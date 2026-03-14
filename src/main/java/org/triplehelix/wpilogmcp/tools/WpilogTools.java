@@ -51,6 +51,7 @@ import org.triplehelix.wpilogmcp.mcp.McpServer;
  *   <li>{@code can_health} - Check for CAN bus errors
  *   <li>{@code compare_matches} - Compare entries across multiple logs
  *   <li>{@code get_code_metadata} - Extract Git info and build metadata
+ *   <li>{@code moi_regression} - OLS regression for moment of inertia and damping from velocity/current logs
  * </ul>
  *
  * <h2>FRC Domain-Specific Analysis Tools ({@link FrcDomainTools})</h2>
