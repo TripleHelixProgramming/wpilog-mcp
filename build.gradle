@@ -1,0 +1,77 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'jacoco'
+}
+
+group = 'org.triplehelix'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+jacocoTestReport {
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+test {
+    finalizedBy jacocoTestReport
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://frcmaven.wpi.edu/artifactory/release/' }
+}
+
+dependencies {
+    // WPILib utilities for DataLog reading
+    implementation 'edu.wpi.first.wpiutil:wpiutil-java:2025.1.1'
+    implementation 'edu.wpi.first.wpimath:wpimath-java:2025.1.1'
+
+    // JSON processing for MCP protocol
+    implementation 'com.google.code.gson:gson:2.11.0'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:2.0.13'
+    implementation 'org.slf4j:slf4j-simple:2.0.13'
+
+    // Testing
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+application {
+    mainClass = 'org.triplehelix.wpilogmcp.Main'
+}
+
+shadowJar {
+    archiveBaseName.set('wpilog-mcp')
+    archiveClassifier.set('all')
+    archiveVersion.set(version)
+
+    manifest {
+        attributes 'Main-Class': 'org.triplehelix.wpilogmcp.Main'
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// Convenience task to build the fat JAR
+tasks.register('buildMcp') {
+    dependsOn shadowJar
+    doLast {
+        println "Built: build/libs/wpilog-mcp-${version}-all.jar"
+    }
+}
