@@ -10,7 +10,7 @@ The **Model Context Protocol (MCP)** is an open standard that enables AI assista
 
 This project provides an **MCP Server**. Once configured, it acts as a "bridge" that gives your AI assistant the specific tools needed to read WPILOG files, analyze swerve performance, detect brownouts, and even pull match results from The Blue Alliance—all through a natural conversation.
 
-Built by [FRC Team 2363 Triple Helix](https://www.triplehelixrobotics.com/) using WPILib's official `DataLogReader` for guaranteed format compatibility.
+Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's official `DataLogReader` for guaranteed format compatibility.
 
 **See what's possible:** [Example Analysis Report](EXAMPLE.md) - A complete match analysis generated from real robot logs.
 
@@ -398,7 +398,7 @@ MIT License - see [LICENSE](LICENSE)
 - [WPILib](https://github.com/wpilibsuite/allwpilib) for the DataLog format
 - [AdvantageKit](https://github.com/Mechanical-Advantage/AdvantageKit) for pioneering FRC replay logging
 - [Anthropic](https://anthropic.com) for MCP and Claude
-- [FRC Team 2363 Triple Helix](https://www.triplehelixrobotics.com/)
+- [FRC Team 2363 Triple Helix](https://team2363.org)
 
 ## See Also
 
