@@ -569,6 +569,12 @@ public class LogManager {
           isArray ? decodeSwerveModuleStateArray(data) : decodeSwerveModuleState(data, 0);
       case "SwerveModulePosition" ->
           isArray ? decodeSwerveModulePositionArray(data) : decodeSwerveModulePosition(data, 0);
+      case "TargetObservation" ->
+          isArray ? decodeTargetObservationArray(data) : decodeTargetObservation(data, 0);
+      case "PoseObservation" ->
+          isArray ? decodePoseObservationArray(data) : decodePoseObservation(data, 0);
+      case "SwerveSample" ->
+          isArray ? decodeSwerveSampleArray(data) : decodeSwerveSample(data, 0);
       default -> data.length <= 100 ? bytesToHex(data) : "<" + structType + ": " + data.length + " bytes>";
     };
   }
@@ -768,12 +774,227 @@ public class LogManager {
     return result;
   }
 
+  // ==================== NEW STRUCT DECODERS ====================
+
+  /**
+   * Size of TargetObservation struct in bytes.
+   * Layout: yaw(8) + pitch(8) + skew(8) + area(8) + confidence(4) + objectID(4) = 40 bytes
+   */
+  private static final int TARGET_OBSERVATION_SIZE = 40;
+
+  /**
+   * Decodes a TargetObservation struct from a byte array.
+   *
+   * <p>Layout (40 bytes total):
+   * <ul>
+   *   <li>Rotation2d yaw (8 bytes) - double radians</li>
+   *   <li>Rotation2d pitch (8 bytes) - double radians</li>
+   *   <li>Rotation2d skew (8 bytes) - double radians</li>
+   *   <li>double area (8 bytes)</li>
+   *   <li>float confidence (4 bytes)</li>
+   *   <li>int32 objectID (4 bytes)</li>
+   * </ul>
+   */
+  private Map<String, Object> decodeTargetObservation(byte[] data, int offset) {
+    if (data.length < offset + TARGET_OBSERVATION_SIZE) {
+      return Map.of("error", "insufficient data for TargetObservation");
+    }
+    double yawRad = readDouble(data, offset);
+    double pitchRad = readDouble(data, offset + 8);
+    double skewRad = readDouble(data, offset + 16);
+    double area = readDouble(data, offset + 24);
+    float confidence = readFloat(data, offset + 32);
+    int objectID = readInt32(data, offset + 36);
+
+    return Map.of(
+        "yaw_rad", yawRad,
+        "yaw_deg", Math.toDegrees(yawRad),
+        "pitch_rad", pitchRad,
+        "pitch_deg", Math.toDegrees(pitchRad),
+        "skew_rad", skewRad,
+        "skew_deg", Math.toDegrees(skewRad),
+        "area", area,
+        "confidence", confidence,
+        "objectID", objectID);
+  }
+
+  private List<Map<String, Object>> decodeTargetObservationArray(byte[] data) {
+    var result = new ArrayList<Map<String, Object>>();
+    for (int offset = 0; offset + TARGET_OBSERVATION_SIZE <= data.length; offset += TARGET_OBSERVATION_SIZE) {
+      result.add(decodeTargetObservation(data, offset));
+    }
+    return result;
+  }
+
+  /**
+   * Size of PoseObservation struct in bytes.
+   * Layout: timestamp(8) + Pose3d(56) + ambiguity(8) + tagCount(4) + avgTagDist(8) + type(4) = 88 bytes
+   */
+  private static final int POSE_OBSERVATION_SIZE = 88;
+
+  /** Enum values for PoseObservationType. */
+  private static final String[] POSE_OBSERVATION_TYPES = {"MEGATAG_1", "MEGATAG_2", "PHOTONVISION"};
+
+  /**
+   * Decodes a PoseObservation struct from a byte array.
+   *
+   * <p>Layout (88 bytes total):
+   * <ul>
+   *   <li>double timestamp (8 bytes)</li>
+   *   <li>Pose3d pose (56 bytes) - Translation3d(24) + Rotation3d/Quaternion(32)</li>
+   *   <li>double ambiguity (8 bytes)</li>
+   *   <li>int32 tagCount (4 bytes)</li>
+   *   <li>double averageTagDistance (8 bytes)</li>
+   *   <li>int32 type (4 bytes) - PoseObservationType enum</li>
+   * </ul>
+   */
+  private Map<String, Object> decodePoseObservation(byte[] data, int offset) {
+    if (data.length < offset + POSE_OBSERVATION_SIZE) {
+      return Map.of("error", "insufficient data for PoseObservation");
+    }
+    double timestamp = readDouble(data, offset);
+
+    // Decode embedded Pose3d (56 bytes): Translation3d (x, y, z) + Quaternion (w, x, y, z)
+    double poseX = readDouble(data, offset + 8);
+    double poseY = readDouble(data, offset + 16);
+    double poseZ = readDouble(data, offset + 24);
+    double qw = readDouble(data, offset + 32);
+    double qx = readDouble(data, offset + 40);
+    double qy = readDouble(data, offset + 48);
+    double qz = readDouble(data, offset + 56);
+
+    double ambiguity = readDouble(data, offset + 64);
+    int tagCount = readInt32(data, offset + 72);
+    double averageTagDistance = readDouble(data, offset + 76);
+    int typeOrdinal = readInt32(data, offset + 84);
+
+    String typeName = (typeOrdinal >= 0 && typeOrdinal < POSE_OBSERVATION_TYPES.length)
+        ? POSE_OBSERVATION_TYPES[typeOrdinal]
+        : "UNKNOWN(" + typeOrdinal + ")";
+
+    // Return flat structure with pose fields prefixed
+    var result = new LinkedHashMap<String, Object>();
+    result.put("timestamp", timestamp);
+    result.put("pose_x", poseX);
+    result.put("pose_y", poseY);
+    result.put("pose_z", poseZ);
+    result.put("pose_qw", qw);
+    result.put("pose_qx", qx);
+    result.put("pose_qy", qy);
+    result.put("pose_qz", qz);
+    result.put("ambiguity", ambiguity);
+    result.put("tagCount", tagCount);
+    result.put("averageTagDistance", averageTagDistance);
+    result.put("type", typeName);
+    return result;
+  }
+
+  private List<Map<String, Object>> decodePoseObservationArray(byte[] data) {
+    var result = new ArrayList<Map<String, Object>>();
+    for (int offset = 0; offset + POSE_OBSERVATION_SIZE <= data.length; offset += POSE_OBSERVATION_SIZE) {
+      result.add(decodePoseObservation(data, offset));
+    }
+    return result;
+  }
+
+  /**
+   * Size of SwerveSample struct in bytes (from Choreo library).
+   * Layout: 10 scalar doubles (80) + moduleForcesX[4] (32) + moduleForcesY[4] (32) = 144 bytes
+   */
+  private static final int SWERVE_SAMPLE_SIZE = 144;
+
+  /**
+   * Decodes a SwerveSample struct from a byte array.
+   *
+   * <p>Layout (144 bytes total):
+   * <ul>
+   *   <li>double timestamp (8 bytes)</li>
+   *   <li>double x (8 bytes)</li>
+   *   <li>double y (8 bytes)</li>
+   *   <li>double heading (8 bytes)</li>
+   *   <li>double vx (8 bytes)</li>
+   *   <li>double vy (8 bytes)</li>
+   *   <li>double omega (8 bytes)</li>
+   *   <li>double ax (8 bytes)</li>
+   *   <li>double ay (8 bytes)</li>
+   *   <li>double alpha (8 bytes)</li>
+   *   <li>double[4] moduleForcesX (32 bytes)</li>
+   *   <li>double[4] moduleForcesY (32 bytes)</li>
+   * </ul>
+   */
+  private Map<String, Object> decodeSwerveSample(byte[] data, int offset) {
+    if (data.length < offset + SWERVE_SAMPLE_SIZE) {
+      return Map.of("error", "insufficient data for SwerveSample");
+    }
+
+    double timestamp = readDouble(data, offset);
+    double x = readDouble(data, offset + 8);
+    double y = readDouble(data, offset + 16);
+    double heading = readDouble(data, offset + 24);
+    double vx = readDouble(data, offset + 32);
+    double vy = readDouble(data, offset + 40);
+    double omega = readDouble(data, offset + 48);
+    double ax = readDouble(data, offset + 56);
+    double ay = readDouble(data, offset + 64);
+    double alpha = readDouble(data, offset + 72);
+
+    // Read module forces arrays (4 elements each)
+    double[] moduleForcesX = new double[4];
+    double[] moduleForcesY = new double[4];
+    for (int i = 0; i < 4; i++) {
+      moduleForcesX[i] = readDouble(data, offset + 80 + i * 8);
+      moduleForcesY[i] = readDouble(data, offset + 112 + i * 8);
+    }
+
+    var result = new LinkedHashMap<String, Object>();
+    result.put("timestamp", timestamp);
+    result.put("x", x);
+    result.put("y", y);
+    result.put("heading", heading);
+    result.put("heading_deg", Math.toDegrees(heading));
+    result.put("vx", vx);
+    result.put("vy", vy);
+    result.put("omega", omega);
+    result.put("ax", ax);
+    result.put("ay", ay);
+    result.put("alpha", alpha);
+    result.put("moduleForcesX", moduleForcesX);
+    result.put("moduleForcesY", moduleForcesY);
+    return result;
+  }
+
+  private List<Map<String, Object>> decodeSwerveSampleArray(byte[] data) {
+    var result = new ArrayList<Map<String, Object>>();
+    for (int offset = 0; offset + SWERVE_SAMPLE_SIZE <= data.length; offset += SWERVE_SAMPLE_SIZE) {
+      result.add(decodeSwerveSample(data, offset));
+    }
+    return result;
+  }
+
+  // ==================== BINARY READ HELPERS ====================
+
   private double readDouble(byte[] data, int offset) {
     long bits = 0;
     for (int i = 0; i < 8; i++) {
       bits |= (long) (data[offset + i] & 0xFF) << (i * 8);
     }
     return Double.longBitsToDouble(bits);
+  }
+
+  private float readFloat(byte[] data, int offset) {
+    int bits = 0;
+    for (int i = 0; i < 4; i++) {
+      bits |= (data[offset + i] & 0xFF) << (i * 8);
+    }
+    return Float.intBitsToFloat(bits);
+  }
+
+  private int readInt32(byte[] data, int offset) {
+    int value = 0;
+    for (int i = 0; i < 4; i++) {
+      value |= (data[offset + i] & 0xFF) << (i * 8);
+    }
+    return value;
   }
 
   private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();
@@ -814,6 +1035,99 @@ public class LogManager {
    */
   Map<String, Object> testDecodePose2d(byte[] data, int offset) {
     return decodePose2d(data, offset);
+  }
+
+  /**
+   * Reads a little-endian float from a byte array at the given offset.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array
+   * @param offset The offset to read from
+   * @return The decoded float value
+   */
+  float testReadFloat(byte[] data, int offset) {
+    return readFloat(data, offset);
+  }
+
+  /**
+   * Reads a little-endian int32 from a byte array at the given offset.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array
+   * @param offset The offset to read from
+   * @return The decoded int value
+   */
+  int testReadInt32(byte[] data, int offset) {
+    return readInt32(data, offset);
+  }
+
+  /**
+   * Decodes a TargetObservation struct from a byte array.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array containing the TargetObservation
+   * @param offset The offset to read from
+   * @return A map containing the decoded fields
+   */
+  Map<String, Object> testDecodeTargetObservation(byte[] data, int offset) {
+    return decodeTargetObservation(data, offset);
+  }
+
+  /**
+   * Decodes a TargetObservation array from a byte array.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array containing the array data
+   * @return A list of maps containing the decoded fields
+   */
+  List<Map<String, Object>> testDecodeTargetObservationArray(byte[] data) {
+    return decodeTargetObservationArray(data);
+  }
+
+  /**
+   * Decodes a PoseObservation struct from a byte array.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array containing the PoseObservation
+   * @param offset The offset to read from
+   * @return A map containing the decoded fields
+   */
+  Map<String, Object> testDecodePoseObservation(byte[] data, int offset) {
+    return decodePoseObservation(data, offset);
+  }
+
+  /**
+   * Decodes a PoseObservation array from a byte array.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array containing the array data
+   * @return A list of maps containing the decoded fields
+   */
+  List<Map<String, Object>> testDecodePoseObservationArray(byte[] data) {
+    return decodePoseObservationArray(data);
+  }
+
+  /**
+   * Decodes a SwerveSample struct from a byte array.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array containing the SwerveSample
+   * @param offset The offset to read from
+   * @return A map containing the decoded fields
+   */
+  Map<String, Object> testDecodeSwerveSample(byte[] data, int offset) {
+    return decodeSwerveSample(data, offset);
+  }
+
+  /**
+   * Decodes a SwerveSample array from a byte array.
+   * Package-private for testing struct decoding.
+   *
+   * @param data The byte array containing the array data
+   * @return A list of maps containing the decoded fields
+   */
+  List<Map<String, Object>> testDecodeSwerveSampleArray(byte[] data) {
+    return decodeSwerveSampleArray(data);
   }
 
   /**

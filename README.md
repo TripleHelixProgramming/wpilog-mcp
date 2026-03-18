@@ -69,7 +69,7 @@ Configuration location depends on how you're running Claude Code:
     "wpilog": {
       "command": "/Users/yourname/wpilib/2026/jdk/bin/java",
       "args": [
-        "-jar", "/path/to/wpilog-mcp-0.1.0-all.jar",
+        "-jar", "/path/to/wpilog-mcp-0.2.0-all.jar",
         "-logdir", "/path/to/your/logs",
         "-team", "2363"
       ],
@@ -88,7 +88,7 @@ Configuration location depends on how you're running Claude Code:
     "wpilog": {
       "command": "C:\\Users\\Public\\wpilib\\2026\\jdk\\bin\\java.exe",
       "args": [
-        "-jar", "C:\\path\\to\\wpilog-mcp-0.1.0-all.jar",
+        "-jar", "C:\\path\\to\\wpilog-mcp-0.2.0-all.jar",
         "-logdir", "C:\\path\\to\\your\\logs",
         "-team", "2363"
       ],
@@ -263,7 +263,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "wpilog": {
       "command": "/path/to/java",
-      "args": ["-jar", "/path/to/wpilog-mcp-0.1.0-all.jar", "-logdir", "/path/to/logs"]
+      "args": ["-jar", "/path/to/wpilog-mcp-0.2.0-all.jar", "-logdir", "/path/to/logs"]
     }
   }
 }
@@ -276,7 +276,7 @@ This server uses **stdio transport** (JSON-RPC over stdin/stdout). Generic confi
 ```json
 {
   "command": "/path/to/java",
-  "args": ["-jar", "/path/to/wpilog-mcp-0.1.0-all.jar"],
+  "args": ["-jar", "/path/to/wpilog-mcp-0.2.0-all.jar"],
   "transport": "stdio"
 }
 ```
@@ -285,7 +285,7 @@ See [MCP Protocol](https://modelcontextprotocol.io/) for client implementations.
 
 ## Available Tools
 
-wpilog-mcp provides 34 tools organized into categories:
+wpilog-mcp provides 35 tools organized into categories:
 
 | Category | Tools |
 |----------|-------|
@@ -326,6 +326,16 @@ For complete tool documentation with parameters and examples, see [TOOLS.md](TOO
 | `SwerveModuleState` | `speed_mps`, `angle_rad`, `angle_deg` |
 | `SwerveModulePosition` | `distance_m`, `angle_rad`, `angle_deg` |
 
+### Vision & Autonomous Types
+
+| Type | Decoded Fields |
+|------|----------------|
+| `TargetObservation` | `yaw_rad`, `yaw_deg`, `pitch_rad`, `pitch_deg`, `skew_rad`, `skew_deg`, `area`, `confidence`, `objectID` |
+| `PoseObservation` | `timestamp`, `pose_x`, `pose_y`, `pose_z`, `pose_qw`, `pose_qx`, `pose_qy`, `pose_qz`, `ambiguity`, `tagCount`, `averageTagDistance`, `type` |
+| `SwerveSample` | `timestamp`, `x`, `y`, `heading`, `heading_deg`, `vx`, `vy`, `omega`, `ax`, `ay`, `alpha`, `moduleForcesX[4]`, `moduleForcesY[4]` |
+
+*Note: `PoseObservation.type` is decoded as an enum string: `MEGATAG_1`, `MEGATAG_2`, or `PHOTONVISION`.*
+
 ## Troubleshooting
 
 ### MCP Server Shows "Failed"
@@ -339,7 +349,7 @@ For complete tool documentation with parameters and examples, see [TOOLS.md](TOO
 2. **Test manually**:
    ```bash
    echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-     java -jar wpilog-mcp-0.1.0-all.jar
+     java -jar wpilog-mcp-0.2.0-all.jar
    ```
 
 3. **Check config location**:
@@ -390,7 +400,7 @@ wpilog-mcp/
 │       ├── CoreTools.java        # Log management tools (9)
 │       ├── QueryTools.java       # Search & query tools (4)
 │       ├── StatisticsTools.java  # Statistical analysis tools (6)
-│       ├── RobotAnalysisTools.java # FRC analysis tools (6)
+│       ├── RobotAnalysisTools.java # FRC analysis tools (7)
 │       ├── FrcDomainTools.java   # Advanced FRC tools (6)
 │       ├── ExportTools.java      # CSV/report export (2)
 │       ├── TbaTools.java         # TBA integration (1)

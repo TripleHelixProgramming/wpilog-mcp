@@ -77,8 +77,8 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // 15 original + 12 advanced + 1 TBA + 6 FRC domain-specific = 34 total
-      assertEquals(34, registeredTools.size());
+      // Core(9) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(6) + Export(2) + TBA(1) = 35 total
+      assertEquals(35, registeredTools.size());
     }
   }
 
