@@ -1166,55 +1166,117 @@ Analyze autonomous routine performance including path following error RMSE, maxi
 ```
 
 ### `analyze_cycles`
-Analyze game piece handling cycle times. Counts cycles, calculates timing statistics, breaks down time by state, and identifies dead time (idle periods between cycles). Enhanced with dead time analysis to identify opportunities for cycle time improvement.
+Analyze game piece handling cycle times with flexible cycle detection modes, data quality warnings, and comprehensive analysis. Enhanced with configurable cycle definitions, time filtering, case-insensitive matching, and incomplete cycle detection.
+
+**Cycle Detection Modes:**
+- **start_to_start**: Measures from one occurrence of `cycle_start_state` to the next (default). Useful for regular repeating patterns.
+- **start_to_end**: Measures from `cycle_start_state` to `cycle_end_state`. More semantically correct for workflows with distinct start and end states.
 
 **Parameters:**
-- `state_entry` (required): Entry name for superstructure/mechanism state
-- `cycle_start_state` (optional): State that marks cycle start (e.g., "INTAKING")
-- `idle_state` (optional): State name representing idle/waiting (e.g., "IDLE") for dead time detection
-- `start_time` (optional): Start timestamp (default: 15s for teleop start)
-- `end_time` (optional): End timestamp (default: 135s for teleop end)
+- `state_entry` (required): Entry name for mechanism state machine
+- `cycle_mode` (optional, default: `"start_to_start"`): Cycle detection mode (`"start_to_start"` or `"start_to_end"`)
+- `cycle_start_state` (optional): State value marking cycle start (e.g., `"INTAKING"`) - required for both modes
+- `cycle_end_state` (optional): State value marking cycle end (e.g., `"SCORING"`) - required for `start_to_end` mode
+- `idle_state` (optional): State value for idle/dead time tracking (e.g., `"IDLE"`)
+- `start_time` (optional): Start timestamp in seconds for filtering
+- `end_time` (optional): End timestamp in seconds for filtering
+- `case_sensitive` (optional, default: `true`): Whether state matching is case-sensitive
+- `limit` (optional, default: `10`): Maximum cycles/dead periods to return in details
 
-**Returns:** Cycle count, timing statistics, time breakdown by state, and dead time analysis
+**Returns:**
+- `success`: true/false
+- `sample_count`: Total state samples processed
+- `cycle_mode`: The cycle detection mode used
+- `warnings`: Array of data quality warnings (if any)
+- `cycle_times`: Statistics object with:
+  - `count`: Number of complete cycles
+  - `avg_sec`: Average cycle duration
+  - `min_sec`: Minimum cycle duration
+  - `max_sec`: Maximum cycle duration
+- `cycles`: Array of cycle details (limited by `limit` parameter):
+  - `start_time`: Cycle start timestamp
+  - `end_time`: Cycle end timestamp
+  - `duration`: Cycle duration in seconds
+  - `incomplete`: Boolean flag indicating if cycle wasn't completed
+- `cycles_truncated`: true if more cycles exist than returned (optional)
+- `total_cycles`: Total cycle count if truncated (optional)
+- `dead_time`: Statistics if `idle_state` provided:
+  - `total_sec`: Total dead time
+  - `period_count`: Number of dead time periods
+  - `avg_duration_sec`: Average dead time duration
+- `dead_time_periods`: Array of dead time period details (limited by `limit` parameter)
 
-**Dead Time Analysis:** Identifies periods when the robot is idle between cycles. High dead time indicates:
-- Driver waiting for game pieces
-- Long travel distances between scoring locations
-- Strategy inefficiencies (e.g., waiting for alliance partners)
+**Data Quality Warnings:**
+The tool automatically detects and warns about potential data quality issues:
+- **Rapid state transitions**: More than 5 transitions occurring less than 0.1s apart may indicate state machine instability or sensor noise
+- **Unknown states**: States that don't match any of the specified states (cycle_start_state, cycle_end_state, idle_state) may indicate unexpected behavior or typos
+- Warnings help identify data collection issues, state machine bugs, or configuration problems
+
+**Example 1: Start-to-End Mode (Semantic Cycles)**
+```json
+{
+  "state_entry": "/Superstructure/State",
+  "cycle_mode": "start_to_end",
+  "cycle_start_state": "INTAKING",
+  "cycle_end_state": "SCORING",
+  "idle_state": "IDLE",
+  "start_time": 15.0,
+  "end_time": 135.0,
+  "case_sensitive": false,
+  "limit": 20
+}
+```
+
+**Example 2: Start-to-Start Mode (Repeating Pattern)**
+```json
+{
+  "state_entry": "/Intake/State",
+  "cycle_mode": "start_to_start",
+  "cycle_start_state": "HAS_PIECE",
+  "idle_state": "IDLE"
+}
+```
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "state_entry": "/Superstructure/State",
-  "start_state": "INTAKING",
-  "cycle_count": 8,
+  "sample_count": 1250,
+  "cycle_mode": "start_to_end",
+  "warnings": [
+    "Detected 2 unknown states: ERROR_STATE, UNKNOWN"
+  ],
   "cycle_times": {
-    "average_sec": 12.5,
+    "count": 8,
+    "avg_sec": 12.5,
     "min_sec": 9.2,
-    "max_sec": 18.1,
-    "cycles_per_minute": 4.0
+    "max_sec": 18.1
   },
   "cycles": [
-    {"start": 15.2, "end": 24.8, "duration": 9.6},
-    {"start": 24.8, "end": 37.2, "duration": 12.4}
+    {"start_time": 15.2, "end_time": 24.8, "duration": 9.6, "incomplete": false},
+    {"start_time": 27.0, "end_time": 39.4, "duration": 12.4, "incomplete": false},
+    {"start_time": 42.0, "end_time": 135.0, "duration": 93.0, "incomplete": true}
   ],
   "dead_time": {
     "total_sec": 20.0,
     "period_count": 4,
-    "avg_duration_sec": 5.0,
-    "percentage_of_teleop": 16.7
+    "avg_duration_sec": 5.0
   },
-  "time_by_state": {
-    "INTAKING": {"time_sec": 25.0, "percentage": 25.0},
-    "TRANSITING": {"time_sec": 30.0, "percentage": 30.0},
-    "AIMING": {"time_sec": 15.0, "percentage": 15.0},
-    "SHOOTING": {"time_sec": 10.0, "percentage": 10.0},
-    "IDLE": {"time_sec": 20.0, "percentage": 20.0}
-  },
+  "dead_time_periods": [
+    {"start_time": 24.8, "end_time": 27.0, "duration": 2.2, "incomplete": false},
+    {"start_time": 39.4, "end_time": 42.0, "duration": 2.6, "incomplete": false}
+  ],
   "_execution_time_ms": 45
 }
 ```
+
+**Incomplete Cycles:**
+Cycles marked with `incomplete: true` indicate the log ended before the cycle completed. This can happen when:
+- Log capture stopped mid-cycle
+- Match ended during a cycle
+- Time filtering (start_time/end_time) cut off a cycle
+
+Incomplete cycles are still included in the output for visibility, but excluded from cycle time statistics to avoid skewing averages.
 
 ### `analyze_replay_drift`
 Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. Identifies entries that diverged and their first divergence timestamp.

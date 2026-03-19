@@ -818,16 +818,23 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze game piece handling cycle times: count cycles, calculate average/min/max times, "
-          + "and identify dead time.";
+      return "Analyze game piece handling cycle times with configurable cycle detection modes "
+          + "(start-to-start or start-to-end), dead time tracking, and data quality warnings. "
+          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection.";
     }
 
     @Override
     public JsonObject inputSchema() {
       return new SchemaBuilder()
           .addProperty("state_entry", "string", "Entry name for mechanism state", true)
+          .addProperty("cycle_mode", "string", "Cycle detection mode: 'start_to_start' or 'start_to_end' (default: 'start_to_start')", false)
           .addProperty("cycle_start_state", "string", "State value that marks cycle start (e.g., 'INTAKING')", false)
+          .addProperty("cycle_end_state", "string", "State value that marks cycle end (only for start_to_end mode, e.g., 'SCORING')", false)
           .addProperty("idle_state", "string", "State value for idle/dead time (e.g., 'IDLE')", false)
+          .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
+          .addNumberProperty("end_time", "End timestamp in seconds", false, null)
+          .addProperty("case_sensitive", "boolean", "Case-sensitive state matching (default: true)", false)
+          .addIntegerProperty("limit", "Max cycles/dead periods to return (default: 10)", false, 10)
           .build();
     }
 
@@ -836,34 +843,100 @@ public final class FrcDomainTools {
       var log = getLogManager().getActiveLog();
       if (log == null) return errorResult("No log loaded");
 
+      // Parse parameters
       var stateEntry = getRequiredString(arguments, "state_entry");
+      var cycleMode = getOptString(arguments, "cycle_mode", "start_to_start");
       var cycleStartState = getOptString(arguments, "cycle_start_state", null);
+      var cycleEndState = getOptString(arguments, "cycle_end_state", null);
       var idleState = getOptString(arguments, "idle_state", null);
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      boolean caseSensitive = arguments.has("case_sensitive") && !arguments.get("case_sensitive").isJsonNull()
+          ? arguments.get("case_sensitive").getAsBoolean()
+          : true; // Default: true
+      int limit = getOptInt(arguments, "limit", 10);
+
+      // Validate cycle mode
+      if (!cycleMode.equals("start_to_start") && !cycleMode.equals("start_to_end")) {
+        return errorResult("cycle_mode must be 'start_to_start' or 'start_to_end'");
+      }
+
+      // Validate required states for mode
+      if (cycleMode.equals("start_to_end") && (cycleStartState == null || cycleEndState == null)) {
+        return errorResult("start_to_end mode requires both cycle_start_state and cycle_end_state");
+      }
+      if (cycleMode.equals("start_to_start") && cycleStartState == null) {
+        return errorResult("start_to_start mode requires cycle_start_state");
+      }
 
       var vals = log.values().get(stateEntry);
       if (vals == null) return errorResult("Entry not found: " + stateEntry);
+      if (vals.isEmpty()) return errorResult("State entry has no data");
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("sample_count", vals.size());
-
-      // Detect state transitions and calculate cycle times
+      // Detect cycles and dead time
       var cycleTimes = new ArrayList<Double>();
       var cycleDetails = new ArrayList<JsonObject>();
       var deadTimePeriods = new ArrayList<JsonObject>();
-
-      String lastState = null;
-      Double cycleStartTime = null;
-      Double idleStartTime = null;
       double totalDeadTime = 0.0;
 
-      for (LogManager.TimestampedValue tv : vals) {
-        String currentState = tv.value().toString();
+      // Cycle detection based on mode
+      if (cycleMode.equals("start_to_start")) {
+        Double cycleStartTime = null;
+        boolean cycleIncomplete = false;
 
-        // Detect cycle start
-        if (cycleStartState != null && currentState.equals(cycleStartState)) {
-          if (cycleStartTime != null) {
-            // End of previous cycle
+        for (LogManager.TimestampedValue tv : vals) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+
+          String currentState = tv.value().toString();
+
+          if (statesEqual(currentState, cycleStartState, caseSensitive)) {
+            if (cycleStartTime != null) {
+              // Complete previous cycle
+              double cycleTime = tv.timestamp() - cycleStartTime;
+              cycleTimes.add(cycleTime);
+
+              var cycleDetail = new JsonObject();
+              cycleDetail.addProperty("start_time", cycleStartTime);
+              cycleDetail.addProperty("end_time", tv.timestamp());
+              cycleDetail.addProperty("duration", cycleTime);
+              cycleDetail.addProperty("incomplete", false);
+              cycleDetails.add(cycleDetail);
+
+              cycleIncomplete = false;
+            }
+            cycleStartTime = tv.timestamp();
+            cycleIncomplete = true;
+          }
+        }
+
+        // Handle incomplete final cycle
+        if (cycleIncomplete && cycleStartTime != null) {
+          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - cycleStartTime;
+
+          var cycleDetail = new JsonObject();
+          cycleDetail.addProperty("start_time", cycleStartTime);
+          cycleDetail.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          cycleDetail.addProperty("duration", incompleteDuration);
+          cycleDetail.addProperty("incomplete", true);
+          cycleDetails.add(cycleDetail);
+        }
+      } else if (cycleMode.equals("start_to_end")) {
+        Double cycleStartTime = null;
+        boolean inCycle = false;
+
+        for (LogManager.TimestampedValue tv : vals) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+
+          String currentState = tv.value().toString();
+
+          // Detect cycle start
+          if (statesEqual(currentState, cycleStartState, caseSensitive) && !inCycle) {
+            cycleStartTime = tv.timestamp();
+            inCycle = true;
+          }
+
+          // Detect cycle end
+          if (statesEqual(currentState, cycleEndState, caseSensitive) && inCycle && cycleStartTime != null) {
             double cycleTime = tv.timestamp() - cycleStartTime;
             cycleTimes.add(cycleTime);
 
@@ -871,17 +944,44 @@ public final class FrcDomainTools {
             cycleDetail.addProperty("start_time", cycleStartTime);
             cycleDetail.addProperty("end_time", tv.timestamp());
             cycleDetail.addProperty("duration", cycleTime);
+            cycleDetail.addProperty("incomplete", false);
             cycleDetails.add(cycleDetail);
+
+            inCycle = false;
+            cycleStartTime = null;
           }
-          cycleStartTime = tv.timestamp();
         }
 
-        // Detect idle/dead time
-        if (idleState != null) {
-          if (currentState.equals(idleState) && !currentState.equals(lastState)) {
+        // Handle incomplete cycle (started but never ended)
+        if (inCycle && cycleStartTime != null) {
+          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - cycleStartTime;
+
+          var cycleDetail = new JsonObject();
+          cycleDetail.addProperty("start_time", cycleStartTime);
+          cycleDetail.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          cycleDetail.addProperty("duration", incompleteDuration);
+          cycleDetail.addProperty("incomplete", true);
+          cycleDetails.add(cycleDetail);
+        }
+      }
+
+      // Detect idle/dead time
+      if (idleState != null) {
+        String lastState = null;
+        Double idleStartTime = null;
+
+        for (LogManager.TimestampedValue tv : vals) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+
+          String currentState = tv.value().toString();
+
+          if (statesEqual(currentState, idleState, caseSensitive) &&
+              !statesEqual(currentState, lastState, caseSensitive)) {
             // Entering idle
             idleStartTime = tv.timestamp();
-          } else if (!currentState.equals(idleState) && idleState.equals(lastState) && idleStartTime != null) {
+          } else if (!statesEqual(currentState, idleState, caseSensitive) &&
+                     statesEqual(lastState, idleState, caseSensitive) &&
+                     idleStartTime != null) {
             // Exiting idle
             double deadTime = tv.timestamp() - idleStartTime;
             totalDeadTime += deadTime;
@@ -894,12 +994,36 @@ public final class FrcDomainTools {
 
             idleStartTime = null;
           }
+
+          lastState = currentState;
         }
 
-        lastState = currentState;
+        // Handle incomplete idle period
+        if (idleStartTime != null) {
+          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - idleStartTime;
+
+          var deadPeriod = new JsonObject();
+          deadPeriod.addProperty("start_time", idleStartTime);
+          deadPeriod.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          deadPeriod.addProperty("duration", incompleteDuration);
+          deadPeriod.addProperty("incomplete", true);
+          deadTimePeriods.add(deadPeriod);
+        }
       }
 
-      // Calculate cycle statistics
+      // Build result
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("sample_count", vals.size());
+      result.addProperty("cycle_mode", cycleMode);
+
+      // Add data quality warnings
+      var warnings = detectDataQualityIssues(vals, cycleStartState, cycleEndState, idleState, caseSensitive, startTime, endTime);
+      if (!warnings.isEmpty()) {
+        result.add("warnings", GSON.toJsonTree(warnings));
+      }
+
+      // Calculate cycle statistics (only for complete cycles)
       if (!cycleTimes.isEmpty()) {
         var cycleStats = new JsonObject();
         cycleStats.addProperty("count", cycleTimes.size());
@@ -907,9 +1031,16 @@ public final class FrcDomainTools {
         cycleStats.addProperty("min_sec", cycleTimes.stream().mapToDouble(d -> d).min().orElse(0));
         cycleStats.addProperty("max_sec", cycleTimes.stream().mapToDouble(d -> d).max().orElse(0));
         result.add("cycle_times", cycleStats);
+      }
 
-        // Only include first 10 cycle details to avoid huge responses
-        result.add("cycles", GSON.toJsonTree(cycleDetails.stream().limit(10).toList()));
+      // Add cycle details (includes both complete and incomplete cycles)
+      if (!cycleDetails.isEmpty()) {
+        result.add("cycles", GSON.toJsonTree(cycleDetails.stream().limit(limit).toList()));
+
+        if (cycleDetails.size() > limit) {
+          result.addProperty("cycles_truncated", true);
+          result.addProperty("total_cycles", cycleDetails.size());
+        }
       }
 
       // Add dead time analysis
@@ -923,11 +1054,91 @@ public final class FrcDomainTools {
         }
         result.add("dead_time", deadTimeStats);
 
-        // Only include first 10 dead time periods
-        result.add("dead_time_periods", GSON.toJsonTree(deadTimePeriods.stream().limit(10).toList()));
+        // Apply configurable limit
+        result.add("dead_time_periods", GSON.toJsonTree(deadTimePeriods.stream().limit(limit).toList()));
+
+        if (deadTimePeriods.size() > limit) {
+          result.addProperty("dead_time_periods_truncated", true);
+          result.addProperty("total_dead_time_periods", deadTimePeriods.size());
+        }
       }
 
       return result;
+    }
+
+    private boolean inTimeRange(double timestamp, Double start, Double end) {
+      if (start != null && timestamp < start) return false;
+      if (end != null && timestamp > end) return false;
+      return true;
+    }
+
+    private boolean statesEqual(String state1, String state2, boolean caseSensitive) {
+      if (state1 == null || state2 == null) return false;
+      if (caseSensitive) {
+        return state1.equals(state2);
+      } else {
+        return state1.equalsIgnoreCase(state2);
+      }
+    }
+
+    private java.util.List<String> detectDataQualityIssues(
+        java.util.List<LogManager.TimestampedValue> vals,
+        String cycleStartState,
+        String cycleEndState,
+        String idleState,
+        boolean caseSensitive,
+        Double startTime,
+        Double endTime) {
+
+      var warnings = new ArrayList<String>();
+
+      // 1. Rapid state bouncing detection
+      String lastState = null;
+      Double lastTransitionTime = null;
+      int rapidTransitions = 0;
+
+      for (var tv : vals) {
+        if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+
+        String currentState = tv.value().toString();
+
+        if (lastState != null && !statesEqual(currentState, lastState, caseSensitive)) {
+          if (lastTransitionTime != null && (tv.timestamp() - lastTransitionTime) < 0.1) {
+            rapidTransitions++;
+          }
+          lastTransitionTime = tv.timestamp();
+        }
+        lastState = currentState;
+      }
+
+      if (rapidTransitions > 5) {
+        warnings.add(String.format("Detected %d rapid state transitions (<0.1s apart) - may indicate state machine instability", rapidTransitions));
+      }
+
+      // 2. Unknown state detection
+      var expectedStates = new java.util.HashSet<String>();
+      if (cycleStartState != null) expectedStates.add(caseSensitive ? cycleStartState : cycleStartState.toLowerCase());
+      if (cycleEndState != null) expectedStates.add(caseSensitive ? cycleEndState : cycleEndState.toLowerCase());
+      if (idleState != null) expectedStates.add(caseSensitive ? idleState : idleState.toLowerCase());
+
+      var unknownStates = new java.util.HashSet<String>();
+      for (var tv : vals) {
+        if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+
+        String state = tv.value().toString();
+        String compareState = caseSensitive ? state : state.toLowerCase();
+        if (!expectedStates.isEmpty() && !expectedStates.contains(compareState)) {
+          unknownStates.add(state);
+        }
+      }
+
+      if (!unknownStates.isEmpty() && unknownStates.size() <= 5) {
+        warnings.add("Detected unknown states: " + String.join(", ", unknownStates));
+      } else if (unknownStates.size() > 5) {
+        warnings.add(String.format("Detected %d unknown states (too many to list)", unknownStates.size()));
+      }
+
+      return warnings;
     }
   }
 

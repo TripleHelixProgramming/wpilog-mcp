@@ -350,6 +350,362 @@ class FrcDomainToolsLogicTest {
         assertTrue(deadTime.has("period_count"), "Should have dead time period count");
       }
     }
+
+    @Test
+    @DisplayName("start_to_start mode with complete cycles")
+    void startToStartModeCompleteCycles() throws Exception {
+      // Test data: INTAKE -> SHOOT -> INTAKE -> SHOOT -> INTAKE
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(2.0, "SHOOT"));
+      stateValues.add(new TimestampedValue(5.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(6.0, "SHOOT"));
+      stateValues.add(new TimestampedValue(10.0, "INTAKE"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/cycles_start_to_start.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_start");
+      args.addProperty("cycle_start_state", "INTAKE");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals("start_to_start", resultObj.get("cycle_mode").getAsString());
+
+      // Should have 2 complete cycles and 1 incomplete
+      var cycleTimes = resultObj.getAsJsonObject("cycle_times");
+      assertEquals(2, cycleTimes.get("count").getAsInt());
+
+      // Check cycles array includes incomplete flag
+      var cycles = resultObj.getAsJsonArray("cycles");
+      assertEquals(3, cycles.size()); // 2 complete + 1 incomplete
+
+      // Last cycle should be incomplete
+      var lastCycle = cycles.get(2).getAsJsonObject();
+      assertTrue(lastCycle.get("incomplete").getAsBoolean());
+    }
+
+    @Test
+    @DisplayName("start_to_end mode with complete cycles")
+    void startToEndModeCompleteCycles() throws Exception {
+      // Test data: INTAKE (start) -> TRANSFER -> SCORE (end) -> IDLE -> INTAKE -> SCORE
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "IDLE"));
+      stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(2.0, "TRANSFER"));
+      stateValues.add(new TimestampedValue(3.0, "SCORE"));
+      stateValues.add(new TimestampedValue(4.0, "IDLE"));
+      stateValues.add(new TimestampedValue(5.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(7.0, "SCORE"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/cycles_start_to_end.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_end");
+      args.addProperty("cycle_start_state", "INTAKE");
+      args.addProperty("cycle_end_state", "SCORE");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals("start_to_end", resultObj.get("cycle_mode").getAsString());
+
+      // Should have 2 complete cycles
+      var cycleTimes = resultObj.getAsJsonObject("cycle_times");
+      assertEquals(2, cycleTimes.get("count").getAsInt());
+
+      // First cycle: 1.0 to 3.0 = 2.0s
+      // Second cycle: 5.0 to 7.0 = 2.0s
+      assertEquals(2.0, cycleTimes.get("avg_sec").getAsDouble(), 0.01);
+    }
+
+    @Test
+    @DisplayName("incomplete cycle at end of log")
+    void incompleteCycleAtEnd() throws Exception {
+      // Test data: INTAKE -> (log ends without completing cycle)
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "IDLE"));
+      stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(2.0, "TRANSFER"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/incomplete.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_end");
+      args.addProperty("cycle_start_state", "INTAKE");
+      args.addProperty("cycle_end_state", "SCORE");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Should have 1 incomplete cycle
+      var cycles = resultObj.getAsJsonArray("cycles");
+      assertEquals(1, cycles.size());
+
+      var cycle = cycles.get(0).getAsJsonObject();
+      assertTrue(cycle.get("incomplete").getAsBoolean());
+    }
+
+    @Test
+    @DisplayName("case insensitive matching")
+    void caseInsensitiveMatching() throws Exception {
+      // Test data: Mixed case states
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "idle"));
+      stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(2.0, "Intake"));  // Different case
+      stateValues.add(new TimestampedValue(3.0, "intAKE"));  // Different case
+
+      var log = new MockLogBuilder()
+          .setPath("/test/case_insensitive.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_start");
+      args.addProperty("cycle_start_state", "intake");  // lowercase
+      args.addProperty("case_sensitive", false);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Should detect all 3 INTAKE variants as cycles
+      var cycleTimes = resultObj.getAsJsonObject("cycle_times");
+      assertEquals(2, cycleTimes.get("count").getAsInt()); // 2 complete + 1 incomplete
+    }
+
+    @Test
+    @DisplayName("time range filtering")
+    void timeRangeFiltering() throws Exception {
+      // Test data: Cycles at different times
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "INTAKE"));  // Before start_time
+      stateValues.add(new TimestampedValue(5.0, "INTAKE"));  // Before start_time
+      stateValues.add(new TimestampedValue(10.0, "INTAKE")); // In range
+      stateValues.add(new TimestampedValue(15.0, "INTAKE")); // In range
+      stateValues.add(new TimestampedValue(25.0, "INTAKE")); // After end_time
+
+      var log = new MockLogBuilder()
+          .setPath("/test/time_filter.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_start");
+      args.addProperty("cycle_start_state", "INTAKE");
+      args.addProperty("start_time", 10.0);
+      args.addProperty("end_time", 20.0);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Should only count cycle from 10.0 to 15.0
+      var cycleTimes = resultObj.getAsJsonObject("cycle_times");
+      assertEquals(1, cycleTimes.get("count").getAsInt());
+    }
+
+    @Test
+    @DisplayName("data quality warnings for rapid transitions")
+    void dataQualityWarningsRapidTransitions() throws Exception {
+      // Test data: State bounces rapidly
+      var stateValues = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 10; i++) {
+        stateValues.add(new TimestampedValue(i * 0.05, i % 2 == 0 ? "A" : "B"));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/rapid.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_start");
+      args.addProperty("cycle_start_state", "A");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Should have warnings about rapid transitions
+      assertTrue(resultObj.has("warnings"));
+      var warnings = resultObj.getAsJsonArray("warnings");
+      assertTrue(warnings.size() > 0);
+
+      boolean hasRapidWarning = false;
+      for (var warning : warnings) {
+        if (warning.getAsString().contains("rapid state transitions")) {
+          hasRapidWarning = true;
+          break;
+        }
+      }
+      assertTrue(hasRapidWarning, "Should warn about rapid state transitions");
+    }
+
+    @Test
+    @DisplayName("data quality warnings for unknown states")
+    void dataQualityWarningsUnknownStates() throws Exception {
+      // Test data: Includes unexpected states
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(1.0, "ERROR_STATE"));
+      stateValues.add(new TimestampedValue(2.0, "UNKNOWN"));
+      stateValues.add(new TimestampedValue(3.0, "INTAKE"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/unknown.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_start");
+      args.addProperty("cycle_start_state", "INTAKE");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Should have warnings about unknown states
+      assertTrue(resultObj.has("warnings"));
+      var warnings = resultObj.getAsJsonArray("warnings");
+      assertTrue(warnings.size() > 0);
+
+      boolean hasUnknownWarning = false;
+      for (var warning : warnings) {
+        if (warning.getAsString().contains("unknown states")) {
+          hasUnknownWarning = true;
+          break;
+        }
+      }
+      assertTrue(hasUnknownWarning, "Should warn about unknown states");
+    }
+
+    @Test
+    @DisplayName("configurable output limit")
+    void configurableOutputLimit() throws Exception {
+      // Test data: Many cycles
+      var stateValues = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 20; i++) {
+        stateValues.add(new TimestampedValue(i * 1.0, "INTAKE"));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/many_cycles.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_start");
+      args.addProperty("cycle_start_state", "INTAKE");
+      args.addProperty("limit", 5);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Should return only 5 cycles
+      var cycles = resultObj.getAsJsonArray("cycles");
+      assertEquals(5, cycles.size());
+
+      // Should indicate truncation
+      assertTrue(resultObj.get("cycles_truncated").getAsBoolean());
+      assertTrue(resultObj.get("total_cycles").getAsInt() > 5);
+    }
+
+    @Test
+    @DisplayName("validates cycle_mode parameter")
+    void validatesCycleModeParameter() throws Exception {
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "INTAKE"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/invalid.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "invalid_mode");
+      args.addProperty("cycle_start_state", "INTAKE");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("cycle_mode"));
+    }
+
+    @Test
+    @DisplayName("requires cycle_end_state for start_to_end mode")
+    void requiresCycleEndStateForStartToEnd() throws Exception {
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "INTAKE"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/missing_end.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_end");
+      args.addProperty("cycle_start_state", "INTAKE");
+      // Missing cycle_end_state
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("cycle_end_state"));
+    }
   }
 
   @Nested
