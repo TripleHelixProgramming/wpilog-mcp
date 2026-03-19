@@ -50,6 +50,7 @@ public final class FrcDomainTools {
     server.registerTool(new AnalyzeReplayDriftTool());
     server.registerTool(new AnalyzeLoopTimingTool());
     server.registerTool(new AnalyzeCanBusTool());
+    server.registerTool(new PredictBatteryHealthTool());
   }
 
   // ==================== SHARED HELPER METHODS ====================
@@ -1424,6 +1425,357 @@ public final class FrcDomainTools {
       }
 
       return result;
+    }
+  }
+
+  static class PredictBatteryHealthTool extends ToolBase {
+    @Override
+    public String name() {
+      return "predict_battery_health";
+    }
+
+    @Override
+    public String description() {
+      return "Analyze battery voltage and current draw to predict brownout risk and estimate "
+          + "battery health. Returns health score (0-100), brownout risk level (MINIMAL/LOW/"
+          + "MODERATE/HIGH/CRITICAL), voltage statistics, and actionable recommendations.";
+    }
+
+    @Override
+    public JsonObject inputSchema() {
+      return new SchemaBuilder()
+          .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
+          .addNumberProperty("end_time", "End timestamp in seconds", false, null)
+          .addNumberProperty("nominal_voltage", "Expected full battery voltage (default: 12.6V)", false, 12.6)
+          .addNumberProperty("brownout_threshold", "Brownout voltage threshold (default: 7.0V)", false, 7.0)
+          .addNumberProperty("warning_threshold", "Warning voltage threshold (default: 9.0V)", false, 9.0)
+          .build();
+    }
+
+    @Override
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var log = requireActiveLog();
+
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      double nominalVoltage = getOptDouble(arguments, "nominal_voltage", 12.6);
+      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 7.0);
+      double warningThreshold = getOptDouble(arguments, "warning_threshold", 9.0);
+
+      // Find voltage and current entries
+      var voltageEntry = findVoltageEntry(log);
+      var currentEntry = findCurrentEntry(log);
+
+      if (voltageEntry == null) {
+        throw new IllegalArgumentException(
+            "No battery voltage entry found. Look for entries containing 'BatteryVoltage', "
+            + "'battery_voltage', or 'voltage'");
+      }
+
+      var voltageValues = requireEntry(log, voltageEntry);
+      var currentValues = currentEntry != null ? log.values().get(currentEntry) : null;
+
+      // Filter by time range
+      voltageValues = filterTimeRange(voltageValues, startTime, endTime);
+      if (currentValues != null) {
+        currentValues = filterTimeRange(currentValues, startTime, endTime);
+      }
+
+      // Analyze battery characteristics
+      return analyzeBatteryCharacteristics(
+          voltageValues,
+          currentValues,
+          nominalVoltage,
+          brownoutThreshold,
+          warningThreshold);
+    }
+
+    private String findVoltageEntry(ParsedLog log) {
+      // Try common voltage entry patterns
+      var patterns = java.util.List.of(
+          "batteryvoltage",
+          "battery_voltage",
+          "inputvoltage",
+          "pdp/voltage",
+          "pdh/voltage"
+      );
+
+      for (var pattern : patterns) {
+        var entry = findEntryByPattern(log, pattern);
+        if (entry != null) return entry;
+      }
+      return null;
+    }
+
+    private String findCurrentEntry(ParsedLog log) {
+      var patterns = java.util.List.of(
+          "totalcurrent",
+          "total_current",
+          "pdp/totalcurrent",
+          "pdh/totalcurrent"
+      );
+
+      for (var pattern : patterns) {
+        var entry = findEntryByPattern(log, pattern);
+        if (entry != null) return entry;
+      }
+      return null;
+    }
+
+    private JsonElement analyzeBatteryCharacteristics(
+        java.util.List<TimestampedValue> voltageValues,
+        java.util.List<TimestampedValue> currentValues,
+        double nominalVoltage,
+        double brownoutThreshold,
+        double warningThreshold) {
+
+      // Extract voltage data
+      var voltageData = voltageValues.stream()
+          .map(tv -> toDouble(tv.value()))
+          .filter(v -> v != null)
+          .toList();
+
+      if (voltageData.isEmpty()) {
+        throw new IllegalArgumentException("No numeric voltage data found");
+      }
+
+      // 1. Calculate voltage statistics
+      double minVoltage = voltageData.stream().mapToDouble(d -> d).min().orElse(0);
+      double maxVoltage = voltageData.stream().mapToDouble(d -> d).max().orElse(0);
+      double avgVoltage = voltageData.stream().mapToDouble(d -> d).average().orElse(0);
+      double voltageSag = nominalVoltage - minVoltage;
+
+      // 2. Detect brownout events
+      var brownoutEvents = detectVoltageEvents(voltageValues, brownoutThreshold);
+
+      // 3. Detect voltage sag events (warning level)
+      var sagEvents = detectVoltageEvents(voltageValues, warningThreshold);
+
+      // 4. Analyze voltage recovery (internal resistance indicator)
+      var recoveryAnalysis = analyzeVoltageRecovery(voltageValues, currentValues);
+
+      // 5. Calculate health score (0-100)
+      int healthScore = calculateHealthScore(
+          avgVoltage, nominalVoltage, minVoltage,
+          brownoutEvents.size(), sagEvents.size(),
+          recoveryAnalysis);
+
+      // 6. Determine brownout risk level
+      String riskLevel = determineRiskLevel(healthScore, minVoltage, brownoutThreshold, warningThreshold);
+
+      // 7. Generate recommendations
+      var recommendations = generateRecommendations(
+          healthScore, riskLevel, minVoltage, avgVoltage,
+          brownoutEvents.size(), voltageSag);
+
+      // Build response using ResponseBuilder
+      var response = success();
+      response.addProperty("health_score", healthScore);
+      response.addProperty("risk_level", riskLevel);
+
+      var voltageStats = new JsonObject();
+      voltageStats.addProperty("min_volts", minVoltage);
+      voltageStats.addProperty("max_volts", maxVoltage);
+      voltageStats.addProperty("avg_volts", avgVoltage);
+      voltageStats.addProperty("voltage_sag", voltageSag);
+      response.addData("voltage_stats", voltageStats);
+
+      response.addProperty("brownout_events", brownoutEvents.size());
+      response.addProperty("warning_events", sagEvents.size());
+
+      if (!brownoutEvents.isEmpty()) {
+        response.addData("brownout_details", GSON.toJsonTree(brownoutEvents.stream().limit(10).toList()));
+      }
+
+      if (recoveryAnalysis != null) {
+        response.addData("recovery_analysis", recoveryAnalysis);
+      }
+
+      response.addData("recommendations", GSON.toJsonTree(recommendations));
+
+      // Add warnings for severe conditions
+      if (brownoutEvents.size() > 0) {
+        response.addWarning(brownoutEvents.size() + " brownout event(s) detected - "
+            + "immediate battery replacement recommended");
+      }
+      if (healthScore < 50) {
+        response.addWarning("Battery health is poor - replace before next match");
+      }
+
+      return response.build();
+    }
+
+    private java.util.List<JsonObject> detectVoltageEvents(
+        java.util.List<TimestampedValue> voltageValues,
+        double threshold) {
+      var events = new ArrayList<JsonObject>();
+      boolean inEvent = false;
+      double eventStartTime = 0;
+      double eventMinVoltage = Double.MAX_VALUE;
+
+      for (var tv : voltageValues) {
+        var voltage = toDouble(tv.value());
+        if (voltage == null) continue;
+
+        if (voltage < threshold && !inEvent) {
+          // Event started
+          inEvent = true;
+          eventStartTime = tv.timestamp();
+          eventMinVoltage = voltage;
+        } else if (voltage < threshold && inEvent) {
+          // Event continuing
+          eventMinVoltage = Math.min(eventMinVoltage, voltage);
+        } else if (voltage >= threshold && inEvent) {
+          // Event ended
+          var event = new JsonObject();
+          event.addProperty("start_time", eventStartTime);
+          event.addProperty("end_time", tv.timestamp());
+          event.addProperty("duration", tv.timestamp() - eventStartTime);
+          event.addProperty("min_voltage", eventMinVoltage);
+          events.add(event);
+          inEvent = false;
+        }
+      }
+
+      return events;
+    }
+
+    private JsonObject analyzeVoltageRecovery(
+        java.util.List<TimestampedValue> voltageValues,
+        java.util.List<TimestampedValue> currentValues) {
+
+      if (currentValues == null || currentValues.isEmpty()) {
+        return null; // Cannot analyze without current data
+      }
+
+      // Find load changes (significant voltage drops)
+      var recoveryTimes = new ArrayList<Double>();
+
+      for (int i = 1; i < voltageValues.size() - 10 && i < 1000; i++) {
+        var voltageBefore = toDouble(voltageValues.get(i - 1).value());
+        var voltageAtLoad = toDouble(voltageValues.get(i).value());
+
+        if (voltageBefore == null || voltageAtLoad == null) continue;
+
+        // Detect voltage drop (potential load application)
+        double voltageDrop = voltageBefore - voltageAtLoad;
+        if (voltageDrop > 0.5) {  // Significant drop
+          // Measure recovery time
+          double dropTime = voltageValues.get(i).timestamp();
+          double recoveryTarget = voltageAtLoad + (voltageDrop * 0.9);  // 90% recovery
+
+          for (int j = i + 1; j < Math.min(i + 20, voltageValues.size()); j++) {
+            var recoveredVoltage = toDouble(voltageValues.get(j).value());
+            if (recoveredVoltage != null && recoveredVoltage >= recoveryTarget) {
+              double recoveryTime = voltageValues.get(j).timestamp() - dropTime;
+              recoveryTimes.add(recoveryTime);
+              break;
+            }
+          }
+        }
+      }
+
+      if (recoveryTimes.isEmpty()) {
+        return null;
+      }
+
+      var analysis = new JsonObject();
+      analysis.addProperty("avg_recovery_sec",
+          recoveryTimes.stream().mapToDouble(d -> d).average().orElse(0));
+      analysis.addProperty("max_recovery_sec",
+          recoveryTimes.stream().mapToDouble(d -> d).max().orElse(0));
+      analysis.addProperty("sample_count", recoveryTimes.size());
+
+      return analysis;
+    }
+
+    private int calculateHealthScore(
+        double avgVoltage,
+        double nominalVoltage,
+        double minVoltage,
+        int brownoutEvents,
+        int sagEvents,
+        JsonObject recoveryAnalysis) {
+
+      // Start at 100
+      int score = 100;
+
+      // Deduct for low average voltage
+      double voltageRatio = avgVoltage / nominalVoltage;
+      if (voltageRatio < 0.95) {
+        score -= (int) ((0.95 - voltageRatio) * 200);
+      }
+
+      // Deduct heavily for brownouts
+      score -= brownoutEvents * 20;
+
+      // Deduct for warning-level sags
+      score -= sagEvents * 5;
+
+      // Deduct for poor recovery time (high internal resistance)
+      if (recoveryAnalysis != null) {
+        double avgRecovery = recoveryAnalysis.get("avg_recovery_sec").getAsDouble();
+        if (avgRecovery > 0.5) {  // Slow recovery indicates aging
+          score -= (int) ((avgRecovery - 0.5) * 20);
+        }
+      }
+
+      // Deduct for low minimum voltage
+      if (minVoltage < 10.0) {
+        score -= (int) ((10.0 - minVoltage) * 10);
+      }
+
+      return Math.max(0, Math.min(100, score));
+    }
+
+    private String determineRiskLevel(
+        int healthScore,
+        double minVoltage,
+        double brownoutThreshold,
+        double warningThreshold) {
+
+      if (minVoltage < brownoutThreshold) return "CRITICAL";
+      if (minVoltage < warningThreshold || healthScore < 30) return "HIGH";
+      if (healthScore < 60) return "MODERATE";
+      if (healthScore < 80) return "LOW";
+      return "MINIMAL";
+    }
+
+    private java.util.List<String> generateRecommendations(
+        int healthScore,
+        String riskLevel,
+        double minVoltage,
+        double avgVoltage,
+        int brownoutEvents,
+        double voltageSag) {
+
+      var recommendations = new ArrayList<String>();
+
+      if (brownoutEvents > 0) {
+        recommendations.add("URGENT: Replace battery immediately - brownouts detected");
+      } else if (healthScore < 50) {
+        recommendations.add("Replace battery before next match");
+      } else if (healthScore < 70) {
+        recommendations.add("Consider battery replacement - health declining");
+      }
+
+      if (voltageSag > 3.0) {
+        recommendations.add("High voltage sag detected - check connections and wire gauge");
+      }
+
+      if (avgVoltage < 11.5) {
+        recommendations.add("Average voltage low - battery may be undercharged");
+      }
+
+      if (minVoltage < 9.0 && brownoutEvents == 0) {
+        recommendations.add("Close to brownout threshold - reduce current draw or replace battery");
+      }
+
+      if (recommendations.isEmpty()) {
+        recommendations.add("Battery health good - continue monitoring");
+      }
+
+      return recommendations;
     }
   }
 }

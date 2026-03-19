@@ -77,9 +77,10 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Core(11) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(8) + Export(2) + TBA(1) = 39 total
-      // Added: list_struct_types, health_check, analyze_loop_timing, analyze_can_bus
-      assertEquals(39, registeredTools.size());
+      // Core(11) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(9) + Export(2) + TBA(1) = 40 total
+      // FrcDomain tools: get_ds_timeline, analyze_vision, profile_mechanism, analyze_auto,
+      // analyze_cycles, analyze_replay_drift, analyze_loop_timing, analyze_can_bus, predict_battery_health
+      assertEquals(40, registeredTools.size());
     }
   }
 

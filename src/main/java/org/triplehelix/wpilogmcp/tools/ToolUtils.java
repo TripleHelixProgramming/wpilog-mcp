@@ -66,6 +66,48 @@ public final class ToolUtils {
   }
 
   /**
+   * Creates a ResponseBuilder for building standardized success responses.
+   *
+   * <p>This is the preferred way to create responses in new tools. Use the fluent API
+   * to add properties, warnings, and metadata.
+   *
+   * <p>Example:
+   * <pre>{@code
+   * return successResponse()
+   *     .addProperty("count", 42)
+   *     .addWarning("Data quality may be affected")
+   *     .addMetadata("samples_used", 1000)
+   *     .build();
+   * }</pre>
+   *
+   * @return A new ResponseBuilder for success responses
+   * @since 0.4.0
+   */
+  public static ResponseBuilder successResponse() {
+    return ResponseBuilder.success();
+  }
+
+  /**
+   * Creates a ResponseBuilder for building standardized error responses.
+   *
+   * <p>This is the preferred way to create error responses in new tools.
+   *
+   * <p>Example:
+   * <pre>{@code
+   * return errorResponse("Entry not found")
+   *     .addProperty("attempted_name", name)
+   *     .build();
+   * }</pre>
+   *
+   * @param message The error message
+   * @return A new ResponseBuilder for error responses
+   * @since 0.4.0
+   */
+  public static ResponseBuilder errorResponse(String message) {
+    return ResponseBuilder.error(message);
+  }
+
+  /**
    * Checks if a WPILOG type is numeric.
    *
    * @param type The type string
