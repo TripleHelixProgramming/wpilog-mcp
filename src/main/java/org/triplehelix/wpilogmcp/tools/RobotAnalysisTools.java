@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
-import org.triplehelix.wpilogmcp.log.LogManager.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
@@ -93,7 +93,10 @@ public final class RobotAnalysisTools {
     public String name() { return "analyze_swerve"; }
 
     @Override
-    public String description() { return "Analyze swerve drive module performance. Looks for wheel slip, module synchronization issues, and speed discrepancies."; }
+    public String description() {
+      return "Analyze swerve drive module performance. Looks for wheel slip, module synchronization issues, and speed discrepancies. "
+          + "Returns 'no swerve modules detected' if log does not contain swerve module state entries.";
+    }
 
     @Override
     public JsonObject inputSchema() {
@@ -181,7 +184,10 @@ public final class RobotAnalysisTools {
     public String name() { return "power_analysis"; }
 
     @Override
-    public String description() { return "Analyze battery and current distribution data. Finds peak currents per channel and brownout risk."; }
+    public String description() {
+      return "Analyze battery and current distribution data. Finds peak currents per channel and brownout risk. "
+          + "Returns 'no battery data found' if log does not contain battery voltage or current entries.";
+    }
 
     @Override
     public JsonObject inputSchema() {
@@ -238,7 +244,10 @@ public final class RobotAnalysisTools {
     public String name() { return "can_health"; }
 
     @Override
-    public String description() { return "Analyze CAN bus health by looking for timeout errors and communication issues."; }
+    public String description() {
+      return "Analyze CAN bus health by looking for timeout errors and communication issues. "
+          + "Returns 'no CAN data found' if log does not contain CAN bus utilization or error entries.";
+    }
 
     @Override
     public JsonObject inputSchema() { return new SchemaBuilder().build(); }
@@ -604,7 +613,10 @@ public final class RobotAnalysisTools {
     public String name() { return "get_code_metadata"; }
 
     @Override
-    public String description() { return "Extract code metadata including Git SHA, branch, and build date."; }
+    public String description() {
+      return "Extract code metadata including Git SHA, branch, and build date. "
+          + "Returns 'no code metadata found' if log does not contain metadata entries.";
+    }
 
     @Override
     public JsonObject inputSchema() { return new SchemaBuilder().build(); }

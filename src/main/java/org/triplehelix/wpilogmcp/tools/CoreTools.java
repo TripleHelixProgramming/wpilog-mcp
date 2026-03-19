@@ -6,7 +6,7 @@ import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.util.Comparator;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
-import org.triplehelix.wpilogmcp.log.LogManager.EntryInfo;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;

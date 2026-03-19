@@ -7,6 +7,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Objects;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
@@ -342,7 +344,7 @@ public final class FrcDomainTools {
         if (values == null || values.size() < 2) continue;
 
         java.util.Map<String, Object> lastPose = null;
-        for (LogManager.TimestampedValue tv : values) {
+        for (TimestampedValue tv : values) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
           if (tv.value() instanceof java.util.Map) {
@@ -484,8 +486,8 @@ public final class FrcDomainTools {
     }
 
     private JsonElement calculateSettlingTime(
-        java.util.List<LogManager.TimestampedValue> setpoints,
-        java.util.List<LogManager.TimestampedValue> measurements,
+        java.util.List<TimestampedValue> setpoints,
+        java.util.List<TimestampedValue> measurements,
         Double startTime,
         Double endTime
     ) {
@@ -499,7 +501,7 @@ public final class FrcDomainTools {
       Double setpointChangeTime = null;
 
       // Use setpoints as reference, interpolate measurements
-      for (LogManager.TimestampedValue spTv : setpoints) {
+      for (TimestampedValue spTv : setpoints) {
         if (startTime != null && spTv.timestamp() < startTime) continue;
         if (endTime != null && spTv.timestamp() > endTime) break;
 
@@ -534,8 +536,8 @@ public final class FrcDomainTools {
     }
 
     private double calculateOvershoot(
-        java.util.List<LogManager.TimestampedValue> setpoints,
-        java.util.List<LogManager.TimestampedValue> measurements,
+        java.util.List<TimestampedValue> setpoints,
+        java.util.List<TimestampedValue> measurements,
         Double startTime,
         Double endTime
     ) {
@@ -549,7 +551,7 @@ public final class FrcDomainTools {
       Double maxOvershoot = null;
 
       // Use setpoints as reference, interpolate measurements
-      for (LogManager.TimestampedValue spTv : setpoints) {
+      for (TimestampedValue spTv : setpoints) {
         if (startTime != null && spTv.timestamp() < startTime) continue;
         if (endTime != null && spTv.timestamp() > endTime) break;
 
@@ -581,8 +583,8 @@ public final class FrcDomainTools {
     }
 
     private java.util.List<JsonObject> detectStalls(
-        java.util.List<LogManager.TimestampedValue> velocities,
-        java.util.List<LogManager.TimestampedValue> currents,
+        java.util.List<TimestampedValue> velocities,
+        java.util.List<TimestampedValue> currents,
         double stallCurrentThreshold,
         Double startTime,
         Double endTime
@@ -595,7 +597,7 @@ public final class FrcDomainTools {
       double stallMaxCurrent = 0;
 
       // Use velocities as reference, interpolate currents
-      for (LogManager.TimestampedValue velTv : velocities) {
+      for (TimestampedValue velTv : velocities) {
         if (startTime != null && velTv.timestamp() < startTime) continue;
         if (endTime != null && velTv.timestamp() > endTime) break;
 
@@ -637,7 +639,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Analyze autonomous routine: identify selected routine, path following error, "
-          + "completion time, and phase breakdown.";
+          + "completion time, and phase breakdown. "
+          + "Returns 'no auto period detected' if log does not contain autonomous phase data.";
     }
 
     @Override
@@ -683,7 +686,7 @@ public final class FrcDomainTools {
         if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))) {
           var values = log.values().get(entryName);
           if (values != null) {
-            for (LogManager.TimestampedValue tv : values) {
+            for (TimestampedValue tv : values) {
               if (tv.value() instanceof Boolean isAuto) {
                 if (isAuto && autoStartTime == null) {
                   autoStartTime = tv.timestamp();
@@ -719,7 +722,7 @@ public final class FrcDomainTools {
     }
 
     private JsonObject calculatePathFollowingError(
-        LogManager.ParsedLog log,
+        ParsedLog log,
         String prefix,
         double startTime,
         double endTime
@@ -766,7 +769,7 @@ public final class FrcDomainTools {
       int count = 0;
       double maxError = 0.0;
 
-      for (LogManager.TimestampedValue spTv : setpointValues) {
+      for (TimestampedValue spTv : setpointValues) {
         if (spTv.timestamp() < startTime || spTv.timestamp() > endTime) continue;
 
         if (spTv.value() instanceof java.util.Map) {
@@ -795,12 +798,12 @@ public final class FrcDomainTools {
     }
 
     private java.util.Map<String, Object> getActualPoseAtTime(
-        java.util.List<LogManager.TimestampedValue> values,
+        java.util.List<TimestampedValue> values,
         double timestamp
     ) {
       // Find closest pose (ZOH)
       java.util.Map<String, Object> result = null;
-      for (LogManager.TimestampedValue tv : values) {
+      for (TimestampedValue tv : values) {
         if (tv.timestamp() > timestamp) break;
         if (tv.value() instanceof java.util.Map) {
           @SuppressWarnings("unchecked")
@@ -884,7 +887,7 @@ public final class FrcDomainTools {
         Double cycleStartTime = null;
         boolean cycleIncomplete = false;
 
-        for (LogManager.TimestampedValue tv : vals) {
+        for (TimestampedValue tv : vals) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
           String currentState = tv.value().toString();
@@ -924,7 +927,7 @@ public final class FrcDomainTools {
         Double cycleStartTime = null;
         boolean inCycle = false;
 
-        for (LogManager.TimestampedValue tv : vals) {
+        for (TimestampedValue tv : vals) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
           String currentState = tv.value().toString();
@@ -970,7 +973,7 @@ public final class FrcDomainTools {
         String lastState = null;
         Double idleStartTime = null;
 
-        for (LogManager.TimestampedValue tv : vals) {
+        for (TimestampedValue tv : vals) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
           String currentState = tv.value().toString();
@@ -1082,7 +1085,7 @@ public final class FrcDomainTools {
     }
 
     private java.util.List<String> detectDataQualityIssues(
-        java.util.List<LogManager.TimestampedValue> vals,
+        java.util.List<TimestampedValue> vals,
         String cycleStartState,
         String cycleEndState,
         String idleState,
@@ -1245,7 +1248,7 @@ public final class FrcDomainTools {
       var violations = new ArrayList<JsonObject>();
       var loopTimes = new ArrayList<Double>();
 
-      for (LogManager.TimestampedValue tv : values) {
+      for (TimestampedValue tv : values) {
         if (startTime != null && tv.timestamp() < startTime) continue;
         if (endTime != null && tv.timestamp() > endTime) break;
 
@@ -1309,7 +1312,8 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices.";
+      return "Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices. "
+          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries.";
     }
 
     @Override
@@ -1363,7 +1367,7 @@ public final class FrcDomainTools {
           if (values == null) continue;
 
           var utilData = new ArrayList<Double>();
-          for (LogManager.TimestampedValue tv : values) {
+          for (TimestampedValue tv : values) {
             if (startTime != null && tv.timestamp() < startTime) continue;
             if (endTime != null && tv.timestamp() > endTime) break;
 
@@ -1393,7 +1397,7 @@ public final class FrcDomainTools {
           if (values == null) continue;
 
           int errorCount = 0;
-          for (LogManager.TimestampedValue tv : values) {
+          for (TimestampedValue tv : values) {
             if (startTime != null && tv.timestamp() < startTime) continue;
             if (endTime != null && tv.timestamp() > endTime) break;
 

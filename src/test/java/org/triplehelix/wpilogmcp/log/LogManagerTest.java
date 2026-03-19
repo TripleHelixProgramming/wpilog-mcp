@@ -21,9 +21,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.triplehelix.wpilogmcp.log.LogManager.EntryInfo;
-import org.triplehelix.wpilogmcp.log.LogManager.ParsedLog;
-import org.triplehelix.wpilogmcp.log.LogManager.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 /**
  * Tests for LogManager functionality including struct decoding and cache management.

@@ -287,7 +287,7 @@ Get system health status including JVM memory usage, loaded log count, cache mem
 
 **Parameters:** None
 
-**Returns:** System status, memory statistics, loaded logs count, and TBA availability
+**Returns:** System status, comprehensive memory statistics with estimation accuracy, loaded logs count, and TBA availability
 
 **Example Response:**
 ```json
@@ -296,12 +296,14 @@ Get system health status including JVM memory usage, loaded log count, cache mem
   "status": "OK",
   "loaded_logs": 3,
   "tba_available": true,
-  "cache_memory_mb": 245.7,
-  "jvm_memory": {
-    "used_mb": 512,
-    "free_mb": 1536,
-    "total_mb": 2048,
-    "max_mb": 4096
+  "memory_stats": {
+    "estimatedMemoryMb": 245,
+    "heapUsedMb": 512,
+    "heapMaxMb": 4096,
+    "heapFreeMb": 1536,
+    "heapUtilization": "25.0%",
+    "estimationAccuracy": "0.48",
+    "loadedLogCount": 3
   },
   "_execution_time_ms": 5
 }
@@ -311,20 +313,54 @@ Get system health status including JVM memory usage, loaded log count, cache mem
 - `status`: Always "OK" if the tool executes successfully
 - `loaded_logs`: Number of logs currently cached in memory
 - `tba_available`: Whether The Blue Alliance API is configured
-- `cache_memory_mb`: Estimated memory used by cached log data
-- `jvm_memory`: JVM heap statistics (used, free, total, max in MB)
+- `memory_stats`: Comprehensive memory analysis including:
+  - `estimatedMemoryMb`: Memory usage calculated from heuristics
+  - `heapUsedMb`: Actual JVM heap memory in use
+  - `heapMaxMb`: Maximum heap memory available
+  - `heapFreeMb`: Free heap memory remaining
+  - `heapUtilization`: Percentage of total heap currently used
+  - `estimationAccuracy`: Ratio of estimated to actual usage (closer to 1.0 = more accurate)
+  - `loadedLogCount`: Number of logs in cache
 - `_execution_time_ms`: Tool execution time in milliseconds
 
-**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
+**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `estimationAccuracy` field helps validate memory estimation heuristics. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
 
 ---
 
 ## Multi-Log Management
 
 ### `list_loaded_logs`
-List all currently loaded log files.
+List all currently loaded log files with detailed metadata.
 
-**Returns:** Loaded log paths and which is active
+**Parameters:** None
+
+**Returns:** List of loaded logs with entry count, duration, estimated memory usage, and active status
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "loaded_log_count": 3,
+  "logs": [
+    {
+      "path": "/Users/team2363/logs/2026vadc_qm42.wpilog",
+      "entry_count": 156,
+      "duration_sec": 154.32,
+      "estimated_memory_mb": 12.5,
+      "is_active": true
+    },
+    {
+      "path": "/Users/team2363/logs/2026vadc_qm68.wpilog",
+      "entry_count": 148,
+      "duration_sec": 149.87,
+      "estimated_memory_mb": 11.8,
+      "is_active": false
+    }
+  ]
+}
+```
+
+**Use Case:** Monitor which logs are currently loaded and their memory footprint. Use with `set_active_log` to switch between loaded logs, or `unload_log` to free memory.
 
 ### `set_active_log`
 Set which loaded log to use for queries.

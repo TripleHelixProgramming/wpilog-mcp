@@ -11,6 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
@@ -48,17 +50,10 @@ class QueryToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(LogManager.ParsedLog log) throws Exception {
+  private void setActiveLog(ParsedLog log) {
     var manager = LogManager.getInstance();
-    var loadedLogsField = LogManager.class.getDeclaredField("loadedLogs");
-    loadedLogsField.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    var loadedLogs = (java.util.LinkedHashMap<String, LogManager.ParsedLog>) loadedLogsField.get(manager);
-    loadedLogs.put(log.path(), log);
-
-    var activeLogPathField = LogManager.class.getDeclaredField("activeLogPath");
-    activeLogPathField.setAccessible(true);
-    activeLogPathField.set(manager, log.path());
+    manager.testPutLog(log.path(), log);
+    manager.testSetActiveLogPath(log.path());
   }
 
   @Nested
@@ -125,7 +120,7 @@ class QueryToolsLogicTest {
       var log = new MockLogBuilder()
           .setPath("/test/query.wpilog")
           .addNumericEntry("/A", new double[]{0}, new double[]{0})
-          .addEntry("/B", "boolean", List.of(new LogManager.TimestampedValue(0, true)))
+          .addEntry("/B", "boolean", List.of(new TimestampedValue(0, true)))
           .build();
 
       setActiveLog(log);

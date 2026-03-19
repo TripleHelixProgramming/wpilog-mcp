@@ -4,8 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.LogManager.ParsedLog;
-import org.triplehelix.wpilogmcp.log.LogManager.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 import java.util.List;
 

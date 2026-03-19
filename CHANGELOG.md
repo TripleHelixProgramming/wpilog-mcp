@@ -5,7 +5,46 @@ All notable changes to wpilog-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2024-03-19
+## [Unreleased]
+
+### Changed
+
+#### Architecture: LogManager Subsystem Extraction
+- **Refactored LogManager** from 1438-line monolith into facade pattern with 6 specialized subsystems:
+  - `LogCache`: LRU cache with thread-safe operations and eviction logic
+  - `LogParser`: WPILOG file parsing delegating to struct decoder registry
+  - `StructDecoderRegistry`: Extensible registry pattern replacing 500-line switch statement with Map-based decoder lookup
+  - `SecurityValidator`: Path validation logic with traversal attack prevention
+  - `MemoryEstimator`: Memory usage estimation for cache eviction decisions
+  - `BinaryReader`: Binary reading utilities for struct decoding
+- **Created 16 struct decoder classes** implementing `StructDecoder` interface for WPILib types:
+  - Geometry: `Pose2dDecoder`, `Pose3dDecoder`, `Translation2dDecoder`, `Translation3dDecoder`, `Rotation2dDecoder`, `Rotation3dDecoder`, `Transform2dDecoder`, `Transform3dDecoder`, `Twist2dDecoder`, `Twist3dDecoder`
+  - Kinematics: `ChassisSpeedsDecoder`, `SwerveModuleStateDecoder`, `SwerveModulePositionDecoder`, `DifferentialDriveWheelSpeedsDecoder`, `MecanumDriveWheelSpeedsDecoder`
+  - Vision: `TargetObservationDecoder`, `PoseObservationDecoder`
+  - Autonomous: `SwerveSampleDecoder`
+- **Benefits**: Improved maintainability, extensibility for custom struct types, clearer separation of concerns, easier testing
+- **Backward Compatibility**: All public APIs preserved - zero breaking changes
+
+### Fixed
+- **`list_loaded_logs`**: Now properly iterates cache and returns LoadedLogInfo records with memory estimates and active status
+- **Tool Documentation**: Updated 6 tool descriptions to explicitly document expected "no data found" messages:
+  - `analyze_swerve`: Documents "no swerve modules detected" message
+  - `power_analysis`: Documents "no battery data found" message
+  - `can_health`: Documents "no CAN data found" message
+  - `get_code_metadata`: Documents "no code metadata found" message
+  - `analyze_auto`: Documents "no auto period detected" message
+  - `analyze_can_bus`: Documents "no CAN bus data found" message
+
+### Added
+- **Memory Monitoring**: New `getMemoryStats()` method in LogManager providing comprehensive heap statistics:
+  - Estimated memory usage from cache (MB)
+  - Actual JVM heap usage (used, max, free, utilization percentage)
+  - Estimation accuracy ratio comparing heuristics to actual usage
+  - Available via `health_check` tool for real-time monitoring
+- **LogCache Iteration**: Added `getAllEntries()` method to LogCache for thread-safe cache enumeration
+- **`health_check` tool enhancement**: Now includes estimation accuracy metric showing how well memory heuristics match actual heap usage
+
+## [0.3.0] - 2026-03-19
 
 ### Added
 
@@ -52,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Concurrent operations: 1000 ops/sec throughput verified
 - Cache eviction: LRU policy working correctly with configurable limits
 
-## [0.2.1] - 2024-03-15
+## [0.2.1] - 2026-03-15
 
 ### Added
 - Struct decoders for vision types (`TargetObservation`, `PoseObservation`)
@@ -66,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Team 2363 Triple Helix website link in README
 
-## [0.2.0] - 2024-03-10
+## [0.2.0] - 2026-03-10
 
 ### Added
 - **`moi_regression` tool**: Mechanism moment of inertia estimation from voltage/velocity/acceleration data
@@ -75,7 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Improved mechanism analysis capabilities
 
-## [0.1.0] - 2024-03-01
+## [0.1.0] - 2026-03-01
 
 ### Added
 - Initial release of wpilog-mcp MCP server

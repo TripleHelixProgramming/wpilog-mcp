@@ -303,6 +303,7 @@ wpilog-mcp provides 39 tools organized into categories:
 
 - **Execution Time Tracking**: All tool responses include `_execution_time_ms` field for performance monitoring
 - **Intelligent Error Handling**: Clear error messages with specific error codes and "Did You Mean?" suggestions for misspelled tool names
+- **Memory Monitoring**: Real-time heap usage tracking with estimation accuracy validation via `health_check` tool
 - **Improved Statistical Analysis**: IQR calculation uses proper linear percentile interpolation for accurate outlier detection
 - **Enhanced Mechanism Analysis**: Stall detection, settling time, and overshoot calculations for control system tuning
 - **Vision System Monitoring**: Pose jump detection to identify unreliable vision estimates

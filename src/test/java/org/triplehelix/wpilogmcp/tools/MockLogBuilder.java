@@ -4,9 +4,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.triplehelix.wpilogmcp.log.LogManager.EntryInfo;
-import org.triplehelix.wpilogmcp.log.LogManager.ParsedLog;
-import org.triplehelix.wpilogmcp.log.LogManager.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 /**
  * Utility for programmatically building Mock ParsedLog objects for unit testing.

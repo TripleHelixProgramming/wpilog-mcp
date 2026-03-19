@@ -11,8 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.LogManager.ParsedLog;
-import org.triplehelix.wpilogmcp.log.LogManager.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
@@ -48,17 +48,10 @@ class FrcDomainToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(ParsedLog log) throws Exception {
+  private void setActiveLog(ParsedLog log) {
     var manager = LogManager.getInstance();
-    var loadedLogsField = LogManager.class.getDeclaredField("loadedLogs");
-    loadedLogsField.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    var loadedLogs = (java.util.LinkedHashMap<String, ParsedLog>) loadedLogsField.get(manager);
-    loadedLogs.put(log.path(), log);
-
-    var activeLogPathField = LogManager.class.getDeclaredField("activeLogPath");
-    activeLogPathField.setAccessible(true);
-    activeLogPathField.set(manager, log.path());
+    manager.testPutLog(log.path(), log);
+    manager.testSetActiveLogPath(log.path());
   }
 
   @Nested
