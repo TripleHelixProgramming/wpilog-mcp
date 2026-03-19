@@ -5,7 +5,6 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
@@ -72,7 +71,7 @@ public final class StatisticsTools {
    * <p>Computes min, max, mean, median, and standard deviation for any numeric entry.
    * Supports optional time range filtering.
    */
-  static class GetStatisticsTool implements Tool {
+  static class GetStatisticsTool extends LogRequiringTool {
     @Override
     public String name() { return "get_statistics"; }
 
@@ -89,28 +88,23 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) return errorResult("No log loaded");
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
 
-      var values = log.values().get(name);
-      if (values == null) return errorResult("Entry not found: " + name);
+      var values = requireEntry(log, name);
+      var data = extractNumericData(values, start, end);
 
-      var data = values.stream()
-          .filter(tv -> (start == null || tv.timestamp() >= start) && (end == null || tv.timestamp() <= end))
-          .filter(tv -> tv.value() instanceof Number)
-          .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-          .toArray();
-
-      if (data.length == 0) return errorResult("No numeric data in range");
+      if (data.length == 0) {
+        throw new IllegalArgumentException("No numeric data in range");
+      }
 
       var stats = java.util.Arrays.stream(data).summaryStatistics();
       java.util.Arrays.sort(data);
-      double median = data.length % 2 == 1 ? data[data.length / 2] : (data[data.length / 2 - 1] + data[data.length / 2]) / 2.0;
+      double median = data.length % 2 == 1
+          ? data[data.length / 2]
+          : (data[data.length / 2 - 1] + data[data.length / 2]) / 2.0;
 
       double mean = stats.getAverage();
       // Use sample standard deviation (Bessel's correction: n-1) for more accurate estimates
@@ -119,20 +113,19 @@ public final class StatisticsTools {
       double variance = data.length > 1 ? sumSquaredDiff / (data.length - 1) : 0.0;
       double stdDev = Math.sqrt(variance);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("name", name);
-      result.addProperty("count", stats.getCount());
-      result.addProperty("min", stats.getMin());
-      result.addProperty("max", stats.getMax());
-      result.addProperty("mean", mean);
-      result.addProperty("median", median);
-      result.addProperty("std_dev", stdDev);
-      return result;
+      return success()
+          .addProperty("name", name)
+          .addProperty("count", stats.getCount())
+          .addProperty("min", stats.getMin())
+          .addProperty("max", stats.getMax())
+          .addProperty("mean", mean)
+          .addProperty("median", median)
+          .addProperty("std_dev", stdDev)
+          .build();
     }
   }
 
-  static class CompareEntriesTool implements Tool {
+  static class CompareEntriesTool extends LogRequiringTool {
     @Override
     public String name() { return "compare_entries"; }
 
@@ -148,23 +141,18 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) return errorResult("No log loaded");
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var n1 = getRequiredString(arguments, "name1");
       var n2 = getRequiredString(arguments, "name2");
 
       var v1 = log.values().get(n1);
       var v2 = log.values().get(n2);
 
-      if (v1 == null || v2 == null) return errorResult("One or both entries not found");
+      if (v1 == null || v2 == null) {
+        throw new IllegalArgumentException("One or both entries not found");
+      }
 
       double rmse = calculateRmseLinear(v1, v2);
-      
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("rmse", rmse);
 
       // Max diff calculation
       double maxDiff = 0.0;
@@ -177,13 +165,15 @@ public final class StatisticsTools {
           maxDiff = Math.max(maxDiff, Math.abs(refValue - otherValue));
         }
       }
-      result.addProperty("max_difference", maxDiff);
 
-      return result;
+      return success()
+          .addProperty("rmse", rmse)
+          .addProperty("max_difference", maxDiff)
+          .build();
     }
   }
 
-  static class DetectAnomaliesTool implements Tool {
+  static class DetectAnomaliesTool extends LogRequiringTool {
     @Override
     public String name() { return "detect_anomalies"; }
 
@@ -204,21 +194,19 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) return errorResult("No log loaded");
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       double iqrMult = getOptDouble(arguments, "iqr_multiplier", 1.5);
       int limit = getOptInt(arguments, "limit", 50);
 
-      var values = log.values().get(name);
-      if (values == null) return errorResult("Entry not found");
+      var values = requireEntry(log, name);
 
       var numeric = values.stream()
           .filter(tv -> tv.value() instanceof Number)
           .toList();
-      if (numeric.size() < 4) return errorResult("Not enough data");
+      if (numeric.size() < 4) {
+        throw new IllegalArgumentException("Not enough data");
+      }
 
       var sortedData = numeric.stream()
           .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
@@ -244,15 +232,14 @@ public final class StatisticsTools {
         }
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("anomaly_count", anomalies.size());
-      result.add("anomalies", GSON.toJsonTree(anomalies));
-      return result;
+      return success()
+          .addProperty("anomaly_count", anomalies.size())
+          .addData("anomalies", GSON.toJsonTree(anomalies))
+          .build();
     }
   }
 
-  static class FindPeaksTool implements Tool {
+  static class FindPeaksTool extends LogRequiringTool {
     @Override
     public String name() { return "find_peaks"; }
 
@@ -272,24 +259,22 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) return errorResult("No log loaded");
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var peakType = getOptString(arguments, "type", "both");
       var prominence = getOptDouble(arguments, "prominence");
       int limit = getOptInt(arguments, "limit", 20);
 
-      var values = log.values().get(name);
-      if (values == null) return errorResult("Entry not found");
+      var values = requireEntry(log, name);
 
       var data = values.stream()
           .filter(tv -> tv.value() instanceof Number)
           .map(tv -> new double[]{tv.timestamp(), ((Number) tv.value()).doubleValue()})
           .toList();
 
-      if (data.size() < 3) return errorResult("Not enough data");
+      if (data.size() < 3) {
+        throw new IllegalArgumentException("Not enough data");
+      }
 
       var maxima = new ArrayList<JsonObject>();
       var minima = new ArrayList<JsonObject>();
@@ -311,15 +296,18 @@ public final class StatisticsTools {
         }
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      if (!"min".equals(peakType)) result.add("maxima", GSON.toJsonTree(maxima.stream().limit(limit).toList()));
-      if (!"max".equals(peakType)) result.add("minima", GSON.toJsonTree(minima.stream().limit(limit).toList()));
-      return result;
+      var builder = success();
+      if (!"min".equals(peakType)) {
+        builder.addData("maxima", GSON.toJsonTree(maxima.stream().limit(limit).toList()));
+      }
+      if (!"max".equals(peakType)) {
+        builder.addData("minima", GSON.toJsonTree(minima.stream().limit(limit).toList()));
+      }
+      return builder.build();
     }
   }
 
-  static class RateOfChangeTool implements Tool {
+  static class RateOfChangeTool extends LogRequiringTool {
     @Override
     public String name() { return "rate_of_change"; }
 
@@ -340,26 +328,23 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) return errorResult("No log loaded");
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
       int window = getOptInt(arguments, "window_size", 1);
       int limit = getOptInt(arguments, "limit", 100);
 
-      var values = log.values().get(name);
-      if (values == null) return errorResult("Entry not found");
+      var values = requireEntry(log, name);
 
-      var data = values.stream()
+      var data = filterTimeRange(values, start, end).stream()
           .filter(tv -> tv.value() instanceof Number)
-          .filter(tv -> (start == null || tv.timestamp() >= start) && (end == null || tv.timestamp() <= end))
           .map(tv -> new double[]{tv.timestamp(), ((Number) tv.value()).doubleValue()})
           .toList();
 
-      if (data.size() < 2) return errorResult("Not enough data");
+      if (data.size() < 2) {
+        throw new IllegalArgumentException("Not enough data");
+      }
 
       var samples = new ArrayList<JsonObject>();
       double sumRate = 0;
@@ -377,17 +362,17 @@ public final class StatisticsTools {
         }
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
       var stats = new JsonObject();
       stats.addProperty("avg_rate", samples.isEmpty() ? 0 : sumRate / (data.size() - window));
-      result.add("statistics", stats);
-      result.add("samples", GSON.toJsonTree(samples));
-      return result;
+
+      return success()
+          .addData("statistics", stats)
+          .addData("samples", GSON.toJsonTree(samples))
+          .build();
     }
   }
 
-  static class TimeCorrelateTool implements Tool {
+  static class TimeCorrelateTool extends LogRequiringTool {
     @Override
     public String name() { return "time_correlate"; }
 
@@ -407,10 +392,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) return errorResult("No log loaded");
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var n1 = getRequiredString(arguments, "name1");
       var n2 = getRequiredString(arguments, "name2");
       var start = getOptDouble(arguments, "start_time");
@@ -418,12 +400,20 @@ public final class StatisticsTools {
 
       var v1 = log.values().get(n1);
       var v2 = log.values().get(n2);
-      if (v1 == null || v2 == null) return errorResult("Entries not found");
+      if (v1 == null || v2 == null) {
+        throw new IllegalArgumentException("Entries not found");
+      }
 
-      var d1 = v1.stream().filter(tv -> tv.value() instanceof Number && (start == null || tv.timestamp() >= start) && (end == null || tv.timestamp() <= end)).toList();
-      var d2 = v2.stream().filter(tv -> tv.value() instanceof Number && (start == null || tv.timestamp() >= start) && (end == null || tv.timestamp() <= end)).toList();
+      var d1 = filterTimeRange(v1, start, end).stream()
+          .filter(tv -> tv.value() instanceof Number)
+          .toList();
+      var d2 = filterTimeRange(v2, start, end).stream()
+          .filter(tv -> tv.value() instanceof Number)
+          .toList();
 
-      if (d1.isEmpty() || d2.isEmpty()) return errorResult("No numeric data");
+      if (d1.isEmpty() || d2.isEmpty()) {
+        throw new IllegalArgumentException("No numeric data");
+      }
 
       var x = new ArrayList<Double>();
       var y = new ArrayList<Double>();
@@ -435,7 +425,9 @@ public final class StatisticsTools {
         }
       }
 
-      if (x.size() < 2) return errorResult("Not enough overlapping data");
+      if (x.size() < 2) {
+        throw new IllegalArgumentException("Not enough overlapping data");
+      }
 
       double meanX = x.stream().mapToDouble(v -> v).average().orElse(0);
       double meanY = y.stream().mapToDouble(v -> v).average().orElse(0);
@@ -445,20 +437,20 @@ public final class StatisticsTools {
         num += dx * dy; denX += dx * dx; denY += dy * dy;
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
+      var builder = success();
 
       // Handle edge case: zero variance means correlation is undefined (NaN)
       if (denX == 0 || denY == 0) {
-        result.addProperty("correlation", Double.NaN);
-        result.addProperty("warning", "Correlation undefined: " +
+        builder.addProperty("correlation", Double.NaN);
+        builder.addWarning("Correlation undefined: " +
             (denX == 0 && denY == 0 ? "both entries" : (denX == 0 ? "first entry" : "second entry")) +
             " has zero variance (all values are identical)");
       } else {
         double corr = num / Math.sqrt(denX * denY);
-        result.addProperty("correlation", corr);
+        builder.addProperty("correlation", corr);
       }
-      return result;
+
+      return builder.build();
     }
   }
 }

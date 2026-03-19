@@ -9,7 +9,6 @@ import java.util.stream.Collectors;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
@@ -38,7 +37,7 @@ public final class QueryTools {
     server.registerTool(new SearchStringsTool());
   }
 
-  static class SearchEntriesTool implements Tool {
+  static class SearchEntriesTool extends LogRequiringTool {
     @Override
     public String name() {
       return "search_entries";
@@ -60,12 +59,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) {
-        return errorResult("No log file loaded. Use load_log first.");
-      }
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var typeFilter =
           arguments.has("type") ? arguments.get("type").getAsString() : null;
       var nameContains =
@@ -92,15 +86,14 @@ public final class QueryTools {
       var matchesArray = new JsonArray();
       matches.forEach(matchesArray::add);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("match_count", matches.size());
-      result.add("matches", matchesArray);
-      return result;
+      return success()
+          .addProperty("match_count", matches.size())
+          .addData("matches", matchesArray)
+          .build();
     }
   }
 
-  static class GetTypesTool implements Tool {
+  static class GetTypesTool extends LogRequiringTool {
     @Override
     public String name() {
       return "get_types";
@@ -117,12 +110,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) {
-        return errorResult("No log file loaded. Use load_log first.");
-      }
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var byType = log.entries().values().stream()
           .collect(Collectors.groupingBy(
               EntryInfo::type,
@@ -139,15 +127,14 @@ public final class QueryTools {
             typesArray.add(typeObj);
           });
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("type_count", byType.size());
-      result.add("types", typesArray);
-      return result;
+      return success()
+          .addProperty("type_count", byType.size())
+          .addData("types", typesArray)
+          .build();
     }
   }
 
-  static class FindConditionTool implements Tool {
+  static class FindConditionTool extends LogRequiringTool {
     @Override
     public String name() {
       return "find_condition";
@@ -175,12 +162,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) {
-        return errorResult("No log loaded");
-      }
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var name = arguments.get("name").getAsString();
       var operator = arguments.get("operator").getAsString();
       double threshold = arguments.get("threshold").getAsDouble();
@@ -190,16 +172,16 @@ public final class QueryTools {
 
       var entry = log.entries().get(name);
       if (entry == null) {
-        return errorResult("Entry not found: " + name);
+        throw new IllegalArgumentException("Entry not found: " + name);
       }
 
       if (!isNumericType(entry.type())) {
-        return errorResult("Entry is not numeric type: " + entry.type());
+        throw new IllegalArgumentException("Entry is not numeric type: " + entry.type());
       }
 
       var values = log.values().get(name);
       if (values == null || values.isEmpty()) {
-        return errorResult("No values for entry: " + name);
+        throw new IllegalArgumentException("No values for entry: " + name);
       }
 
       var transitions = new ArrayList<JsonObject>();
@@ -222,17 +204,15 @@ public final class QueryTools {
         wasTrue = isTrue;
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("name", name);
-      result.addProperty("condition", name + " " + operatorSymbol(operator) + " " + threshold);
-      result.addProperty("transition_count", transitions.size());
-
       var transitionsArray = new JsonArray();
       transitions.forEach(transitionsArray::add);
-      result.add("transitions", transitionsArray);
 
-      return result;
+      return success()
+          .addProperty("name", name)
+          .addProperty("condition", name + " " + operatorSymbol(operator) + " " + threshold)
+          .addProperty("transition_count", transitions.size())
+          .addData("transitions", transitionsArray)
+          .build();
     }
 
     private boolean evaluateCondition(double value, String operator, double threshold) {
@@ -258,7 +238,7 @@ public final class QueryTools {
     }
   }
 
-  static class SearchStringsTool implements Tool {
+  static class SearchStringsTool extends LogRequiringTool {
     @Override
     public String name() {
       return "search_strings";
@@ -289,12 +269,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) {
-        return errorResult("No log loaded");
-      }
-
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var pattern = arguments.get("pattern").getAsString().toLowerCase();
       var entryPattern = arguments.has("entry_pattern") && !arguments.get("entry_pattern").isJsonNull()
           ? arguments.get("entry_pattern").getAsString().toLowerCase()
@@ -338,16 +313,14 @@ public final class QueryTools {
         if (matches.size() >= limit) break;
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("pattern", pattern);
-      result.addProperty("match_count", matches.size());
-
       var matchesArray = new JsonArray();
       matches.forEach(matchesArray::add);
-      result.add("matches", matchesArray);
 
-      return result;
+      return success()
+          .addProperty("pattern", pattern)
+          .addProperty("match_count", matches.size())
+          .addData("matches", matchesArray)
+          .build();
     }
   }
 }

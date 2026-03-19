@@ -6,10 +6,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Objects;
+import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
+import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
@@ -609,7 +611,7 @@ public final class FrcDomainTools {
     }
   }
 
-  static class AnalyzeAutoTool extends LogRequiringTool {
+  static class AnalyzeAutoTool implements Tool {
     @Override
     public String name() { return "analyze_auto"; }
 
@@ -628,7 +630,11 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {var autoPrefix = getOptString(arguments, "auto_prefix", null);
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var log = getLogManager().getActiveLog();
+      if (log == null) return errorResult("No log loaded");
+
+      var autoPrefix = getOptString(arguments, "auto_prefix", null);
 
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -788,7 +794,7 @@ public final class FrcDomainTools {
     }
   }
 
-  static class AnalyzeCyclesTool extends LogRequiringTool {
+  static class AnalyzeCyclesTool implements Tool {
     @Override
     public String name() { return "analyze_cycles"; }
 
@@ -815,7 +821,11 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {// Parse parameters
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var log = getLogManager().getActiveLog();
+      if (log == null) return errorResult("No log loaded");
+
+      // Parse parameters
       var stateEntry = getRequiredString(arguments, "state_entry");
       var cycleMode = getOptString(arguments, "cycle_mode", "start_to_start");
       var cycleStartState = getOptString(arguments, "cycle_start_state", null);
@@ -1036,7 +1046,15 @@ public final class FrcDomainTools {
       }
 
       return result;
-    }private boolean statesEqual(String state1, String state2, boolean caseSensitive) {
+    }
+
+    private boolean inTimeRange(double timestamp, Double start, Double end) {
+      if (start != null && timestamp < start) return false;
+      if (end != null && timestamp > end) return false;
+      return true;
+    }
+
+    private boolean statesEqual(String state1, String state2, boolean caseSensitive) {
       if (state1 == null || state2 == null) return false;
       if (caseSensitive) {
         return state1.equals(state2);
@@ -1106,7 +1124,7 @@ public final class FrcDomainTools {
     }
   }
 
-  static class AnalyzeReplayDriftTool extends LogRequiringTool {
+  static class AnalyzeReplayDriftTool implements Tool {
     @Override
     public String name() { return "analyze_replay_drift"; }
 
@@ -1121,7 +1139,11 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {var realEntries = log.entries().keySet().stream()
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var log = getLogManager().getActiveLog();
+      if (log == null) return errorResult("No log loaded");
+
+      var realEntries = log.entries().keySet().stream()
           .filter(n -> n.contains("/RealOutputs/"))
           .toList();
 
@@ -1155,7 +1177,7 @@ public final class FrcDomainTools {
     }
   }
 
-  static class AnalyzeLoopTimingTool extends LogRequiringTool {
+  static class AnalyzeLoopTimingTool implements Tool {
     @Override
     public String name() { return "analyze_loop_timing"; }
 
@@ -1175,7 +1197,11 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var log = getLogManager().getActiveLog();
+      if (log == null) return errorResult("No log loaded");
+
+      double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
 
@@ -1259,7 +1285,7 @@ public final class FrcDomainTools {
     }
   }
 
-  static class AnalyzeCanBusTool extends LogRequiringTool {
+  static class AnalyzeCanBusTool implements Tool {
     @Override
     public String name() { return "analyze_can_bus"; }
 
@@ -1279,7 +1305,11 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {var busName = getOptString(arguments, "bus_name", "rio");
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var log = getLogManager().getActiveLog();
+      if (log == null) return errorResult("No log loaded");
+
+      var busName = getOptString(arguments, "bus_name", "rio");
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
 

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-03-19
+
+### Changed
+
+#### Architecture: Tool Infrastructure Modernization
+- **Created ToolBase Abstract Class**: Centralized common tool functionality eliminating 20-30% boilerplate across all tools:
+  - Helper methods: `requireActiveLog()`, `requireEntry()` with "did you mean?" suggestions, `filterTimeRange()`, `inTimeRange()`, `extractNumericData()`, `findEntryByPattern()`
+  - Template method pattern with automatic `IllegalArgumentException` → error response conversion
+  - Fluent response builders: `success()` and `error()` for standardized responses
+- **Created LogRequiringTool Specialized Base**: Abstract class for the 90% of tools requiring an active log
+  - Guarantees non-null log parameter to `executeWithLog()`
+  - Automatic "no log loaded" error responses
+  - Eliminated ~40 duplicate log acquisition checks across codebase
+- **Migrated 18 Tools** to new infrastructure:
+  - **StatisticsTools** (6 tools): `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`
+  - **QueryTools** (4 tools): `search_entries`, `get_types`, `find_condition`, `search_strings`
+  - **FrcDomainTools** (8 tools): `get_ds_timeline`, `analyze_vision`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `analyze_can_bus`
+- **Benefits**:
+  - Reduced duplicate code: ~40 log checks, ~20 entry retrievals, ~8 helper method duplicates eliminated
+  - Improved error messages: Automatic suggestions for misspelled entry names
+  - Better testability: LogRequiringTool enables easier testing with guaranteed non-null parameters
+  - Consistent error handling: All IllegalArgumentExceptions automatically converted to proper error responses
+
+### Added
+
+#### Comprehensive Edge Case Testing (67 new tests)
+- **ToolDependenciesTest** (20 tests): Dependency injection container verification
+  - Factory method (`fromSingletons()`) behavior
+  - Constructor with explicit/null dependencies
+  - Getter consistency and immutability
+  - Concurrent access patterns
+- **LogRequiringToolTest** (21 tests): Automatic log checking infrastructure
+  - Template method pattern verification
+  - Error handling when no log loaded
+  - Non-null log parameter guarantee
+  - Exception propagation and conversion
+- **MigratedToolsEdgeCaseTest** (26 tests): Boundary conditions for all migrated tools
+  - Statistical edge cases: single data point, two points (Bessel's correction), 10,000 points
+  - Numeric extremes: `Double.MAX_VALUE`, `Double.MIN_VALUE`, zero variance
+  - Empty datasets and special characters in entry names
+  - Concurrent tool execution (100 iterations)
+  - Log switching and state transitions
+
+### Testing
+- **Test Suite Growth**: 417 → 478 tests (15% increase)
+- **Pass Rate**: 100% (478/478 tests passing)
+- **Coverage**: Maintained >80% code coverage
+- **Edge Cases**: Comprehensive boundary condition testing ensures robustness
+
+## [0.4.0] - 2026-03-19
+
 ### Changed
 
 #### Architecture: LogManager Subsystem Extraction
