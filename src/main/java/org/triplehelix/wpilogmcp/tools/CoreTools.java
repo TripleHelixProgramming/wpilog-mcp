@@ -48,6 +48,8 @@ public final class CoreTools {
     server.registerTool(new SetActiveLogTool());
     server.registerTool(new UnloadLogTool());
     server.registerTool(new UnloadAllLogsTool());
+    server.registerTool(new ListStructTypesTool());
+    server.registerTool(new HealthCheckTool());
   }
 
   static class ListAvailableLogsTool implements Tool {
@@ -520,6 +522,106 @@ public final class CoreTools {
       result.addProperty("success", true);
       result.addProperty("unloaded_count", count);
       result.addProperty("message", "Unloaded " + count + " log(s)");
+      return result;
+    }
+  }
+
+  static class ListStructTypesTool implements Tool {
+    @Override
+    public String name() {
+      return "list_struct_types";
+    }
+
+    @Override
+    public String description() {
+      return "List all supported struct types for decoding.";
+    }
+
+    @Override
+    public JsonObject inputSchema() {
+      return new SchemaBuilder().build();
+    }
+
+    @Override
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var result = new JsonObject();
+      result.addProperty("success", true);
+
+      var geometry = new JsonArray();
+      geometry.add("Pose2d");
+      geometry.add("Pose3d");
+      geometry.add("Translation2d");
+      geometry.add("Translation3d");
+      geometry.add("Rotation2d");
+      geometry.add("Rotation3d");
+      geometry.add("Transform2d");
+      geometry.add("Transform3d");
+      geometry.add("Twist2d");
+      geometry.add("Twist3d");
+
+      var kinematics = new JsonArray();
+      kinematics.add("ChassisSpeeds");
+      kinematics.add("SwerveModuleState");
+      kinematics.add("SwerveModulePosition");
+
+      var vision = new JsonArray();
+      vision.add("TargetObservation");
+      vision.add("PoseObservation");
+      vision.add("SwerveSample");
+
+      var structs = new JsonObject();
+      structs.add("geometry", geometry);
+      structs.add("kinematics", kinematics);
+      structs.add("vision", vision);
+
+      result.add("struct_types", structs);
+      return result;
+    }
+  }
+
+  static class HealthCheckTool implements Tool {
+    @Override
+    public String name() {
+      return "health_check";
+    }
+
+    @Override
+    public String description() {
+      return "Verify server is working correctly and get system status.";
+    }
+
+    @Override
+    public JsonObject inputSchema() {
+      return new SchemaBuilder().build();
+    }
+
+    @Override
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("status", "OK");
+
+      var logManager = getLogManager();
+      result.addProperty("loaded_logs", logManager.getLoadedLogPaths().size());
+      result.addProperty("active_log", logManager.getActiveLog() != null ?
+          logManager.getActiveLog().path() : null);
+
+      // TBA availability
+      var tbaConfig = org.triplehelix.wpilogmcp.tba.TbaConfig.getInstance();
+      result.addProperty("tba_available", tbaConfig.isConfigured());
+
+      // JVM memory info
+      var runtime = Runtime.getRuntime();
+      var memory = new JsonObject();
+      memory.addProperty("used_mb", (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L));
+      memory.addProperty("total_mb", runtime.totalMemory() / (1024L * 1024L));
+      memory.addProperty("max_mb", runtime.maxMemory() / (1024L * 1024L));
+      memory.addProperty("free_mb", runtime.freeMemory() / (1024L * 1024L));
+      result.add("jvm_memory", memory);
+
+      // Cache memory estimate
+      result.addProperty("cache_memory_mb", logManager.getEstimatedMemoryUsageMb());
+
       return result;
     }
   }

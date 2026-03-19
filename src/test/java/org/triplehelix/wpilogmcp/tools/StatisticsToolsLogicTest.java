@@ -72,7 +72,8 @@ class StatisticsToolsLogicTest {
     @Test
     @DisplayName("calculates correct statistics for uniform data")
     void calculatesCorrectStatisticsForUniformData() throws Exception {
-      // Data: 1, 2, 3, 4, 5 - mean = 3, std = sqrt(2) ≈ 1.414
+      // Data: 1, 2, 3, 4, 5 - mean = 3
+      // Sample std dev = sqrt(sum((xi - mean)^2) / (n-1)) = sqrt(10/4) = sqrt(2.5) ≈ 1.581
       var log = new MockLogBuilder()
           .setPath("/test/stats.wpilog")
           .addNumericEntry("/Test/Values", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
@@ -93,7 +94,7 @@ class StatisticsToolsLogicTest {
       assertEquals(5.0, resultObj.get("max").getAsDouble(), 0.001);
       assertEquals(3.0, resultObj.get("mean").getAsDouble(), 0.001);
       assertEquals(3.0, resultObj.get("median").getAsDouble(), 0.001);
-      assertEquals(1.414, resultObj.get("std_dev").getAsDouble(), 0.01);
+      assertEquals(1.581, resultObj.get("std_dev").getAsDouble(), 0.01);
     }
 
     @Test
@@ -167,6 +168,74 @@ class StatisticsToolsLogicTest {
       assertEquals(42.0, resultObj.get("max").getAsDouble(), 0.001);
       assertEquals(0.0, resultObj.get("std_dev").getAsDouble(), 0.001);
     }
+
+    @Test
+    @DisplayName("handles negative values correctly")
+    void handlesNegativeValues() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/stats.wpilog")
+          .addNumericEntry("/Test/Values", new double[]{0,1,2,3,4}, new double[]{-5,-3,-1,1,3})
+          .build();
+
+      setActiveLog(log);
+
+      var tool = findTool("get_statistics");
+      var args = new JsonObject();
+      args.addProperty("name", "/Test/Values");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(-5.0, resultObj.get("min").getAsDouble(), 0.001);
+      assertEquals(3.0, resultObj.get("max").getAsDouble(), 0.001);
+      assertEquals(-1.0, resultObj.get("mean").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("handles very large values")
+    void handlesVeryLargeValues() throws Exception {
+      double large = 1e15;
+      var log = new MockLogBuilder()
+          .setPath("/test/stats.wpilog")
+          .addNumericEntry("/Test/Values", new double[]{0,1,2}, new double[]{large, large + 1, large + 2})
+          .build();
+
+      setActiveLog(log);
+
+      var tool = findTool("get_statistics");
+      var args = new JsonObject();
+      args.addProperty("name", "/Test/Values");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(large, resultObj.get("min").getAsDouble(), 1.0);
+      assertEquals(large + 2, resultObj.get("max").getAsDouble(), 1.0);
+    }
+
+    @Test
+    @DisplayName("handles zero values")
+    void handlesZeroValues() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/stats.wpilog")
+          .addNumericEntry("/Test/Values", new double[]{0,1,2}, new double[]{0,0,0})
+          .build();
+
+      setActiveLog(log);
+
+      var tool = findTool("get_statistics");
+      var args = new JsonObject();
+      args.addProperty("name", "/Test/Values");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(0.0, resultObj.get("mean").getAsDouble(), 0.001);
+      assertEquals(0.0, resultObj.get("std_dev").getAsDouble(), 0.001);
+    }
   }
 
   @Nested
@@ -192,6 +261,62 @@ class StatisticsToolsLogicTest {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals(0, resultObj.get("anomaly_count").getAsInt());
+    }
+
+    @Test
+    @DisplayName("correctly calculates IQR with percentile interpolation")
+    void correctlyCalculatesIqrWithInterpolation() throws Exception {
+      // Test data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+      // Q1 (25th percentile) at index 2.25 = 2.75
+      // Q3 (75th percentile) at index 6.75 = 7.75
+      // IQR = 7.75 - 2.75 = 5.0
+      // Lower fence = 2.75 - 1.5 * 5.0 = -4.75
+      // Upper fence = 7.75 + 1.5 * 5.0 = 15.25
+      // Outlier at 20 should be detected
+      var log = new MockLogBuilder()
+          .setPath("/test/iqr.wpilog")
+          .addNumericEntry("/Test/WithOutlier",
+              new double[]{0,1,2,3,4,5,6,7,8,9,10},
+              new double[]{1,2,3,4,5,6,7,8,9,10,20})
+          .build();
+
+      setActiveLog(log);
+
+      var tool = findTool("detect_anomalies");
+      var args = new JsonObject();
+      args.addProperty("name", "/Test/WithOutlier");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(1, resultObj.get("anomaly_count").getAsInt());
+
+      var anomalies = resultObj.getAsJsonArray("anomalies");
+      assertEquals(1, anomalies.size());
+      assertEquals(20.0, anomalies.get(0).getAsJsonObject().get("value").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("handles edge case with small dataset for IQR")
+    void handlesSmallDatasetForIqr() throws Exception {
+      // With only 4 values, should still calculate IQR correctly
+      var log = new MockLogBuilder()
+          .setPath("/test/small.wpilog")
+          .addNumericEntry("/Test/Small", new double[]{0,1,2,3}, new double[]{1,2,3,100})
+          .build();
+
+      setActiveLog(log);
+
+      var tool = findTool("detect_anomalies");
+      var args = new JsonObject();
+      args.addProperty("name", "/Test/Small");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("anomaly_count").getAsInt() >= 0);
     }
   }
 

@@ -3,12 +3,15 @@ package org.triplehelix.wpilogmcp.log;
 import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +59,13 @@ public class LogManager {
   private boolean maxLogsExplicitlySet = false;
 
   /**
+   * Set of allowed directories from which logs can be loaded.
+   * If empty, path validation is disabled (for backwards compatibility).
+   * Paths are normalized and absolute.
+   */
+  private final Set<Path> allowedDirectories = new HashSet<>();
+
+  /**
    * Read-write lock for thread-safe access to the cache.
    * Using ReentrantReadWriteLock allows multiple concurrent readers while ensuring
    * exclusive access for writers.
@@ -70,8 +80,12 @@ public class LogManager {
   private final LinkedHashMap<String, ParsedLog> loadedLogs =
       new LinkedHashMap<>(16, 0.75f, true);
 
-  /** Path to the currently active log. Queries operate on this log by default. */
-  private String activeLogPath = null;
+  /**
+   * Path to the currently active log. Queries operate on this log by default.
+   * Marked volatile to ensure visibility across threads when read without lock.
+   * Write operations are still protected by {@link #cacheLock}.
+   */
+  private volatile String activeLogPath = null;
 
   /** Private constructor for singleton pattern. */
   private LogManager() {}
@@ -139,15 +153,67 @@ public class LogManager {
 
   /**
    * Estimates the memory usage of a single log in bytes.
-   * This is a rough estimate based on the number of entries and values.
+   * Uses type information and actual value sampling for better accuracy.
    */
   private long estimateLogMemory(ParsedLog log) {
-    long valueEstimate = log.values().values().stream()
-        .mapToLong(values -> values.size() * 40L)
-        .sum();
-    
-    // Add overhead for entry metadata
-    return valueEstimate + (log.entries().size() * 200L);
+    long totalMemory = 0;
+
+    for (var entry : log.entries().entrySet()) {
+      var entryName = entry.getKey();
+      var entryInfo = entry.getValue();
+      var values = log.values().get(entryName);
+
+      if (values == null || values.isEmpty()) continue;
+
+      // Estimate per-value memory based on type and actual values
+      long perValueMemory = estimateValueMemory(entryInfo.type(), values.get(0).value());
+      totalMemory += values.size() * perValueMemory;
+
+      // Add entry metadata overhead: name string, EntryInfo object, List object, etc.
+      totalMemory += 200 + (entryName.length() * 2); // Java strings are 2 bytes per char
+    }
+
+    return totalMemory;
+  }
+
+  /**
+   * Estimates memory usage of a single value based on its type and content.
+   */
+  private long estimateValueMemory(String type, Object sampleValue) {
+    // Base overhead for TimestampedValue object: timestamp (8) + object reference (8) + object header (16)
+    long baseOverhead = 32;
+
+    // Estimate value size based on type
+    long valueSize = switch (type) {
+      case "double", "int64" -> 8;
+      case "float" -> 4;
+      case "boolean" -> 1;
+      case "string" -> {
+        if (sampleValue instanceof String s) {
+          // String overhead (object header + length field) + character data
+          yield 40 + (s.length() * 2);
+        }
+        yield 100; // Default for unknown string size
+      }
+      case "byte[]", "raw" -> {
+        if (sampleValue instanceof byte[] b) {
+          yield 40 + b.length;
+        }
+        yield 100; // Default for unknown byte array size
+      }
+      default -> {
+        // For structs and other complex types
+        if (sampleValue instanceof java.util.Map) {
+          @SuppressWarnings("unchecked")
+          var map = (java.util.Map<String, Object>) sampleValue;
+          // Map overhead + approximate size of entries
+          yield 200 + (map.size() * 50);
+        }
+        yield 40; // Fallback for unknown types
+      }
+    };
+
+    return baseOverhead + valueSize;
   }
 
   /**
@@ -157,29 +223,132 @@ public class LogManager {
     this.maxLoadedLogs = null;
     this.maxMemoryMb = null;
     this.maxLogsExplicitlySet = false;
+    this.allowedDirectories.clear();
+  }
+
+  /**
+   * Adds a directory to the list of allowed directories for loading logs.
+   * Only paths within allowed directories can be loaded.
+   *
+   * <p><b>Security:</b> This prevents path traversal attacks by restricting
+   * file access to explicitly allowed directories.
+   *
+   * @param directory The directory to allow (will be normalized to absolute path)
+   */
+  public void addAllowedDirectory(Path directory) {
+    if (directory != null) {
+      Path normalized = directory.toAbsolutePath().normalize();
+      allowedDirectories.add(normalized);
+      logger.info("Added allowed directory: {}", normalized);
+    }
+  }
+
+  /**
+   * Adds a directory to the list of allowed directories for loading logs.
+   *
+   * @param directory The directory path string to allow
+   */
+  public void addAllowedDirectory(String directory) {
+    if (directory != null && !directory.isBlank()) {
+      addAllowedDirectory(Path.of(directory));
+    }
+  }
+
+  /**
+   * Clears all allowed directories.
+   */
+  public void clearAllowedDirectories() {
+    allowedDirectories.clear();
+    logger.info("Cleared all allowed directories");
+  }
+
+  /**
+   * Gets a copy of the allowed directories set.
+   *
+   * @return A new set containing the allowed directories
+   */
+  public Set<Path> getAllowedDirectories() {
+    return new HashSet<>(allowedDirectories);
+  }
+
+  /**
+   * Validates that a path is within an allowed directory.
+   *
+   * <p>If no allowed directories are configured, all paths are allowed
+   * (for backwards compatibility). Otherwise, the path must be within
+   * one of the configured allowed directories.
+   *
+   * @param filePath The path to validate (should be absolute and normalized)
+   * @throws IOException if the path is outside allowed directories
+   */
+  private void validatePathSecurity(Path filePath) throws IOException {
+    if (allowedDirectories.isEmpty()) {
+      // No restrictions configured - allow all paths (backwards compatibility)
+      return;
+    }
+
+    Path normalizedPath = filePath.toAbsolutePath().normalize();
+
+    // Check if path is within any allowed directory
+    for (Path allowedDir : allowedDirectories) {
+      if (normalizedPath.startsWith(allowedDir)) {
+        return; // Path is allowed
+      }
+    }
+
+    // Also check if the file is already in the cache (allow re-access to cached logs)
+    cacheLock.readLock().lock();
+    try {
+      if (loadedLogs.containsKey(normalizedPath.toString())) {
+        return; // Already cached, allow access
+      }
+    } finally {
+      cacheLock.readLock().unlock();
+    }
+
+    logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
+    throw new IOException("Access denied: path is outside configured log directories. " +
+        "Configure allowed directories or use list_available_logs to find valid paths.");
   }
 
   /**
    * Loads a WPILOG file and caches it.
    *
+   * <p><b>Security:</b> If allowed directories are configured via {@link #addAllowedDirectory},
+   * the path must be within one of those directories. This prevents path traversal attacks.
+   *
    * @param path Path to the WPILOG file
    * @return The parsed log
-   * @throws IOException if the file cannot be read or is invalid
+   * @throws IOException if the file cannot be read, is invalid, or is outside allowed directories
    */
   public ParsedLog loadLog(String path) throws IOException {
-    var filePath = Path.of(path).toAbsolutePath();
+    var filePath = Path.of(path).toAbsolutePath().normalize();
     var normalizedPath = filePath.toString();
 
+    // Security check: validate path is within allowed directories
+    validatePathSecurity(filePath);
+
     // First check with read lock if already cached
+    ParsedLog cachedLog = null;
     cacheLock.readLock().lock();
     try {
-      if (loadedLogs.containsKey(normalizedPath)) {
-        logger.debug("Log file already in cache: {}", normalizedPath);
-        activeLogPath = normalizedPath;
-        return loadedLogs.get(normalizedPath);
-      }
+      cachedLog = loadedLogs.get(normalizedPath);
     } finally {
       cacheLock.readLock().unlock();
+    }
+
+    // If cached, update active path under write lock and return
+    if (cachedLog != null) {
+      logger.debug("Log file already in cache: {}", normalizedPath);
+      cacheLock.writeLock().lock();
+      try {
+        activeLogPath = normalizedPath;
+        // Re-fetch under write lock to ensure we return the correct value
+        // (LinkedHashMap access-order update also happens here)
+        return loadedLogs.get(normalizedPath);
+      } finally {
+        cacheLock.writeLock().unlock();
+      }
     }
 
     // Parse outside of lock to avoid blocking other threads
@@ -431,7 +600,8 @@ public class LogManager {
    * Gets the estimated memory usage of all loaded logs in MB.
    */
   public long getEstimatedMemoryUsageMb() {
-    return estimateMemoryUsage() / (1024 * 1024);
+    // Use long literals to prevent integer overflow before division
+    return estimateMemoryUsage() / (1024L * 1024L);
   }
 
   /**
@@ -1128,6 +1298,48 @@ public class LogManager {
    */
   List<Map<String, Object>> testDecodeSwerveSampleArray(byte[] data) {
     return decodeSwerveSampleArray(data);
+  }
+
+  // Additional struct type test accessors
+
+  Map<String, Object> testDecodePose3d(byte[] data, int offset) {
+    return decodePose3d(data, offset);
+  }
+
+  Map<String, Object> testDecodeTranslation2d(byte[] data, int offset) {
+    return decodeTranslation2d(data, offset);
+  }
+
+  Map<String, Object> testDecodeTranslation3d(byte[] data, int offset) {
+    return decodeTranslation3d(data, offset);
+  }
+
+  Map<String, Object> testDecodeRotation2d(byte[] data, int offset) {
+    return decodeRotation2d(data, offset);
+  }
+
+  Map<String, Object> testDecodeRotation3d(byte[] data, int offset) {
+    return decodeRotation3d(data, offset);
+  }
+
+  Map<String, Object> testDecodeTwist2d(byte[] data, int offset) {
+    return decodeTwist2d(data, offset);
+  }
+
+  Map<String, Object> testDecodeTwist3d(byte[] data, int offset) {
+    return decodeTwist3d(data, offset);
+  }
+
+  Map<String, Object> testDecodeChassisSpeeds(byte[] data, int offset) {
+    return decodeChassisSpeeds(data, offset);
+  }
+
+  Map<String, Object> testDecodeSwerveModuleState(byte[] data, int offset) {
+    return decodeSwerveModuleState(data, offset);
+  }
+
+  Map<String, Object> testDecodeSwerveModulePosition(byte[] data, int offset) {
+    return decodeSwerveModulePosition(data, offset);
   }
 
   /**

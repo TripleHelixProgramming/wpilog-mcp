@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'org.triplehelix'
-version = '0.2.0'
+version = '0.2.1'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -33,10 +33,15 @@ repositories {
     maven { url 'https://frcmaven.wpi.edu/artifactory/release/' }
 }
 
+// Configuration for native libraries (ZIP artifacts need extraction)
+configurations {
+    testNatives
+}
+
 dependencies {
     // WPILib utilities for DataLog reading
-    implementation 'edu.wpi.first.wpiutil:wpiutil-java:2025.1.1'
-    implementation 'edu.wpi.first.wpimath:wpimath-java:2025.1.1'
+    implementation 'edu.wpi.first.wpiutil:wpiutil-java:2026.2.2'
+    implementation 'edu.wpi.first.wpimath:wpimath-java:2026.2.2'
 
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
@@ -48,6 +53,35 @@ dependencies {
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // WPILib C++ natives for DataLogWriter tests (JNI is bundled inside cpp artifacts in 2026)
+    // Only include the platform-specific artifact for the current OS
+    def osName = System.getProperty('os.name').toLowerCase()
+    if (osName.contains('mac')) {
+        testNatives 'edu.wpi.first.wpiutil:wpiutil-cpp:2026.2.2:osxuniversal@zip'
+    } else if (osName.contains('win')) {
+        testNatives 'edu.wpi.first.wpiutil:wpiutil-cpp:2026.2.2:windowsx86-64@zip'
+    } else {
+        testNatives 'edu.wpi.first.wpiutil:wpiutil-cpp:2026.2.2:linuxx86-64@zip'
+    }
+}
+
+// Task to extract native libraries from ZIP files
+tasks.register('extractTestNatives', Copy) {
+    configurations.testNatives.files.each { file ->
+        from(zipTree(file)) {
+            include '**/shared/*.dylib'
+            include '**/shared/*.so'
+            include '**/shared/*.dll'
+        }
+    }
+    into "$buildDir/testnatives"
+}
+
+// Make test task depend on native extraction and set the library path
+tasks.named('test') {
+    dependsOn extractTestNatives
+    systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
 }
 
 application {
@@ -74,4 +108,297 @@ tasks.register('buildMcp') {
     doLast {
         println "Built: build/libs/wpilog-mcp-${version}-all.jar"
     }
+}
+
+// ==================== Stress Test Task ====================
+// Scans MCP configuration files to discover settings, prompts for confirmation,
+// then runs the integration stress test.
+
+import groovy.json.JsonSlurper
+
+tasks.register('stressTest') {
+    description = 'Run integration stress test with real log files'
+    group = 'verification'
+    dependsOn extractTestNatives
+
+    doLast {
+        // MCP configuration file locations to scan
+        def configLocations = [
+            // Claude Code CLI settings (primary location)
+            new File(System.getProperty('user.home'), '.claude/settings.json'),
+            // Claude Desktop (macOS)
+            new File(System.getProperty('user.home'), 'Library/Application Support/Claude/claude_desktop_config.json'),
+            // Claude Desktop (Linux)
+            new File(System.getProperty('user.home'), '.config/claude/claude_desktop_config.json'),
+            // Claude Desktop (Windows)
+            new File(System.getenv('APPDATA') ?: '', 'Claude/claude_desktop_config.json'),
+            // VS Code Claude extension
+            new File(System.getProperty('user.home'), '.config/Code/User/globalStorage/anthropic.claude-code/settings/projects.json'),
+        ].findAll { it.exists() }
+
+        println ''
+        println '========================================'
+        println 'wpilog-mcp Stress Test Configuration'
+        println '========================================'
+        println ''
+
+        String discoveredLogDir = null
+        String discoveredTbaKey = null
+        String configSource = null
+
+        // Scan each config file for wpilog-mcp configuration
+        for (configFile in configLocations) {
+            try {
+                def json = new JsonSlurper().parse(configFile)
+
+                // Check for mcpServers configuration (Claude Desktop format)
+                def mcpServers = json.mcpServers ?: json.servers ?: [:]
+                def wpilogConfig = mcpServers['wpilog-mcp'] ?: mcpServers['wpilog'] ?: null
+
+                if (wpilogConfig) {
+                    def args = wpilogConfig.args ?: []
+
+                    // Parse args array for -logdir and -tba-key
+                    for (int i = 0; i < args.size() - 1; i++) {
+                        if (args[i] == '-logdir' || args[i] == '--logdir') {
+                            discoveredLogDir = args[i + 1]
+                        }
+                        if (args[i] == '-tba-key' || args[i] == '--tba-key') {
+                            discoveredTbaKey = args[i + 1]
+                        }
+                    }
+
+                    // Also check env configuration
+                    def env = wpilogConfig.env ?: [:]
+                    if (!discoveredLogDir && env.WPILOG_DIR) {
+                        discoveredLogDir = env.WPILOG_DIR
+                    }
+                    if (!discoveredTbaKey && env.TBA_API_KEY) {
+                        discoveredTbaKey = env.TBA_API_KEY
+                    }
+
+                    if (discoveredLogDir || discoveredTbaKey) {
+                        configSource = configFile.absolutePath
+                        break
+                    }
+                }
+            } catch (Exception e) {
+                // Skip files that can't be parsed
+                logger.debug("Could not parse config file ${configFile}: ${e.message}")
+            }
+        }
+
+        // Also check environment variables
+        if (!discoveredLogDir) {
+            discoveredLogDir = System.getenv('WPILOG_DIR') ?: System.getenv('STRESS_LOGDIR')
+            if (discoveredLogDir) configSource = 'environment variable'
+        }
+        if (!discoveredTbaKey) {
+            discoveredTbaKey = System.getenv('TBA_API_KEY')
+        }
+
+        // Display discovered configuration
+        if (configSource) {
+            println "Configuration found in: ${configSource}"
+            println ''
+        } else {
+            println 'No existing MCP configuration found.'
+            println 'Checked locations:'
+            configLocations.each { println "  - ${it.absolutePath}" }
+            println ''
+        }
+
+        println "Discovered settings:"
+        println "  Log directory: ${discoveredLogDir ?: '(not found)'}"
+        println "  TBA API key:   ${discoveredTbaKey ? '****' + discoveredTbaKey[-4..-1] : '(not found)'}"
+        println ''
+
+        // Check for Gradle property overrides first
+        String logDir = project.hasProperty('logdir') ? project.property('logdir') : null
+        String tbaKey = project.hasProperty('tbaKey') ? project.property('tbaKey') : null
+
+        // Interactive prompts using ant.input (works with Gradle daemon)
+        if (!logDir) {
+            def defaultVal = discoveredLogDir ?: ''
+            // Flush and pause so Gradle's own output settles before showing the prompt
+            System.out.flush()
+            System.err.flush()
+            Thread.sleep(300)
+            println ''
+            println ''
+            println '╔═══════════════════════════════════════════════════════════════════╗'
+            if (discoveredLogDir) {
+                println '║  LOG DIRECTORY                                                    ║'
+                println '║  ═══════════════                                                  ║'
+                println "║  Discovered: ${discoveredLogDir.padRight(48)}║"
+                println '║                                                                   ║'
+                println '║  • Press ENTER to use the discovered path                        ║'
+                println '║  • Type a different path and press ENTER to override             ║'
+            } else {
+                println '║  LOG DIRECTORY (no configuration found)                           ║'
+                println '║  ═══════════════════════════════════════════                      ║'
+                println '║  Enter the path to your log directory:                           ║'
+            }
+            println '╚═══════════════════════════════════════════════════════════════════╝'
+            println ''
+            print 'Log directory'
+            if (discoveredLogDir) {
+                print " [${discoveredLogDir}]"
+            }
+            print ': '
+            System.out.flush()
+
+            ant.input(message: '', addproperty: 'stress.logdir.input', defaultvalue: defaultVal)
+            println ''
+            logDir = ant.properties['stress.logdir.input'] ?: discoveredLogDir
+        }
+
+        if (!tbaKey && discoveredTbaKey) {
+            tbaKey = discoveredTbaKey
+            println "Using TBA API key from configuration"
+        }
+
+        println ''
+        println '─────────────────────────────────────────────────────────────────────'
+        println 'TIP: Skip prompts in future runs with Gradle properties:'
+        println '  ./gradlew stressTest -Plogdir=/path/to/logs -PtbaKey=your_key'
+        println '─────────────────────────────────────────────────────────────────────'
+
+        // Validate log directory
+        if (!logDir) {
+            throw new GradleException('''
+No log directory specified. Please provide one using:
+  1. MCP configuration file with -logdir argument
+  2. WPILOG_DIR or STRESS_LOGDIR environment variable
+  3. Gradle property: ./gradlew stressTest -Plogdir=/path/to/logs
+  4. Interactive prompt (when running in terminal)
+''')
+        }
+
+        def logDirFile = new File(logDir)
+        if (!logDirFile.isDirectory()) {
+            throw new GradleException("Log directory does not exist: ${logDir}")
+        }
+
+        println ''
+        println 'Running stress test with:'
+        println "  Log directory: ${logDir}"
+        println "  TBA API key:   ${tbaKey ? 'configured' : 'not configured'}"
+        println ''
+
+        // Create reports directory
+        def reportsDir = file("${buildDir}/reports/stress-test")
+        reportsDir.mkdirs()
+
+        // Generate timestamped log filename
+        def timestamp = new Date().format('yyyy-MM-dd_HH-mm-ss')
+        def logFile = new File(reportsDir, "stress-test-${timestamp}.log")
+        def latestLogLink = new File(reportsDir, "latest.log")
+
+        println "Logging to: ${logFile.absolutePath}"
+        println ''
+
+        // Capture output to ByteArrayOutputStreams so we can write to both console and file
+        def stdoutCapture = new ByteArrayOutputStream()
+        def stderrCapture = new ByteArrayOutputStream()
+
+        // Tee stdout to console while capturing
+        def stdoutTee = new OutputStream() {
+            @Override
+            void write(int b) throws IOException {
+                System.out.write(b)
+                stdoutCapture.write(b)
+            }
+            @Override
+            void write(byte[] b, int off, int len) throws IOException {
+                System.out.write(b, off, len)
+                stdoutCapture.write(b, off, len)
+            }
+            @Override
+            void flush() throws IOException {
+                System.out.flush()
+                stdoutCapture.flush()
+            }
+        }
+
+        try {
+            // Use javaexec to run JUnit
+            def result = javaexec {
+                classpath = sourceSets.test.runtimeClasspath
+                mainClass = 'org.junit.platform.console.ConsoleLauncher'
+
+                args '--select-class=org.triplehelix.wpilogmcp.integration.StressTest',
+                     '--details=verbose',
+                     '--disable-banner'
+
+                systemProperty 'stress.logdir', logDir
+                systemProperty 'wpilib.natives.path', "${buildDir}/testnatives"
+
+                // SLF4J config - verbose logging to stderr
+                systemProperty 'org.slf4j.simpleLogger.defaultLogLevel', 'debug'
+                systemProperty 'org.slf4j.simpleLogger.showDateTime', 'true'
+                systemProperty 'org.slf4j.simpleLogger.dateTimeFormat', 'yyyy-MM-dd HH:mm:ss.SSS'
+                systemProperty 'org.slf4j.simpleLogger.showThreadName', 'true'
+                systemProperty 'org.slf4j.simpleLogger.showLogName', 'true'
+
+                if (tbaKey) {
+                    environment 'TBA_API_KEY', tbaKey
+                }
+
+                // Capture both stdout and stderr
+                standardOutput = stdoutTee
+                errorOutput = stderrCapture
+
+                // Don't fail the build on test failure - we'll check the result
+                ignoreExitValue = true
+            }
+
+            if (result.exitValue != 0) {
+                println "\nTests completed with failures (exit code: ${result.exitValue})"
+            }
+        } finally {
+            // Write captured output to log file, stripping ANSI codes
+            logFile.withWriter('UTF-8') { writer ->
+                // Helper to strip ANSI escape sequences
+                def stripAnsi = { String text ->
+                    text.replaceAll(/\x1B\[[0-9;]*[mGKHf]/, '')
+                        .replaceAll(/\r/, '')
+                }
+
+                // Write stdout
+                writer.write(stripAnsi(stdoutCapture.toString('UTF-8')))
+                // Write stderr
+                writer.write(stripAnsi(stderrCapture.toString('UTF-8')))
+            }
+
+            // Create/update symlink to latest log (Unix only)
+            if (!System.getProperty('os.name').toLowerCase().contains('win')) {
+                if (latestLogLink.exists()) {
+                    latestLogLink.delete()
+                }
+                try {
+                    java.nio.file.Files.createSymbolicLink(
+                        latestLogLink.toPath(),
+                        logFile.toPath().fileName
+                    )
+                } catch (Exception e) {
+                    // Symlink creation may fail on some systems, ignore
+                }
+            }
+
+            println ''
+            println '========================================'
+            println 'Log file saved to:'
+            println "  ${logFile.absolutePath}"
+            if (latestLogLink.exists()) {
+                println "  ${latestLogLink.absolutePath} (symlink to latest)"
+            }
+            println '========================================'
+        }
+    }
+}
+
+// Add JUnit Platform Console dependency for stressTest task
+dependencies {
+    testRuntimeOnly 'org.junit.platform:junit-platform-console:1.10.2'
 }

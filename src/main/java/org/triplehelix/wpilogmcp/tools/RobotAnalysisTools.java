@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -123,12 +124,23 @@ public final class RobotAnalysisTools {
       result.add("swerve_entries", GSON.toJsonTree(categorizedEntries));
 
       var states = categorizedEntries.get("module_states");
+      var warnings = new ArrayList<String>();
+
       if (states != null) {
-        var analysis = states.stream()
-            .map(name -> analyzeModule(name, log.values().get(name)))
-            .filter(Objects::nonNull)
-            .collect(JsonArray::new, JsonArray::add, JsonArray::addAll);
+        var analysis = new JsonArray();
+        for (var name : states) {
+          var moduleResult = analyzeModule(name, log.values().get(name));
+          if (moduleResult != null) {
+            analysis.add(moduleResult);
+          } else {
+            warnings.add("Could not analyze module '" + name + "': no valid speed data found");
+          }
+        }
         result.add("module_analysis", analysis);
+      }
+
+      if (!warnings.isEmpty()) {
+        result.add("warnings", GSON.toJsonTree(warnings));
       }
 
       return result;
@@ -136,7 +148,7 @@ public final class RobotAnalysisTools {
 
     private JsonObject analyzeModule(String name, List<TimestampedValue> values) {
       if (values == null || values.isEmpty()) return null;
-      
+
       var speeds = values.stream()
           .flatMap(tv -> {
             if (tv.value() instanceof Map) {

@@ -36,7 +36,7 @@ Unlike traditional log viewers (like AdvantageScope) which require you to know e
 
 ---
 
-Built by [FRC Team 2363 Triple Helix](https://www.triplehelixrobotics.com/) using WPILib's official `DataLogReader` for guaranteed format compatibility.
+Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's official `DataLogReader` for guaranteed format compatibility.
 
 **See what's possible:** [Example Analysis Report](EXAMPLE.md) - A complete match analysis generated from real robot logs.
 
@@ -69,7 +69,7 @@ Configuration location depends on how you're running Claude Code:
     "wpilog": {
       "command": "/Users/yourname/wpilib/2026/jdk/bin/java",
       "args": [
-        "-jar", "/path/to/wpilog-mcp-0.2.0-all.jar",
+        "-jar", "/path/to/wpilog-mcp-0.3.0-all.jar",
         "-logdir", "/path/to/your/logs",
         "-team", "2363"
       ],
@@ -88,7 +88,7 @@ Configuration location depends on how you're running Claude Code:
     "wpilog": {
       "command": "C:\\Users\\Public\\wpilib\\2026\\jdk\\bin\\java.exe",
       "args": [
-        "-jar", "C:\\path\\to\\wpilog-mcp-0.2.0-all.jar",
+        "-jar", "C:\\path\\to\\wpilog-mcp-0.3.0-all.jar",
         "-logdir", "C:\\path\\to\\your\\logs",
         "-team", "2363"
       ],
@@ -263,7 +263,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "wpilog": {
       "command": "/path/to/java",
-      "args": ["-jar", "/path/to/wpilog-mcp-0.2.0-all.jar", "-logdir", "/path/to/logs"]
+      "args": ["-jar", "/path/to/wpilog-mcp-0.3.0-all.jar", "-logdir", "/path/to/logs"]
     }
   }
 }
@@ -276,7 +276,7 @@ This server uses **stdio transport** (JSON-RPC over stdin/stdout). Generic confi
 ```json
 {
   "command": "/path/to/java",
-  "args": ["-jar", "/path/to/wpilog-mcp-0.2.0-all.jar"],
+  "args": ["-jar", "/path/to/wpilog-mcp-0.3.0-all.jar"],
   "transport": "stdio"
 }
 ```
@@ -285,19 +285,29 @@ See [MCP Protocol](https://modelcontextprotocol.io/) for client implementations.
 
 ## Available Tools
 
-wpilog-mcp provides 35 tools organized into categories:
+wpilog-mcp provides 39 tools organized into categories:
 
 | Category | Tools |
 |----------|-------|
-| **Core** | `load_log`, `list_entries`, `read_entry`, `get_entry_info`, `search_entries`, `get_statistics`, `compare_entries`, `get_types` |
+| **Core** | `load_log`, `list_entries`, `read_entry`, `get_entry_info`, `search_entries`, `get_statistics`, `compare_entries`, `get_types`, `list_struct_types`, `health_check` |
 | **Log Browser** | `list_available_logs` |
 | **Multi-Log** | `list_loaded_logs`, `set_active_log`, `unload_log`, `unload_all_logs` |
 | **Search** | `find_condition`, `search_strings` |
 | **Analysis** | `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `get_match_phases` |
 | **FRC-Specific** | `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata` |
-| **FRC Domain Analysis** | `get_ds_timeline`, `analyze_vision`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift` |
+| **FRC Domain Analysis** | `get_ds_timeline`, `analyze_vision`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `analyze_can_bus` |
 | **TBA Integration** | `get_tba_status` |
 | **Export** | `export_csv`, `generate_report` |
+
+### Key Features
+
+- **Execution Time Tracking**: All tool responses include `_execution_time_ms` field for performance monitoring
+- **Intelligent Error Handling**: Clear error messages with specific error codes and "Did You Mean?" suggestions for misspelled tool names
+- **Improved Statistical Analysis**: IQR calculation uses proper linear percentile interpolation for accurate outlier detection
+- **Enhanced Mechanism Analysis**: Stall detection, settling time, and overshoot calculations for control system tuning
+- **Vision System Monitoring**: Pose jump detection to identify unreliable vision estimates
+- **Loop Timing Analysis**: Detect and diagnose real-time performance issues
+- **CAN Bus Health**: Monitor bus utilization and error rates
 
 For complete tool documentation with parameters and examples, see [TOOLS.md](TOOLS.md).
 
@@ -349,7 +359,7 @@ For complete tool documentation with parameters and examples, see [TOOLS.md](TOO
 2. **Test manually**:
    ```bash
    echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-     java -jar wpilog-mcp-0.2.0-all.jar
+     java -jar wpilog-mcp-0.3.0-all.jar
    ```
 
 3. **Check config location**:
@@ -397,11 +407,11 @@ wpilog-mcp/
 │   │   └── TbaEnrichment.java    # Log enrichment with TBA data
 │   └── tools/
 │       ├── WpilogTools.java      # Tool registration
-│       ├── CoreTools.java        # Log management tools (9)
+│       ├── CoreTools.java        # Log management tools (11)
 │       ├── QueryTools.java       # Search & query tools (4)
 │       ├── StatisticsTools.java  # Statistical analysis tools (6)
 │       ├── RobotAnalysisTools.java # FRC analysis tools (7)
-│       ├── FrcDomainTools.java   # Advanced FRC tools (6)
+│       ├── FrcDomainTools.java   # Advanced FRC tools (8)
 │       ├── ExportTools.java      # CSV/report export (2)
 │       ├── TbaTools.java         # TBA integration (1)
 │       └── ToolUtils.java        # Shared utilities

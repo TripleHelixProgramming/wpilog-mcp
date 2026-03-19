@@ -77,8 +77,9 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Core(9) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(6) + Export(2) + TBA(1) = 35 total
-      assertEquals(35, registeredTools.size());
+      // Core(11) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(8) + Export(2) + TBA(1) = 39 total
+      // Added: list_struct_types, health_check, analyze_loop_timing, analyze_can_bus
+      assertEquals(39, registeredTools.size());
     }
   }
 

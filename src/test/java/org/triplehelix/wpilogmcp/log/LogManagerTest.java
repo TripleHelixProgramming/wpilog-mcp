@@ -2,6 +2,12 @@ package org.triplehelix.wpilogmcp.log;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import edu.wpi.first.util.WPIUtilJNI;
+import edu.wpi.first.util.datalog.BooleanLogEntry;
+import edu.wpi.first.util.datalog.DataLogWriter;
+import edu.wpi.first.util.datalog.DoubleLogEntry;
+import edu.wpi.first.util.datalog.IntegerLogEntry;
+import edu.wpi.first.util.datalog.StringLogEntry;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -9,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -24,6 +31,51 @@ import org.triplehelix.wpilogmcp.log.LogManager.TimestampedValue;
 class LogManagerTest {
 
   private LogManager logManager;
+
+  /** Load WPILib native libraries before any tests run. */
+  @BeforeAll
+  static void loadNativeLibraries() throws IOException {
+    // Disable WPILib's automatic static loading - we'll load manually
+    WPIUtilJNI.Helper.setExtractOnStaticLoad(false);
+
+    // Find native library from extracted test natives (set by Gradle)
+    String nativesPath = System.getProperty("wpilib.natives.path");
+    if (nativesPath == null) {
+      throw new IOException("wpilib.natives.path system property not set - run tests via Gradle");
+    }
+
+    String osName = System.getProperty("os.name").toLowerCase();
+    String baseLibName;
+    String jniLibName;
+    String platform;
+    if (osName.contains("mac")) {
+      baseLibName = "libwpiutil.dylib";
+      jniLibName = "libwpiutiljni.dylib";
+      platform = "osx/universal";
+    } else if (osName.contains("win")) {
+      baseLibName = "wpiutil.dll";
+      jniLibName = "wpiutiljni.dll";
+      platform = "windows/x86-64";
+    } else {
+      baseLibName = "libwpiutil.so";
+      jniLibName = "libwpiutiljni.so";
+      platform = "linux/x86-64";
+    }
+
+    Path nativesDir = Path.of(nativesPath);
+    Path sharedDir = nativesDir.resolve(platform).resolve("shared");
+    Path baseLibPath = sharedDir.resolve(baseLibName);
+    Path jniLibPath = sharedDir.resolve(jniLibName);
+
+    if (!Files.exists(jniLibPath)) {
+      throw new IOException("Native library not found at: " + jniLibPath);
+    }
+
+    if (Files.exists(baseLibPath)) {
+      System.load(baseLibPath.toAbsolutePath().toString());
+    }
+    System.load(jniLibPath.toAbsolutePath().toString());
+  }
 
   @BeforeEach
   void setUp() {
@@ -62,6 +114,127 @@ class LogManagerTest {
       Files.write(invalidFile, "not a valid wpilog".getBytes());
 
       assertThrows(IOException.class, () -> logManager.loadLog(invalidFile.toString()));
+    }
+  }
+
+  @Nested
+  @DisplayName("Path Security")
+  class PathSecurity {
+
+    @Test
+    @DisplayName("allows any path when no directories configured")
+    void allowsAnyPathWhenNoDirectoriesConfigured(@TempDir Path tempDir) throws IOException {
+      // With no allowed directories configured, any path is allowed (backwards compat)
+      Path logFile = tempDir.resolve("test.wpilog");
+      Files.write(logFile, "not a valid wpilog".getBytes());
+
+      // Should fail with "invalid wpilog" not "access denied"
+      IOException ex = assertThrows(IOException.class, () -> logManager.loadLog(logFile.toString()));
+      assertTrue(ex.getMessage().contains("Invalid WPILOG"), "Should fail on invalid file, not access denied");
+    }
+
+    @Test
+    @DisplayName("allows paths within configured directory")
+    void allowsPathsWithinConfiguredDirectory(@TempDir Path tempDir) throws IOException {
+      logManager.addAllowedDirectory(tempDir);
+
+      Path logFile = tempDir.resolve("test.wpilog");
+      Files.write(logFile, "not a valid wpilog".getBytes());
+
+      // Should fail with "invalid wpilog" not "access denied"
+      IOException ex = assertThrows(IOException.class, () -> logManager.loadLog(logFile.toString()));
+      assertTrue(ex.getMessage().contains("Invalid WPILOG"), "Should fail on invalid file, not access denied");
+    }
+
+    @Test
+    @DisplayName("denies paths outside configured directory")
+    void deniesPathsOutsideConfiguredDirectory(@TempDir Path tempDir) throws IOException {
+      // Configure a specific allowed directory
+      Path allowedDir = tempDir.resolve("allowed");
+      Files.createDirectories(allowedDir);
+      logManager.addAllowedDirectory(allowedDir);
+
+      // Try to access a file outside the allowed directory
+      Path outsideFile = tempDir.resolve("outside.wpilog");
+      Files.write(outsideFile, "test".getBytes());
+
+      IOException ex = assertThrows(IOException.class, () -> logManager.loadLog(outsideFile.toString()));
+      assertTrue(ex.getMessage().contains("Access denied"), "Should deny access to paths outside allowed directories");
+    }
+
+    @Test
+    @DisplayName("prevents path traversal attacks")
+    void preventsPathTraversalAttacks(@TempDir Path tempDir) throws IOException {
+      Path allowedDir = tempDir.resolve("logs");
+      Files.createDirectories(allowedDir);
+      logManager.addAllowedDirectory(allowedDir);
+
+      // Create a file in parent directory
+      Path parentFile = tempDir.resolve("secret.wpilog");
+      Files.write(parentFile, "secret data".getBytes());
+
+      // Try path traversal
+      String traversalPath = allowedDir.resolve("../secret.wpilog").toString();
+
+      IOException ex = assertThrows(IOException.class, () -> logManager.loadLog(traversalPath));
+      assertTrue(ex.getMessage().contains("Access denied"), "Should prevent path traversal attacks");
+    }
+
+    @Test
+    @DisplayName("allows multiple configured directories")
+    void allowsMultipleConfiguredDirectories(@TempDir Path tempDir) throws IOException {
+      Path dir1 = tempDir.resolve("dir1");
+      Path dir2 = tempDir.resolve("dir2");
+      Files.createDirectories(dir1);
+      Files.createDirectories(dir2);
+
+      logManager.addAllowedDirectory(dir1);
+      logManager.addAllowedDirectory(dir2);
+
+      // Both should be accessible (will fail on invalid file, not access denied)
+      Path file1 = dir1.resolve("test1.wpilog");
+      Path file2 = dir2.resolve("test2.wpilog");
+      Files.write(file1, "test".getBytes());
+      Files.write(file2, "test".getBytes());
+
+      IOException ex1 = assertThrows(IOException.class, () -> logManager.loadLog(file1.toString()));
+      IOException ex2 = assertThrows(IOException.class, () -> logManager.loadLog(file2.toString()));
+
+      assertTrue(ex1.getMessage().contains("Invalid WPILOG"), "dir1 should be accessible");
+      assertTrue(ex2.getMessage().contains("Invalid WPILOG"), "dir2 should be accessible");
+    }
+
+    @Test
+    @DisplayName("clearAllowedDirectories removes restrictions")
+    void clearAllowedDirectoriesRemovesRestrictions(@TempDir Path tempDir) throws IOException {
+      Path allowedDir = tempDir.resolve("allowed");
+      Path outsideFile = tempDir.resolve("outside.wpilog");
+      Files.createDirectories(allowedDir);
+      Files.write(outsideFile, "test".getBytes());
+
+      // First, restrict to allowed directory
+      logManager.addAllowedDirectory(allowedDir);
+      IOException ex1 = assertThrows(IOException.class, () -> logManager.loadLog(outsideFile.toString()));
+      assertTrue(ex1.getMessage().contains("Access denied"));
+
+      // Clear restrictions
+      logManager.clearAllowedDirectories();
+
+      // Now should fail on invalid file, not access denied
+      IOException ex2 = assertThrows(IOException.class, () -> logManager.loadLog(outsideFile.toString()));
+      assertTrue(ex2.getMessage().contains("Invalid WPILOG"));
+    }
+
+    @Test
+    @DisplayName("getAllowedDirectories returns copy of set")
+    void getAllowedDirectoriesReturnsCopy(@TempDir Path tempDir) {
+      logManager.addAllowedDirectory(tempDir);
+
+      var dirs1 = logManager.getAllowedDirectories();
+      var dirs2 = logManager.getAllowedDirectories();
+
+      assertNotSame(dirs1, dirs2, "Should return different Set instances");
+      assertEquals(dirs1, dirs2, "But with equal contents");
     }
   }
 
@@ -153,6 +326,159 @@ class LogManagerTest {
       ByteBuffer buffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
       buffer.putDouble(x).putDouble(y).putDouble(rotation);
       return buffer.array();
+    }
+
+    @Test
+    @DisplayName("decodePose2d returns error for insufficient data")
+    void decodePose2dReturnsErrorForInsufficientData() {
+      byte[] data = new byte[23]; // One byte short of 24
+      Map<String, Object> result = logManager.testDecodePose2d(data, 0);
+      assertTrue(result.containsKey("error"));
+      assertTrue(result.get("error").toString().contains("insufficient data"));
+    }
+
+    @Test
+    @DisplayName("decodePose2d calculates rotation_deg correctly")
+    void decodePose2dCalculatesRotationDegCorrectly() {
+      double rotation = Math.PI / 2; // 90 degrees
+      byte[] data = createPose2dBytes(0, 0, rotation);
+      Map<String, Object> result = logManager.testDecodePose2d(data, 0);
+      assertEquals(90.0, (double) result.get("rotation_deg"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("readDouble handles negative values")
+    void readDoubleHandlesNegative() {
+      double expected = -123.456789;
+      ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(expected);
+      byte[] data = buffer.array();
+      double actual = logManager.testReadDouble(data, 0);
+      assertEquals(expected, actual, 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodePose3d extracts all fields")
+    void decodePose3dExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(56).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(1.0).putDouble(2.0).putDouble(3.0); // x, y, z
+      buffer.putDouble(0.707).putDouble(0.0).putDouble(0.707).putDouble(0.0); // qw, qx, qy, qz
+      Map<String, Object> result = logManager.testDecodePose3d(buffer.array(), 0);
+      assertEquals(1.0, (double) result.get("x"), 1e-10);
+      assertEquals(2.0, (double) result.get("y"), 1e-10);
+      assertEquals(3.0, (double) result.get("z"), 1e-10);
+      assertEquals(0.707, (double) result.get("qw"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodePose3d returns error for insufficient data")
+    void decodePose3dReturnsErrorForInsufficientData() {
+      byte[] data = new byte[55]; // One byte short of 56
+      Map<String, Object> result = logManager.testDecodePose3d(data, 0);
+      assertTrue(result.containsKey("error"));
+    }
+
+    @Test
+    @DisplayName("decodeTranslation2d extracts x and y")
+    void decodeTranslation2dExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(5.5).putDouble(-3.2);
+      Map<String, Object> result = logManager.testDecodeTranslation2d(buffer.array(), 0);
+      assertEquals(5.5, (double) result.get("x"), 1e-10);
+      assertEquals(-3.2, (double) result.get("y"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeTranslation3d extracts x, y, and z")
+    void decodeTranslation3dExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(1.0).putDouble(2.0).putDouble(3.0);
+      Map<String, Object> result = logManager.testDecodeTranslation3d(buffer.array(), 0);
+      assertEquals(1.0, (double) result.get("x"), 1e-10);
+      assertEquals(2.0, (double) result.get("y"), 1e-10);
+      assertEquals(3.0, (double) result.get("z"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeRotation2d extracts radians and calculates degrees")
+    void decodeRotation2dExtractsFields() {
+      double radians = Math.PI / 4; // 45 degrees
+      ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(radians);
+      Map<String, Object> result = logManager.testDecodeRotation2d(buffer.array(), 0);
+      assertEquals(radians, (double) result.get("radians"), 1e-10);
+      assertEquals(45.0, (double) result.get("degrees"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeRotation3d extracts quaternion components")
+    void decodeRotation3dExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(32).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(1.0).putDouble(0.0).putDouble(0.0).putDouble(0.0); // qw, qx, qy, qz
+      Map<String, Object> result = logManager.testDecodeRotation3d(buffer.array(), 0);
+      assertEquals(1.0, (double) result.get("qw"), 1e-10);
+      assertEquals(0.0, (double) result.get("qx"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeTwist2d extracts all fields")
+    void decodeTwist2dExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(1.0).putDouble(2.0).putDouble(0.5); // dx, dy, dtheta
+      Map<String, Object> result = logManager.testDecodeTwist2d(buffer.array(), 0);
+      assertEquals(1.0, (double) result.get("dx"), 1e-10);
+      assertEquals(2.0, (double) result.get("dy"), 1e-10);
+      assertEquals(0.5, (double) result.get("dtheta"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeTwist3d extracts all fields")
+    void decodeTwist3dExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(48).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(1.0).putDouble(2.0).putDouble(3.0); // dx, dy, dz
+      buffer.putDouble(0.1).putDouble(0.2).putDouble(0.3); // rx, ry, rz
+      Map<String, Object> result = logManager.testDecodeTwist3d(buffer.array(), 0);
+      assertEquals(1.0, (double) result.get("dx"), 1e-10);
+      assertEquals(2.0, (double) result.get("dy"), 1e-10);
+      assertEquals(3.0, (double) result.get("dz"), 1e-10);
+      assertEquals(0.1, (double) result.get("rx"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeChassisSpeeds extracts velocity components")
+    void decodeChassisSpeedsExtractsFields() {
+      ByteBuffer buffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(2.5).putDouble(-1.0).putDouble(0.3); // vx, vy, omega
+      Map<String, Object> result = logManager.testDecodeChassisSpeeds(buffer.array(), 0);
+      assertEquals(2.5, (double) result.get("vx_mps"), 1e-10);
+      assertEquals(-1.0, (double) result.get("vy_mps"), 1e-10);
+      assertEquals(0.3, (double) result.get("omega_radps"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeSwerveModuleState extracts speed and angle")
+    void decodeSwerveModuleStateExtractsFields() {
+      double speed = 3.5;
+      double angle = Math.PI / 6; // 30 degrees
+      ByteBuffer buffer = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(speed).putDouble(angle);
+      Map<String, Object> result = logManager.testDecodeSwerveModuleState(buffer.array(), 0);
+      assertEquals(speed, (double) result.get("speed_mps"), 1e-10);
+      assertEquals(angle, (double) result.get("angle_rad"), 1e-10);
+      assertEquals(30.0, (double) result.get("angle_deg"), 1e-10);
+    }
+
+    @Test
+    @DisplayName("decodeSwerveModulePosition extracts distance and angle")
+    void decodeSwerveModulePositionExtractsFields() {
+      double distance = 10.5;
+      double angle = Math.PI / 3; // 60 degrees
+      ByteBuffer buffer = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+      buffer.putDouble(distance).putDouble(angle);
+      Map<String, Object> result = logManager.testDecodeSwerveModulePosition(buffer.array(), 0);
+      assertEquals(distance, (double) result.get("distance_m"), 1e-10);
+      assertEquals(angle, (double) result.get("angle_rad"), 1e-10);
+      assertEquals(60.0, (double) result.get("angle_deg"), 1e-10);
     }
 
     @Test
@@ -789,6 +1115,195 @@ class LogManagerTest {
       ParsedLog log = new ParsedLog("/test.wpilog", Map.of(), Map.of(), 5.0, 15.0);
 
       assertEquals(10.0, log.duration());
+    }
+  }
+
+  /**
+   * Integration tests using DataLogWriter to create real WPILOG files.
+   * These tests verify the full read/load/parse pipeline.
+   */
+  @Nested
+  @DisplayName("Integration Tests with DataLogWriter")
+  class IntegrationTests {
+
+    @Test
+    @DisplayName("loads and parses log with double entries")
+    void loadsLogWithDoubleEntries(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new DoubleLogEntry(log, "/Test/Value");
+        entry.append(1.5, 1000000);  // 1 second in microseconds
+        entry.append(2.5, 2000000);  // 2 seconds
+        entry.append(3.5, 3000000);  // 3 seconds
+        // Note: DataLogWriter drops the last record on close due to double-buffering
+        // Write a sentinel value that we don't test for
+        entry.append(0.0, 4000000);
+        log.flush();
+      }
+      Thread.sleep(100);
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      assertNotNull(parsedLog);
+      assertTrue(parsedLog.entries().containsKey("/Test/Value"));
+      assertEquals("double", parsedLog.entries().get("/Test/Value").type());
+
+      var values = parsedLog.values().get("/Test/Value");
+      assertEquals(3, values.size());
+      assertEquals(1.5, (double) values.get(0).value(), 0.001);
+      assertEquals(2.5, (double) values.get(1).value(), 0.001);
+      assertEquals(3.5, (double) values.get(2).value(), 0.001);
+    }
+
+    @Test
+    @DisplayName("loads and parses log with integer entries")
+    void loadsLogWithIntegerEntries(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new IntegerLogEntry(log, "/Test/Counter");
+        entry.append(100, 1000000);  // 1 second in microseconds
+        entry.append(200, 2000000);  // 2 seconds
+        // Sentinel value - DataLogWriter drops the last record
+        entry.append(0, 3000000);
+        log.flush();
+      }
+      Thread.sleep(100);
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      var values = parsedLog.values().get("/Test/Counter");
+      assertEquals(2, values.size());
+      assertEquals(100L, values.get(0).value());
+      assertEquals(200L, values.get(1).value());
+    }
+
+    @Test
+    @DisplayName("loads and parses log with string entries")
+    void loadsLogWithStringEntries(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new StringLogEntry(log, "/Test/Message");
+        entry.append("Hello", 1000000);  // 1 second in microseconds
+        entry.append("World", 2000000);  // 2 seconds
+        // Sentinel value - DataLogWriter drops the last record
+        entry.append("", 3000000);
+        log.flush();
+      }
+      Thread.sleep(100);
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      var values = parsedLog.values().get("/Test/Message");
+      assertEquals(2, values.size());
+      assertEquals("Hello", values.get(0).value());
+      assertEquals("World", values.get(1).value());
+    }
+
+    @Test
+    @DisplayName("loads and parses log with boolean entries")
+    void loadsLogWithBooleanEntries(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new BooleanLogEntry(log, "/Test/Flag");
+        entry.append(true, 1000000);   // 1 second in microseconds
+        entry.append(false, 2000000);  // 2 seconds
+        entry.append(true, 3000000);   // 3 seconds
+        // Sentinel values - DataLogWriter may drop multiple small records
+        entry.append(false, 4000000);
+        entry.append(false, 5000000);
+        log.flush();
+      }
+      Thread.sleep(100);
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      var values = parsedLog.values().get("/Test/Flag");
+      assertTrue(values.size() >= 3, "Expected at least 3 values, got " + values.size());
+      assertEquals(true, values.get(0).value());
+      assertEquals(false, values.get(1).value());
+      assertEquals(true, values.get(2).value());
+    }
+
+    @Test
+    @DisplayName("loads log with multiple entry types")
+    void loadsLogWithMultipleEntryTypes(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var doubleEntry = new DoubleLogEntry(log, "/Robot/Speed");
+        var intEntry = new IntegerLogEntry(log, "/Robot/Counter");
+        var stringEntry = new StringLogEntry(log, "/Robot/State");
+        var boolEntry = new BooleanLogEntry(log, "/Robot/Enabled");
+
+        doubleEntry.append(5.0, 1000000);  // 1 second in microseconds
+        intEntry.append(42, 1000000);
+        stringEntry.append("TELEOP", 1000000);
+        boolEntry.append(true, 1000000);
+        log.flush();
+      }
+      Thread.sleep(50); // Allow file system to sync
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      assertEquals(4, parsedLog.entryCount());
+      assertTrue(parsedLog.entries().containsKey("/Robot/Speed"));
+      assertTrue(parsedLog.entries().containsKey("/Robot/Counter"));
+      assertTrue(parsedLog.entries().containsKey("/Robot/State"));
+      assertTrue(parsedLog.entries().containsKey("/Robot/Enabled"));
+    }
+
+    @Test
+    @DisplayName("calculates correct min and max timestamps")
+    void calculatesCorrectTimestamps(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new DoubleLogEntry(log, "/Test/Data");
+        entry.append(1.0, 1000000); // 1 second in microseconds
+        entry.append(2.0, 5000000); // 5 seconds
+        entry.append(3.0, 10000000); // 10 seconds
+        // Sentinel value - DataLogWriter drops the last record
+        entry.append(0.0, 11000000);
+        log.flush();
+      }
+      Thread.sleep(100);
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      // Timestamps are in seconds (converted from microseconds)
+      assertEquals(1.0, parsedLog.minTimestamp(), 0.001);
+      assertEquals(10.0, parsedLog.maxTimestamp(), 0.001);
+      assertEquals(9.0, parsedLog.duration(), 0.001);
+    }
+
+    @Test
+    @DisplayName("sets loaded log as active")
+    void setsLoadedLogAsActive(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new DoubleLogEntry(log, "/Test/Data");
+        entry.append(1.0, 1000000);  // 1 second in microseconds
+        log.flush();
+      }
+      Thread.sleep(50); // Allow file system to sync
+
+      logManager.loadLog(logFile.toString());
+
+      assertNotNull(logManager.getActiveLog());
+      assertEquals(logFile.toString(), logManager.getActiveLog().path());
+    }
+
+    @Test
+    @DisplayName("handles empty log file")
+    void handlesEmptyLogFile(@TempDir Path tempDir) throws IOException, InterruptedException {
+      Path logFile = tempDir.resolve("empty.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        // Create log but don't add any entries
+      }
+      Thread.sleep(50); // Allow file system to sync
+
+      var parsedLog = logManager.loadLog(logFile.toString());
+
+      assertNotNull(parsedLog);
+      assertEquals(0, parsedLog.entryCount());
     }
   }
 }

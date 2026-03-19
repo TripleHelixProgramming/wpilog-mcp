@@ -44,6 +44,29 @@ public final class StatisticsTools {
   }
 
   /**
+   * Calculate percentile using linear interpolation.
+   *
+   * @param sortedData Array of sorted numeric values
+   * @param p Percentile (0.0 to 1.0, e.g., 0.25 for Q1, 0.75 for Q3)
+   * @return The interpolated percentile value
+   */
+  private static double percentile(double[] sortedData, double p) {
+    if (sortedData.length == 0) return 0.0;
+    if (sortedData.length == 1) return sortedData[0];
+
+    double index = p * (sortedData.length - 1);
+    int lower = (int) Math.floor(index);
+    int upper = (int) Math.ceil(index);
+
+    if (lower == upper) {
+      return sortedData[lower];
+    }
+
+    double weight = index - lower;
+    return sortedData[lower] * (1 - weight) + sortedData[upper] * weight;
+  }
+
+  /**
    * Tool for computing descriptive statistics on numeric log entries.
    *
    * <p>Computes min, max, mean, median, and standard deviation for any numeric entry.
@@ -88,9 +111,13 @@ public final class StatisticsTools {
       var stats = java.util.Arrays.stream(data).summaryStatistics();
       java.util.Arrays.sort(data);
       double median = data.length % 2 == 1 ? data[data.length / 2] : (data[data.length / 2 - 1] + data[data.length / 2]) / 2.0;
-      
+
       double mean = stats.getAverage();
-      double stdDev = Math.sqrt(java.util.Arrays.stream(data).map(v -> Math.pow(v - mean, 2)).average().orElse(0.0));
+      // Use sample standard deviation (Bessel's correction: n-1) for more accurate estimates
+      // from sample data. For n=1, return 0 to avoid division by zero.
+      double sumSquaredDiff = java.util.Arrays.stream(data).map(v -> Math.pow(v - mean, 2)).sum();
+      double variance = data.length > 1 ? sumSquaredDiff / (data.length - 1) : 0.0;
+      double stdDev = Math.sqrt(variance);
 
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -198,8 +225,8 @@ public final class StatisticsTools {
           .sorted()
           .toArray();
 
-      double q1 = sortedData[sortedData.length / 4];
-      double q3 = sortedData[3 * sortedData.length / 4];
+      double q1 = percentile(sortedData, 0.25);
+      double q3 = percentile(sortedData, 0.75);
       double iqr = q3 - q1;
       double low = q1 - iqrMult * iqr;
       double high = q3 + iqrMult * iqr;
@@ -417,11 +444,20 @@ public final class StatisticsTools {
         double dx = x.get(i) - meanX, dy = y.get(i) - meanY;
         num += dx * dy; denX += dx * dx; denY += dy * dy;
       }
-      double corr = (denX == 0 || denY == 0) ? 0 : num / Math.sqrt(denX * denY);
 
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("correlation", corr);
+
+      // Handle edge case: zero variance means correlation is undefined (NaN)
+      if (denX == 0 || denY == 0) {
+        result.addProperty("correlation", Double.NaN);
+        result.addProperty("warning", "Correlation undefined: " +
+            (denX == 0 && denY == 0 ? "both entries" : (denX == 0 ? "first entry" : "second entry")) +
+            " has zero variance (all values are identical)");
+      } else {
+        double corr = num / Math.sqrt(denX * denY);
+        result.addProperty("correlation", corr);
+      }
       return result;
     }
   }

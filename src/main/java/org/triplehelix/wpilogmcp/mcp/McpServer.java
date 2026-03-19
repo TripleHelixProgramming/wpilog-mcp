@@ -22,7 +22,7 @@ public class McpServer {
   private static final Logger logger = LoggerFactory.getLogger(McpServer.class);
 
   private static final String SERVER_NAME = "wpilog-mcp";
-  private static final String SERVER_VERSION = "0.1.0";
+  private static final String SERVER_VERSION = "0.2.1";
   private static final String PROTOCOL_VERSION = "2024-11-05";
 
   private final Gson gson;
@@ -169,14 +169,33 @@ public class McpServer {
 
     var tool = tools.get(toolName);
     if (tool == null) {
-      sendError(id, JsonRpc.METHOD_NOT_FOUND, "Unknown tool: " + toolName);
+      var suggestions = tools.keySet().stream()
+          .filter(name -> levenshteinDistance(name, toolName) <= 3)
+          .limit(3)
+          .toList();
+      String msg = "Unknown tool: " + toolName;
+      if (!suggestions.isEmpty()) {
+        msg += ". Did you mean: " + String.join(", ", suggestions) + "?";
+      }
+      sendError(id, JsonRpc.METHOD_NOT_FOUND, msg);
       return;
     }
 
     var arguments = paramsObj.has("arguments") ? paramsObj.getAsJsonObject("arguments") : new JsonObject();
 
+    logger.info("Executing tool '{}' with {} argument(s)", toolName, arguments.size());
+    long startTime = System.currentTimeMillis();
     try {
       var toolResult = tool.execute(arguments);
+      long executionTimeMs = System.currentTimeMillis() - startTime;
+
+      logger.info("Tool '{}' executed successfully in {} ms", toolName, executionTimeMs);
+
+      // Add execution time to result if it's a JsonObject
+      if (toolResult.isJsonObject()) {
+        toolResult.getAsJsonObject().addProperty("_execution_time_ms", executionTimeMs);
+      }
+
       var result = new JsonObject();
       var content = new JsonArray();
       var textContent = new JsonObject();
@@ -185,14 +204,61 @@ public class McpServer {
       content.add(textContent);
       result.add("content", content);
       sendResult(id, result);
-    } catch (Exception e) {
+    } catch (IllegalArgumentException e) {
+      // Client error: bad parameters
+      logger.warn("Tool '{}' failed with invalid parameter: {}", toolName, e.getMessage());
       var result = new JsonObject();
       var content = new JsonArray();
       var textContent = new JsonObject();
       textContent.addProperty("type", "text");
-      // Use GSON for proper JSON escaping of error messages
+      var errorObj = new JsonObject();
+      errorObj.addProperty("error", e.getMessage() != null ? e.getMessage() : "Invalid argument");
+      errorObj.addProperty("error_type", "invalid_parameter");
+      textContent.addProperty("text", gson.toJson(errorObj));
+      content.add(textContent);
+      result.add("content", content);
+      result.addProperty("isError", true);
+      sendResult(id, result);
+    } catch (java.io.IOException e) {
+      // IO error: file/network issues
+      logger.error("Tool '{}' failed with IO error: {}", toolName, e.getMessage());
+      var result = new JsonObject();
+      var content = new JsonArray();
+      var textContent = new JsonObject();
+      textContent.addProperty("type", "text");
+      var errorObj = new JsonObject();
+      errorObj.addProperty("error", e.getMessage() != null ? e.getMessage() : "IO error");
+      errorObj.addProperty("error_type", "io_error");
+      textContent.addProperty("text", gson.toJson(errorObj));
+      content.add(textContent);
+      result.add("content", content);
+      result.addProperty("isError", true);
+      sendResult(id, result);
+    } catch (OutOfMemoryError e) {
+      // Memory error
+      logger.error("Tool '{}' failed with out of memory error", toolName);
+      var result = new JsonObject();
+      var content = new JsonArray();
+      var textContent = new JsonObject();
+      textContent.addProperty("type", "text");
+      var errorObj = new JsonObject();
+      errorObj.addProperty("error", "Out of memory");
+      errorObj.addProperty("error_type", "memory_error");
+      textContent.addProperty("text", gson.toJson(errorObj));
+      content.add(textContent);
+      result.add("content", content);
+      result.addProperty("isError", true);
+      sendResult(id, result);
+    } catch (Exception e) {
+      // Generic internal error
+      logger.error("Tool '{}' failed with internal error: {}", toolName, e.getMessage(), e);
+      var result = new JsonObject();
+      var content = new JsonArray();
+      var textContent = new JsonObject();
+      textContent.addProperty("type", "text");
       var errorObj = new JsonObject();
       errorObj.addProperty("error", e.getMessage() != null ? e.getMessage() : "Unknown error");
+      errorObj.addProperty("error_type", "internal_error");
       textContent.addProperty("text", gson.toJson(errorObj));
       content.add(textContent);
       result.add("content", content);
@@ -213,6 +279,35 @@ public class McpServer {
   private void sendMessage(JsonObject message) {
     writer.println(gson.toJson(message));
     writer.flush();
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings for spell-checking suggestions.
+   */
+  private int levenshteinDistance(String s1, String s2) {
+    int len1 = s1.length();
+    int len2 = s2.length();
+
+    int[][] dp = new int[len1 + 1][len2 + 1];
+
+    for (int i = 0; i <= len1; i++) {
+      dp[i][0] = i;
+    }
+    for (int j = 0; j <= len2; j++) {
+      dp[0][j] = j;
+    }
+
+    for (int i = 1; i <= len1; i++) {
+      for (int j = 1; j <= len2; j++) {
+        int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
+        dp[i][j] = Math.min(
+            Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1),
+            dp[i - 1][j - 1] + cost
+        );
+      }
+    }
+
+    return dp[len1][len2];
   }
 
   public interface Tool {

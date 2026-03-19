@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Reference
 
-Complete documentation for all 34 tools available in wpilog-mcp.
+Complete documentation for all 39 tools available in wpilog-mcp.
 
 ## Table of Contents
 
@@ -14,6 +14,8 @@ Complete documentation for all 34 tools available in wpilog-mcp.
   - [get_statistics](#get_statistics)
   - [compare_entries](#compare_entries)
   - [get_types](#get_types)
+  - [list_struct_types](#list_struct_types) *(new)*
+  - [health_check](#health_check) *(new)*
 - [Multi-Log Management](#multi-log-management)
   - [list_loaded_logs](#list_loaded_logs)
   - [set_active_log](#set_active_log)
@@ -40,11 +42,13 @@ Complete documentation for all 34 tools available in wpilog-mcp.
   - [generate_report](#generate_report)
 - [FRC Domain-Specific Tools](#frc-domain-specific-tools)
   - [get_ds_timeline](#get_ds_timeline)
-  - [analyze_vision](#analyze_vision)
-  - [profile_mechanism](#profile_mechanism)
-  - [analyze_auto](#analyze_auto)
-  - [analyze_cycles](#analyze_cycles)
+  - [analyze_vision](#analyze_vision) *(enhanced)*
+  - [profile_mechanism](#profile_mechanism) *(enhanced)*
+  - [analyze_auto](#analyze_auto) *(enhanced)*
+  - [analyze_cycles](#analyze_cycles) *(enhanced)*
   - [analyze_replay_drift](#analyze_replay_drift)
+  - [analyze_loop_timing](#analyze_loop_timing) *(new)*
+  - [analyze_can_bus](#analyze_can_bus) *(new)*
 
 ---
 
@@ -243,6 +247,76 @@ Get all data types used in the log file.
 
 **Returns:** Types with entry counts and entry names
 
+### `list_struct_types`
+List all supported WPILib struct types organized by category. Useful for discovering what struct types can be decoded and what fields they contain.
+
+**Parameters:** None
+
+**Returns:** Struct types organized into categories (geometry, kinematics, vision, autonomous)
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "struct_types": {
+    "geometry": [
+      "Pose2d", "Pose3d", "Transform2d", "Transform3d",
+      "Translation2d", "Translation3d", "Rotation2d", "Rotation3d",
+      "Twist2d", "Twist3d"
+    ],
+    "kinematics": [
+      "ChassisSpeeds", "DifferentialDriveWheelSpeeds",
+      "MecanumDriveWheelSpeeds", "SwerveModuleState",
+      "SwerveModulePosition"
+    ],
+    "vision": [
+      "TargetObservation", "PoseObservation"
+    ],
+    "autonomous": [
+      "SwerveSample"
+    ]
+  },
+  "_execution_time_ms": 2
+}
+```
+
+**Use Case:** When exploring a new log file, use this tool to see what struct types are available for decoding. Each struct type is automatically decoded into its component fields when read.
+
+### `health_check`
+Get system health status including JVM memory usage, loaded log count, cache memory estimate, and TBA availability. Useful for monitoring server performance and resource usage.
+
+**Parameters:** None
+
+**Returns:** System status, memory statistics, loaded logs count, and TBA availability
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "status": "OK",
+  "loaded_logs": 3,
+  "tba_available": true,
+  "cache_memory_mb": 245.7,
+  "jvm_memory": {
+    "used_mb": 512,
+    "free_mb": 1536,
+    "total_mb": 2048,
+    "max_mb": 4096
+  },
+  "_execution_time_ms": 5
+}
+```
+
+**Response Fields:**
+- `status`: Always "OK" if the tool executes successfully
+- `loaded_logs`: Number of logs currently cached in memory
+- `tba_available`: Whether The Blue Alliance API is configured
+- `cache_memory_mb`: Estimated memory used by cached log data
+- `jvm_memory`: JVM heap statistics (used, free, total, max in MB)
+- `_execution_time_ms`: Tool execution time in milliseconds
+
+**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
+
 ---
 
 ## Multi-Log Management
@@ -339,7 +413,9 @@ Search string entries for text patterns. Useful for finding errors, warnings, or
 ## Advanced Analysis Tools
 
 ### `detect_anomalies`
-Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) method. Values outside Q1 - 1.5xIQR or Q3 + 1.5xIQR are flagged as outliers. Optionally detects sudden spikes (large percentage changes between consecutive samples).
+Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) method with proper linear percentile interpolation. Values outside Q1 - 1.5xIQR or Q3 + 1.5xIQR are flagged as outliers. Optionally detects sudden spikes (large percentage changes between consecutive samples).
+
+**Note:** IQR calculation uses linear interpolation between data points for accurate percentile estimates, ensuring reliable outlier detection even with small datasets.
 
 **Parameters:**
 - `name` (required): Entry name to analyze (must be numeric type)
@@ -917,13 +993,13 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 ```
 
 ### `analyze_vision`
-Analyze vision system reliability and pose estimation quality. Detects target acquisition rate, flicker (rapid loss/reacquisition), and sudden pose jumps ("teleportation").
+Analyze vision system reliability and pose estimation quality. Detects target acquisition rate, flicker (rapid loss/reacquisition), and sudden pose jumps ("teleportation"). Enhanced with pose jump detection to identify unreliable vision estimates that can cause odometry drift.
 
 **Parameters:**
 - `vision_prefix` (optional): Entry path prefix for vision data (auto-detect if not specified)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
-- `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
+- `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5). Lower values detect smaller jumps
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
 
 **Searches for entries containing:**
@@ -931,7 +1007,13 @@ Analyze vision system reliability and pose estimation quality. Detects target ac
 - Vision pose: `visionPose`, `estimatedPose`, `botPose`, `robotPose`
 - Odometry: `odometry` + `pose`
 
-**Returns:** Target acquisition analysis, flicker detection, and pose jump analysis
+**Returns:** Target acquisition analysis, flicker detection, and pose jump analysis with specific jump locations
+
+**Pose Jump Detection:** Identifies sudden position changes that exceed the threshold. Useful for diagnosing:
+- Ambiguous AprilTag detections causing incorrect pose estimates
+- Tag ID misidentification
+- Poorly tuned vision standard deviations
+- Lighting or camera exposure issues
 
 **Example Response:**
 ```json
@@ -971,14 +1053,14 @@ Analyze vision system reliability and pose estimation quality. Detects target ac
 ```
 
 ### `profile_mechanism`
-Analyze closed-loop mechanism performance including following error, stall detection, and temperature profiling.
+Analyze closed-loop mechanism performance including following error RMSE, stall detection, settling time, overshoot calculations, and temperature profiling. Enhanced with advanced control system metrics for PID tuning and mechanism health monitoring.
 
 **Parameters:**
-- `mechanism_name` (required): Name or prefix of mechanism to analyze (e.g., "Elevator", "Arm")
+- `mechanism_name` (required): Name or prefix of mechanism to analyze (e.g., "Elevator", "Arm", "Shooter")
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
-- `settling_threshold` (optional): Position error threshold for settling (default: 0.02)
-- `stall_current_threshold` (optional): Current threshold for stall detection (default: 30A)
+- `settling_threshold` (optional): Position error threshold for settling time calculation (default: 0.02 or 2%)
+- `stall_current_threshold` (optional): Current threshold for stall detection in amperes (default: 30A)
 
 **Searches for entries containing the mechanism name plus:**
 - Setpoint: `setpoint`, `goal`, `target`, `desired`
@@ -988,7 +1070,12 @@ Analyze closed-loop mechanism performance including following error, stall detec
 - Current: `current`
 - Temperature: `temp`, `temperature`
 
-**Returns:** Following error RMSE, stall events, and temperature analysis
+**Returns:** Comprehensive mechanism performance analysis including:
+- **Following Error**: RMSE, max error, mean error - indicates control loop accuracy
+- **Stall Detection**: Detects when velocity is near zero (< 0.01) while current exceeds threshold - indicates mechanical binding or overload
+- **Settling Time**: Time to reach and stay within threshold of setpoint - measures control response speed
+- **Overshoot**: Maximum overshoot percentage beyond setpoint - indicates control aggressiveness
+- **Temperature Analysis**: Max/avg temperature with overheat warnings
 
 **Example Response:**
 ```json
@@ -1008,26 +1095,40 @@ Analyze closed-loop mechanism performance including following error, stall detec
     "mean_error": 0.012,
     "sample_count": 7500
   },
-  "stall_detection": {
-    "stall_events": 2,
-    "samples": [
-      {
-        "timestamp": 45.23,
-        "current": 35.5,
-        "velocity": 0.01
-      }
-    ]
-  },
+  "settling_time_sec": 0.45,
+  "overshoot_percent": 12.5,
+  "stall_events": [
+    {
+      "start_time": 45.23,
+      "end_time": 45.78,
+      "duration": 0.55,
+      "max_current": 38.2
+    },
+    {
+      "start_time": 89.12,
+      "end_time": 89.34,
+      "duration": 0.22,
+      "max_current": 35.5
+    }
+  ],
   "temperature": {
     "max_temperature_c": 58.2,
     "avg_temperature_c": 42.1,
     "overheat_warning": false
-  }
+  },
+  "_execution_time_ms": 125
 }
 ```
 
+**Use Case for Control Tuning:**
+- **High RMSE or overshoot**: Increase D gain or decrease P gain
+- **Slow settling time**: Increase P gain or add feedforward
+- **Stall events**: Check for mechanical binding, insufficient power, or incorrect current limits
+- **High overshoot with fast settling**: Well-tuned but aggressive - acceptable for many mechanisms
+```
+
 ### `analyze_auto`
-Analyze autonomous routine performance including path following error and completion timing.
+Analyze autonomous routine performance including path following error RMSE, maximum deviation, and completion timing. Enhanced with detailed path following metrics for tuning trajectory following controllers.
 
 **Parameters:**
 - `auto_prefix` (optional): Entry path prefix for auto data (auto-detect if not specified)
@@ -1038,7 +1139,12 @@ Analyze autonomous routine performance including path following error and comple
 - Trajectory: `trajectory`, `targetPose`, `desiredPose`, `setpointPose`
 - Actual pose: `odometry` + `pose`
 
-**Returns:** Selected routine name, path following RMSE, and timing analysis
+**Returns:** Selected routine name, path following error RMSE, max error, and timing analysis
+
+**Path Following Error Calculation:** Computes RMSE (Root Mean Square Error) between desired and actual robot position throughout autonomous. Lower RMSE indicates better path following. Typical values:
+- **< 0.05m**: Excellent path following
+- **0.05-0.15m**: Good path following (acceptable for most games)
+- **> 0.15m**: Poor path following - check controller tuning or wheel slippage
 
 **Example Response:**
 ```json
@@ -1060,15 +1166,21 @@ Analyze autonomous routine performance including path following error and comple
 ```
 
 ### `analyze_cycles`
-Analyze game piece handling cycle times. Counts cycles, calculates timing statistics, and breaks down time by state.
+Analyze game piece handling cycle times. Counts cycles, calculates timing statistics, breaks down time by state, and identifies dead time (idle periods between cycles). Enhanced with dead time analysis to identify opportunities for cycle time improvement.
 
 **Parameters:**
 - `state_entry` (required): Entry name for superstructure/mechanism state
-- `start_state` (optional): State that marks cycle start (default: first state seen)
+- `cycle_start_state` (optional): State that marks cycle start (e.g., "INTAKING")
+- `idle_state` (optional): State name representing idle/waiting (e.g., "IDLE") for dead time detection
 - `start_time` (optional): Start timestamp (default: 15s for teleop start)
 - `end_time` (optional): End timestamp (default: 135s for teleop end)
 
-**Returns:** Cycle count, timing statistics, and time breakdown by state
+**Returns:** Cycle count, timing statistics, time breakdown by state, and dead time analysis
+
+**Dead Time Analysis:** Identifies periods when the robot is idle between cycles. High dead time indicates:
+- Driver waiting for game pieces
+- Long travel distances between scoring locations
+- Strategy inefficiencies (e.g., waiting for alliance partners)
 
 **Example Response:**
 ```json
@@ -1087,13 +1199,20 @@ Analyze game piece handling cycle times. Counts cycles, calculates timing statis
     {"start": 15.2, "end": 24.8, "duration": 9.6},
     {"start": 24.8, "end": 37.2, "duration": 12.4}
   ],
+  "dead_time": {
+    "total_sec": 20.0,
+    "period_count": 4,
+    "avg_duration_sec": 5.0,
+    "percentage_of_teleop": 16.7
+  },
   "time_by_state": {
     "INTAKING": {"time_sec": 25.0, "percentage": 25.0},
     "TRANSITING": {"time_sec": 30.0, "percentage": 30.0},
     "AIMING": {"time_sec": 15.0, "percentage": 15.0},
     "SHOOTING": {"time_sec": 10.0, "percentage": 10.0},
     "IDLE": {"time_sec": 20.0, "percentage": 20.0}
-  }
+  },
+  "_execution_time_ms": 45
 }
 ```
 
@@ -1136,3 +1255,147 @@ Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOut
 ```
 
 **Use Case:** When replay outputs don't match real outputs, this tool helps identify which subsystems broke determinism. The first divergence timestamp often points to the root cause - entries that diverge first typically contain the non-deterministic code.
+
+### `analyze_loop_timing`
+Analyze robot code loop timing performance. Detects loop overruns (> 20ms), measures jitter, and provides timing statistics. Critical for diagnosing real-time performance issues that can cause stuttering, dropped commands, or unstable control.
+
+**Parameters:**
+- `loop_time_entry` (optional): Entry name for loop time (auto-detects common patterns if not specified)
+- `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20ms for standard 50Hz loop)
+- `start_time` (optional): Start timestamp in seconds
+- `end_time` (optional): End timestamp in seconds
+
+**Searches for entries containing:**
+- Loop timing: `loopTime`, `cycleTime`, `scanTime`, `dt`, `period`
+- Common patterns: `/RobotCode/LoopTime`, `/Diagnostics/LoopTime`, `/Robot/LoopTime`
+
+**Returns:** Loop timing statistics, violation count, jitter analysis, and specific violation timestamps
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "entry": "/RobotCode/LoopTime",
+  "statistics": {
+    "avg_ms": 18.2,
+    "min_ms": 15.1,
+    "max_ms": 42.7,
+    "std_dev_ms": 2.8,
+    "sample_count": 7500
+  },
+  "violations": [
+    {
+      "timestamp": 45.23,
+      "loop_time_ms": 42.7,
+      "threshold_ms": 20.0
+    },
+    {
+      "timestamp": 89.45,
+      "loop_time_ms": 25.3,
+      "threshold_ms": 20.0
+    }
+  ],
+  "violation_count": 12,
+  "violation_rate": 0.0016,
+  "jitter": {
+    "p95_ms": 19.8,
+    "p99_ms": 21.5,
+    "range_ms": 27.6
+  },
+  "health_assessment": "FAIR - Some loop overruns detected",
+  "_execution_time_ms": 35
+}
+```
+
+**Health Assessment Levels:**
+- **EXCELLENT**: No violations, low jitter (< 2ms std dev)
+- **GOOD**: Few violations (< 1%), moderate jitter
+- **FAIR**: Some violations (1-5%), higher jitter
+- **POOR**: Many violations (> 5%), indicates serious performance issues
+
+**Common Causes of Loop Overruns:**
+- Vision processing on RoboRIO thread
+- Excessive logging or NetworkTables writes
+- Blocking I2C/SPI sensor reads
+- Unoptimized algorithms (O(n²) in periodic)
+- Garbage collection pauses (check JVM memory)
+
+### `analyze_can_bus`
+Analyze CAN bus health, utilization, and error rates. Monitors bus loading and detects communication errors that can cause device timeouts or unreliable sensor readings.
+
+**Parameters:**
+- `utilization_threshold` (optional): Bus utilization percentage threshold for warnings (default: 80%)
+- `start_time` (optional): Start timestamp in seconds
+- `end_time` (optional): End timestamp in seconds
+
+**Searches for entries containing:**
+- Bus utilization: `CANBus/Utilization`, `CAN/Usage`, `CAN/BusPercent`
+- Transmit errors: `CAN/Error/Tx`, `CANBus/TxError`, `CAN/TEC`
+- Receive errors: `CAN/Error/Rx`, `CANBus/RxError`, `CAN/REC`
+- Bus off events: `CAN/BusOff`, `CANBus/Status`
+
+**Returns:** Bus utilization analysis, error counts by type, health assessment, and recommendations
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "utilization": [
+    {
+      "entry": "/CANBus/Utilization",
+      "avg_percent": 45.2,
+      "max_percent": 78.5,
+      "min_percent": 15.3,
+      "sample_count": 7500,
+      "exceeded_threshold": false
+    }
+  ],
+  "errors": [
+    {
+      "entry": "/CANBus/Error/Tx",
+      "type": "transmit",
+      "error_count": 15,
+      "first_error_timestamp": 23.4,
+      "last_error_timestamp": 89.2
+    },
+    {
+      "entry": "/CANBus/Error/Rx",
+      "type": "receive",
+      "error_count": 8,
+      "first_error_timestamp": 34.5,
+      "last_error_timestamp": 92.1
+    }
+  ],
+  "total_errors": 23,
+  "health_assessment": "GOOD - Low error rate, utilization within limits",
+  "recommendations": [
+    "Monitor CAN utilization if adding more devices",
+    "Consider reducing status frame rates if utilization approaches 80%"
+  ],
+  "_execution_time_ms": 28
+}
+```
+
+**Health Assessment Levels:**
+- **EXCELLENT**: No errors, utilization < 50%
+- **GOOD**: Few errors (< 10), utilization < 80%
+- **FAIR**: Some errors (10-100), utilization 80-90%
+- **POOR**: Many errors (> 100) or utilization > 90%
+
+**Utilization Guidelines:**
+- **< 50%**: Healthy, plenty of bandwidth
+- **50-70%**: Good, monitor if adding devices
+- **70-85%**: Concerning, reduce status frame rates
+- **> 85%**: Critical, high risk of timeouts and errors
+
+**Common Solutions for High Utilization:**
+- Reduce motor controller status frame rates (default is often too high)
+- Use CAN FD bus (if supported by hardware)
+- Minimize unnecessary CAN devices
+- Optimize PDH/PDP current monitoring rates
+
+**Use Case:** Run this tool if experiencing:
+- Intermittent motor controller disconnects
+- Sensor reading timeouts
+- "CAN timeout" errors in Driver Station
+- Unreliable device communication

@@ -13,32 +13,49 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Manages a configured directory of WPILOG files for browsing and discovery.
+ *
+ * <p>This class is a thread-safe singleton that provides log file discovery and
+ * metadata caching. It uses {@link ConcurrentHashMap} for the cache and
+ * {@link LongAdder} for thread-safe statistics counters.
  */
 public class LogDirectory {
   private static final Logger logger = LoggerFactory.getLogger(LogDirectory.class);
 
-  /** Singleton instance. */
-  private static LogDirectory instance;
+  /**
+   * Singleton holder class for thread-safe lazy initialization.
+   * This pattern ensures thread-safety without synchronization overhead.
+   */
+  private static class Holder {
+    static final LogDirectory INSTANCE = new LogDirectory();
+  }
 
   /** Configured root directory for log file discovery. */
   private Path logDirectory;
 
   /**
    * Cache of log file metadata, keyed by absolute path.
+   * Uses ConcurrentHashMap for thread-safe access.
    */
   private final Map<String, CachedLogInfo> metadataCache = new ConcurrentHashMap<>();
 
-  /** Cache hit counter for diagnostics. */
-  private long cacheHits = 0;
+  /**
+   * Cache hit counter for diagnostics.
+   * Uses LongAdder for thread-safe, high-performance incrementing.
+   */
+  private final LongAdder cacheHits = new LongAdder();
 
-  /** Cache miss counter for diagnostics. */
-  private long cacheMisses = 0;
+  /**
+   * Cache miss counter for diagnostics.
+   * Uses LongAdder for thread-safe, high-performance incrementing.
+   */
+  private final LongAdder cacheMisses = new LongAdder();
 
   /** Default team number to use when file metadata is missing. */
   private Integer defaultTeamNumber = null;
@@ -49,13 +66,13 @@ public class LogDirectory {
   /**
    * Gets the singleton instance of LogDirectory.
    *
+   * <p>Uses the initialization-on-demand holder idiom for thread-safe lazy
+   * initialization without synchronization overhead.
+   *
    * @return The singleton instance
    */
-  public static synchronized LogDirectory getInstance() {
-    if (instance == null) {
-      instance = new LogDirectory();
-    }
-    return instance;
+  public static LogDirectory getInstance() {
+    return Holder.INSTANCE;
   }
 
   /** Match types used in FRC. */
@@ -132,13 +149,13 @@ public class LogDirectory {
   }
 
   public Map<String, Long> getCacheStats() {
-    return Map.of("size", (long) metadataCache.size(), "hits", cacheHits, "misses", cacheMisses);
+    return Map.of("size", (long) metadataCache.size(), "hits", cacheHits.sum(), "misses", cacheMisses.sum());
   }
 
   public void clearCache() {
     metadataCache.clear();
-    cacheHits = 0;
-    cacheMisses = 0;
+    cacheHits.reset();
+    cacheMisses.reset();
   }
 
   /**
@@ -156,8 +173,8 @@ public class LogDirectory {
               Comparator.nullsLast(Comparator.reverseOrder())))
           .toList();
 
-      logger.info("Found {} log files. Cache hits: {}, misses: {}", 
-          logs.size(), cacheHits, cacheMisses);
+      logger.info("Found {} log files. Cache hits: {}, misses: {}",
+          logs.size(), cacheHits.sum(), cacheMisses.sum());
       return logs;
     }
   }
@@ -168,11 +185,11 @@ public class LogDirectory {
 
     var cached = metadataCache.get(pathKey);
     if (cached != null && cached.cachedLastModified() == currentLastModified) {
-      cacheHits++;
+      cacheHits.increment();
       return cached.info();
     }
 
-    cacheMisses++;
+    cacheMisses.increment();
     var info = extractLogInfo(path);
     metadataCache.put(pathKey, new CachedLogInfo(info, currentLastModified));
     return info;
@@ -208,11 +225,14 @@ public class LogDirectory {
             if (entryName != null) {
               var lowerName = entryName.toLowerCase();
               if (lowerName.contains("eventname")) {
-                eventName = getSafeString(record);
+                var s = getSafeString(record);
+                if (s != null && !s.isEmpty()) eventName = s;
               } else if (lowerName.contains("matchtype")) {
-                matchType = parseMatchTypeFromRecord(record);
+                var mt = parseMatchTypeFromRecord(record);
+                if (mt != null) matchType = mt;
               } else if (lowerName.contains("matchnumber")) {
-                matchNumber = (int) record.getInteger();
+                int mn = (int) record.getInteger();
+                if (mn > 0) matchNumber = mn;
               } else if (lowerName.contains("stationnumber") || lowerName.contains("teamnumber")) {
                 int val = (int) record.getInteger();
                 if (val > 10) teamNumber = val;
@@ -227,20 +247,27 @@ public class LogDirectory {
     }
 
     // Fallback to filename parsing
+    String matchTypeStr = null;
     if (eventName == null || matchType == null || matchNumber == null) {
       var parsed = parseFilename(filename, path, getLastModified(path), getFileSize(path));
       if (parsed != null) {
         if (eventName == null) eventName = parsed.eventName();
-        if (matchType == null) matchType = parsed.matchType() != null ? MatchType.fromString(parsed.matchType()) : null;
+        if (matchType == null && parsed.matchType() != null) {
+          matchType = MatchType.fromString(parsed.matchType());
+          matchTypeStr = parsed.matchType(); // Preserve the original string (may include " (sim)")
+        }
         if (matchNumber == null) matchNumber = parsed.matchNumber();
       }
     }
 
     if (teamNumber == null) teamNumber = defaultTeamNumber;
 
+    // Use preserved string if available (includes sim indicator), otherwise use enum friendly name
+    String finalMatchType = matchTypeStr != null ? matchTypeStr : (matchType != null ? matchType.getFriendlyName() : null);
+
     return new LogFileInfo(
-        path.toString(), filename, eventName, 
-        matchType != null ? matchType.getFriendlyName() : null,
+        path.toString(), filename, eventName,
+        finalMatchType,
         matchNumber, teamNumber, getLastModified(path), getFileSize(path),
         extractCreationTime(filename));
   }
@@ -265,7 +292,36 @@ public class LogDirectory {
     return parsed != null ? parsed.logCreationTime() : null;
   }
 
+  /**
+   * Parses a WPILOG filename to extract metadata.
+   *
+   * <p>Expected filename format (from WPILib's DataLogManager):
+   * <pre>
+   * {name}_{YY}-{MM}-{DD}_{HH}-{mm}-{SS}_{event}[_{matchType}{matchNum}][_sim].wpilog
+   * </pre>
+   *
+   * <p>Examples:
+   * <ul>
+   *   <li>{@code frc_25-03-15_10-30-00_vadc.wpilog} - Practice at VADC</li>
+   *   <li>{@code frc_25-03-15_10-30-00_vadc_qm42.wpilog} - Qualification match 42 at VADC</li>
+   *   <li>{@code frc_25-03-15_10-30-00_vadc_qm42_sim.wpilog} - Simulated match</li>
+   * </ul>
+   *
+   * @param filename The filename to parse
+   * @param path The full path to the file
+   * @param lastModified Last modified timestamp in millis
+   * @param fileSize File size in bytes
+   * @return Parsed LogFileInfo or null if filename doesn't match expected format
+   */
   private LogFileInfo parseFilename(String filename, Path path, long lastModified, long fileSize) {
+    // Regex breakdown:
+    // ^[a-z]+_                           - Prefix (e.g., "frc_")
+    // (\d{2})-(\d{2})-(\d{2})_           - Date: YY-MM-DD (groups 1-3)
+    // (\d{2})-(\d{2})-(\d{2})_           - Time: HH-mm-SS (groups 4-6)
+    // ([a-z0-9]+)                        - Event code (group 7, e.g., "vadc")
+    // (?:_([a-z]+)(\d+))?                - Optional match: type + number (groups 8-9, e.g., "qm42")
+    // (?:_sim)?                          - Optional simulation indicator
+    // \.wpilog$                          - File extension
     var regex = "^[a-z]+_(\\d{2})-(\\d{2})-(\\d{2})_(\\d{2})-(\\d{2})-(\\d{2})_([a-z0-9]+)(?:_([a-z]+)(\\d+))?(?:_sim)?\\.wpilog$";
     var pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
     var matcher = pattern.matcher(filename);
@@ -290,7 +346,7 @@ public class LogDirectory {
       matchType = "Practice";
     }
 
-    if (filename.toLowerCase().contains("_sim.")) matchType += " (sim)";
+    if (filename.toLowerCase().endsWith("_sim.wpilog")) matchType += " (sim)";
 
     return new LogFileInfo(path.toString(), filename, eventName, matchType, matchNumber, null, lastModified, fileSize, logCreationTime);
   }

@@ -16,6 +16,7 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  */
 public class Main {
   private static final Logger logger = LoggerFactory.getLogger(Main.class);
+  private static final String VERSION = "0.3.0";
 
   public static void main(String[] args) {
     // Set default log level if not specified
@@ -33,6 +34,9 @@ public class Main {
       var arg = args[i];
       if (arg.equals("-help") || arg.equals("-h")) {
         printUsage();
+        System.exit(0);
+      } else if (arg.equals("-version") || arg.equals("-v") || arg.equals("--version")) {
+        System.out.println("wpilog-mcp version " + VERSION);
         System.exit(0);
       } else if (arg.equals("-debug")) {
         System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
@@ -125,6 +129,9 @@ public class Main {
     if (logDir != null && !logDir.isEmpty()) {
       logger.info("Configuring log directory: {}", logDir);
       LogDirectory.getInstance().setLogDirectory(logDir);
+      // Also configure as allowed directory for path security
+      // This prevents path traversal attacks by restricting file access
+      LogManager.getInstance().addAllowedDirectory(logDir);
     } else {
       logger.warn("No log directory configured. Use -logdir or WPILOG_DIR env var.");
     }
@@ -179,6 +186,7 @@ public class Main {
     logger.info("  -maxlogs <n>      Max number of logs to cache (default: 20)");
     logger.info("  -maxmemory <mb>   Max memory (MB) for log cache (alternative to -maxlogs)");
     logger.info("  -debug            Enable debug logging");
+    logger.info("  -version, -v      Show version information");
     logger.info("  -help, -h         Show this help message");
     logger.info("");
     logger.info("Environment variables:");
