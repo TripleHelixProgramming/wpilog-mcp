@@ -121,9 +121,14 @@ class SecurityValidatorTest {
   @Test
   void testValidateOrAllowCached() throws IOException {
     Path allowedDir = tempDir.resolve("allowed");
+    Files.createDirectories(allowedDir);
     validator.addAllowedDirectory(allowedDir);
 
-    Path cachedPath = tempDir.resolve("cached/test.wpilog").toAbsolutePath().normalize();
+    // Create the cached path's parent so symlink resolution works consistently
+    Path cachedDir = tempDir.resolve("cached");
+    Files.createDirectories(cachedDir);
+    // Use toRealPath() on the parent to match how SecurityValidator resolves paths
+    Path cachedPath = cachedDir.toRealPath().resolve("test.wpilog");
     Path uncachedPath = tempDir.resolve("uncached/test.wpilog").toAbsolutePath().normalize();
 
     // Cached path should be allowed even if outside allowed directories

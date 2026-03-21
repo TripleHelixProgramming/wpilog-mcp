@@ -292,8 +292,8 @@ class LogRequiringToolTest {
     }
 
     @Test
-    @DisplayName("propagates other exceptions")
-    void propagatesOtherExceptions() throws Exception {
+    @DisplayName("returns error response for runtime exceptions")
+    void returnsErrorForRuntimeExceptions() throws Exception {
       var mockLog = mockLogBuilder
           .setPath("/test.wpilog")
           .addNumericEntry("/entry", new double[]{0}, new double[]{1.0})
@@ -305,12 +305,16 @@ class LogRequiringToolTest {
       var args = new JsonObject();
       args.addProperty("throw_type", "runtime");
 
-      assertThrows(RuntimeException.class, () -> tool.execute(args));
+      // ToolBase now catches all exceptions and returns error responses
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("Internal error"));
     }
 
     @Test
-    @DisplayName("propagates NullPointerException")
-    void propagatesNullPointerException() throws Exception {
+    @DisplayName("returns error response for NullPointerException")
+    void returnsErrorForNullPointerException() throws Exception {
       var mockLog = mockLogBuilder
           .setPath("/test.wpilog")
           .addNumericEntry("/entry", new double[]{0}, new double[]{1.0})
@@ -322,7 +326,11 @@ class LogRequiringToolTest {
       var args = new JsonObject();
       args.addProperty("throw_type", "null_pointer");
 
-      assertThrows(NullPointerException.class, () -> tool.execute(args));
+      // ToolBase now catches all exceptions and returns error responses
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("Internal error"));
     }
   }
 

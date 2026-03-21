@@ -148,6 +148,11 @@ public abstract class ToolBase implements McpServer.Tool {
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
       return errorResult(e.getMessage());
+    } catch (Exception e) {
+      // Unexpected errors - return error response instead of propagating
+      // raw exceptions to the MCP layer
+      var msg = e.getMessage();
+      return errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
     }
   }
 
@@ -267,6 +272,17 @@ public abstract class ToolBase implements McpServer.Tool {
    * @param endTime Optional end time (inclusive), or null
    * @return Array of numeric values
    */
+  /**
+   * Extracts numeric values from timestamped data with optional time filtering.
+   *
+   * <p>Filters by time range and includes only finite numeric values (NaN and Infinity
+   * are excluded to prevent silent corruption of statistical calculations).
+   *
+   * @param values The timestamped values
+   * @param startTime Optional start time (inclusive), or null
+   * @param endTime Optional end time (inclusive), or null
+   * @return Array of finite numeric values
+   */
   protected double[] extractNumericData(
       List<TimestampedValue> values,
       Double startTime,
@@ -275,6 +291,7 @@ public abstract class ToolBase implements McpServer.Tool {
         .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime))
         .filter(tv -> tv.value() instanceof Number)
         .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
+        .filter(Double::isFinite)
         .toArray();
   }
 

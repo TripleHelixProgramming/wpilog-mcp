@@ -22,7 +22,7 @@ public class McpServer {
   private static final Logger logger = LoggerFactory.getLogger(McpServer.class);
 
   private static final String SERVER_NAME = "wpilog-mcp";
-  private static final String SERVER_VERSION = "0.2.1";
+  private static final String SERVER_VERSION = org.triplehelix.wpilogmcp.Version.VERSION;
   private static final String PROTOCOL_VERSION = "2024-11-05";
 
   private final Gson gson;
@@ -64,6 +64,8 @@ public class McpServer {
         handleMessage(message);
       } catch (Exception e) {
         logger.error("Failed to parse JSON-RPC message: {}", e.getMessage());
+        // JSON-RPC 2.0 §4.2: parse errors must return id:null response
+        sendMessage(JsonRpc.createErrorResponse(null, JsonRpc.PARSE_ERROR, "Parse error"));
       }
     }
     logger.info("MCP server stopped");

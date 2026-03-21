@@ -32,6 +32,9 @@ public class TbaClient {
   /** HTTP request timeout. */
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
+  /** Maximum entries per cache map to prevent unbounded memory growth. */
+  private static final int MAX_CACHE_SIZE = 200;
+
   /** Singleton instance. */
   private static TbaClient instance;
 
@@ -121,6 +124,7 @@ public class TbaClient {
       var endpoint = "/event/" + eventKey;
       var data = fetchJson(endpoint, JsonObject.class);
       eventCache.put(eventKey, new CachedData<>(data));
+      evictStaleEntries(eventCache);
       return Optional.ofNullable(data);
     } catch (Exception e) {
       logger.warn("TBA API error for event {}: {}", eventKey, e.getMessage());
@@ -154,6 +158,7 @@ public class TbaClient {
       var endpoint = "/match/" + matchKey;
       var data = fetchJson(endpoint, JsonObject.class);
       matchCache.put(matchKey, new CachedData<>(data));
+      evictStaleEntries(matchCache);
       return Optional.ofNullable(data);
     } catch (Exception e) {
       logger.warn("TBA API error for match {}: {}", matchKey, e.getMessage());
@@ -184,6 +189,7 @@ public class TbaClient {
       var endpoint = "/event/" + eventKey + "/matches";
       var data = fetchJson(endpoint, JsonArray.class);
       eventMatchesCache.put(eventKey, new CachedData<>(data));
+      evictStaleEntries(eventMatchesCache);
       return Optional.ofNullable(data);
     } catch (Exception e) {
       logger.warn("TBA API error for event matches {}: {}", eventKey, e.getMessage());
@@ -526,6 +532,21 @@ public class TbaClient {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IOException("Request interrupted", e);
+    }
+  }
+
+  /**
+   * Evicts expired entries and trims to MAX_CACHE_SIZE if a cache exceeds its limit.
+   * Called periodically to prevent unbounded memory growth in long-running servers.
+   */
+  private <T> void evictStaleEntries(Map<String, CachedData<T>> cacheMap) {
+    // Remove expired entries first
+    cacheMap.entrySet().removeIf(e -> e.getValue().isExpired());
+    // If still over limit, remove oldest entries
+    while (cacheMap.size() > MAX_CACHE_SIZE) {
+      var oldest = cacheMap.entrySet().stream()
+          .min((a, b) -> a.getValue().cachedAt.compareTo(b.getValue().cachedAt));
+      oldest.ifPresent(e -> cacheMap.remove(e.getKey()));
     }
   }
 

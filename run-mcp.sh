@@ -4,11 +4,34 @@
 # wpilog-mcp Launcher
 #
 # Automatically locates the WPILib 2026 JDK and starts the MCP server.
+#
+# Environment variables:
+#   WPILOG_MAX_HEAP  - Max JVM heap size (default: 4g). Examples: 2g, 8g, 512m
+#   JAVA_HOME        - Override JDK location (WPILib 2026 JDK auto-detected)
 # =============================================================================
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-JAR_PATH="${SCRIPT_DIR}/build/libs/wpilog-mcp-0.1.0-all.jar"
+
+# --- JVM Configuration ---
+
+MAX_HEAP="${WPILOG_MAX_HEAP:-4g}"
+
+# --- JAR Discovery ---
+
+# Find the fat JAR, preferring the most recently modified
+JAR_PATH=""
+for f in "${SCRIPT_DIR}"/build/libs/wpilog-mcp-*-all.jar; do
+    if [[ -f "$f" ]]; then
+        JAR_PATH="$f"
+    fi
+done
+
+if [[ -z "$JAR_PATH" ]]; then
+    echo "Error: Server JAR not found in ${SCRIPT_DIR}/build/libs/" >&2
+    echo "Please run './gradlew buildMcp' first." >&2
+    exit 1
+fi
 
 # --- JDK Discovery Logic ---
 
@@ -32,10 +55,4 @@ fi
 
 # --- Execution ---
 
-if [[ ! -f "$JAR_PATH" ]]; then
-    echo "Error: Server JAR not found at ${JAR_PATH}" >&2
-    echo "Please run './gradlew buildMcp' first." >&2
-    exit 1
-fi
-
-exec "${JAVA_EXEC}" -jar "${JAR_PATH}" "$@"
+exec "${JAVA_EXEC}" -Xmx${MAX_HEAP} -jar "${JAR_PATH}" "$@"

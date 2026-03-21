@@ -24,3 +24,6 @@ Thumbs.db
 # Local configuration
 local.properties
 CODE_REVIEW.md
+.mcp.json
+CODE_REVIEW_PROMPT.md
+CODE_REVIEW_REJECTION.md

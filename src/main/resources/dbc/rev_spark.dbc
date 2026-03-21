@@ -1,0 +1,73 @@
+VERSION "1.0"
+
+// REV Robotics SPARK MAX/Flex CAN Signal Definitions
+//
+// This file defines the signal layouts for periodic status frames from
+// REV SPARK MAX and SPARK Flex motor controllers.
+//
+// CAN Arbitration ID structure (29-bit extended):
+//   Bits 28-24: Device Type (2 = SPARK MAX)
+//   Bits 23-16: Manufacturer ID (5 = REV Robotics)
+//   Bits 15-10: API Class (status frame number)
+//   Bits 9-6:   API Index
+//   Bits 5-0:   Device CAN ID (0-63)
+//
+// Base IDs shown below assume device CAN ID = 0. Actual arbitration IDs
+// will have the device ID OR'd into bits 5-0.
+//
+// Reference: REV SPARK MAX Software Reference Manual
+
+// Periodic Status 0 - Applied Output & Faults
+// Base arbitration ID: 0x02051800 (device type=2, mfg=5, api_class=6, api_index=0)
+BO_ 0x02051800 Periodic_Status_0: 8 SparkMax
+ SG_ AppliedOutput : 0|16@1- (0.0001,0) [-1|1] "duty_cycle"
+ SG_ Faults : 16|16@1+ (1,0) [0|65535] ""
+ SG_ StickyFaults : 32|16@1+ (1,0) [0|65535] ""
+ SG_ IsFollower : 48|1@1+ (1,0) [0|1] ""
+ SG_ IsInverted : 49|1@1+ (1,0) [0|1] ""
+
+// Periodic Status 1 - Velocity, Temperature, Voltage, Current
+// Base arbitration ID: 0x02051840 (device type=2, mfg=5, api_class=6, api_index=1)
+BO_ 0x02051840 Periodic_Status_1: 8 SparkMax
+ SG_ Velocity : 0|32@1- (1,0) [-2147483648|2147483647] "rpm"
+ SG_ Temperature : 32|8@1+ (1,0) [0|255] "degC"
+ SG_ BusVoltage : 40|12@1+ (0.01,0) [0|40.95] "V"
+ SG_ OutputCurrent : 52|12@1+ (0.0625,0) [0|255.9375] "A"
+
+// Periodic Status 2 - Position & IAccum
+// Base arbitration ID: 0x02051880 (device type=2, mfg=5, api_class=6, api_index=2)
+BO_ 0x02051880 Periodic_Status_2: 8 SparkMax
+ SG_ Position : 0|32@1- (1,0) [-2147483648|2147483647] "rotations"
+ SG_ IAccum : 32|32@1- (1,0) [-2147483648|2147483647] ""
+
+// Periodic Status 3 - Analog Sensor
+// Base arbitration ID: 0x020518C0 (device type=2, mfg=5, api_class=6, api_index=3)
+BO_ 0x020518C0 Periodic_Status_3: 8 SparkMax
+ SG_ AnalogVoltage : 0|10@1+ (0.001,0) [0|3.3] "V"
+ SG_ AnalogVelocity : 10|22@1- (1,0) [-2097152|2097151] "rpm"
+ SG_ AnalogPosition : 32|32@1- (1,0) [-2147483648|2147483647] "rotations"
+
+// Periodic Status 4 - Alternate Encoder
+// Base arbitration ID: 0x02051900 (device type=2, mfg=5, api_class=6, api_index=4)
+BO_ 0x02051900 Periodic_Status_4: 8 SparkMax
+ SG_ AltEncoderPosition : 0|32@1- (1,0) [-2147483648|2147483647] "rotations"
+ SG_ AltEncoderVelocity : 32|32@1- (1,0) [-2147483648|2147483647] "rpm"
+
+// Periodic Status 5 - Duty Cycle Encoder Position
+// Base arbitration ID: 0x02051940 (device type=2, mfg=5, api_class=6, api_index=5)
+BO_ 0x02051940 Periodic_Status_5: 8 SparkMax
+ SG_ DutyCyclePosition : 0|32@1- (1,0) [-2147483648|2147483647] "rotations"
+ SG_ DutyCycleAbsolutePosition : 32|16@1+ (0.0001,0) [0|1] "rotations"
+
+// Periodic Status 6 - Duty Cycle Encoder Velocity
+// Base arbitration ID: 0x02051980 (device type=2, mfg=5, api_class=6, api_index=6)
+BO_ 0x02051980 Periodic_Status_6: 8 SparkMax
+ SG_ DutyCycleVelocity : 0|32@1- (1,0) [-2147483648|2147483647] "rpm"
+ SG_ DutyCycleFrequency : 32|16@1+ (1,0) [0|65535] "Hz"
+
+// Periodic Status 7 - Additional Data (SPARK Flex specific)
+// Base arbitration ID: 0x020519C0 (device type=2, mfg=5, api_class=6, api_index=7)
+BO_ 0x020519C0 Periodic_Status_7: 8 SparkMax
+ SG_ MotorTemperature : 0|8@1+ (1,0) [0|255] "degC"
+ SG_ AppliedOutputRaw : 8|16@1- (1,0) [-32768|32767] ""
+ SG_ Reserved : 24|40@1+ (1,0) [0|0] ""

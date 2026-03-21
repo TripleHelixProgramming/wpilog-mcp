@@ -61,7 +61,7 @@ public class LogParser {
     var valuesByEntry = new HashMap<String, java.util.List<TimestampedValue>>();
 
     double minTimestamp = Double.MAX_VALUE;
-    double maxTimestamp = Double.MIN_VALUE;
+    double maxTimestamp = Double.NEGATIVE_INFINITY;
     boolean truncated = false;
     var truncationMessage = (String) null;
 
@@ -109,7 +109,11 @@ public class LogParser {
         }
       }
     } catch (IllegalArgumentException e) {
-      if (e.getMessage() != null && e.getMessage().contains("capacity")) {
+      // WPILib throws IllegalArgumentException with "capacity" for truncated logs.
+      // Include fallback match strings in case the message wording changes.
+      String msg = e.getMessage();
+      if (msg != null && (msg.contains("capacity") || msg.contains("truncat")
+              || msg.contains("incomplete") || msg.contains("buffer"))) {
         truncated = true;
         truncationMessage =
             "Log file is truncated (incomplete write). Data up to "
@@ -128,7 +132,7 @@ public class LogParser {
         entriesByName,
         valuesByEntry,
         minTimestamp == Double.MAX_VALUE ? 0 : minTimestamp,
-        maxTimestamp == Double.MIN_VALUE ? 0 : maxTimestamp,
+        maxTimestamp == Double.NEGATIVE_INFINITY ? 0 : maxTimestamp,
         truncated,
         truncationMessage);
   }
@@ -160,6 +164,7 @@ public class LogParser {
           byte[] raw = record.getRaw();
           yield decoderRegistry.decodeStruct(type, raw);
         }
+        logger.debug("Unknown WPILib data type: '{}', falling back to raw bytes", type);
         byte[] raw = record.getRaw();
         yield raw.length <= 100 ? BinaryReader.bytesToHex(raw) : "<" + raw.length + " bytes>";
       }

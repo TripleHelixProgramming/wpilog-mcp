@@ -57,8 +57,16 @@ public class MemoryEstimator {
 
       if (values == null || values.isEmpty()) continue;
 
-      // Estimate per-value memory based on type and actual values
-      long perValueMemory = estimateValueMemory(entryInfo.type(), values.get(0).value());
+      // Estimate per-value memory by sampling first, middle, and last values
+      // and using the maximum to avoid underestimating for entries with variable-size values
+      long sample1 = estimateValueMemory(entryInfo.type(), values.get(0).value());
+      long sample2 = values.size() > 2
+          ? estimateValueMemory(entryInfo.type(), values.get(values.size() / 2).value())
+          : sample1;
+      long sample3 = values.size() > 1
+          ? estimateValueMemory(entryInfo.type(), values.get(values.size() - 1).value())
+          : sample1;
+      long perValueMemory = Math.max(sample1, Math.max(sample2, sample3));
       totalMemory += values.size() * perValueMemory;
 
       // Add entry metadata overhead: name string, EntryInfo object, List object, etc.

@@ -6,12 +6,40 @@ plugins {
 }
 
 group = 'org.triplehelix'
-version = '0.4.1'
+version = '0.6.0'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
 }
+
+// Generate Version.java from the Gradle project version — single source of truth.
+// The generated file goes to build/generated/sources so it doesn't conflict with src/.
+def generatedSrcDir = file("${buildDir}/generated/sources/version/java")
+
+tasks.register('generateVersionSource') {
+    def outputFile = file("${generatedSrcDir}/org/triplehelix/wpilogmcp/Version.java")
+    inputs.property('version', project.version)
+    outputs.file(outputFile)
+    doLast {
+        outputFile.parentFile.mkdirs()
+        outputFile.text = """\
+package org.triplehelix.wpilogmcp;
+
+/**
+ * Auto-generated from build.gradle version property.
+ * Do not edit — change the version in build.gradle instead.
+ */
+public final class Version {
+  public static final String VERSION = "${project.version}";
+  private Version() {}
+}
+"""
+    }
+}
+
+sourceSets.main.java.srcDir generatedSrcDir
+compileJava.dependsOn generateVersionSource
 
 jacoco {
     toolVersion = "0.8.11"
@@ -45,6 +73,9 @@ dependencies {
 
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
+
+    // Binary serialization for disk cache
+    implementation 'org.msgpack:msgpack-core:0.9.8'
 
     // Logging
     implementation 'org.slf4j:slf4j-api:2.0.13'
@@ -124,7 +155,9 @@ tasks.register('stressTest') {
     doLast {
         // MCP configuration file locations to scan
         def configLocations = [
-            // Claude Code CLI settings (primary location)
+            // Project-local .mcp.json (highest priority — same config Claude Code uses)
+            new File(projectDir, '.mcp.json'),
+            // Claude Code CLI settings
             new File(System.getProperty('user.home'), '.claude/settings.json'),
             // Claude Desktop (macOS)
             new File(System.getProperty('user.home'), 'Library/Application Support/Claude/claude_desktop_config.json'),
@@ -330,6 +363,8 @@ No log directory specified. Please provide one using:
                 args '--select-class=org.triplehelix.wpilogmcp.integration.StressTest',
                      '--details=verbose',
                      '--disable-banner'
+
+                maxHeapSize = '4g'
 
                 systemProperty 'stress.logdir', logDir
                 systemProperty 'wpilib.natives.path', "${buildDir}/testnatives"

@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Reference
 
-Complete documentation for all 39 tools available in wpilog-mcp.
+Complete documentation for all 46 tools available in wpilog-mcp.
 
 ## Table of Contents
 
@@ -14,8 +14,9 @@ Complete documentation for all 39 tools available in wpilog-mcp.
   - [get_statistics](#get_statistics)
   - [compare_entries](#compare_entries)
   - [get_types](#get_types)
-  - [list_struct_types](#list_struct_types) *(new)*
-  - [health_check](#health_check) *(new)*
+  - [list_struct_types](#list_struct_types)
+  - [health_check](#health_check)
+  - [get_game_info](#get_game_info)
 - [Multi-Log Management](#multi-log-management)
   - [list_loaded_logs](#list_loaded_logs)
   - [set_active_log](#set_active_log)
@@ -35,6 +36,7 @@ Complete documentation for all 39 tools available in wpilog-mcp.
   - [can_health](#can_health)
   - [compare_matches](#compare_matches)
   - [get_code_metadata](#get_code_metadata)
+  - [moi_regression](#moi_regression)
 - [TBA Integration](#tba-integration)
   - [get_tba_status](#get_tba_status)
 - [Export Tools](#export-tools)
@@ -42,13 +44,20 @@ Complete documentation for all 39 tools available in wpilog-mcp.
   - [generate_report](#generate_report)
 - [FRC Domain-Specific Tools](#frc-domain-specific-tools)
   - [get_ds_timeline](#get_ds_timeline)
-  - [analyze_vision](#analyze_vision) *(enhanced)*
-  - [profile_mechanism](#profile_mechanism) *(enhanced)*
-  - [analyze_auto](#analyze_auto) *(enhanced)*
-  - [analyze_cycles](#analyze_cycles) *(enhanced)*
+  - [analyze_vision](#analyze_vision)
+  - [profile_mechanism](#profile_mechanism)
+  - [analyze_auto](#analyze_auto)
+  - [analyze_cycles](#analyze_cycles)
   - [analyze_replay_drift](#analyze_replay_drift)
-  - [analyze_loop_timing](#analyze_loop_timing) *(new)*
-  - [analyze_can_bus](#analyze_can_bus) *(new)*
+  - [analyze_loop_timing](#analyze_loop_timing)
+  - [analyze_can_bus](#analyze_can_bus)
+  - [predict_battery_health](#predict_battery_health)
+- [RevLog Tools](#revlog-tools)
+  - [list_revlog_signals](#list_revlog_signals)
+  - [get_revlog_data](#get_revlog_data)
+  - [sync_status](#sync_status)
+  - [set_revlog_offset](#set_revlog_offset)
+  - [wait_for_sync](#wait_for_sync)
 
 ---
 
@@ -323,7 +332,15 @@ Get system health status including JVM memory usage, loaded log count, cache mem
   - `loadedLogCount`: Number of logs in cache
 - `_execution_time_ms`: Tool execution time in milliseconds
 
-**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `estimationAccuracy` field helps validate memory estimation heuristics. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
+**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `disk_cache` section shows persistent cache status. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
+
+### `get_game_info`
+Get year-specific FRC game information (match timing, scoring values, field geometry, game pieces, and analysis hints). Use this to understand the context of a log file: what the match phases are, what scoring actions look like, and what mechanisms to expect. Defaults to the current season if no year is specified.
+
+**Parameters:**
+- `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
+
+**Returns:** Game name, match timing with shift details, scoring values, field geometry, game pieces, typical mechanisms, and analysis hints. Returns error with available seasons list if the requested season is not found.
 
 ---
 
@@ -492,58 +509,59 @@ Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) 
 ```
 
 ### `get_match_phases`
-Auto-detect FRC match phases based on standard timing. Attempts to find the actual match start from DriverStation "Enabled" entries; falls back to log timestamps if not found.
+Detect match phases from DriverStation/FMS data in the log. Phases are derived from actual DS mode transitions (Enabled, Autonomous, Teleop), not hardcoded durations, so they reflect the real match regardless of game year.
 
-**Phases:**
-- **Autonomous**: First 15 seconds (0-15s from match start)
-- **Teleop**: 15-135 seconds from match start
-- **Endgame**: Last 15 seconds of teleop (120-135s from match start)
+**How it works:**
+- Looks for DriverStation entries containing "Enabled" and "Autonomous" mode flags
+- Detects auto→teleop transition from the actual boolean state change
+- Match start/end come from enable/disable transitions
+- If DriverStation data is not present in the log, returns a warning instead of guessing
 
 **Parameters:** None
 
-**Returns:** Time ranges for each phase with start/end timestamps and durations
+**Returns:** Time ranges for detected phases, match duration, and source indicator
+
+**Data Quality Notes:**
+- Phases are only reported when supported by actual log data — no assumptions about game timing
+- The `source` field indicates where phase data came from ("DriverStation" or "none")
+- If only enable/disable is found but not autonomous/teleop mode, reports "enabled" phase with a warning
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "log_start": 0.0,
-  "log_end": 154.32,
-  "log_duration": 154.32,
+  "log_duration": 160.5,
   "phases": {
     "autonomous": {
-      "start": 0.0,
-      "end": 15.0,
+      "start": 3.2,
+      "end": 18.2,
       "duration": 15.0,
-      "description": "Autonomous period (first 15 seconds)"
+      "description": "Autonomous"
     },
     "teleop": {
-      "start": 15.0,
-      "end": 135.0,
-      "duration": 120.0,
-      "description": "Teleop period (15-135 seconds)"
-    },
-    "endgame": {
-      "start": 120.0,
-      "end": 135.0,
-      "duration": 15.0,
-      "description": "Endgame period (last 15 seconds)"
+      "start": 18.2,
+      "end": 153.2,
+      "duration": 135.0,
+      "description": "Teleop"
     }
   },
-  "hint": "Use read_entry with start_time/end_time to analyze data within a specific phase"
+  "source": "DriverStation",
+  "match_duration": 150.0,
+  "auto_duration": 15.0,
+  "teleop_duration": 135.0
 }
 ```
 
 ### `find_peaks`
-Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are sorted by prominence (how much they stand out from surrounding values).
+Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are sorted by height difference (how much they stand out from neighboring values).
 
 **Parameters:**
 - `name` (required): Entry name to analyze (must be numeric type)
 - `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
-- `prominence` (optional): Minimum prominence (height difference from neighbors) to count as a peak. Filters out noise
+- `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
 
-**Returns:** Lists of maxima and/or minima sorted by prominence (most prominent first)
+**Returns:** Lists of maxima and/or minima with height difference from neighbors
 
 **Example Response:**
 ```json
@@ -556,7 +574,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
     {
       "timestamp_sec": 2.34,
       "value": 12.89,
-      "prominence": 0.45,
+      "height_diff": 0.45,
       "index": 117
     }
   ],
@@ -565,7 +583,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
     {
       "timestamp_sec": 89.45,
       "value": 10.23,
-      "prominence": 1.2,
+      "height_diff": 1.2,
       "index": 4472
     }
   ]
@@ -684,13 +702,13 @@ Analyze swerve drive module performance. Searches for entries containing SwerveM
 Analyze power distribution (PDP/PDH) data. Finds battery voltage entries, per-channel current entries, and total current. Assesses brownout risk based on minimum voltage.
 
 **Brownout Risk Levels:**
-- **HIGH**: Voltage dropped below brownout threshold (default 7.0V)
+- **HIGH**: Voltage dropped below brownout threshold
 - **MODERATE**: Voltage within 1V of threshold
 - **LOW**: Voltage stayed above threshold + 1V
 
 **Parameters:**
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
-- `brownout_threshold` (optional): Voltage threshold for brownout warning (default 7.0V)
+- `brownout_threshold` (optional): Voltage threshold for brownout warning (default 6.8V for roboRIO 1; set to 6.3V for roboRIO 2)
 
 **Returns:** Voltage analysis (min/max/avg), per-channel current statistics sorted by max current, and brownout risk assessment
 
@@ -704,7 +722,7 @@ Analyze power distribution (PDP/PDH) data. Finds battery voltage entries, per-ch
     "max_voltage": 12.89,
     "avg_voltage": 11.87,
     "samples_below_threshold": 0,
-    "brownout_threshold": 7.0,
+    "brownout_threshold": 6.8,
     "brownout_risk": "LOW"
   },
   "channel_analysis": [
@@ -833,6 +851,37 @@ Extract code metadata from the log. WPILib and AdvantageKit typically log Git in
   ]
 }
 ```
+
+---
+
+### `moi_regression`
+Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a DC-motor-driven mechanism using OLS regression on logged velocity and current.
+
+**Physics model:** `G × motor_count × kt × I = J × α + B × ω`
+
+**Parameters:**
+- `velocity_entry` (string, **required**): Entry path for mechanism velocity (rad/s, or m/s if `wheel_radius` given)
+- `current_entry` (string, **required**): Entry path for motor current (A)
+- `kt` (number, **required**): Motor torque constant (Nm/A). Kraken X60=0.01940, NEO Vortex=0.01706, NEO 550=0.0108
+- `gear_ratio` (number, **required**): Overall gear ratio from motor to output shaft
+- `motor_count` (integer, default 1): Number of motors in parallel
+- `wheel_radius` (number): Wheel radius (m) for converting linear velocity to angular
+- `applied_volts_entry` (string): Entry for applied voltage, used to recover torque sign when current is always non-negative (TalonFX/SparkMax)
+- `start_time` / `end_time` (number): Analysis time window
+- `alpha_threshold` (number, default 1.0): Min |α| (rad/s²) to include in OLS
+- `smooth_window` (integer, default 2): Moving-average half-width for velocity smoothing
+
+**Returns:**
+- `J_kg_m2`: Estimated moment of inertia
+- `B_Nm_s_per_rad`: Estimated viscous damping coefficient
+- `r_squared`: Uncentered R² goodness-of-fit (appropriate for no-intercept model)
+- `n_samples_used` / `n_samples_total`: Sample counts
+- `warnings`: Diagnostic warnings (negative J, low R², few samples)
+
+**Notes:**
+- Uses uncentered R² (`1 - SS_res / Σy²`) since the physics model has no intercept term. Standard centered R² is mathematically invalid for regression through the origin.
+- Samples where current or voltage interpolation returns null (e.g., when a log starts later than the velocity log) are skipped rather than zero-filled, preventing silent corruption of the OLS fit.
+- Provide `applied_volts_entry` when using motor controllers that report unsigned current (TalonFX, SparkMax) so torque direction can be recovered from voltage sign.
 
 ---
 
@@ -981,7 +1030,7 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 **Parameters:**
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
-- `brownout_threshold` (optional): Voltage threshold for brownout detection (default: 7.0V)
+- `brownout_threshold` (optional): Voltage threshold for brownout detection (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
 
 **Returns:** Chronologically sorted list of events with category, type, timestamp, and source entry
 
@@ -1362,6 +1411,7 @@ Analyze robot code loop timing performance. Detects loop overruns (> 20ms), meas
 - `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20ms for standard 50Hz loop)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
+- `unit` (optional): Unit of loop time values: `"ms"`, `"s"`, or `"auto"` (default). Auto-detect uses the median value: if median < 1.0, assumes seconds and converts to milliseconds.
 
 **Searches for entries containing:**
 - Loop timing: `loopTime`, `cycleTime`, `scanTime`, `dt`, `period`
@@ -1497,3 +1547,427 @@ Analyze CAN bus health, utilization, and error rates. Monitors bus loading and d
 - Sensor reading timeouts
 - "CAN timeout" errors in Driver Station
 - Unreliable device communication
+
+### `predict_battery_health`
+Analyze battery voltage and current draw to predict brownout risk and estimate battery health. Returns a health score (0–100), risk level, voltage statistics, recovery analysis, and actionable recommendations.
+
+**Parameters:**
+- `start_time` (optional): Start timestamp in seconds
+- `end_time` (optional): End timestamp in seconds
+- `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
+- `brownout_threshold` (optional): Brownout voltage threshold (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
+- `warning_threshold` (optional): Warning voltage threshold (default: 9.0V)
+
+**Health Score Formula (0–100):**
+The health score starts at 100 and deducts points for detected issues:
+
+| Factor | Penalty | Rationale |
+|--------|---------|-----------|
+| Avg voltage < 88% of nominal (≈11.1V) | Up to 18 pts (deficit × 150) | Normal under-load sag is 87–91%; below 88% approaches brownout territory |
+| Each brownout event | 20 pts each | Indicates serious power delivery issues |
+| Each warning-level sag event | 5 pts each | Cumulative wear indicator |
+| Slow voltage recovery (>0.5s avg) | Up to 20 pts | Suggests high internal resistance (aging battery) |
+| Min voltage < 10V | Up to 30 pts | Approaching critical failure territory |
+
+Brownout detection uses 0.2V hysteresis — voltage must rise 0.2V above the threshold before a brownout is considered ended. This prevents noisy connections from inflating event counts.
+
+**Note:** This score provides useful relative ranking between batteries. Absolute values should not be the sole basis for replacement decisions — also consider battery age, connector condition, and wire gauge.
+
+**Risk Levels:** MINIMAL (score ≥ 80), LOW (60–79), MODERATE (30–59), HIGH (score < 30 or min voltage < warning threshold), CRITICAL (min voltage < brownout threshold)
+
+**Returns:** Health score, risk level, voltage statistics, brownout event details, recovery analysis, and recommendations
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "health_score": 72,
+  "risk_level": "LOW",
+  "voltage_stats": {
+    "min_volts": 10.2,
+    "max_volts": 12.8,
+    "avg_volts": 11.9,
+    "voltage_sag": 2.4
+  },
+  "brownout_events": 0,
+  "warning_events": 3,
+  "recommendations": ["Consider battery replacement - health declining"],
+  "data_quality": { "sample_count": 7500, "quality_score": 0.92 }
+}
+```
+
+### `get_game_info`
+Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
+
+**Parameters:**
+- `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
+
+**Bundled game data:** 2026 REBUILT (from official game manual TU17)
+
+**Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values (fuel, tower, ranking points), field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "season": 2026,
+  "game_name": "REBUILT",
+  "match_timing": {
+    "auto_duration_sec": 20,
+    "teleop_duration_sec": 140,
+    "total_duration_sec": 160,
+    "endgame_duration_sec": 30,
+    "shifts": { "auto": {"start_sec": 0, "end_sec": 20}, "..." : "..." }
+  },
+  "scoring": {
+    "match_points": { "auto": {"fuel_active_hub": 1, "tower_level_1": 15}, "..." : "..." },
+    "ranking_points": { "energized_rp": {"regional_threshold": 100}, "..." : "..." }
+  },
+  "analysis_hints": {
+    "endgame_activity": "Tower climbing attempts in final 30 seconds",
+    "fuel_context": "100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP"
+  }
+}
+```
+
+**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API.
+
+---
+
+## Response Metadata
+
+All analytical tools (15+) include two metadata sections in their responses that help LLMs calibrate their confidence when interpreting results.
+
+### `data_quality`
+
+Computed from the primary data entry's timestamped values. Includes:
+
+| Field | Description |
+|-------|-------------|
+| `sample_count` | Number of data points |
+| `time_span_seconds` | Duration of the data |
+| `gap_count` | Number of data gaps (intervals > 5× the median sample interval) |
+| `max_gap_ms` | Largest gap in milliseconds (only present if gaps > 0) |
+| `nan_filtered` | Count of NaN/Infinity values filtered (only present if > 0) |
+| `effective_sample_rate_hz` | Actual sample rate based on median interval |
+| `quality_score` | Composite score 0.0–1.0 (see formula below) |
+
+**Quality Score Formula:**
+```
+score = 1.0
+  - 0.3 × min(gap_count / 20, 1)       // Gaps: 20+ gaps = full penalty
+  - 0.2 × min(nan_count / total, 1)     // NaN: ratio of non-finite values
+  - 0.3 × (n<100 ? 1 : n<500 ? 0.5 : 0) // Samples: statistical confidence
+  - 0.2 × min(jitter / median_dt, 1)    // Jitter: timing irregularity
+```
+
+**Confidence levels** derived from quality score:
+- `"high"` (> 0.8): Reliable data, results can be stated with confidence
+- `"moderate"` (0.5–0.8): Usable data, note caveats in analysis
+- `"low"` (< 0.5): Poor data, results should be treated as preliminary
+
+### `server_analysis_directives`
+
+Auto-generated LLM guidance based on data quality issues detected:
+
+| Field | Description |
+|-------|-------------|
+| `confidence_level` | "high", "moderate", or "low" |
+| `sample_context` | Human-readable summary (e.g., "Based on 4500 samples over 150.0 seconds") |
+| `interpretation_guidance` | Array of warnings about data quality issues detected |
+| `suggested_followup` | Array of recommended next tools to call |
+
+Auto-generated guidance triggers:
+- Sample count < 100 → "Low sample count" warning
+- Gap count > 5 → "Data gaps detected" warning
+- NaN values present → "Non-finite values filtered" warning
+- Time span < 10 seconds → "Short time span" warning
+
+---
+
+## RevLog Tools
+
+REV log (.revlog) files contain CAN bus data from SPARK MAX/Flex motor controllers. These are typically recorded on the roboRIO by REV's logging library in your robot code, though they can also be captured by REV Hardware Client on a connected laptop. These tools allow you to analyze REV motor controller data synchronized with your wpilog timestamps.
+
+### How Timestamp Synchronization Works
+
+The fundamental challenge: `.wpilog` files timestamp data using the **roboRIO's FPGA hardware clock** (microseconds since FPGA boot), while `.revlog` files use **CLOCK_MONOTONIC** (microseconds since system boot) on whatever device recorded them — usually the roboRIO itself, or a laptop running REV Hardware Client. Even when both clocks run on the same roboRIO, the FPGA clock and the Linux monotonic clock are independent sources that start at different times and may run at slightly different rates.
+
+wpilog-mcp solves this with a **two-phase synchronization algorithm**:
+
+#### Phase 1: Coarse Alignment (seconds-level accuracy)
+
+The wpilog contains periodic `systemTime` entries that map FPGA timestamps to UTC wall-clock time. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog` → March 20, 2026 at 2:30:52 PM local time). By comparing these, we establish an initial offset estimate accurate to within a few seconds.
+
+This step can fail if: the recording device's wall clock was significantly wrong (e.g., no NTP sync on the roboRIO or laptop), or `systemTime` entries are missing from the wpilog.
+
+#### Phase 2: Fine Alignment via Cross-Correlation (millisecond accuracy)
+
+Both logs record overlapping physical quantities — for example, the robot code logs motor output duty cycle to the wpilog, and the SPARK MAX independently records its applied output in the revlog. These are the same physical signal observed through different clocks.
+
+The algorithm:
+1. **Signal matching**: Identifies candidate pairs (e.g., `/drive/frontLeft/output` ↔ `SparkMax_1/appliedOutput`) using naming heuristics and optional CAN ID hints
+2. **Resampling**: Both signals are resampled to a uniform 100 Hz rate using linear interpolation. For long recordings, a **high-variance window search** selects the most active portion of the signal (important when logs start with minutes of the robot disabled)
+3. **Cross-correlation**: For each candidate pair, the [Pearson correlation coefficient](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient) is computed at every integer sample lag within a ±60-second search window centered on the coarse estimate. Pearson correlation is invariant to signal scaling and DC offset, making it robust when comparing duty cycle against voltage or velocity
+4. **Sub-sample refinement**: Parabolic interpolation on the correlation peak achieves sub-millisecond accuracy from 100 Hz data
+5. **Consensus**: The median offset across all strong pairs (correlation > 0.7) is used as the final estimate. Confidence is scored from three factors: average correlation strength (0–0.4), number of agreeing pairs (0–0.3), and inter-pair agreement measured by offset standard deviation (0–0.3)
+
+#### Clock Drift Compensation (for recordings > 15 minutes)
+
+For long recordings, the FPGA clock and the monotonic clock may drift at different rates — typically 10–50 ms per hour, even when both run on the same roboRIO. The synchronizer detects this by splitting the signal into halves, computing independent offsets on each half, and fitting a linear drift rate (nanoseconds per second). When drift is detected, all timestamp conversions apply a correction:
+
+```
+fpga_time = revlog_time + offset + (revlog_time − reference_time) × drift_rate
+```
+
+The `sync_status` tool reports drift rate when detected.
+
+### Confidence Levels
+
+| Confidence Level | Estimated Accuracy | How It's Determined |
+|-----------------|-------------------|---------------------|
+| **HIGH** | 1–5 ms | Multiple signal pairs agree within 5 ms, correlation > 0.9 |
+| **MEDIUM** | 5–50 ms | Some signals correlate well, minor disagreement between pairs |
+| **LOW** | 50–5000 ms | Weak correlation or significant disagreement between signals |
+| **FAILED** | Unknown | Could not establish reliable synchronization |
+
+**Always check `sync_confidence` before using REV log data for precise timing analysis.** If automatic synchronization produces poor results, use `set_revlog_offset` to provide a known-good offset manually.
+
+### Binary Parsing Robustness
+
+The revlog parser includes guards against corrupted or truncated files:
+- **Record limit**: Stops after 10 million records to prevent OOM on corrupt files
+- **Malformed record recovery**: Individual corrupt records are skipped without aborting the parse
+- **Negative timestamp rejection**: Records with invalid timestamps are discarded
+- **Truncated CAN frame handling**: Frames shorter than 8 bytes are silently skipped
+
+### `list_revlog_signals`
+List all available signals from synchronized REV log files. Shows signal names, device info, sample counts, and synchronization confidence.
+
+**Parameters:**
+- `device_filter` (optional): Filter signals by device key substring (e.g., "SparkMax_1")
+- `signal_filter` (optional): Filter signals by signal name substring (e.g., "velocity")
+
+**Returns:** List of available signals with sync status and metadata
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "signal_count": 12,
+  "revlog_count": 1,
+  "overall_sync_confidence": "high",
+  "signals": [
+    {
+      "key": "REV/SparkMax_1/appliedOutput",
+      "device": "SparkMax_1",
+      "signal": "appliedOutput",
+      "unit": "duty_cycle",
+      "sample_count": 7500,
+      "can_bus": "rio",
+      "sync_confidence": "high"
+    },
+    {
+      "key": "REV/SparkMax_1/velocity",
+      "device": "SparkMax_1",
+      "signal": "velocity",
+      "unit": "rpm",
+      "sample_count": 7500,
+      "can_bus": "rio",
+      "sync_confidence": "high"
+    },
+    {
+      "key": "REV/SparkFlex_5/outputCurrent",
+      "device": "SparkFlex_5",
+      "signal": "outputCurrent",
+      "unit": "A",
+      "sample_count": 5000,
+      "can_bus": "rio",
+      "sync_confidence": "high"
+    }
+  ],
+  "warnings": [],
+  "_metadata": {
+    "timing_accuracy_ms": "1-5"
+  }
+}
+```
+
+**Available Signals (from DBC definitions):**
+- `appliedOutput` - Motor output duty cycle (-1 to 1)
+- `velocity` - Motor velocity in RPM
+- `position` - Motor position in rotations
+- `busVoltage` - Bus voltage in V
+- `outputCurrent` - Motor current in A
+- `temperature` - Motor controller temperature in °C
+- `faults` / `stickyFaults` - Fault flags
+
+### `get_revlog_data`
+Get data from a REV log signal with timestamps converted to FPGA time. Similar to `read_entry` but for REV motor controller data.
+
+**Parameters:**
+- `signal_key` (required): Signal key from `list_revlog_signals` (e.g., "REV/SparkMax_1/appliedOutput")
+- `start_time` (optional): Start timestamp in seconds (FPGA time)
+- `end_time` (optional): End timestamp in seconds (FPGA time)
+- `limit` (optional): Maximum samples to return (default: 1000)
+- `include_stats` (optional): Include basic statistics (min, max, mean)
+
+**Returns:** Timestamped data array with optional statistics
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "signal_key": "REV/SparkMax_1/velocity",
+  "sample_count": 100,
+  "total_samples": 7500,
+  "sync_confidence": "high",
+  "data": [
+    {"timestamp": 15.02, "value": 5200.5},
+    {"timestamp": 15.04, "value": 5198.3},
+    {"timestamp": 15.06, "value": 5201.1}
+  ],
+  "statistics": {
+    "min": 0.0,
+    "max": 5500.2,
+    "mean": 4200.3,
+    "count": 100
+  },
+  "_metadata": {
+    "timing_accuracy_ms": "1-5"
+  }
+}
+```
+
+**Use Cases:**
+- Compare motor commanded output (wpilog) vs actual output (revlog)
+- Analyze motor velocity/position response
+- Validate PID controller tuning with actual motor data
+- Debug motor controller communication issues
+
+### `sync_status`
+Get detailed synchronization status for all synchronized REV log files. Shows confidence levels, timing offsets, and the signal pairs used for correlation.
+
+**Parameters:**
+- `include_signal_pairs` (optional): Include details about which signal pairs were used for correlation
+
+**Returns:** Detailed sync status with confidence assessment and offset information
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "synchronized": true,
+  "revlog_count": 1,
+  "overall_confidence": "high",
+  "overall_confidence_value": 1.0,
+  "revlogs": [
+    {
+      "can_bus": "rio",
+      "path": "/logs/REV_20260320_143052.revlog",
+      "device_count": 4,
+      "signal_count": 24,
+      "sync": {
+        "method": "CROSS_CORRELATION",
+        "confidence": 0.95,
+        "confidence_level": "high",
+        "offset_microseconds": 523450,
+        "offset_milliseconds": 523.45,
+        "offset_seconds": 0.52345,
+        "explanation": "Good sync via cross-correlation of 3 signal pairs",
+        "successful": true,
+        "drift_rate_ns_per_sec": 12.5,
+        "drift_rate_ms_per_hour": 45.0,
+        "reference_time_sec": 150.0
+      },
+      "signal_pairs": [
+        {
+          "wpilog_entry": "/drive/frontLeft/output",
+          "revlog_signal": "SparkMax_1/appliedOutput",
+          "correlation": 0.95,
+          "estimated_offset_us": 523000,
+          "samples_used": 5000
+        }
+      ]
+    }
+  ],
+  "_metadata": {
+    "timing_accuracy_ms": "1-5",
+    "confidence_description": "Multiple signals agree within 5ms, correlation > 0.9"
+  }
+}
+```
+
+**Sync Methods:**
+- `CROSS_CORRELATION`: Full cross-correlation alignment (best accuracy)
+- `SYSTEM_TIME_ONLY`: Coarse alignment from system time only (fallback)
+- `USER_PROVIDED`: Manual offset provided by user
+- `FAILED`: Could not establish synchronization
+
+**Troubleshooting Low Confidence:**
+1. Ensure wpilog and revlog were recorded during the same time period
+2. Check that matching signals exist (e.g., motor outputs logged in both)
+3. Try providing CAN ID hints to improve signal matching
+4. If sync fails, verify motor controllers were connected and reporting data
+5. Use `set_revlog_offset` to manually provide a known offset if automatic sync fails
+
+**Example Workflow:**
+```
+1. load_log("/logs/match.wpilog")           # Auto-syncs revlogs in same dir
+2. sync_status()                             # Check sync confidence
+3. list_revlog_signals()                     # See available signals
+4. get_revlog_data(signal_key="REV/SparkMax_1/appliedOutput", start_time=15.0, end_time=30.0)
+5. compare with read_entry(name="/drive/frontLeft/output", start_time=15.0, end_time=30.0)
+```
+
+### `set_revlog_offset`
+Manually set the synchronization offset for a REV log file, overriding automatic synchronization. Use this when automatic sync fails, produces incorrect results, or when you have determined the correct offset through other means (e.g., by visually aligning a known event in both logs).
+
+**Parameters:**
+- `offset_ms` (required): Time offset in milliseconds to add to revlog timestamps to convert them to FPGA time. Example: if a revlog event appears 500ms after the same event in wpilog, set `offset_ms` to -500
+- `can_bus` (optional): CAN bus name to apply offset to (e.g., "rio"). If omitted, applies to the first/only revlog
+
+**Returns:** Confirmation with previous and new offset details
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "can_bus": "rio",
+  "offset_ms": -523.5,
+  "offset_us": -523500,
+  "previous_offset_ms": -480.2,
+  "previous_method": "CROSS_CORRELATION",
+  "new_method": "USER_PROVIDED"
+}
+```
+
+**When to use this:**
+- Automatic synchronization reports LOW or FAILED confidence
+- You know the exact offset from a distinctive event visible in both logs (e.g., a motor stall, a sudden stop)
+- The automatic offset produces visibly misaligned data when comparing corresponding wpilog/revlog signals
+- The recording started with the robot disabled for a long period and correlation was poor
+
+### `wait_for_sync`
+Wait for background RevLog synchronization to complete. RevLog synchronization runs asynchronously after `load_log` returns, so revlog data may not be immediately available. Call this tool if you need revlog data right away. Returns instantly if sync is already done or no revlogs are present.
+
+**Parameters:**
+- `timeout_ms` (optional): Maximum time to wait in milliseconds (default: 30000)
+
+**Returns:** Completion status and revlog count
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "completed": true,
+  "was_in_progress": true,
+  "revlog_count": 2,
+  "synchronized": true
+}
+```
+
+**When to use this:**
+- After `load_log`, when you need to immediately query revlog signals
+- When `sync_status` or `list_revlog_signals` shows `sync_in_progress: true`
+- Not needed if you call other tools first — sync usually completes within a few seconds

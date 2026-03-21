@@ -322,9 +322,7 @@ public class LogDirectory {
     // (?:_([a-z]+)(\d+))?                - Optional match: type + number (groups 8-9, e.g., "qm42")
     // (?:_sim)?                          - Optional simulation indicator
     // \.wpilog$                          - File extension
-    var regex = "^[a-z]+_(\\d{2})-(\\d{2})-(\\d{2})_(\\d{2})-(\\d{2})-(\\d{2})_([a-z0-9]+)(?:_([a-z]+)(\\d+))?(?:_sim)?\\.wpilog$";
-    var pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
-    var matcher = pattern.matcher(filename);
+    var matcher = WPILOG_FILENAME_PATTERN.matcher(filename);
     
     if (!matcher.matches()) return null;
 
@@ -367,12 +365,12 @@ public class LogDirectory {
     try { return Files.size(path); } catch (IOException e) { return 0; }
   }
 
-  public record LogFileInfo(String path, String filename, String eventName, String matchType, 
-                            Integer matchNumber, Integer teamNumber, long lastModified, long fileSize, 
+  public record LogFileInfo(String path, String filename, String eventName, String matchType,
+                            Integer matchNumber, Integer teamNumber, long lastModified, long fileSize,
                             Long logCreationTime) {
-    
+
     /** Overloaded constructor for backwards compatibility with tests. */
-    public LogFileInfo(String path, String filename, String eventName, String matchType, 
+    public LogFileInfo(String path, String filename, String eventName, String matchType,
                        Integer matchNumber, Integer teamNumber, long lastModified, long fileSize) {
       this(path, filename, eventName, matchType, matchNumber, teamNumber, lastModified, fileSize, null);
     }
@@ -391,4 +389,148 @@ public class LogDirectory {
   }
 
   private record CachedLogInfo(LogFileInfo info, long cachedLastModified) {}
+
+  // =====================================================================
+  // RevLog File Discovery
+  // =====================================================================
+
+  /** Pattern to parse WPILOG filenames: teamname_YY-MM-DD_HH-mm-SS_event[_matchtype#][_sim].wpilog */
+  private static final Pattern WPILOG_FILENAME_PATTERN = Pattern.compile(
+      "^[a-z]+_(\\d{2})-(\\d{2})-(\\d{2})_(\\d{2})-(\\d{2})-(\\d{2})_([a-z0-9]+)(?:_([a-z]+)(\\d+))?(?:_sim)?\\.wpilog$",
+      Pattern.CASE_INSENSITIVE);
+
+  /** Pattern to parse REV log filenames: REV_YYYYMMDD_HHMMSS[_busname].revlog */
+  private static final Pattern REVLOG_FILENAME_PATTERN = Pattern.compile(
+      "REV_(\\d{4})(\\d{2})(\\d{2})_(\\d{2})(\\d{2})(\\d{2})(?:_([\\w]+))?\\.revlog$",
+      Pattern.CASE_INSENSITIVE);
+
+  /**
+   * Information about a discovered .revlog file.
+   *
+   * @param path The full path to the file
+   * @param filenameTimestamp The timestamp parsed from the filename (e.g., "20260320_143052")
+   * @param parsedTimestamp The timestamp as a LocalDateTime, or null if parsing failed
+   * @param canBusName The CAN bus name from the filename (e.g., "canivore"), or null
+   * @param fileSize The file size in bytes
+   * @since 0.5.0
+   */
+  public record RevLogFileInfo(
+      Path path,
+      String filenameTimestamp,
+      LocalDateTime parsedTimestamp,
+      String canBusName,
+      long fileSize) {
+
+    /**
+     * Gets the filename without the path.
+     *
+     * @return The filename
+     */
+    public String filename() {
+      return path.getFileName().toString();
+    }
+
+    /**
+     * Gets the timestamp as epoch milliseconds, or null if not available.
+     *
+     * @return Epoch milliseconds, or null
+     */
+    public Long timestampMillis() {
+      if (parsedTimestamp == null) return null;
+      return parsedTimestamp.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    }
+  }
+
+  /**
+   * Lists all available .revlog files in the configured directory.
+   *
+   * <p>RevLog files are CAN bus logs from REV SPARK motor controllers. They use
+   * the naming convention: REV_YYYYMMDD_HHMMSS[_busname].revlog
+   *
+   * @return List of discovered revlog files, sorted by timestamp (newest first)
+   * @throws IOException if the directory cannot be read
+   * @since 0.5.0
+   */
+  public List<RevLogFileInfo> listRevLogFiles() throws IOException {
+    if (!isConfigured()) throw new IOException("Log directory not configured");
+
+    try (var paths = Files.walk(logDirectory, 3)) {
+      var revlogs = paths
+          .filter(Files::isRegularFile)
+          .filter(p -> p.toString().toLowerCase().endsWith(".revlog"))
+          .map(this::extractRevLogInfo)
+          .sorted(Comparator.comparing(
+              RevLogFileInfo::parsedTimestamp,
+              Comparator.nullsLast(Comparator.reverseOrder())))
+          .toList();
+
+      logger.info("Found {} revlog files", revlogs.size());
+      return revlogs;
+    }
+  }
+
+  /**
+   * Finds revlog files that overlap with a given time range.
+   *
+   * <p>This is useful for finding revlogs that correspond to a specific wpilog file.
+   *
+   * @param startTime The start of the time range (epoch millis)
+   * @param endTime The end of the time range (epoch millis)
+   * @param toleranceMinutes Additional minutes to add before/after the range
+   * @return List of matching revlog files
+   * @throws IOException if the directory cannot be read
+   * @since 0.5.0
+   */
+  public List<RevLogFileInfo> findRevLogsInTimeRange(
+      long startTime, long endTime, int toleranceMinutes) throws IOException {
+
+    long toleranceMillis = toleranceMinutes * 60_000L;
+    long rangeStart = startTime - toleranceMillis;
+    long rangeEnd = endTime + toleranceMillis;
+
+    return listRevLogFiles().stream()
+        .filter(r -> {
+          Long ts = r.timestampMillis();
+          if (ts == null) return false;
+          return ts >= rangeStart && ts <= rangeEnd;
+        })
+        .toList();
+  }
+
+  /**
+   * Extracts metadata from a revlog file path.
+   */
+  private RevLogFileInfo extractRevLogInfo(Path path) {
+    var filename = path.getFileName().toString();
+    var matcher = REVLOG_FILENAME_PATTERN.matcher(filename);
+
+    String filenameTimestamp = null;
+    LocalDateTime parsedTimestamp = null;
+    String canBusName = null;
+
+    if (matcher.find()) {
+      try {
+        int year = Integer.parseInt(matcher.group(1));
+        int month = Integer.parseInt(matcher.group(2));
+        int day = Integer.parseInt(matcher.group(3));
+        int hour = Integer.parseInt(matcher.group(4));
+        int minute = Integer.parseInt(matcher.group(5));
+        int second = Integer.parseInt(matcher.group(6));
+
+        filenameTimestamp = matcher.group(1) + matcher.group(2) + matcher.group(3) + "_"
+            + matcher.group(4) + matcher.group(5) + matcher.group(6);
+        parsedTimestamp = LocalDateTime.of(year, month, day, hour, minute, second);
+        canBusName = matcher.group(7); // May be null
+      } catch (Exception e) {
+        logger.debug("Failed to parse revlog filename timestamp: {}", filename);
+      }
+    }
+
+    return new RevLogFileInfo(
+        path,
+        filenameTimestamp,
+        parsedTimestamp,
+        canBusName,
+        getFileSize(path));
+  }
 }

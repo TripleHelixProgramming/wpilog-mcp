@@ -25,6 +25,38 @@ public final class ToolUtils {
   /** JSON serializer with null serialization (important for optional fields). */
   public static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
+  // ==================== LLM INTERPRETATION GUIDANCE (§6.1) ====================
+  // Appended to tool descriptions to nudge LLMs toward calibrated reasoning.
+
+  /** Universal guidance appended to all analytical tools. */
+  public static final String GUIDANCE_UNIVERSAL =
+      "\n\nINTERPRETATION GUIDANCE: Results are raw data, not conclusions. "
+      + "Express findings as possibilities, not certainties. "
+      + "Single-match data cannot establish patterns—recommend cross-match comparison. "
+      + "Consider alternative explanations before attributing causation.";
+
+  /** Additional guidance for statistical tools. */
+  public static final String GUIDANCE_STATISTICAL =
+      " Sample sizes below 100 have high uncertainty. "
+      + "Correlations below |0.7| are weak and may be coincidental.";
+
+  /** Additional guidance for power/battery tools. */
+  public static final String GUIDANCE_POWER =
+      " Voltage drops may indicate power issues, aggressive driving, worn battery, "
+      + "or loose connections. Single brownout events are not necessarily concerning—"
+      + "look for patterns across matches.";
+
+  /** Additional guidance for mechanism/regression tools. */
+  public static final String GUIDANCE_MECHANISM =
+      " Regression estimates depend on data quality and model assumptions. "
+      + "Physical parameters outside typical ranges (negative inertia, negative damping) "
+      + "indicate model or data issues, not actual physics.";
+
+  /** Additional guidance for FRC match analysis tools. */
+  public static final String GUIDANCE_MATCH_ANALYSIS =
+      " Match conditions vary (battery age, field surface, alliance partners). "
+      + "A single match is one sample—do not generalize without cross-match data.";
+
   /** Shared LogManager instance for all tools. */
   private static final LogManager LOG_MANAGER = LogManager.getInstance();
 
@@ -165,51 +197,55 @@ public final class ToolUtils {
 
   /**
    * Gets value at a specific timestamp using linear interpolation.
-   * Only works for numeric values; falls back to ZOH for non-numeric.
+   * Only works for numeric values. Returns null if the target timestamp is
+   * outside the time range of the series (no extrapolation).
+   *
+   * <p>Uses binary search for O(log n) lookup instead of O(n) linear scan.
    *
    * @param values The timestamped values (must be sorted by timestamp)
    * @param targetTimestamp The timestamp to look up
-   * @return The interpolated value at that timestamp
+   * @return The interpolated value at that timestamp, or null if out of bounds
    */
   public static Double getValueAtTimeLinear(List<TimestampedValue> values, double targetTimestamp) {
     if (values == null || values.isEmpty()) {
       return null;
     }
 
-    // Find the two surrounding values
-    var before = (TimestampedValue) null;
-    var after = (TimestampedValue) null;
+    // Reject timestamps outside the series range (no extrapolation)
+    double firstTime = values.get(0).timestamp();
+    double lastTime = values.get(values.size() - 1).timestamp();
+    if (targetTimestamp < firstTime || targetTimestamp > lastTime) {
+      return null;
+    }
 
-    for (int i = 0; i < values.size(); i++) {
-      var tv = values.get(i);
-      if (tv.timestamp() <= targetTimestamp) {
-        before = tv;
+    // Binary search for the insertion point
+    int lo = 0, hi = values.size() - 1;
+    while (lo < hi) {
+      int mid = (lo + hi + 1) >>> 1; // upper-mid to find last <= target
+      if (values.get(mid).timestamp() <= targetTimestamp) {
+        lo = mid;
       } else {
-        after = tv;
-        break;
+        hi = mid - 1;
       }
     }
 
-    // If we have an exact match or only before, return it
-    if (before != null && (after == null || before.timestamp() == targetTimestamp)) {
+    var before = values.get(lo);
+
+    // Exact match or at the last timestamp
+    if (before.timestamp() == targetTimestamp || lo == values.size() - 1) {
       return toDouble(before.value());
     }
 
-    // If we only have after, return it
-    if (before == null && after != null) {
-      return toDouble(after.value());
-    }
-
-    // If we have both, interpolate
-    if (before != null && after != null) {
-      var v1 = toDouble(before.value());
-      var v2 = toDouble(after.value());
-      if (v1 != null && v2 != null) {
-        double t1 = before.timestamp();
-        double t2 = after.timestamp();
-        double fraction = (targetTimestamp - t1) / (t2 - t1);
-        return v1 + (v2 - v1) * fraction;
-      }
+    // Interpolate between before and after
+    var after = values.get(lo + 1);
+    var v1 = toDouble(before.value());
+    var v2 = toDouble(after.value());
+    if (v1 != null && v2 != null) {
+      double t1 = before.timestamp();
+      double t2 = after.timestamp();
+      if (t2 == t1) return v1; // Guard against zero dt
+      double fraction = (targetTimestamp - t1) / (t2 - t1);
+      return v1 + (v2 - v1) * fraction;
     }
 
     return null;
@@ -420,5 +456,41 @@ public final class ToolUtils {
       throw new IllegalArgumentException(paramName + " must be non-negative, got " + value);
     }
     return value;
+  }
+
+  // ==================== DATA QUALITY HELPERS ====================
+
+  /**
+   * Appends data quality and analysis directives to a raw JsonObject response.
+   *
+   * <p>Use this for tools that build responses manually (not via ResponseBuilder).
+   * Merges with any existing warnings array.
+   *
+   * @param result The response JsonObject to augment
+   * @param quality The data quality metrics
+   * @param directives The analysis directives
+   */
+  public static void appendQualityToResult(
+      com.google.gson.JsonObject result,
+      DataQuality quality,
+      AnalysisDirectives directives) {
+    result.add("data_quality", quality.toJson());
+    result.add("server_analysis_directives", directives.toJson());
+
+    if (quality.qualityScore() < 0.5) {
+      String warning = "Low data quality (score: "
+          + String.format("%.2f", quality.qualityScore())
+          + "). Results should be treated as preliminary.";
+
+      // Merge with existing warnings
+      com.google.gson.JsonArray warnings;
+      if (result.has("warnings") && result.get("warnings").isJsonArray()) {
+        warnings = result.getAsJsonArray("warnings");
+      } else {
+        warnings = new com.google.gson.JsonArray();
+      }
+      warnings.add(warning);
+      result.add("warnings", warnings);
+    }
   }
 }

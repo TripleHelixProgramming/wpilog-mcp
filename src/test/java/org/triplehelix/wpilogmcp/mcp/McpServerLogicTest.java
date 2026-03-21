@@ -208,4 +208,57 @@ class McpServerLogicTest {
     assertTrue(output.contains("_execution_time_ms") || output.contains("success"),
         "Tool response should include execution time or success status");
   }
+
+  @Test
+  @DisplayName("server responds to malformed JSON with parse error (§2.6 fix)")
+  void respondsToMalformedJsonWithParseError() throws Exception {
+    // Send garbage that isn't valid JSON, then a shutdown to stop the server
+    var input = "this is not valid json at all!\n"
+              + "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"shutdown\",\"params\":{}}\n";
+
+    System.setIn(new ByteArrayInputStream(input.getBytes()));
+    System.setOut(new PrintStream(outputStream));
+
+    var server = new McpServer();
+
+    executor.submit(() -> {
+      try {
+        server.run();
+      } catch (Exception ignored) {}
+    });
+
+    executor.shutdown();
+    executor.awaitTermination(2, TimeUnit.SECONDS);
+
+    var output = outputStream.toString();
+    // Per JSON-RPC 2.0 §4.2, parse errors must return id:null error with code -32700
+    assertTrue(output.contains("-32700") || output.contains("Parse error"),
+        "Should emit JSON-RPC parse error (-32700) for malformed JSON. Output: " + output);
+  }
+
+  @Test
+  @DisplayName("server version matches Version.VERSION (§2.5 fix)")
+  void serverVersionMatchesVersionClass() throws Exception {
+    var initRequest = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+                    + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":{}}\n";
+
+    System.setIn(new ByteArrayInputStream(initRequest.getBytes()));
+    System.setOut(new PrintStream(outputStream));
+
+    var server = new McpServer();
+
+    executor.submit(() -> {
+      try {
+        server.run();
+      } catch (Exception ignored) {}
+    });
+
+    executor.shutdown();
+    executor.awaitTermination(2, TimeUnit.SECONDS);
+
+    var output = outputStream.toString();
+    assertTrue(output.contains(org.triplehelix.wpilogmcp.Version.VERSION),
+        "Server initialize response should contain version " +
+        org.triplehelix.wpilogmcp.Version.VERSION + ". Output: " + output);
+  }
 }

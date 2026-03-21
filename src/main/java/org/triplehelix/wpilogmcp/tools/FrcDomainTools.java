@@ -54,6 +54,20 @@ public final class FrcDomainTools {
   // ==================== SHARED HELPER METHODS ====================
 
   /**
+   * NIST Type 7 percentile with linear interpolation (same method as StatisticsTools).
+   */
+  private static double interpolatedPercentile(double[] sortedData, double p) {
+    if (sortedData.length == 0) return 0.0;
+    if (sortedData.length == 1) return sortedData[0];
+    double index = p * (sortedData.length - 1);
+    int lower = (int) Math.floor(index);
+    int upper = Math.min((int) Math.ceil(index), sortedData.length - 1);
+    if (lower == upper) return sortedData[lower];
+    double weight = index - lower;
+    return sortedData[lower] * (1 - weight) + sortedData[upper] * weight;
+  }
+
+  /**
    * Calculate the Euclidean distance between two poses (works for Pose2d and Pose3d).
    */
   private static double calculatePoseDistance(java.util.Map<String, Object> pose1, java.util.Map<String, Object> pose2) {
@@ -109,7 +123,7 @@ public final class FrcDomainTools {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addNumberProperty("brownout_threshold", "Voltage threshold for brownout detection (default: 7.0V)", false, 7.0)
+          .addNumberProperty("brownout_threshold", "Voltage threshold for brownout detection (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
           .build();
     }
 
@@ -118,7 +132,7 @@ public final class FrcDomainTools {
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
-      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 7.0);
+      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 6.8);
 
       var events = new ArrayList<JsonObject>();
 
@@ -186,6 +200,9 @@ public final class FrcDomainTools {
               if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
               if (tv.value() instanceof Number num) {
                 double voltage = num.doubleValue();
+                // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
+                // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
+                double hysteresis = 0.2;
                 if (voltage < brownoutThreshold && !inBrownout) {
                   var event = new JsonObject();
                   event.addProperty("timestamp", tv.timestamp());
@@ -195,7 +212,7 @@ public final class FrcDomainTools {
                   event.addProperty("source", entryName);
                   events.add(event);
                   inBrownout = true;
-                } else if (voltage >= brownoutThreshold && inBrownout) {
+                } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
                   var event = new JsonObject();
                   event.addProperty("timestamp", tv.timestamp());
                   event.addProperty("type", "BROWNOUT_END");
@@ -235,7 +252,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Analyze vision system reliability: target acquisition rate, flicker detection, "
-          + "pose discrepancy between vision and odometry, and sudden pose jumps.";
+          + "pose discrepancy between vision and odometry, and sudden pose jumps."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -361,6 +379,16 @@ public final class FrcDomainTools {
         builder.addProperty("jump_count", poseJumps.size());
       }
 
+      // Data quality from first target entry
+      if (!targetValidEntries.isEmpty()) {
+        var tvVals = log.values().get(targetValidEntries.get(0));
+        if (tvVals != null) {
+          var quality = DataQuality.fromValues(tvVals);
+          builder.addDataQuality(quality)
+              .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
+        }
+      }
+
       return builder.build();
     }
   }
@@ -372,7 +400,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Analyze closed-loop mechanism performance: following error (RMSE), settling time, "
-          + "stall detection, and motor temperature profiling.";
+          + "stall detection, and motor temperature profiling."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
 
     @Override
@@ -456,6 +485,20 @@ public final class FrcDomainTools {
         if (!stallEvents.isEmpty()) {
           builder.addData("stall_events", GSON.toJsonTree(stallEvents));
           builder.addProperty("stall_count", stallEvents.size());
+        }
+      }
+
+      // Data quality from measurement entry if available
+      var qualityEntry = measurementEntry != null ? measurementEntry
+          : (velocityEntry != null ? velocityEntry : null);
+      if (qualityEntry != null) {
+        var qVals = log.values().get(qualityEntry);
+        if (qVals != null) {
+          var quality = DataQuality.fromValues(qVals);
+          builder.addDataQuality(quality)
+              .addDirectives(AnalysisDirectives.fromQuality(quality)
+                  .addSingleMatchCaveat()
+                  .addFollowup("Use moi_regression for mechanism inertia estimation"));
         }
       }
 
@@ -617,7 +660,8 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze autonomous routine: identify selected routine, path following error, "
           + "completion time, and phase breakdown. "
-          + "Returns 'no auto period detected' if log does not contain autonomous phase data.";
+          + "Returns 'no auto period detected' if log does not contain autonomous phase data."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -796,7 +840,8 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze game piece handling cycle times with configurable cycle detection modes "
           + "(start-to-start or start-to-end), dead time tracking, and data quality warnings. "
-          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection.";
+          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -991,6 +1036,15 @@ public final class FrcDomainTools {
 
       // Add data quality warnings
       var warnings = detectDataQualityIssues(vals, cycleStartState, cycleEndState, idleState, caseSensitive, startTime, endTime);
+
+      // Warn about incomplete cycles
+      long incompleteCount = cycleDetails.stream()
+          .filter(c -> c.has("incomplete") && c.get("incomplete").getAsBoolean()).count();
+      if (incompleteCount > 0) {
+        warnings.add(incompleteCount + " cycle(s) incomplete (log ended mid-cycle). "
+            + "Exclude from statistical analysis.");
+      }
+
       if (!warnings.isEmpty()) {
         result.add("warnings", GSON.toJsonTree(warnings));
       }
@@ -1112,7 +1166,8 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs.";
+      return "Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs."
+          + GUIDANCE_UNIVERSAL;
     }
 
     @Override
@@ -1162,7 +1217,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Detect when robot code exceeded loop period threshold (default 20ms). "
-          + "Returns violations, statistics, and a health score.";
+          + "Returns violations, statistics, and a health score."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -1171,6 +1227,8 @@ public final class FrcDomainTools {
           .addNumberProperty("threshold_ms", "Loop time threshold in milliseconds (default: 20)", false, 20.0)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
+          .addProperty("unit", "string", "Unit of loop time values: 'ms', 's', or 'auto' (default: 'auto'). "
+              + "Auto-detect uses median value: if median < 1.0, assumes seconds and converts to ms.", false)
           .build();
     }
 
@@ -1178,6 +1236,7 @@ public final class FrcDomainTools {
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
+      var unit = getOptString(arguments, "unit", "auto");
 
       // Find loop time entry
       String loopTimeEntry = null;
@@ -1201,32 +1260,51 @@ public final class FrcDomainTools {
       var violations = new ArrayList<JsonObject>();
       var loopTimes = new ArrayList<Double>();
 
+      // Determine conversion factor based on unit parameter
+      // For "auto", collect raw values first, then detect unit from median
+      boolean needsAutoDetect = "auto".equalsIgnoreCase(unit);
+      double conversionFactor = 1.0; // default: assume ms
+      if ("s".equalsIgnoreCase(unit)) {
+        conversionFactor = 1000.0;
+      }
+
+      // First pass: collect raw values with timestamps for auto-detection
+      record RawSample(double timestamp, double value) {}
+      var rawSamples = new ArrayList<RawSample>();
       for (TimestampedValue tv : values) {
         if (startTime != null && tv.timestamp() < startTime) continue;
         if (endTime != null && tv.timestamp() > endTime) break;
-
         if (tv.value() instanceof Number num) {
-          double loopTimeMs = num.doubleValue();
-
-          // Convert to ms if it looks like it's in seconds (< 1.0 but > 0)
-          if (loopTimeMs < 1.0 && loopTimeMs > 0) {
-            loopTimeMs *= 1000.0;
-          }
-
-          loopTimes.add(loopTimeMs);
-
-          if (loopTimeMs > thresholdMs) {
-            var violation = new JsonObject();
-            violation.addProperty("timestamp", tv.timestamp());
-            violation.addProperty("loop_time_ms", loopTimeMs);
-            violation.addProperty("overage_ms", loopTimeMs - thresholdMs);
-            violations.add(violation);
-          }
+          rawSamples.add(new RawSample(tv.timestamp(), num.doubleValue()));
         }
       }
 
-      if (loopTimes.isEmpty()) {
+      if (rawSamples.isEmpty()) {
         return errorResult("No numeric loop time data found");
+      }
+
+      if (needsAutoDetect) {
+        // Use median to determine unit (robust to outliers)
+        var sortedRaw = rawSamples.stream().mapToDouble(RawSample::value).sorted().toArray();
+        double median = sortedRaw[sortedRaw.length / 2];
+        // Values in 0.001–1.0 range look like seconds (typical: 0.02 for 20ms loop)
+        // Below 0.001 could be fractional ms or corrupt data — leave as-is
+        if (median >= 0.001 && median < 1.0) {
+          conversionFactor = 1000.0; // Values look like seconds, convert to ms
+        }
+      }
+
+      for (var sample : rawSamples) {
+        double loopTimeMs = sample.value() * conversionFactor;
+        loopTimes.add(loopTimeMs);
+
+        if (loopTimeMs > thresholdMs) {
+          var violation = new JsonObject();
+          violation.addProperty("timestamp", sample.timestamp());
+          violation.addProperty("loop_time_ms", loopTimeMs);
+          violation.addProperty("overage_ms", loopTimeMs - thresholdMs);
+          violations.add(violation);
+        }
       }
 
       // Calculate statistics
@@ -1237,12 +1315,13 @@ public final class FrcDomainTools {
       statistics.addProperty("avg_ms", stats.getAverage());
       statistics.addProperty("max_ms", stats.getMax());
       statistics.addProperty("min_ms", stats.getMin());
-      statistics.addProperty("p95_ms", sorted[(int) (sorted.length * 0.95)]);
-      statistics.addProperty("p99_ms", sorted[(int) (sorted.length * 0.99)]);
+      statistics.addProperty("p95_ms", interpolatedPercentile(sorted, 0.95));
+      statistics.addProperty("p99_ms", interpolatedPercentile(sorted, 0.99));
 
       // Calculate health score (0-100)
       double violationRate = (double) violations.size() / loopTimes.size();
-      int healthScore = (int) Math.max(0, Math.min(100, 100 - (violationRate * 200)));
+      // Linear mapping: 0% violations = 100, 100% violations = 0
+      int healthScore = (int) Math.max(0, Math.min(100, 100 - (violationRate * 100)));
 
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -1266,7 +1345,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices. "
-          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries.";
+          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -1386,7 +1466,8 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze battery voltage and current draw to predict brownout risk and estimate "
           + "battery health. Returns health score (0-100), brownout risk level (MINIMAL/LOW/"
-          + "MODERATE/HIGH/CRITICAL), voltage statistics, and actionable recommendations.";
+          + "MODERATE/HIGH/CRITICAL), voltage statistics, and actionable recommendations."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_POWER;
     }
 
     @Override
@@ -1395,7 +1476,7 @@ public final class FrcDomainTools {
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("nominal_voltage", "Expected full battery voltage (default: 12.6V)", false, 12.6)
-          .addNumberProperty("brownout_threshold", "Brownout voltage threshold (default: 7.0V)", false, 7.0)
+          .addNumberProperty("brownout_threshold", "Brownout voltage threshold (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
           .addNumberProperty("warning_threshold", "Warning voltage threshold (default: 9.0V)", false, 9.0)
           .build();
     }
@@ -1407,7 +1488,7 @@ public final class FrcDomainTools {
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double nominalVoltage = getOptDouble(arguments, "nominal_voltage", 12.6);
-      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 7.0);
+      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 6.8);
       double warningThreshold = getOptDouble(arguments, "warning_threshold", 9.0);
 
       // Find voltage and current entries
@@ -1550,6 +1631,12 @@ public final class FrcDomainTools {
         response.addWarning("Battery health is poor - replace before next match");
       }
 
+      var quality = DataQuality.fromValues(voltageValues);
+      var directives = AnalysisDirectives.fromQuality(quality)
+          .addSingleMatchCaveat()
+          .addGuidance("Battery health score is a heuristic — consider battery age and connector condition");
+      response.addDataQuality(quality).addDirectives(directives);
+
       return response.build();
     }
 
@@ -1565,6 +1652,8 @@ public final class FrcDomainTools {
         var voltage = toDouble(tv.value());
         if (voltage == null) continue;
 
+        // Hysteresis: enter below threshold, exit only above threshold + 0.2V
+        double hysteresis = 0.2;
         if (voltage < threshold && !inEvent) {
           // Event started
           inEvent = true;
@@ -1573,7 +1662,7 @@ public final class FrcDomainTools {
         } else if (voltage < threshold && inEvent) {
           // Event continuing
           eventMinVoltage = Math.min(eventMinVoltage, voltage);
-        } else if (voltage >= threshold && inEvent) {
+        } else if (voltage >= threshold + hysteresis && inEvent) {
           // Event ended
           var event = new JsonObject();
           event.addProperty("start_time", eventStartTime);
@@ -1599,7 +1688,8 @@ public final class FrcDomainTools {
       // Find load changes (significant voltage drops)
       var recoveryTimes = new ArrayList<Double>();
 
-      for (int i = 1; i < voltageValues.size() - 10 && i < 1000; i++) {
+      // Scan entire match (10000 samples covers ~200s at 50Hz, sufficient for full match)
+      for (int i = 1; i < voltageValues.size() - 10 && i < 10000; i++) {
         var voltageBefore = toDouble(voltageValues.get(i - 1).value());
         var voltageAtLoad = toDouble(voltageValues.get(i).value());
 
@@ -1637,6 +1727,23 @@ public final class FrcDomainTools {
       return analysis;
     }
 
+    /**
+     * Calculates a battery health score (0-100) from voltage characteristics.
+     *
+     * <p>Scoring formula (empirical, not derived from battery specs):
+     * <ul>
+     *   <li>Start at 100</li>
+     *   <li>Avg voltage below 88% of nominal (≈11.1V on 12.6V): −(deficit × 150)</li>
+     *   <li>Each brownout event: −20</li>
+     *   <li>Each warning-level sag event: −5</li>
+     *   <li>Slow recovery (>0.5s avg): −(excess × 20)</li>
+     *   <li>Min voltage below 10V: −(deficit × 10)</li>
+     * </ul>
+     *
+     * <p>Note: This score provides useful relative ranking between batteries but
+     * absolute values should not be the sole basis for replacement decisions.
+     * Factors like battery age, connector condition, and wire gauge also matter.
+     */
     private int calculateHealthScore(
         double avgVoltage,
         double nominalVoltage,
@@ -1645,19 +1752,19 @@ public final class FrcDomainTools {
         int sagEvents,
         JsonObject recoveryAnalysis) {
 
-      // Start at 100
       int score = 100;
 
-      // Deduct for low average voltage
-      double voltageRatio = avgVoltage / nominalVoltage;
-      if (voltageRatio < 0.95) {
-        score -= (int) ((0.95 - voltageRatio) * 200);
+      // Avg voltage penalty: 88% threshold (≈11.1V on 12.6V nominal).
+      // Healthy FRC batteries routinely sag to 11.0–11.5V under match load.
+      double voltageRatio = nominalVoltage > 0 ? avgVoltage / nominalVoltage : 1.0;
+      if (voltageRatio < 0.88) {
+        score -= (int) ((0.88 - voltageRatio) * 150);
       }
 
-      // Deduct heavily for brownouts
+      // Brownout penalty: 20 pts each — indicates serious power delivery issues
       score -= brownoutEvents * 20;
 
-      // Deduct for warning-level sags
+      // Warning-level sag penalty: 5 pts each — cumulative indicator
       score -= sagEvents * 5;
 
       // Deduct for poor recovery time (high internal resistance)

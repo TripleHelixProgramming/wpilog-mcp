@@ -41,7 +41,16 @@ public class SecurityValidator {
    */
   public synchronized void addAllowedDirectory(Path directory) {
     if (directory != null) {
-      Path normalized = directory.toAbsolutePath().normalize();
+      // Use toRealPath() to resolve symlinks if the directory exists,
+      // so that the allowed path matches what toRealPath() returns during validation
+      Path normalized;
+      try {
+        normalized = java.nio.file.Files.exists(directory)
+            ? directory.toRealPath()
+            : directory.toAbsolutePath().normalize();
+      } catch (java.io.IOException e) {
+        normalized = directory.toAbsolutePath().normalize();
+      }
       allowedDirectories.add(normalized);
       logger.info("Added allowed directory: {}", normalized);
     }
@@ -88,7 +97,7 @@ public class SecurityValidator {
       return;
     }
 
-    Path normalizedPath = filePath.toAbsolutePath().normalize();
+    Path normalizedPath = resolvePath(filePath);
 
     // Check if path is within any allowed directory
     for (Path allowedDir : allowedDirectories) {
@@ -101,6 +110,33 @@ public class SecurityValidator {
     throw new IOException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
+  }
+
+  /**
+   * Resolves a path, following symlinks where possible to prevent symlink-based path traversal.
+   * If the file exists, uses toRealPath() which resolves all symlinks.
+   * If not, walks up the ancestor chain to find the nearest existing directory, resolves
+   * symlinks there, and appends the remaining relative portion.
+   */
+  private Path resolvePath(Path filePath) throws IOException {
+    Path absPath = filePath.toAbsolutePath().normalize();
+    if (java.nio.file.Files.exists(absPath)) {
+      return absPath.toRealPath();
+    }
+    // Walk up the path to find the nearest existing ancestor
+    Path current = absPath;
+    Path relative = Path.of("");
+    while (current != null && !java.nio.file.Files.exists(current)) {
+      relative = current.getFileName() != null
+          ? current.getFileName().resolve(relative)
+          : relative;
+      current = current.getParent();
+    }
+    if (current != null) {
+      Path resolved = current.toRealPath();
+      return relative.toString().isEmpty() ? resolved : resolved.resolve(relative);
+    }
+    return absPath;
   }
 
   /**
@@ -119,7 +155,7 @@ public class SecurityValidator {
       return;
     }
 
-    Path normalizedPath = filePath.toAbsolutePath().normalize();
+    Path normalizedPath = resolvePath(filePath);
 
     // Check if path is within any allowed directory
     for (Path allowedDir : allowedDirectories) {

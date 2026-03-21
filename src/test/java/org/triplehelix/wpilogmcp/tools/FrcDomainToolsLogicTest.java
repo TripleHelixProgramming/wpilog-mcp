@@ -799,4 +799,319 @@ class FrcDomainToolsLogicTest {
       }
     }
   }
+
+  // ==================== Code Review Fix Tests ====================
+
+  @Nested
+  @DisplayName("Loop Timing Health Score (§1.1 fix)")
+  class LoopTimingHealthScoreTests {
+
+    @Test
+    @DisplayName("health score is linear: 0% violations = 100, 100% violations = 0")
+    void linearHealthScore() throws Exception {
+      // All values are violations (> 20ms)
+      var log = new MockLogBuilder()
+          .setPath("/test/all_violations.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime",
+              new double[]{0, 0.02, 0.04, 0.06, 0.08},
+              new double[]{25, 30, 35, 40, 50}) // all > 20ms
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int healthScore = resultObj.get("health_score").getAsInt();
+      // 100% violation rate → score should be 0
+      assertEquals(0, healthScore, "100% violations should give score 0");
+    }
+
+    @Test
+    @DisplayName("50% violations gives score ~50 (not 0 as with old 200x multiplier)")
+    void fiftyPercentViolationsGivesFifty() throws Exception {
+      // Half good, half violations
+      var log = new MockLogBuilder()
+          .setPath("/test/half_violations.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime",
+              new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10},
+              new double[]{15, 25, 18, 30, 19, 35}) // 3 of 6 are violations
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int healthScore = resultObj.get("health_score").getAsInt();
+      // 50% violation rate → score should be ~50
+      assertTrue(healthScore >= 40 && healthScore <= 60,
+          "50% violations should give score ~50, got: " + healthScore);
+    }
+
+    @Test
+    @DisplayName("no violations gives score 100")
+    void noViolationsGivesHundred() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/clean_loops.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime",
+              new double[]{0, 0.02, 0.04, 0.06, 0.08},
+              new double[]{15, 18, 19, 17, 16}) // all < 20ms
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(100, resultObj.get("health_score").getAsInt());
+    }
+  }
+
+  @Nested
+  @DisplayName("Battery Health Scoring (§3.1 fix)")
+  class BatteryHealthScoringTests {
+
+    @Test
+    @DisplayName("healthy battery under normal load gets high score")
+    void healthyBatteryUnderLoad() throws Exception {
+      // Average ~11.5V under load is normal — should not be penalized heavily
+      var log = new MockLogBuilder()
+          .setPath("/test/healthy_battery.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+              new double[]{12.5, 11.8, 11.5, 11.2, 11.5, 11.8, 12.0, 11.5, 11.3, 11.6})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int score = resultObj.get("health_score").getAsInt();
+      // Average ~11.7V is well above the 88% threshold (11.1V), should be healthy
+      assertTrue(score >= 70,
+          "Healthy battery under normal load should score >= 70, got: " + score);
+    }
+
+    @Test
+    @DisplayName("battery near brownout gets low score")
+    void batteryNearBrownout() throws Exception {
+      // Voltage dropping near brownout territory
+      var log = new MockLogBuilder()
+          .setPath("/test/bad_battery.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+              new double[]{10.5, 9.5, 8.0, 7.5, 6.5, 7.0, 8.5, 9.0, 10.0, 10.5})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int score = resultObj.get("health_score").getAsInt();
+      assertTrue(score < 50,
+          "Battery near brownout should score < 50, got: " + score);
+    }
+
+    @Test
+    @DisplayName("returns health score and risk level")
+    void returnsHealthScoreAndRisk() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/battery.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{12.5, 12.3, 12.1, 12.4, 12.2})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.has("health_score"));
+      assertTrue(resultObj.has("risk_level"));
+      assertTrue(resultObj.has("voltage_stats"));
+      assertTrue(resultObj.has("recommendations"));
+    }
+
+    @Test
+    @DisplayName("brownout hysteresis in battery health: oscillating voltage = single event")
+    void batteryHealthHysteresis() throws Exception {
+      // Voltage oscillates around 6.8V threshold — should count as one brownout, not many
+      var tvs = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 200; i++) {
+        double t = i * 0.02;
+        double v;
+        if (t < 1.0 || t > 3.0) {
+          v = 12.0; // normal
+        } else {
+          // Oscillate around threshold: 6.7 → 6.85 → 6.7 → 6.85 ...
+          v = 6.75 + 0.1 * Math.sin(t * 20);
+        }
+        tvs.add(new TimestampedValue(t, v));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/battery_hysteresis.wpilog")
+          .addEntry("/Robot/BatteryVoltage", "double", tvs)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      // Hysteresis should prevent multiple brownout events from oscillation
+      int brownoutEvents = resultObj.get("brownout_events").getAsInt();
+      assertTrue(brownoutEvents <= 2,
+          "Hysteresis should collapse oscillating voltage into few events, got: " + brownoutEvents);
+    }
+
+    @Test
+    @DisplayName("health score is clamped to 0-100 range")
+    void healthScoreClamped() throws Exception {
+      // Extreme brownout scenario — score should be 0, not negative
+      var tvs = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 100; i++) {
+        tvs.add(new TimestampedValue(i * 0.02, 5.0)); // way below brownout
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/extreme_brownout.wpilog")
+          .addEntry("/Robot/BatteryVoltage", "double", tvs)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int score = resultObj.get("health_score").getAsInt();
+      assertTrue(score >= 0 && score <= 100, "Score should be clamped to 0-100, got: " + score);
+    }
+
+    @Test
+    @DisplayName("includes data quality metadata")
+    void includesDataQuality() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/battery_dq.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{12.5, 12.3, 12.1, 12.4, 12.2})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.has("data_quality"));
+      assertTrue(resultObj.has("server_analysis_directives"));
+    }
+  }
+
+  @Nested
+  @DisplayName("Incomplete Cycle Warning (§3.3 fix)")
+  class IncompleteCycleWarningTests {
+
+    @Test
+    @DisplayName("warns when log ends mid-cycle")
+    void warnsOnIncompleteCycle() throws Exception {
+      // Create a state entry that starts a cycle but never finishes it
+      var values = new ArrayList<TimestampedValue>();
+      values.add(new TimestampedValue(0.0, "IDLE"));
+      values.add(new TimestampedValue(1.0, "INTAKING"));
+      values.add(new TimestampedValue(3.0, "IDLE"));
+      values.add(new TimestampedValue(4.0, "INTAKING"));
+      // Log ends while INTAKING — incomplete cycle
+
+      var log = new MockLogBuilder()
+          .setPath("/test/incomplete_cycle.wpilog")
+          .addEntry("/Robot/State", "string", values)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("state_entry", "/Robot/State");
+      args.addProperty("cycle_start_state", "INTAKING");
+      args.addProperty("cycle_mode", "start_to_start");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.has("warnings"), "Should have warnings");
+      var warnings = resultObj.getAsJsonArray("warnings");
+      boolean foundIncompleteWarning = false;
+      for (int i = 0; i < warnings.size(); i++) {
+        if (warnings.get(i).getAsString().contains("incomplete")) {
+          foundIncompleteWarning = true;
+        }
+      }
+      assertTrue(foundIncompleteWarning,
+          "Should warn about incomplete cycle(s)");
+    }
+  }
+
+  // ==================== Brownout Hysteresis Tests (§2.3 fix) ====================
+
+  @Nested
+  @DisplayName("Brownout Hysteresis")
+  class BrownoutHysteresisTests {
+
+    @Test
+    @DisplayName("voltage oscillating around threshold counts as one brownout, not many")
+    void hysteresisPreventsOscillationInflation() throws Exception {
+      // Simulate voltage oscillating around 6.8V threshold:
+      // 6.7 → 6.85 → 6.7 → 6.85 → 6.7 → 7.5 (recovery)
+      // Without hysteresis: 3 brownout events
+      // With hysteresis (exit at threshold + 0.2 = 7.0V): 1 brownout event
+      var values = new ArrayList<TimestampedValue>();
+      values.add(new TimestampedValue(0.0, 12.0));
+      values.add(new TimestampedValue(1.0, 6.7));  // below 6.8 → brownout start
+      values.add(new TimestampedValue(2.0, 6.85)); // above 6.8 but below 7.0 → still in brownout
+      values.add(new TimestampedValue(3.0, 6.7));  // back below → still in brownout
+      values.add(new TimestampedValue(4.0, 6.85)); // still below 7.0
+      values.add(new TimestampedValue(5.0, 7.5));  // above 7.0 → brownout end
+      values.add(new TimestampedValue(6.0, 12.0));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/hysteresis.wpilog")
+          .addEntry("/Robot/BatteryVoltage", "double", values)
+          .addEntry("/DriverStation/Enabled", "boolean",
+              java.util.List.of(new TimestampedValue(0.0, true), new TimestampedValue(6.0, false)))
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("brownout_threshold", 6.8);
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      var events = resultObj.getAsJsonArray("events");
+
+      // Count BROWNOUT_START events
+      int brownoutStarts = 0;
+      for (int i = 0; i < events.size(); i++) {
+        if ("BROWNOUT_START".equals(events.get(i).getAsJsonObject().get("type").getAsString())) {
+          brownoutStarts++;
+        }
+      }
+      assertEquals(1, brownoutStarts,
+          "Hysteresis should collapse oscillating voltage into 1 brownout event, got: " + brownoutStarts);
+    }
+  }
 }

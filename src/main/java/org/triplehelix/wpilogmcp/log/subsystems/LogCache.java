@@ -14,7 +14,8 @@ import org.triplehelix.wpilogmcp.log.ParsedLog;
  * limits are exceeded, the least recently used log is evicted (unless it's the active log).
  *
  * <p>Uses LinkedHashMap with access-order for LRU behavior and ReentrantReadWriteLock for
- * thread-safe concurrent reads.
+ * thread safety. Note: {@code get()} requires a write lock because access-ordered
+ * LinkedHashMap structurally modifies its internal linked list on every access.
  *
  * @since 0.4.0
  */
@@ -25,9 +26,12 @@ public class LogCache {
   private final ReentrantReadWriteLock cacheLock = new ReentrantReadWriteLock();
   private final MemoryEstimator memoryEstimator;
 
+  /** Optional callback invoked when a log is evicted, for cleaning up associated resources. */
+  private volatile java.util.function.Consumer<String> evictionCallback;
+
   private volatile String activeLogPath;
-  private int maxLoadedLogs = 20;
-  private int maxMemoryMb = 2048;
+  private volatile int maxLoadedLogs = 20;
+  private volatile int maxMemoryMb = 2048;
 
   /**
    * Creates a new LogCache with the specified memory estimator.
@@ -45,6 +49,16 @@ public class LogCache {
    *
    * @param maxLoadedLogs Maximum number of logs (must be > 0)
    */
+  /**
+   * Sets a callback to be invoked when a log is evicted from the cache.
+   * Used to clean up associated resources (e.g., synchronized revlog data).
+   *
+   * @param callback A consumer that receives the evicted log's path
+   */
+  public void setEvictionCallback(java.util.function.Consumer<String> callback) {
+    this.evictionCallback = callback;
+  }
+
   public void setMaxLoadedLogs(int maxLoadedLogs) {
     if (maxLoadedLogs <= 0) {
       throw new IllegalArgumentException("maxLoadedLogs must be positive");
@@ -85,17 +99,42 @@ public class LogCache {
   }
 
   /**
+   * Atomically checks if a log is in the cache and sets it as active if found.
+   * This avoids the TOCTOU race of separate containsKey + setActiveLogPath calls,
+   * where the log could be evicted between the two operations.
+   *
+   * @param path The log file path
+   * @return true if the log was found and made active, false if not in cache
+   */
+  public boolean setActiveIfPresent(String path) {
+    cacheLock.writeLock().lock();
+    try {
+      if (cache.containsKey(path)) {
+        this.activeLogPath = path;
+        return true;
+      }
+      return false;
+    } finally {
+      cacheLock.writeLock().unlock();
+    }
+  }
+
+  /**
    * Gets a log from the cache.
    *
    * @param path The log file path
    * @return The parsed log, or null if not in cache
    */
   public ParsedLog get(String path) {
-    cacheLock.readLock().lock();
+    // Must use writeLock because LinkedHashMap with accessOrder=true
+    // structurally modifies the internal linked list on get() calls.
+    // Using readLock here would allow concurrent structural modifications,
+    // risking ConcurrentModificationException or infinite loops.
+    cacheLock.writeLock().lock();
     try {
       return cache.get(path);
     } finally {
-      cacheLock.readLock().unlock();
+      cacheLock.writeLock().unlock();
     }
   }
 
@@ -140,6 +179,17 @@ public class LogCache {
   public void clear() {
     cacheLock.writeLock().lock();
     try {
+      // Invoke eviction callback for each entry before clearing
+      var callback = this.evictionCallback;
+      if (callback != null) {
+        for (String path : new java.util.ArrayList<>(cache.keySet())) {
+          try {
+            callback.accept(path);
+          } catch (Exception e) {
+            logger.warn("Eviction callback failed for '{}': {}", path, e.getMessage());
+          }
+        }
+      }
       cache.clear();
       activeLogPath = null;
       logger.info("Cleared all logs from cache");
@@ -215,28 +265,44 @@ public class LogCache {
    *   <li>Memory-based: If estimated memory exceeds maxMemoryMb, evict LRU log
    *   <li>Never evicts the active log
    * </ul>
+   */
+  /**
+   * Evicts logs until cache is within both count and memory limits.
    *
-   * After eviction, calls System.gc() to encourage release of memory-mapped buffers.
+   * <p>Loops until all limits are satisfied (or only the active log remains).
+   * This prevents the cache from growing unboundedly when multiple logs need
+   * to be evicted at once.
    */
   public void evictIfNeeded() {
     cacheLock.writeLock().lock();
     try {
-      // Check count-based eviction
-      if (cache.size() > maxLoadedLogs) {
-        evictLeastRecentlyUsed("count limit (" + maxLoadedLogs + ")");
-        return;
+      // Snapshot volatile config at method entry for consistent behavior
+      int currentMaxLogs = this.maxLoadedLogs;
+      int currentMaxMemoryMb = this.maxMemoryMb;
+
+      // Loop for count-based eviction
+      while (cache.size() > currentMaxLogs) {
+        if (!evictLeastRecentlyUsed("count limit (" + currentMaxLogs + ")")) {
+          break; // Only active log remains
+        }
       }
 
-      // Check memory-based eviction
-      long estimatedMemoryBytes = memoryEstimator.estimateTotalMemory(cache.values());
-      long estimatedMemoryMb = estimatedMemoryBytes / (1024 * 1024);
+      // Loop for memory-based eviction
+      while (true) {
+        long estimatedMemoryBytes = memoryEstimator.estimateTotalMemory(cache.values());
+        long estimatedMemoryMb = estimatedMemoryBytes / (1024 * 1024);
 
-      if (estimatedMemoryMb > maxMemoryMb) {
+        if (estimatedMemoryMb <= currentMaxMemoryMb) {
+          break;
+        }
+
         logger.info(
             "Estimated memory usage: {} MB (limit: {} MB) - evicting least recently used log",
             estimatedMemoryMb,
-            maxMemoryMb);
-        evictLeastRecentlyUsed("memory limit (" + maxMemoryMb + " MB)");
+            currentMaxMemoryMb);
+        if (!evictLeastRecentlyUsed("memory limit (" + currentMaxMemoryMb + " MB)")) {
+          break; // Only active log remains
+        }
       }
     } finally {
       cacheLock.writeLock().unlock();
@@ -250,9 +316,17 @@ public class LogCache {
    *
    * @param reason The reason for eviction (for logging)
    */
-  private void evictLeastRecentlyUsed(String reason) {
+  /**
+   * Evicts the least recently used log from the cache.
+   *
+   * <p>Internal method - assumes write lock is already held.
+   *
+   * @param reason The reason for eviction (for logging)
+   * @return true if a log was evicted, false if only the active log remains
+   */
+  private boolean evictLeastRecentlyUsed(String reason) {
     if (cache.isEmpty()) {
-      return;
+      return false;
     }
 
     // Find LRU entry (first entry in LinkedHashMap with access-order)
@@ -268,14 +342,23 @@ public class LogCache {
 
     if (pathToEvict == null) {
       logger.warn("Cannot evict: only active log remains in cache");
-      return;
+      return false;
     }
 
     cache.remove(pathToEvict);
     logger.info("Evicted log '{}' due to {}", pathToEvict, reason);
 
-    // Suggest GC to release memory-mapped buffers
-    System.gc();
+    // Notify callback (e.g., to clean up syncCache entries)
+    var callback = this.evictionCallback;
+    if (callback != null) {
+      try {
+        callback.accept(pathToEvict);
+      } catch (Exception e) {
+        logger.warn("Eviction callback failed for '{}': {}", pathToEvict, e.getMessage());
+      }
+    }
+
+    return true;
   }
 
   /**

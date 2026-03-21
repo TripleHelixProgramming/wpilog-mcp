@@ -15,6 +15,10 @@ import org.triplehelix.wpilogmcp.log.LogDirectory.LogFileInfo;
  */
 public class TbaEnrichment {
   private static final Logger logger = LoggerFactory.getLogger(TbaEnrichment.class);
+  private static final java.util.regex.Pattern YEAR_PATTERN =
+      java.util.regex.Pattern.compile("(\\d{4})");
+  private static final DateTimeFormatter TIME_FORMAT =
+      DateTimeFormatter.ofPattern("h:mm a");
 
   /** Singleton instance. */
   private static TbaEnrichment instance;
@@ -86,8 +90,7 @@ public class TbaEnrichment {
     var eventName = logInfo.eventName();
     if (eventName != null && eventName.length() >= 4) {
       try {
-        var yearPattern = java.util.regex.Pattern.compile("(\\d{4})");
-        var matcher = yearPattern.matcher(eventName);
+        var matcher = YEAR_PATTERN.matcher(eventName);
         if (matcher.find()) {
           int year = Integer.parseInt(matcher.group(1));
           if (year >= 1992 && year <= 2100) {
@@ -139,7 +142,7 @@ public class TbaEnrichment {
   private String formatMatchTime(Long epochSeconds, ZoneId timezone) {
     if (epochSeconds == null) return null;
     var zdt = Instant.ofEpochSecond(epochSeconds).atZone(timezone);
-    return zdt.format(DateTimeFormatter.ofPattern("h:mm a"));
+    return zdt.format(TIME_FORMAT);
   }
 
   /**

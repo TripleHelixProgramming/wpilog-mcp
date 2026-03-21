@@ -173,6 +173,38 @@ public class ResponseBuilder {
    *
    * @return The complete response as a JsonObject
    */
+  /**
+   * Adds data quality metrics to the response.
+   *
+   * <p>Automatically adds a warning if the quality score is below 0.5.
+   *
+   * @param quality The data quality metrics
+   * @return This builder for chaining
+   * @since 0.5.0
+   */
+  public ResponseBuilder addDataQuality(DataQuality quality) {
+    response.add("data_quality", quality.toJson());
+    if (quality.qualityScore() < 0.5) {
+      addWarning("Low data quality (score: " + String.format("%.2f", quality.qualityScore())
+          + "). Results should be treated as preliminary.");
+    }
+    return this;
+  }
+
+  /**
+   * Adds LLM analysis directives to the response.
+   *
+   * <p>These directives guide LLMs toward calibrated interpretation of results.
+   *
+   * @param directives The analysis directives
+   * @return This builder for chaining
+   * @since 0.5.0
+   */
+  public ResponseBuilder addDirectives(AnalysisDirectives directives) {
+    response.add("server_analysis_directives", directives.toJson());
+    return this;
+  }
+
   public JsonObject build() {
     // Add warnings array if any warnings were added
     if (!warnings.isEmpty()) {

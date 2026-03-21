@@ -67,9 +67,8 @@ Configuration location depends on how you're running Claude Code:
 {
   "mcpServers": {
     "wpilog": {
-      "command": "/Users/yourname/wpilib/2026/jdk/bin/java",
+      "command": "/path/to/wpilog-mcp/run-mcp.sh",
       "args": [
-        "-jar", "/path/to/wpilog-mcp-0.3.0-all.jar",
         "-logdir", "/path/to/your/logs",
         "-team", "2363"
       ],
@@ -86,13 +85,29 @@ Configuration location depends on how you're running Claude Code:
 {
   "mcpServers": {
     "wpilog": {
-      "command": "C:\\Users\\Public\\wpilib\\2026\\jdk\\bin\\java.exe",
+      "command": "C:\\path\\to\\wpilog-mcp\\run-mcp.bat",
       "args": [
-        "-jar", "C:\\path\\to\\wpilog-mcp-0.3.0-all.jar",
         "-logdir", "C:\\path\\to\\your\\logs",
         "-team", "2363"
       ],
       "env": {
+        "TBA_API_KEY": "your_tba_api_key"
+      }
+    }
+  }
+}
+```
+
+The wrapper scripts (`run-mcp.sh` / `run-mcp.bat`) automatically locate the WPILib JDK and configure JVM memory. To control how much memory the server can use, set the `WPILOG_MAX_HEAP` environment variable (default: `4g`):
+
+```json
+{
+  "mcpServers": {
+    "wpilog": {
+      "command": "/path/to/wpilog-mcp/run-mcp.sh",
+      "args": ["-logdir", "/path/to/your/logs"],
+      "env": {
+        "WPILOG_MAX_HEAP": "8g",
         "TBA_API_KEY": "your_tba_api_key"
       }
     }
@@ -213,6 +228,20 @@ Compare /RealOutputs/Drive/Pose with /ReplayOutputs/Drive/Pose
 Load both the practice and match logs, then compare battery statistics
 ```
 
+### REV Log Analysis
+
+```
+What REV signals are available for this match?
+```
+
+```
+Show me the motor temperature and current for SparkMax_1 during teleop
+```
+
+```
+Compare the commanded output from the wpilog with the actual applied output from the revlog
+```
+
 ### Memory Management
 
 ```
@@ -225,7 +254,7 @@ Unload all logs to free up memory
 
 | Option | Description |
 |--------|-------------|
-| `-logdir <path>` | Directory containing `.wpilog` files |
+| `-logdir <path>` | Directory containing `.wpilog` files (scans subdirectories up to 3 levels deep) |
 | `-team <number>` | Default team number for logs missing metadata |
 | `-tba-key <key>` | The Blue Alliance API key for match data enrichment |
 | `-maxlogs <n>` | Max number of logs to cache (default: 20) |
@@ -237,8 +266,11 @@ Unload all logs to free up memory
 - `WPILOG_DIR` - Alternative to `-logdir` (command line takes precedence)
 - `WPILOG_TEAM` - Alternative to `-team`
 - `TBA_API_KEY` - Alternative to `-tba-key`
+- `WPILOG_MAX_HEAP` - JVM max heap size (default: `4g`). Set in the MCP `env` block or export before running the wrapper script. Examples: `2g`, `8g`, `512m`
 
 **Cache limits:** The server caches parsed logs in memory for fast access. By default, up to 20 logs are kept. Use `-maxlogs` to change this limit, or `-maxmemory` to set a memory-based limit instead (only used if `-maxlogs` is not set). The least recently used log is evicted when the limit is reached.
+
+**JVM memory:** The wrapper scripts (`run-mcp.sh` / `run-mcp.bat`) set the JVM heap to 4 GB by default. Large log files (hundreds of MB) may need more heap. Set `WPILOG_MAX_HEAP=8g` for heavy use. The server will refuse to load files that would exceed available heap rather than crashing.
 
 ### The Blue Alliance Integration
 
@@ -254,6 +286,37 @@ Team number is extracted from each log file's metadata (DriverStation/FMS data),
 
 This data is automatically added to `list_available_logs` output for logs that have event/match/team metadata.
 
+### REV Log Integration
+
+wpilog-mcp can correlate `.revlog` files (from REV's logging library on the roboRIO, or REV Hardware Client on a laptop) with your robot's WPILOG data, giving you access to high-resolution motor controller telemetry with synchronized timestamps.
+
+**How it works:**
+1. Place `.revlog` files in the same directory as their corresponding `.wpilog` files
+2. Load the wpilog normally — revlog files are discovered and synchronized automatically
+3. Use `sync_status` to verify synchronization confidence before relying on timestamps
+
+**Synchronization:** Timestamps are aligned using a two-phase approach:
+1. **Coarse alignment** from `systemTime` entries and revlog filename timestamps (seconds-level)
+2. **Fine alignment** via Pearson cross-correlation of matching signals like motor output duty cycle (millisecond-level)
+
+For long recordings (>15 minutes), linear clock drift between the FPGA clock and the monotonic clock is estimated and compensated automatically.
+
+The system reports confidence levels (HIGH/MEDIUM/LOW/FAILED) based on correlation strength, number of agreeing signal pairs, and inter-pair consistency. Typical accuracy at HIGH confidence is ±1–5 ms.
+
+**If automatic sync fails**, use `set_revlog_offset` to manually provide a known offset.
+
+**Limitations:**
+- REV logs use `CLOCK_MONOTONIC` while WPILOGs use FPGA time — offset varies per boot
+- Correlation requires overlapping signal variation (flat/disabled data degrades quality)
+- Short logs or steady-state data may produce lower confidence synchronization
+
+**Available data:**
+- Applied output (duty cycle), velocity, position
+- Bus voltage, output current, temperature
+- Faults and sticky faults
+
+See [TOOLS.md](TOOLS.md#revlog-tools) for detailed tool documentation and a technical explanation of the synchronization algorithm.
+
 ### Claude Desktop
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
@@ -262,8 +325,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "wpilog": {
-      "command": "/path/to/java",
-      "args": ["-jar", "/path/to/wpilog-mcp-0.3.0-all.jar", "-logdir", "/path/to/logs"]
+      "command": "/path/to/wpilog-mcp/run-mcp.sh",
+      "args": ["-logdir", "/path/to/logs"]
     }
   }
 }
@@ -275,8 +338,8 @@ This server uses **stdio transport** (JSON-RPC over stdin/stdout). Generic confi
 
 ```json
 {
-  "command": "/path/to/java",
-  "args": ["-jar", "/path/to/wpilog-mcp-0.3.0-all.jar"],
+  "command": "/path/to/wpilog-mcp/run-mcp.sh",
+  "args": [],
   "transport": "stdio"
 }
 ```
@@ -285,7 +348,7 @@ See [MCP Protocol](https://modelcontextprotocol.io/) for client implementations.
 
 ## Available Tools
 
-wpilog-mcp provides 39 tools organized into categories:
+wpilog-mcp provides 46 tools organized into categories:
 
 | Category | Tools |
 |----------|-------|
@@ -297,6 +360,7 @@ wpilog-mcp provides 39 tools organized into categories:
 | **FRC-Specific** | `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata` |
 | **FRC Domain Analysis** | `get_ds_timeline`, `analyze_vision`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `analyze_can_bus` |
 | **TBA Integration** | `get_tba_status` |
+| **RevLog Integration** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset` |
 | **Export** | `export_csv`, `generate_report` |
 
 ### Key Features
@@ -309,6 +373,7 @@ wpilog-mcp provides 39 tools organized into categories:
 - **Vision System Monitoring**: Pose jump detection to identify unreliable vision estimates
 - **Loop Timing Analysis**: Detect and diagnose real-time performance issues
 - **CAN Bus Health**: Monitor bus utilization and error rates
+- **REV Log Integration**: Correlate high-resolution motor controller data from `.revlog` files with FPGA-timestamped telemetry
 
 For complete tool documentation with parameters and examples, see [TOOLS.md](TOOLS.md).
 
@@ -360,7 +425,7 @@ For complete tool documentation with parameters and examples, see [TOOLS.md](TOO
 2. **Test manually**:
    ```bash
    echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-     java -jar wpilog-mcp-0.3.0-all.jar
+     ./run-mcp.sh
    ```
 
 3. **Check config location**:
@@ -402,6 +467,13 @@ wpilog-mcp/
 │   ├── mcp/
 │   │   ├── McpServer.java        # MCP protocol handling
 │   │   └── JsonRpc.java          # JSON-RPC utilities
+│   ├── revlog/
+│   │   ├── RevLogReader.java     # REV log file parsing
+│   │   └── RevLogSignal.java     # Signal data structures
+│   ├── sync/
+│   │   ├── LogSynchronizer.java  # Cross-correlation timestamp alignment
+│   │   ├── SynchronizedLogs.java # Unified wpilog+revlog access
+│   │   └── SyncResult.java       # Synchronization confidence metrics
 │   ├── tba/
 │   │   ├── TbaClient.java        # TBA API client with caching
 │   │   ├── TbaConfig.java        # TBA configuration management
@@ -412,9 +484,10 @@ wpilog-mcp/
 │       ├── QueryTools.java       # Search & query tools (4)
 │       ├── StatisticsTools.java  # Statistical analysis tools (6)
 │       ├── RobotAnalysisTools.java # FRC analysis tools (7)
-│       ├── FrcDomainTools.java   # Advanced FRC tools (8)
+│       ├── FrcDomainTools.java   # Advanced FRC tools (9)
 │       ├── ExportTools.java      # CSV/report export (2)
 │       ├── TbaTools.java         # TBA integration (1)
+│       ├── RevLogTools.java      # REV log integration (4)
 │       └── ToolUtils.java        # Shared utilities
 ├── src/test/java/                # Test suite
 ├── build.gradle                  # Build configuration

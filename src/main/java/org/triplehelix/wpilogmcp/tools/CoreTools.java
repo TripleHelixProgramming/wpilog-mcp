@@ -50,6 +50,7 @@ public final class CoreTools {
     server.registerTool(new UnloadAllLogsTool());
     server.registerTool(new ListStructTypesTool());
     server.registerTool(new HealthCheckTool());
+    server.registerTool(new GetGameInfoTool());
   }
 
   static class ListAvailableLogsTool implements Tool {
@@ -600,6 +601,7 @@ public final class CoreTools {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("status", "OK");
+      result.addProperty("server_version", org.triplehelix.wpilogmcp.Version.VERSION);
 
       var logManager = getLogManager();
       result.addProperty("loaded_logs", logManager.getLoadedLogPaths().size());
@@ -610,6 +612,9 @@ public final class CoreTools {
       var tbaConfig = org.triplehelix.wpilogmcp.tba.TbaConfig.getInstance();
       result.addProperty("tba_available", tbaConfig.isConfigured());
 
+      // RevLog sync status
+      result.addProperty("revlog_sync_in_progress", logManager.isRevLogSyncInProgress());
+
       // JVM memory info
       var runtime = Runtime.getRuntime();
       var memory = new JsonObject();
@@ -619,9 +624,108 @@ public final class CoreTools {
       memory.addProperty("free_mb", runtime.freeMemory() / (1024L * 1024L));
       result.add("jvm_memory", memory);
 
-      // Cache memory estimate
+      // In-memory cache info
       result.addProperty("cache_memory_mb", logManager.getEstimatedMemoryUsageMb());
 
+      // Disk cache info
+      var diskCache = logManager.getDiskCache();
+      var diskCacheInfo = new JsonObject();
+      diskCacheInfo.addProperty("enabled", diskCache.isEnabled());
+      try {
+        var cacheDir = logManager.getCacheDirectory().getPath();
+        diskCacheInfo.addProperty("directory", cacheDir.toString());
+        // Count cache files and total size
+        if (java.nio.file.Files.isDirectory(cacheDir)) {
+          long fileCount = 0;
+          long totalBytes = 0;
+          try (var stream = java.nio.file.Files.list(cacheDir)) {
+            var files = stream.filter(f -> f.toString().endsWith(".msgpack")).toList();
+            fileCount = files.size();
+            for (var f : files) {
+              totalBytes += java.nio.file.Files.size(f);
+            }
+          }
+          diskCacheInfo.addProperty("cached_files", fileCount);
+          diskCacheInfo.addProperty("total_size_mb", totalBytes / (1024L * 1024L));
+        }
+      } catch (Exception e) {
+        diskCacheInfo.addProperty("error", e.getMessage());
+      }
+      diskCacheInfo.addProperty("format_version",
+          org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION);
+      result.add("disk_cache", diskCacheInfo);
+
+      return result;
+    }
+  }
+
+  /**
+   * Provides year-specific FRC game information for contextual log analysis.
+   *
+   * <p>Returns match timing, scoring values, field geometry, game pieces, and
+   * analysis hints for a specific FRC season. This enables LLMs to interpret
+   * log data in the context of the actual game being played.
+   */
+  static class GetGameInfoTool implements Tool {
+    @Override
+    public String name() {
+      return "get_game_info";
+    }
+
+    @Override
+    public String description() {
+      return "Get year-specific FRC game information (match timing, scoring values, field geometry, "
+          + "game pieces, and analysis hints). Use this to understand the context of a log file: "
+          + "what the match phases are, what scoring actions look like, and what mechanisms to expect. "
+          + "Defaults to the current season if no year is specified.";
+    }
+
+    @Override
+    public JsonObject inputSchema() {
+      return new SchemaBuilder()
+          .addIntegerProperty("season", "FRC season year (e.g., 2026). Defaults to current year.", false, null)
+          .build();
+    }
+
+    @Override
+    public JsonElement execute(JsonObject arguments) throws Exception {
+      var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
+
+      int season = arguments.has("season") && !arguments.get("season").isJsonNull()
+          ? arguments.get("season").getAsInt()
+          : java.time.Year.now().getValue();
+
+      var game = kb.getGame(season);
+      if (game == null) {
+        var result = new JsonObject();
+        result.addProperty("success", false);
+        result.addProperty("error", "No game data available for season " + season);
+        var available = kb.availableSeasons();
+        if (available.length > 0) {
+          var arr = new com.google.gson.JsonArray();
+          for (int s : available) arr.add(s);
+          result.add("available_seasons", arr);
+        }
+        return result;
+      }
+
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("season", game.season());
+      result.addProperty("game_name", game.gameName());
+      result.add("match_timing", game.raw().getAsJsonObject("match_timing"));
+      result.add("scoring", game.scoring());
+      result.add("field_geometry", game.raw().getAsJsonObject("field_geometry"));
+      result.add("game_pieces", game.gamePieces());
+      if (game.analysisHints() != null) {
+        result.add("analysis_hints", game.analysisHints());
+      }
+      if (game.raw().has("typical_mechanisms")) {
+        result.add("typical_mechanisms", game.raw().getAsJsonArray("typical_mechanisms"));
+      }
+      if (game.raw().has("hub_mechanics")) {
+        result.add("hub_mechanics", game.raw().getAsJsonObject("hub_mechanics"));
+      }
       return result;
     }
   }

@@ -1,0 +1,129 @@
+{
+  "format_version": 1,
+  "season": 2026,
+  "game_name": "REBUILT",
+  "full_title": "REBUILT presented by Haas",
+  "source": "https://firstfrc.blob.core.windows.net/frc2026/Manual/2026GameManual.pdf",
+  "manual_version": "TU17",
+  "generated_at": "2026-03-21T00:00:00Z",
+
+  "match_timing": {
+    "auto_duration_sec": 20,
+    "auto_to_teleop_delay_sec": 3,
+    "teleop_duration_sec": 140,
+    "total_duration_sec": 160,
+    "endgame_start_before_end_sec": 30,
+    "endgame_duration_sec": 30,
+    "shifts": {
+      "auto":             {"start_sec": 0,   "end_sec": 20,  "duration_sec": 20},
+      "transition_shift": {"start_sec": 20,  "end_sec": 30,  "duration_sec": 10},
+      "shift_1":          {"start_sec": 30,  "end_sec": 55,  "duration_sec": 25},
+      "shift_2":          {"start_sec": 55,  "end_sec": 80,  "duration_sec": 25},
+      "shift_3":          {"start_sec": 80,  "end_sec": 105, "duration_sec": 25},
+      "shift_4":          {"start_sec": 105, "end_sec": 130, "duration_sec": 25},
+      "end_game":         {"start_sec": 130, "end_sec": 160, "duration_sec": 30}
+    }
+  },
+
+  "game_pieces": [
+    {
+      "name": "FUEL",
+      "type": "foam ball",
+      "diameter_m": 0.150,
+      "diameter_in": 5.91,
+      "preload_max_per_robot": 8,
+      "preload_max_per_alliance": 48
+    }
+  ],
+
+  "scoring": {
+    "match_points": {
+      "auto": {
+        "fuel_active_hub": 1,
+        "fuel_inactive_hub": 0,
+        "tower_level_1": 15,
+        "tower_level_1_max_robots": 2
+      },
+      "teleop": {
+        "fuel_active_hub": 1,
+        "fuel_inactive_hub": 0,
+        "tower_level_1": 10,
+        "tower_level_2": 20,
+        "tower_level_3": 30
+      }
+    },
+    "ranking_points": {
+      "win": 3,
+      "tie": 1,
+      "energized_rp": {
+        "description": "Amount of FUEL scored in HUB at or above threshold",
+        "value": 1,
+        "regional_threshold": 100,
+        "district_championship_threshold": null,
+        "championship_threshold": null
+      },
+      "supercharged_rp": {
+        "description": "Amount of FUEL scored in HUB at or above threshold",
+        "value": 1,
+        "regional_threshold": 360,
+        "district_championship_threshold": null,
+        "championship_threshold": null
+      },
+      "traversal_rp": {
+        "description": "Amount of TOWER points scored during MATCH at or above threshold",
+        "value": 1,
+        "regional_threshold": 50,
+        "district_championship_threshold": null,
+        "championship_threshold": null
+      }
+    },
+    "fouls": {
+      "minor_foul": 5,
+      "major_foul": 15
+    }
+  },
+
+  "field_geometry": {
+    "field_length_m": 16.54,
+    "field_length_in": 651.2,
+    "field_width_m": 8.07,
+    "field_width_in": 317.7,
+    "alliance_zone_depth_m": 4.03,
+    "neutral_zone_depth_m": 7.19,
+    "bump_width_m": 1.854,
+    "bump_depth_m": 1.128,
+    "bump_height_m": 0.1654,
+    "hub_size_m": 1.19,
+    "hub_opening_m": 1.06,
+    "tower": {
+      "low_rung_height_m": 0.6858,
+      "mid_rung_height_m": 1.143,
+      "high_rung_height_m": 1.600
+    }
+  },
+
+  "robot_constraints": {
+    "max_starting_perimeter_in": 110.0,
+    "max_starting_height_in": 30.0,
+    "max_weight_lbs": 115.0,
+    "max_weight_with_bumpers_lbs": null,
+    "note": "Weight excludes bumpers, battery, and location detection tags"
+  },
+
+  "hub_mechanics": {
+    "description": "Both HUBs active during AUTO, TRANSITION SHIFT, and END GAME. During ALLIANCE SHIFTS, HUBs alternate active/inactive based on AUTO results.",
+    "auto_winner_shift_1_hub": "inactive",
+    "auto_loser_shift_1_hub": "active"
+  },
+
+  "typical_mechanisms": ["shooter", "intake", "climber", "fuel_storage"],
+
+  "analysis_hints": {
+    "endgame_activity": "Tower climbing attempts typically occur in the final 30 seconds (END GAME). Level 1 available in AUTO (max 2 robots).",
+    "hub_strategy": "Track hub active/inactive status from FMS data. Scoring in inactive hub earns 0 points. Alliance shifts alternate every 25 seconds.",
+    "fuel_context": "Each FUEL scored in active HUB = 1 point (auto and teleop). High volume scoring is key: 100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP.",
+    "cycle_time": "Fuel cycle = intake from field/depot -> score in hub. Track time between successive hub scores.",
+    "tower_context": "TRAVERSAL RP requires 50+ tower points. Level 3 climb (30 pts) + Level 2 (20 pts) = 50 pts minimum for RP.",
+    "auto_importance": "AUTO winner determines hub shift order. Scoring more FUEL in AUTO gives strategic advantage for SHIFT 1."
+  }
+}

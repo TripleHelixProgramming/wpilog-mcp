@@ -16,7 +16,7 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  */
 public class Main {
   private static final Logger logger = LoggerFactory.getLogger(Main.class);
-  private static final String VERSION = "0.3.0";
+  private static final String VERSION = Version.VERSION;
 
   public static void main(String[] args) {
     // Set default log level if not specified
@@ -118,6 +118,19 @@ public class Main {
           printUsage();
           System.exit(1);
         }
+      } else if (arg.equals("-cachedir")) {
+        if (i + 1 < args.length) {
+          var dir = args[++i];
+          LogManager.getInstance().getCacheDirectory().setOverride(dir);
+          logger.debug("Cache directory set from command line: {}", dir);
+        } else {
+          logger.error("Error: -cachedir requires a path argument");
+          printUsage();
+          System.exit(1);
+        }
+      } else if (arg.equals("-nocache")) {
+        LogManager.getInstance().getDiskCache().setEnabled(false);
+        logger.info("Disk cache disabled");
       } else if (arg.startsWith("-")) {
         logger.error("Unknown option: {}", arg);
         printUsage();
@@ -161,6 +174,20 @@ public class Main {
       logger.info("TBA enrichment disabled (no API key found in env or args)");
     }
 
+    // Run disk cache cleanup in background (non-blocking)
+    if (LogManager.getInstance().getDiskCache().isEnabled()) {
+      new Thread(() -> LogManager.getInstance().getDiskCache().cleanup(),
+          "cache-cleanup").start();
+    }
+
+    // Verify bundled game data is accessible
+    var currentGame = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance().getCurrentGame();
+    if (currentGame != null) {
+      logger.info("Game data loaded: {} {}", currentGame.season(), currentGame.gameName());
+    } else {
+      logger.warn("No bundled game data for current season");
+    }
+
     // Create and configure server
     var server = new McpServer();
 
@@ -185,6 +212,8 @@ public class Main {
     logger.info("  -tba-key <key>    The Blue Alliance API key for match data");
     logger.info("  -maxlogs <n>      Max number of logs to cache (default: 20)");
     logger.info("  -maxmemory <mb>   Max memory (MB) for log cache (alternative to -maxlogs)");
+    logger.info("  -cachedir <path>  Set directory for persistent disk cache");
+    logger.info("  -nocache          Disable persistent disk cache");
     logger.info("  -debug            Enable debug logging");
     logger.info("  -version, -v      Show version information");
     logger.info("  -help, -h         Show this help message");
@@ -193,10 +222,16 @@ public class Main {
     logger.info("  WPILOG_DIR        Default directory for log files");
     logger.info("  WPILOG_TEAM       Default team number for logs missing metadata");
     logger.info("  TBA_API_KEY       The Blue Alliance API key");
+    logger.info("  WPILOG_MAX_HEAP   Max JVM heap size (default: 4g, used by run-mcp.sh/bat)");
+    logger.info("  WPILOG_CACHE_DIR  Directory for persistent disk cache");
     logger.info("");
     logger.info("Cache limits:");
     logger.info("  -maxlogs sets a fixed number of logs to keep in memory.");
     logger.info("  -maxmemory sets a memory limit (only used if -maxlogs is not set).");
     logger.info("  If neither is set, defaults to 20 logs.");
+    logger.info("");
+    logger.info("JVM memory:");
+    logger.info("  Use run-mcp.sh (or .bat) to launch with proper heap settings.");
+    logger.info("  Set WPILOG_MAX_HEAP=8g in the MCP env block for large logs.");
   }
 }
