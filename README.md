@@ -10,6 +10,8 @@ The **Model Context Protocol (MCP)** is an open standard that enables AI assista
 
 This project provides an **MCP Server**. Once configured, it acts as a "bridge" that gives your AI assistant the specific tools needed to read WPILOG files, analyze swerve performance, detect brownouts, and even pull match results from The Blue Alliance—all through a natural conversation.
 
+> **⚠️ NOT SAFE FOR CONCURRENT USE** — This server maintains shared state and is designed for single-client, sequential operation. Do not call multiple tools in parallel. See [Concurrency Limitations](#important-concurrency-limitations) for details.
+
 ---
 
 ## The Power of AI Reasoning
@@ -141,9 +143,22 @@ That's it! See [Usage Examples](#usage-examples) for more.
 
 ---
 
+## Important: Concurrency Limitations
+
+> **⚠️ NOT SAFE FOR CONCURRENT USE**
+>
+> This server maintains shared state (active log, log cache) and is designed for single-client, sequential operation. **Do not call multiple tools in parallel** from the same session—execute tool calls sequentially. If multiple agents or sessions share this server instance, they will conflict over shared state.
+>
+> Any attempt to use this server concurrently would require coarse-grained locking and fully reinitializing state on each request (e.g., a client could not assume which log is currently loaded).
+
+**Workaround for multi-log analysis:** Running multiple *separate* server instances pointing to the same log directory is safe. The disk cache uses file locking and atomic operations to prevent corruption. Each instance maintains its own in-memory state.
+
+**⚠️ LLM Sub-Agent Warning:** Some LLM frameworks (e.g., Claude Code, AutoGPT, LangGraph) may spawn sub-agents to parallelize work when analyzing multiple log files. These sub-agents may not observe the sequential execution guidance embedded in the server's self-description. **Explicitly instruct your agent to operate sequentially**, for example: *"Analyze each log file one at a time, completing all analysis on one log before moving to the next."*
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Concurrency Limitations](#important-concurrency-limitations)
 - [Usage Examples](#usage-examples)
 - [Configuration Options](#configuration-options)
 - [Available Tools](#available-tools)
@@ -348,10 +363,11 @@ See [MCP Protocol](https://modelcontextprotocol.io/) for client implementations.
 
 ## Available Tools
 
-wpilog-mcp provides 46 tools organized into categories:
+wpilog-mcp provides 49 tools organized into categories:
 
 | Category | Tools |
 |----------|-------|
+| **Discovery** | `get_server_guide`, `suggest_tools` |
 | **Core** | `load_log`, `list_entries`, `read_entry`, `get_entry_info`, `search_entries`, `get_statistics`, `compare_entries`, `get_types`, `list_struct_types`, `health_check` |
 | **Log Browser** | `list_available_logs` |
 | **Multi-Log** | `list_loaded_logs`, `set_active_log`, `unload_log`, `unload_all_logs` |
@@ -359,9 +375,11 @@ wpilog-mcp provides 46 tools organized into categories:
 | **Analysis** | `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `get_match_phases` |
 | **FRC-Specific** | `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata` |
 | **FRC Domain Analysis** | `get_ds_timeline`, `analyze_vision`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `analyze_can_bus` |
-| **TBA Integration** | `get_tba_status` |
+| **TBA Integration** | `get_tba_status`, `get_tba_match_data` |
 | **RevLog Integration** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset` |
 | **Export** | `export_csv`, `generate_report` |
+
+**Start here:** Call `get_server_guide` first to understand what analysis capabilities are available. This prevents writing custom analysis code when a built-in tool already exists.
 
 ### Key Features
 
@@ -486,8 +504,9 @@ wpilog-mcp/
 │       ├── RobotAnalysisTools.java # FRC analysis tools (7)
 │       ├── FrcDomainTools.java   # Advanced FRC tools (9)
 │       ├── ExportTools.java      # CSV/report export (2)
-│       ├── TbaTools.java         # TBA integration (1)
-│       ├── RevLogTools.java      # REV log integration (4)
+│       ├── TbaTools.java         # TBA integration (2)
+│       ├── RevLogTools.java      # REV log integration (5)
+│       ├── DiscoveryTools.java   # LLM discoverability (2)
 │       └── ToolUtils.java        # Shared utilities
 ├── src/test/java/                # Test suite
 ├── build.gradle                  # Build configuration

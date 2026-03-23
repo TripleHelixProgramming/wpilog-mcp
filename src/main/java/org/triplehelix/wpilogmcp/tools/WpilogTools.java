@@ -76,6 +76,7 @@ import org.triplehelix.wpilogmcp.mcp.McpServer;
  *
  * <ul>
  *   <li>{@code get_tba_status} - Get The Blue Alliance API integration status
+ *   <li>{@code get_tba_match_data} - Query match scores and detailed results from TBA
  * </ul>
  *
  * <h2>RevLog Tools ({@link RevLogTools})</h2>
@@ -84,6 +85,13 @@ import org.triplehelix.wpilogmcp.mcp.McpServer;
  *   <li>{@code list_revlog_signals} - List available REV signals with sync status
  *   <li>{@code get_revlog_data} - Query REV signal data with FPGA timestamps
  *   <li>{@code sync_status} - Get synchronization confidence and details
+ * </ul>
+ *
+ * <h2>Discovery Tools ({@link DiscoveryTools})</h2>
+ *
+ * <ul>
+ *   <li>{@code get_server_guide} - Comprehensive overview of all server capabilities
+ *   <li>{@code suggest_tools} - Recommend tools for a specific analysis task
  * </ul>
  *
  * @see McpServer.Tool
@@ -95,6 +103,7 @@ import org.triplehelix.wpilogmcp.mcp.McpServer;
  * @see ExportTools
  * @see TbaTools
  * @see RevLogTools
+ * @see DiscoveryTools
  */
 public final class WpilogTools {
 
@@ -117,5 +126,6 @@ public final class WpilogTools {
     ExportTools.registerAll(server);
     TbaTools.registerAll(server);
     RevLogTools.registerAll(server);
+    DiscoveryTools.registerAll(server);
   }
 }

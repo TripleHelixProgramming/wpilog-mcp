@@ -865,6 +865,42 @@ class RobotAnalysisToolsLogicTest {
     }
 
     @Test
+    @DisplayName("auto start deferred until robot is enabled (pre-match FMS setup)")
+    void autoStartDeferredUntilEnabled() throws Exception {
+      // FMS sets Autonomous=true at t=0 during countdown, but robot isn't enabled until t=3
+      var enabledValues = new ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+      enabledValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(0.0, false));  // pre-match disabled
+      enabledValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(3.0, true));   // match start
+      enabledValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(18.0, false)); // auto end
+      enabledValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(20.0, true));  // teleop start
+      enabledValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(155.0, false)); // match end
+
+      var autoValues = new ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+      autoValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(0.0, true));   // FMS sets auto during countdown
+      autoValues.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(18.0, false)); // auto mode ends
+
+      var log = new MockLogBuilder()
+          .setPath("/test/prematch_auto.wpilog")
+          .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
+          .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("get_match_phases");
+      var result = tool.execute(new JsonObject()).getAsJsonObject();
+
+      assertTrue(result.get("success").getAsBoolean());
+      var phases = result.getAsJsonObject("phases");
+      var auto = phases.getAsJsonObject("autonomous");
+      assertEquals(3.0, auto.get("start").getAsDouble(), 0.01,
+          "Auto should start when robot is enabled, not when FMS sets auto flag");
+      assertEquals(18.0, auto.get("end").getAsDouble(), 0.01);
+
+      // Match duration should be from first enable to last disable
+      assertEquals(152.0, result.get("match_duration").getAsDouble(), 0.01);
+    }
+
+    @Test
     @DisplayName("only enabled data (no auto entry) reports enabled phase with warning")
     void onlyEnabledNoAuto() throws Exception {
       var enabledValues = new ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();

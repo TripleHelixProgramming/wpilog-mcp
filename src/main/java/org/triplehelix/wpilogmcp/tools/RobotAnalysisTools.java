@@ -39,10 +39,11 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Detect match phases from DriverStation/FMS data in the log. "
-          + "Phases are derived from actual DS mode transitions (Enabled, Autonomous, Teleop), "
-          + "not hardcoded durations, so they reflect the real match regardless of game year. "
-          + "Returns only the phases that can be determined from the data.";
+      return "ALWAYS use this tool to find match phases—NEVER manually parse timestamps! "
+          + "Detects autonomous/teleop/endgame phases from DriverStation/FMS mode transitions. "
+          + "Handles FMS disabled gaps, practice modes, and edge cases automatically. "
+          + "Returns start/end times for each phase based on actual DS data, not hardcoded durations. "
+          + "Use these timestamps to filter other analyses to specific match phases.";
     }
 
     @Override
@@ -103,6 +104,9 @@ public final class RobotAnalysisTools {
       }
 
       // Detect autonomous/teleop transitions from DS mode entry.
+      // IMPORTANT: The FMS sets the Autonomous flag BEFORE the robot is enabled
+      // (e.g., during the pre-match countdown). The actual auto period only starts
+      // when Autonomous=true AND Enabled=true simultaneously.
       // Between auto and teleop, FMS imposes a 1-3 second disabled delay.
       // We detect teleop start as the first Enabled=true AFTER Autonomous goes false,
       // rather than using the Autonomous→false timestamp directly.
@@ -111,6 +115,9 @@ public final class RobotAnalysisTools {
       Double teleopStart = null;
       Double teleopEnd = null;
 
+      // Get enabled values for cross-referencing with autonomous state
+      var enabledValuesForAutoCheck = enabledEntry != null ? log.values().get(enabledEntry) : null;
+
       if (autoEntry != null) {
         var autoValues = log.values().get(autoEntry);
         if (autoValues != null) {
@@ -118,7 +125,22 @@ public final class RobotAnalysisTools {
           for (var tv : autoValues) {
             if (tv.value() instanceof Boolean isAuto) {
               if (isAuto && (lastAutoState == null || !lastAutoState)) {
-                autoStart = tv.timestamp();
+                // Autonomous flag went true — but only count as auto start
+                // if the robot is also enabled (not just pre-match FMS setup)
+                if (ToolUtils.isEnabledAt(enabledValuesForAutoCheck, tv.timestamp())) {
+                  autoStart = tv.timestamp();
+                } else if (autoStart == null) {
+                  // Robot is in auto mode but not yet enabled — find the actual
+                  // enable time while still in auto mode
+                  if (enabledValuesForAutoCheck != null) {
+                    for (var ev : enabledValuesForAutoCheck) {
+                      if (ev.timestamp() > tv.timestamp() && ev.value() instanceof Boolean en && en) {
+                        autoStart = ev.timestamp();
+                        break;
+                      }
+                    }
+                  }
+                }
               }
               if (!isAuto && lastAutoState != null && lastAutoState) {
                 autoEnd = tv.timestamp();

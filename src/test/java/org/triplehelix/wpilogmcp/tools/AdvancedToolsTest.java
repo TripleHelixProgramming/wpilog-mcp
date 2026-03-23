@@ -77,11 +77,13 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Core(12) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(9) + Export(2) + TBA(1) + RevLog(5) = 46 total
+      // Core(12) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(9) + Export(2) + TBA(2) + RevLog(5) + Discovery(2) = 49 total
       // Core tools: list_available_logs, load_log, list_entries, get_entry_info, read_entry,
       //   list_loaded_logs, set_active_log, unload_log, unload_all_logs, list_struct_types, health_check, get_game_info
       // RevLog tools: list_revlog_signals, get_revlog_data, sync_status, set_revlog_offset, wait_for_sync
-      assertEquals(46, registeredTools.size());
+      // TBA tools: get_tba_status, get_tba_match_data
+      // Discovery tools: get_server_guide, suggest_tools
+      assertEquals(49, registeredTools.size());
     }
   }
 

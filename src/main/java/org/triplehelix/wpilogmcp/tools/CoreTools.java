@@ -61,7 +61,11 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List WPILOG files available in the configured log directory with friendly names.";
+      return "List WPILOG files available in the configured log directory with friendly names. "
+          + "IMPORTANT: When TBA is configured, this tool automatically enriches each log with "
+          + "match data including alliance scores, win/loss results, and actual match times. "
+          + "Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! "
+          + "Use this tool first to find logs and get match results, then load_log to analyze details.";
     }
 
     @Override

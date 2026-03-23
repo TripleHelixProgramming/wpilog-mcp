@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Objects;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
@@ -142,6 +143,16 @@ public final class FrcDomainTools {
         lowerEntryNames.put(entryName, entryName.toLowerCase());
       }
 
+      // First pass: find the Enabled values for cross-referencing with auto mode
+      List<TimestampedValue> enabledValuesForTimeline = null;
+      for (var entryName : log.entries().keySet()) {
+        var lower = lowerEntryNames.get(entryName);
+        if (lower.contains("driverstation") && lower.contains("enabled")) {
+          enabledValuesForTimeline = log.values().get(entryName);
+          break;
+        }
+      }
+
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
 
@@ -170,17 +181,63 @@ public final class FrcDomainTools {
           var values = log.values().get(entryName);
           if (values != null) {
             var lastState = (Boolean) null;
+            boolean pendingAutoStart = false;
+            double autoFlagTime = 0;
+            String autoSource = entryName;
             for (var tv : values) {
               if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
               if (tv.value() instanceof Boolean isAuto) {
                 if (lastState == null || !lastState.equals(isAuto)) {
+                  if (isAuto && !ToolUtils.isEnabledAt(enabledValuesForTimeline, tv.timestamp())) {
+                    // Auto flag set but robot not yet enabled — defer the AUTO_START
+                    pendingAutoStart = true;
+                    autoFlagTime = tv.timestamp();
+                    lastState = isAuto;
+                    continue;
+                  }
+                  // If transitioning out of auto and we have a pending deferred AUTO_START,
+                  // resolve it now: find when the robot was first enabled during auto
+                  if (!isAuto && pendingAutoStart && enabledValuesForTimeline != null) {
+                    for (var ev : enabledValuesForTimeline) {
+                      if (ev.timestamp() > autoFlagTime && ev.timestamp() < tv.timestamp()
+                          && ev.value() instanceof Boolean en && en) {
+                        var autoEvent = new JsonObject();
+                        autoEvent.addProperty("timestamp", ev.timestamp());
+                        autoEvent.addProperty("type", "AUTO_START");
+                        autoEvent.addProperty("category", "match_phase");
+                        autoEvent.addProperty("source", autoSource);
+                        events.add(autoEvent);
+                        break;
+                      }
+                    }
+                    pendingAutoStart = false;
+                  }
                   var event = new JsonObject();
                   event.addProperty("timestamp", tv.timestamp());
                   event.addProperty("type", isAuto ? "AUTO_START" : "TELEOP_START");
                   event.addProperty("category", "match_phase");
-                  event.addProperty("source", entryName);
+                  event.addProperty("source", autoSource);
                   events.add(event);
                   lastState = isAuto;
+                }
+              }
+            }
+            // If auto flag was set and robot never transitioned out of auto,
+            // check if robot got enabled while still in auto
+            if (pendingAutoStart && enabledValuesForTimeline != null) {
+              for (var ev : enabledValuesForTimeline) {
+                if (ev.timestamp() > autoFlagTime && inTimeRange(ev.timestamp(), startTime, endTime)
+                    && ev.value() instanceof Boolean en && en) {
+                  var autoState = ToolUtils.getValueAtTimeZoh(values, ev.timestamp());
+                  if (Boolean.TRUE.equals(autoState)) {
+                    var event = new JsonObject();
+                    event.addProperty("timestamp", ev.timestamp());
+                    event.addProperty("type", "AUTO_START");
+                    event.addProperty("category", "match_phase");
+                    event.addProperty("source", autoSource);
+                    events.add(event);
+                  }
+                  break;
                 }
               }
             }
@@ -689,6 +746,8 @@ public final class FrcDomainTools {
           });
 
       // Find auto period (first 15 seconds or until teleop)
+      // IMPORTANT: Auto doesn't truly start until the robot is both in autonomous
+      // mode AND enabled. The FMS sets the Autonomous flag before the countdown ends.
       Double autoStartTime = null;
       Double autoEndTime = null;
 
@@ -698,17 +757,55 @@ public final class FrcDomainTools {
         lowerEntryNames.put(entryName, entryName.toLowerCase());
       }
 
+      // Find enabled values for cross-referencing
+      List<TimestampedValue> enabledValuesForAuto = null;
+      for (var entryName : log.entries().keySet()) {
+        var lower = lowerEntryNames.get(entryName);
+        if (lower.contains("driverstation") && lower.contains("enabled")) {
+          enabledValuesForAuto = log.values().get(entryName);
+          break;
+        }
+      }
+
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
         if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))) {
           var values = log.values().get(entryName);
           if (values != null) {
+            boolean autoFlagSet = false;
             for (TimestampedValue tv : values) {
               if (tv.value() instanceof Boolean isAuto) {
                 if (isAuto && autoStartTime == null) {
-                  autoStartTime = tv.timestamp();
+                  if (ToolUtils.isEnabledAt(enabledValuesForAuto, tv.timestamp())) {
+                    autoStartTime = tv.timestamp();
+                  } else {
+                    autoFlagSet = true; // Auto mode set but not yet enabled
+                  }
                 } else if (!isAuto && autoStartTime != null && autoEndTime == null) {
                   autoEndTime = tv.timestamp();
+                  break;
+                } else if (!isAuto && autoFlagSet) {
+                  // Auto mode ended without ever being enabled — no auto period
+                  autoFlagSet = false;
+                }
+              }
+            }
+            // If auto flag was set but we haven't found the enable yet, scan enabled values
+            if (autoFlagSet && autoStartTime == null && enabledValuesForAuto != null) {
+              // Find the first enable that happens while in auto mode
+              double autoFlagTime = -1;
+              double autoFlagEndTime = Double.MAX_VALUE;
+              for (var tv2 : values) {
+                if (tv2.value() instanceof Boolean isAuto) {
+                  if (isAuto && autoFlagTime < 0) autoFlagTime = tv2.timestamp();
+                  else if (!isAuto && autoFlagTime >= 0) { autoFlagEndTime = tv2.timestamp(); break; }
+                }
+              }
+              for (var ev : enabledValuesForAuto) {
+                if (ev.timestamp() >= autoFlagTime && ev.timestamp() < autoFlagEndTime
+                    && ev.value() instanceof Boolean en && en) {
+                  autoStartTime = ev.timestamp();
+                  autoEndTime = autoFlagEndTime < Double.MAX_VALUE ? autoFlagEndTime : null;
                   break;
                 }
               }

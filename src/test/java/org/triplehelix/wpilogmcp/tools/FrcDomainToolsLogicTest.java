@@ -114,6 +114,84 @@ class FrcDomainToolsLogicTest {
   }
 
   @Nested
+  @DisplayName("get_ds_timeline pre-match auto flag")
+  class GetDsTimelinePreMatchAutoTests {
+    @Test
+    @DisplayName("AUTO_START deferred until robot is enabled")
+    void autoStartDeferredUntilEnabled() throws Exception {
+      // FMS sets Autonomous=true at t=0 (during countdown) but robot is enabled at t=3
+      var enabledValues = new ArrayList<TimestampedValue>();
+      enabledValues.add(new TimestampedValue(0.0, false));
+      enabledValues.add(new TimestampedValue(3.0, true));
+      enabledValues.add(new TimestampedValue(18.0, false));
+
+      var autoValues = new ArrayList<TimestampedValue>();
+      autoValues.add(new TimestampedValue(0.0, true));   // FMS sets auto before match
+      autoValues.add(new TimestampedValue(18.0, false));  // auto ends
+
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_prematch.wpilog")
+          .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
+          .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("get_ds_timeline");
+      var result = tool.execute(new JsonObject()).getAsJsonObject();
+
+      assertTrue(result.get("success").getAsBoolean());
+      var events = result.getAsJsonArray("events");
+
+      // Find the AUTO_START event — should be at t=3 (enable time), not t=0
+      boolean foundAutoStart = false;
+      for (var e : events) {
+        var ev = e.getAsJsonObject();
+        if ("AUTO_START".equals(ev.get("type").getAsString())) {
+          assertEquals(3.0, ev.get("timestamp").getAsDouble(), 0.01,
+              "AUTO_START should be at enable time, not when FMS set auto flag");
+          foundAutoStart = true;
+        }
+      }
+      assertTrue(foundAutoStart, "Should have an AUTO_START event");
+    }
+
+    @Test
+    @DisplayName("AUTO_START at correct time when auto and enabled are simultaneous")
+    void autoStartWhenSimultaneous() throws Exception {
+      // Normal case: Autonomous=true and Enabled=true happen at the same time
+      var enabledValues = new ArrayList<TimestampedValue>();
+      enabledValues.add(new TimestampedValue(0.0, true));
+      enabledValues.add(new TimestampedValue(15.0, false));
+
+      var autoValues = new ArrayList<TimestampedValue>();
+      autoValues.add(new TimestampedValue(0.0, true));
+      autoValues.add(new TimestampedValue(15.0, false));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_normal.wpilog")
+          .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
+          .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("get_ds_timeline");
+      var result = tool.execute(new JsonObject()).getAsJsonObject();
+
+      var events = result.getAsJsonArray("events");
+      boolean foundAutoStart = false;
+      for (var e : events) {
+        var ev = e.getAsJsonObject();
+        if ("AUTO_START".equals(ev.get("type").getAsString())) {
+          assertEquals(0.0, ev.get("timestamp").getAsDouble(), 0.01,
+              "AUTO_START should be at t=0 when auto and enabled are simultaneous");
+          foundAutoStart = true;
+        }
+      }
+      assertTrue(foundAutoStart, "Should have an AUTO_START event");
+    }
+  }
+
+  @Nested
   @DisplayName("profile_mechanism Tool")
   class ProfileMechanismToolTests {
     @Test

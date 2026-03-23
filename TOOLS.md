@@ -1,9 +1,24 @@
 # wpilog-mcp Tool Reference
 
-Complete documentation for all 46 tools available in wpilog-mcp.
+Complete documentation for all 49 tools available in wpilog-mcp.
+
+## Important: Concurrency Limitations
+
+> **⚠️ NOT SAFE FOR CONCURRENT USE**
+>
+> This server maintains shared state (active log, log cache) and is designed for single-client, sequential operation. **Do not call multiple tools in parallel** from the same session—execute tool calls sequentially.
+>
+> Any concurrent use would require coarse-grained locking and fully reinitializing state on each request (e.g., clients cannot assume which log is currently loaded between calls).
+
+**Workaround:** Running multiple *separate* server instances pointing to the same log directory is safe (disk cache uses file locking and atomic operations).
+
+**⚠️ LLM Sub-Agent Warning:** Some LLM frameworks spawn sub-agents to parallelize multi-log analysis. These sub-agents may ignore sequential execution guidance. Explicitly instruct agents: *"Analyze each log file one at a time, completing all analysis before moving to the next."*
 
 ## Table of Contents
 
+- [Discovery Tools](#discovery-tools)
+  - [get_server_guide](#get_server_guide)
+  - [suggest_tools](#suggest_tools)
 - [Core Tools](#core-tools)
   - [list_available_logs](#list_available_logs)
   - [load_log](#load_log)
@@ -39,6 +54,7 @@ Complete documentation for all 46 tools available in wpilog-mcp.
   - [moi_regression](#moi_regression)
 - [TBA Integration](#tba-integration)
   - [get_tba_status](#get_tba_status)
+  - [get_tba_match_data](#get_tba_match_data)
 - [Export Tools](#export-tools)
   - [export_csv](#export_csv)
   - [generate_report](#generate_report)
@@ -58,6 +74,100 @@ Complete documentation for all 46 tools available in wpilog-mcp.
   - [sync_status](#sync_status)
   - [set_revlog_offset](#set_revlog_offset)
   - [wait_for_sync](#wait_for_sync)
+
+---
+
+## Discovery Tools
+
+These tools help LLM agents discover and effectively use the server's capabilities. **Call `get_server_guide` first** when starting a new analysis session to understand what tools are available.
+
+### `get_server_guide`
+Get a comprehensive overview of all server capabilities, organized by category with usage guidance and anti-patterns to avoid.
+
+**IMPORTANT:** Call this tool first to understand what analysis capabilities are available. This server has 49+ specialized tools—don't write custom analysis code when a built-in tool already exists.
+
+**Parameters:**
+- `category` (optional): Filter by category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`
+- `include_examples` (optional): Include example use cases for each tool (default: true)
+
+**Returns:** Structured overview including:
+- `overview`: Server name, version, total tools, purpose
+- `critical_guidance`: Key anti-patterns to avoid (e.g., "NEVER compute statistics manually")
+- `limitations`: Concurrency constraints (NOT SAFE FOR CONCURRENT USE)
+- `categories`: Array of tool categories with descriptions, anti-patterns, and tool details
+- `common_workflows`: Step-by-step workflows for common analysis tasks
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "overview": {
+    "server_name": "wpilog-mcp",
+    "version": "0.6.1",
+    "total_tools": 49,
+    "purpose": "Parse and analyze FRC robot telemetry logs"
+  },
+  "critical_guidance": {
+    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code",
+    "statistics_tip": "NEVER compute mean/std/percentiles manually—use get_statistics",
+    "tba_tip": "To get match scores: use list_available_logs or get_tba_match_data"
+  },
+  "limitations": {
+    "concurrency": "NOT SAFE FOR CONCURRENT USE. Execute tool calls sequentially.",
+    "single_session": "Designed for single-client use"
+  },
+  "categories": [...]
+}
+```
+
+### `suggest_tools`
+Given a natural language description of what you want to analyze, this tool recommends the most relevant tools and provides a suggested workflow.
+
+**Parameters:**
+- `task` (required): Natural language description of what you want to analyze (e.g., "check why our auto was inconsistent" or "investigate brownout during teleop")
+- `max_suggestions` (optional): Maximum number of tools to suggest (default: 5)
+
+**Returns:**
+- `suggestions`: Array of recommended tools with relevance scores and example uses
+- `suggested_workflow`: Step-by-step workflow for the task
+- `anti_patterns`: Common mistakes to avoid for this type of analysis
+
+**Example Request:**
+```json
+{
+  "task": "Why did we brownout during teleop?"
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "task": "why did we brownout during teleop?",
+  "suggestions": [
+    {
+      "tool": "power_analysis",
+      "description": "Analyze battery voltage and current distribution",
+      "relevance_score": 8,
+      "category": "robot_analysis"
+    },
+    {
+      "tool": "find_condition",
+      "description": "Find timestamps where values cross thresholds",
+      "relevance_score": 4
+    }
+  ],
+  "suggested_workflow": [
+    "1. list_available_logs - Find available logs",
+    "2. load_log - Load the specific match",
+    "3. power_analysis - Check for brownouts and current peaks",
+    "4. find_condition - Find exact timestamps of voltage drops"
+  ],
+  "anti_patterns": [
+    "Don't manually check voltage thresholds—use power_analysis"
+  ]
+}
+```
 
 ---
 
@@ -933,6 +1043,86 @@ When TBA is configured and `list_available_logs` is called, logs that have FRC e
 - Actual match start time (corrects midnight timestamp bug)
 
 Only logs with valid event codes, match types (Qualification, Semifinal, Final), and team numbers in their metadata are enriched. Practice matches, simulations, replays, and logs without FMS metadata are not enriched.
+
+### `get_tba_match_data`
+Query match scores and detailed results directly from The Blue Alliance. **Use this tool to answer questions about match outcomes**—don't guess or infer match results from telemetry.
+
+**Use Cases:**
+- "What was our score?"
+- "Did we win?"
+- "How many autonomous points did we score?"
+- "What were the match results?"
+
+**Parameters:**
+- `year` (required): Competition year (e.g., 2024, 2025, 2026)
+- `event_code` (required): TBA event code (e.g., "caph" for Poway, "cmptx" for Houston Championship). Must be lowercase.
+- `match_type` (required): Match type: "Qualification", "Quarterfinal", "Semifinal", "Final", or "Elimination"
+- `match_number` (required): Match number within the type (1-indexed)
+- `team_number` (optional): Your team number to highlight your alliance's data
+
+**Returns:**
+- `match_found`: Whether the match was found in TBA
+- `winning_alliance`: "red", "blue", or "tie_or_not_played"
+- `alliances`: Score and team list for each alliance, with `your_alliance` and `won` flags if team_number provided
+- `score_breakdown`: Detailed scoring (autoPoints, teleopPoints, endgamePoints, etc.) when available
+
+**Example Request:**
+```json
+{
+  "year": 2024,
+  "event_code": "caph",
+  "match_type": "Qualification",
+  "match_number": 42,
+  "team_number": 2363
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "match_found": true,
+  "match_key": "2024caph_qm42",
+  "comp_level": "qm",
+  "match_number": 42,
+  "winning_alliance": "red",
+  "alliances": {
+    "red": {
+      "score": 85,
+      "teams": [2363, 1234, 5678],
+      "your_alliance": true,
+      "won": true
+    },
+    "blue": {
+      "score": 72,
+      "teams": [9012, 3456, 7890]
+    }
+  },
+  "score_breakdown": {
+    "red": {
+      "autoPoints": 18,
+      "teleopPoints": 52,
+      "endgamePoints": 15,
+      "totalPoints": 85
+    },
+    "blue": {
+      "autoPoints": 12,
+      "teleopPoints": 48,
+      "endgamePoints": 12,
+      "totalPoints": 72
+    }
+  }
+}
+```
+
+**Error Handling:**
+- If TBA is not configured: Returns error with instructions to set `TBA_API_KEY`
+- If match not found: Returns `match_found: false` with suggestions (verify event code, try specific elimination type)
+
+**Game-Specific Scoring:**
+The score breakdown includes game-specific fields that vary by year:
+- **2024 Crescendo**: `autoLeavePoints`, `autoAmpNotePoints`, `autoSpeakerNotePoints`, `teleopAmpNotePoints`, `teleopSpeakerNotePoints`
+- **2025 Reefscape**: `autoCoralPoints`, `autoAlgaePoints`, `teleopCoralPoints`, `teleopAlgaePoints`, `netAlgaePoints`, `bargePoints`
 
 ---
 

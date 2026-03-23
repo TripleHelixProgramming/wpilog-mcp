@@ -170,6 +170,45 @@ public final class ToolUtils {
     return null;
   }
 
+  // ==================== MATCH PHASE DETECTION UTILITIES ====================
+
+  /**
+   * Checks if the robot is enabled at a given timestamp using Zero-Order Hold.
+   *
+   * <p>The FMS sets mode flags (e.g., Autonomous) before the robot is actually enabled.
+   * Match phases should only start when the robot is both in the correct mode AND enabled.
+   *
+   * @param enabledValues The timestamped Enabled boolean values (may be null)
+   * @param timestamp The timestamp to check
+   * @return true if the robot is enabled at that timestamp, or true if no enabled data exists (permissive fallback)
+   */
+  public static boolean isEnabledAt(List<TimestampedValue> enabledValues, double timestamp) {
+    if (enabledValues == null || enabledValues.isEmpty()) {
+      return true; // No enabled data — fall back to permissive behavior
+    }
+    var value = getValueAtTimeZoh(enabledValues, timestamp);
+    return Boolean.TRUE.equals(value);
+  }
+
+  /**
+   * Finds a DriverStation entry name in the log matching the given keyword.
+   *
+   * @param log The parsed log
+   * @param keyword The keyword to match (e.g., "enabled", "autonomous")
+   * @return The entry name, or null if not found
+   */
+  public static String findDsEntry(ParsedLog log, String keyword) {
+    for (var entryName : log.entries().keySet()) {
+      var lower = entryName.toLowerCase();
+      if (lower.contains("driverstation") && lower.contains(keyword)) {
+        // Exclude "command" entries for auto detection
+        if (keyword.contains("auto") && lower.contains("command")) continue;
+        return entryName;
+      }
+    }
+    return null;
+  }
+
   // ==================== SIGNAL ALIGNMENT UTILITIES ====================
 
   /**

@@ -5,6 +5,35 @@ All notable changes to wpilog-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-23
+
+### Added
+
+#### Discovery Tools for LLM Agent Discoverability
+- **`get_server_guide` tool** — Comprehensive overview of all 49 server capabilities organized by category. Returns structured JSON with tool descriptions, usage examples, anti-patterns to avoid, common workflows, and critical guidance. Includes a `limitations` section warning about concurrency constraints. Call this first when starting a new analysis session.
+- **`suggest_tools` tool** — Recommendation engine that suggests relevant tools for a natural language task description. Uses keyword matching and semantic understanding to recommend tools with relevance scores, anti-patterns, and suggested workflows.
+- **`get_tba_match_data` tool** — Direct access to The Blue Alliance match data. Query specific match scores, win/loss status, detailed score breakdowns (autonomous points, teleop points, etc.), and alliance compositions. Use this instead of guessing match outcomes from telemetry.
+
+#### Enhanced Tool Descriptions ("Trojan Horse" Pattern)
+- **`list_available_logs`**: Now prominently mentions TBA enrichment and match score availability
+- **`get_tba_status`**: Enhanced to explain TBA capabilities and direct users to get_tba_match_data
+- **`get_statistics`**: Emphasizes "NEVER compute statistics manually—always use this tool"
+- **`get_match_phases`**: Emphasizes "NEVER manually parse timestamps—always use this tool"
+- **`time_correlate`**: Emphasizes "NEVER compute correlation manually—always use this tool"
+
+#### Concurrency Warning and Workarounds
+- **Server limitations documented** — The `get_server_guide` tool now includes a `limitations` section explicitly warning that the server is NOT SAFE FOR CONCURRENT USE. Clients must execute tool calls sequentially. The server maintains shared state (active log, log cache) that would conflict under concurrent access.
+- **Multi-instance workaround** — Documented that running multiple *separate* server instances pointing to the same log directory IS safe. The disk cache uses file locking and atomic operations to prevent corruption.
+- **LLM sub-agent warning** — Added explicit warning about LLM frameworks (Claude Code, AutoGPT, LangGraph, etc.) that may spawn sub-agents to parallelize work. Users must explicitly instruct agents to operate sequentially when analyzing multiple logs.
+
+### Changed
+- **Tool count**: 46 → 49 (added get_server_guide, suggest_tools, get_tba_match_data)
+
+### Testing
+- Added `DiscoveryToolsTest` with 19 tests covering get_server_guide and suggest_tools functionality
+- Extended `TbaToolsLogicTest` with 5 tests for get_tba_match_data schema, description, and behavior
+- All 965 tests passing
+
 ## [0.6.0] - 2026-03-21
 
 ### Added

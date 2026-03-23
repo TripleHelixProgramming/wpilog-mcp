@@ -78,7 +78,10 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Get statistics (min, max, mean, median, std_dev) for a numeric entry."
+      return "BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry. "
+          + "NEVER compute these manually—always use this tool! "
+          + "Supports optional time range filtering (start_time, end_time). "
+          + "Includes data quality metrics and sample size for confidence assessment."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -431,7 +434,10 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Compute Pearson correlation coefficient between two numeric entries."
+      return "BUILT-IN correlation: NEVER compute correlation manually—always use this tool! "
+          + "Computes Pearson correlation coefficient with statistical significance (p-value). "
+          + "Handles timestamp alignment automatically via linear interpolation. "
+          + "Returns sample count for confidence assessment."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL
           + " Correlation does not imply causation—consider confounding variables.";
     }
