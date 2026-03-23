@@ -8,7 +8,7 @@ import com.google.gson.JsonObject;
 import java.util.List;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.revlog.RevLogSignal;
 import org.triplehelix.wpilogmcp.sync.ConfidenceLevel;
@@ -41,12 +41,12 @@ public final class RevLogTools {
    *
    * @param server The MCP server to register tools with
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new ListRevLogSignalsTool());
-    server.registerTool(new GetRevLogDataTool());
-    server.registerTool(new SyncStatusTool());
-    server.registerTool(new SetRevLogOffsetTool());
-    server.registerTool(new WaitForSyncTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new ListRevLogSignalsTool());
+    registry.registerTool(new GetRevLogDataTool());
+    registry.registerTool(new SyncStatusTool());
+    registry.registerTool(new SetRevLogOffsetTool());
+    registry.registerTool(new WaitForSyncTool());
   }
 
   /**
@@ -282,7 +282,7 @@ public final class RevLogTools {
       if (includeStats && !filtered.isEmpty()) {
         double[] numericData = extractNumericData(filtered);
         if (numericData.length > 0) {
-          double sum = 0, min = Double.MAX_VALUE, max = Double.MIN_VALUE;
+          double sum = 0, min = Double.MAX_VALUE, max = Double.NEGATIVE_INFINITY;
           for (double d : numericData) {
             sum += d;
             min = Math.min(min, d);

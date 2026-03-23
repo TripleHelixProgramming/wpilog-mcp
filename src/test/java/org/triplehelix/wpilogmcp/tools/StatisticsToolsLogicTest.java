@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for StatisticsTools using synthetic log data.
@@ -27,7 +27,7 @@ class StatisticsToolsLogicTest {
   void setUp() {
     tools = new ArrayList<>();
 
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
@@ -35,7 +35,7 @@ class StatisticsToolsLogicTest {
       }
     };
 
-    StatisticsTools.registerAll(capturingServer);
+    StatisticsTools.registerAll(capturingRegistry);
   }
 
   @AfterEach
@@ -261,6 +261,38 @@ class StatisticsToolsLogicTest {
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals(0.0, resultObj.get("mean").getAsDouble(), 0.001);
       assertEquals(0.0, resultObj.get("std_dev").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("filters out NaN and Infinity values")
+    void filtersNanAndInfinity() throws Exception {
+      // Data: [1.0, NaN, 3.0, Infinity, 5.0] → filtered to [1.0, 3.0, 5.0]
+      var log = new MockLogBuilder()
+          .setPath("/test/stats_nan.wpilog")
+          .addNumericEntry("/Test/Values",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{1.0, Double.NaN, 3.0, Double.POSITIVE_INFINITY, 5.0})
+          .build();
+
+      setActiveLog(log);
+
+      var tool = findTool("get_statistics");
+      var args = new JsonObject();
+      args.addProperty("name", "/Test/Values");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(3, resultObj.get("count").getAsInt(),
+          "Should count only finite values: [1.0, 3.0, 5.0]");
+      assertEquals(3.0, resultObj.get("mean").getAsDouble(), 0.001,
+          "Mean of [1.0, 3.0, 5.0] should be 3.0");
+      assertEquals(1.0, resultObj.get("min").getAsDouble(), 0.001);
+      assertEquals(5.0, resultObj.get("max").getAsDouble(), 0.001);
+      assertEquals(3.0, resultObj.get("median").getAsDouble(), 0.001);
+      // Std dev of [1, 3, 5] with Bessel's: sqrt(((1-3)^2 + (3-3)^2 + (5-3)^2) / 2) = sqrt(4) = 2.0
+      assertEquals(2.0, resultObj.get("std_dev").getAsDouble(), 0.001);
     }
   }
 

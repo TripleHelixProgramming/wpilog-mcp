@@ -9,8 +9,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 class TbaToolsLogicTest {
 
@@ -19,14 +19,14 @@ class TbaToolsLogicTest {
   @BeforeEach
   void setUp() {
     tools = new ArrayList<>();
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
         super.registerTool(tool);
       }
     };
-    TbaTools.registerAll(capturingServer);
+    TbaTools.registerAll(capturingRegistry);
   }
 
   private Tool findTool(String name) {

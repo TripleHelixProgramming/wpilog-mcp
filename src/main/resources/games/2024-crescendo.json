@@ -1,0 +1,101 @@
+{
+  "format_version": 1,
+  "season": 2024,
+  "game_name": "CRESCENDO",
+  "full_title": "CRESCENDO presented by Haas",
+  "source": "https://firstfrc.blob.core.windows.net/frc2024/Manual/2024GameManual.pdf",
+  "manual_version": "initial",
+  "generated_at": "2026-03-23T00:00:00Z",
+
+  "match_timing": {
+    "auto_duration_sec": 15,
+    "auto_to_teleop_delay_sec": 3,
+    "teleop_duration_sec": 135,
+    "total_duration_sec": 150,
+    "endgame_start_before_end_sec": 20,
+    "endgame_duration_sec": 20
+  },
+
+  "game_pieces": [
+    {
+      "name": "Note",
+      "type": "foam ring",
+      "diameter_m": 0.356,
+      "diameter_in": 14.0,
+      "preload_max_per_robot": 1,
+      "preload_max_per_alliance": 3
+    }
+  ],
+
+  "scoring": {
+    "match_points": {
+      "auto": {
+        "leave": 2,
+        "amp": 5,
+        "speaker": 5
+      },
+      "teleop": {
+        "amp": 1,
+        "speaker_unamplified": 2,
+        "speaker_amplified": 5
+      },
+      "endgame": {
+        "park": 1,
+        "onstage": 3,
+        "onstage_spotlit": 4,
+        "harmony": 2,
+        "trap": 5
+      }
+    },
+    "ranking_points": {
+      "win": 2,
+      "tie": 1,
+      "melody_rp": {
+        "description": "Score a threshold number of Notes",
+        "value": 1,
+        "regional_threshold": 18,
+        "district_championship_threshold": 18,
+        "championship_threshold": 18
+      },
+      "ensemble_rp": {
+        "description": "Achieve a stage threshold plus minimum score",
+        "value": 1,
+        "regional_threshold": 10,
+        "district_championship_threshold": 10,
+        "championship_threshold": 10
+      }
+    },
+    "fouls": {
+      "minor_foul": 2,
+      "major_foul": 5
+    }
+  },
+
+  "field_geometry": {
+    "field_length_m": 16.54,
+    "field_length_in": 651.25,
+    "field_width_m": 8.02,
+    "field_width_in": 315.5,
+    "speaker_opening_width_m": 1.05,
+    "amp_width_m": 0.61,
+    "stage_width_m": 3.35
+  },
+
+  "robot_constraints": {
+    "max_starting_perimeter_in": 120.0,
+    "max_starting_height_in": 48.0,
+    "max_weight_lbs": 125.0,
+    "max_weight_with_bumpers_lbs": null,
+    "note": "Weight excludes bumpers and battery"
+  },
+
+  "typical_mechanisms": ["shooter", "intake", "climber", "amp_scorer", "trap_scorer"],
+
+  "analysis_hints": {
+    "endgame_activity": "Climbing attempts (onstage) and trap scoring typically occur in the final 20 seconds.",
+    "scoring_context": "Notes can be scored in Speaker (2 pts unamplified, 5 pts amplified) or Amp (1 pt). Amplification lasts 10 seconds after scoring 2 Notes in Amp.",
+    "cycle_time": "Note cycle = intake from field/source -> score in Speaker or Amp. Track time between successive scores.",
+    "auto_importance": "Auto Notes score 5 pts each in Speaker. Leaving the starting zone scores 2 pts.",
+    "stage_context": "Ensemble RP requires stage points plus minimum match score. Harmony bonus for multiple robots on same chain."
+  }
+}

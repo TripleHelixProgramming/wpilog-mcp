@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
@@ -30,11 +30,11 @@ public final class QueryTools {
   /**
    * Registers all query tools with the MCP server.
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new SearchEntriesTool());
-    server.registerTool(new GetTypesTool());
-    server.registerTool(new FindConditionTool());
-    server.registerTool(new SearchStringsTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new SearchEntriesTool());
+    registry.registerTool(new GetTypesTool());
+    registry.registerTool(new FindConditionTool());
+    registry.registerTool(new SearchStringsTool());
   }
 
   static class SearchEntriesTool extends LogRequiringTool {
@@ -221,8 +221,8 @@ public final class QueryTools {
         case "lte", "<=" -> value <= threshold;
         case "gt", ">" -> value > threshold;
         case "gte", ">=" -> value >= threshold;
-        case "eq", "==" -> Math.abs(value - threshold) < 0.0001;
-        default -> false;
+        case "eq", "==" -> Math.abs(value - threshold) <= Math.max(1e-9, Math.abs(threshold) * 1e-6);
+        default -> throw new IllegalArgumentException("Unknown operator: " + operator + ". Valid operators: lt, <, lte, <=, gt, >, gte, >=, eq, ==");
       };
     }
 

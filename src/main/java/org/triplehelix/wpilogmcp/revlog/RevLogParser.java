@@ -100,7 +100,7 @@ public class RevLogParser {
     Map<String, List<TimestampedValue>> signalValues = new LinkedHashMap<>();
 
     double minTimestamp = Double.MAX_VALUE;
-    double maxTimestamp = Double.MIN_VALUE;
+    double maxTimestamp = Double.NEGATIVE_INFINITY;
     long recordCount = 0;
 
     logger.debug("Starting revlog parse: {}", pathStr);
@@ -189,7 +189,7 @@ public class RevLogParser {
         devices,
         signals,
         minTimestamp == Double.MAX_VALUE ? 0 : minTimestamp,
-        maxTimestamp == Double.MIN_VALUE ? 0 : maxTimestamp,
+        maxTimestamp == Double.NEGATIVE_INFINITY ? 0 : maxTimestamp,
         recordCount);
   }
 

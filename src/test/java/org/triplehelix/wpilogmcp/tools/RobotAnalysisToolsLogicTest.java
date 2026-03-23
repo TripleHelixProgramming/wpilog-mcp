@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for RobotAnalysisTools using synthetic log data.
@@ -26,7 +26,7 @@ class RobotAnalysisToolsLogicTest {
   void setUp() {
     tools = new ArrayList<>();
 
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
@@ -34,7 +34,7 @@ class RobotAnalysisToolsLogicTest {
       }
     };
 
-    RobotAnalysisTools.registerAll(capturingServer);
+    RobotAnalysisTools.registerAll(capturingRegistry);
   }
 
   @AfterEach
@@ -920,6 +920,91 @@ class RobotAnalysisToolsLogicTest {
       var phases = result.getAsJsonObject("phases");
       assertTrue(phases.has("enabled"), "Should have generic 'enabled' phase");
       assertTrue(result.has("warnings"), "Should warn about missing auto/teleop distinction");
+    }
+  }
+
+  @Nested
+  @DisplayName("compare_matches Tool")
+  class CompareMatchesToolTests {
+
+    @Test
+    @DisplayName("returns error when fewer than 2 logs loaded")
+    void returnsErrorWithFewerThanTwoLogs() throws Exception {
+      // Load only one log
+      var log = new MockLogBuilder()
+          .setPath("/test/single_match.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2}, new double[]{12.5, 12.3, 12.1})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("compare_matches");
+      var args = new JsonObject();
+      args.addProperty("name", "/Robot/BatteryVoltage");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("2 logs"),
+          "Error should indicate need for at least 2 logs");
+    }
+
+    @Test
+    @DisplayName("compares same entry across two loaded logs")
+    void comparesSameEntryAcrossTwoLogs() throws Exception {
+      var manager = LogManager.getInstance();
+
+      // Load two logs with the same entry but different values
+      var log1 = new MockLogBuilder()
+          .setPath("/test/match1.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{12.5, 12.3, 12.1, 12.4, 12.2})
+          .build();
+
+      var log2 = new MockLogBuilder()
+          .setPath("/test/match2.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{11.5, 11.0, 10.5, 11.2, 10.8})
+          .build();
+
+      manager.testPutLog(log1.path(), log1);
+      manager.testPutLog(log2.path(), log2);
+      manager.testSetActiveLogPath(log1.path());
+
+      var tool = findTool("compare_matches");
+      var args = new JsonObject();
+      args.addProperty("name", "/Robot/BatteryVoltage");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.has("comparisons"), "Should have comparisons array");
+      var comparisons = resultObj.getAsJsonArray("comparisons");
+      assertEquals(2, comparisons.size(), "Should have 2 comparison entries");
+
+      // Both should have statistics
+      for (int i = 0; i < comparisons.size(); i++) {
+        var comp = comparisons.get(i).getAsJsonObject();
+        assertTrue(comp.has("log_filename"), "Each comparison should have log_filename");
+        assertTrue(comp.has("statistics"), "Each comparison should have statistics");
+        var stats = comp.getAsJsonObject("statistics");
+        assertTrue(stats.has("min"), "Statistics should have min");
+        assertTrue(stats.has("max"), "Statistics should have max");
+        assertTrue(stats.has("mean"), "Statistics should have mean");
+      }
+
+      // Verify the statistics are different between the two logs
+      var stats1 = comparisons.get(0).getAsJsonObject().getAsJsonObject("statistics");
+      var stats2 = comparisons.get(1).getAsJsonObject().getAsJsonObject("statistics");
+      assertNotEquals(
+          stats1.get("mean").getAsDouble(),
+          stats2.get("mean").getAsDouble(),
+          0.001,
+          "The two logs should have different mean voltages");
     }
   }
 }

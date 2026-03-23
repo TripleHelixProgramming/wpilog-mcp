@@ -7,11 +7,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
@@ -23,14 +25,14 @@ public final class RobotAnalysisTools {
 
   private RobotAnalysisTools() {}
 
-  public static void registerAll(McpServer server) {
-    server.registerTool(new GetMatchPhasesTool());
-    server.registerTool(new AnalyzeSwerveTool());
-    server.registerTool(new PowerAnalysisTool());
-    server.registerTool(new CanHealthTool());
-    server.registerTool(new CompareMatchesTool());
-    server.registerTool(new GetCodeMetadataTool());
-    server.registerTool(new MoiRegressionTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new GetMatchPhasesTool());
+    registry.registerTool(new AnalyzeSwerveTool());
+    registry.registerTool(new PowerAnalysisTool());
+    registry.registerTool(new CanHealthTool());
+    registry.registerTool(new CompareMatchesTool());
+    registry.registerTool(new GetCodeMetadataTool());
+    registry.registerTool(new MoiRegressionTool());
   }
 
   static class GetMatchPhasesTool extends LogRequiringTool {
@@ -202,6 +204,22 @@ public final class RobotAnalysisTools {
         if (tEnd > teleopStart) {
           phases.add("teleop", createPhase(teleopStart, tEnd, "Teleop"));
           teleopEnd = tEnd;
+
+          // Add endgame phase: use game knowledge if available, otherwise default 20s before teleop end
+          double endgameBeforeEnd = 20.0; // default
+          try {
+            var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
+            var gameData = kb.getCurrentGame();
+            if (gameData != null) {
+              endgameBeforeEnd = gameData.endgameStartBeforeEndSec();
+            }
+          } catch (Exception ignored) {
+            // Fall back to default
+          }
+          double endgameStart = tEnd - endgameBeforeEnd;
+          if (endgameStart > teleopStart && endgameStart < tEnd) {
+            phases.add("endgame", createPhase(endgameStart, tEnd, "Endgame"));
+          }
         }
       }
 
@@ -363,8 +381,9 @@ public final class RobotAnalysisTools {
 
     /** Detects wheel slip by comparing setpoint and measured module state entries. */
     private JsonObject analyzeWheelSlip(ParsedLog log, List<String> stateEntries, double threshold) {
-      // Find setpoint/measured pairs by naming convention
+      // Find setpoint/measured pairs by naming convention (deduplicated)
       var pairs = new ArrayList<String[]>(); // [setpoint, measured]
+      Set<String> seenPairs = new HashSet<>();
       for (var entry : stateEntries) {
         var lower = entry.toLowerCase();
         if (lower.contains("setpoint") || lower.contains("desired") || lower.contains("target")) {
@@ -374,13 +393,19 @@ public final class RobotAnalysisTools {
             var otherLower = other.toLowerCase();
             if ((otherLower.contains("measured") || otherLower.contains("actual") || otherLower.contains("state"))
                 && other.replaceAll("(?i)(measured|actual|state)", "").equalsIgnoreCase(base)) {
-              pairs.add(new String[]{entry, other});
+              String pairKey = entry + "|" + other;
+              if (seenPairs.add(pairKey)) {
+                pairs.add(new String[]{entry, other});
+              }
             }
           }
           // Also try: same prefix, Setpoint vs Measured suffix
           for (var other : stateEntries) {
             if (!other.equals(entry) && sharePrefix(entry, other)) {
-              pairs.add(new String[]{entry, other});
+              String pairKey = entry + "|" + other;
+              if (seenPairs.add(pairKey)) {
+                pairs.add(new String[]{entry, other});
+              }
             }
           }
         }
@@ -396,30 +421,44 @@ public final class RobotAnalysisTools {
         var measuredVals = log.values().get(pair[1]);
         if (setpointVals == null || measuredVals == null) continue;
 
-        double[] setpointSpeeds = extractSpeeds(setpointVals);
-        double[] measuredSpeeds = extractSpeeds(measuredVals);
-
-        int len = Math.min(setpointSpeeds.length, measuredSpeeds.length);
-        if (len == 0) continue;
+        // Use measured timestamps as reference, interpolate setpoint speeds
+        // This handles different sample rates correctly
+        if (setpointVals.isEmpty() || measuredVals.isEmpty()) continue;
 
         double maxSlip = 0;
         double sumSlip = 0;
         int slipEvents = 0;
+        int comparedCount = 0;
 
-        for (int i = 0; i < len; i++) {
-          double slip = Math.abs(setpointSpeeds[i] - measuredSpeeds[i]);
-          maxSlip = Math.max(maxSlip, slip);
-          sumSlip += slip;
-          if (slip > threshold) slipEvents++;
+        for (var mv : measuredVals) {
+          double mSpeed = extractSingleSpeed(mv);
+          if (Double.isNaN(mSpeed)) continue;
+          mSpeed = Math.abs(mSpeed);
+
+          // Interpolate setpoint speed at this measured timestamp
+          Double sSpeedInterp = interpolateSpeedAtTime(setpointVals, mv.timestamp());
+          if (sSpeedInterp == null) continue;
+          double sSpeed = Math.abs(sSpeedInterp);
+
+          if (sSpeed > 0.01) { // minimum speed to avoid division by near-zero
+            double slip = Math.abs(mSpeed - sSpeed) / sSpeed;
+            maxSlip = Math.max(maxSlip, slip);
+            sumSlip += slip;
+            if (Math.abs(mSpeed - sSpeed) > threshold) slipEvents++;
+            comparedCount++;
+          }
         }
+
+        if (comparedCount == 0) continue;
 
         var moduleSlip = new JsonObject();
         moduleSlip.addProperty("setpoint_entry", pair[0]);
         moduleSlip.addProperty("measured_entry", pair[1]);
-        moduleSlip.addProperty("max_slip_mps", maxSlip);
-        moduleSlip.addProperty("avg_slip_mps", sumSlip / len);
+        moduleSlip.addProperty("max_slip_ratio", maxSlip);
+        moduleSlip.addProperty("avg_slip_ratio", sumSlip / comparedCount);
         moduleSlip.addProperty("slip_events", slipEvents);
-        moduleSlip.addProperty("slip_event_rate", (double) slipEvents / len);
+        moduleSlip.addProperty("slip_event_rate", (double) slipEvents / comparedCount);
+        moduleSlip.addProperty("samples_compared", comparedCount);
         moduleSlips.add(moduleSlip);
       }
 
@@ -464,12 +503,19 @@ public final class RobotAnalysisTools {
       String worstModule = "";
 
       for (int i = 0; i < minLen; i++) {
-        double sum = 0;
-        for (var angles : moduleAngles) sum += angles[i];
-        double mean = sum / moduleAngles.size();
+        // Circular mean: average of angles on the unit circle
+        double sinSum = 0, cosSum = 0;
+        for (var angles : moduleAngles) {
+          sinSum += Math.sin(angles[i]);
+          cosSum += Math.cos(angles[i]);
+        }
+        double circularMean = Math.atan2(sinSum / moduleAngles.size(), cosSum / moduleAngles.size());
 
         for (int m = 0; m < moduleAngles.size(); m++) {
-          double dev = Math.abs(moduleAngles.get(m)[i] - mean);
+          // Angular distance (handles wrapping at +/- pi)
+          double dev = Math.abs(Math.atan2(
+              Math.sin(moduleAngles.get(m)[i] - circularMean),
+              Math.cos(moduleAngles.get(m)[i] - circularMean)));
           if (dev > maxDeviation) {
             maxDeviation = dev;
             worstModule = moduleNames.get(m);
@@ -581,6 +627,43 @@ public final class RobotAnalysisTools {
           .filter(v -> v instanceof Number)
           .mapToDouble(v -> ((Number) v).doubleValue())
           .toArray();
+    }
+
+    /** Extracts speed from a single TimestampedValue (Map with speed_mps). Returns NaN if not available. */
+    private double extractSingleSpeed(TimestampedValue tv) {
+      if (tv.value() instanceof Map) {
+        var speed = ((Map<?, ?>) tv.value()).get("speed_mps");
+        if (speed instanceof Number) return ((Number) speed).doubleValue();
+      }
+      return Double.NaN;
+    }
+
+    /** Interpolates speed at a given timestamp using linear interpolation on the speed_mps field. */
+    private Double interpolateSpeedAtTime(List<TimestampedValue> values, double targetTimestamp) {
+      if (values == null || values.size() < 2) return null;
+
+      // Binary search for the insertion point
+      int lo = 0, hi = values.size() - 1;
+      while (lo < hi - 1) {
+        int mid = (lo + hi) >>> 1;
+        if (values.get(mid).timestamp() <= targetTimestamp) lo = mid;
+        else hi = mid;
+      }
+
+      double t0 = values.get(lo).timestamp();
+      double t1 = values.get(hi).timestamp();
+      double s0 = extractSingleSpeed(values.get(lo));
+      double s1 = extractSingleSpeed(values.get(hi));
+
+      if (Double.isNaN(s0) || Double.isNaN(s1)) return null;
+      if (targetTimestamp < values.get(0).timestamp() || targetTimestamp > values.get(values.size() - 1).timestamp()) {
+        return null;
+      }
+
+      double dt = t1 - t0;
+      if (dt < 1e-9) return s0;
+      double frac = (targetTimestamp - t0) / dt;
+      return s0 + frac * (s1 - s0);
     }
 
     private double[] extractAngles(List<TimestampedValue> values) {
@@ -719,26 +802,95 @@ public final class RobotAnalysisTools {
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
 
-      var errorCounts = log.entries().entrySet().stream()
-          .filter(e -> "string".equals(e.getValue().type()))
-          .collect(Collectors.toMap(Map.Entry::getKey, e -> {
-            var values = log.values().get(e.getKey());
-            return values == null ? 0L : values.stream()
-                .filter(tv -> tv.value() instanceof String s && isCanError(s))
-                .count();
-          }))
-          .entrySet().stream()
-          .filter(e -> e.getValue() > 0)
-          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+      // Find the DriverStation Enabled entry for cross-referencing
+      String enabledEntryName = findDsEntry(log, "enabled");
+      List<TimestampedValue> enabledValues = enabledEntryName != null
+          ? log.values().get(enabledEntryName) : null;
+      boolean hasEnabledData = enabledValues != null && !enabledValues.isEmpty();
+
+      long totalEnabled = 0;
+      long totalDisabled = 0;
+      long totalAll = 0;
+
+      var errorCounts = new JsonObject();
+      var allCanErrorValues = new ArrayList<TimestampedValue>();
+
+      for (var entry : log.entries().entrySet()) {
+        if (!"string".equals(entry.getValue().type())) continue;
+        var values = log.values().get(entry.getKey());
+        if (values == null) continue;
+
+        long enabledErrors = 0;
+        long disabledErrors = 0;
+
+        for (var tv : values) {
+          if (!(tv.value() instanceof String s) || !isCanError(s)) continue;
+          allCanErrorValues.add(tv);
+
+          if (hasEnabledData) {
+            if (isEnabledAt(enabledValues, tv.timestamp())) {
+              enabledErrors++;
+            } else {
+              disabledErrors++;
+            }
+          } else {
+            enabledErrors++; // count all as "enabled" when no DS data
+          }
+        }
+
+        long entryTotal = enabledErrors + disabledErrors;
+        if (entryTotal > 0) {
+          var entryObj = new JsonObject();
+          entryObj.addProperty("total", entryTotal);
+          if (hasEnabledData) {
+            entryObj.addProperty("while_enabled", enabledErrors);
+            entryObj.addProperty("while_disabled", disabledErrors);
+          }
+          errorCounts.add(entry.getKey(), entryObj);
+          totalEnabled += enabledErrors;
+          totalDisabled += disabledErrors;
+          totalAll += entryTotal;
+        }
+      }
 
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.add("error_counts_by_entry", GSON.toJsonTree(errorCounts));
-      
-      long total = errorCounts.values().stream().mapToLong(Long::longValue).sum();
-      result.addProperty("total_can_errors", total);
-      result.addProperty("health_assessment", total == 0 ? "GOOD" : (total < 50 ? "CONCERNING" : "POOR"));
-      
+      result.add("error_counts_by_entry", errorCounts);
+
+      result.addProperty("total_can_errors", totalAll);
+      if (hasEnabledData) {
+        result.addProperty("errors_while_enabled", totalEnabled);
+        result.addProperty("errors_while_disabled", totalDisabled);
+        // Base health assessment only on enabled-state errors
+        result.addProperty("health_assessment",
+            totalEnabled == 0 ? "GOOD" : (totalEnabled < 50 ? "CONCERNING" : "POOR"));
+      } else {
+        result.addProperty("health_assessment",
+            totalAll == 0 ? "GOOD" : (totalAll < 50 ? "CONCERNING" : "POOR"));
+      }
+
+      var warnings = new ArrayList<String>();
+      if (!hasEnabledData) {
+        warnings.add("No DriverStation Enabled entry found. Cannot distinguish enabled vs disabled CAN errors. "
+            + "All errors are counted toward the health assessment.");
+      }
+      if (totalDisabled > 0) {
+        warnings.add("CAN errors while disabled (" + totalDisabled + ") are normal "
+            + "and excluded from health assessment.");
+      }
+      if (!warnings.isEmpty()) {
+        result.add("warnings", GSON.toJsonTree(warnings));
+      }
+
+      // Data quality
+      if (!allCanErrorValues.isEmpty()) {
+        var quality = DataQuality.fromValues(allCanErrorValues);
+        var directives = AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat()
+            .addGuidance("CAN errors while disabled are normal; focus on enabled-state errors");
+        appendQualityToResult(result, quality, directives);
+      }
+
       return result;
     }
 
@@ -805,6 +957,19 @@ public final class RobotAnalysisTools {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.add("comparisons", comparisons);
+
+      // Data quality from first log's values for this entry
+      for (var entry : allEntries.entrySet()) {
+        var vals = entry.getValue().values().get(name);
+        if (vals != null && !vals.isEmpty()) {
+          var quality = DataQuality.fromValues(vals);
+          var directives = AnalysisDirectives.fromQuality(quality)
+              .addGuidance("Cross-match comparisons require consistent logging configurations for valid comparison");
+          appendQualityToResult(result, quality, directives);
+          break;
+        }
+      }
+
       return result;
     }
   }
@@ -999,6 +1164,7 @@ public final class RobotAnalysisTools {
       // Standard centered R² (using mean of Y) is mathematically invalid for
       // regression through the origin and can produce misleading or negative values.
       double ssY2 = 0, ssRes = 0;
+      int residualCount = 0;
       for (int i = 0; i < n; i++) {
         if (!Double.isFinite(alpha[i]) || !Double.isFinite(omegaS[i])
             || !Double.isFinite(curr[i]) || !Double.isFinite(tauSign[i]))
@@ -1008,9 +1174,12 @@ public final class RobotAnalysisTools {
         double y    = torqueScale * tauSign[i] * Math.abs(curr[i]);
         double yHat = J * alpha[i] + B * omegaS[i];
         ssY2  += y * y;
-        ssRes += (y - yHat) * (y - yHat);
+        double residual = y - yHat;
+        ssRes += residual * residual;
+        residualCount++;
       }
       double r2 = ssY2 > 1e-20 ? 1.0 - ssRes / ssY2 : Double.NaN;
+      double rmse = residualCount > 0 ? Math.sqrt(ssRes / residualCount) : Double.NaN;
 
       // ── Build result ──────────────────────────────────────────────────────────
       var result = new JsonObject();
@@ -1018,6 +1187,7 @@ public final class RobotAnalysisTools {
       result.addProperty("J_kg_m2", J);
       result.addProperty("B_Nm_s_per_rad", B);
       result.addProperty("r_squared", r2);
+      result.addProperty("rmse_nm", rmse);
       result.addProperty("n_samples_used", nUsed);
       result.addProperty("n_samples_total", n);
       result.addProperty("filtered_by_alpha_threshold", filtByThr);

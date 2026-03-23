@@ -45,7 +45,10 @@ public final class ContentFingerprint {
         // Read first chunk
         int firstChunkSize = (int) Math.min(CHUNK_SIZE, fileSize);
         ByteBuffer buffer = ByteBuffer.allocate(firstChunkSize);
-        channel.read(buffer, 0);
+        while (buffer.hasRemaining()) {
+          int bytesRead = channel.read(buffer, buffer.position());
+          if (bytesRead <= 0) break;
+        }
         buffer.flip();
         digest.update(buffer);
 
@@ -53,7 +56,10 @@ public final class ContentFingerprint {
         if (fileSize > CHUNK_SIZE) {
           long lastChunkStart = fileSize - CHUNK_SIZE;
           buffer.clear();
-          channel.read(buffer, lastChunkStart);
+          while (buffer.hasRemaining()) {
+            int bytesRead = channel.read(buffer, lastChunkStart + buffer.position());
+            if (bytesRead <= 0) break;
+          }
           buffer.flip();
           digest.update(buffer);
         }

@@ -26,6 +26,8 @@ import org.triplehelix.wpilogmcp.revlog.dbc.DbcDatabase;
 import org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader;
 import org.triplehelix.wpilogmcp.sync.LogSynchronizer;
 import org.triplehelix.wpilogmcp.sync.SyncResult;
+import org.triplehelix.wpilogmcp.mcp.McpSession;
+import org.triplehelix.wpilogmcp.mcp.SessionContext;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
 
@@ -96,6 +98,9 @@ public class LogManager {
 
   /** Whether maxLoadedLogs was explicitly set (vs using default). */
   private boolean maxLogsExplicitlySet = false;
+
+  /** Per-path locks to prevent duplicate concurrent parses of the same log file. */
+  private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
 
   /** Private constructor for singleton pattern. */
   private LogManager() {
@@ -273,73 +278,90 @@ public class LogManager {
     // Validate path is allowed (or cache is already loaded)
     securityValidator.validateOrAllowCached(filePath, logCache::containsKey);
 
-    // Check if already cached
-    ParsedLog cachedLog = logCache.get(filePath.toString());
+    // Check if already cached (fast path, no lock needed)
+    String normalizedPath = filePath.toString();
+    ParsedLog cachedLog = logCache.get(normalizedPath);
     if (cachedLog != null) {
       logger.debug("Returning cached log: {}", filePath);
-      logCache.setActiveLogPath(filePath.toString());
+      setActiveLogPathInternal(normalizedPath);
       return cachedLog;
     }
 
-    // Check file exists
-    if (!Files.exists(filePath)) {
-      throw new IOException("File not found: " + filePath);
+    // Per-path lock to prevent duplicate concurrent parses of the same file
+    Object lock = loadLocks.computeIfAbsent(normalizedPath, k -> new Object());
+    synchronized (lock) {
+      try {
+        // Double-check cache after acquiring lock (another thread may have finished parsing)
+        cachedLog = logCache.get(normalizedPath);
+        if (cachedLog != null) {
+          logger.debug("Returning cached log (loaded by another thread): {}", filePath);
+          setActiveLogPathInternal(normalizedPath);
+          return cachedLog;
+        }
+
+        // Check file exists
+        if (!Files.exists(filePath)) {
+          throw new IOException("File not found: " + filePath);
+        }
+
+        // Check file size against available memory to prevent OOM.
+        // Note: Struct-heavy logs (e.g., SwerveModuleState arrays) expand more than
+        // simple numeric logs due to LinkedHashMap overhead per decoded field.
+        // The 5x multiplier is conservative for typical FRC logs; worst case for
+        // struct-dense data can be higher.
+        long fileSizeBytes = Files.size(filePath);
+        long fileSizeMb = fileSizeBytes / (1024 * 1024);
+        Runtime runtime = Runtime.getRuntime();
+        long availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+        long estimatedHeapNeeded = fileSizeBytes * 5;
+        if (estimatedHeapNeeded > availableMemory) {
+          throw new IOException(
+              String.format(
+                  "Log file too large to load safely: %s is %d MB, estimated heap needed ~%d MB, "
+                      + "but only %d MB available. Increase JVM heap size (-Xmx) or use a smaller log file.",
+                  filePath.getFileName(), fileSizeMb, estimatedHeapNeeded / (1024 * 1024),
+                  availableMemory / (1024 * 1024)));
+        }
+
+        // Evict before parsing to free memory for the new log.
+        // This prevents OOM when the cache is full and the new log is large.
+        logCache.evictIfNeeded();
+
+        // Try disk cache before full parse
+        ParsedLog log = null;
+        var diskCached = diskCache.load(filePath);
+        if (diskCached.isPresent()) {
+          log = diskCached.get();
+          logger.info("Loaded from disk cache: {}", filePath.getFileName());
+        } else {
+          // Full parse (expensive)
+          logger.info("Parsing log file: {}", filePath);
+          log = logParser.parse(filePath);
+
+          // Save to disk cache asynchronously
+          diskCache.saveAsync(log, filePath);
+        }
+
+        // Add to in-memory cache and set as active
+        logCache.put(normalizedPath, log);
+        setActiveLogPathInternal(normalizedPath);
+        logger.debug(
+            "Loaded log with {} entries spanning {} seconds",
+            log.entryCount(), String.format("%.2f", log.duration()));
+
+        // Auto-sync matching revlogs asynchronously (doesn't block the MCP response)
+        if (autoSyncEnabled) {
+          autoSyncRevLogsAsync(log);
+        }
+
+        // Evict again after adding the new log in case it pushed us over limits
+        logCache.evictIfNeeded();
+
+        return log;
+      } finally {
+        loadLocks.remove(normalizedPath);
+      }
     }
-
-    // Check file size against available memory to prevent OOM.
-    // Note: Struct-heavy logs (e.g., SwerveModuleState arrays) expand more than
-    // simple numeric logs due to LinkedHashMap overhead per decoded field.
-    // The 5x multiplier is conservative for typical FRC logs; worst case for
-    // struct-dense data can be higher.
-    long fileSizeBytes = Files.size(filePath);
-    long fileSizeMb = fileSizeBytes / (1024 * 1024);
-    Runtime runtime = Runtime.getRuntime();
-    long availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-    long estimatedHeapNeeded = fileSizeBytes * 5;
-    if (estimatedHeapNeeded > availableMemory) {
-      throw new IOException(
-          String.format(
-              "Log file too large to load safely: %s is %d MB, estimated heap needed ~%d MB, "
-                  + "but only %d MB available. Increase JVM heap size (-Xmx) or use a smaller log file.",
-              filePath.getFileName(), fileSizeMb, estimatedHeapNeeded / (1024 * 1024),
-              availableMemory / (1024 * 1024)));
-    }
-
-    // Evict before parsing to free memory for the new log.
-    // This prevents OOM when the cache is full and the new log is large.
-    logCache.evictIfNeeded();
-
-    // Try disk cache before full parse
-    ParsedLog log = null;
-    var diskCached = diskCache.load(filePath);
-    if (diskCached.isPresent()) {
-      log = diskCached.get();
-      logger.info("Loaded from disk cache: {}", filePath.getFileName());
-    } else {
-      // Full parse (expensive)
-      logger.info("Parsing log file: {}", filePath);
-      log = logParser.parse(filePath);
-
-      // Save to disk cache asynchronously
-      diskCache.saveAsync(log, filePath);
-    }
-
-    // Add to in-memory cache and set as active
-    logCache.put(filePath.toString(), log);
-    logCache.setActiveLogPath(filePath.toString());
-    logger.debug(
-        "Loaded log with {} entries spanning {} seconds",
-        log.entryCount(), String.format("%.2f", log.duration()));
-
-    // Auto-sync matching revlogs asynchronously (doesn't block the MCP response)
-    if (autoSyncEnabled) {
-      autoSyncRevLogsAsync(log);
-    }
-
-    // Evict again after adding the new log in case it pushed us over limits
-    logCache.evictIfNeeded();
-
-    return log;
   }
 
   /**
@@ -348,7 +370,7 @@ public class LogManager {
    * @return The active log, or null if no log is active
    */
   public ParsedLog getActiveLog() {
-    String activePath = logCache.getActiveLogPath();
+    String activePath = getActiveLogPath();
     if (activePath == null) {
       return null;
     }
@@ -365,14 +387,26 @@ public class LogManager {
     Path filePath = Path.of(path).toAbsolutePath().normalize();
     String normalizedPath = filePath.toString();
 
-    // Use atomic setActiveIfPresent to avoid TOCTOU race where the log
-    // could be evicted between a containsKey check and setActiveLogPath call.
+    // Verify the log exists in the shared cache
+    if (!logCache.containsKey(normalizedPath)) {
+      logger.warn("Cannot set active log: log not found in cache: {}", normalizedPath);
+      return false;
+    }
+
+    // If a session is active, set the active log on the session only
+    McpSession session = SessionContext.current();
+    if (session != null) {
+      session.setActiveLogPath(normalizedPath);
+      logger.info("Active log set to: {} (session {})", normalizedPath, session.getId());
+      return true;
+    }
+
+    // Stdio fallback: set on the global cache
     if (logCache.setActiveIfPresent(normalizedPath)) {
       logger.info("Active log set to: {}", normalizedPath);
       return true;
     }
 
-    logger.warn("Cannot set active log: log not found in cache: {}", normalizedPath);
     return false;
   }
 
@@ -472,7 +506,26 @@ public class LogManager {
    * @return The active log path, or null if no log is active
    */
   public String getActiveLogPath() {
+    // If a session is active, use the session's active log path
+    McpSession session = SessionContext.current();
+    if (session != null) {
+      return session.getActiveLogPath();
+    }
+    // Stdio fallback: use the global active log path
     return logCache.getActiveLogPath();
+  }
+
+  /**
+   * Sets the active log path on the current session if present, otherwise on the global cache.
+   * Used internally by loadLog() to set the active log after loading.
+   */
+  private void setActiveLogPathInternal(String path) {
+    McpSession session = SessionContext.current();
+    if (session != null) {
+      session.setActiveLogPath(path);
+    } else {
+      logCache.setActiveLogPath(path);
+    }
   }
 
   /**
@@ -564,7 +617,7 @@ public class LogManager {
   public List<LoadedLogInfo> listLoadedLogs() {
     var entries = logCache.getAllEntries();
     var result = new ArrayList<LoadedLogInfo>();
-    String activePath = logCache.getActiveLogPath();
+    String activePath = getActiveLogPath();
 
     for (var entry : entries.entrySet()) {
       String path = entry.getKey();
@@ -675,7 +728,7 @@ public class LogManager {
    * @since 0.5.0
    */
   public boolean isRevLogSyncInProgress() {
-    String activePath = logCache.getActiveLogPath();
+    String activePath = getActiveLogPath();
     if (activePath == null) return false;
     var future = syncInProgress.get(activePath);
     return future != null && !future.isDone();
@@ -701,7 +754,7 @@ public class LogManager {
    * @since 0.5.0
    */
   public boolean waitForRevLogSync(long timeoutMs) {
-    String activePath = logCache.getActiveLogPath();
+    String activePath = getActiveLogPath();
     if (activePath == null) return true;
     var future = syncInProgress.get(activePath);
     if (future == null || future.isDone()) return true;
@@ -760,7 +813,7 @@ public class LogManager {
    * @since 0.5.0
    */
   public SynchronizedLogs getSynchronizedLogs() {
-    String activePath = logCache.getActiveLogPath();
+    String activePath = getActiveLogPath();
     if (activePath == null) {
       return null;
     }

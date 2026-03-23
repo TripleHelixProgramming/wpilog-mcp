@@ -7,9 +7,10 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
+import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
@@ -40,16 +41,16 @@ public final class FrcDomainTools {
    *
    * @param server The MCP server to register tools with
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new GetDsTimelineTool());
-    server.registerTool(new AnalyzeVisionTool());
-    server.registerTool(new ProfileMechanismTool());
-    server.registerTool(new AnalyzeAutoTool());
-    server.registerTool(new AnalyzeCyclesTool());
-    server.registerTool(new AnalyzeReplayDriftTool());
-    server.registerTool(new AnalyzeLoopTimingTool());
-    server.registerTool(new AnalyzeCanBusTool());
-    server.registerTool(new PredictBatteryHealthTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new GetDsTimelineTool());
+    registry.registerTool(new AnalyzeVisionTool());
+    registry.registerTool(new ProfileMechanismTool());
+    registry.registerTool(new AnalyzeAutoTool());
+    registry.registerTool(new AnalyzeCyclesTool());
+    registry.registerTool(new AnalyzeReplayDriftTool());
+    registry.registerTool(new AnalyzeLoopTimingTool());
+    registry.registerTool(new AnalyzeCanBusTool());
+    registry.registerTool(new PredictBatteryHealthTool());
   }
 
   // ==================== SHARED HELPER METHODS ====================
@@ -116,7 +117,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Generate a chronological timeline of critical robot events: enable/disable, "
-          + "match phases, brownouts, joystick disconnects, errors, and warnings.";
+          + "match phases, brownouts, joystick disconnects, errors, and warnings."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -294,11 +296,19 @@ public final class FrcDomainTools {
         categoryCounts.merge(cat, 1, Integer::sum);
       }
 
-      return success()
+      var builder = success()
           .addProperty("event_count", events.size())
           .addData("summary", GSON.toJsonTree(categoryCounts))
-          .addData("events", GSON.toJsonTree(events))
-          .build();
+          .addData("events", GSON.toJsonTree(events));
+
+      // Add data quality from enabled values if available
+      if (enabledValuesForTimeline != null && !enabledValuesForTimeline.isEmpty()) {
+        var quality = DataQuality.fromValues(enabledValuesForTimeline);
+        builder.addDataQuality(quality)
+            .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
+      }
+
+      return builder.build();
     }
   }
 
@@ -817,8 +827,17 @@ public final class FrcDomainTools {
 
       if (autoStartTime != null) {
         if (autoEndTime == null) {
-          // If we didn't find auto end, use 15 seconds
-          autoEndTime = autoStartTime + 15.0;
+          // If we didn't find auto end, use game knowledge base or 15s default
+          double autoDuration = 15.0;
+          try {
+            var gameData = GameKnowledgeBase.getInstance().getCurrentGame();
+            if (gameData != null) {
+              autoDuration = gameData.autoDurationSec();
+            }
+          } catch (Exception e) {
+            // use default
+          }
+          autoEndTime = autoStartTime + autoDuration;
         }
         var autoDuration = autoEndTime - autoStartTime;
         result.addProperty("auto_start_time", autoStartTime);
@@ -830,6 +849,14 @@ public final class FrcDomainTools {
         if (pathFollowingError != null) {
           result.add("path_following_error", pathFollowingError);
         }
+      }
+
+      // Add data quality from enabled values if available
+      if (enabledValuesForAuto != null && !enabledValuesForAuto.isEmpty()) {
+        var quality = DataQuality.fromValues(enabledValuesForAuto);
+        var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
+        result.add("data_quality", quality.toJson());
+        result.add("server_analysis_directives", directives.toJson());
       }
 
       return result;
@@ -1186,6 +1213,12 @@ public final class FrcDomainTools {
         }
       }
 
+      // Add data quality and analysis directives
+      var quality = DataQuality.fromValues(vals);
+      var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
+      result.add("data_quality", quality.toJson());
+      result.add("server_analysis_directives", directives.toJson());
+
       return result;
     }private boolean statesEqual(String state1, String state2, boolean caseSensitive) {
       if (state1 == null || state2 == null) return false;
@@ -1303,6 +1336,18 @@ public final class FrcDomainTools {
       result.addProperty("success", true);
       result.addProperty("divergent_count", divergent.size());
       result.add("divergences", GSON.toJsonTree(divergent.stream().limit(10).toList()));
+
+      // Add data quality from first real entry if available
+      if (!realEntries.isEmpty()) {
+        var firstVals = log.values().get(realEntries.get(0));
+        if (firstVals != null && !firstVals.isEmpty()) {
+          var quality = DataQuality.fromValues(firstVals);
+          var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
+          result.add("data_quality", quality.toJson());
+          result.add("server_analysis_directives", directives.toJson());
+        }
+      }
+
       return result;
     }
   }
@@ -1314,7 +1359,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Detect when robot code exceeded loop period threshold (default 20ms). "
-          + "Returns violations, statistics, and a health score."
+          + "Returns violations, statistics, and a health score. "
+          + "Auto-detects units (ms vs s) via median heuristic; assumes standard FRC loop rates."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -1431,6 +1477,14 @@ public final class FrcDomainTools {
       result.add("statistics", statistics);
       result.add("violations", GSON.toJsonTree(violations.stream().limit(50).toList()));
 
+      // Add data quality and analysis directives
+      var quality = DataQuality.fromValues(values);
+      var directives = AnalysisDirectives.fromQuality(quality)
+          .addSingleMatchCaveat()
+          .addGuidance("Health score is a heuristic based on violation rate — consider context of violations");
+      result.add("data_quality", quality.toJson());
+      result.add("server_analysis_directives", directives.toJson());
+
       return result;
     }
   }
@@ -1515,38 +1569,97 @@ public final class FrcDomainTools {
         result.add("utilization", GSON.toJsonTree(utilAnalysis));
       }
 
-      // Analyze errors
+      // Find DriverStation Enabled entry for cross-referencing
+      List<TimestampedValue> enabledValues = null;
+      for (var entryName : log.entries().keySet()) {
+        var lower = lowerEntryNames.get(entryName);
+        if (lower.contains("driverstation") && lower.contains("enabled")) {
+          enabledValues = log.values().get(entryName);
+          break;
+        }
+      }
+
+      // Analyze errors, distinguishing enabled vs disabled state
       if (!canErrorEntries.isEmpty()) {
         var errorAnalysis = new ArrayList<JsonObject>();
+        boolean hasDsData = enabledValues != null && !enabledValues.isEmpty();
+
+        if (!hasDsData) {
+          result.addProperty("ds_enabled_warning",
+              "No DriverStation Enabled entry found — cannot distinguish enabled vs disabled CAN errors. All errors counted.");
+        }
+
         for (var entryName : canErrorEntries) {
           var values = log.values().get(entryName);
           if (values == null) continue;
 
-          int errorCount = 0;
+          int errorsWhileEnabled = 0;
+          int errorsWhileDisabled = 0;
           for (TimestampedValue tv : values) {
             if (startTime != null && tv.timestamp() < startTime) continue;
             if (endTime != null && tv.timestamp() > endTime) break;
 
             // Count non-zero errors or true boolean errors
+            boolean isError = false;
             if (tv.value() instanceof Boolean b && b) {
-              errorCount++;
+              isError = true;
             } else if (tv.value() instanceof Number num && num.doubleValue() > 0) {
-              errorCount++;
+              isError = true;
+            }
+
+            if (isError) {
+              if (hasDsData) {
+                if (ToolUtils.isEnabledAt(enabledValues, tv.timestamp())) {
+                  errorsWhileEnabled++;
+                } else {
+                  errorsWhileDisabled++;
+                }
+              } else {
+                errorsWhileEnabled++; // Count all as enabled when no DS data
+              }
             }
           }
 
-          if (errorCount > 0) {
+          int totalErrors = errorsWhileEnabled + errorsWhileDisabled;
+          if (totalErrors > 0) {
             var analysis = new JsonObject();
             analysis.addProperty("entry", entryName);
-            analysis.addProperty("error_count", errorCount);
+            analysis.addProperty("error_count", totalErrors);
+            analysis.addProperty("errors_while_enabled", errorsWhileEnabled);
+            analysis.addProperty("errors_while_disabled", errorsWhileDisabled);
             errorAnalysis.add(analysis);
           }
         }
         result.add("errors", GSON.toJsonTree(errorAnalysis));
+
+        // Base health assessment on enabled-state errors only
+        int totalEnabledErrors = errorAnalysis.stream()
+            .mapToInt(a -> a.get("errors_while_enabled").getAsInt()).sum();
+        result.addProperty("enabled_error_total", totalEnabledErrors);
+        if (totalEnabledErrors == 0 && !errorAnalysis.isEmpty()) {
+          result.addProperty("assessment", "CAN errors only during disabled state — likely normal timeout behavior");
+        } else if (totalEnabledErrors > 0) {
+          result.addProperty("assessment", "CAN errors detected while robot was enabled — investigate device connections");
+        }
       }
 
       if (canUtilEntries.isEmpty() && canErrorEntries.isEmpty()) {
         result.addProperty("warning", "No CAN-related entries found in log");
+      }
+
+      // Add data quality from first CAN utilization or error entry
+      var canQualityEntry = !canUtilEntries.isEmpty() ? canUtilEntries.get(0)
+          : (!canErrorEntries.isEmpty() ? canErrorEntries.get(0) : null);
+      if (canQualityEntry != null) {
+        var qVals = log.values().get(canQualityEntry);
+        if (qVals != null && !qVals.isEmpty()) {
+          var quality = DataQuality.fromValues(qVals);
+          var directives = AnalysisDirectives.fromQuality(quality)
+              .addSingleMatchCaveat()
+              .addGuidance("Disabled-state CAN timeouts are normal — focus on enabled-state errors");
+          result.add("data_quality", quality.toJson());
+          result.add("server_analysis_directives", directives.toJson());
+        }
       }
 
       return result;
@@ -1799,11 +1912,12 @@ public final class FrcDomainTools {
           double dropTime = voltageValues.get(i).timestamp();
           double recoveryTarget = voltageAtLoad + (voltageDrop * 0.9);  // 90% recovery
 
-          for (int j = i + 1; j < Math.min(i + 20, voltageValues.size()); j++) {
+          for (int j = i + 1; j < voltageValues.size(); j++) {
+            double elapsed = voltageValues.get(j).timestamp() - dropTime;
+            if (elapsed > 2.0) break; // 2-second recovery window
             var recoveredVoltage = toDouble(voltageValues.get(j).value());
             if (recoveredVoltage != null && recoveredVoltage >= recoveryTarget) {
-              double recoveryTime = voltageValues.get(j).timestamp() - dropTime;
-              recoveryTimes.add(recoveryTime);
+              recoveryTimes.add(elapsed);
               break;
             }
           }

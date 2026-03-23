@@ -16,8 +16,8 @@ import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 import org.triplehelix.wpilogmcp.revlog.RevLogDevice;
 import org.triplehelix.wpilogmcp.revlog.RevLogSignal;
@@ -40,7 +40,7 @@ class RevLogToolsTest {
     tools = new ArrayList<>();
     logManager = LogManager.getInstance();
 
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
@@ -48,7 +48,7 @@ class RevLogToolsTest {
       }
     };
 
-    RevLogTools.registerAll(capturingServer);
+    RevLogTools.registerAll(capturingRegistry);
   }
 
   @AfterEach

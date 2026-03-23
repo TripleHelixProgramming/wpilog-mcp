@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
@@ -32,9 +32,9 @@ public final class ExportTools {
   /**
    * Registers all export tools with the MCP server.
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new ExportCsvTool());
-    server.registerTool(new GenerateReportTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new ExportCsvTool());
+    registry.registerTool(new GenerateReportTool());
   }
 
   static class ExportCsvTool implements Tool {
@@ -229,7 +229,7 @@ public final class ExportTools {
         if (entryName.toLowerCase().contains("batteryvoltage") || entryName.toLowerCase().contains("battery_voltage")) {
           var values = log.values().get(entryName);
           if (values != null && !values.isEmpty()) {
-            double minV = Double.MAX_VALUE, maxV = Double.MIN_VALUE;
+            double minV = Double.MAX_VALUE, maxV = Double.NEGATIVE_INFINITY;
             for (var tv : values) {
               if (tv.value() instanceof Number num) {
                 double v = num.doubleValue();

@@ -36,6 +36,8 @@ public class GameKnowledgeBase {
 
   /** Known bundled game files (season year → resource path). */
   private static final Map<Integer, String> BUNDLED_GAMES = Map.of(
+      2024, "games/2024-crescendo.json",
+      2025, "games/2025-reefscape.json",
       2026, "games/2026-rebuilt.json"
   );
 

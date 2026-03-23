@@ -3,7 +3,7 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
@@ -33,13 +33,13 @@ public final class StatisticsTools {
    *
    * @param server The MCP server to register tools with
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new GetStatisticsTool());
-    server.registerTool(new CompareEntriesTool());
-    server.registerTool(new DetectAnomaliesTool());
-    server.registerTool(new FindPeaksTool());
-    server.registerTool(new RateOfChangeTool());
-    server.registerTool(new TimeCorrelateTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new GetStatisticsTool());
+    registry.registerTool(new CompareEntriesTool());
+    registry.registerTool(new DetectAnomaliesTool());
+    registry.registerTool(new FindPeaksTool());
+    registry.registerTool(new RateOfChangeTool());
+    registry.registerTool(new TimeCorrelateTool());
   }
 
   /**
@@ -102,7 +102,10 @@ public final class StatisticsTools {
 
       var values = requireEntry(log, name);
       var filtered = filterTimeRange(values, start, end);
-      var quality = DataQuality.fromValues(filtered);
+      var numericFiltered = filtered.stream()
+          .filter(tv -> tv.value() instanceof Number && Double.isFinite(((Number) tv.value()).doubleValue()))
+          .toList();
+      var quality = DataQuality.fromValues(numericFiltered);
       var data = extractNumericData(values, start, end);
 
       if (data.length == 0) {
@@ -135,6 +138,11 @@ public final class StatisticsTools {
           .addProperty("mean", mean)
           .addProperty("median", median)
           .addProperty("std_dev", stdDev)
+          .addProperty("q1", percentile(data, 0.25))
+          .addProperty("q3", percentile(data, 0.75))
+          .addProperty("iqr", percentile(data, 0.75) - percentile(data, 0.25))
+          .addProperty("p5", percentile(data, 0.05))
+          .addProperty("p95", percentile(data, 0.95))
           .addDataQuality(quality)
           .addDirectives(directives)
           .build();
@@ -185,7 +193,9 @@ public final class StatisticsTools {
         }
       }
 
-      var quality = DataQuality.fromValues(v1);
+      DataQuality q1 = DataQuality.fromValues(v1);
+      DataQuality q2 = DataQuality.fromValues(v2);
+      var quality = q1.qualityScore() <= q2.qualityScore() ? q1 : q2;
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("RMSE is scale-dependent — compare to the entry's typical range for context")
@@ -252,9 +262,14 @@ public final class StatisticsTools {
       double low = q1 - iqrMult * iqr;
       double high = q3 + iqrMult * iqr;
 
+      long nonFiniteCount = numeric.stream()
+          .filter(tv -> tv.value() instanceof Number && !Double.isFinite(((Number) tv.value()).doubleValue()))
+          .count();
+
       var anomalies = new ArrayList<JsonObject>();
       for (var tv : numeric) {
         double v = ((Number) tv.value()).doubleValue();
+        if (!Double.isFinite(v)) continue; // non-finite values counted separately
         if (v < low || v > high) {
           var obj = new JsonObject();
           obj.addProperty("timestamp_sec", tv.timestamp());
@@ -270,12 +285,13 @@ public final class StatisticsTools {
           .addSingleMatchCaveat()
           .addFollowup("Use find_peaks if looking for signal extrema rather than statistical outliers");
 
-      return success()
+      var builder = success()
           .addProperty("anomaly_count", anomalies.size())
+          .addProperty("non_finite_count", nonFiniteCount)
           .addData("anomalies", GSON.toJsonTree(anomalies))
           .addDataQuality(quality)
-          .addDirectives(directives)
-          .build();
+          .addDirectives(directives);
+      return builder.build();
     }
   }
 
@@ -396,17 +412,54 @@ public final class StatisticsTools {
       var samples = new ArrayList<JsonObject>();
       double sumRate = 0;
       int rateCount = 0;
-      for (int i = window; i < data.size(); i++) {
-        double dt = data.get(i)[0] - data.get(i-window)[0];
-        if (dt > 0) {
-          double rate = (data.get(i)[1] - data.get(i-window)[1]) / dt;
+      if (window == 1) {
+        // Use central differences for interior points (more accurate, O(h^2) vs O(h))
+        // Forward difference for first point, backward difference for last point
+        for (int i = 0; i < data.size(); i++) {
+          double rate;
+          double timestamp;
+          if (i == 0) {
+            // Forward difference for first point
+            double dt = data.get(1)[0] - data.get(0)[0];
+            if (dt <= 0) continue;
+            rate = (data.get(1)[1] - data.get(0)[1]) / dt;
+            timestamp = data.get(0)[0];
+          } else if (i == data.size() - 1) {
+            // Backward difference for last point
+            double dt = data.get(i)[0] - data.get(i - 1)[0];
+            if (dt <= 0) continue;
+            rate = (data.get(i)[1] - data.get(i - 1)[1]) / dt;
+            timestamp = data.get(i)[0];
+          } else {
+            // Central difference for interior points
+            double dt = data.get(i + 1)[0] - data.get(i - 1)[0];
+            if (dt <= 0) continue;
+            rate = (data.get(i + 1)[1] - data.get(i - 1)[1]) / dt;
+            timestamp = data.get(i)[0];
+          }
           sumRate += rate;
           rateCount++;
           if (samples.size() < limit) {
             var obj = new JsonObject();
-            obj.addProperty("timestamp_sec", data.get(i)[0]);
+            obj.addProperty("timestamp_sec", timestamp);
             obj.addProperty("rate", rate);
             samples.add(obj);
+          }
+        }
+      } else {
+        // Windowed forward difference (already smooths via averaging)
+        for (int i = window; i < data.size(); i++) {
+          double dt = data.get(i)[0] - data.get(i - window)[0];
+          if (dt > 0) {
+            double rate = (data.get(i)[1] - data.get(i - window)[1]) / dt;
+            sumRate += rate;
+            rateCount++;
+            if (samples.size() < limit) {
+              var obj = new JsonObject();
+              obj.addProperty("timestamp_sec", data.get(i)[0]);
+              obj.addProperty("rate", rate);
+              samples.add(obj);
+            }
           }
         }
       }
@@ -527,15 +580,20 @@ public final class StatisticsTools {
         }
       }
 
+      int sampleCount = x.size();
+      builder.addProperty("sample_count", sampleCount);
+
       // Handle edge case: zero variance means correlation is undefined (NaN)
       if (denX == 0 || denY == 0) {
         builder.addProperty("correlation", Double.NaN);
+        builder.addProperty("p_value", 1.0);
         builder.addWarning("Correlation undefined: " +
             (denX == 0 && denY == 0 ? "both entries" : (denX == 0 ? "first entry" : "second entry")) +
             " has zero variance (all values are identical)");
       } else {
         double corr = num / Math.sqrt(denX * denY);
         builder.addProperty("correlation", corr);
+        builder.addProperty("p_value", computePValue(corr, sampleCount));
       }
 
       var quality = DataQuality.fromValues(v1);
@@ -545,5 +603,41 @@ public final class StatisticsTools {
 
       return builder.addDataQuality(quality).addDirectives(directives).build();
     }
+  }
+
+  /**
+   * Compute two-tailed p-value for Pearson correlation coefficient.
+   *
+   * <p>Uses the t-statistic t = r * sqrt((n-2) / (1 - r^2)) and approximates
+   * the t-distribution CDF via the Abramowitz and Stegun normal approximation.
+   *
+   * @param r Pearson correlation coefficient
+   * @param n Sample count
+   * @return Two-tailed p-value
+   */
+  static double computePValue(double r, int n) {
+    if (n <= 2) return 1.0;
+    if (Math.abs(r) >= 1.0) return 0.0;
+    double t = Math.abs(r) * Math.sqrt((n - 2.0) / (1.0 - r * r));
+    double df = n - 2;
+    // Abramowitz and Stegun formula 26.7.4 approximation
+    double a = df - 0.5;
+    double b = 48.0 * a * a;
+    double z = Math.sqrt(a * Math.log(1.0 + t * t / df));
+    // Two-tailed p-value
+    return 2.0 * (1.0 - normalCdf(z));
+  }
+
+  /**
+   * Normal CDF approximation using Abramowitz and Stegun formula 26.2.17.
+   */
+  private static double normalCdf(double z) {
+    if (z < -8.0) return 0.0;
+    if (z > 8.0) return 1.0;
+    double t = 1.0 / (1.0 + 0.2316419 * Math.abs(z));
+    double d = 0.3989422804014327; // 1/sqrt(2*pi)
+    double p = d * Math.exp(-z * z / 2.0) * t
+        * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.330274))));
+    return z > 0 ? 1.0 - p : p;
   }
 }

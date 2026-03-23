@@ -445,12 +445,40 @@ Get system health status including JVM memory usage, loaded log count, cache mem
 **Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `disk_cache` section shows persistent cache status. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
 
 ### `get_game_info`
-Get year-specific FRC game information (match timing, scoring values, field geometry, game pieces, and analysis hints). Use this to understand the context of a log file: what the match phases are, what scoring actions look like, and what mechanisms to expect. Defaults to the current season if no year is specified.
+Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
 
 **Parameters:**
 - `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
 
-**Returns:** Game name, match timing with shift details, scoring values, field geometry, game pieces, typical mechanisms, and analysis hints. Returns error with available seasons list if the requested season is not found.
+**Bundled game data:** 2026 REBUILT (from official game manual TU17)
+
+**Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values (fuel, tower, ranking points), field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "season": 2026,
+  "game_name": "REBUILT",
+  "match_timing": {
+    "auto_duration_sec": 20,
+    "teleop_duration_sec": 140,
+    "total_duration_sec": 160,
+    "endgame_duration_sec": 30,
+    "shifts": { "auto": {"start_sec": 0, "end_sec": 20}, "..." : "..." }
+  },
+  "scoring": {
+    "match_points": { "auto": {"fuel_active_hub": 1, "tower_level_1": 15}, "..." : "..." },
+    "ranking_points": { "energized_rp": {"regional_threshold": 100}, "..." : "..." }
+  },
+  "analysis_hints": {
+    "endgame_activity": "Tower climbing attempts in final 30 seconds",
+    "fuel_context": "100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP"
+  }
+}
+```
+
+**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API.
 
 ---
 
@@ -1785,42 +1813,6 @@ Brownout detection uses 0.2V hysteresis — voltage must rise 0.2V above the thr
   "data_quality": { "sample_count": 7500, "quality_score": 0.92 }
 }
 ```
-
-### `get_game_info`
-Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
-
-**Parameters:**
-- `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
-
-**Bundled game data:** 2026 REBUILT (from official game manual TU17)
-
-**Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values (fuel, tower, ranking points), field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "season": 2026,
-  "game_name": "REBUILT",
-  "match_timing": {
-    "auto_duration_sec": 20,
-    "teleop_duration_sec": 140,
-    "total_duration_sec": 160,
-    "endgame_duration_sec": 30,
-    "shifts": { "auto": {"start_sec": 0, "end_sec": 20}, "..." : "..." }
-  },
-  "scoring": {
-    "match_points": { "auto": {"fuel_active_hub": 1, "tower_level_1": 15}, "..." : "..." },
-    "ranking_points": { "energized_rp": {"regional_threshold": 100}, "..." : "..." }
-  },
-  "analysis_hints": {
-    "endgame_activity": "Tower climbing attempts in final 30 seconds",
-    "fuel_context": "100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP"
-  }
-}
-```
-
-**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API.
 
 ---
 

@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for CoreTools using synthetic log data.
@@ -25,14 +25,14 @@ class CoreToolsLogicTest {
   @BeforeEach
   void setUp() {
     tools = new ArrayList<>();
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
         super.registerTool(tool);
       }
     };
-    CoreTools.registerAll(capturingServer);
+    CoreTools.registerAll(capturingRegistry);
   }
 
   @AfterEach

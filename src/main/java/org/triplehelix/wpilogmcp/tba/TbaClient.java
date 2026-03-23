@@ -465,9 +465,8 @@ public class TbaClient {
     if ("qm".equals(compLevel)) {
       matchKey = eventKey + "_qm" + matchNumber;
     } else if ("sf".equals(compLevel)) {
-      int setNum = ((matchNumber - 1) / 2) + 1;
-      int matchInSet = ((matchNumber - 1) % 2) + 1;
-      matchKey = eventKey + "_sf" + setNum + "m" + matchInSet;
+      // Since 2023, FRC uses double-elimination where semifinal keys are sequential
+      matchKey = eventKey + "_sf" + matchNumber + "m1";
     } else if ("f".equals(compLevel)) {
       matchKey = eventKey + "_f1m" + matchNumber;
     } else {

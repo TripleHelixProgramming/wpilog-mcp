@@ -251,11 +251,11 @@ public class DiskCache {
         }
 
         serializer.write(log, tempFile, metadata);
-      }
 
-      // Atomic rename (after lock is released — the file is complete)
-      Files.move(tempFile, cacheFile,
-          StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        // Atomic rename inside lock scope to prevent races with other processes
+        Files.move(tempFile, cacheFile,
+            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      }
 
       long cacheSizeKb = Files.size(cacheFile) / 1024;
       logger.info("Cached {} ({} KB)", wpilogFile.getFileName(), cacheSizeKb);

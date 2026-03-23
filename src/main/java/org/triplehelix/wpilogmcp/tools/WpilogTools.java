@@ -1,6 +1,6 @@
 package org.triplehelix.wpilogmcp.tools;
 
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
 /**
  * MCP tool implementations for WPILOG analysis.
@@ -117,15 +117,15 @@ public final class WpilogTools {
    *
    * @param server The MCP server to register tools with
    */
-  public static void registerAll(McpServer server) {
-    CoreTools.registerAll(server);
-    QueryTools.registerAll(server);
-    StatisticsTools.registerAll(server);
-    RobotAnalysisTools.registerAll(server);
-    FrcDomainTools.registerAll(server);
-    ExportTools.registerAll(server);
-    TbaTools.registerAll(server);
-    RevLogTools.registerAll(server);
-    DiscoveryTools.registerAll(server);
+  public static void registerAll(ToolRegistry registry) {
+    CoreTools.registerAll(registry);
+    QueryTools.registerAll(registry);
+    StatisticsTools.registerAll(registry);
+    RobotAnalysisTools.registerAll(registry);
+    FrcDomainTools.registerAll(registry);
+    ExportTools.registerAll(registry);
+    TbaTools.registerAll(registry);
+    RevLogTools.registerAll(registry);
+    DiscoveryTools.registerAll(registry);
   }
 }

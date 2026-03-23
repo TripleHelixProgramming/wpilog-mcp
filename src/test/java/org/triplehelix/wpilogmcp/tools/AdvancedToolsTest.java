@@ -11,8 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Tests for advanced WPILOG analysis tools.
@@ -26,8 +26,8 @@ class AdvancedToolsTest {
     registeredTools = new ArrayList<>();
 
     // Capture registered tools
-    var capturingServer =
-        new McpServer() {
+    var capturingRegistry =
+        new ToolRegistry() {
           @Override
           public void registerTool(Tool tool) {
             registeredTools.add(tool);
@@ -35,7 +35,7 @@ class AdvancedToolsTest {
           }
         };
 
-    WpilogTools.registerAll(capturingServer);
+    WpilogTools.registerAll(capturingRegistry);
   }
 
   private Tool findTool(String name) {

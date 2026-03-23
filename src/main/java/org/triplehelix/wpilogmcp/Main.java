@@ -5,7 +5,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
@@ -28,6 +30,8 @@ public class Main {
 
     var tbaConfig = TbaConfig.getInstance();
     var logDir = System.getenv("WPILOG_DIR");
+    boolean httpMode = false;
+    int httpPort = 3000;
 
     // Parse command line arguments
     for (int i = 0; i < args.length; i++) {
@@ -131,6 +135,29 @@ public class Main {
       } else if (arg.equals("-nocache")) {
         LogManager.getInstance().getDiskCache().setEnabled(false);
         logger.info("Disk cache disabled");
+      } else if (arg.equals("--http")) {
+        httpMode = true;
+        logger.info("HTTP transport enabled");
+      } else if (arg.equals("--port")) {
+        if (i + 1 < args.length) {
+          try {
+            httpPort = Integer.parseInt(args[++i]);
+            if (httpPort < 1 || httpPort > 65535) {
+              logger.error("Error: --port must be between 1 and 65535");
+              printUsage();
+              System.exit(1);
+            }
+            logger.debug("HTTP port set from command line: {}", httpPort);
+          } catch (NumberFormatException e) {
+            logger.error("Error: --port requires a numeric value");
+            printUsage();
+            System.exit(1);
+          }
+        } else {
+          logger.error("Error: --port requires a port number argument");
+          printUsage();
+          System.exit(1);
+        }
       } else if (arg.startsWith("-")) {
         logger.error("Unknown option: {}", arg);
         printUsage();
@@ -188,18 +215,38 @@ public class Main {
       logger.warn("No bundled game data for current season");
     }
 
-    // Create and configure server
-    var server = new McpServer();
-
-    // Register all WPILOG tools
-    WpilogTools.registerAll(server);
+    // Create tool registry and register all tools
+    var toolRegistry = new ToolRegistry();
+    WpilogTools.registerAll(toolRegistry);
     logger.debug("Registered all MCP tools");
 
-    try {
-      server.run();
-    } catch (IOException e) {
-      logger.error("Fatal server error: {}", e.getMessage(), e);
-      System.exit(1);
+    if (httpMode) {
+      // HTTP transport: server runs until interrupted
+      var httpTransport = new HttpTransport(toolRegistry, httpPort);
+      Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        logger.info("Shutdown signal received");
+        httpTransport.stop();
+      }, "shutdown-hook"));
+      try {
+        httpTransport.start();
+        // Block until interrupted (Ctrl+C)
+        Thread.currentThread().join();
+      } catch (IOException e) {
+        logger.error("Fatal HTTP server error: {}", e.getMessage(), e);
+        System.exit(1);
+      } catch (InterruptedException e) {
+        logger.info("Server interrupted, shutting down");
+        httpTransport.stop();
+      }
+    } else {
+      // Stdio transport (default): server runs until client disconnects
+      var server = new McpServer(toolRegistry);
+      try {
+        server.run();
+      } catch (IOException e) {
+        logger.error("Fatal server error: {}", e.getMessage(), e);
+        System.exit(1);
+      }
     }
   }
 
@@ -214,6 +261,8 @@ public class Main {
     logger.info("  -maxmemory <mb>   Max memory (MB) for log cache (alternative to -maxlogs)");
     logger.info("  -cachedir <path>  Set directory for persistent disk cache");
     logger.info("  -nocache          Disable persistent disk cache");
+    logger.info("  --http            Use HTTP transport instead of stdio");
+    logger.info("  --port <port>     HTTP port (default: 3000, requires --http)");
     logger.info("  -debug            Enable debug logging");
     logger.info("  -version, -v      Show version information");
     logger.info("  -help, -h         Show this help message");

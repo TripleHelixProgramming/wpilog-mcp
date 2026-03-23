@@ -7,7 +7,7 @@ import java.io.IOException;
 import java.util.Comparator;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 import org.triplehelix.wpilogmcp.tba.TbaClient;
@@ -38,19 +38,19 @@ public final class CoreTools {
   /**
    * Registers all core tools with the MCP server.
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new ListAvailableLogsTool());
-    server.registerTool(new LoadLogTool());
-    server.registerTool(new ListEntriesTool());
-    server.registerTool(new GetEntryInfoTool());
-    server.registerTool(new ReadEntryTool());
-    server.registerTool(new ListLoadedLogsTool());
-    server.registerTool(new SetActiveLogTool());
-    server.registerTool(new UnloadLogTool());
-    server.registerTool(new UnloadAllLogsTool());
-    server.registerTool(new ListStructTypesTool());
-    server.registerTool(new HealthCheckTool());
-    server.registerTool(new GetGameInfoTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new ListAvailableLogsTool());
+    registry.registerTool(new LoadLogTool());
+    registry.registerTool(new ListEntriesTool());
+    registry.registerTool(new GetEntryInfoTool());
+    registry.registerTool(new ReadEntryTool());
+    registry.registerTool(new ListLoadedLogsTool());
+    registry.registerTool(new SetActiveLogTool());
+    registry.registerTool(new UnloadLogTool());
+    registry.registerTool(new UnloadAllLogsTool());
+    registry.registerTool(new ListStructTypesTool());
+    registry.registerTool(new HealthCheckTool());
+    registry.registerTool(new GetGameInfoTool());
   }
 
   static class ListAvailableLogsTool implements Tool {

@@ -3,7 +3,7 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
@@ -14,7 +14,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 /**
  * Discovery tools to help LLM agents understand and use the server's capabilities.
  *
- * <p>These tools address a fundamental discoverability problem: MCP exposes a flat list of 46+
+ * <p>These tools address a fundamental discoverability problem: MCP exposes a flat list of 49
  * tools, and LLM agents often don't know which tools exist, what they can do, or when to use
  * them instead of fetching raw data and writing custom analysis code.
  *
@@ -33,9 +33,9 @@ public final class DiscoveryTools {
   /**
    * Registers all discovery tools with the MCP server.
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new GetServerGuideTool());
-    server.registerTool(new SuggestToolsTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new GetServerGuideTool());
+    registry.registerTool(new SuggestToolsTool());
   }
 
   // ==================== TOOL CATALOG ====================
@@ -112,6 +112,30 @@ public final class DiscoveryTools {
         List.of("switch", "active", "select"),
         List.of("Switch to a different match", "Compare across matches"),
         false, List.of("list_loaded_logs", "compare_matches")));
+
+    tools.add(new ToolInfo("unload_log", "core",
+        "Unload a specific log file from memory",
+        List.of("unload", "free", "memory", "close"),
+        List.of("Free memory from a loaded log", "Close a specific match log"),
+        false, List.of("list_loaded_logs", "unload_all_logs")));
+
+    tools.add(new ToolInfo("unload_all_logs", "core",
+        "Unload all log files from memory",
+        List.of("unload", "free", "memory", "clear", "all"),
+        List.of("Free all memory", "Clear all loaded logs"),
+        false, List.of("list_loaded_logs", "unload_log")));
+
+    tools.add(new ToolInfo("list_struct_types", "core",
+        "List all WPILib struct types found in the log",
+        List.of("struct", "types", "schema", "wpilib", "protobuf"),
+        List.of("See what struct types are in the log", "Find custom struct definitions"),
+        true, List.of("get_types", "search_entries")));
+
+    tools.add(new ToolInfo("health_check", "core",
+        "Check server health and version information",
+        List.of("health", "status", "version", "memory", "heap"),
+        List.of("Check server status", "Monitor memory usage", "Get version info"),
+        false, List.of("list_loaded_logs")));
 
     // === QUERY TOOLS ===
     tools.add(new ToolInfo("search_entries", "query",
@@ -318,6 +342,25 @@ public final class DiscoveryTools {
         List.of("Check timestamp accuracy", "Verify sync quality"),
         true, List.of("list_revlog_signals")));
 
+    tools.add(new ToolInfo("set_revlog_offset", "revlog",
+        "Manually set the REV log time offset",
+        List.of("revlog", "offset", "manual", "sync", "timestamp"),
+        List.of("Override automatic sync offset", "Manually align REV timestamps"),
+        true, List.of("sync_status", "list_revlog_signals")));
+
+    tools.add(new ToolInfo("wait_for_sync", "revlog",
+        "Wait for REV log synchronization to complete",
+        List.of("wait", "sync", "revlog", "synchronization", "ready"),
+        List.of("Wait until REV sync is done", "Block until synchronization completes"),
+        true, List.of("sync_status", "list_revlog_signals")));
+
+    // === ROBOT ANALYSIS - additional ===
+    tools.add(new ToolInfo("analyze_can_bus", "robot_analysis",
+        "Analyze CAN bus utilization and error patterns",
+        List.of("can", "bus", "utilization", "error", "bandwidth"),
+        List.of("Check CAN bus utilization", "Find CAN error patterns", "Diagnose bus congestion"),
+        true, List.of("can_health", "power_analysis")));
+
     // === DISCOVERY TOOLS ===
     tools.add(new ToolInfo("get_server_guide", "discovery",
         "Get comprehensive overview of server capabilities",
@@ -359,7 +402,7 @@ public final class DiscoveryTools {
             "Don't write custom brownout detection—use power_analysis. "
                 + "Don't manually detect match phases—use get_match_phases.",
             List.of("get_match_phases", "analyze_swerve", "power_analysis", "can_health",
-                "compare_matches", "get_code_metadata", "moi_regression")),
+                "compare_matches", "get_code_metadata", "moi_regression", "analyze_can_bus")),
 
         new CategoryInfo("frc_domain",
             "FRC-specific analysis: vision, mechanisms, cycles, autonomous, battery health.",
@@ -406,7 +449,7 @@ public final class DiscoveryTools {
     @Override
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
-          + "Returns a structured overview of all 46+ tools organized by category, with usage guidance "
+          + "Returns a structured overview of all 49 tools organized by category, with usage guidance "
           + "and anti-patterns to avoid. This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
     }
@@ -444,7 +487,7 @@ public final class DiscoveryTools {
       var guidance = new JsonObject();
       guidance.addProperty("primary_rule",
           "ALWAYS check for a built-in tool before writing custom analysis code. "
-          + "This server has 46+ specialized tools covering statistics, power analysis, "
+          + "This server has 49 specialized tools covering statistics, power analysis, "
           + "swerve diagnostics, cycle detection, battery health prediction, and more.");
       guidance.addProperty("tba_tip",
           "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. "

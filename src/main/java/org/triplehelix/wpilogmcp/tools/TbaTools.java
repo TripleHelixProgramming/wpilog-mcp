@@ -3,7 +3,7 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 import org.triplehelix.wpilogmcp.tba.TbaClient;
@@ -32,9 +32,9 @@ public final class TbaTools {
   /**
    * Registers all TBA tools with the MCP server.
    */
-  public static void registerAll(McpServer server) {
-    server.registerTool(new GetTbaStatusTool());
-    server.registerTool(new GetTbaMatchDataTool());
+  public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new GetTbaStatusTool());
+    registry.registerTool(new GetTbaMatchDataTool());
   }
 
   static class GetTbaStatusTool implements Tool {

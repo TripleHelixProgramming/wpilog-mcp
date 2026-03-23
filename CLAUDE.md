@@ -4,7 +4,7 @@ This document provides context and coding guidelines for Claude Code when workin
 
 ## Project Overview
 
-**wpilog-mcp** is a Java 17+ MCP server that parses WPILib robot telemetry logs (binary `.wpilog` format) and REV motor controller logs (`.revlog`), providing 46 analysis tools for FRC (FIRST Robotics Competition) diagnostics via JSON-RPC 2.0 over stdio.
+**wpilog-mcp** is a Java 17+ MCP server that parses WPILib robot telemetry logs (binary `.wpilog` format) and REV motor controller logs (`.revlog`), providing 49 analysis tools for FRC (FIRST Robotics Competition) diagnostics via JSON-RPC 2.0 over stdio.
 
 The codebase is ~17,000 lines of production Java and ~17,000 lines of tests (850+ test cases).
 
@@ -17,7 +17,7 @@ The codebase is ~17,000 lines of production Java and ~17,000 lines of tests (850
 - `revlog/` — REV Hardware Client `.revlog` parsing, DBC-based CAN signal decoding
 - `sync/` — Cross-correlation timestamp synchronization between wpilog and revlog (async background processing)
 - `tba/` — The Blue Alliance API integration with caching
-- `tools/` — 46 MCP tools: statistics, FRC domain analysis, swerve, power, CAN, vision, cycle detection, battery health, MoI regression, loop timing, game info, export, plus LLM epistemological guardrails
+- `tools/` — 49 MCP tools: statistics, FRC domain analysis, swerve, power, CAN, vision, cycle detection, battery health, MoI regression, loop timing, game info, export, plus LLM epistemological guardrails
 
 ## FRC Domain Knowledge
 

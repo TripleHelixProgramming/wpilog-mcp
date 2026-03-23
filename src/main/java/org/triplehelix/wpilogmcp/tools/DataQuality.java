@@ -32,7 +32,7 @@ public record DataQuality(
   /**
    * Computes data quality metrics from a list of timestamped values.
    *
-   * <p>A "gap" is defined as a timestamp interval exceeding 3x the median sample interval.
+   * <p>A "gap" is defined as a timestamp interval exceeding 5x the median sample interval.
    * This adapts to any sample rate without hardcoded thresholds.
    *
    * @param values The timestamped values (must be sorted by timestamp)
@@ -92,11 +92,11 @@ public record DataQuality(
       }
     }
 
-    // Jitter: sample standard deviation of intervals (Bessel's correction: n-1)
-    double meanDt = timeSpan / (n - 1);
+    // Jitter: sample standard deviation of intervals around median (Bessel's correction: n-1)
+    // Using medianDt as center is more robust to outlier gaps than mean.
     double sumSq = 0;
     for (double dt : intervals) {
-      double diff = dt - meanDt;
+      double diff = dt - medianDt;
       sumSq += diff * diff;
     }
     double jitter = intervals.length > 1 ? Math.sqrt(sumSq / (intervals.length - 1)) : 0;

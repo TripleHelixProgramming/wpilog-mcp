@@ -418,10 +418,15 @@ public class DiskCacheSerializer {
       case NIL -> { unpacker.unpackNil(); yield null; }
       case BOOLEAN -> unpacker.unpackBoolean();
       case INTEGER -> {
-        // Preserve Long type (WPILib int64 entries)
-        yield unpacker.unpackLong();
+        long val = unpacker.unpackLong();
+        yield (val >= Integer.MIN_VALUE && val <= Integer.MAX_VALUE) ? (int) val : val;
       }
-      case FLOAT -> unpacker.unpackDouble();
+      case FLOAT -> {
+        // Check the MessagePack format to distinguish 32-bit from 64-bit floats
+        yield (format == org.msgpack.core.MessageFormat.FLOAT32)
+            ? unpacker.unpackFloat()
+            : unpacker.unpackDouble();
+      }
       case STRING -> unpacker.unpackString();
       case BINARY -> {
         int len = unpacker.unpackBinaryHeader();

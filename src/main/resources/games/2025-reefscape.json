@@ -1,0 +1,121 @@
+{
+  "format_version": 1,
+  "season": 2025,
+  "game_name": "REEFSCAPE",
+  "full_title": "REEFSCAPE presented by Haas",
+  "source": "https://firstfrc.blob.core.windows.net/frc2025/Manual/2025GameManual.pdf",
+  "manual_version": "initial",
+  "generated_at": "2026-03-23T00:00:00Z",
+
+  "match_timing": {
+    "auto_duration_sec": 15,
+    "auto_to_teleop_delay_sec": 3,
+    "teleop_duration_sec": 135,
+    "total_duration_sec": 150,
+    "endgame_start_before_end_sec": 20,
+    "endgame_duration_sec": 20
+  },
+
+  "game_pieces": [
+    {
+      "name": "Coral",
+      "type": "PVC pipe segment",
+      "diameter_m": 0.114,
+      "diameter_in": 4.5,
+      "preload_max_per_robot": 1,
+      "preload_max_per_alliance": 3
+    },
+    {
+      "name": "Algae",
+      "type": "foam ball",
+      "diameter_m": 0.410,
+      "diameter_in": 16.0,
+      "preload_max_per_robot": 0,
+      "preload_max_per_alliance": 0
+    }
+  ],
+
+  "scoring": {
+    "match_points": {
+      "auto": {
+        "leave": 3,
+        "coral_l1": 3,
+        "coral_l2": 4,
+        "coral_l3": 6,
+        "coral_l4": 7,
+        "algae_processor": 6,
+        "algae_net": 4
+      },
+      "teleop": {
+        "coral_l1": 2,
+        "coral_l2": 3,
+        "coral_l3": 4,
+        "coral_l4": 5,
+        "algae_processor": 6,
+        "algae_net": 4
+      },
+      "endgame": {
+        "park": 2,
+        "shallow_cage": 6,
+        "deep_cage": 12
+      }
+    },
+    "ranking_points": {
+      "win": 2,
+      "tie": 1,
+      "coop_rp": {
+        "description": "Both alliances score enough Coral",
+        "value": 1,
+        "regional_threshold": null,
+        "district_championship_threshold": null,
+        "championship_threshold": null
+      },
+      "reef_rp": {
+        "description": "Fill all 5 Reef levels with Coral on your alliance side",
+        "value": 1,
+        "regional_threshold": null,
+        "district_championship_threshold": null,
+        "championship_threshold": null
+      },
+      "barge_rp": {
+        "description": "Achieve a Barge threshold score",
+        "value": 1,
+        "regional_threshold": 14,
+        "district_championship_threshold": 14,
+        "championship_threshold": 14
+      }
+    },
+    "fouls": {
+      "minor_foul": 2,
+      "major_foul": 8
+    }
+  },
+
+  "field_geometry": {
+    "field_length_m": 16.54,
+    "field_length_in": 651.25,
+    "field_width_m": 8.02,
+    "field_width_in": 315.5,
+    "reef_diameter_m": 1.66,
+    "barge_width_m": 2.42
+  },
+
+  "robot_constraints": {
+    "max_starting_perimeter_in": 120.0,
+    "max_starting_height_in": 48.0,
+    "max_weight_lbs": 125.0,
+    "max_weight_with_bumpers_lbs": null,
+    "note": "Weight excludes bumpers and battery"
+  },
+
+  "typical_mechanisms": ["intake", "coral_scorer", "algae_scorer", "climber", "elevator"],
+
+  "analysis_hints": {
+    "endgame_activity": "Cage climbing (shallow or deep) typically occurs in the final 20 seconds.",
+    "scoring_context": "Coral is scored on the Reef at 4 levels (L1-L4). Higher levels score more points. Algae can go to the Processor (6 pts) or Net (4 pts).",
+    "cycle_time": "Coral cycle = intake from station -> score on Reef. Track time between successive Reef scores. Algae cycle is separate.",
+    "auto_importance": "Auto Coral scores are worth more than teleop. Leaving scores 3 pts.",
+    "reef_context": "Reef RP requires filling all 5 levels on your alliance side. Coordinate with alliance partners for level coverage.",
+    "barge_context": "Barge RP requires 14+ Barge points. Deep cage (12 pts) + park (2 pts) = 14 pts minimum for RP."
+  }
+}

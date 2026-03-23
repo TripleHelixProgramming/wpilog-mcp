@@ -37,7 +37,7 @@ public class LogDirectory {
   }
 
   /** Configured root directory for log file discovery. */
-  private Path logDirectory;
+  private volatile Path logDirectory;
 
   /**
    * Cache of log file metadata, keyed by absolute path.
@@ -58,7 +58,7 @@ public class LogDirectory {
   private final LongAdder cacheMisses = new LongAdder();
 
   /** Default team number to use when file metadata is missing. */
-  private Integer defaultTeamNumber = null;
+  private volatile Integer defaultTeamNumber = null;
 
   /** Private constructor for singleton pattern. */
   private LogDirectory() {}

@@ -21,8 +21,8 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
 import org.triplehelix.wpilogmcp.tools.CoreTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
@@ -96,21 +96,21 @@ class StressTest {
 
     // Register all tools
     tools = new ArrayList<>();
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
       }
     };
 
-    CoreTools.registerAll(capturingServer);
-    QueryTools.registerAll(capturingServer);
-    StatisticsTools.registerAll(capturingServer);
-    FrcDomainTools.registerAll(capturingServer);
-    RobotAnalysisTools.registerAll(capturingServer);
-    ExportTools.registerAll(capturingServer);
-    TbaTools.registerAll(capturingServer);
-    RevLogTools.registerAll(capturingServer);
+    CoreTools.registerAll(capturingRegistry);
+    QueryTools.registerAll(capturingRegistry);
+    StatisticsTools.registerAll(capturingRegistry);
+    FrcDomainTools.registerAll(capturingRegistry);
+    RobotAnalysisTools.registerAll(capturingRegistry);
+    ExportTools.registerAll(capturingRegistry);
+    TbaTools.registerAll(capturingRegistry);
+    RevLogTools.registerAll(capturingRegistry);
 
     System.out.println("\n========================================");
     System.out.println("MCP Server Stress Test");

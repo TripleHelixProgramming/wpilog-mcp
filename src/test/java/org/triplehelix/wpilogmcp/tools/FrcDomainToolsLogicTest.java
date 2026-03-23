@@ -13,8 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.mcp.McpServer;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for FrcDomainTools using synthetic log data.
@@ -26,14 +26,14 @@ class FrcDomainToolsLogicTest {
   @BeforeEach
   void setUp() {
     tools = new ArrayList<>();
-    var capturingServer = new McpServer() {
+    var capturingRegistry = new ToolRegistry() {
       @Override
       public void registerTool(Tool tool) {
         tools.add(tool);
         super.registerTool(tool);
       }
     };
-    FrcDomainTools.registerAll(capturingServer);
+    FrcDomainTools.registerAll(capturingRegistry);
   }
 
   @AfterEach
@@ -266,21 +266,30 @@ class FrcDomainToolsLogicTest {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      if (resultObj.has("settling_time_sec")) {
-        // Settling time should be around 2-3 seconds (from t=1 when setpoint changes)
-        double settlingTime = resultObj.get("settling_time_sec").getAsDouble();
-        assertTrue(settlingTime >= 0, "Settling time should be non-negative");
-      }
+      assertTrue(resultObj.has("following_error"), "Expected following_error in response");
+      var followingError = resultObj.getAsJsonObject("following_error");
+      assertTrue(followingError.has("settling_time_sec"), "Expected settling_time_sec in following_error");
+      // Settling time should be around 2-3 seconds (from t=1 when setpoint changes to 10, settled at t=3)
+      var settlingStats = followingError.getAsJsonObject("settling_time_sec");
+      double avgSettling = settlingStats.get("avg").getAsDouble();
+      assertTrue(avgSettling >= 1.0 && avgSettling <= 3.0,
+          "Average settling time should be ~2s, got: " + avgSettling);
     }
 
     @Test
     @DisplayName("calculates overshoot for step response")
     void calculatesOvershoot() throws Exception {
-      // Simulate overshoot: setpoint 10, but mechanism goes to 12 before settling
+      // Simulate overshoot with two setpoint changes (overshoot is flushed on next setpoint change)
+      // First step: setpoint 0->100, mechanism overshoots to 130 (overshoot > initial undershoot)
+      // Second step: setpoint 100->200, needed to flush the first overshoot calculation
       var log = new MockLogBuilder()
           .setPath("/test/overshoot.wpilog")
-          .addNumericEntry("/Shooter/Setpoint", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 100, 100, 100, 100, 100})
-          .addNumericEntry("/Shooter/Velocity", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 80, 120, 105, 100, 100})
+          .addNumericEntry("/Shooter/Setpoint",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7},
+              new double[]{0, 100, 100, 100, 200, 200, 200, 200})
+          .addNumericEntry("/Shooter/Position",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7},
+              new double[]{0, 90, 130, 100, 190, 230, 200, 200})
           .build();
       setActiveLog(log);
 
@@ -292,12 +301,13 @@ class FrcDomainToolsLogicTest {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      if (resultObj.has("overshoot_percent")) {
-        // Max overshoot: (120 - 100) / 100 * 100 = 20%
-        double overshoot = resultObj.get("overshoot_percent").getAsDouble();
-        assertTrue(overshoot >= 0, "Overshoot should be non-negative");
-        assertTrue(overshoot <= 100, "Overshoot should be reasonable");
-      }
+      assertTrue(resultObj.has("following_error"), "Expected following_error in response");
+      var followingError = resultObj.getAsJsonObject("following_error");
+      assertTrue(followingError.has("overshoot_percent"),
+          "Expected overshoot_percent in following_error");
+      // First step overshoot: (130-100)/100 * 100 = 30%
+      double overshoot = followingError.get("overshoot_percent").getAsDouble();
+      assertEquals(30.0, overshoot, 1.0, "Overshoot should be ~30%");
     }
   }
 
@@ -307,12 +317,18 @@ class FrcDomainToolsLogicTest {
     @Test
     @DisplayName("detects pose jumps when distance exceeds threshold")
     void detectsPoseJumps() throws Exception {
-      // Simulate pose data with a jump: normal small changes, then a big jump
+      // Simulate Pose2d data with a jump: normal small changes, then a big jump
+      var poseTvs = new ArrayList<TimestampedValue>();
+      poseTvs.add(new TimestampedValue(0.0, MockLogBuilder.makePose2d(0, 0)));
+      poseTvs.add(new TimestampedValue(0.1, MockLogBuilder.makePose2d(0.1, 0)));
+      poseTvs.add(new TimestampedValue(0.2, MockLogBuilder.makePose2d(0.2, 0)));
+      poseTvs.add(new TimestampedValue(0.3, MockLogBuilder.makePose2d(0.3, 0)));
+      poseTvs.add(new TimestampedValue(0.4, MockLogBuilder.makePose2d(5.0, 0))); // 4.7m jump
+      poseTvs.add(new TimestampedValue(0.5, MockLogBuilder.makePose2d(5.1, 0)));
+
       var log = new MockLogBuilder()
           .setPath("/test/vision_jumps.wpilog")
-          .addNumericEntry("/Vision/Pose2d",
-              new double[]{0, 0.1, 0.2, 0.3, 0.4, 0.5},
-              new double[]{0, 0.1, 0.2, 0.3, 5.0, 5.1}) // Jump from 0.3 to 5.0 = 4.7m
+          .addEntry("/Vision/Pose", "struct:Pose2d", poseTvs)
           .build();
       setActiveLog(log);
 
@@ -324,17 +340,11 @@ class FrcDomainToolsLogicTest {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      // Should detect the jump from 0.3 to 5.0
-      if (resultObj.has("target_acquisition")) {
-        var targetAcq = resultObj.getAsJsonArray("target_acquisition");
-        if (targetAcq.size() > 0) {
-          var firstVision = targetAcq.get(0).getAsJsonObject();
-          if (firstVision.has("pose_jumps")) {
-            var jumps = firstVision.getAsJsonArray("pose_jumps");
-            assertTrue(jumps.size() > 0, "Should detect pose jump exceeding 1m threshold");
-          }
-        }
-      }
+      // pose_jumps is at top-level when jumps are detected
+      assertTrue(resultObj.has("pose_jumps"), "Expected pose_jumps in response");
+      var jumps = resultObj.getAsJsonArray("pose_jumps");
+      assertTrue(jumps.size() > 0, "Should detect pose jump exceeding 1m threshold");
+      assertTrue(resultObj.get("jump_count").getAsInt() > 0, "jump_count should reflect detected jumps");
     }
   }
 
@@ -344,18 +354,29 @@ class FrcDomainToolsLogicTest {
     @Test
     @DisplayName("calculates path following error RMSE")
     void calculatesPathFollowingError() throws Exception {
-      // Simulate auto period with desired and actual positions
+      // Simulate auto period with Pose2d desired and actual entries
+      var enabledValues = new ArrayList<TimestampedValue>();
+      enabledValues.add(new TimestampedValue(0.0, true));
+      enabledValues.add(new TimestampedValue(5.0, false));
+
       var autoValues = new ArrayList<TimestampedValue>();
       autoValues.add(new TimestampedValue(0.0, true));
       autoValues.add(new TimestampedValue(5.0, false));
 
+      // Create Pose2d data for desired and actual paths
+      var desiredPoses = new ArrayList<TimestampedValue>();
+      var actualPoses = new ArrayList<TimestampedValue>();
+      for (int i = 0; i <= 5; i++) {
+        desiredPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i, 0)));
+        actualPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i + 0.1, 0.1)));
+      }
+
       var log = new MockLogBuilder()
           .setPath("/test/auto_path.wpilog")
+          .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
-          .addNumericEntry("/Auto/Desired/X", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 1, 2, 3, 4, 5})
-          .addNumericEntry("/Auto/Desired/Y", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 0, 0, 0, 0, 0})
-          .addNumericEntry("/Auto/Actual/X", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 1.1, 2.2, 3.1, 4.2, 5.1})
-          .addNumericEntry("/Auto/Actual/Y", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 0.1, 0.1, 0.2, 0.1, 0.1})
+          .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
+          .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
           .build();
       setActiveLog(log);
 
@@ -366,13 +387,13 @@ class FrcDomainToolsLogicTest {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      if (resultObj.has("path_following_error")) {
-        var pathError = resultObj.getAsJsonObject("path_following_error");
-        assertTrue(pathError.has("rmse"), "Should calculate RMSE");
-        assertTrue(pathError.has("max_error"), "Should calculate max error");
-        double rmse = pathError.get("rmse").getAsDouble();
-        assertTrue(rmse >= 0, "RMSE should be non-negative");
-      }
+      assertTrue(resultObj.has("path_following_error"), "Expected path_following_error in response");
+      var pathError = resultObj.getAsJsonObject("path_following_error");
+      assertTrue(pathError.has("rmse_meters"), "Should calculate RMSE");
+      assertTrue(pathError.has("max_error_meters"), "Should calculate max error");
+      double rmse = pathError.get("rmse_meters").getAsDouble();
+      assertTrue(rmse >= 0, "RMSE should be non-negative");
+      assertTrue(rmse < 1.0, "RMSE should be small for near-matching paths");
     }
   }
 
@@ -810,6 +831,110 @@ class FrcDomainToolsLogicTest {
       // Should detect at least the 25ms and 30ms values
       assertTrue(violations.size() >= 2, "Should detect loop violations > 20ms");
     }
+
+    @Test
+    @DisplayName("normal 20ms loop timing gives health score near 100")
+    void normalLoopTimingGivesHighHealthScore() throws Exception {
+      // All loop times well under 20ms threshold
+      var log = new MockLogBuilder()
+          .setPath("/test/normal_loop.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime",
+              new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18},
+              new double[]{18, 19, 17, 18, 19, 18, 17, 19, 18, 17}) // ms, all < 20ms
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(100, resultObj.get("health_score").getAsInt(),
+          "All-normal loop timing should give health score of 100");
+      assertEquals(0, resultObj.get("violation_count").getAsInt(),
+          "No violations expected for normal loop timing");
+
+      var stats = resultObj.getAsJsonObject("statistics");
+      double avgMs = stats.get("avg_ms").getAsDouble();
+      assertTrue(avgMs > 16 && avgMs < 20,
+          "Average loop time should be between 16-20ms, got: " + avgMs);
+    }
+
+    @Test
+    @DisplayName("auto-detects seconds format and converts to ms")
+    void autoDetectsSecondsFormat() throws Exception {
+      // Data in seconds (0.02s = 20ms) - should auto-detect and convert
+      var log = new MockLogBuilder()
+          .setPath("/test/loop_seconds.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime",
+              new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10},
+              new double[]{0.018, 0.019, 0.025, 0.017, 0.030, 0.016}) // seconds
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Auto-detect should convert seconds to ms
+      var stats = resultObj.getAsJsonObject("statistics");
+      double avgMs = stats.get("avg_ms").getAsDouble();
+      assertTrue(avgMs > 15 && avgMs < 30,
+          "Auto-detected seconds should convert to ms range (15-30), got: " + avgMs);
+
+      // Should detect violations for 0.025s (25ms) and 0.030s (30ms)
+      assertEquals(2, resultObj.get("violation_count").getAsInt(),
+          "Should detect 2 violations > 20ms after conversion from seconds");
+    }
+
+    @Test
+    @DisplayName("loop with overruns reports correct violation count and rate")
+    void loopWithOverrunsReportsViolations() throws Exception {
+      // 3 out of 8 samples exceed 20ms threshold
+      var log = new MockLogBuilder()
+          .setPath("/test/loop_overruns.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime",
+              new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14},
+              new double[]{15, 18, 25, 19, 30, 16, 22, 17}) // 25, 30, 22 are violations
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(3, resultObj.get("violation_count").getAsInt(),
+          "Should detect exactly 3 violations (25ms, 30ms, 22ms)");
+      assertEquals(8, resultObj.get("total_samples").getAsInt());
+      assertEquals(3.0 / 8.0, resultObj.get("violation_rate").getAsDouble(), 0.001);
+
+      // Health score should reflect 37.5% violation rate
+      int healthScore = resultObj.get("health_score").getAsInt();
+      assertTrue(healthScore > 50 && healthScore < 70,
+          "37.5% violation rate should give score ~62, got: " + healthScore);
+    }
+
+    @Test
+    @DisplayName("empty loop timing data returns error")
+    void emptyLoopTimingDataReturnsError() throws Exception {
+      // Log with no loop time entries
+      var log = new MockLogBuilder()
+          .setPath("/test/no_loop_time.wpilog")
+          .addNumericEntry("/Motor/Velocity", new double[]{0, 1, 2}, new double[]{10, 20, 30})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("loop time"),
+          "Error message should mention loop time entry not found");
+    }
   }
 
   @Nested
@@ -1076,6 +1201,80 @@ class FrcDomainToolsLogicTest {
       assertTrue(resultObj.get("success").getAsBoolean());
       int score = resultObj.get("health_score").getAsInt();
       assertTrue(score >= 0 && score <= 100, "Score should be clamped to 0-100, got: " + score);
+    }
+
+    @Test
+    @DisplayName("empty voltage data returns error")
+    void emptyVoltageDataReturnsError() throws Exception {
+      // Log with no battery voltage entries at all
+      var log = new MockLogBuilder()
+          .setPath("/test/no_voltage.wpilog")
+          .addNumericEntry("/Motor/Velocity", new double[]{0, 1, 2}, new double[]{10, 20, 30})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("voltage"),
+          "Error message should mention voltage");
+    }
+
+    @Test
+    @DisplayName("constant voltage (no sag) gives high health score")
+    void constantVoltageGivesHighScore() throws Exception {
+      // Perfectly steady voltage with no sag at all
+      var log = new MockLogBuilder()
+          .setPath("/test/constant_voltage.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+              new double[]{12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int score = resultObj.get("health_score").getAsInt();
+      assertEquals(100, score, "Constant healthy voltage should give perfect score");
+      assertEquals("MINIMAL", resultObj.get("risk_level").getAsString(),
+          "No sag should give MINIMAL risk level");
+      assertEquals(0, resultObj.get("brownout_events").getAsInt(),
+          "No brownout events expected");
+
+      var voltageStats = resultObj.getAsJsonObject("voltage_stats");
+      assertEquals(12.5, voltageStats.get("min_volts").getAsDouble(), 0.001);
+      assertEquals(12.5, voltageStats.get("max_volts").getAsDouble(), 0.001);
+      assertEquals(12.5, voltageStats.get("avg_volts").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("severely degraded battery with frequent drops below 8V")
+    void severelyDegradedBattery() throws Exception {
+      // Voltage frequently dropping below 8V
+      var log = new MockLogBuilder()
+          .setPath("/test/degraded_battery.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+              new double[]{10.0, 7.5, 6.0, 7.0, 6.5, 7.8, 6.2, 7.2, 6.8, 8.0})
+          .build();
+      setActiveLog(log);
+
+      var tool = findTool("predict_battery_health");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int score = resultObj.get("health_score").getAsInt();
+      assertTrue(score < 30,
+          "Severely degraded battery should score < 30, got: " + score);
+
+      var voltageStats = resultObj.getAsJsonObject("voltage_stats");
+      assertEquals(6.0, voltageStats.get("min_volts").getAsDouble(), 0.001);
     }
 
     @Test
