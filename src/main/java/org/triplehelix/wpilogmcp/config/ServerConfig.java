@@ -7,6 +7,9 @@ package org.triplehelix.wpilogmcp.config;
  * The merge logic in {@link ConfigLoader} overlays per-server values onto the
  * {@code defaults} section, then applies built-in defaults for anything still null.
  *
+ * <p>Memory management is automatic — the server adapts to available JVM heap.
+ * Users control capacity via {@code WPILOG_MAX_HEAP} environment variable.
+ *
  * @since 0.8.0
  */
 public record ServerConfig(
@@ -16,8 +19,6 @@ public record ServerConfig(
     String tbaKey,
     String transport,
     Integer port,
-    Integer maxlogs,
-    Long maxmemory,
     String diskcachedir,
     Long diskcachesize,
     Boolean diskcachedisable,
@@ -44,9 +45,6 @@ public record ServerConfig(
   /**
    * Merges this config with a defaults config. Per-server values take priority;
    * null fields fall through to the default.
-   *
-   * @param defaults The defaults config (nullable fields used as fallback)
-   * @return A new ServerConfig with merged values
    */
   public ServerConfig mergeWithDefaults(ServerConfig defaults) {
     if (defaults == null) return this;
@@ -57,8 +55,6 @@ public record ServerConfig(
         tbaKey != null ? tbaKey : defaults.tbaKey(),
         transport != null ? transport : defaults.transport(),
         port != null ? port : defaults.port(),
-        maxlogs != null ? maxlogs : defaults.maxlogs(),
-        maxmemory != null ? maxmemory : defaults.maxmemory(),
         diskcachedir != null ? diskcachedir : defaults.diskcachedir(),
         diskcachesize != null ? diskcachesize : defaults.diskcachesize(),
         diskcachedisable != null ? diskcachedisable : defaults.diskcachedisable(),

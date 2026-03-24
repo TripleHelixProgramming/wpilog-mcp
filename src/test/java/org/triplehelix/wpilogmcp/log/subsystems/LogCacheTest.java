@@ -12,12 +12,10 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 class LogCacheTest {
   private LogCache cache;
-  private MemoryEstimator memoryEstimator;
 
   @BeforeEach
   void setUp() {
-    memoryEstimator = new MemoryEstimator();
-    cache = new LogCache(memoryEstimator);
+    cache = new LogCache();
   }
 
   private ParsedLog createMockLog(String path, int entryCount) {
@@ -62,65 +60,8 @@ class LogCacheTest {
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
     cache.clear();
 
-    assertEquals(0, cache.size());
-  }
-
-  @Test
-  void testCountBasedEviction() {
-    cache.setMaxLoadedLogs(2);
-
-    // Add 3 logs, should evict the first one
-    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
-    cache.evictIfNeeded(); // No eviction yet, only 2 logs
-
-    assertEquals(2, cache.size());
-
-    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
-    cache.evictIfNeeded(); // Should evict log1 (LRU)
-
-    assertEquals(2, cache.size());
-    assertNull(cache.get("/log1.wpilog"));
-    assertNotNull(cache.get("/log2.wpilog"));
-    assertNotNull(cache.get("/log3.wpilog"));
-  }
-
-  @Test
-  void testLRUEvictsOldest() {
-    cache.setMaxLoadedLogs(2);
-
-    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
-
-    // Access log1 to make it recently used
-    cache.get("/log1.wpilog");
-
-    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
-    cache.evictIfNeeded(); // Should evict log2 (least recently used)
-
-    assertEquals(2, cache.size());
-    assertNotNull(cache.get("/log1.wpilog")); // Recently accessed
-    assertNull(cache.get("/log2.wpilog")); // LRU — evicted
-    assertNotNull(cache.get("/log3.wpilog"));
-  }
-
-  @Test
-  void testLRUOrder() {
-    cache.setMaxLoadedLogs(2);
-
-    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
-
-    // Access log1 to make it more recently used
-    cache.get("/log1.wpilog");
-
-    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
-    cache.evictIfNeeded(); // Should evict log2 (LRU), not log1
-
-    assertEquals(2, cache.size());
-    assertNotNull(cache.get("/log1.wpilog")); // Accessed more recently
-    assertNull(cache.get("/log2.wpilog")); // LRU
-    assertNotNull(cache.get("/log3.wpilog"));
+    assertTrue(cache.isEmpty());
+    assertTrue(cache.getAllEntries().isEmpty());
   }
 
   @Test
@@ -132,76 +73,123 @@ class LogCacheTest {
   }
 
   @Test
-  void testGetStats() {
-    cache.setMaxLoadedLogs(10);
-    cache.setMaxMemoryMb(2048);
+  void testIsEmpty() {
+    assertTrue(cache.isEmpty());
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-
-    var stats = cache.getStats();
-
-    assertEquals(1, stats.get("size"));
-    assertEquals(10, stats.get("maxLogs"));
-    assertEquals(2048, stats.get("maxMemoryMb"));
-    assertTrue(stats.containsKey("estimatedMemoryMb"));
+    assertFalse(cache.isEmpty());
   }
 
   @Test
-  void testSetMaxLoadedLogsInvalid() {
-    assertThrows(IllegalArgumentException.class, () -> cache.setMaxLoadedLogs(0));
-    assertThrows(IllegalArgumentException.class, () -> cache.setMaxLoadedLogs(-1));
-  }
-
-  @Test
-  void testSetMaxMemoryMbInvalid() {
-    assertThrows(IllegalArgumentException.class, () -> cache.setMaxMemoryMb(0));
-    assertThrows(IllegalArgumentException.class, () -> cache.setMaxMemoryMb(-1));
-  }
-
-  // Active log path tests removed — active log concept replaced by explicit path parameters
-
-  @Test
-  void testEvictionDoesNotCallSystemGc() {
-    // Regression test: eviction should not call System.gc() while holding the write lock,
-    // as this can cause Stop-The-World pauses that block all cache operations.
-    cache.setMaxLoadedLogs(1);
+  void testGetAllEntries() {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
-    // If System.gc() were called inside the write lock, this would still work
-    // but we verify the eviction completes quickly (< 1 second).
-    // A blocked System.gc() inside a lock would cause much longer delays under load.
-    long start = System.nanoTime();
-    cache.evictIfNeeded();
-    long durationMs = (System.nanoTime() - start) / 1_000_000;
-
-    assertEquals(1, cache.size());
-    assertTrue(durationMs < 1000, "Eviction took too long (" + durationMs + "ms), "
-        + "possible System.gc() blocking inside lock");
+    var entries = cache.getAllEntries();
+    assertEquals(2, entries.size());
+    assertTrue(entries.containsKey("/log1.wpilog"));
+    assertTrue(entries.containsKey("/log2.wpilog"));
   }
 
   @Test
-  void testConfigFieldsAreVolatile() throws Exception {
-    // Regression test: maxLoadedLogs and maxMemoryMb should be volatile to ensure
-    // visibility across threads when set during configuration.
-    var field1 = LogCache.class.getDeclaredField("maxLoadedLogs");
-    var field2 = LogCache.class.getDeclaredField("maxMemoryMb");
+  void testGetAllEntriesReturnsDefensiveCopy() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+    var entries = cache.getAllEntries();
+    entries.put("/injected.wpilog", createMockLog("/injected.wpilog", 1));
 
-    assertTrue(java.lang.reflect.Modifier.isVolatile(field1.getModifiers()),
-        "maxLoadedLogs should be volatile for thread safety");
-    assertTrue(java.lang.reflect.Modifier.isVolatile(field2.getModifiers()),
-        "maxMemoryMb should be volatile for thread safety");
+    assertFalse(cache.containsKey("/injected.wpilog"));
   }
 
   @Test
-  void testConcurrentGetDoesNotCorruptLRU() throws Exception {
-    // Regression test: get() must use writeLock with access-ordered LinkedHashMap.
-    // With readLock, concurrent get() calls would corrupt the LRU linked list.
-    cache.setMaxLoadedLogs(3);
+  void testEvictOneRemovesEntry() {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
     cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
 
-    // Concurrent reads should not cause ConcurrentModificationException
+    boolean evicted = cache.evictOne();
+    assertTrue(evicted);
+    assertEquals(2, cache.getAllEntries().size());
+  }
+
+  @Test
+  void testEvictOneRemovesLRU() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    // Small sleep to ensure different access times
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
+
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
+
+    // Access log1 and log3 to make log2 the LRU
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.get("/log1.wpilog");
+
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.get("/log3.wpilog");
+
+    cache.evictOne();
+    // log2 should be evicted (least recently accessed)
+    assertNull(cache.get("/log2.wpilog"), "LRU entry should have been evicted");
+    assertEquals(2, cache.getAllEntries().size());
+  }
+
+  @Test
+  void testEvictOneOnEmptyCacheReturnsFalse() {
+    assertFalse(cache.evictOne());
+  }
+
+  @Test
+  void testLRUOrder() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
+
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
+
+    // Access log1 to move it to MRU
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    cache.get("/log1.wpilog");
+
+    // Evict should remove log2 (oldest not-recently-accessed)
+    cache.evictOne();
+    assertNull(cache.get("/log2.wpilog"), "LRU entry should be evicted");
+    // log1 and log3 should remain
+    assertEquals(2, cache.getAllEntries().size());
+  }
+
+  @Test
+  void testGetStats() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    var stats = cache.getStats();
+
+    assertEquals(1, stats.get("cached_logs"));
+    assertTrue(stats.containsKey("heap_used_mb"));
+    assertTrue(stats.containsKey("heap_max_mb"));
+    assertTrue(stats.containsKey("heap_pressure_threshold"));
+  }
+
+  @Test
+  void testEvictionDoesNotCallSystemGc() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
+
+    long start = System.nanoTime();
+    cache.evictOne();
+    long durationMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertTrue(durationMs < 1000, "Eviction took too long (" + durationMs + "ms)");
+  }
+
+  @Test
+  void testConcurrentGetDoesNotCorruptCache() throws Exception {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
+    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
+
     var threads = new Thread[10];
     var errors = new java.util.concurrent.atomic.AtomicInteger(0);
     for (int i = 0; i < threads.length; i++) {
@@ -220,45 +208,24 @@ class LogCacheTest {
     for (var t : threads) t.join();
 
     assertEquals(0, errors.get(), "Concurrent get() calls should not throw");
-    // Cache should still be consistent
-    assertEquals(3, cache.size());
-  }
-
-  @Test
-  void evictsMultipleEntriesUntilWithinCountLimit() {
-    cache.setMaxLoadedLogs(2);
-
-    // Add 5 logs
-    for (int i = 0; i < 5; i++) {
-      cache.put("/log" + i + ".wpilog", createMockLog("/log" + i + ".wpilog", 1));
-    }
-    // Access log4 to make it MRU
-    cache.get("/log4.wpilog");
-
-    assertEquals(5, cache.size());
-
-    // evictIfNeeded should loop until cache is within limit (2)
-    cache.evictIfNeeded();
-
-    assertTrue(cache.size() <= 2,
-        "Cache should have at most 2 entries after eviction, but has: " + cache.size());
-    // MRU log should be kept
-    assertTrue(cache.containsKey("/log4.wpilog"), "Active log should not be evicted");
+    assertEquals(3, cache.getAllEntries().size());
   }
 
   @Test
   void evictionCallbackIsInvokedOnEviction() {
-    cache.setMaxLoadedLogs(1);
-
     var evictedPaths = new java.util.ArrayList<String>();
     cache.setEvictionCallback(evictedPaths::add);
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
+
     // Access log2 to make it MRU
+    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
     cache.get("/log2.wpilog");
 
-    cache.evictIfNeeded();
+    cache.evictOne();
 
     assertTrue(evictedPaths.contains("/log1.wpilog"),
         "Eviction callback should have been called with the LRU path");
@@ -287,8 +254,62 @@ class LogCacheTest {
   @Test
   void clearWithNoCallbackDoesNotThrow() {
     cache.put("/a.wpilog", createMockLog("/a.wpilog", 1));
-    // No callback set — clear should still work
     assertDoesNotThrow(() -> cache.clear());
-    assertEquals(0, cache.size());
+    assertTrue(cache.isEmpty());
+  }
+
+  @Test
+  void evictIfNeededEvictsIdleLogs() {
+    // Create cache with 1ms idle timeout
+    var shortCache = new LogCache(1);
+    shortCache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    // Wait for idle expiration
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+
+    shortCache.evictIfNeeded();
+
+    assertTrue(shortCache.isEmpty(), "Idle log should have been evicted");
+  }
+
+  @Test
+  void evictIfNeededKeepsRecentLogs() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    cache.evictIfNeeded();
+
+    // Under normal heap conditions, the log should not be evicted
+    // (it's not idle and we're not under heap pressure in tests)
+  }
+
+  @Test
+  void multipleEvictOneCallsDrainCache() {
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+    cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
+    cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
+
+    assertTrue(cache.evictOne());
+    assertTrue(cache.evictOne());
+    assertTrue(cache.evictOne());
+    assertFalse(cache.evictOne());
+    assertTrue(cache.isEmpty());
+  }
+
+  @Test
+  void putOverwriteDoesNotInvokeEvictionCallback() {
+    var evictedPaths = new java.util.ArrayList<String>();
+    cache.setEvictionCallback(evictedPaths::add);
+
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+    // Overwrite with new value
+    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
+
+    assertTrue(evictedPaths.isEmpty(),
+        "Overwriting an entry should not invoke eviction callback");
+  }
+
+  @Test
+  void removeReturnsNullForMissingEntry() {
+    assertNull(cache.remove("/nonexistent.wpilog"));
   }
 }

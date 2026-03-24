@@ -2,43 +2,62 @@
 
 **Ever wondered why your robot died with 30 seconds left? Or why auto worked in practice but not in competition?**
 
-wpilog-mcp lets you ask those questions in plain English. Load your robot's telemetry logs and have a conversation with your data.
+wpilog-mcp lets you ask those questions in plain English. Load your robot's telemetry logs and have a conversation with your data.  Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's official `DataLogReader` for guaranteed format compatibility.
 
-### What is MCP?
+**See what's possible:** [Example Analysis Report](EXAMPLE.md) - A complete match analysis generated from real robot logs.
 
-The **Model Context Protocol (MCP)** is an open standard that enables AI assistants (like Claude) to securely access your local data and tools. 
+## Table of Contents
 
-This project provides an **MCP Server**. Once configured, it acts as a "bridge" that gives your AI assistant the specific tools needed to read WPILOG files, analyze swerve performance, detect brownouts, and even pull match results from The Blue Alliance—all through a natural conversation.
+- [AI Semantic Processing](#ai-semantic-processing)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Available Tools](#available-tools)
+- [Supported Data Types](#supported-data-types)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Contributing](#contributing)
 
 ---
 
-## The Power of AI Reasoning
+## AI Semantic Processing
+
+### What is MCP?
+
+The **Model Context Protocol (MCP)** is an open standard that enables AI assistants (like Claude) to securely access your local data and tools.
+
+This project provides an **MCP Server**. Once configured, it acts as a "bridge" that gives your AI assistant the specific tools needed to read WPILOG files, analyze swerve performance, detect brownouts, and even pull match results from The Blue Alliance—all through a natural conversation.
 
 Unlike traditional log viewers (like AdvantageScope) which require you to know exactly what to look for, **wpilog-mcp** allows you to ask high-level engineering and strategic questions. The AI doesn't just "query" data; it **hypothesizes, investigates, and synthesizes**.
 
-### 1. The Autonomous "Post-Match Pit Boss"
+### Example Scenarios
+
+#### 1. The Autonomous "Post-Match Pit Boss"
 **Prompt:** *"We just finished Q68 and the drivers said the robot 'stuttered' during teleop. Investigate the log and tell the pit crew exactly what to check."*
 
 *   **The AI's Reasoning:** Claude will load the log, scan the `get_ds_timeline` for brownout events, use `power_analysis` to find which motor controller had the highest current spike at that exact timestamp, and check `can_health` for timeouts.
 *   **The Result:** *"I found a BROWNOUT_START at 42.5s. During this time, the 'Intake/Roller' current spiked to 60A while velocity was zero, suggesting a mechanical jam. Check the intake for debris or a bent mounting bracket."*
 
-### 2. Strategic "Cycle Time" Optimization
+#### 2. Strategic "Cycle Time" Optimization
 **Prompt:** *"Compare our cycle times in Q74 vs Q68. Why were we slower in the second half of Q68?"*
 
 *   **The AI's Reasoning:** Claude will pull match results from TBA to see the scores, use `analyze_cycles` to calculate state-based efficiency, and correlate "dead time" with robot position data.
 *   **The Result:** *"Your scoring cycles in Q74 averaged 8.2s. In Q68, they slowed to 12.5s after the 60-second mark. I noticed that during those slower cycles, the robot was taking a much longer path around the 'Stage' obstacle—check if your autonomous path-finding or driver path was blocked."*
 
-### 3. Control Theory "Tuning Audit"
+#### 3. Control Theory "Tuning Audit"
 **Prompt:** *"Look at our swerve drive performance in the last match. Is our steering PID too aggressive? Look for oscillation."*
 
 *   **The AI's Reasoning:** Claude will use `analyze_swerve` to identify the modules, call `get_statistics` on the steering error, and run `find_peaks` to look for high-frequency oscillations in the `AppliedVolts`.
 *   **The Result:** *"The Back-Left module is showing a 0.15s oscillation period in steering position while the robot is at a standstill. This suggests your P gain is slightly too high or your D gain is insufficient for the new modules."*
 
----
+### Honest Analysis, Not Just Answers
 
-Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's official `DataLogReader` for guaranteed format compatibility.
+AI models have a natural tendency to find explanations that fit the data — even when the data doesn't support a strong conclusion. wpilog-mcp is designed to work against this bias. Every tool returns **accurate, raw data** (statistics, timestamps, sample counts, p-values) rather than pre-digested conclusions. Built-in guardrails steer the AI toward honest, qualified analysis:
 
-**See what's possible:** [Example Analysis Report](EXAMPLE.md) - A complete match analysis generated from real robot logs.
+- **Data quality scoring** — Each response includes a quality assessment based on sample count, data gaps, and timing regularity. When data quality is poor, the AI is explicitly told to reduce its confidence.
+- **Epistemic guidance** — Tool descriptions and response metadata embed language like "suggests" and "may indicate" rather than "proves" or "confirms." The AI is reminded that a single match is never enough to draw definitive conclusions.
+- **Primitive tool design** — Instead of a single "diagnose my robot" tool that returns a health score, the server provides building blocks (voltage stats, current stats, correlation coefficients). The AI must reason across multiple tool calls, making its logic transparent and auditable.
+
+The goal: when you ask "why did we lose Q68?", you get analysis grounded in what the data actually shows — with appropriate caveats about what it doesn't.
 
 ## Quick Start
 
@@ -74,9 +93,7 @@ Edit `~/.wpilog-mcp/servers.json` (created by the installer with defaults):
 ```json
 {
   "defaults": {
-    "team": 2363,
-    "maxlogs": 10,
-    "maxmemory": 2048
+    "team": 2363
   },
   "servers": {
     "default": {
@@ -130,117 +147,16 @@ Analyze the qualification match 42 log and give me a summary
 ```
 
 ```
-When did battery voltage drop below 11 volts?
+When did battery voltage drop below 8 volts?
 ```
 
 ```
 Compare the commanded wheel speeds to actual wheel speeds
 ```
 
-That's it! See [Usage Examples](#usage-examples) for more.
+That's it!
 
 ---
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Usage Examples](#usage-examples)
-- [Configuration Options](#configuration-options)
-- [Available Tools](#available-tools)
-- [Supported Data Types](#supported-data-types)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-- [Contributing](#contributing)
-
-## Usage Examples
-
-### Browsing Logs
-
-```
-What robot logs are available?
-```
-
-The server parses filenames like `2024vadc_qm42.wpilog` into friendly names like "VADC Qualification 42".
-
-### Basic Analysis
-
-```
-Give me a summary of the robot log
-```
-
-```
-Show me all entries related to the drivetrain
-```
-
-```
-What Pose2d entries are available?
-```
-
-### Robot Position
-
-```
-Show me where the robot was at the start and end of the match
-```
-
-```
-Get statistics on the robot's X position - how much did it vary?
-```
-
-### Threshold Events
-
-```
-When did battery voltage drop below 11 volts?
-```
-
-```
-Find all times when robot speed exceeded 4 meters per second
-```
-
-### Console Output
-
-```
-Search for any CAN errors in the console output
-```
-
-```
-Find all vision-related messages in the logs
-```
-
-### Swerve Analysis
-
-```
-Show me the swerve module states for the front left module
-```
-
-```
-Compare commanded wheel speeds to actual wheel speeds
-```
-
-### AdvantageKit Replay
-
-```
-Compare /RealOutputs/Drive/Pose with /ReplayOutputs/Drive/Pose
-```
-
-### Multi-Log Analysis
-
-```
-Compare battery statistics between the practice log and the match log
-```
-
-### REV Log Analysis
-
-```
-What REV signals are available for this match?
-```
-
-```
-Show me the motor temperature and current for SparkMax_1 during teleop
-```
-
-```
-Compare the commanded output from the wpilog with the actual applied output from the revlog
-```
 
 ## Configuration
 
@@ -267,8 +183,6 @@ Config file search order:
 | `tba_key` | The Blue Alliance API key (supports `${TBA_API_KEY}`) | — |
 | `transport` | `"stdio"` or `"http"` | `"stdio"` |
 | `port` | HTTP port | `2363` |
-| `maxlogs` | Max logs in memory cache | `20` |
-| `maxmemory` | Max memory (MB) for log cache (alternative to `maxlogs`) | — |
 | `diskcachedir` | Directory for persistent disk cache | OS default |
 | `diskcachesize` | Max disk cache size (MB) | `8192` |
 | `diskcachedisable` | Disable persistent disk cache | `false` |
@@ -292,8 +206,6 @@ wpilog-mcp start http --port 9000
 | `-logdir <path>` | `WPILOG_DIR` |
 | `-team <number>` | `WPILOG_TEAM` |
 | `-tba-key <key>` | `TBA_API_KEY` |
-| `-maxlogs <n>` | `WPILOG_MAX_LOGS` |
-| `-maxmemory <mb>` | `WPILOG_MAX_MEMORY` |
 | `-diskcachedir <path>` | `WPILOG_DISK_CACHE_DIR` |
 | `-diskcachesize <mb>` | `WPILOG_DISK_CACHE_SIZE` |
 | `-diskcachedisable` | `WPILOG_DISK_CACHE_DISABLE` |
@@ -307,9 +219,9 @@ The launcher script sets `WPILOG_MAX_HEAP` (default `4g`) for JVM heap size. Lar
 
 **Precedence:** CLI flags > environment variables > `servers.json` per-server values > `servers.json` defaults.
 
-**In-memory cache:** Logs are auto-loaded on first reference and auto-evicted after 30 minutes of inactivity. Use `maxlogs` for a count-based limit (default 20) or `maxmemory` for a memory-based limit. The least recently used log is evicted when the limit is reached.
+**In-memory cache:** Logs are auto-loaded on first reference and auto-evicted after 30 minutes of inactivity. Under heap pressure (free heap < 15%), the least recently used log is evicted automatically. Control total capacity via `WPILOG_MAX_HEAP` environment variable (default 4g).
 
-**Disk cache:** Parsed wpilog files and revlog sync results are cached to disk to avoid expensive reparsing on server restart. Enabled by default. Set `diskcachedisable` to turn off.
+**Disk cache:** Revlog sync results are cached to disk to avoid expensive reparsing on server restart. Enabled by default. Set `diskcachedisable` to turn off.
 
 ### The Blue Alliance Integration
 
@@ -409,20 +321,6 @@ wpilog-mcp provides 45 tools organized into categories. All log-requiring tools 
 
 **Start here:** Call `get_server_guide` first to understand what analysis capabilities are available. This prevents writing custom analysis code when a built-in tool already exists.
 
-### Key Features
-
-- **Execution Time Tracking**: All tool responses include `_execution_time_ms` field for performance monitoring
-- **Intelligent Error Handling**: Clear error messages with specific error codes and "Did You Mean?" suggestions for misspelled tool names
-- **Memory Monitoring**: Real-time heap usage tracking with estimation accuracy validation via `health_check` tool
-- **Improved Statistical Analysis**: IQR calculation uses proper linear percentile interpolation for accurate outlier detection
-- **Enhanced Mechanism Analysis**: Stall detection, settling time, and overshoot calculations for control system tuning
-- **Vision System Monitoring**: Pose jump detection to identify unreliable vision estimates
-- **Loop Timing Analysis**: Detect and diagnose real-time performance issues
-- **CAN Bus Health**: Monitor bus utilization and error rates
-- **REV Log Integration**: Correlate high-resolution motor controller data from `.revlog` files with FPGA-timestamped telemetry
-
-For complete tool documentation with parameters and examples, see [TOOLS.md](TOOLS.md).
-
 ## Supported Data Types
 
 ### Primitive Types
@@ -504,58 +402,21 @@ WPILib JDK locations:
 
 ### Project Structure
 
-```
-wpilog-mcp/
-├── src/main/java/org/triplehelix/wpilogmcp/
-│   ├── Main.java                   # Entry point (stdio + HTTP modes)
-│   ├── cache/
-│   │   ├── DiskCache.java          # Persistent wpilog cache (MessagePack)
-│   │   ├── SyncDiskCache.java      # Persistent revlog sync cache
-│   │   ├── ContentFingerprint.java # SHA-256 content fingerprinting
-│   │   └── ...                     # Serializers, metadata, directory
-│   ├── config/
-│   │   ├── ConfigLoader.java       # Named server config (JSON)
-│   │   ├── DaemonManager.java      # HTTP daemon lifecycle
-│   │   └── ServerConfig.java       # Config record
-│   ├── game/
-│   │   └── GameKnowledgeBase.java  # FRC game data (2024-2026)
-│   ├── log/
-│   │   ├── LogManager.java         # WPILOG parsing, caching, revlog sync
-│   │   ├── LogDirectory.java       # Log/revlog file discovery
-│   │   └── subsystems/             # Parser, cache, struct decoders
-│   ├── mcp/
-│   │   ├── McpMessageHandler.java  # Transport-independent router
-│   │   ├── McpServer.java          # Stdio transport
-│   │   ├── HttpTransport.java      # HTTP Streamable transport
-│   │   ├── SessionManager.java     # Session lifecycle
-│   │   └── ToolRegistry.java       # Tool registration
-│   ├── revlog/
-│   │   ├── RevLogParser.java       # REV log file parsing
-│   │   └── dbc/                    # DBC-based CAN signal decoding
-│   ├── sync/
-│   │   ├── LogSynchronizer.java    # Cross-correlation timestamp alignment
-│   │   ├── SynchronizedLogs.java   # Unified wpilog+revlog access
-│   │   └── SyncResult.java         # Synchronization confidence metrics
-│   ├── tba/
-│   │   ├── TbaClient.java          # TBA API client with caching
-│   │   └── TbaEnrichment.java      # Log enrichment with TBA data
-│   └── tools/
-│       ├── WpilogTools.java        # Tool registration
-│       ├── CoreTools.java          # Core tools (8)
-│       ├── QueryTools.java         # Search & query tools (4)
-│       ├── StatisticsTools.java    # Statistical analysis tools (6)
-│       ├── RobotAnalysisTools.java # FRC analysis tools (7)
-│       ├── FrcDomainTools.java     # Advanced FRC tools (9)
-│       ├── ExportTools.java        # CSV/report export (2)
-│       ├── TbaTools.java           # TBA integration (2)
-│       ├── RevLogTools.java        # REV log integration (5)
-│       ├── DiscoveryTools.java     # LLM discoverability (2)
-│       └── ToolUtils.java          # Shared utilities
-├── src/test/java/                  # 1,170+ test cases
-├── build.gradle                    # Build configuration
-├── README.md
-└── TOOLS.md                        # Complete tool reference
-```
+Production source is in `src/main/java/org/triplehelix/wpilogmcp/`, organized by responsibility:
+
+| Package | Purpose |
+|---------|---------|
+| `cache/` | Persistent disk cache for revlog sync results and content fingerprinting |
+| `config/` | Named server configurations, JSON parsing, daemon lifecycle |
+| `game/` | Year-specific FRC game knowledge (scoring, timing, field geometry) |
+| `log/` | WPILOG loading with lazy on-demand parsing, LRU caching, struct decoding |
+| `mcp/` | MCP JSON-RPC 2.0 protocol: message routing, stdio/HTTP transports, sessions |
+| `revlog/` | REV `.revlog` parsing (WPILOG-format and native binary) with DBC signal decoding |
+| `sync/` | Cross-correlation timestamp synchronization between wpilog and revlog |
+| `tba/` | The Blue Alliance API client with caching and log enrichment |
+| `tools/` | All MCP tools, organized by category into module classes |
+
+Tests mirror this structure under `src/test/java/`.
 
 ### Building
 

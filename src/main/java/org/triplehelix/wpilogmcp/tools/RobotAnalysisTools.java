@@ -11,7 +11,7 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
@@ -53,7 +53,7 @@ public final class RobotAnalysisTools {
     protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -314,7 +314,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var prefix = getOptString(arguments, "module_prefix", null);
       double slipThreshold = getOptDouble(arguments, "slip_threshold", 0.5);
       double syncThresholdRad = getOptDouble(arguments, "sync_threshold_rad", 0.1);
@@ -409,7 +409,7 @@ public final class RobotAnalysisTools {
     }
 
     /** Detects wheel slip by comparing setpoint and measured module state entries. */
-    private JsonObject analyzeWheelSlip(ParsedLog log, List<String> stateEntries, double threshold) {
+    private JsonObject analyzeWheelSlip(LogData log, List<String> stateEntries, double threshold) {
       // Find setpoint/measured pairs by naming convention (deduplicated)
       var pairs = new ArrayList<String[]>(); // [setpoint, measured]
       Set<String> seenPairs = new HashSet<>();
@@ -498,7 +498,7 @@ public final class RobotAnalysisTools {
     }
 
     /** Analyzes steering angle synchronization across modules. */
-    private JsonObject analyzeModuleSync(ParsedLog log, List<String> stateEntries, double thresholdRad) {
+    private JsonObject analyzeModuleSync(LogData log, List<String> stateEntries, double thresholdRad) {
       // Collect measured entries (exclude setpoints)
       var measuredEntries = stateEntries.stream()
           .filter(e -> {
@@ -567,7 +567,7 @@ public final class RobotAnalysisTools {
 
     /** Analyzes odometry drift by comparing odometry pose to vision pose. */
     @SuppressWarnings("unchecked")
-    private JsonObject analyzeOdometryDrift(ParsedLog log, String odomName, String visionName) {
+    private JsonObject analyzeOdometryDrift(LogData log, String odomName, String visionName) {
       // Discover entries if not specified
       if (odomName == null) {
         odomName = log.entries().keySet().stream()
@@ -704,9 +704,10 @@ public final class RobotAnalysisTools {
           .map(m -> {
             var angle = m.get("angle_rad");
             if (angle instanceof Number n) return n.doubleValue();
-            // Try nested Rotation2d
+            // Try nested Rotation2d (may use "value" or "radians" field)
             if (m.get("angle") instanceof Map<?, ?> angleMap) {
               var rot = angleMap.get("value");
+              if (rot == null) rot = angleMap.get("radians");
               if (rot instanceof Number n) return n.doubleValue();
             }
             return null;
@@ -759,7 +760,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var prefix = getOptString(arguments, "power_prefix", null);
       double threshold = getOptDouble(arguments, "brownout_threshold", 6.8);
 
@@ -824,7 +825,7 @@ public final class RobotAnalysisTools {
     protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       // Find the DriverStation Enabled entry for cross-referencing
       String enabledEntryName = findDsEntry(log, "enabled");
@@ -957,7 +958,7 @@ public final class RobotAnalysisTools {
       var log2 = logManager.getOrLoad(path2);
 
       // Use a LinkedHashMap to ensure deterministic output order (path1 first, path2 second)
-      var logsByPath = new java.util.LinkedHashMap<String, ParsedLog>();
+      var logsByPath = new java.util.LinkedHashMap<String, LogData>();
       logsByPath.put(path1, log1);
       logsByPath.put(path2, log2);
 
@@ -1066,7 +1067,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject args) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject args) throws Exception {
       // ── Required params ──────────────────────────────────────────────────────
       var velEntry  = getRequiredString(args, "velocity_entry");
       var currEntry = getRequiredString(args, "current_entry");
@@ -1179,7 +1180,7 @@ public final class RobotAnalysisTools {
 
       double det = sumA2 * sumW2 - sumAW * sumAW;
       double detScale = Math.max(sumA2 * sumW2, 1e-20);
-      if (Math.abs(det) < 1e-10 * detScale)
+      if (Math.abs(det) < Math.max(1e-10 * detScale, 1e-15))
         return errorResult("Singular OLS matrix: α and ω are nearly collinear. "
             + "Try a different time window or increase alpha_threshold.");
 
@@ -1298,7 +1299,7 @@ public final class RobotAnalysisTools {
     protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var keys = List.of("GitSHA", "GitBranch", "GitDirty", "BuildDate", "ProjectName", "Version");
       var found = log.entries().keySet().stream()
           .filter(name -> keys.stream().anyMatch(name::contains))

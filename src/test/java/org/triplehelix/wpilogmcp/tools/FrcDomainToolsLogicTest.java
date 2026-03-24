@@ -1451,4 +1451,145 @@ class FrcDomainToolsLogicTest {
           "Hysteresis should collapse oscillating voltage into 1 brownout event, got: " + brownoutStarts);
     }
   }
+
+  // ==================== analyze_replay_drift ====================
+
+  @Nested
+  @DisplayName("analyze_replay_drift Tool")
+  class AnalyzeReplayDriftToolTests {
+
+    @Test
+    @DisplayName("detects divergence between RealOutputs and ReplayOutputs")
+    void detectsDivergence() throws Exception {
+      var realValues = new ArrayList<TimestampedValue>();
+      var replayValues = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 10; i++) {
+        double ts = i * 0.02; // 50Hz
+        realValues.add(new TimestampedValue(ts, (double) i));
+        // Replay diverges at i=5
+        replayValues.add(new TimestampedValue(ts, i < 5 ? (double) i : (double) (i + 10)));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/replay.wpilog")
+          .addEntry("/RealOutputs/Drive/Speed", "double", realValues)
+          .addEntry("/ReplayOutputs/Drive/Speed", "double", replayValues)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_replay_drift");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      int divergentCount = resultObj.get("divergent_count").getAsInt();
+      assertTrue(divergentCount > 0, "Should detect divergences");
+      assertTrue(resultObj.has("divergences"));
+    }
+
+    @Test
+    @DisplayName("reports zero divergences for identical data")
+    void reportsZeroDivergences() throws Exception {
+      var values = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 10; i++) {
+        values.add(new TimestampedValue(i * 0.02, (double) i));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/replay_clean.wpilog")
+          .addEntry("/RealOutputs/Drive/Speed", "double", values)
+          .addEntry("/ReplayOutputs/Drive/Speed", "double", values)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_replay_drift");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(0, resultObj.get("divergent_count").getAsInt());
+    }
+
+    @Test
+    @DisplayName("handles log with no RealOutputs entries")
+    void handlesNoRealOutputs() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/no_replay.wpilog")
+          .addNumericEntry("/Drive/Speed", new double[]{0, 1, 2}, new double[]{1, 2, 3})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_replay_drift");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(0, resultObj.get("divergent_count").getAsInt());
+    }
+
+    @Test
+    @DisplayName("handles RealOutputs with no matching ReplayOutputs")
+    void handlesUnmatchedRealOutputs() throws Exception {
+      var values = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 5; i++) {
+        values.add(new TimestampedValue(i * 0.02, (double) i));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/replay_unmatched.wpilog")
+          .addEntry("/RealOutputs/Drive/Speed", "double", values)
+          // No ReplayOutputs counterpart
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_replay_drift");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(0, resultObj.get("divergent_count").getAsInt(),
+          "Unmatched entries should not count as divergences");
+    }
+
+    @Test
+    @DisplayName("includes data quality metadata")
+    void includesDataQuality() throws Exception {
+      var realValues = new ArrayList<TimestampedValue>();
+      var replayValues = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 20; i++) {
+        double ts = i * 0.02;
+        realValues.add(new TimestampedValue(ts, (double) i));
+        replayValues.add(new TimestampedValue(ts, (double) i));
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/replay_quality.wpilog")
+          .addEntry("/RealOutputs/Drive/Speed", "double", realValues)
+          .addEntry("/ReplayOutputs/Drive/Speed", "double", replayValues)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_replay_drift");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.has("data_quality"), "Should include data quality");
+      assertTrue(resultObj.has("server_analysis_directives"), "Should include analysis directives");
+    }
+  }
 }

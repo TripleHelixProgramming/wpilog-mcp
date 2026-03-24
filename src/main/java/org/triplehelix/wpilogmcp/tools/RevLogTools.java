@@ -6,7 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.List;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
@@ -86,7 +86,7 @@ public final class RevLogTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
 
@@ -225,7 +225,7 @@ public final class RevLogTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
@@ -351,7 +351,7 @@ public final class RevLogTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
@@ -494,7 +494,7 @@ public final class RevLogTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
@@ -582,7 +582,7 @@ public final class RevLogTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       int timeoutMs = getOptInt(arguments, "timeout_ms", 30000);
 
       boolean wasInProgress = logManager.isRevLogSyncInProgress(log.path());

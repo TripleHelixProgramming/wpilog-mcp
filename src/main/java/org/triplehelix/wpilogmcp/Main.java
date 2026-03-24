@@ -162,14 +162,6 @@ public class Main {
     }
 
     // Cache settings
-    if (config.maxlogs() != null) {
-      logManager.setMaxLoadedLogs(config.maxlogs());
-      logger.debug("Max loaded logs: {}", config.maxlogs());
-    }
-    if (config.maxmemory() != null) {
-      logManager.setMaxMemoryMb(config.maxmemory());
-      logger.debug("Max memory: {} MB", config.maxmemory());
-    }
     if (config.diskcachedir() != null && !config.diskcachedir().isEmpty()) {
       logManager.getCacheDirectory().setOverride(config.diskcachedir());
       logger.debug("Disk cache directory: {}", config.diskcachedir());
@@ -209,8 +201,6 @@ public class Main {
     int httpPort = parseEnvInt("WPILOG_HTTP_PORT", 2363);
     boolean debugMode = "true".equalsIgnoreCase(System.getenv("WPILOG_DEBUG"));
 
-    applyEnvInt("WPILOG_MAX_LOGS", v -> logManager.setMaxLoadedLogs(v));
-    applyEnvLong("WPILOG_MAX_MEMORY", v -> logManager.setMaxMemoryMb(v));
     applyEnvLong("WPILOG_DISK_CACHE_SIZE", v -> logManager.getDiskCache().setMaxTotalSizeMb(v));
     if ("true".equalsIgnoreCase(System.getenv("WPILOG_DISK_CACHE_DISABLE"))) {
       logManager.getDiskCache().setEnabled(false);
@@ -269,48 +259,6 @@ public class Main {
           }
         } else {
           logger.error("Error: -team requires a team number argument");
-          printUsage();
-          System.exit(1);
-        }
-      } else if (arg.equals("-maxlogs")) {
-        if (i + 1 < args.length) {
-          try {
-            int maxLogs = Integer.parseInt(args[++i]);
-            if (maxLogs < 1) {
-              logger.error("Error: -maxlogs must be at least 1");
-              printUsage();
-              System.exit(1);
-            }
-            LogManager.getInstance().setMaxLoadedLogs(maxLogs);
-            logger.debug("Max loaded logs set from command line: {}", maxLogs);
-          } catch (NumberFormatException e) {
-            logger.error("Error: -maxlogs requires a numeric value");
-            printUsage();
-            System.exit(1);
-          }
-        } else {
-          logger.error("Error: -maxlogs requires a number argument");
-          printUsage();
-          System.exit(1);
-        }
-      } else if (arg.equals("-maxmemory")) {
-        if (i + 1 < args.length) {
-          try {
-            long maxMemory = Long.parseLong(args[++i]);
-            if (maxMemory < 1) {
-              logger.error("Error: -maxmemory must be at least 1 MB");
-              printUsage();
-              System.exit(1);
-            }
-            LogManager.getInstance().setMaxMemoryMb(maxMemory);
-            logger.debug("Max memory for log cache set from command line: {} MB", maxMemory);
-          } catch (NumberFormatException e) {
-            logger.error("Error: -maxmemory requires a numeric value (MB)");
-            printUsage();
-            System.exit(1);
-          }
-        } else {
-          logger.error("Error: -maxmemory requires a number argument (MB)");
           printUsage();
           System.exit(1);
         }
@@ -523,8 +471,6 @@ public class Main {
     logger.info("  -logdir <path>    Set default directory for log files");
     logger.info("  -team <number>    Default team number for logs missing metadata");
     logger.info("  -tba-key <key>    The Blue Alliance API key for match data");
-    logger.info("  -maxlogs <n>      Max number of logs to cache (default: 20)");
-    logger.info("  -maxmemory <mb>   Max memory (MB) for log cache (alternative to -maxlogs)");
     logger.info("  -diskcachedir <path> Set directory for persistent disk cache");
     logger.info("  -diskcachesize <mb>  Max disk cache size in MB (default: 8192)");
     logger.info("  -diskcachedisable    Disable persistent disk cache");
@@ -540,8 +486,6 @@ public class Main {
     logger.info("  WPILOG_DIR             Default directory for log files");
     logger.info("  WPILOG_TEAM            Default team number for logs missing metadata");
     logger.info("  TBA_API_KEY            The Blue Alliance API key");
-    logger.info("  WPILOG_MAX_LOGS        Max number of logs to cache in memory");
-    logger.info("  WPILOG_MAX_MEMORY      Max memory (MB) for in-memory log cache");
     logger.info("  WPILOG_DISK_CACHE_DIR     Directory for persistent disk cache");
     logger.info("  WPILOG_DISK_CACHE_SIZE    Max disk cache size in MB (default: 8192)");
     logger.info("  WPILOG_DISK_CACHE_DISABLE Set to 'true' to disable persistent disk cache");
@@ -552,14 +496,8 @@ public class Main {
     logger.info("  WPILOG_DEBUG           Set to 'true' to enable debug logging");
     logger.info("  WPILOG_MAX_HEAP        Max JVM heap size (default: 4g, used by run-mcp.sh/bat)");
     logger.info("");
-    logger.info("Cache limits:");
-    logger.info("  -maxlogs sets a fixed number of logs to keep in memory.");
-    logger.info("  -maxmemory sets a memory limit (only used if -maxlogs is not set).");
-    logger.info("  If neither is set, defaults to 20 logs.");
-    logger.info("");
-    logger.info("JVM memory:");
-    logger.info("  Use run-mcp.sh (or .bat) to launch with proper heap settings.");
-    logger.info("  Set WPILOG_MAX_HEAP=8g in the MCP env block for large logs.");
+    logger.info("Memory management is automatic — the server adapts to available JVM heap.");
+    logger.info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");
   }
 
   private static int parseEnvInt(String name, int defaultValue) {

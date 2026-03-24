@@ -475,21 +475,17 @@ public final class DiscoveryTools {
           "NEVER manually parse timestamps to find auto/teleop—use get_match_phases.");
       result.add("critical_guidance", guidance);
 
-      // Limitations section - important for correct client behavior
-      var limitations = new JsonObject();
-      limitations.addProperty("concurrency",
-          "NOT SAFE FOR CONCURRENT USE. This server maintains shared state (log cache). "
-          + "Do not call multiple tools in parallel from the same session. Execute tool calls sequentially.");
-      limitations.addProperty("single_session",
-          "Designed for single-client use (stdio). If multiple agents or sessions share this server, "
-          + "they may contend for cache state. Use HTTP transport for multi-client scenarios.");
-      limitations.addProperty("multi_instance_workaround",
-          "Running multiple SEPARATE server instances pointing to the same log directory IS safe. "
-          + "The disk cache uses file locking and atomic operations. Each instance has its own in-memory state.");
-      limitations.addProperty("llm_sub_agent_warning",
-          "IMPORTANT: Some LLM frameworks spawn sub-agents that may parallelize work and ignore this guidance. "
-          + "Explicitly instruct your agent to operate sequentially when analyzing multiple logs.");
-      result.add("limitations", limitations);
+      // Architecture notes
+      var architecture = new JsonObject();
+      architecture.addProperty("concurrency",
+          "Thread-safe. Concurrent tool calls from multiple sessions are supported. "
+          + "The log cache, session management, and all shared state use concurrent data structures.");
+      architecture.addProperty("transports",
+          "Stdio transport (single-client, sequential) and HTTP Streamable transport (multi-client, concurrent).");
+      architecture.addProperty("log_loading",
+          "Logs are loaded on demand when referenced by path. No 'active log' concept — each tool call is self-contained. "
+          + "Idle logs are evicted after 30 minutes. Under heap pressure, least-recently-used logs are evicted automatically.");
+      result.add("architecture", architecture);
 
       // Categories section
       var categoriesArray = new JsonArray();

@@ -158,6 +158,63 @@ class McpMessageHandlerTest {
     assertNull(SessionContext.current());
   }
 
+  @Test
+  @DisplayName("concurrent tool calls with different sessions are isolated")
+  void concurrentToolCallsWithSessions() throws InterruptedException {
+    var sessionManager = new SessionManager();
+    var sessionHandler = new McpMessageHandler(registry, sessionManager);
+
+    // Register a tool that captures the session context
+    var capturedSessionIds = java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+    registry.registerTool(new ToolRegistry.Tool() {
+      @Override public String name() { return "capture_session_id"; }
+      @Override public String description() { return "test"; }
+      @Override public JsonObject inputSchema() { return new JsonObject(); }
+      @Override public com.google.gson.JsonElement execute(JsonObject args) {
+        var session = SessionContext.current();
+        if (session != null) capturedSessionIds.add(session.getId());
+        try { Thread.sleep(5); } catch (InterruptedException ignored) {} // Simulate work
+        var result = new JsonObject();
+        result.addProperty("session_id", session != null ? session.getId() : "none");
+        return result;
+      }
+    });
+
+    // Create sessions
+    int threadCount = 10;
+    var sessions = new McpSession[threadCount];
+    for (int i = 0; i < threadCount; i++) {
+      sessions[i] = sessionManager.createSession();
+    }
+
+    var errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    var barrier = new java.util.concurrent.CyclicBarrier(threadCount);
+    var threads = new Thread[threadCount];
+
+    for (int i = 0; i < threadCount; i++) {
+      final var session = sessions[i];
+      threads[i] = new Thread(() -> {
+        try {
+          barrier.await(); // All threads start simultaneously
+          var msg = parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+              + "\"params\":{\"name\":\"capture_session_id\"}}");
+          sessionHandler.handleMessage(msg, session);
+        } catch (Exception e) {
+          errors.incrementAndGet();
+        }
+      });
+    }
+    for (var t : threads) t.start();
+    for (var t : threads) t.join();
+
+    assertEquals(0, errors.get(), "Concurrent tool calls should not throw");
+    assertEquals(threadCount, capturedSessionIds.size(),
+        "Each thread should have captured its session");
+
+    // Verify SessionContext is cleared after each call (ThreadLocal cleanup)
+    assertNull(SessionContext.current(), "SessionContext should be cleared after calls");
+  }
+
   private JsonObject parse(String json) {
     return JsonParser.parseString(json).getAsJsonObject();
   }

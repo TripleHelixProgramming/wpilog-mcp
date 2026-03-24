@@ -4,7 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.tba.TbaClient;
@@ -182,7 +182,7 @@ public abstract class ToolBase implements McpServer.Tool {
    * @return The list of timestamped values for the entry
    * @throws IllegalArgumentException if entry not found
    */
-  protected List<TimestampedValue> requireEntry(ParsedLog log, String name)
+  protected List<TimestampedValue> requireEntry(LogData log, String name)
       throws IllegalArgumentException {
     var values = log.values().get(name);
     if (values == null) {
@@ -290,7 +290,7 @@ public abstract class ToolBase implements McpServer.Tool {
    * @param pattern The pattern to search for (case-insensitive)
    * @return The first matching entry name, or null if no match found
    */
-  protected String findEntryByPattern(ParsedLog log, String pattern) {
+  protected String findEntryByPattern(LogData log, String pattern) {
     var lowerPattern = pattern.toLowerCase();
     return log.entries().keySet().stream()
         .filter(name -> name.toLowerCase().contains(lowerPattern))
@@ -305,7 +305,7 @@ public abstract class ToolBase implements McpServer.Tool {
    * @param pattern The pattern to search for (case-insensitive)
    * @return List of matching entry names (may be empty)
    */
-  protected List<String> findEntriesByPattern(ParsedLog log, String pattern) {
+  protected List<String> findEntriesByPattern(LogData log, String pattern) {
     var lowerPattern = pattern.toLowerCase();
     return log.entries().keySet().stream()
         .filter(name -> name.toLowerCase().contains(lowerPattern))

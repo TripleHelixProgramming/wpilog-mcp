@@ -6,80 +6,7 @@ This document captures ideas for future versions of wpilog-mcp. Items are organi
 
 ## 1. Performance & Scalability
 
-### ~~1.1 Persistent Parse Cache~~ *(DONE — MessagePack-based disk cache with content fingerprinting)*
-
-### ~~1.2 Version-Aware Cache Invalidation~~ *(DONE — `CacheMetadata` with format version, mtime+size fast path, fingerprint recheck)*
-
-### ~~1.3 Background RevLog Processing~~ *(DONE — async sync with `wait_for_sync` tool, `sync_in_progress` status field)*
-
-### 1.4 Lazy On-Demand Parsing with Per-Entry LRU Cache
-**Priority:** High
-**Complexity:** High
-
-The current architecture eagerly parses every record in a wpilog file into Java objects on first load, consuming ~6-7.5x the file size in JVM heap. This is unnecessary because WPILib's `DataLogReader` memory-maps the file (essentially free), and most analysis sessions only touch a handful of the hundreds of entries in a typical log.
-
-**Proposed architecture:**
-
-**Phase 1: Index-only initial load**
-- On first load, scan the memory-mapped file to build an entry index: entry names, types, record byte offsets, timestamp ranges, sample counts
-- Store the index in `ParsedLog` (lightweight — kilobytes, not gigabytes)
-- Keep the `DataLogReader` (memory-mapped `ByteBuffer`) open for the lifetime of the cached log
-- This replaces the current `LogParser.parse()` which decodes every value eagerly
-
-**Phase 2: Lazy value decoding**
-- When a tool requests an entry's values via `log.values().get(name)`, decode that entry's records on demand from the memory-mapped data
-- Cache the decoded `List<TimestampedValue>` in a per-entry LRU map on the `ParsedLog`
-- Return cached values on subsequent requests for the same entry
-
-**Phase 3: Per-entry LRU eviction**
-- Track memory usage of cached decoded values (using existing `MemoryEstimator`)
-- On memory pressure, evict least-recently-used entry values (not the whole log)
-- The memory-mapped file stays open — re-decoding is fast (no I/O, just ByteBuffer reads)
-- This gives much finer-grained memory management than the current all-or-nothing log eviction
-
-**Impact on existing code:**
-
-| Component | Change |
-|-----------|--------|
-| `ParsedLog` | Changes from a record holding all values to a class with lazy value access. `values()` returns a lazy map that decodes on first access. |
-| `LogParser` | Split into `LogIndexer` (builds entry index from scan) and `EntryDecoder` (decodes individual entries on demand). The `decodeValue` methods move to `EntryDecoder`. |
-| `DiskCache` | **No longer needed for wpilog data.** Re-decoding a single entry from a memory-mapped file is fast (~milliseconds). The disk cache added complexity for a problem that lazy loading eliminates. May still be useful for revlog sync results (`SyncDiskCache`). |
-| `MemoryEstimator` | Now operates per-entry rather than per-log. Drives the per-entry LRU eviction. |
-| `LogCache` | Continues to manage log-level LRU (which logs to keep open). Per-entry eviction is internal to each `ParsedLog`. |
-| `LogManager` | `getOrLoad()` returns a `ParsedLog` with only the index loaded. Value access is lazy. |
-| All tools | Currently call `log.values().get(name)` which returns `List<TimestampedValue>`. This API can be preserved if `values()` returns a lazy map. Tools don't need to change if the laziness is transparent. |
-| `ToolBase.requireEntry()` | Already validates entry existence — would check the index instead of decoded values. |
-| `ToolBase.extractNumericData()` | Triggers lazy decode of the requested entry. No API change. |
-
-**Key design decisions:**
-- The `DataLogReader` / `ByteBuffer` must stay open while the log is cached. Closing it invalidates the memory mapping. This means `ParsedLog` is no longer a simple record — it has lifecycle (open/close).
-- The entry index must store byte offsets or record positions so individual entries can be decoded without scanning the entire file again.
-- WPILib's `DataLogReader` iterates records sequentially (no random access by entry). The indexer must either: (a) build a per-entry list of record positions during the initial scan, or (b) scan the file again when decoding an entry (filtering to just that entry's records). Option (a) uses more index memory but is faster for repeated access.
-- Struct decoding (Pose2d, SwerveModuleState, etc.) happens during lazy decode, same as today.
-- Time-range filtering (`start_time`/`end_time` parameters) can be applied during lazy decode, avoiding decoding values outside the requested range.
-
-**Benefits:**
-- Loading a 500 MB log goes from ~3.5 GB heap + seconds of parsing to ~kilobytes + milliseconds (index only)
-- A 2 GB log becomes loadable on a 4 GB heap (only the requested entries are decoded)
-- Memory usage is proportional to what tools actually access, not the total file size
-- No more "file too large to load" errors for reasonable heap sizes
-- Disk cache for wpilog data becomes unnecessary (simplifies architecture)
-- Multiple large logs can be "loaded" simultaneously since only their indexes consume memory
-
-**Risks:**
-- First access to an entry is slower than today (decode on demand vs. pre-decoded)
-- `DataLogReader`'s sequential iteration means decoding entry N requires skipping entries 1..N-1 unless we build a position index
-- Memory-mapped files hold file handles — need cleanup on log eviction
-- The `ParsedLog` API change (record → class with lifecycle) touches many files
-
-**Migration path:**
-1. Add `LazyParsedLog` alongside `ParsedLog` — both implement a common interface
-2. Update `LogParser` to optionally return `LazyParsedLog`
-3. Update tools one module at a time (they shouldn't need changes if the interface is right)
-4. Remove eager `ParsedLog` path once all tools work with lazy loading
-5. Remove or simplify `DiskCache` (keep `SyncDiskCache` for revlog sync results)
-
-### 1.5 FFT-Based Cross-Correlation
+### 1.6 FFT-Based Cross-Correlation
 **Priority:** Low
 **Complexity:** High
 
@@ -93,8 +20,6 @@ For very long recordings (>30 minutes), use FFT for O(n log n) cross-correlation
 ---
 
 ## 2. Data Quality & Accuracy
-
-### ~~2.1 Data Quality Scoring~~ *(DONE — `data_quality` and `server_analysis_directives` propagated to all 15 analytical tools)*
 
 ### 2.2 Multi-Log Temporal Alignment
 **Priority:** Low
@@ -110,8 +35,6 @@ Align multiple logs from the same event (e.g., practice sessions) for comparativ
 ---
 
 ## 3. FRC Domain Features
-
-### ~~3.1 Comprehensive Swerve Analysis~~ *(DONE — wheel slip detection, module sync analysis, odometry drift measurement)*
 
 ### 3.2 Autonomous Routine Library
 **Priority:** Medium
@@ -160,8 +83,6 @@ Track mechanism health across multiple logs.
 - Current draw for constant loads (motor wear)
 - Encoder noise (bearing wear)
 - Response time degradation
-
-### ~~3.6 Year-Specific Game Knowledge Base~~ *(DONE — 2026 REBUILT bundled, `get_game_info` tool, user-loadable JSON format)*
 
 ---
 
@@ -330,7 +251,7 @@ FRC teams use wildly different naming conventions: `/Robot/Drive/FrontLeft/Veloc
 - Fuzzy search that ranks by edit distance and structural similarity
 - "Did you mean?" suggestions with confidence scores
 
-### 5.5 Auto-Organize Log Directory
+### 5.6 Auto-Organize Log Directory
 **Priority:** Medium
 **Complexity:** Medium
 
@@ -361,10 +282,6 @@ logdir/
 ## 6. LLM Epistemological Guardrails
 
 Taming an LLM's natural tendency toward overconfidence is one of the biggest challenges when using them for telemetry and log analysis. These strategies guide LLMs toward statistical reasoning and probabilistic answers.
-
-### ~~6.1 "Trojan Horse" Tool Descriptions~~ *(DONE — all 20 analytical tools have interpretation guidance in descriptions)*
-
-### ~~6.2 Output Contextual Framing~~ *(DONE — `AnalysisDirectives` class generates `server_analysis_directives` with confidence level, sample context, guidance, and follow-up suggestions)*
 
 ### 6.3 MCP Guided Prompts
 **Priority:** Medium
@@ -427,8 +344,6 @@ correlate_entries → {correlation: 0.73, p_value: 0.002}
 - Let the LLM synthesize across multiple tool calls
 
 **Note:** The codebase largely follows this pattern already (`get_statistics`, `rate_of_change`, `time_correlate` are primitives). However, `predict_battery_health` returns a pre-computed health score with a risk level, which is the monolithic anti-pattern. Consider whether the health score belongs in the tool output or whether the tool should return voltage stats, recovery times, and brownout events as raw data. The tension is real: teams want quick answers during competition, but monolithic scores mask uncertainty.
-
-### ~~6.5 Data Quality Metadata~~ *(DONE — `DataQuality` class computes sample count, gaps, NaN, jitter, and quality score; auto-warns when score < 0.5)*
 
 ### 6.6 Comparative Framing
 **Priority:** Medium
@@ -542,50 +457,6 @@ tba:
   cache_ttl_hours: 24
 ```
 
-### 8.2 Named Server Configurations
-**Priority:** Medium
-**Complexity:** Medium
-
-A configuration file that enumerates settings for named server instances. The server can then be started by referencing just the configuration name — a single argument at startup.
-
-**Format:** JSON (parsed with the already-bundled Gson — no new dependencies)
-```json
-{
-  "defaults": {
-    "team": 2363,
-    "tba_key": "${TBA_API_KEY}",
-    "maxlogs": 10,
-    "maxmemory": 2048
-  },
-  "servers": {
-    "competition": {
-      "logdir": "/media/usb/logs",
-      "transport": "http",
-      "port": 2363
-    },
-    "dev": {
-      "logdir": "~/frc-logs",
-      "transport": "stdio",
-      "diskcachedisable": true
-    }
-  }
-}
-```
-
-The `defaults` section provides baseline values inherited by all named servers. Per-server settings override defaults. This avoids repeating team number, TBA key, memory limits, etc. across every configuration.
-
-**Usage:**
-```bash
-wpilog-mcp start competition   # single argument
-wpilog-mcp start dev
-```
-
-**Behaviors:**
-- If the configuration specifies HTTP transport, the server detaches from the console and runs as a daemon
-- If the configuration specifies stdio transport, the server runs in the foreground (current behavior)
-- If a user starts a named HTTP server that is already running, the command exits with code 0 (idempotent start)
-- Configuration file location: `~/.wpilog-mcp/servers.yaml` or project-local `.wpilog-mcp.yaml`
-
 ### 8.3 Graceful Degradation
 **Priority:** Medium
 **Complexity:** Low
@@ -614,26 +485,6 @@ Handle resource constraints gracefully.
 | 3.4 | CAN bus diagnostics | Medium | Medium | **P3** |
 | 3.3 | Energy budget analysis | Medium | Low | **P3** |
 | 3.2 | Autonomous routine library | Medium | Medium | **P3** |
-
----
-
-## Completed
-
-| ID | Feature | Completed |
-|----|---------|-----------|
-| — | Binary search for time-based lookups | Code review remediation (2026-03-20) |
-| — | Game-state-aware phase detection | Code review remediation (2026-03-20) |
-| — | Configurable brownout thresholds | Code review remediation (2026-03-20) |
-| 6.1 | Trojan horse tool descriptions | LLM guardrails implementation (2026-03-20) |
-| 6.2 | Output contextual framing | LLM guardrails implementation (2026-03-20) |
-| 6.5 | Data quality metadata | LLM guardrails implementation (2026-03-20) |
-| 1.1 | Persistent parse cache | Disk cache implementation (2026-03-20) |
-| 1.2 | Version-aware cache invalidation | Disk cache implementation (2026-03-20) |
-| 1.3 | Background RevLog processing | Async sync implementation (2026-03-21) |
-| 3.6 | Year-specific game knowledge base | Game knowledge base with 2026 REBUILT (2026-03-21) |
-| 7.2 | Test data library | MockLogBuilder factory methods (2026-03-21) |
-| 2.1 | Data quality scoring | Propagated to all 15 analytical tools (2026-03-21) |
-| 3.1 | Comprehensive swerve analysis | Wheel slip, module sync, odometry drift (2026-03-21) |
 
 ---
 

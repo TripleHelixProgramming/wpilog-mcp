@@ -2,16 +2,6 @@
 
 Complete documentation for all 45 tools available in wpilog-mcp.
 
-## Important: Concurrency Limitations
-
-> **⚠️ NOT SAFE FOR CONCURRENT USE**
->
-> This server maintains shared state (log cache) and is designed for single-client, sequential operation in stdio mode. **Do not call multiple tools in parallel** from the same session—execute tool calls sequentially. Use HTTP transport for multi-client scenarios.
-
-**Workaround:** Running multiple *separate* server instances pointing to the same log directory is safe (disk cache uses file locking and atomic operations).
-
-**⚠️ LLM Sub-Agent Warning:** Some LLM frameworks spawn sub-agents to parallelize multi-log analysis. These sub-agents may ignore sequential execution guidance. Explicitly instruct agents: *"Analyze each log file one at a time, completing all analysis before moving to the next."*
-
 ## Table of Contents
 
 - [Discovery Tools](#discovery-tools)
@@ -87,32 +77,8 @@ Get a comprehensive overview of all server capabilities, organized by category w
 **Returns:** Structured overview including:
 - `overview`: Server name, version, total tools, purpose
 - `critical_guidance`: Key anti-patterns to avoid (e.g., "NEVER compute statistics manually")
-- `limitations`: Concurrency constraints (NOT SAFE FOR CONCURRENT USE)
 - `categories`: Array of tool categories with descriptions, anti-patterns, and tool details
 - `common_workflows`: Step-by-step workflows for common analysis tasks
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "overview": {
-    "server_name": "wpilog-mcp",
-    "version": "0.6.1",
-    "total_tools": 45,
-    "purpose": "Parse and analyze FRC robot telemetry logs"
-  },
-  "critical_guidance": {
-    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code",
-    "statistics_tip": "NEVER compute mean/std/percentiles manually—use get_statistics",
-    "tba_tip": "To get match scores: use list_available_logs or get_tba_match_data"
-  },
-  "limitations": {
-    "concurrency": "NOT SAFE FOR CONCURRENT USE. Execute tool calls sequentially.",
-    "single_session": "Designed for single-client use"
-  },
-  "categories": [...]
-}
-```
 
 ### `suggest_tools`
 Given a natural language description of what you want to analyze, this tool recommends the most relevant tools and provides a suggested workflow.
@@ -230,35 +196,25 @@ List WPILOG files in the configured log directory with user-friendly names.
 **Note:** Requires `-logdir` to be configured. Team numbers and friendly names are extracted from DriverStation metadata in the log file, or parsed from common filename patterns.
 
 ### `list_loaded_logs`
-List all currently loaded log files with detailed metadata.
+List all currently cached log files.
 
 **Parameters:** None
 
-**Returns:** List of loaded logs with entry count, duration, estimated memory usage
+**Returns:** List of loaded log paths and count
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "loaded_log_count": 3,
+  "loaded_count": 2,
   "logs": [
-    {
-      "path": "/Users/team2363/logs/2026vadc_qm42.wpilog",
-      "entry_count": 156,
-      "duration_sec": 154.32,
-      "estimated_memory_mb": 12.5
-    },
-    {
-      "path": "/Users/team2363/logs/2026vadc_qm68.wpilog",
-      "entry_count": 148,
-      "duration_sec": 149.87,
-      "estimated_memory_mb": 11.8
-    }
+    { "path": "/Users/team2363/logs/2026vadc_qm42.wpilog" },
+    { "path": "/Users/team2363/logs/2026vadc_qm68.wpilog" }
   ]
 }
 ```
 
-**Use Case:** Monitor which logs are currently loaded and their memory footprint. Idle logs are automatically evicted after 30 minutes.
+**Use Case:** Check which logs are currently cached. Idle logs are automatically evicted after 30 minutes.
 
 **Supported filename patterns:**
 - Match types: `qm`/`q` (Qualification), `pm`/`p` (Practice), `sf` (Semifinal), `f` (Final), `em`/`e` (Elimination)
@@ -413,27 +369,34 @@ List all supported WPILib struct types organized by category. Useful for discove
 **Use Case:** When exploring a new log file, use this tool to see what struct types are available for decoding. Each struct type is automatically decoded into its component fields when read.
 
 ### `health_check`
-Get system health status including JVM memory usage, loaded log count, cache memory estimate, and TBA availability. Useful for monitoring server performance and resource usage.
+Get system health status including JVM memory usage, loaded log count, disk cache status, and TBA availability. Useful for monitoring server performance and resource usage.
 
 **Parameters:** None
 
-**Returns:** System status, comprehensive memory statistics with estimation accuracy, loaded logs count, and TBA availability
+**Returns:** System status, JVM memory info, loaded log count, disk cache status, and TBA availability
 
 **Example Response:**
 ```json
 {
   "success": true,
   "status": "OK",
+  "server_version": "0.8.0",
   "loaded_logs": 3,
   "tba_available": true,
-  "memory_stats": {
-    "estimatedMemoryMb": 245,
-    "heapUsedMb": 512,
-    "heapMaxMb": 4096,
-    "heapFreeMb": 1536,
-    "heapUtilization": "25.0%",
-    "estimationAccuracy": "0.48",
-    "loadedLogCount": 3
+  "revlog_sync_in_progress": false,
+  "jvm_memory": {
+    "used_mb": 512,
+    "total_mb": 1024,
+    "max_mb": 4096,
+    "free_mb": 512
+  },
+  "cache_memory_mb": 512,
+  "disk_cache": {
+    "enabled": true,
+    "directory": "/Users/team2363/.wpilog-mcp/cache",
+    "cached_files": 5,
+    "total_size_mb": 42,
+    "format_version": 3
   },
   "_execution_time_ms": 5
 }
@@ -441,19 +404,15 @@ Get system health status including JVM memory usage, loaded log count, cache mem
 
 **Response Fields:**
 - `status`: Always "OK" if the tool executes successfully
+- `server_version`: Server version string
 - `loaded_logs`: Number of logs currently cached in memory
 - `tba_available`: Whether The Blue Alliance API is configured
-- `memory_stats`: Comprehensive memory analysis including:
-  - `estimatedMemoryMb`: Memory usage calculated from heuristics
-  - `heapUsedMb`: Actual JVM heap memory in use
-  - `heapMaxMb`: Maximum heap memory available
-  - `heapFreeMb`: Free heap memory remaining
-  - `heapUtilization`: Percentage of total heap currently used
-  - `estimationAccuracy`: Ratio of estimated to actual usage (closer to 1.0 = more accurate)
-  - `loadedLogCount`: Number of logs in cache
-- `_execution_time_ms`: Tool execution time in milliseconds
+- `revlog_sync_in_progress`: Whether any revlog sync is currently running
+- `jvm_memory`: JVM heap memory info (`used_mb`, `total_mb`, `max_mb`, `free_mb`)
+- `cache_memory_mb`: Estimated heap memory used by cached logs
+- `disk_cache`: Persistent disk cache status (enabled, directory, file count, size, format version)
 
-**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `disk_cache` section shows persistent cache status. Idle logs are automatically evicted after 30 minutes.
+**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. Idle logs are automatically evicted after 30 minutes.
 
 ### `get_game_info`
 Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.

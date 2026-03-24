@@ -110,6 +110,8 @@ public record DataQuality(
     //   Jitter (0.2):  Timing irregularity relative to median interval.
     //
     // These weights are empirical defaults calibrated for typical 50Hz FRC telemetry.
+    // For signals at significantly different rates (e.g., 1kHz CAN data or 5Hz slow
+    // sensors), the sample-count thresholds (100/500) may under- or over-penalize.
     // The score provides relative ranking — use for LLM confidence calibration,
     // not as an absolute data validity threshold.
     double score = 1.0;

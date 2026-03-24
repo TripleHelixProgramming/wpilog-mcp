@@ -181,8 +181,6 @@ public class ConfigLoader {
         interpolate(getString(block, "tba_key")),
         getString(block, "transport"),
         getInteger(block, "port"),
-        getInteger(block, "maxlogs"),
-        getLong(block, "maxmemory"),
         expandPath(interpolate(getString(block, "diskcachedir"))),
         getLong(block, "diskcachesize"),
         getBoolean(block, "diskcachedisable"),
@@ -207,15 +205,6 @@ public class ConfigLoader {
               + "'. Must be between 1 and 65535.");
     }
 
-    if (config.maxlogs() != null && config.maxlogs() < 1) {
-      throw new ConfigException(
-          "maxlogs must be at least 1 in configuration '" + config.name() + "'.");
-    }
-
-    if (config.maxmemory() != null && config.maxmemory() < 1) {
-      throw new ConfigException(
-          "maxmemory must be at least 1 in configuration '" + config.name() + "'.");
-    }
   }
 
   /**

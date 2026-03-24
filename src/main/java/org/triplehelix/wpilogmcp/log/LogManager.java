@@ -17,7 +17,6 @@ import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.log.LogDirectory.RevLogFileInfo;
 import org.triplehelix.wpilogmcp.log.subsystems.LogCache;
 import org.triplehelix.wpilogmcp.log.subsystems.LogParser;
-import org.triplehelix.wpilogmcp.log.subsystems.MemoryEstimator;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
@@ -39,7 +38,6 @@ import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
  *   <li>{@link LogCache} - LRU cache with memory/count-based eviction
  *   <li>{@link LogParser} - WPILOG file parsing with struct decoding
  *   <li>{@link SecurityValidator} - Path validation to prevent traversal attacks
- *   <li>{@link MemoryEstimator} - Memory usage estimation for eviction
  *   <li>{@link StructDecoderRegistry} - Extensible struct decoder registry
  * </ul>
  *
@@ -52,11 +50,6 @@ public class LogManager {
   private static final LogManager INSTANCE = new LogManager();
 
   /**
-   * Default maximum number of logs to keep in cache before evicting least recently used.
-   */
-  private static final int DEFAULT_MAX_LOADED_LOGS = 20;
-
-  /**
    * Maximum number of records to scan when extracting metadata from a log file. This prevents
    * excessive memory/time usage on very large logs.
    */
@@ -64,7 +57,6 @@ public class LogManager {
 
   // Subsystems (initialized in constructor)
   private final StructDecoderRegistry decoderRegistry;
-  private final MemoryEstimator memoryEstimator;
   private final SecurityValidator securityValidator;
   private final LogParser logParser;
   private final LogCache logCache;
@@ -84,21 +76,6 @@ public class LogManager {
   private final java.util.concurrent.ScheduledExecutorService evictionScheduler;
   private volatile boolean autoSyncEnabled = true;
 
-  /**
-   * Configured maximum number of logs. If null, uses memory-based limiting if configured,
-   * otherwise uses DEFAULT_MAX_LOADED_LOGS.
-   */
-  private Integer maxLoadedLogs = null;
-
-  /**
-   * Maximum memory (in MB) to use for log cache. Only used if maxLoadedLogs is not explicitly set.
-   * If null, count-based limiting is used.
-   */
-  private Long maxMemoryMb = null;
-
-  /** Whether maxLoadedLogs was explicitly set (vs using default). */
-  private boolean maxLogsExplicitlySet = false;
-
   /** Per-path locks to prevent duplicate concurrent parses of the same log file. */
   private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
 
@@ -106,10 +83,9 @@ public class LogManager {
   private LogManager() {
     // Initialize subsystems
     this.decoderRegistry = new StructDecoderRegistry();
-    this.memoryEstimator = new MemoryEstimator();
     this.securityValidator = new SecurityValidator();
     this.logParser = new LogParser(decoderRegistry);
-    this.logCache = new LogCache(memoryEstimator);
+    this.logCache = new LogCache();
 
     // Initialize disk cache
     this.cacheDirectory = new CacheDirectory();
@@ -125,12 +101,7 @@ public class LogManager {
       return t;
     });
 
-    // Set default cache limits
-    this.logCache.setMaxLoadedLogs(DEFAULT_MAX_LOADED_LOGS);
-    this.logCache.setMaxMemoryMb(2048); // Default 2GB
-
-    // Clean up syncCache when logs are evicted to prevent memory leaks
-    // Clean up syncCache AND cancel in-progress syncs when logs are evicted
+    // Clean up syncCache and cancel in-progress syncs when logs are evicted
     this.logCache.setEvictionCallback(evictedPath -> {
       syncCache.remove(evictedPath);
       var pending = syncInProgress.remove(evictedPath);
@@ -178,60 +149,7 @@ public class LogManager {
 
   /**
    * Sets the maximum number of logs to keep in cache.
-   *
-   * @param max The maximum number of logs, or null to use default/memory-based
    */
-  public void setMaxLoadedLogs(Integer max) {
-    this.maxLoadedLogs = max;
-    this.maxLogsExplicitlySet = (max != null);
-    if (max != null) {
-      logger.info("Max loaded logs set to: {}", max);
-      logCache.setMaxLoadedLogs(max);
-    } else {
-      // Reset to default or memory-based
-      if (maxMemoryMb == null) {
-        logCache.setMaxLoadedLogs(DEFAULT_MAX_LOADED_LOGS);
-      } else {
-        logCache.setMaxLoadedLogs(Integer.MAX_VALUE); // Memory-based only
-      }
-    }
-  }
-
-  /**
-   * Sets the maximum memory (in MB) to use for log cache. Only takes effect if maxLoadedLogs is
-   * not explicitly set.
-   *
-   * @param mb The maximum memory in MB, or null to disable memory-based limiting
-   */
-  public void setMaxMemoryMb(Long mb) {
-    this.maxMemoryMb = mb;
-    if (mb != null) {
-      logger.info("Max memory for log cache set to: {} MB", mb);
-      logCache.setMaxMemoryMb(mb.intValue());
-
-      // If no explicit max logs, use memory-based only
-      if (!maxLogsExplicitlySet) {
-        logCache.setMaxLoadedLogs(Integer.MAX_VALUE);
-      }
-    }
-  }
-
-  /**
-   * Gets the effective maximum number of loaded logs.
-   *
-   * @return The max logs limit currently in effect
-   */
-  public int getEffectiveMaxLoadedLogs() {
-    if (maxLoadedLogs != null) {
-      return maxLoadedLogs;
-    }
-    // If memory-based limiting is in effect, return a high number
-    // (actual eviction is handled by memory checks)
-    if (maxMemoryMb != null && !maxLogsExplicitlySet) {
-      return Integer.MAX_VALUE;
-    }
-    return DEFAULT_MAX_LOADED_LOGS;
-  }
 
   /**
    * Adds a directory to the list of allowed directories for loading logs.
@@ -289,7 +207,7 @@ public class LogManager {
    * @throws IOException if the file cannot be read or is invalid, or if path is outside allowed
    *     directories
    */
-  public ParsedLog loadLog(String path) throws IOException {
+  public LogData loadLog(String path) throws IOException {
     Path filePath = Path.of(path).toAbsolutePath().normalize();
 
     // Validate path is allowed (or cache is already loaded)
@@ -297,7 +215,7 @@ public class LogManager {
 
     // Check if already cached (fast path, no lock needed)
     String normalizedPath = filePath.toString();
-    ParsedLog cachedLog = logCache.get(normalizedPath);
+    LogData cachedLog = logCache.get(normalizedPath);
     if (cachedLog != null) {
       logger.debug("Returning cached log: {}", filePath);
       return cachedLog;
@@ -318,42 +236,43 @@ public class LogManager {
           throw new IOException("File not found: " + filePath);
         }
 
-        // Check file size against available memory to prevent OOM.
-        // Empirical measurement shows parsed logs consume ~6-7.5x the file size in heap
-        // (DataLogReader memory-maps the file, so the raw bytes don't use heap, but the
-        // decoded TimestampedValue objects, HashMaps, struct LinkedHashMaps, and ArrayList
-        // overhead expand significantly). Using 8x as the safety multiplier.
+        // Evict cached logs to free memory for the new one.
+        // With lazy loading, the main heap cost is the stashed DataLogRecord references
+        // (~88 bytes per record). Aggressively evict until we have enough room.
         long fileSizeBytes = Files.size(filePath);
-        long fileSizeMb = fileSizeBytes / (1024 * 1024);
-        Runtime runtime = Runtime.getRuntime();
-        long availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        long estimatedHeapNeeded = fileSizeBytes * 8;
-        if (estimatedHeapNeeded > availableMemory) {
-          throw new IOException(
-              String.format(
-                  "Log file too large to load safely: %s is %d MB, estimated heap needed ~%d MB, "
-                      + "but only %d MB available. Increase JVM heap size (-Xmx) or use a smaller log file.",
-                  filePath.getFileName(), fileSizeMb, estimatedHeapNeeded / (1024 * 1024),
-                  availableMemory / (1024 * 1024)));
-        }
-
-        // Evict before parsing to free memory for the new log.
-        // This prevents OOM when the cache is full and the new log is large.
         logCache.evictIfNeeded();
 
-        // Try disk cache before full parse
-        ParsedLog log = null;
-        var diskCached = diskCache.load(filePath);
-        if (diskCached.isPresent()) {
-          log = diskCached.get();
-          logger.info("Loaded from disk cache: {}", filePath.getFileName());
-        } else {
-          // Full parse (expensive)
-          logger.info("Parsing log file: {}", filePath);
-          log = logParser.parse(filePath);
+        // If the file is large relative to available heap, evict more aggressively
+        Runtime runtime = Runtime.getRuntime();
+        long availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+        boolean evicted = false;
+        while (fileSizeBytes > availableMemory && !logCache.isEmpty()) {
+          logger.info("Evicting logs to make room for {} ({} MB, {} MB available)",
+              filePath.getFileName(), fileSizeBytes / (1024 * 1024), availableMemory / (1024 * 1024));
+          logCache.evictOne();
+          evicted = true;
+          runtime = Runtime.getRuntime();
+          availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+        }
+        if (evicted) {
+          System.gc(); // Single GC hint after eviction loop, not per-iteration
+        }
 
-          // Save to disk cache asynchronously
-          diskCache.saveAsync(log, filePath);
+        // Lazy loading: single-pass scan collects entry metadata and stashes
+        // lightweight DataLogRecord references (ByteBuffer slices into the memory-mapped
+        // file — no data copying, no value decoding). Values are decoded on demand
+        // when tools access specific entries via the Caffeine-backed cache.
+        LogData log;
+        try {
+          long perLogBudgetBytes = getPerLogCacheBudgetBytes();
+          var reader = new edu.wpi.first.util.datalog.DataLogReader(filePath.toString());
+          log = new LazyParsedLog(filePath.toString(), reader,
+              logParser.getDecoderRegistry(), perLogBudgetBytes);
+        } catch (Exception e) {
+          // If lazy scan fails (e.g., not a valid WPILOG), fall back to eager parse
+          logger.debug("Lazy scan failed for {}, falling back to eager parse: {}",
+              filePath.getFileName(), e.getMessage());
+          log = logParser.parse(filePath);
         }
 
         // Add to in-memory cache
@@ -388,7 +307,7 @@ public class LogManager {
    * @return The parsed log (never null)
    * @throws IOException if the file cannot be read or is invalid, or path is not allowed
    */
-  public ParsedLog getOrLoad(String path) throws IOException {
+  public LogData getOrLoad(String path) throws IOException {
     return loadLog(path);
   }
 
@@ -413,7 +332,7 @@ public class LogManager {
   }
 
   /**
-   * Gets all loaded logs as a map of path to ParsedLog.
+   * Gets all loaded logs as a map of path to LogData.
    *
    * <p>Returns a snapshot copy — safe to iterate without holding locks.
    * Use this instead of accessing LogCache directly from tools.
@@ -421,7 +340,7 @@ public class LogManager {
    * @return Map of file paths to their parsed logs
    * @since 0.5.0
    */
-  public java.util.Map<String, ParsedLog> getAllLoadedLogs() {
+  public java.util.Map<String, LogData> getAllLoadedLogs() {
     return logCache.getAllEntries();
   }
 
@@ -431,8 +350,8 @@ public class LogManager {
    * @return Estimated memory usage in MB
    */
   public long getEstimatedMemoryUsageMb() {
-    var stats = logCache.getStats();
-    return (long) stats.get("estimatedMemoryMb");
+    var rt = Runtime.getRuntime();
+    return (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
   }
 
   /**
@@ -441,7 +360,7 @@ public class LogManager {
    * @return The number of loaded logs
    */
   public int getLoadedLogCount() {
-    return logCache.size();
+    return logCache.getAllEntries().size();
   }
 
   /**
@@ -450,11 +369,6 @@ public class LogManager {
   public void resetConfiguration() {
     clearAllLogs();
     clearAllowedDirectories();
-    maxLoadedLogs = null;
-    maxMemoryMb = null;
-    maxLogsExplicitlySet = false;
-    logCache.setMaxLoadedLogs(DEFAULT_MAX_LOADED_LOGS);
-    logCache.setMaxMemoryMb(2048);
   }
 
   /**
@@ -484,7 +398,7 @@ public class LogManager {
    * @return List of paths for logs currently in cache
    */
   public List<String> getLoadedLogPaths() {
-    return logCache.getAllPaths();
+    return new ArrayList<>(logCache.getAllEntries().keySet());
   }
 
   /**
@@ -492,9 +406,6 @@ public class LogManager {
    *
    * @return The configured max loaded logs, or null if using default/memory-based
    */
-  public Integer getMaxLoadedLogs() {
-    return maxLoadedLogs;
-  }
 
   /**
    * Lists all available WPILOG files in the configured directories.
@@ -570,80 +481,14 @@ public class LogManager {
 
     for (var entry : entries.entrySet()) {
       String path = entry.getKey();
-      ParsedLog log = entry.getValue();
-      long estimatedMemory = memoryEstimator.estimateLogMemory(log);
-
+      LogData log = entry.getValue();
       result.add(
-          new LoadedLogInfo(path, log.entryCount(), log.duration(), estimatedMemory));
+          new LoadedLogInfo(path, log.entryCount(), log.duration(), 0));
     }
 
     return result;
   }
 
-  /**
-   * Gets statistics about the log cache.
-   *
-   * @return Map with cache statistics (size, memory usage, limits)
-   * @since 0.4.0
-   */
-  public java.util.Map<String, Object> getCacheStats() {
-    return logCache.getStats();
-  }
-
-  /**
-   * Gets detailed memory statistics including heap usage.
-   *
-   * <p>This method provides both estimated memory usage (based on heuristics) and actual JVM heap
-   * usage for comparison and validation.
-   *
-   * @return Map with memory statistics:
-   *     <ul>
-   *       <li>estimatedMemoryMb - Heuristic estimate of log cache memory usage
-   *       <li>heapUsedMb - Actual JVM heap memory currently in use
-   *       <li>heapMaxMb - Maximum heap memory available to JVM
-   *       <li>heapFreeMb - Free heap memory available
-   *       <li>heapUtilization - Percentage of heap currently used (0-100)
-   *       <li>estimationAccuracy - Estimated/Actual ratio (1.0 = perfect estimate)
-   *     </ul>
-   *
-   * @since 0.4.0
-   */
-  public java.util.Map<String, Object> getMemoryStats() {
-    Runtime runtime = Runtime.getRuntime();
-
-    // Get estimated memory from cache
-    long estimatedBytes = memoryEstimator.estimateTotalMemory(logCache.getAllEntries().values());
-    long estimatedMb = estimatedBytes / (1024 * 1024);
-
-    // Get actual heap usage
-    long heapMax = runtime.maxMemory();
-    long heapTotal = runtime.totalMemory();
-    long heapFree = runtime.freeMemory();
-    long heapUsed = heapTotal - heapFree;
-
-    long heapUsedMb = heapUsed / (1024 * 1024);
-    long heapMaxMb = heapMax / (1024 * 1024);
-    long heapFreeMb = heapFree / (1024 * 1024);
-    double heapUtilization = (heapUsed * 100.0) / heapTotal;
-
-    // Calculate estimation accuracy (estimated / actual)
-    // Note: This is approximate since heap includes more than just log data
-    double estimationAccuracy =
-        heapUsedMb > 0 ? (double) estimatedMb / heapUsedMb : Double.NaN;
-
-    var stats = new java.util.LinkedHashMap<String, Object>();
-    stats.put("estimatedMemoryMb", estimatedMb);
-    stats.put("heapUsedMb", heapUsedMb);
-    stats.put("heapMaxMb", heapMaxMb);
-    stats.put("heapFreeMb", heapFreeMb);
-    stats.put("heapUtilization", String.format("%.1f%%", heapUtilization));
-    stats.put(
-        "estimationAccuracy",
-        Double.isNaN(estimationAccuracy) ? "N/A" : String.format("%.2f", estimationAccuracy));
-    stats.put("loadedLogCount", logCache.size());
-
-    return stats;
-  }
 
   // ==================== DISK CACHE CONFIGURATION ====================
 
@@ -741,26 +586,6 @@ public class LogManager {
     }
   }
 
-  /**
-   * Enables or disables automatic RevLog synchronization when loading wpilog files.
-   *
-   * @param enabled true to enable auto-sync (default), false to disable
-   * @since 0.5.0
-   */
-  public void setAutoSyncEnabled(boolean enabled) {
-    this.autoSyncEnabled = enabled;
-    logger.info("RevLog auto-sync {}", enabled ? "enabled" : "disabled");
-  }
-
-  /**
-   * Checks if automatic RevLog synchronization is enabled.
-   *
-   * @return true if auto-sync is enabled
-   * @since 0.5.0
-   */
-  public boolean isAutoSyncEnabled() {
-    return autoSyncEnabled;
-  }
 
   /**
    * Gets the synchronized logs for a specific wpilog path.
@@ -797,7 +622,7 @@ public class LogManager {
    * @since 0.5.0
    */
   public SyncResult syncRevLog(String wpilogPath, String revlogPath) throws IOException {
-    ParsedLog wpilog = getOrLoad(wpilogPath);
+    LogData wpilog = getOrLoad(wpilogPath);
 
     Path revPath = Path.of(revlogPath).toAbsolutePath().normalize();
     ParsedRevLog revlog = revLogParser.parse(revPath);
@@ -837,7 +662,7 @@ public class LogManager {
    *
    * @param wpilog The parsed wpilog to sync revlogs for
    */
-  private void autoSyncRevLogsAsync(ParsedLog wpilog) {
+  private void autoSyncRevLogsAsync(LogData wpilog) {
     String wpilogPath = wpilog.path();
 
     // Put a placeholder immediately so tools see "sync pending" rather than null
@@ -913,7 +738,7 @@ public class LogManager {
   /**
    * Fallback sync path when wpilog fingerprint cannot be computed (skips disk cache).
    */
-  private void startSyncWithoutCache(ParsedLog wpilog, List<RevLogFileInfo> matchingRevLogs,
+  private void startSyncWithoutCache(LogData wpilog, List<RevLogFileInfo> matchingRevLogs,
       String wpilogPath) {
     var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
       SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
@@ -957,7 +782,7 @@ public class LogManager {
    * <p>Discovers revlogs by walking up to the configured scan depth under the configured logdir
    * and the wpilog's parent directory.
    */
-  private List<RevLogFileInfo> findMatchingRevLogs(ParsedLog wpilog) {
+  private List<RevLogFileInfo> findMatchingRevLogs(LogData wpilog) {
     // Step 1: Determine the wpilog's wall-clock time window
     long[] wallClockRange = estimateWallClockRange(wpilog);
     long wpilogStartMillis = wallClockRange[0];
@@ -1044,6 +869,18 @@ public class LogManager {
   }
 
   /**
+   * Computes the Caffeine per-log cache budget based on available heap.
+   * Uses 60% of max heap as total budget, divided across cached logs (minimum 128 MB per log).
+   */
+  private long getPerLogCacheBudgetBytes() {
+    long maxHeap = Runtime.getRuntime().maxMemory();
+    long totalBudget = (long) (maxHeap * 0.6);
+    int logCount = Math.max(1, logCache.getAllEntries().size());
+    long perLog = Math.max(128L * 1024 * 1024, totalBudget / logCount);
+    return perLog;
+  }
+
+  /**
    * Estimates the wall-clock time range of a wpilog file.
    *
    * <p>Tries three strategies in order:
@@ -1056,7 +893,7 @@ public class LogManager {
    * @param wpilog The parsed wpilog
    * @return Array of [startMillis, endMillis, usingMtimeFallback (0 or 1)]
    */
-  private long[] estimateWallClockRange(ParsedLog wpilog) {
+  private long[] estimateWallClockRange(LogData wpilog) {
     long durationMillis = (long) (wpilog.duration() * 1000);
 
     // Strategy 1: Extract wall-clock time from systemTime entries
@@ -1141,11 +978,6 @@ public class LogManager {
   // These methods provide access to internal state for testing without requiring reflection.
   // They are public to allow access from test classes in different packages.
 
-  /** Test accessor: Gets the number of currently loaded logs. */
-  public int testGetLoadedLogCount() {
-    return logCache.size();
-  }
-
   /** Test accessor: Checks if a specific log is in the cache. */
   public boolean testIsLogLoaded(String path) {
     Path normalized = Path.of(path).toAbsolutePath().normalize();
@@ -1153,7 +985,7 @@ public class LogManager {
   }
 
   /** Test accessor: Adds a log directly to the cache (for testing only). */
-  public void testPutLog(String path, ParsedLog log) {
+  public void testPutLog(String path, LogData log) {
     Path normalized = Path.of(path).toAbsolutePath().normalize();
     logCache.put(normalized.toString(), log);
   }

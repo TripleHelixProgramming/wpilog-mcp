@@ -8,7 +8,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
@@ -122,7 +122,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -326,7 +326,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       var visionPrefix = getOptString(arguments, "vision_prefix", null);
       var startTime = getOptDouble(arguments, "start_time");
@@ -473,7 +473,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       var mechanismName = getRequiredString(arguments, "mechanism_name");
       var startTime = getOptDouble(arguments, "start_time");
@@ -730,7 +730,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {var autoPrefix = getOptString(arguments, "auto_prefix", null);
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var autoPrefix = getOptString(arguments, "auto_prefix", null);
 
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -855,7 +855,7 @@ public final class FrcDomainTools {
     }
 
     private JsonObject calculatePathFollowingError(
-        ParsedLog log,
+        LogData log,
         String prefix,
         double startTime,
         double endTime
@@ -972,7 +972,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {// Parse parameters
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {// Parse parameters
       var stateEntry = getRequiredString(arguments, "state_entry");
       var cycleMode = getOptString(arguments, "cycle_mode", "start_to_start");
       var cycleStartState = getOptString(arguments, "cycle_start_state", null);
@@ -1294,7 +1294,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {var realEntries = log.entries().keySet().stream()
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var realEntries = log.entries().keySet().stream()
           .filter(n -> n.contains("/RealOutputs/"))
           .toList();
 
@@ -1379,7 +1379,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       var unit = getOptString(arguments, "unit", "auto");
@@ -1513,7 +1513,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {var busName = getOptString(arguments, "bus_name", "rio");
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var busName = getOptString(arguments, "bus_name", "rio");
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
 
@@ -1695,7 +1695,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -1731,7 +1731,7 @@ public final class FrcDomainTools {
           warningThreshold);
     }
 
-    private String findVoltageEntry(ParsedLog log) {
+    private String findVoltageEntry(LogData log) {
       // Try common voltage entry patterns
       var patterns = java.util.List.of(
           "batteryvoltage",
@@ -1748,7 +1748,7 @@ public final class FrcDomainTools {
       return null;
     }
 
-    private String findCurrentEntry(ParsedLog log) {
+    private String findCurrentEntry(LogData log) {
       var patterns = java.util.List.of(
           "totalcurrent",
           "total_current",

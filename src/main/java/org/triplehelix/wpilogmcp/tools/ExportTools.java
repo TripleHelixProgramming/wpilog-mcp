@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
@@ -89,7 +89,7 @@ public final class ExportTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var name = arguments.get("name").getAsString();
       var outputPath = arguments.get("output_path").getAsString();
       var startTime = arguments.has("start_time") && !arguments.get("start_time").isJsonNull()
@@ -214,7 +214,7 @@ public final class ExportTools {
       return value;
     }
 
-    private boolean isPathAllowed(Path path, ParsedLog log) {
+    private boolean isPathAllowed(Path path, LogData log) {
       // Exports are restricted to the configured export directory only.
       // Resolve symlinks to prevent symlink-based path escape:
       // - If the file already exists, resolve the FULL path (catches symlinks in filename)
@@ -265,7 +265,7 @@ public final class ExportTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
 
       var report = new JsonObject();
       report.addProperty("success", true);

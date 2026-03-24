@@ -4,21 +4,19 @@ This document provides context and coding guidelines for Claude Code when workin
 
 ## Project Overview
 
-**wpilog-mcp** is a Java 17+ MCP server that parses WPILib robot telemetry logs (binary `.wpilog` format) and REV motor controller logs (`.revlog`), providing 45 analysis tools for FRC (FIRST Robotics Competition) diagnostics via JSON-RPC 2.0 over stdio and HTTP transports.
+**wpilog-mcp** is a Java 17+ MCP server that parses WPILib robot telemetry logs (binary `.wpilog` format) and REV motor controller logs (`.revlog`), providing analysis tools for FRC (FIRST Robotics Competition) diagnostics via JSON-RPC 2.0 over stdio and HTTP transports.
 
-The codebase is ~22,000 lines of production Java and ~25,000 lines of tests (1,170+ test cases).
+Before working on this codebase, scan the package structure and read the key files relevant to your task. Do not rely on class names or counts mentioned in any documentation — verify against the actual code.
 
-## Package Structure
+## Architecture at a Glance
 
-- `cache/` — Persistent disk cache for wpilog (`DiskCache`, MessagePack serialization, content fingerprinting, CRC-32 integrity, atomic writes) and revlog sync results (`SyncDiskCache`, `SyncCacheSerializer`)
-- `config/` — Named server configurations (`ServerConfig` record, `ConfigLoader` with JSON parsing/env var interpolation/defaults merging, `DaemonManager` for HTTP daemon lifecycle with PID files)
-- `game/` — Year-specific FRC game knowledge base (match timing, scoring, field geometry; 2024 Crescendo, 2025 Reefscape, 2026 REBUILT)
-- `log/` — Log loading, binary parsing, LRU caching with memory estimation and time-based eviction, struct decoding, per-path load locking
-- `mcp/` — MCP JSON-RPC 2.0 protocol: transport-independent message handler, stdio transport, HTTP Streamable transport with session management, tool registry
-- `revlog/` — REV `.revlog` parsing (from WPILib robot programs using REV hardware), DBC-based CAN signal decoding
-- `sync/` — Cross-correlation timestamp synchronization between wpilog and revlog (async background processing, time-based revlog discovery across directory trees)
-- `tba/` — The Blue Alliance API integration with caching
-- `tools/` — 45 MCP tools: statistics, FRC domain analysis, swerve, power, CAN, vision, cycle detection, battery health, MoI regression, loop timing, game info, TBA match queries, discovery tools, export, plus LLM epistemological guardrails (data quality metadata, analysis directives, interpretation guidance)
+The server has a layered architecture:
+
+1. **Transport layer** — Accepts MCP JSON-RPC 2.0 messages over stdio (single-client) or HTTP Streamable (multi-client). Transport-independent message routing.
+2. **Tool layer** — Dozens of analysis tools, each registered via a tool registry. Tools that need log data extend a common base class that auto-injects a `path` parameter and handles log loading. There is no "active log" concept — each tool call is self-contained.
+3. **Log layer** — Lazy on-demand parsing of WPILOG files. A single-pass scan records entry metadata and byte offsets; values are decoded on demand via random access into the memory-mapped file and cached with Caffeine. An LRU cache manages loaded logs with idle expiration and heap-pressure-based eviction.
+4. **RevLog layer** — REV motor controller log parsing (both WPILOG-format and REV native binary format) with DBC-based CAN signal decoding. Cross-correlation timestamp synchronization aligns revlog data to WPILOG FPGA timestamps.
+5. **External integrations** — The Blue Alliance API for match data enrichment. Disk caching for expensive sync results. Named server configurations with environment variable interpolation.
 
 ## Java 17 Best Practices
 
@@ -61,21 +59,17 @@ This codebase implements strategies to prevent LLM overconfidence when interpret
 Return raw statistics (mean, std, percentiles, sample sizes, p-values) rather than pre-computed interpretations. Let the LLM synthesize across multiple tool calls rather than providing monolithic "health scores."
 
 ### Data Quality Metadata
-Use `DataQuality.fromValues()` to compute quality scores and attach them to analysis results. Quality metrics include sample count, gap analysis, NaN ratio, and jitter.
+Attach data quality scores to analysis results. Quality metrics include sample count, gap analysis, NaN ratio, and jitter.
 
 ### Analysis Directives
-Use `AnalysisDirectives.fromQuality()` to generate `server_analysis_directives` blocks with:
+Generate analysis directives with:
 - Confidence level (high/medium/low/insufficient) calibrated to data quality
 - Guidance text using epistemic language ("suggests", "may indicate", "consistent with")
 - Follow-up suggestions for additional analysis
 - Single-match limitation warnings
 
 ### Tool Description Guidance
-Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Include:
-- Sample size considerations
-- Correlation vs causation caveats
-- Single-match limitations
-- Appropriate uncertainty language
+Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Include sample size considerations, correlation vs causation caveats, single-match limitations, and appropriate uncertainty language.
 
 ### Confidence Calibration
 - Don't claim "high confidence" with < 100 samples or > 10% data gaps
@@ -84,14 +78,13 @@ Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Inc
 
 ## Tool Architecture
 
-When adding new tools, follow existing patterns:
+When adding new tools, follow existing patterns. Read the existing tool base classes and a few representative tools to understand the conventions. Key principles:
 
-- **`ToolBase`**: Base class for simple tools. Override `execute()`.
-- **`LogRequiringTool`**: For tools that need a loaded log. Override `executeWithLog()`. All log-requiring tools take a required `path` parameter specifying the log file. The server auto-loads logs on first reference and auto-evicts idle logs after 30 minutes. There is no "active log" concept — each tool call is self-contained.
-- **`ResponseBuilder`**: Use for consistent response formatting with data quality and directives.
-- **`ToolUtils`**: Shared utilities for common operations.
-
-Tools are registered in their respective modules (`CoreTools`, `StatisticsTools`, `FrcDomainTools`, `RobotAnalysisTools`, `WpilogTools`, `RevLogTools`).
+- Tools that need log data extend a common base class that auto-injects a `path` parameter and loads the log on demand. Override the method that receives the loaded log data.
+- Tools that don't need log data implement the tool interface directly.
+- Use the shared response builder for consistent response formatting with data quality and directives.
+- Use the shared tool utilities for common operations.
+- Register new tools in the appropriate module alongside related tools.
 
 ## Testing Standards
 
@@ -100,19 +93,31 @@ This codebase must be rock solid. Maintain exhaustive test coverage:
 - **Edge cases**: Empty inputs, single elements, boundary values, null/missing data, NaN/Infinity, zero values, negative values, duplicates, malformed inputs.
 - **Mathematical edge cases**: Zero variance, single data points, all-NaN arrays, percentiles at 0/100, regression with collinear data, correlation with constant signals.
 - **Error paths**: Exception-throwing code paths must be tested.
-- **Stress test currency**: When adding new tools, add corresponding scenarios to `StressTest.java`.
+- **Stress test currency**: When adding new tools, add corresponding scenarios to the stress tests.
 
 ## Version Management
 
-`Version.java` is the single source of truth for version numbers. Update it when releasing new versions. The version is used by `Main`, `DiskCache`, and `health_check`.
+There is a single source of truth for version numbers, auto-generated by the build. Update it in the build file when releasing new versions.
 
 ## Security
 
-`SecurityValidator` prevents path traversal with symlink resolution. When handling file paths, always validate through this class.
+Path traversal prevention with symlink resolution is enforced for all file access. When handling file paths, always validate through the security validator. CSV exports are restricted to a configured export directory.
+
+## Concurrency
+
+This server handles concurrent access from multiple MCP clients (especially in HTTP mode) and uses background threads for revlog sync and cache eviction. When writing or modifying code:
+
+- Assume any public method on shared state (caches, registries, managers) may be called concurrently.
+- Prefer Caffeine caches and `ConcurrentHashMap` over manual locking where possible.
+- When manual locking is necessary, hold locks for the shortest time possible and never perform I/O or blocking operations while holding a lock.
+- Background executors should use daemon threads so they don't prevent JVM shutdown.
+- Watch for TOCTOU bugs: check-then-act sequences on shared state must be atomic.
 
 ## Documentation
 
-When modifying tools, keep documentation in sync:
+When modifying tools or features, keep all documentation in sync:
 - Tool descriptions in Java code (shown to LLM agents via MCP)
-- `TOOLS.md` for human reference
+- `README.md` for end-user installation, configuration, and usage
+- `TOOLS.md` for human reference on tool parameters and behavior
 - `CHANGELOG.md` for release notes
+- `IDEAS.md` for planned/proposed work (update or remove items as they are completed)

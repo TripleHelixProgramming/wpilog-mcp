@@ -22,7 +22,7 @@ public record ParsedLog(
     double minTimestamp,
     double maxTimestamp,
     boolean truncated,
-    String truncationMessage) {
+    String truncationMessage) implements LogData {
 
   /**
    * Creates a ParsedLog without truncation information.

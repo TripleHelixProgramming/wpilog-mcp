@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 import org.triplehelix.wpilogmcp.revlog.RevLogSignal;
@@ -28,7 +28,7 @@ public class SynchronizedLogs {
   private static final Pattern SIGNAL_KEY_PATTERN =
       Pattern.compile("^REV/(?:([^/]+)/)?(\\w+_\\d+)/(\\w+)$");
 
-  private final ParsedLog wpilog;
+  private final LogData wpilog;
   private final List<SyncedRevLog> revlogs;
 
   /** Cache of transformed revlog values (signal key → offset-adjusted values). */
@@ -58,7 +58,7 @@ public class SynchronizedLogs {
    * @param wpilog The base wpilog
    * @param revlogs The synchronized revlogs (may be empty)
    */
-  public SynchronizedLogs(ParsedLog wpilog, List<SyncedRevLog> revlogs) {
+  public SynchronizedLogs(LogData wpilog, List<SyncedRevLog> revlogs) {
     this.wpilog = wpilog;
     this.revlogs = new ArrayList<>(revlogs);
   }
@@ -68,7 +68,7 @@ public class SynchronizedLogs {
    *
    * @param wpilog The base wpilog
    */
-  public SynchronizedLogs(ParsedLog wpilog) {
+  public SynchronizedLogs(LogData wpilog) {
     this(wpilog, List.of());
   }
 
@@ -77,7 +77,7 @@ public class SynchronizedLogs {
    *
    * @return The parsed wpilog
    */
-  public ParsedLog wpilog() {
+  public LogData wpilog() {
     return wpilog;
   }
 
@@ -261,7 +261,7 @@ public class SynchronizedLogs {
    * Builder for creating SynchronizedLogs instances.
    */
   public static class Builder {
-    private ParsedLog wpilog;
+    private LogData wpilog;
     private final List<SyncedRevLog> revlogs = new ArrayList<>();
 
     /**
@@ -270,7 +270,7 @@ public class SynchronizedLogs {
      * @param wpilog The parsed wpilog
      * @return This builder
      */
-    public Builder wpilog(ParsedLog wpilog) {
+    public Builder wpilog(LogData wpilog) {
       this.wpilog = wpilog;
       return this;
     }

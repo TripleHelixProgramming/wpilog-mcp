@@ -391,7 +391,7 @@ public class HttpTransport {
     try {
       java.net.URI uri = java.net.URI.create(origin);
       String host = uri.getHost();
-      return "localhost".equals(host) || "127.0.0.1".equals(host);
+      return "localhost".equals(host) || "127.0.0.1".equals(host) || "[::1]".equals(host);
     } catch (Exception e) {
       return false;
     }

@@ -8,7 +8,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 import org.triplehelix.wpilogmcp.revlog.RevLogDevice;
@@ -75,7 +75,7 @@ public class SignalMatcher {
    * @return List of signal pairs sorted by match quality (best first)
    */
   public List<SignalPair> findPairs(
-      ParsedLog wpilog,
+      LogData wpilog,
       ParsedRevLog revlog,
       Map<Integer, String> canIdHints) {
 
@@ -134,7 +134,7 @@ public class SignalMatcher {
    * Finds wpilog entries that might match a revlog signal.
    */
   private List<MatchCandidate> findMatchingEntries(
-      ParsedLog wpilog,
+      LogData wpilog,
       RevLogSignal revSignal,
       RevLogDevice device,
       String deviceHint) {

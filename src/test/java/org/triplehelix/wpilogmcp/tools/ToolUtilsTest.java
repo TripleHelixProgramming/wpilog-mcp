@@ -247,6 +247,20 @@ class ToolUtilsTest {
       // index = 0.1 * 4 = 0.4 → 1.0 * 0.6 + 2.0 * 0.4 = 1.4
       assertEquals(1.4, ToolUtils.percentile(new double[]{1, 2, 3, 4, 5}, 0.1), 0.001);
     }
+
+    @Test
+    @DisplayName("rejects negative percentile")
+    void rejectsNegativePercentile() {
+      assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.percentile(new double[]{1, 2, 3}, -0.1));
+    }
+
+    @Test
+    @DisplayName("rejects percentile > 1.0")
+    void rejectsPercentileAboveOne() {
+      assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.percentile(new double[]{1, 2, 3}, 1.1));
+    }
   }
 
   // ==================== getValueAtTimeZoh ====================

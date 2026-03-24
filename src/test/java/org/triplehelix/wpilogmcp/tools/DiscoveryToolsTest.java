@@ -133,59 +133,21 @@ class DiscoveryToolsTest {
     }
 
     @Test
-    @DisplayName("limitations section warns about concurrency")
-    void containsConcurrencyWarning() throws Exception {
+    @DisplayName("architecture section describes concurrency support")
+    void containsArchitectureInfo() throws Exception {
       var tool = findTool("get_server_guide");
       var result = tool.execute(new JsonObject());
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.has("limitations"), "Should have limitations section");
-      var limitations = resultObj.getAsJsonObject("limitations");
-      assertTrue(limitations.has("concurrency"));
-      assertTrue(limitations.has("single_session"));
+      assertTrue(resultObj.has("architecture"), "Should have architecture section");
+      var architecture = resultObj.getAsJsonObject("architecture");
+      assertTrue(architecture.has("concurrency"));
+      assertTrue(architecture.has("transports"));
+      assertTrue(architecture.has("log_loading"));
 
-      // Check that concurrency warning is clear
-      var concurrencyWarning = limitations.get("concurrency").getAsString().toLowerCase();
-      assertTrue(concurrencyWarning.contains("not safe"),
-          "Concurrency warning should clearly state server is not safe for concurrent use");
-      assertTrue(concurrencyWarning.contains("sequential"),
-          "Should advise sequential execution");
-    }
-
-    @Test
-    @DisplayName("limitations section includes multi-instance workaround")
-    void containsMultiInstanceWorkaround() throws Exception {
-      var tool = findTool("get_server_guide");
-      var result = tool.execute(new JsonObject());
-      var resultObj = result.getAsJsonObject();
-
-      var limitations = resultObj.getAsJsonObject("limitations");
-      assertTrue(limitations.has("multi_instance_workaround"),
-          "Should have multi-instance workaround");
-
-      var workaround = limitations.get("multi_instance_workaround").getAsString().toLowerCase();
-      assertTrue(workaround.contains("safe"),
-          "Should indicate multi-instance is safe");
-      assertTrue(workaround.contains("file locking") || workaround.contains("atomic"),
-          "Should mention safety mechanism");
-    }
-
-    @Test
-    @DisplayName("limitations section warns about LLM sub-agents")
-    void containsSubAgentWarning() throws Exception {
-      var tool = findTool("get_server_guide");
-      var result = tool.execute(new JsonObject());
-      var resultObj = result.getAsJsonObject();
-
-      var limitations = resultObj.getAsJsonObject("limitations");
-      assertTrue(limitations.has("llm_sub_agent_warning"),
-          "Should have LLM sub-agent warning");
-
-      var warning = limitations.get("llm_sub_agent_warning").getAsString().toLowerCase();
-      assertTrue(warning.contains("sub-agent") || warning.contains("parallelize"),
-          "Should warn about sub-agents that parallelize");
-      assertTrue(warning.contains("sequentially"),
-          "Should advise sequential operation");
+      var concurrency = architecture.get("concurrency").getAsString().toLowerCase();
+      assertTrue(concurrency.contains("thread-safe"),
+          "Should indicate thread safety");
     }
 
     @Test

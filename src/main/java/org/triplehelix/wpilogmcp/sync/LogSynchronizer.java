@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.OptionalLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 
@@ -127,7 +127,7 @@ public class LogSynchronizer {
    * @param revlog The parsed revlog
    * @return The synchronization result
    */
-  public SyncResult synchronize(ParsedLog wpilog, ParsedRevLog revlog) {
+  public SyncResult synchronize(LogData wpilog, ParsedRevLog revlog) {
     return synchronize(wpilog, revlog, Map.of());
   }
 
@@ -140,7 +140,7 @@ public class LogSynchronizer {
    * @return The synchronization result
    */
   public SyncResult synchronize(
-      ParsedLog wpilog,
+      LogData wpilog,
       ParsedRevLog revlog,
       Map<Integer, String> canIdHints) {
 
@@ -320,7 +320,7 @@ public class LogSynchronizer {
    *
    * @return The estimated offset in microseconds, or empty if estimation failed
    */
-  private OptionalLong estimateCoarseOffset(ParsedLog wpilog, ParsedRevLog revlog) {
+  private OptionalLong estimateCoarseOffset(LogData wpilog, ParsedRevLog revlog) {
     // Try to find systemTime entries in wpilog
     List<SystemTimeEntry> systemTimes = extractSystemTimeEntries(wpilog);
 
@@ -356,7 +356,7 @@ public class LogSynchronizer {
    * Extracts systemTime entries from wpilog.
    * systemTime entries map FPGA timestamps to wall clock time.
    */
-  private List<SystemTimeEntry> extractSystemTimeEntries(ParsedLog wpilog) {
+  private List<SystemTimeEntry> extractSystemTimeEntries(LogData wpilog) {
     List<SystemTimeEntry> entries = new ArrayList<>();
 
     // Look for systemTime entry

@@ -63,8 +63,6 @@ class ConfigLoaderTest {
                 "tba_key": "test_key",
                 "transport": "http",
                 "port": 8080,
-                "maxlogs": 5,
-                "maxmemory": 4096,
                 "diskcachedir": "/cache",
                 "diskcachesize": 16384,
                 "diskcachedisable": false,
@@ -85,8 +83,6 @@ class ConfigLoaderTest {
       assertEquals("test_key", config.tbaKey());
       assertTrue(config.isHttp());
       assertEquals(8080, config.effectivePort());
-      assertEquals(5, config.maxlogs());
-      assertEquals(4096L, config.maxmemory());
       assertEquals("/cache", config.diskcachedir());
       assertEquals(16384L, config.diskcachesize());
       assertFalse(config.diskcachedisable());
@@ -154,9 +150,7 @@ class ConfigLoaderTest {
           {
             "defaults": {
               "team": 2363,
-              "tba_key": "default_key",
-              "maxlogs": 10,
-              "maxmemory": 2048
+              "tba_key": "default_key"
             },
             "servers": {
               "dev": {
@@ -173,8 +167,6 @@ class ConfigLoaderTest {
       assertEquals("/logs", config.logdir());
       assertEquals(2363, config.team());
       assertEquals("default_key", config.tbaKey());
-      assertEquals(10, config.maxlogs());
-      assertEquals(2048L, config.maxmemory());
       assertEquals("stdio", config.effectiveTransport());
     }
 
@@ -184,14 +176,12 @@ class ConfigLoaderTest {
       var file = writeConfig("""
           {
             "defaults": {
-              "team": 2363,
-              "maxlogs": 10
+              "team": 2363
             },
             "servers": {
               "comp": {
                 "logdir": "/logs",
-                "team": 9999,
-                "maxlogs": 5
+                "team": 9999
               }
             }
           }
@@ -201,7 +191,6 @@ class ConfigLoaderTest {
       var config = loader.load("comp", file);
 
       assertEquals(9999, config.team());
-      assertEquals(5, config.maxlogs());
     }
 
     @Test
@@ -449,12 +438,11 @@ class ConfigLoaderTest {
     }
 
     @Test
-    @DisplayName("rejects maxlogs < 1")
-    void rejectsInvalidMaxlogs() throws Exception {
+    @DisplayName("rejects unknown server name from empty servers section")
+    void rejectsUnknownServerFromEmptyServers() throws Exception {
       var file = writeConfig("""
           {
             "servers": {
-              "dev": { "logdir": "/logs", "maxlogs": 0 }
             }
           }
           """);
@@ -529,9 +517,9 @@ class ConfigLoaderTest {
     @DisplayName("mergeWithDefaults preserves non-null server values")
     void mergePreservesServerValues() {
       var defaults = new ServerConfig("_defaults", "/default", 1, "key", "stdio",
-          3000, 10, 2048L, null, null, false, false, null, null);
+          3000, null, null, false, false, null, null);
       var server = new ServerConfig("comp", "/server", null, null, "http",
-          8080, null, null, null, null, null, null, null, null);
+          8080, null, null, null, null, null, null);
 
       var merged = server.mergeWithDefaults(defaults);
 
@@ -540,14 +528,13 @@ class ConfigLoaderTest {
       assertEquals("key", merged.tbaKey());  // from defaults
       assertEquals("http", merged.transport());  // from server
       assertEquals(8080, merged.port());  // from server
-      assertEquals(10, merged.maxlogs());  // from defaults
     }
 
     @Test
     @DisplayName("mergeWithDefaults handles null defaults")
     void mergeHandlesNullDefaults() {
       var server = new ServerConfig("dev", "/logs", null, null, null,
-          null, null, null, null, null, null, null, null, null);
+          null, null, null, null, null, null, null);
 
       var merged = server.mergeWithDefaults(null);
       assertSame(server, merged);
@@ -557,7 +544,7 @@ class ConfigLoaderTest {
     @DisplayName("effectiveTransport defaults to stdio")
     void defaultTransport() {
       var config = new ServerConfig("dev", null, null, null, null,
-          null, null, null, null, null, null, null, null, null);
+          null, null, null, null, null, null, null);
       assertEquals("stdio", config.effectiveTransport());
       assertFalse(config.isHttp());
     }
@@ -566,7 +553,7 @@ class ConfigLoaderTest {
     @DisplayName("effectivePort defaults to 2363")
     void defaultPort() {
       var config = new ServerConfig("dev", null, null, null, null,
-          null, null, null, null, null, null, null, null, null);
+          null, null, null, null, null, null, null);
       assertEquals(2363, config.effectivePort());
     }
   }

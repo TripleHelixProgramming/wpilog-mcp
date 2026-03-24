@@ -6,7 +6,7 @@ import com.google.gson.JsonObject;
 import java.util.Comparator;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
@@ -143,7 +143,7 @@ public final class CoreTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var pattern = arguments.has("pattern") && !arguments.get("pattern").isJsonNull()
           ? arguments.get("pattern").getAsString() : null;
 
@@ -203,7 +203,7 @@ public final class CoreTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var entry = log.entries().get(name);
 
@@ -276,7 +276,7 @@ public final class CoreTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var allValues = log.values().get(name);
 
@@ -359,7 +359,6 @@ public final class CoreTools {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("loaded_count", paths.size());
-      result.addProperty("max_cached_logs", logManager.getMaxLoadedLogs());
       result.add("logs", logsArray);
       return result;
     }

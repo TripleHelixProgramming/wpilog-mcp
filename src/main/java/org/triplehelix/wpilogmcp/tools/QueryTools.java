@@ -59,7 +59,7 @@ public final class QueryTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var typeFilter =
           arguments.has("type") && !arguments.get("type").isJsonNull() ? arguments.get("type").getAsString() : null;
       var nameContains =
@@ -110,7 +110,7 @@ public final class QueryTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var byType = log.entries().values().stream()
           .collect(Collectors.groupingBy(
               EntryInfo::type,
@@ -162,7 +162,7 @@ public final class QueryTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var name = arguments.get("name").getAsString();
       var operator = arguments.get("operator").getAsString();
       double threshold = arguments.get("threshold").getAsDouble();
@@ -269,7 +269,7 @@ public final class QueryTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var pattern = arguments.get("pattern").getAsString().toLowerCase();
       var entryPattern = arguments.has("entry_pattern") && !arguments.get("entry_pattern").isJsonNull()
           ? arguments.get("entry_pattern").getAsString().toLowerCase()

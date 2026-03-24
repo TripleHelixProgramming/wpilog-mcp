@@ -3,7 +3,7 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
 
@@ -19,11 +19,11 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
  *   <li>Injects a required {@code path} parameter into the tool schema</li>
  *   <li>Extracts the path from arguments and auto-loads the log via
  *       {@link org.triplehelix.wpilogmcp.log.LogManager#getOrLoad(String)}</li>
- *   <li>Passes the loaded log to {@link #executeWithLog(ParsedLog, JsonObject)}</li>
+ *   <li>Passes the loaded log to {@link #executeWithLog(LogData, JsonObject)}</li>
  * </ul>
  *
  * <p>Subclasses define their tool-specific parameters by overriding {@link #toolSchema()},
- * and implement their logic in {@link #executeWithLog(ParsedLog, JsonObject)}.
+ * and implement their logic in {@link #executeWithLog(LogData, JsonObject)}.
  *
  * <p>Example usage:
  * <pre>{@code
@@ -42,7 +42,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
  *     }
  *
  *     {@literal @}Override
- *     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments)
+ *     protected JsonElement executeWithLog(LogData log, JsonObject arguments)
  *             throws Exception {
  *         var name = getRequiredString(arguments, "name");
  *         var values = requireEntry(log, name);
@@ -103,7 +103,7 @@ public abstract class LogRequiringTool extends ToolBase {
 
   /**
    * Extracts the {@code path} argument, auto-loads the log, and delegates
-   * to {@link #executeWithLog(ParsedLog, JsonObject)}.
+   * to {@link #executeWithLog(LogData, JsonObject)}.
    *
    * <p>Subclasses must not override this method.
    */
@@ -125,6 +125,6 @@ public abstract class LogRequiringTool extends ToolBase {
    * @return The tool result as JsonElement
    * @throws Exception if an error occurs
    */
-  protected abstract JsonElement executeWithLog(ParsedLog log, JsonObject arguments)
+  protected abstract JsonElement executeWithLog(LogData log, JsonObject arguments)
       throws Exception;
 }

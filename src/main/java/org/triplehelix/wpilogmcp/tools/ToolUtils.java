@@ -4,7 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 import java.util.List;
@@ -84,7 +84,7 @@ public final class ToolUtils {
    * @param log The parsed log
    * @return The estimated season year
    */
-  public static int estimateSeasonYear(org.triplehelix.wpilogmcp.log.ParsedLog log) {
+  public static int estimateSeasonYear(org.triplehelix.wpilogmcp.log.LogData log) {
     if (log.path() != null) {
       var matcher = YEAR_PATTERN.matcher(log.path());
       if (matcher.find()) {
@@ -201,7 +201,7 @@ public final class ToolUtils {
    * @param keyword The keyword to match (e.g., "enabled", "autonomous")
    * @return The entry name, or null if not found
    */
-  public static String findDsEntry(ParsedLog log, String keyword) {
+  public static String findDsEntry(LogData log, String keyword) {
     for (var entryName : log.entries().keySet()) {
       var lower = entryName.toLowerCase();
       if (lower.contains("driverstation") && lower.contains(keyword)) {
@@ -223,6 +223,9 @@ public final class ToolUtils {
    * @return The interpolated percentile value
    */
   public static double percentile(double[] sortedData, double p) {
+    if (p < 0.0 || p > 1.0) {
+      throw new IllegalArgumentException("Percentile must be in [0.0, 1.0], got " + p);
+    }
     if (sortedData.length == 0) return 0.0;
     if (sortedData.length == 1) return sortedData[0];
     double index = p * (sortedData.length - 1);

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
@@ -47,7 +48,7 @@ class LogRequiringToolTest {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) {
       return success()
           .addProperty("log_path", log.path())
           .build();
@@ -70,7 +71,7 @@ class LogRequiringToolTest {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var entryName = arguments.get("entry_name").getAsString();
       var values = requireEntry(log, entryName);
       return success()
@@ -96,7 +97,7 @@ class LogRequiringToolTest {
     }
 
     @Override
-    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var throwType = arguments.get("throw_type").getAsString();
       return switch (throwType) {
         case "illegal_argument" -> throw new IllegalArgumentException("Test illegal argument");

@@ -917,8 +917,7 @@ class RevLogToolsTest {
     @Test
     @DisplayName("eviction callback cancels in-progress sync (§2.1 fix)")
     void evictionCallbackCancelsSync() throws Exception {
-      // Set up: small cache that will evict, with a pending sync
-      logManager.setMaxLoadedLogs(1);
+      // Set up: load multiple logs, then evict one manually
 
       var wpilog1 = createMockWpilog();
       logManager.testPutLog(wpilog1.path(), wpilog1);
@@ -929,13 +928,19 @@ class RevLogToolsTest {
 
       assertTrue(logManager.isRevLogSyncInProgress(wpilog1.path()));
 
-      // Load a second log — this should trigger eviction of wpilog1
+      // Load a second log with a small delay so Caffeine sees distinct access times
+      Thread.sleep(20);
       var wpilog2 = new ParsedLog("/test2.wpilog",
           new java.util.HashMap<>(), new java.util.HashMap<>(), 0, 1);
       logManager.testPutLog(wpilog2.path(), wpilog2);
 
-      // Trigger eviction
-      logManager.testEvictIfNeeded();
+      // Access wpilog2 to ensure wpilog1 is the LRU
+      Thread.sleep(20);
+      logManager.testGetLogCache().get(
+          java.nio.file.Path.of(wpilog2.path()).toAbsolutePath().normalize().toString());
+
+      // Force LRU eviction (heap-pressure-based eviction won't trigger in tests)
+      logManager.testGetLogCache().evictOne();
 
       // The eviction callback should have cancelled the sync for wpilog1
       assertTrue(future.isCancelled() || future.isDone(),

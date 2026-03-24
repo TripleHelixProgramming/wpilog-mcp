@@ -89,4 +89,106 @@ class SessionManagerTest {
     assertEquals(0, cleaned);
     assertEquals(1, manager.size());
   }
+
+  // ==================== Concurrency Tests ====================
+
+  @Test
+  @DisplayName("concurrent session creation produces unique sessions")
+  void concurrentSessionCreation() throws InterruptedException {
+    int threadCount = 20;
+    var sessions = java.util.Collections.synchronizedList(new java.util.ArrayList<McpSession>());
+    var errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    var barrier = new java.util.concurrent.CyclicBarrier(threadCount);
+
+    var threads = new Thread[threadCount];
+    for (int i = 0; i < threadCount; i++) {
+      threads[i] = new Thread(() -> {
+        try {
+          barrier.await(); // All threads start simultaneously
+          sessions.add(manager.createSession());
+        } catch (Exception e) {
+          errors.incrementAndGet();
+        }
+      });
+    }
+    for (var t : threads) t.start();
+    for (var t : threads) t.join();
+
+    assertEquals(0, errors.get(), "No errors during concurrent creation");
+    assertEquals(threadCount, manager.size(), "All sessions should be created");
+
+    // Verify all IDs are unique
+    var ids = sessions.stream().map(McpSession::getId).distinct().count();
+    assertEquals(threadCount, ids, "All session IDs should be unique");
+  }
+
+  @Test
+  @DisplayName("concurrent get and touch does not corrupt sessions")
+  void concurrentGetAndTouch() throws InterruptedException {
+    // Create sessions first
+    var sessionIds = new java.util.ArrayList<String>();
+    for (int i = 0; i < 10; i++) {
+      sessionIds.add(manager.createSession().getId());
+    }
+
+    int threadCount = 20;
+    var errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    var threads = new Thread[threadCount];
+
+    for (int i = 0; i < threadCount; i++) {
+      final int idx = i;
+      threads[i] = new Thread(() -> {
+        try {
+          for (int j = 0; j < 100; j++) {
+            String id = sessionIds.get((idx + j) % sessionIds.size());
+            var session = manager.getSession(id);
+            assertNotNull(session, "Session should exist: " + id);
+          }
+        } catch (Exception e) {
+          errors.incrementAndGet();
+        }
+      });
+    }
+    for (var t : threads) t.start();
+    for (var t : threads) t.join();
+
+    assertEquals(0, errors.get(), "Concurrent get/touch should not throw");
+    assertEquals(10, manager.size(), "All sessions should still exist");
+  }
+
+  @Test
+  @DisplayName("concurrent cleanup and access does not corrupt state")
+  void concurrentCleanupAndAccess() throws InterruptedException {
+    // Create sessions
+    for (int i = 0; i < 20; i++) {
+      manager.createSession();
+    }
+
+    int threadCount = 10;
+    var errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    var threads = new Thread[threadCount];
+
+    // Half the threads create sessions, half clean up
+    for (int i = 0; i < threadCount; i++) {
+      final boolean isCleanup = i % 2 == 0;
+      threads[i] = new Thread(() -> {
+        try {
+          for (int j = 0; j < 50; j++) {
+            if (isCleanup) {
+              manager.cleanupExpired(Duration.ofHours(1)); // Won't expire recent sessions
+            } else {
+              manager.createSession();
+            }
+          }
+        } catch (Exception e) {
+          errors.incrementAndGet();
+        }
+      });
+    }
+    for (var t : threads) t.start();
+    for (var t : threads) t.join();
+
+    assertEquals(0, errors.get(), "Concurrent create + cleanup should not throw");
+    assertTrue(manager.size() > 0, "Some sessions should remain");
+  }
 }

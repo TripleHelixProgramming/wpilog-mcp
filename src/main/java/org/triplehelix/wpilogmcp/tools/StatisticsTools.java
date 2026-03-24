@@ -76,7 +76,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
@@ -149,7 +149,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var n1 = getRequiredString(arguments, "name1");
       var n2 = getRequiredString(arguments, "name2");
 
@@ -213,7 +213,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       double iqrMult = getOptDouble(arguments, "iqr_multiplier", 1.5);
       int limit = getOptInt(arguments, "limit", 50);
@@ -297,7 +297,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var peakType = getOptString(arguments, "type", "both");
       var minHeightDiff = getOptDouble(arguments, "min_height_diff");
@@ -372,7 +372,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
@@ -489,7 +489,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var n1 = getRequiredString(arguments, "name1");
       var n2 = getRequiredString(arguments, "name2");
       var start = getOptDouble(arguments, "start_time");
@@ -567,12 +567,12 @@ public final class StatisticsTools {
       builder.addProperty("sample_count", sampleCount);
 
       // Handle edge case: zero variance means correlation is undefined (NaN)
-      if (denX == 0 || denY == 0) {
+      if (denX < 1e-20 || denY < 1e-20) {
         builder.addProperty("correlation", Double.NaN);
         builder.addProperty("p_value", 1.0);
         builder.addWarning("Correlation undefined: " +
-            (denX == 0 && denY == 0 ? "both entries" : (denX == 0 ? "first entry" : "second entry")) +
-            " has zero variance (all values are identical)");
+            (denX < 1e-20 && denY < 1e-20 ? "both entries" : (denX < 1e-20 ? "first entry" : "second entry")) +
+            " has near-zero variance (all values are effectively identical)");
       } else {
         double corr = Math.max(-1.0, Math.min(1.0, num / Math.sqrt(denX * denY)));
         builder.addProperty("correlation", corr);

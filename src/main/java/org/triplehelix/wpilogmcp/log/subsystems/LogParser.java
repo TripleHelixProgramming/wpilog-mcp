@@ -138,36 +138,13 @@ public class LogParser {
   }
 
   /**
-   * Decodes a value from a DataLogRecord based on its type.
-   *
-   * <p>Handles primitive types directly and delegates struct decoding to the registry.
-   *
-   * @param record The log record
-   * @param type The entry type
-   * @return The decoded value
+   * Gets the struct decoder registry (for use by LazyParsedLog).
    */
+  public StructDecoderRegistry getDecoderRegistry() {
+    return decoderRegistry;
+  }
+
   private Object decodeValue(DataLogRecord record, String type) {
-    return switch (type) {
-      case "boolean" -> record.getBoolean();
-      case "int64" -> record.getInteger();
-      case "float" -> record.getFloat();
-      case "double" -> record.getDouble();
-      case "string", "json" -> record.getString();
-      case "boolean[]" -> record.getBooleanArray();
-      case "int64[]" -> record.getIntegerArray();
-      case "float[]" -> record.getFloatArray();
-      case "double[]" -> record.getDoubleArray();
-      case "string[]" -> record.getStringArray();
-      case "raw" -> record.getRaw();
-      default -> {
-        if (type.startsWith("struct:") || type.startsWith("structarray:")) {
-          byte[] raw = record.getRaw();
-          yield decoderRegistry.decodeStruct(type, raw);
-        }
-        logger.debug("Unknown WPILib data type: '{}', falling back to raw bytes", type);
-        byte[] raw = record.getRaw();
-        yield raw.length <= 100 ? BinaryReader.bytesToHex(raw) : "<" + raw.length + " bytes>";
-      }
-    };
+    return EntryDecoder.decodeValue(record, type, decoderRegistry);
   }
 }
