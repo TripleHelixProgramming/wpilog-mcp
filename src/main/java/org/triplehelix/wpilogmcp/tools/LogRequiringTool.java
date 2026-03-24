@@ -1,18 +1,29 @@
 package org.triplehelix.wpilogmcp.tools;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 
+import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
+
 /**
- * Base class for tools that require an active log to be loaded.
+ * Base class for tools that operate on a specific log file.
  *
- * <p>This specialized base class automatically checks for an active log and provides
- * it to the {@link #executeWithLog(ParsedLog, JsonObject)} method. This eliminates
- * the repetitive pattern of checking for a loaded log in every tool.
+ * <p>Each tool call specifies which log to operate on via a required {@code path} parameter.
+ * The server auto-loads the log on first reference and caches it for subsequent calls.
+ * There is no need for clients to explicitly load or unload logs.
  *
- * <p>Approximately 90% of tools require an active log, making this the most common
- * base class for tool implementations.
+ * <p>This class automatically:
+ * <ul>
+ *   <li>Injects a required {@code path} parameter into the tool schema</li>
+ *   <li>Extracts the path from arguments and auto-loads the log via
+ *       {@link org.triplehelix.wpilogmcp.log.LogManager#getOrLoad(String)}</li>
+ *   <li>Passes the loaded log to {@link #executeWithLog(ParsedLog, JsonObject)}</li>
+ * </ul>
+ *
+ * <p>Subclasses define their tool-specific parameters by overriding {@link #toolSchema()},
+ * and implement their logic in {@link #executeWithLog(ParsedLog, JsonObject)}.
  *
  * <p>Example usage:
  * <pre>{@code
@@ -21,12 +32,10 @@ import org.triplehelix.wpilogmcp.log.ParsedLog;
  *     public String name() { return "get_statistics"; }
  *
  *     {@literal @}Override
- *     public String description() {
- *         return "Calculate statistics for a numeric entry";
- *     }
+ *     public String description() { return "Calculate statistics"; }
  *
  *     {@literal @}Override
- *     public JsonObject inputSchema() {
+ *     protected JsonObject toolSchema() {
  *         return new SchemaBuilder()
  *             .addProperty("name", "string", "Entry name", true)
  *             .build();
@@ -37,61 +46,82 @@ import org.triplehelix.wpilogmcp.log.ParsedLog;
  *             throws Exception {
  *         var name = getRequiredString(arguments, "name");
  *         var values = requireEntry(log, name);
- *         var data = extractNumericData(values);
- *
- *         // Calculate statistics...
- *         return success()
- *             .addProperty("count", data.length)
- *             .addProperty("mean", mean)
- *             .build();
+ *         // ...
  *     }
  * }
  * }</pre>
- *
- * <p><strong>When NOT to use this class:</strong>
- * <ul>
- *   <li>Tools that don't require a log (e.g., {@code list_available_logs},
- *       {@code load_log}, {@code health_check})</li>
- *   <li>Tools that optionally use a log but don't require it</li>
- * </ul>
- * For these cases, extend {@link ToolBase} directly and call {@code getLogManager().getActiveLog()}
- * explicitly.
  *
  * @since 0.4.0
  */
 public abstract class LogRequiringTool extends ToolBase {
 
   /**
-   * Executes the tool with automatic log checking.
+   * Returns the tool-specific input schema (without the {@code path} parameter).
    *
-   * <p>This method automatically calls {@link #requireActiveLog()} and passes the
-   * result to {@link #executeWithLog(ParsedLog, JsonObject)}. If no log is loaded,
-   * an error response is automatically returned.
+   * <p>The {@code path} parameter is automatically injected by {@link #inputSchema()}.
+   * Subclasses should only define their own parameters here.
    *
-   * <p><strong>Do not override this method.</strong> Override {@link #executeWithLog(ParsedLog, JsonObject)}
-   * instead.
+   * @return The tool-specific JSON Schema object
+   */
+  protected abstract JsonObject toolSchema();
+
+  /**
+   * Returns the complete input schema with the {@code path} parameter injected.
    *
-   * @param arguments The tool arguments from MCP
-   * @return The tool result as JsonElement
-   * @throws Exception if an error occurs
+   * <p>Calls {@link #toolSchema()} to get tool-specific parameters, then adds
+   * a required {@code path} string property. Subclasses must not override this
+   * method — override {@link #toolSchema()} instead.
+   */
+  @Override
+  public final JsonObject inputSchema() {
+    var base = toolSchema();
+
+    // Deep-copy to avoid modifying the original schema object
+    var schema = base.deepCopy();
+
+    // Inject "path" property
+    var properties = schema.getAsJsonObject("properties");
+    if (properties == null) {
+      properties = new JsonObject();
+      schema.add("properties", properties);
+    }
+    var pathProp = new JsonObject();
+    pathProp.addProperty("type", "string");
+    pathProp.addProperty("description",
+        "Path to the log file (from list_available_logs)");
+    properties.add("path", pathProp);
+
+    // Add to required array
+    var required = schema.has("required")
+        ? schema.getAsJsonArray("required")
+        : new JsonArray();
+    required.add("path");
+    schema.add("required", required);
+
+    return schema;
+  }
+
+  /**
+   * Extracts the {@code path} argument, auto-loads the log, and delegates
+   * to {@link #executeWithLog(ParsedLog, JsonObject)}.
+   *
+   * <p>Subclasses must not override this method.
    */
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
-    var log = requireActiveLog();
+    var path = getRequiredString(arguments, "path");
+    var log = logManager.getOrLoad(path);
     return executeWithLog(log, arguments);
   }
 
   /**
-   * Executes the tool with a guaranteed non-null active log.
+   * Executes the tool with the loaded log.
    *
    * <p>Subclasses implement this method to provide tool-specific logic.
    * The log parameter is guaranteed to be non-null.
    *
-   * <p>Throw {@link IllegalArgumentException} for parameter validation errors.
-   * These will be automatically converted to error responses.
-   *
-   * @param log The active parsed log (guaranteed non-null)
-   * @param arguments The tool arguments from MCP
+   * @param log The parsed log (never null)
+   * @param arguments The tool arguments from MCP (includes {@code path})
    * @return The tool result as JsonElement
    * @throws Exception if an error occurs
    */

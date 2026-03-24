@@ -44,17 +44,21 @@ public class SessionManager {
 
   public int cleanupExpired(Duration maxIdle) {
     var cutoff = Instant.now().minus(maxIdle);
-    var expired = sessions.entrySet().stream()
-        .filter(e -> e.getValue().getLastAccessedAt().isBefore(cutoff))
-        .map(Map.Entry::getKey)
-        .toList();
+    // Use removeIf for atomic per-entry removal on ConcurrentHashMap, avoiding
+    // a TOCTOU race where a session could be touched between filter and remove.
+    var count = new int[]{0};
+    sessions.entrySet().removeIf(e -> {
+      if (e.getValue().getLastAccessedAt().isBefore(cutoff)) {
+        count[0]++;
+        return true;
+      }
+      return false;
+    });
 
-    expired.forEach(sessions::remove);
-
-    if (!expired.isEmpty()) {
-      logger.info("Cleaned up {} expired session(s)", expired.size());
+    if (count[0] > 0) {
+      logger.info("Cleaned up {} expired session(s)", count[0]);
     }
-    return expired.size();
+    return count[0];
   }
 
   public int size() {

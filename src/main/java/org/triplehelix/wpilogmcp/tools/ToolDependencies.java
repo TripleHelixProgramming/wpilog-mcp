@@ -8,7 +8,7 @@ import org.triplehelix.wpilogmcp.tba.TbaConfig;
 /**
  * Container for tool dependencies.
  *
- * <p>This class enables dependency injection for tools while maintaining backwards compatibility
+ * <p>This record enables dependency injection for tools while maintaining backwards compatibility
  * with the existing singleton pattern. Tools can be created with explicit dependencies (for
  * testing with mocks) or using the default singleton-based factory method.
  *
@@ -26,20 +26,23 @@ import org.triplehelix.wpilogmcp.tba.TbaConfig;
  * // Now tool uses the mocked LogManager for complete test isolation
  * }</pre>
  *
+ * @param logManager The LogManager instance (or null)
+ * @param tbaClient The TbaClient instance (or null)
+ * @param tbaConfig The TbaConfig instance (or null)
+ * @param logDirectory The LogDirectory instance (or null)
  * @since 0.4.0
  */
-public class ToolDependencies {
-  private final LogManager logManager;
-  private final TbaClient tbaClient;
-  private final TbaConfig tbaConfig;
-  private final LogDirectory logDirectory;
+public record ToolDependencies(
+    LogManager logManager,
+    TbaClient tbaClient,
+    TbaConfig tbaConfig,
+    LogDirectory logDirectory) {
 
   /**
    * Creates a ToolDependencies instance from singleton instances.
    *
    * <p>This is the default factory method that maintains backwards compatibility
-   * with the existing singleton architecture. Tools created with these dependencies
-   * will behave identically to tools created before dependency injection was introduced.
+   * with the existing singleton architecture.
    *
    * @return A new ToolDependencies using singleton instances
    */
@@ -49,63 +52,5 @@ public class ToolDependencies {
         TbaClient.getInstance(),
         TbaConfig.getInstance(),
         LogDirectory.getInstance());
-  }
-
-  /**
-   * Creates a ToolDependencies instance with explicit dependencies.
-   *
-   * <p>This constructor enables dependency injection for testing and alternative
-   * configurations. Any dependency can be null if not needed by the tool.
-   *
-   * @param logManager The LogManager instance (or null)
-   * @param tbaClient The TbaClient instance (or null)
-   * @param tbaConfig The TbaConfig instance (or null)
-   * @param logDirectory The LogDirectory instance (or null)
-   */
-  public ToolDependencies(
-      LogManager logManager,
-      TbaClient tbaClient,
-      TbaConfig tbaConfig,
-      LogDirectory logDirectory) {
-    this.logManager = logManager;
-    this.tbaClient = tbaClient;
-    this.tbaConfig = tbaConfig;
-    this.logDirectory = logDirectory;
-  }
-
-  /**
-   * Gets the LogManager instance.
-   *
-   * @return The LogManager, or null if not set
-   */
-  public LogManager getLogManager() {
-    return logManager;
-  }
-
-  /**
-   * Gets the TbaClient instance.
-   *
-   * @return The TbaClient, or null if not set
-   */
-  public TbaClient getTbaClient() {
-    return tbaClient;
-  }
-
-  /**
-   * Gets the TbaConfig instance.
-   *
-   * @return The TbaConfig, or null if not set
-   */
-  public TbaConfig getTbaConfig() {
-    return tbaConfig;
-  }
-
-  /**
-   * Gets the LogDirectory instance.
-   *
-   * @return The LogDirectory, or null if not set
-   */
-  public LogDirectory getLogDirectory() {
-    return logDirectory;
   }
 }

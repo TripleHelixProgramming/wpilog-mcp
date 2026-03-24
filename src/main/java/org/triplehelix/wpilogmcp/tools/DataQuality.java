@@ -154,11 +154,12 @@ public record DataQuality(
   /**
    * Returns a human-readable confidence level derived from the quality score.
    *
-   * @return "high" (&gt;0.8), "moderate" (0.5-0.8), or "low" (&lt;0.5)
+   * @return "high" (&gt;0.8), "medium" (0.5-0.8), "low" (0.2-0.5), or "insufficient" (&le;0.2)
    */
   public String confidenceLevel() {
     if (qualityScore > 0.8) return "high";
-    if (qualityScore > 0.5) return "moderate";
-    return "low";
+    if (qualityScore > 0.5) return "medium";
+    if (qualityScore > 0.2) return "low";
+    return "insufficient";
   }
 }

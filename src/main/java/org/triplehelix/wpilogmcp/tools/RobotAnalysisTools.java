@@ -45,11 +45,12 @@ public final class RobotAnalysisTools {
           + "Detects autonomous/teleop/endgame phases from DriverStation/FMS mode transitions. "
           + "Handles FMS disabled gaps, practice modes, and edge cases automatically. "
           + "Returns start/end times for each phase based on actual DS data, not hardcoded durations. "
-          + "Use these timestamps to filter other analyses to specific match phases.";
+          + "Use these timestamps to filter other analyses to specific match phases."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
-    public JsonObject inputSchema() { return new SchemaBuilder().build(); }
+    protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
@@ -194,8 +195,24 @@ public final class RobotAnalysisTools {
 
       // Build phases from observed transitions
       if (autoStart != null) {
-        double aEnd = autoEnd != null ? autoEnd
-            : (firstEnableTime != null && lastDisableTime != null ? lastDisableTime : log.maxTimestamp());
+        Double aEnd = autoEnd;
+        if (aEnd == null) {
+          // Use game knowledge base for auto duration fallback before falling back to
+          // lastDisableTime/maxTimestamp, which would incorrectly label the entire match as auto
+          try {
+            var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
+            int seasonYear = ToolUtils.estimateSeasonYear(log);
+            var gameData = kb.getGame(seasonYear);
+            if (gameData != null) {
+              aEnd = autoStart + gameData.autoDurationSec();
+            }
+          } catch (Exception ignored) {
+            // Fall back below
+          }
+          if (aEnd == null) {
+            aEnd = firstEnableTime != null && lastDisableTime != null ? lastDisableTime : log.maxTimestamp();
+          }
+        }
         phases.add("autonomous", createPhase(autoStart, aEnd, "Autonomous"));
       }
 
@@ -209,7 +226,8 @@ public final class RobotAnalysisTools {
           double endgameBeforeEnd = 20.0; // default
           try {
             var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
-            var gameData = kb.getCurrentGame();
+            int seasonYear = ToolUtils.estimateSeasonYear(log);
+            var gameData = kb.getGame(seasonYear);
             if (gameData != null) {
               endgameBeforeEnd = gameData.endgameStartBeforeEndSec();
             }
@@ -249,6 +267,17 @@ public final class RobotAnalysisTools {
       if (!warnings.isEmpty()) {
         result.add("warnings", GSON.toJsonTree(warnings));
       }
+
+      // Attach data quality from the DriverStation enabled entry
+      var qualityValues = enabledEntry != null ? log.values().get(enabledEntry) : null;
+      if (qualityValues != null && !qualityValues.isEmpty()) {
+        var quality = DataQuality.fromValues(qualityValues);
+        result.add("data_quality", quality.toJson());
+        var directives = AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat();
+        result.add("server_analysis_directives", directives.toJson());
+      }
+
       return result;
     }
 
@@ -274,7 +303,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("module_prefix", "string", "Entry path prefix (e.g., '/Drive/Module')", false)
           .addNumberProperty("slip_threshold", "Speed difference threshold for slip detection in m/s (default: 0.5)", false, 0.5)
@@ -578,14 +607,11 @@ public final class RobotAnalysisTools {
         if (!(vTv.value() instanceof Map)) continue;
         var visionPose = (Map<String, Object>) vTv.value();
 
-        // Find nearest odometry pose (ZOH)
-        Map<String, Object> odomPose = null;
-        for (var oTv : odomVals) {
-          if (oTv.timestamp() > vTv.timestamp()) break;
-          if (oTv.value() instanceof Map) {
-            odomPose = (Map<String, Object>) oTv.value();
-          }
-        }
+        // Find nearest odometry pose (ZOH) using binary search
+        var odomRaw = ToolUtils.getValueAtTimeZoh(odomVals, vTv.timestamp());
+        if (!(odomRaw instanceof Map)) continue;
+        @SuppressWarnings("unchecked")
+        var odomPose = (Map<String, Object>) odomRaw;
 
         if (odomPose == null) continue;
 
@@ -598,14 +624,12 @@ public final class RobotAnalysisTools {
       if (comparisons < 2) return null;
 
       double timeSpan = visionVals.get(visionVals.size() - 1).timestamp() - visionVals.get(0).timestamp();
-      double driftRate = timeSpan > 0 ? maxDrift / timeSpan : 0;
-
       var driftResult = new JsonObject();
       driftResult.addProperty("odometry_entry", odomName);
       driftResult.addProperty("vision_entry", visionName);
       driftResult.addProperty("avg_error_m", totalDrift / comparisons);
       driftResult.addProperty("max_error_m", maxDrift);
-      driftResult.addProperty("drift_rate_m_per_sec", driftRate);
+      driftResult.addProperty("max_error_per_total_time", timeSpan > 0 ? maxDrift / timeSpan : 0);
       driftResult.addProperty("comparisons", comparisons);
       return driftResult;
     }
@@ -615,10 +639,10 @@ public final class RobotAnalysisTools {
     private double[] extractSpeeds(List<TimestampedValue> values) {
       return values.stream()
           .flatMap(tv -> {
-            if (tv.value() instanceof Map) {
-              return java.util.stream.Stream.of((Map<?, ?>) tv.value());
-            } else if (tv.value() instanceof List) {
-              return ((List<?>) tv.value()).stream()
+            if (tv.value() instanceof Map<?, ?> m) {
+              return java.util.stream.Stream.of(m);
+            } else if (tv.value() instanceof List<?> l) {
+              return l.stream()
                   .filter(v -> v instanceof Map).map(v -> (Map<?, ?>) v);
             }
             return java.util.stream.Stream.empty();
@@ -631,9 +655,9 @@ public final class RobotAnalysisTools {
 
     /** Extracts speed from a single TimestampedValue (Map with speed_mps). Returns NaN if not available. */
     private double extractSingleSpeed(TimestampedValue tv) {
-      if (tv.value() instanceof Map) {
-        var speed = ((Map<?, ?>) tv.value()).get("speed_mps");
-        if (speed instanceof Number) return ((Number) speed).doubleValue();
+      if (tv.value() instanceof Map<?, ?> m) {
+        var speed = m.get("speed_mps");
+        if (speed instanceof Number n) return n.doubleValue();
       }
       return Double.NaN;
     }
@@ -669,21 +693,21 @@ public final class RobotAnalysisTools {
     private double[] extractAngles(List<TimestampedValue> values) {
       return values.stream()
           .flatMap(tv -> {
-            if (tv.value() instanceof Map) {
-              return java.util.stream.Stream.of((Map<?, ?>) tv.value());
-            } else if (tv.value() instanceof List) {
-              return ((List<?>) tv.value()).stream()
+            if (tv.value() instanceof Map<?, ?> m) {
+              return java.util.stream.Stream.of(m);
+            } else if (tv.value() instanceof List<?> l) {
+              return l.stream()
                   .filter(v -> v instanceof Map).map(v -> (Map<?, ?>) v);
             }
             return java.util.stream.Stream.empty();
           })
           .map(m -> {
             var angle = m.get("angle_rad");
-            if (angle instanceof Number) return ((Number) angle).doubleValue();
+            if (angle instanceof Number n) return n.doubleValue();
             // Try nested Rotation2d
-            if (m.get("angle") instanceof Map) {
-              var rot = ((Map<?, ?>) m.get("angle")).get("value");
-              if (rot instanceof Number) return ((Number) rot).doubleValue();
+            if (m.get("angle") instanceof Map<?, ?> angleMap) {
+              var rot = angleMap.get("value");
+              if (rot instanceof Number n) return n.doubleValue();
             }
             return null;
           })
@@ -727,7 +751,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("power_prefix", "string", "Entry path prefix (e.g., '/PDP')", false)
           .addNumberProperty("brownout_threshold", "Voltage threshold (default 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
@@ -797,7 +821,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    public JsonObject inputSchema() { return new SchemaBuilder().build(); }
+    protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
@@ -906,36 +930,43 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Compare statistics for an entry across multiple loaded log files."
+      return "Compare statistics for an entry across two log files."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
     public JsonObject inputSchema() {
-      return new SchemaBuilder().addProperty("name", "string", "Entry name", true).build();
+      return new SchemaBuilder()
+          .addProperty("path", "string", "Path to the first log file", true)
+          .addProperty("compare_path", "string", "Path to the second log file", true)
+          .addProperty("name", "string", "Entry name to compare", true)
+          .build();
     }
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      var loadedPaths = logManager.getLoadedLogPaths();
-      if (loadedPaths.size() < 2) {
-        throw new IllegalArgumentException(
-            "Need at least 2 logs loaded to compare. Currently loaded: " + loadedPaths.size());
-      }
-
+      var path1 = getRequiredString(arguments, "path");
+      var path2 = getRequiredString(arguments, "compare_path");
       var name = getRequiredString(arguments, "name");
 
-      // Access logs directly by path instead of mutating the active log.
-      // This avoids a race condition where concurrent tool invocations could see
-      // an unexpected active log.
-      var allEntries = logManager.getAllLoadedLogs();
+      if (path1.equals(path2)) {
+        throw new IllegalArgumentException("path and compare_path must be different log files");
+      }
+
+      var log1 = logManager.getOrLoad(path1);
+      var log2 = logManager.getOrLoad(path2);
+
+      // Use a LinkedHashMap to ensure deterministic output order (path1 first, path2 second)
+      var logsByPath = new java.util.LinkedHashMap<String, ParsedLog>();
+      logsByPath.put(path1, log1);
+      logsByPath.put(path2, log2);
 
       var comparisons = new JsonArray();
-      for (var entry : allEntries.entrySet()) {
-        var path = entry.getKey();
+      for (var entry : logsByPath.entrySet()) {
+        var logPath = entry.getKey();
         var log = entry.getValue();
         var stats = new JsonObject();
-        stats.addProperty("log_filename", Path.of(path).getFileName().toString());
+        stats.addProperty("log_filename", Path.of(logPath).getFileName().toString());
 
         var vals = log.values().get(name);
         if (vals != null) {
@@ -959,15 +990,12 @@ public final class RobotAnalysisTools {
       result.add("comparisons", comparisons);
 
       // Data quality from first log's values for this entry
-      for (var entry : allEntries.entrySet()) {
-        var vals = entry.getValue().values().get(name);
-        if (vals != null && !vals.isEmpty()) {
-          var quality = DataQuality.fromValues(vals);
-          var directives = AnalysisDirectives.fromQuality(quality)
-              .addGuidance("Cross-match comparisons require consistent logging configurations for valid comparison");
-          appendQualityToResult(result, quality, directives);
-          break;
-        }
+      var vals1 = log1.values().get(name);
+      if (vals1 != null && !vals1.isEmpty()) {
+        var quality = DataQuality.fromValues(vals1);
+        var directives = AnalysisDirectives.fromQuality(quality)
+            .addGuidance("Cross-match comparisons require consistent logging configurations for valid comparison");
+        appendQualityToResult(result, quality, directives);
       }
 
       return result;
@@ -1008,7 +1036,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("velocity_entry", "string",
               "Entry path for mechanism velocity (rad/s, or m/s if wheel_radius is given)", true)
@@ -1267,7 +1295,7 @@ public final class RobotAnalysisTools {
     }
 
     @Override
-    public JsonObject inputSchema() { return new SchemaBuilder().build(); }
+    protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
@@ -1276,7 +1304,10 @@ public final class RobotAnalysisTools {
           .filter(name -> keys.stream().anyMatch(name::contains))
           .collect(Collectors.toMap(
               name -> keys.stream().filter(name::contains).findFirst().get(),
-              name -> log.values().get(name).get(0).value(),
+              name -> {
+                var vals = log.values().get(name);
+                return (vals != null && !vals.isEmpty()) ? vals.get(0).value() : "unknown";
+              },
               (v1, v2) -> v1));
 
       return success()

@@ -42,28 +42,9 @@ public final class StatisticsTools {
     registry.registerTool(new TimeCorrelateTool());
   }
 
-  /**
-   * Calculate percentile using linear interpolation.
-   *
-   * @param sortedData Array of sorted numeric values
-   * @param p Percentile (0.0 to 1.0, e.g., 0.25 for Q1, 0.75 for Q3)
-   * @return The interpolated percentile value
-   */
-  // NIST Type 7 percentile (linear interpolation), same as R default and numpy method='linear'
+  /** Delegate to shared percentile implementation in ToolUtils. */
   private static double percentile(double[] sortedData, double p) {
-    if (sortedData.length == 0) return 0.0;
-    if (sortedData.length == 1) return sortedData[0];
-
-    double index = p * (sortedData.length - 1);
-    int lower = (int) Math.floor(index);
-    int upper = (int) Math.ceil(index);
-
-    if (lower == upper) {
-      return sortedData[lower];
-    }
-
-    double weight = index - lower;
-    return sortedData[lower] * (1 - weight) + sortedData[upper] * weight;
+    return ToolUtils.percentile(sortedData, p);
   }
 
   /**
@@ -86,7 +67,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "The entry name", true)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
@@ -160,7 +141,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name1", "string", "First entry", true)
           .addProperty("name2", "string", "Second entry", true)
@@ -222,7 +203,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name", true)
           .addNumberProperty("iqr_multiplier", "IQR multiplier (default 1.5)", false, 1.5)
@@ -306,7 +287,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name", true)
           .addProperty("type", "string", "Type: 'max', 'min', or 'both'", false)
@@ -325,7 +306,7 @@ public final class StatisticsTools {
       var values = requireEntry(log, name);
 
       var data = values.stream()
-          .filter(tv -> tv.value() instanceof Number)
+          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .map(tv -> new double[]{tv.timestamp(), ((Number) tv.value()).doubleValue()})
           .toList();
 
@@ -380,7 +361,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name", true)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
@@ -437,6 +418,7 @@ public final class StatisticsTools {
             rate = (data.get(i + 1)[1] - data.get(i - 1)[1]) / dt;
             timestamp = data.get(i)[0];
           }
+          if (!Double.isFinite(rate)) continue;
           sumRate += rate;
           rateCount++;
           if (samples.size() < limit) {
@@ -452,6 +434,7 @@ public final class StatisticsTools {
           double dt = data.get(i)[0] - data.get(i - window)[0];
           if (dt > 0) {
             double rate = (data.get(i)[1] - data.get(i - window)[1]) / dt;
+            if (!Double.isFinite(rate)) continue;
             sumRate += rate;
             rateCount++;
             if (samples.size() < limit) {
@@ -496,7 +479,7 @@ public final class StatisticsTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name1", "string", "First entry", true)
           .addProperty("name2", "string", "Second entry", true)
@@ -591,9 +574,16 @@ public final class StatisticsTools {
             (denX == 0 && denY == 0 ? "both entries" : (denX == 0 ? "first entry" : "second entry")) +
             " has zero variance (all values are identical)");
       } else {
-        double corr = num / Math.sqrt(denX * denY);
+        double corr = Math.max(-1.0, Math.min(1.0, num / Math.sqrt(denX * denY)));
         builder.addProperty("correlation", corr);
-        builder.addProperty("p_value", computePValue(corr, sampleCount));
+        double pValue = computePValue(corr, sampleCount);
+        if (Double.isNaN(pValue)) {
+          builder.addData("p_value", com.google.gson.JsonNull.INSTANCE);
+          builder.addWarning(
+              "P-value cannot be reliably computed for n < 15 (asymptotic approximation unreliable)");
+        } else {
+          builder.addProperty("p_value", pValue);
+        }
       }
 
       var quality = DataQuality.fromValues(v1);
@@ -609,7 +599,8 @@ public final class StatisticsTools {
    * Compute two-tailed p-value for Pearson correlation coefficient.
    *
    * <p>Uses the t-statistic t = r * sqrt((n-2) / (1 - r^2)) and approximates
-   * the t-distribution CDF via the Abramowitz and Stegun normal approximation.
+   * the t-distribution CDF via the Abramowitz and Stegun formula 26.7.4
+   * (complete Cornish-Fisher expansion with correction terms).
    *
    * @param r Pearson correlation coefficient
    * @param n Sample count
@@ -617,19 +608,28 @@ public final class StatisticsTools {
    */
   static double computePValue(double r, int n) {
     if (n <= 2) return 1.0;
+    // For small samples, the Cornish-Fisher normal approximation is unreliable.
+    // Return NaN to avoid understating p-values (overstating significance).
+    if (n < 15) return Double.NaN;
     if (Math.abs(r) >= 1.0) return 0.0;
     double t = Math.abs(r) * Math.sqrt((n - 2.0) / (1.0 - r * r));
     double df = n - 2;
-    // Abramowitz and Stegun formula 26.7.4 approximation
+    // Abramowitz and Stegun formula 26.7.4 — Cornish-Fisher expansion with
+    // higher-order correction terms for improved accuracy at moderate df.
     double a = df - 0.5;
     double b = 48.0 * a * a;
-    double z = Math.sqrt(a * Math.log(1.0 + t * t / df));
+    double z2 = a * Math.log1p(t * t / df);
+    double z = Math.sqrt(z2);
+    // Full correction: first-order + second-order terms from A&S 26.7.5
+    double z3 = z * z * z;
+    z = z + (z3 + 3.0 * z) / b - (4.0 * z3 * z * z * z * z + 33.0 * z3 * z * z + 240.0 * z3 + 855.0 * z) / (10.0 * b * b);
     // Two-tailed p-value
     return 2.0 * (1.0 - normalCdf(z));
   }
 
   /**
    * Normal CDF approximation using Abramowitz and Stegun formula 26.2.17.
+   * Full-precision polynomial coefficients for maximum accuracy (~7.5e-8).
    */
   private static double normalCdf(double z) {
     if (z < -8.0) return 0.0;
@@ -637,7 +637,7 @@ public final class StatisticsTools {
     double t = 1.0 / (1.0 + 0.2316419 * Math.abs(z));
     double d = 0.3989422804014327; // 1/sqrt(2*pi)
     double p = d * Math.exp(-z * z / 2.0) * t
-        * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.330274))));
+        * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
     return z > 0 ? 1.0 - p : p;
   }
 }

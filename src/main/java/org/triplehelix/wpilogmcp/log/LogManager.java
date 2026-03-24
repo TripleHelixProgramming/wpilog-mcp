@@ -26,8 +26,6 @@ import org.triplehelix.wpilogmcp.revlog.dbc.DbcDatabase;
 import org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader;
 import org.triplehelix.wpilogmcp.sync.LogSynchronizer;
 import org.triplehelix.wpilogmcp.sync.SyncResult;
-import org.triplehelix.wpilogmcp.mcp.McpSession;
-import org.triplehelix.wpilogmcp.mcp.SessionContext;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
 
@@ -74,6 +72,7 @@ public class LogManager {
   // Disk cache (initialized in constructor)
   private final DiskCache diskCache;
   private final CacheDirectory cacheDirectory;
+  private final org.triplehelix.wpilogmcp.cache.SyncDiskCache syncDiskCache;
 
   // RevLog integration (initialized in constructor)
   private final RevLogParser revLogParser;
@@ -82,6 +81,7 @@ public class LogManager {
   private final Map<String, java.util.concurrent.CompletableFuture<Void>> syncInProgress =
       new ConcurrentHashMap<>();
   private final java.util.concurrent.ExecutorService syncExecutor;
+  private final java.util.concurrent.ScheduledExecutorService evictionScheduler;
   private volatile boolean autoSyncEnabled = true;
 
   /**
@@ -114,6 +114,7 @@ public class LogManager {
     // Initialize disk cache
     this.cacheDirectory = new CacheDirectory();
     this.diskCache = new DiskCache(cacheDirectory, org.triplehelix.wpilogmcp.Version.VERSION);
+    this.syncDiskCache = new org.triplehelix.wpilogmcp.cache.SyncDiskCache(cacheDirectory);
 
     // Initialize RevLog subsystems
     this.revLogParser = createRevLogParser();
@@ -138,6 +139,22 @@ public class LogManager {
         logger.debug("Cancelled sync for evicted log: {}", evictedPath);
       }
     });
+
+    // Schedule periodic idle eviction every 5 minutes
+    this.evictionScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+      Thread t = new Thread(r, "log-cache-evictor");
+      t.setDaemon(true);
+      return t;
+    });
+    this.evictionScheduler.scheduleAtFixedRate(
+        () -> {
+          try {
+            logCache.evictIfNeeded();
+          } catch (Exception e) {
+            logger.warn("Periodic cache eviction failed: {}", e.getMessage());
+          }
+        },
+        5, 5, java.util.concurrent.TimeUnit.MINUTES);
   }
 
   /**
@@ -283,19 +300,16 @@ public class LogManager {
     ParsedLog cachedLog = logCache.get(normalizedPath);
     if (cachedLog != null) {
       logger.debug("Returning cached log: {}", filePath);
-      setActiveLogPathInternal(normalizedPath);
       return cachedLog;
     }
 
     // Per-path lock to prevent duplicate concurrent parses of the same file
     Object lock = loadLocks.computeIfAbsent(normalizedPath, k -> new Object());
-    synchronized (lock) {
-      try {
+    try { synchronized (lock) {
         // Double-check cache after acquiring lock (another thread may have finished parsing)
         cachedLog = logCache.get(normalizedPath);
         if (cachedLog != null) {
           logger.debug("Returning cached log (loaded by another thread): {}", filePath);
-          setActiveLogPathInternal(normalizedPath);
           return cachedLog;
         }
 
@@ -305,15 +319,15 @@ public class LogManager {
         }
 
         // Check file size against available memory to prevent OOM.
-        // Note: Struct-heavy logs (e.g., SwerveModuleState arrays) expand more than
-        // simple numeric logs due to LinkedHashMap overhead per decoded field.
-        // The 5x multiplier is conservative for typical FRC logs; worst case for
-        // struct-dense data can be higher.
+        // Empirical measurement shows parsed logs consume ~6-7.5x the file size in heap
+        // (DataLogReader memory-maps the file, so the raw bytes don't use heap, but the
+        // decoded TimestampedValue objects, HashMaps, struct LinkedHashMaps, and ArrayList
+        // overhead expand significantly). Using 8x as the safety multiplier.
         long fileSizeBytes = Files.size(filePath);
         long fileSizeMb = fileSizeBytes / (1024 * 1024);
         Runtime runtime = Runtime.getRuntime();
         long availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        long estimatedHeapNeeded = fileSizeBytes * 5;
+        long estimatedHeapNeeded = fileSizeBytes * 8;
         if (estimatedHeapNeeded > availableMemory) {
           throw new IOException(
               String.format(
@@ -342,9 +356,8 @@ public class LogManager {
           diskCache.saveAsync(log, filePath);
         }
 
-        // Add to in-memory cache and set as active
+        // Add to in-memory cache
         logCache.put(normalizedPath, log);
-        setActiveLogPathInternal(normalizedPath);
         logger.debug(
             "Loaded log with {} entries spanning {} seconds",
             log.entryCount(), String.format("%.2f", log.duration()));
@@ -358,57 +371,27 @@ public class LogManager {
         logCache.evictIfNeeded();
 
         return log;
-      } finally {
-        loadLocks.remove(normalizedPath);
-      }
+    } } finally {
+      // Do not remove lock entries — removal creates a race where a new lock object
+      // can be created while another thread still holds the old one, defeating the
+      // deduplication. Memory growth is bounded by the number of distinct paths loaded.
     }
   }
 
   /**
-   * Gets the currently active log (the target of queries).
+   * Gets a log by path, auto-loading from disk if not already cached.
    *
-   * @return The active log, or null if no log is active
+   * <p>This is the primary API for tools to access logs. If the log is already in cache,
+   * returns it immediately. Otherwise, validates the path, parses the file, and caches it.
+   *
+   * @param path The file path (can be relative or absolute)
+   * @return The parsed log (never null)
+   * @throws IOException if the file cannot be read or is invalid, or path is not allowed
    */
-  public ParsedLog getActiveLog() {
-    String activePath = getActiveLogPath();
-    if (activePath == null) {
-      return null;
-    }
-    return logCache.get(activePath);
+  public ParsedLog getOrLoad(String path) throws IOException {
+    return loadLog(path);
   }
 
-  /**
-   * Sets the active log by path. The log must already be loaded.
-   *
-   * @param path The path to the log to make active
-   * @return true if the log was found and made active, false if not found
-   */
-  public boolean setActiveLog(String path) {
-    Path filePath = Path.of(path).toAbsolutePath().normalize();
-    String normalizedPath = filePath.toString();
-
-    // Verify the log exists in the shared cache
-    if (!logCache.containsKey(normalizedPath)) {
-      logger.warn("Cannot set active log: log not found in cache: {}", normalizedPath);
-      return false;
-    }
-
-    // If a session is active, set the active log on the session only
-    McpSession session = SessionContext.current();
-    if (session != null) {
-      session.setActiveLogPath(normalizedPath);
-      logger.info("Active log set to: {} (session {})", normalizedPath, session.getId());
-      return true;
-    }
-
-    // Stdio fallback: set on the global cache
-    if (logCache.setActiveIfPresent(normalizedPath)) {
-      logger.info("Active log set to: {}", normalizedPath);
-      return true;
-    }
-
-    return false;
-  }
 
   /**
    * Clears all loaded logs from the cache.
@@ -491,41 +474,8 @@ public class LogManager {
       var future = syncInProgress.remove(normalizedPath);
       if (future != null) future.cancel(false);
       syncCache.remove(normalizedPath);
-
-      // Clear active log if it was the one unloaded
-      if (normalizedPath.equals(logCache.getActiveLogPath())) {
-        logCache.setActiveLogPath(null);
-      }
     }
     return removed;
-  }
-
-  /**
-   * Gets the path to the currently active log.
-   *
-   * @return The active log path, or null if no log is active
-   */
-  public String getActiveLogPath() {
-    // If a session is active, use the session's active log path
-    McpSession session = SessionContext.current();
-    if (session != null) {
-      return session.getActiveLogPath();
-    }
-    // Stdio fallback: use the global active log path
-    return logCache.getActiveLogPath();
-  }
-
-  /**
-   * Sets the active log path on the current session if present, otherwise on the global cache.
-   * Used internally by loadLog() to set the active log after loading.
-   */
-  private void setActiveLogPathInternal(String path) {
-    McpSession session = SessionContext.current();
-    if (session != null) {
-      session.setActiveLogPath(path);
-    } else {
-      logCache.setActiveLogPath(path);
-    }
   }
 
   /**
@@ -617,16 +567,14 @@ public class LogManager {
   public List<LoadedLogInfo> listLoadedLogs() {
     var entries = logCache.getAllEntries();
     var result = new ArrayList<LoadedLogInfo>();
-    String activePath = getActiveLogPath();
 
     for (var entry : entries.entrySet()) {
       String path = entry.getKey();
       ParsedLog log = entry.getValue();
       long estimatedMemory = memoryEstimator.estimateLogMemory(log);
-      boolean isActive = path.equals(activePath);
 
       result.add(
-          new LoadedLogInfo(path, log.entryCount(), log.duration(), estimatedMemory, isActive));
+          new LoadedLogInfo(path, log.entryCount(), log.duration(), estimatedMemory));
     }
 
     return result;
@@ -710,6 +658,16 @@ public class LogManager {
   }
 
   /**
+   * Gets the sync disk cache instance.
+   *
+   * @return The sync disk cache
+   * @since 0.8.0
+   */
+  public org.triplehelix.wpilogmcp.cache.SyncDiskCache getSyncDiskCache() {
+    return syncDiskCache;
+  }
+
+  /**
    * Gets the cache directory resolver.
    *
    * @return The cache directory
@@ -722,16 +680,13 @@ public class LogManager {
   // ==================== REVLOG SYNC STATUS ====================
 
   /**
-   * Checks if revlog synchronization is currently in progress for the active log.
+   * Checks if revlog synchronization is in progress for any loaded log.
    *
-   * @return true if a background sync is running
-   * @since 0.5.0
+   * @return true if any background sync is running
+   * @since 0.8.0
    */
-  public boolean isRevLogSyncInProgress() {
-    String activePath = getActiveLogPath();
-    if (activePath == null) return false;
-    var future = syncInProgress.get(activePath);
-    return future != null && !future.isDone();
+  public boolean isAnyRevLogSyncInProgress() {
+    return syncInProgress.values().stream().anyMatch(f -> !f.isDone());
   }
 
   /**
@@ -747,16 +702,17 @@ public class LogManager {
   }
 
   /**
-   * Waits for the active log's revlog synchronization to complete.
+   * Waits for revlog synchronization to complete for the given log path.
    *
+   * @param wpilogPath The wpilog file path
    * @param timeoutMs Maximum time to wait in milliseconds
    * @return true if sync completed (or was not in progress), false if timed out
    * @since 0.5.0
    */
-  public boolean waitForRevLogSync(long timeoutMs) {
-    String activePath = getActiveLogPath();
-    if (activePath == null) return true;
-    var future = syncInProgress.get(activePath);
+  public boolean waitForRevLogSync(String wpilogPath, long timeoutMs) {
+    if (wpilogPath == null) return true;
+    String normalizedPath = Path.of(wpilogPath).toAbsolutePath().normalize().toString();
+    var future = syncInProgress.get(normalizedPath);
     if (future == null || future.isDone()) return true;
 
     try {
@@ -807,20 +763,6 @@ public class LogManager {
   }
 
   /**
-   * Gets the synchronized logs for the active wpilog, including any auto-synced revlogs.
-   *
-   * @return The SynchronizedLogs container, or null if no active log
-   * @since 0.5.0
-   */
-  public SynchronizedLogs getSynchronizedLogs() {
-    String activePath = getActiveLogPath();
-    if (activePath == null) {
-      return null;
-    }
-    return syncCache.get(activePath);
-  }
-
-  /**
    * Gets the synchronized logs for a specific wpilog path.
    *
    * @param wpilogPath The path to the wpilog
@@ -845,26 +787,25 @@ public class LogManager {
   }
 
   /**
-   * Manually synchronizes a revlog with the active wpilog.
+   * Manually synchronizes a revlog with the specified wpilog.
    *
+   * @param wpilogPath Path to the wpilog file (must be loaded)
    * @param revlogPath Path to the revlog file
    * @return The sync result
    * @throws IOException if the files cannot be read
+   * @throws IllegalStateException if the wpilog is not loaded
    * @since 0.5.0
    */
-  public SyncResult syncRevLog(String revlogPath) throws IOException {
-    ParsedLog wpilog = getActiveLog();
-    if (wpilog == null) {
-      throw new IllegalStateException("No active wpilog loaded");
-    }
+  public SyncResult syncRevLog(String wpilogPath, String revlogPath) throws IOException {
+    ParsedLog wpilog = getOrLoad(wpilogPath);
 
     Path revPath = Path.of(revlogPath).toAbsolutePath().normalize();
     ParsedRevLog revlog = revLogParser.parse(revPath);
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
     // Update sync cache atomically to prevent TOCTOU race
-    String wpilogPath = logCache.getActiveLogPath();
-    syncCache.compute(wpilogPath, (key, existing) -> {
+    String normalizedWpilogPath = Path.of(wpilogPath).toAbsolutePath().normalize().toString();
+    syncCache.compute(normalizedWpilogPath, (key, existing) -> {
       SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
       if (existing != null) {
         for (SyncedRevLog synced : existing.revlogs()) {
@@ -912,15 +853,42 @@ public class LogManager {
     logger.info("Starting async sync of {} revlog file(s) with {}",
         matchingRevLogs.size(), wpilogPath);
 
+    // Compute wpilog fingerprint once for all revlog cache lookups
+    final String wpilogFingerprint;
+    try {
+      wpilogFingerprint = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
+          Path.of(wpilogPath));
+    } catch (IOException e) {
+      logger.debug("Cannot fingerprint wpilog for sync cache: {}", e.getMessage());
+      // Fall through with null — will skip cache lookup/save
+      startSyncWithoutCache(wpilog, matchingRevLogs, wpilogPath);
+      return;
+    }
+
     var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
       SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
 
       for (RevLogFileInfo revlogInfo : matchingRevLogs) {
         try {
+          // Try sync disk cache first
+          String revlogFp = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
+              revlogInfo.path());
+          var cached = syncDiskCache.load(wpilogFingerprint, revlogFp);
+
+          if (cached.isPresent()) {
+            var entry = cached.get();
+            builder.addRevLog(entry.revlog(), entry.syncResult());
+            continue;
+          }
+
+          // Cache miss — parse and correlate
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
           builder.addRevLog(revlog, result);
+
+          // Save to sync cache
+          syncDiskCache.save(revlog, result, wpilogFingerprint, revlogFp);
 
           logger.info("Synced {} (confidence: {}, offset: {}ms)",
               revlogInfo.path().getFileName(),
@@ -943,56 +911,202 @@ public class LogManager {
   }
 
   /**
-   * Finds revlog files that match the given wpilog by being in the same directory
-   * or having similar timestamps.
+   * Fallback sync path when wpilog fingerprint cannot be computed (skips disk cache).
+   */
+  private void startSyncWithoutCache(ParsedLog wpilog, List<RevLogFileInfo> matchingRevLogs,
+      String wpilogPath) {
+    var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
+      SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
+      for (RevLogFileInfo revlogInfo : matchingRevLogs) {
+        try {
+          ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
+          SyncResult result = synchronizer.synchronize(wpilog, revlog);
+          builder.addRevLog(revlog, result);
+          logger.info("Synced {} (no cache, confidence: {}, offset: {}ms)",
+              revlogInfo.path().getFileName(),
+              result.confidenceLevel().getLabel(),
+              result.offsetMillis());
+        } catch (Exception e) {
+          logger.warn("Failed to sync revlog {}: {}", revlogInfo.path(), e.getMessage());
+        }
+      }
+      syncCache.put(wpilogPath, builder.build());
+      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
+    }, syncExecutor);
+    syncInProgress.put(wpilogPath, future);
+    future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
+  }
+
+  /** Tolerance for timestamp-based revlog matching (minutes). */
+  private static final int REVLOG_MATCH_TOLERANCE_MINUTES = 5;
+
+  /** Wider tolerance when using file modification time as fallback (minutes). */
+  private static final int REVLOG_MTIME_TOLERANCE_MINUTES = 30;
+
+  /**
+   * Finds revlog files that match the given wpilog by time overlap.
+   *
+   * <p>Uses multiple timestamp sources to match even when files are in sibling directories
+   * with unrelated filenames:
+   * <ol>
+   *   <li>SystemTime entries from the parsed wpilog (FPGA → wall clock mapping)</li>
+   *   <li>Filename-embedded timestamps (e.g., FRC_25-03-21_10-30-00.wpilog)</li>
+   *   <li>File modification time as last resort</li>
+   * </ol>
+   *
+   * <p>Discovers revlogs by walking up to the configured scan depth under the configured logdir
+   * and the wpilog's parent directory.
    */
   private List<RevLogFileInfo> findMatchingRevLogs(ParsedLog wpilog) {
+    // Step 1: Determine the wpilog's wall-clock time window
+    long[] wallClockRange = estimateWallClockRange(wpilog);
+    long wpilogStartMillis = wallClockRange[0];
+    long wpilogEndMillis = wallClockRange[1];
+    boolean usingMtimeFallback = wallClockRange[2] != 0;
+
+    if (wpilogStartMillis <= 0) {
+      logger.warn("Cannot determine wall-clock time for {}; skipping revlog matching",
+          Path.of(wpilog.path()).getFileName());
+      return List.of();
+    }
+
+    int toleranceMinutes = usingMtimeFallback
+        ? REVLOG_MTIME_TOLERANCE_MINUTES
+        : REVLOG_MATCH_TOLERANCE_MINUTES;
+    long toleranceMillis = toleranceMinutes * 60_000L;
+    long rangeStart = wpilogStartMillis - toleranceMillis;
+    long rangeEnd = wpilogEndMillis + toleranceMillis;
+
+    logger.debug("Revlog search window: {} to {} (tolerance: {} min, mtime fallback: {})",
+        java.time.Instant.ofEpochMilli(rangeStart),
+        java.time.Instant.ofEpochMilli(rangeEnd),
+        toleranceMinutes, usingMtimeFallback);
+
+    // Step 2: Discover all revlogs (walk the configured scan depth)
+    var logDir = LogDirectory.getInstance();
+    List<RevLogFileInfo> allRevLogs = new ArrayList<>();
+    var seenPaths = new java.util.HashSet<Path>();
+
+    // Scan configured logdir (the configured scan depth)
+    if (logDir.isConfigured()) {
+      try {
+        for (var info : logDir.listRevLogFiles()) {
+          if (seenPaths.add(info.path().toAbsolutePath().normalize())) {
+            allRevLogs.add(info);
+          }
+        }
+      } catch (IOException e) {
+        logger.debug("Error listing revlogs from logdir: {}", e.getMessage());
+      }
+    }
+
+    // Also scan the wpilog's parent directory tree (handles ad-hoc paths outside logdir)
+    Path wpilogDir = Path.of(wpilog.path()).getParent();
+    if (wpilogDir != null) {
+      for (var info : logDir.listRevLogFilesInDirectory(wpilogDir)) {
+        if (seenPaths.add(info.path().toAbsolutePath().normalize())) {
+          allRevLogs.add(info);
+        }
+      }
+    }
+
+    if (allRevLogs.isEmpty()) {
+      return List.of();
+    }
+
+    // Step 3: Filter by time overlap
     List<RevLogFileInfo> matching = new ArrayList<>();
-
-    // First, look in the same directory as the wpilog
-    Path wpilogPath = Path.of(wpilog.path());
-    Path wpilogDir = wpilogPath.getParent();
-
-    if (wpilogDir != null && Files.isDirectory(wpilogDir)) {
-      try {
-        scanDirectoryForRevLogs(wpilogDir, matching);
-      } catch (IOException e) {
-        logger.debug("Error scanning for revlogs in {}: {}", wpilogDir, e.getMessage());
+    for (var revlog : allRevLogs) {
+      Long revlogTimestamp = revlog.timestampMillis();
+      if (revlogTimestamp != null) {
+        // Revlog has a filename timestamp — use it for precise matching
+        if (revlogTimestamp >= rangeStart && revlogTimestamp <= rangeEnd) {
+          matching.add(revlog);
+        }
+      } else {
+        // No filename timestamp — fall back to file modification time with wider tolerance
+        try {
+          long mtime = Files.getLastModifiedTime(revlog.path()).toMillis();
+          long mtimeRangeStart = wpilogStartMillis - REVLOG_MTIME_TOLERANCE_MINUTES * 60_000L;
+          long mtimeRangeEnd = wpilogEndMillis + REVLOG_MTIME_TOLERANCE_MINUTES * 60_000L;
+          if (mtime >= mtimeRangeStart && mtime <= mtimeRangeEnd) {
+            matching.add(revlog);
+          }
+        } catch (IOException e) {
+          logger.debug("Cannot read mtime for {}: {}", revlog.path(), e.getMessage());
+        }
       }
     }
 
-    // Also check allowed directories
-    var allowedDirs = securityValidator.getAllowedDirectories();
-    for (Path dir : allowedDirs) {
-      if (!Files.isDirectory(dir) || dir.equals(wpilogDir)) {
-        continue;
-      }
-      try {
-        scanDirectoryForRevLogs(dir, matching);
-      } catch (IOException e) {
-        logger.debug("Error scanning for revlogs in {}: {}", dir, e.getMessage());
-      }
-    }
-
+    logger.debug("Found {} candidate revlog(s) out of {} total for {}",
+        matching.size(), allRevLogs.size(), Path.of(wpilog.path()).getFileName());
     return matching;
   }
 
   /**
-   * Scans a directory for revlog files.
+   * Estimates the wall-clock time range of a wpilog file.
+   *
+   * <p>Tries three strategies in order:
+   * <ol>
+   *   <li>SystemTime entries (FPGA → wall clock mapping from the parsed log)</li>
+   *   <li>Filename timestamp (parsed from standard WPILib naming convention)</li>
+   *   <li>File modification time (last resort, less accurate)</li>
+   * </ol>
+   *
+   * @param wpilog The parsed wpilog
+   * @return Array of [startMillis, endMillis, usingMtimeFallback (0 or 1)]
    */
-  private void scanDirectoryForRevLogs(Path dir, List<RevLogFileInfo> revlogs) throws IOException {
-    try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*.revlog")) {
-      for (Path path : stream) {
-        if (Files.isRegularFile(path)) {
-          try {
-            long size = Files.size(path);
-            // Create RevLogFileInfo with null timestamps (will be parsed later if needed)
-            revlogs.add(new RevLogFileInfo(path, null, null, null, size));
-          } catch (IOException e) {
-            logger.debug("Error reading revlog metadata: {}", e.getMessage());
+  private long[] estimateWallClockRange(ParsedLog wpilog) {
+    long durationMillis = (long) (wpilog.duration() * 1000);
+
+    // Strategy 1: Extract wall-clock time from systemTime entries
+    for (String entryName : wpilog.values().keySet()) {
+      if (entryName.toLowerCase().contains("systemtime")) {
+        List<TimestampedValue> values = wpilog.values().get(entryName);
+        if (values != null && !values.isEmpty()) {
+          // Find the first valid systemTime entry to anchor the time range
+          for (var tv : values) {
+            if (tv.value() instanceof Number num) {
+              long wallClockMicros = num.longValue();
+              double fpgaTime = tv.timestamp();
+              // Compute wall-clock time at log start and end
+              long startMillis = (wallClockMicros / 1000)
+                  - (long) ((fpgaTime - wpilog.minTimestamp()) * 1000);
+              long endMillis = startMillis + durationMillis;
+              logger.debug("Wpilog wall-clock range from systemTime: {} to {}",
+                  java.time.Instant.ofEpochMilli(startMillis),
+                  java.time.Instant.ofEpochMilli(endMillis));
+              return new long[]{startMillis, endMillis, 0};
+            }
           }
         }
       }
+    }
+
+    // Strategy 2: Parse filename timestamp
+    Path wpilogPath = Path.of(wpilog.path());
+    Long creationTime = LogDirectory.getInstance().extractCreationTime(
+        wpilogPath.getFileName().toString());
+    if (creationTime != null) {
+      long endMillis = creationTime + durationMillis;
+      logger.debug("Wpilog wall-clock range from filename: {} to {}",
+          java.time.Instant.ofEpochMilli(creationTime),
+          java.time.Instant.ofEpochMilli(endMillis));
+      return new long[]{creationTime, endMillis, 0};
+    }
+
+    // Strategy 3: File modification time (last resort — marks as mtime fallback)
+    try {
+      long mtime = Files.getLastModifiedTime(wpilogPath).toMillis();
+      // mtime is approximately the end time; subtract duration to estimate start
+      long startMillis = mtime - durationMillis;
+      logger.debug("Wpilog wall-clock range from mtime (fallback): {} to {}",
+          java.time.Instant.ofEpochMilli(startMillis),
+          java.time.Instant.ofEpochMilli(mtime));
+      return new long[]{startMillis, mtime, 1};
+    } catch (IOException e) {
+      logger.debug("Cannot read mtime for {}: {}", wpilogPath, e.getMessage());
+      return new long[]{0, 0, 0};
     }
   }
 
@@ -1018,11 +1132,10 @@ public class LogManager {
    * @param entryCount Number of entries in the log
    * @param duration Duration of the log in seconds
    * @param estimatedMemoryBytes Estimated memory usage
-   * @param isActive Whether this is the active log
    * @since 0.4.0
    */
   public record LoadedLogInfo(
-      String path, int entryCount, double duration, long estimatedMemoryBytes, boolean isActive) {}
+      String path, int entryCount, double duration, long estimatedMemoryBytes) {}
 
   // ==================== PUBLIC TEST ACCESSORS ====================
   // These methods provide access to internal state for testing without requiring reflection.
@@ -1037,11 +1150,6 @@ public class LogManager {
   public boolean testIsLogLoaded(String path) {
     Path normalized = Path.of(path).toAbsolutePath().normalize();
     return logCache.containsKey(normalized.toString());
-  }
-
-  /** Test accessor: Gets the active log path. */
-  public String testGetActiveLogPath() {
-    return logCache.getActiveLogPath();
   }
 
   /** Test accessor: Adds a log directly to the cache (for testing only). */
@@ -1063,11 +1171,6 @@ public class LogManager {
   /** Test accessor: Gets the decoder registry. */
   public StructDecoderRegistry testGetDecoderRegistry() {
     return decoderRegistry;
-  }
-
-  /** Test accessor: Sets the active log path. */
-  public void testSetActiveLogPath(String path) {
-    logCache.setActiveLogPath(path);
   }
 
   /** Test accessor: Triggers eviction check. */

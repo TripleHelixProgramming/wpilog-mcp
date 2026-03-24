@@ -14,7 +14,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 /**
  * Discovery tools to help LLM agents understand and use the server's capabilities.
  *
- * <p>These tools address a fundamental discoverability problem: MCP exposes a flat list of 49
+ * <p>These tools address a fundamental discoverability problem: MCP exposes a flat list of 45
  * tools, and LLM agents often don't know which tools exist, what they can do, or when to use
  * them instead of fetching raw data and writing custom analysis code.
  *
@@ -75,13 +75,7 @@ public final class DiscoveryTools {
         "List WPILOG files with TBA match data enrichment",
         List.of("logs", "files", "directory", "tba", "match", "score", "win", "loss"),
         List.of("Find available log files", "Get match scores from TBA", "See which matches we won/lost"),
-        false, List.of("load_log", "get_tba_status")));
-
-    tools.add(new ToolInfo("load_log", "core",
-        "Load a WPILOG file for analysis",
-        List.of("load", "open", "wpilog", "file"),
-        List.of("Start analyzing a match log", "Load robot telemetry data"),
-        false, List.of("list_available_logs", "list_entries")));
+        false, List.of("list_entries", "get_tba_status")));
 
     tools.add(new ToolInfo("list_entries", "core",
         "List all data entries in the loaded log",
@@ -105,31 +99,13 @@ public final class DiscoveryTools {
         "List all loaded logs and cache status",
         List.of("loaded", "cache", "memory"),
         List.of("See which logs are in memory", "Check cache usage"),
-        false, List.of("set_active_log", "unload_log")));
-
-    tools.add(new ToolInfo("set_active_log", "core",
-        "Switch between loaded logs for multi-match analysis",
-        List.of("switch", "active", "select"),
-        List.of("Switch to a different match", "Compare across matches"),
-        false, List.of("list_loaded_logs", "compare_matches")));
-
-    tools.add(new ToolInfo("unload_log", "core",
-        "Unload a specific log file from memory",
-        List.of("unload", "free", "memory", "close"),
-        List.of("Free memory from a loaded log", "Close a specific match log"),
-        false, List.of("list_loaded_logs", "unload_all_logs")));
-
-    tools.add(new ToolInfo("unload_all_logs", "core",
-        "Unload all log files from memory",
-        List.of("unload", "free", "memory", "clear", "all"),
-        List.of("Free all memory", "Clear all loaded logs"),
-        false, List.of("list_loaded_logs", "unload_log")));
+        false, List.of("list_entries")));
 
     tools.add(new ToolInfo("list_struct_types", "core",
-        "List all WPILib struct types found in the log",
+        "List all supported WPILib struct types",
         List.of("struct", "types", "schema", "wpilib", "protobuf"),
-        List.of("See what struct types are in the log", "Find custom struct definitions"),
-        true, List.of("get_types", "search_entries")));
+        List.of("See what struct types are supported", "Find available struct decoders"),
+        false, List.of("get_types", "search_entries")));
 
     tools.add(new ToolInfo("health_check", "core",
         "Check server health and version information",
@@ -228,7 +204,7 @@ public final class DiscoveryTools {
         "Compare statistics across multiple loaded logs",
         List.of("compare", "match", "cross", "multiple"),
         List.of("Compare auto performance across matches", "Find patterns across matches"),
-        true, List.of("set_active_log", "get_statistics")));
+        true, List.of("get_statistics")));
 
     tools.add(new ToolInfo("get_code_metadata", "robot_analysis",
         "Extract Git SHA, branch, and build info",
@@ -380,10 +356,10 @@ public final class DiscoveryTools {
   private static List<CategoryInfo> buildCategories() {
     return List.of(
         new CategoryInfo("core",
-            "Log loading and data access. Start here to load logs and discover available data.",
-            "Don't manually parse log files—use load_log and list_entries.",
-            List.of("list_available_logs", "load_log", "list_entries", "get_entry_info", "read_entry",
-                "list_loaded_logs", "set_active_log", "unload_log", "unload_all_logs")),
+            "Log loading and data access. Start here to discover available data.",
+            "Don't manually parse log files—use list_entries and read_entry.",
+            List.of("list_available_logs", "list_entries", "get_entry_info", "read_entry",
+                "list_loaded_logs", "list_struct_types", "health_check")),
 
         new CategoryInfo("query",
             "Search and filter log data. Find specific entries, types, and events.",
@@ -449,7 +425,7 @@ public final class DiscoveryTools {
     @Override
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
-          + "Returns a structured overview of all 49 tools organized by category, with usage guidance "
+          + "Returns a structured overview of all 45 tools organized by category, with usage guidance "
           + "and anti-patterns to avoid. This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
     }
@@ -487,7 +463,7 @@ public final class DiscoveryTools {
       var guidance = new JsonObject();
       guidance.addProperty("primary_rule",
           "ALWAYS check for a built-in tool before writing custom analysis code. "
-          + "This server has 49 specialized tools covering statistics, power analysis, "
+          + "This server has " + TOOL_CATALOG.size() + " specialized tools covering statistics, power analysis, "
           + "swerve diagnostics, cycle detection, battery health prediction, and more.");
       guidance.addProperty("tba_tip",
           "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. "
@@ -502,11 +478,11 @@ public final class DiscoveryTools {
       // Limitations section - important for correct client behavior
       var limitations = new JsonObject();
       limitations.addProperty("concurrency",
-          "NOT SAFE FOR CONCURRENT USE. This server maintains shared state (active log, log cache). "
+          "NOT SAFE FOR CONCURRENT USE. This server maintains shared state (log cache). "
           + "Do not call multiple tools in parallel from the same session. Execute tool calls sequentially.");
       limitations.addProperty("single_session",
-          "Designed for single-client use. If multiple agents or sessions share this server, "
-          + "they will conflict over the active log and cache state.");
+          "Designed for single-client use (stdio). If multiple agents or sessions share this server, "
+          + "they may contend for cache state. Use HTTP transport for multi-client scenarios.");
       limitations.addProperty("multi_instance_workaround",
           "Running multiple SEPARATE server instances pointing to the same log directory IS safe. "
           + "The disk cache uses file locking and atomic operations. Each instance has its own in-memory state.");
@@ -560,7 +536,7 @@ public final class DiscoveryTools {
       basicWorkflow.addProperty("name", "Basic Match Analysis");
       basicWorkflow.add("steps", GSON.toJsonTree(List.of(
           "1. list_available_logs - See available logs with TBA match data",
-          "2. load_log - Load a specific match",
+          "2. list_entries - Discover available telemetry (pass log path)",
           "3. get_match_phases - Find auto/teleop timing",
           "4. generate_report - Get overview of match health",
           "5. Use specialized tools as needed (power_analysis, analyze_swerve, etc.)"
@@ -570,8 +546,8 @@ public final class DiscoveryTools {
       var cycleWorkflow = new JsonObject();
       cycleWorkflow.addProperty("name", "Cycle Time Analysis");
       cycleWorkflow.add("steps", GSON.toJsonTree(List.of(
-          "1. load_log - Load match log",
-          "2. analyze_cycles - Detect and measure cycle times",
+          "1. list_available_logs - Find available logs",
+          "2. analyze_cycles - Detect and measure cycle times (pass log path)",
           "3. get_tba_match_data - Verify against actual scored points",
           "4. compare_matches - Compare cycle times across matches"
       )));
@@ -580,8 +556,8 @@ public final class DiscoveryTools {
       var powerWorkflow = new JsonObject();
       powerWorkflow.addProperty("name", "Power/Brownout Investigation");
       powerWorkflow.add("steps", GSON.toJsonTree(List.of(
-          "1. load_log - Load match log",
-          "2. power_analysis - Check for brownouts and current peaks",
+          "1. list_available_logs - Find available logs",
+          "2. power_analysis - Check for brownouts and current peaks (pass log path)",
           "3. find_condition - Find exact timestamps of voltage drops",
           "4. predict_battery_health - Assess battery condition",
           "5. can_health - Check for CAN errors (often accompany brownouts)"
@@ -748,19 +724,17 @@ public final class DiscoveryTools {
     private JsonArray generateWorkflow(String task, List<ToolInfo> tools) {
       var workflow = new JsonArray();
 
-      // Always start with loading if not already loaded
-      boolean hasLoadTool = tools.stream().anyMatch(t -> t.name().equals("load_log"));
+      // Always start with listing available logs if not already suggested
       boolean hasListTool = tools.stream().anyMatch(t -> t.name().equals("list_available_logs"));
 
-      if (!hasLoadTool && !hasListTool) {
+      if (!hasListTool) {
         workflow.add("1. list_available_logs - Find available logs (includes TBA match data)");
-        workflow.add("2. load_log - Load the specific match you want to analyze");
       }
 
       // Add suggested tools in logical order
-      int step = hasLoadTool || hasListTool ? 1 : 3;
+      int step = hasListTool ? 1 : 2;
       for (var tool : tools) {
-        if (tool.name().equals("load_log") || tool.name().equals("list_available_logs")) {
+        if (tool.name().equals("list_available_logs")) {
           continue; // Already added
         }
         workflow.add(step + ". " + tool.name() + " - " + tool.briefDescription());

@@ -50,10 +50,8 @@ class StatisticsToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(ParsedLog log) {
-    var manager = LogManager.getInstance();
-    manager.testPutLog(log.path(), log);
-    manager.testSetActiveLogPath(log.path());
+  private void putLogInCache(ParsedLog log) {
+    LogManager.getInstance().testPutLog(log.path(), log);
   }
 
   @Nested
@@ -70,10 +68,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -97,10 +96,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2,3}, new double[]{1,2,3,4})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -119,10 +119,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2,3,4}, new double[]{10,20,30,40,50})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
       args.addProperty("start_time", 1.0);
       args.addProperty("end_time", 3.0);
@@ -143,10 +144,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0}, new double[]{42.0})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -168,10 +170,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2,3,4}, new double[]{-5,-3,-1,1,3})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -192,10 +195,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2}, new double[]{large, large + 1, large + 2})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -214,10 +218,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -249,10 +254,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Values", new double[]{0,1,2}, new double[]{0,0,0})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -274,10 +280,11 @@ class StatisticsToolsLogicTest {
               new double[]{1.0, Double.NaN, 3.0, Double.POSITIVE_INFINITY, 5.0})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Values");
 
       var result = tool.execute(args);
@@ -308,10 +315,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Uniform", new double[]{0,1,2,3,4,5,6,7}, new double[]{10,10,10,10,10,10,10,10})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Uniform");
 
       var result = tool.execute(args);
@@ -338,10 +346,11 @@ class StatisticsToolsLogicTest {
               new double[]{1,2,3,4,5,6,7,8,9,10,20})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/WithOutlier");
 
       var result = tool.execute(args);
@@ -368,10 +377,11 @@ class StatisticsToolsLogicTest {
                   Double.NaN, Double.POSITIVE_INFINITY})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/WithNaN");
 
       var result = tool.execute(args);
@@ -395,10 +405,11 @@ class StatisticsToolsLogicTest {
               new double[]{1, Double.NaN, Double.NaN, 2, Double.NaN, Double.NaN, 3})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/MostlyNaN");
 
       // LogRequiringTool catches IllegalArgumentException and returns error response
@@ -417,10 +428,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Test/Small", new double[]{0,1,2,3}, new double[]{1,2,3,100})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Test/Small");
 
       var result = tool.execute(args);
@@ -444,10 +456,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,1,2,3,4,5,6,7,8,9},
               new double[]{0,10,0,15,0,10,0,5,0,0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("find_peaks");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Sensor/Oscillating");
       args.addProperty("type", "max");
 
@@ -480,10 +493,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,1,2,3,4,5,6},
               new double[]{0,10,0,15,0,5,0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("find_peaks");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Sensor/Oscillating");
       args.addProperty("type", "max");
 
@@ -509,10 +523,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,1,2,3,4,5,6},
               new double[]{0,5,0,15,0,3,0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("find_peaks");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Sensor/Oscillating");
       args.addProperty("type", "max");
       args.addProperty("min_height_diff", 10.0);
@@ -544,10 +559,11 @@ class StatisticsToolsLogicTest {
           .setPath("/test/roc.wpilog")
           .addNumericEntry("/Position", timestamps, values)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("rate_of_change");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Position");
 
       var result = tool.execute(args);
@@ -572,10 +588,11 @@ class StatisticsToolsLogicTest {
           .setPath("/test/roc_dup.wpilog")
           .addNumericEntry("/Position", timestamps, values)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("rate_of_change");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Position");
       args.addProperty("window_size", 1);
 
@@ -616,10 +633,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Fast", timestampsA, valuesA)
           .addNumericEntry("/Slow", timestampsB, valuesB)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("time_correlate");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/Fast");
       args.addProperty("name2", "/Slow");
 
@@ -647,10 +665,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/A", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
           .addNumericEntry("/B", new double[]{0,1,2,3,4}, new double[]{2,4,6,8,10})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("time_correlate");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/A");
       args.addProperty("name2", "/B");
 
@@ -660,6 +679,10 @@ class StatisticsToolsLogicTest {
       assertTrue(resultObj.get("success").getAsBoolean());
       double correlation = resultObj.get("correlation").getAsDouble();
       assertEquals(1.0, correlation, 0.01); // Perfect positive correlation
+      // With n=5 (< 15), p_value is NaN (serialized as JSON null) because the
+      // Cornish-Fisher approximation is unreliable for small degrees of freedom.
+      assertTrue(resultObj.has("p_value"));
+      assertTrue(resultObj.get("p_value").isJsonNull(), "p_value should be null for n < 15");
     }
 
     @Test
@@ -671,10 +694,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/A", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
           .addNumericEntry("/B", new double[]{0,1,2,3,4}, new double[]{5,4,3,2,1})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("time_correlate");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/A");
       args.addProperty("name2", "/B");
 
@@ -696,6 +720,83 @@ class StatisticsToolsLogicTest {
   }
 
   @Nested
+  @DisplayName("computePValue")
+  class ComputePValueTests {
+
+    @Test
+    @DisplayName("returns 1.0 for n <= 2")
+    void returnsOneForTinyN() {
+      assertEquals(1.0, StatisticsTools.computePValue(0.9, 2));
+      assertEquals(1.0, StatisticsTools.computePValue(0.9, 1));
+      assertEquals(1.0, StatisticsTools.computePValue(0.9, 0));
+    }
+
+    @Test
+    @DisplayName("returns 0.0 for |r| >= 1.0")
+    void returnsZeroForPerfectCorrelation() {
+      assertEquals(0.0, StatisticsTools.computePValue(1.0, 30));
+      assertEquals(0.0, StatisticsTools.computePValue(-1.0, 30));
+      assertEquals(0.0, StatisticsTools.computePValue(1.0001, 30));
+    }
+
+    @Test
+    @DisplayName("returns NaN for n < 15 (unreliable approximation)")
+    void returnsNanForSmallN() {
+      assertTrue(Double.isNaN(StatisticsTools.computePValue(0.5, 3)));
+      assertTrue(Double.isNaN(StatisticsTools.computePValue(0.5, 10)));
+      assertTrue(Double.isNaN(StatisticsTools.computePValue(0.5, 14)));
+    }
+
+    @Test
+    @DisplayName("returns finite value at boundary n = 15")
+    void returnsFiniteAtBoundary() {
+      double pValue = StatisticsTools.computePValue(0.5, 15);
+      assertFalse(Double.isNaN(pValue), "p-value should be finite for n=15");
+      assertTrue(pValue > 0 && pValue < 1, "p-value should be between 0 and 1");
+    }
+
+    @Test
+    @DisplayName("returns approximately 1.0 for r = 0 (no correlation)")
+    void returnsOneForZeroCorrelation() {
+      double pValue = StatisticsTools.computePValue(0.0, 30);
+      // r=0 means t=0, so p-value should be ~1.0 (two-tailed)
+      assertEquals(1.0, pValue, 0.01);
+    }
+
+    @Test
+    @DisplayName("known reference value: r=0.5, n=30 yields p ≈ 0.005")
+    void knownReferenceValue() {
+      double pValue = StatisticsTools.computePValue(0.5, 30);
+      // Reference from statistical tables: r=0.5, df=28, p ≈ 0.005
+      assertEquals(0.005, pValue, 0.003);
+    }
+
+    @Test
+    @DisplayName("stronger correlation yields smaller p-value")
+    void strongerCorrelationSmallerP() {
+      double pWeak = StatisticsTools.computePValue(0.3, 50);
+      double pStrong = StatisticsTools.computePValue(0.7, 50);
+      assertTrue(pStrong < pWeak, "Stronger correlation should have smaller p-value");
+    }
+
+    @Test
+    @DisplayName("larger sample size yields smaller p-value for same r")
+    void largerNSmallerP() {
+      double pSmall = StatisticsTools.computePValue(0.5, 20);
+      double pLarge = StatisticsTools.computePValue(0.5, 100);
+      assertTrue(pLarge < pSmall, "Larger n should have smaller p-value for same r");
+    }
+
+    @Test
+    @DisplayName("negative correlation has same p-value as positive")
+    void symmetricForNegativeCorrelation() {
+      double pPos = StatisticsTools.computePValue(0.6, 30);
+      double pNeg = StatisticsTools.computePValue(-0.6, 30);
+      assertEquals(pPos, pNeg, 1e-10, "Positive and negative r should yield same p-value");
+    }
+  }
+
+  @Nested
   @DisplayName("compare_entries Tool")
   class CompareEntriesToolTests {
 
@@ -708,10 +809,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Entry/B", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("compare_entries");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/Entry/A");
       args.addProperty("name2", "/Entry/B");
 
@@ -733,10 +835,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Entry/B", new double[]{0,1,2,3,4}, new double[]{2,3,4,5,6})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("compare_entries");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/Entry/A");
       args.addProperty("name2", "/Entry/B");
 
@@ -760,10 +863,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Entry/B", new double[]{2,3,4,5,6}, new double[]{10,10,10,10,10})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("compare_entries");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/Entry/A");
       args.addProperty("name2", "/Entry/B");
 
@@ -786,10 +890,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Entry/B", new double[]{5,6,7}, new double[]{4,5,6})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("compare_entries");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/Entry/A");
       args.addProperty("name2", "/Entry/B");
 
@@ -816,10 +921,11 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Flat", new double[]{0,1,2,3,4}, new double[]{5,5,5,5,5})
           .addNumericEntry("/Vary", new double[]{0,1,2,3,4}, new double[]{1,2,3,4,5})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("time_correlate");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name1", "/Flat");
       args.addProperty("name2", "/Vary");
 
@@ -842,10 +948,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,1,2,3,4,5,6,7},
               new double[]{42,42,42,42,42,42,42,42})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Constant");
 
       var result = tool.execute(args);
@@ -866,10 +973,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,1,2,3,4},
               new double[]{7,7,7,7,7})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Constant");
 
       var result = tool.execute(args);
@@ -891,10 +999,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,0,0,0,0},
               new double[]{1,2,3,4,5})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("rate_of_change");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Sensor");
 
       var result = tool.execute(args);
@@ -915,10 +1024,11 @@ class StatisticsToolsLogicTest {
               new double[]{0,1,2,3,4,5,6,7,8,9},
               new double[]{10,20,30,40,50,60,70,80,90,100})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_statistics");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Values");
 
       var result = tool.execute(args);
@@ -949,9 +1059,10 @@ class StatisticsToolsLogicTest {
     @Test
     @DisplayName("compare_entries includes data quality")
     void compareEntriesQuality() throws Exception {
-      setActiveLog(createTestLog());
+      putLogInCache(createTestLog());
       var tool = findTool("compare_entries");
       var args = new JsonObject();
+      args.addProperty("path", "/test/quality_propagation.wpilog");
       args.addProperty("name1", "/A");
       args.addProperty("name2", "/B");
       var result = tool.execute(args).getAsJsonObject();
@@ -962,9 +1073,10 @@ class StatisticsToolsLogicTest {
     @Test
     @DisplayName("detect_anomalies includes data quality")
     void detectAnomaliesQuality() throws Exception {
-      setActiveLog(createTestLog());
+      putLogInCache(createTestLog());
       var tool = findTool("detect_anomalies");
       var args = new JsonObject();
+      args.addProperty("path", "/test/quality_propagation.wpilog");
       args.addProperty("name", "/A");
       var result = tool.execute(args).getAsJsonObject();
       assertTrue(result.has("data_quality"));
@@ -979,9 +1091,10 @@ class StatisticsToolsLogicTest {
           .addNumericEntry("/Wave", new double[]{0,1,2,3,4,5,6},
               new double[]{0,5,0,8,0,3,0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
       var tool = findTool("find_peaks");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("name", "/Wave");
       var result = tool.execute(args).getAsJsonObject();
       assertTrue(result.has("data_quality"));
@@ -991,9 +1104,10 @@ class StatisticsToolsLogicTest {
     @Test
     @DisplayName("rate_of_change includes data quality")
     void rateOfChangeQuality() throws Exception {
-      setActiveLog(createTestLog());
+      putLogInCache(createTestLog());
       var tool = findTool("rate_of_change");
       var args = new JsonObject();
+      args.addProperty("path", "/test/quality_propagation.wpilog");
       args.addProperty("name", "/A");
       var result = tool.execute(args).getAsJsonObject();
       assertTrue(result.has("data_quality"));
@@ -1003,9 +1117,10 @@ class StatisticsToolsLogicTest {
     @Test
     @DisplayName("time_correlate includes data quality")
     void timeCorrelateQuality() throws Exception {
-      setActiveLog(createTestLog());
+      putLogInCache(createTestLog());
       var tool = findTool("time_correlate");
       var args = new JsonObject();
+      args.addProperty("path", "/test/quality_propagation.wpilog");
       args.addProperty("name1", "/A");
       args.addProperty("name2", "/B");
       var result = tool.execute(args).getAsJsonObject();

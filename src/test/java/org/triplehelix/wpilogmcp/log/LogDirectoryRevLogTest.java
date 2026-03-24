@@ -239,4 +239,153 @@ class LogDirectoryRevLogTest {
 
     assertEquals(2, revlogs.size());
   }
+
+  // ==================== listRevLogFilesInDirectory ====================
+
+  @Test
+  void testListRevLogFilesInDirectory() throws IOException {
+    // Create a directory outside the configured logdir
+    Path otherDir = tempDir.resolve("other");
+    Files.createDirectory(otherDir);
+    Files.writeString(otherDir.resolve("REV_20260320_143052.revlog"), "");
+
+    var revlogs = LogDirectory.getInstance().listRevLogFilesInDirectory(otherDir);
+
+    assertEquals(1, revlogs.size());
+    assertEquals("REV_20260320_143052.revlog", revlogs.get(0).filename());
+    assertNotNull(revlogs.get(0).parsedTimestamp());
+  }
+
+  @Test
+  void testListRevLogFilesInDirectoryWalksSubdirs() throws IOException {
+    // Revlog is in a subdirectory
+    Path parent = tempDir.resolve("parent");
+    Path child = parent.resolve("child");
+    Files.createDirectories(child);
+    Files.writeString(child.resolve("REV_20260320_143052.revlog"), "");
+
+    var revlogs = LogDirectory.getInstance().listRevLogFilesInDirectory(parent);
+
+    assertEquals(1, revlogs.size());
+  }
+
+  @Test
+  void testListRevLogFilesInDirectoryHandlesNullDir() {
+    var revlogs = LogDirectory.getInstance().listRevLogFilesInDirectory(null);
+    assertTrue(revlogs.isEmpty());
+  }
+
+  @Test
+  void testListRevLogFilesInDirectoryHandlesNonexistentDir() {
+    var revlogs = LogDirectory.getInstance().listRevLogFilesInDirectory(
+        tempDir.resolve("nonexistent"));
+    assertTrue(revlogs.isEmpty());
+  }
+
+  @Test
+  void testListRevLogFilesInDirectoryParsesNonStandardFilenames() throws IOException {
+    // File with no standard REV timestamp — should still be discovered but with null timestamp
+    Path dir = tempDir.resolve("custom");
+    Files.createDirectory(dir);
+    Files.writeString(dir.resolve("bah.revlog"), "");
+
+    var revlogs = LogDirectory.getInstance().listRevLogFilesInDirectory(dir);
+
+    assertEquals(1, revlogs.size());
+    assertEquals("bah.revlog", revlogs.get(0).filename());
+    assertNull(revlogs.get(0).parsedTimestamp());
+    assertNull(revlogs.get(0).timestampMillis());
+  }
+
+  // ==================== extractRevLogInfo (package-private) ====================
+
+  @Test
+  void testExtractRevLogInfoStandardFilename() throws IOException {
+    Path file = tempDir.resolve("REV_20260321_103045.revlog");
+    Files.writeString(file, "data");
+
+    var info = LogDirectory.getInstance().extractRevLogInfo(file);
+
+    assertEquals("20260321_103045", info.filenameTimestamp());
+    assertEquals(2026, info.parsedTimestamp().getYear());
+    assertEquals(3, info.parsedTimestamp().getMonthValue());
+    assertEquals(21, info.parsedTimestamp().getDayOfMonth());
+    assertEquals(10, info.parsedTimestamp().getHour());
+    assertEquals(30, info.parsedTimestamp().getMinute());
+    assertEquals(45, info.parsedTimestamp().getSecond());
+    assertNull(info.canBusName());
+  }
+
+  @Test
+  void testExtractRevLogInfoArbitraryFilename() throws IOException {
+    Path file = tempDir.resolve("bah.revlog");
+    Files.writeString(file, "data");
+
+    var info = LogDirectory.getInstance().extractRevLogInfo(file);
+
+    assertNull(info.filenameTimestamp());
+    assertNull(info.parsedTimestamp());
+    assertNull(info.canBusName());
+    assertEquals("bah.revlog", info.filename());
+  }
+
+  // ==================== extractCreationTime ====================
+
+  @Test
+  void testExtractCreationTimeStandardFilename() {
+    Long time = LogDirectory.getInstance().extractCreationTime(
+        "frc_26-03-21_10-30-45_vadc.wpilog");
+    assertNotNull(time);
+    assertTrue(time > 1577836800000L); // After Jan 1, 2020
+  }
+
+  @Test
+  void testExtractCreationTimeNonStandardFilename() {
+    Long time = LogDirectory.getInstance().extractCreationTime("poo.wpilog");
+    assertNull(time);
+  }
+
+  @Test
+  void testExtractCreationTimeWithSimSuffix() {
+    Long time = LogDirectory.getInstance().extractCreationTime(
+        "frc_26-03-21_10-30-45_vadc_sim.wpilog");
+    assertNotNull(time);
+  }
+
+  // ==================== Sibling directory discovery ====================
+
+  @Test
+  void testRevLogsFoundInSiblingDirectories() throws IOException {
+    // Simulate: logdir has two subdirectories — wpilog in one, revlog in the other
+    Path wpilogDir = tempDir.resolve("wpilogs");
+    Path revlogDir = tempDir.resolve("revlogs");
+    Files.createDirectories(wpilogDir);
+    Files.createDirectories(revlogDir);
+
+    Files.writeString(wpilogDir.resolve("poo.wpilog"), "");
+    Files.writeString(revlogDir.resolve("REV_20260321_103045.revlog"), "");
+
+    // listRevLogFiles walks up to scanDepth (default 5) under tempDir (the configured logdir)
+    var revlogs = LogDirectory.getInstance().listRevLogFiles();
+    assertEquals(1, revlogs.size());
+    assertTrue(revlogs.get(0).path().toString().contains("revlogs"));
+  }
+
+  @Test
+  void testRevLogsWithArbitraryNamesFoundInSiblingDirectories() throws IOException {
+    Path wpilogDir = tempDir.resolve("match1");
+    Path revlogDir = tempDir.resolve("match2");
+    Files.createDirectories(wpilogDir);
+    Files.createDirectories(revlogDir);
+
+    Files.writeString(wpilogDir.resolve("poo.wpilog"), "");
+    Files.writeString(revlogDir.resolve("bah.revlog"), "");
+
+    // Discovery finds the revlog even though it has no standard filename
+    var revlogs = LogDirectory.getInstance().listRevLogFiles();
+    assertEquals(1, revlogs.size());
+    assertEquals("bah.revlog", revlogs.get(0).filename());
+    // No filename timestamp — will need mtime-based matching
+    assertNull(revlogs.get(0).parsedTimestamp());
+  }
 }

@@ -43,8 +43,7 @@ public class DiskCache {
       new java.util.concurrent.ConcurrentHashMap<>();
 
   private volatile boolean enabled = true;
-  private volatile int maxAgeDays = 30;
-  private volatile long maxTotalSizeMb = 2048;
+  private volatile long maxTotalSizeMb = 8192;
 
   /**
    * Creates a new DiskCache.
@@ -84,18 +83,9 @@ public class DiskCache {
   }
 
   /**
-   * Sets the maximum age for cache files in days.
-   *
-   * @param days Maximum age (default: 30)
-   */
-  public void setMaxAgeDays(int days) {
-    this.maxAgeDays = days;
-  }
-
-  /**
    * Sets the maximum total cache size in megabytes.
    *
-   * @param mb Maximum size (default: 2048)
+   * @param mb Maximum size (default: 8192)
    */
   public void setMaxTotalSizeMb(long mb) {
     this.maxTotalSizeMb = mb;
@@ -272,9 +262,9 @@ public class DiskCache {
   }
 
   /**
-   * Removes expired and oversized cache files.
+   * Removes oversized and stale-format cache files.
    *
-   * <p>Deletes files older than {@code maxAgeDays} and trims the cache
+   * <p>Deletes cache files with incompatible format versions, then trims
    * if total size exceeds {@code maxTotalSizeMb}. Runs synchronously
    * but is designed to be called from a background thread.
    */
@@ -286,21 +276,35 @@ public class DiskCache {
       if (!Files.isDirectory(cacheDir)) return;
 
       long now = System.currentTimeMillis();
-      long maxAgeMs = maxAgeDays * 24L * 60 * 60 * 1000;
       long totalSize = 0;
       int deleted = 0;
 
-      try (DirectoryStream<Path> stream = Files.newDirectoryStream(cacheDir, "*.msgpack")) {
-        for (Path file : stream) {
+      // Also clean up stale sync cache files
+      var syncSerializer = new SyncCacheSerializer();
+      try (DirectoryStream<Path> syncStream = Files.newDirectoryStream(cacheDir, "*-sync.msgpack")) {
+        for (Path file : syncStream) {
           try {
-            long mtime = Files.getLastModifiedTime(file).toMillis();
             long size = Files.size(file);
-
-            if (now - mtime > maxAgeMs) {
+            int version = syncSerializer.readFormatVersion(file);
+            if (version != SyncCacheSerializer.CURRENT_FORMAT_VERSION) {
               deleteQuietly(file);
               deleted++;
-              continue;
+            } else {
+              totalSize += size;
             }
+          } catch (IOException e) {
+            deleteQuietly(file);
+            deleted++;
+          }
+        }
+      }
+
+      try (DirectoryStream<Path> stream = Files.newDirectoryStream(cacheDir, "*.msgpack")) {
+        for (Path file : stream) {
+          // Skip sync cache files — already handled above
+          if (file.getFileName().toString().endsWith("-sync.msgpack")) continue;
+          try {
+            long size = Files.size(file);
 
             // Check format version — delete stale or unreadable cache files
             CacheMetadata meta = serializer.readMetadata(file);
@@ -316,6 +320,8 @@ public class DiskCache {
               continue;
             }
 
+            // Only count files that passed the format version check toward total size.
+            // Deleted stale files should not inflate the total and trigger unnecessary eviction.
             totalSize += size;
           } catch (IOException e) {
             logger.debug("Deleting unreadable cache file {}: {}", file, e.getMessage());
@@ -397,6 +403,11 @@ public class DiskCache {
    */
   public void shutdown() {
     writeExecutor.shutdown();
+    try {
+      writeExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   private static void deleteQuietly(Path file) {

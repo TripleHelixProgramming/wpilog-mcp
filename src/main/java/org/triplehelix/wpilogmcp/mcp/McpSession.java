@@ -6,15 +6,13 @@ import java.util.UUID;
 /**
  * Per-client MCP session state.
  *
- * <p>Each connected client gets its own session, which tracks the client's active log path
- * independently of other clients. The parsed log cache itself is shared; only the "which log is
- * active" pointer is per-session.
+ * <p>Each connected client gets its own session. The parsed log cache is shared
+ * and logs are referenced by explicit path parameters on each tool call.
  */
 public class McpSession {
   private final String id;
   private final Instant createdAt;
   private volatile Instant lastAccessedAt;
-  private volatile String activeLogPath;
 
   public McpSession() {
     this.id = UUID.randomUUID().toString();
@@ -36,14 +34,5 @@ public class McpSession {
 
   public void touch() {
     this.lastAccessedAt = Instant.now();
-  }
-
-  public String getActiveLogPath() {
-    return activeLogPath;
-  }
-
-  public void setActiveLogPath(String path) {
-    this.activeLogPath = path;
-    touch();
   }
 }

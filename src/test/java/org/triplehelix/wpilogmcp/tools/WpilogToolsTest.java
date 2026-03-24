@@ -53,7 +53,6 @@ class WpilogToolsTest {
       var expectedTools =
           List.of(
               "list_available_logs",
-              "load_log",
               "list_entries",
               "get_entry_info",
               "read_entry",
@@ -62,10 +61,7 @@ class WpilogToolsTest {
               "get_types",
               "get_statistics",
               "find_condition",
-              "set_active_log",
               "list_loaded_logs",
-              "unload_log",
-              "unload_all_logs",
               "compare_entries");
 
       var actualTools = registeredTools.stream().map(Tool::name).toList();
@@ -76,42 +72,8 @@ class WpilogToolsTest {
     }
   }
 
-  @Nested
-  @DisplayName("load_log Tool")
-  class LoadLogTool {
-
-    private Tool loadLogTool;
-
-    @BeforeEach
-    void setUp() {
-      loadLogTool = findTool("load_log");
-    }
-
-    @Test
-    @DisplayName("has required path parameter")
-    void hasRequiredPathParameter() {
-      var schema = loadLogTool.inputSchema();
-      var required = schema.getAsJsonArray("required");
-
-      assertNotNull(required);
-      assertTrue(required.toString().contains("path"));
-    }
-
-    @Test
-    @DisplayName("returns error for missing file")
-    void returnsErrorForMissingFile() throws Exception {
-      var args = new JsonObject();
-      args.addProperty("path", "/non/existent/file.wpilog");
-
-      var result = loadLogTool.execute(args);
-      var resultObj = result.getAsJsonObject();
-
-      assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("Failed to load") 
-          || resultObj.get("error").getAsString().contains("No such file")
-          || resultObj.get("error").getAsString().contains("not found"));
-    }
-  }
+  // load_log, unload_log, unload_all_logs, set_active_log tests removed
+  // — lifecycle tools removed in path-per-call refactor
 
   @Nested
   @DisplayName("read_entry Tool")
@@ -217,18 +179,4 @@ class WpilogToolsTest {
     }
   }
 
-  @Nested
-  @DisplayName("unload_all_logs Tool")
-  class UnloadAllLogsTool {
-
-    @Test
-    @DisplayName("returns unloaded count")
-    void returnsUnloadedCount() throws Exception {
-      var tool = findTool("unload_all_logs");
-      var result = tool.execute(new JsonObject());
-
-      assertTrue(result.getAsJsonObject().get("success").getAsBoolean());
-      assertTrue(result.getAsJsonObject().has("unloaded_count"));
-    }
-  }
 }

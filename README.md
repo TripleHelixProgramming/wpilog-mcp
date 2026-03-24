@@ -10,8 +10,6 @@ The **Model Context Protocol (MCP)** is an open standard that enables AI assista
 
 This project provides an **MCP Server**. Once configured, it acts as a "bridge" that gives your AI assistant the specific tools needed to read WPILOG files, analyze swerve performance, detect brownouts, and even pull match results from The Blue Alliance—all through a natural conversation.
 
-> **⚠️ NOT SAFE FOR CONCURRENT USE** — This server maintains shared state and is designed for single-client, sequential operation. Do not call multiple tools in parallel. See [Concurrency Limitations](#important-concurrency-limitations) for details.
-
 ---
 
 ## The Power of AI Reasoning
@@ -44,19 +42,59 @@ Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's offic
 
 ## Quick Start
 
-### 1. Build
+### 1. Build and Install
 
 Built for JDK 17 binary compatibility. It is recommended to use the [WPILib JDK](https://docs.wpilib.org/en/stable/docs/zero-to-robot/step-2/wpilib-setup.html), which the build tool attempts to locate automatically.
 
 ```bash
 git clone https://github.com/TripleHelixProgramming/wpilog-mcp.git
 cd wpilog-mcp
-./gradlew shadowJar
+./gradlew install
+```
+
+This installs to `~/.wpilog-mcp/`:
+```
+~/.wpilog-mcp/
+├── jars/wpilog-mcp-{version}.jar   # versioned JAR
+├── bin/
+│   ├── wpilog-mcp-{version}.sh     # versioned launcher
+│   └── wpilog-mcp                  # symlink to current version
+└── servers.json                     # server configurations
+```
+
+Add to your shell profile (`~/.zshrc` or `~/.bashrc`):
+```bash
+export PATH="${HOME}/.wpilog-mcp/bin:$PATH"
 ```
 
 ### 2. Configure
 
-Configuration location depends on how you're running Claude Code:
+Edit `~/.wpilog-mcp/servers.json` (created by the installer with defaults):
+
+```json
+{
+  "defaults": {
+    "team": 2363,
+    "maxlogs": 10,
+    "maxmemory": 2048
+  },
+  "servers": {
+    "default": {
+      "logdir": "~/wpilib/logs",
+      "transport": "stdio"
+    },
+    "http": {
+      "logdir": "~/wpilib/logs",
+      "transport": "http",
+      "port": 2363
+    }
+  }
+}
+```
+
+The `defaults` section is inherited by all server configs. Per-server values override defaults. Environment variable references (`${TBA_API_KEY}`) and tilde paths (`~/...`) are expanded automatically.
+
+Then configure your MCP client to use the installed command:
 
 | Environment | Config File |
 |-------------|-------------|
@@ -64,60 +102,20 @@ Configuration location depends on how you're running Claude Code:
 | **Claude Code CLI** | `~/.claude/settings.json` |
 | **Claude Desktop** | See [Claude Desktop](#claude-desktop) section |
 
-**Example configuration (macOS/Linux):**
+**MCP client configuration:**
 ```json
 {
   "mcpServers": {
     "wpilog": {
-      "command": "/path/to/wpilog-mcp/run-mcp.sh",
-      "args": [
-        "-logdir", "/path/to/your/logs",
-        "-team", "2363"
-      ],
-      "env": {
-        "TBA_API_KEY": "your_tba_api_key"
-      }
+      "command": "wpilog-mcp"
     }
   }
 }
 ```
 
-**Example configuration (Windows):**
-```json
-{
-  "mcpServers": {
-    "wpilog": {
-      "command": "C:\\path\\to\\wpilog-mcp\\run-mcp.bat",
-      "args": [
-        "-logdir", "C:\\path\\to\\your\\logs",
-        "-team", "2363"
-      ],
-      "env": {
-        "TBA_API_KEY": "your_tba_api_key"
-      }
-    }
-  }
-}
-```
+With no arguments, the launcher starts the `"default"` server configuration from `servers.json`. It automatically locates the WPILib JDK and sets JVM heap to 4 GB (override with `WPILOG_MAX_HEAP` in `servers.json` env or shell profile).
 
-The wrapper scripts (`run-mcp.sh` / `run-mcp.bat`) automatically locate the WPILib JDK and configure JVM memory. To control how much memory the server can use, set the `WPILOG_MAX_HEAP` environment variable (default: `4g`):
-
-```json
-{
-  "mcpServers": {
-    "wpilog": {
-      "command": "/path/to/wpilog-mcp/run-mcp.sh",
-      "args": ["-logdir", "/path/to/your/logs"],
-      "env": {
-        "WPILOG_MAX_HEAP": "8g",
-        "TBA_API_KEY": "your_tba_api_key"
-      }
-    }
-  }
-}
-```
-
-*Note: TBA key is optional. Without it, the server works normally but without match enrichment. Team number is extracted from log metadata when available, with `-team` as a fallback.*
+All configuration — log directory, team number, TBA key, cache settings — lives in `servers.json`. The TBA key is optional; without it, the server works normally but without match score enrichment.
 
 ### 3. Use
 
@@ -128,7 +126,7 @@ What robot logs are available?
 ```
 
 ```
-Load the qualification match 42 log and give me a summary
+Analyze the qualification match 42 log and give me a summary
 ```
 
 ```
@@ -143,22 +141,9 @@ That's it! See [Usage Examples](#usage-examples) for more.
 
 ---
 
-## Important: Concurrency Limitations
-
-> **⚠️ NOT SAFE FOR CONCURRENT USE**
->
-> This server maintains shared state (active log, log cache) and is designed for single-client, sequential operation. **Do not call multiple tools in parallel** from the same session—execute tool calls sequentially. If multiple agents or sessions share this server instance, they will conflict over shared state.
->
-> Any attempt to use this server concurrently would require coarse-grained locking and fully reinitializing state on each request (e.g., a client could not assume which log is currently loaded).
-
-**Workaround for multi-log analysis:** Running multiple *separate* server instances pointing to the same log directory is safe. The disk cache uses file locking and atomic operations to prevent corruption. Each instance maintains its own in-memory state.
-
-**⚠️ LLM Sub-Agent Warning:** Some LLM frameworks (e.g., Claude Code, AutoGPT, LangGraph) may spawn sub-agents to parallelize work when analyzing multiple log files. These sub-agents may not observe the sequential execution guidance embedded in the server's self-description. **Explicitly instruct your agent to operate sequentially**, for example: *"Analyze each log file one at a time, completing all analysis on one log before moving to the next."*
-
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Concurrency Limitations](#important-concurrency-limitations)
 - [Usage Examples](#usage-examples)
 - [Configuration Options](#configuration-options)
 - [Available Tools](#available-tools)
@@ -180,7 +165,7 @@ The server parses filenames like `2024vadc_qm42.wpilog` into friendly names like
 ### Basic Analysis
 
 ```
-Load the robot log and give me a summary
+Give me a summary of the robot log
 ```
 
 ```
@@ -240,7 +225,7 @@ Compare /RealOutputs/Drive/Pose with /ReplayOutputs/Drive/Pose
 ### Multi-Log Analysis
 
 ```
-Load both the practice and match logs, then compare battery statistics
+Compare battery statistics between the practice log and the match log
 ```
 
 ### REV Log Analysis
@@ -257,35 +242,74 @@ Show me the motor temperature and current for SparkMax_1 during teleop
 Compare the commanded output from the wpilog with the actual applied output from the revlog
 ```
 
-### Memory Management
+## Configuration
 
+### Server Configuration (`servers.json`)
+
+Running `wpilog-mcp` with no arguments loads the `"default"` configuration from `servers.json`. Use `start <name>` to select a different configuration:
+
+```bash
+wpilog-mcp                          # starts the "default" config
+wpilog-mcp start http               # starts the "http" config
 ```
-Unload all logs to free up memory
+
+Config file search order:
+1. `--config <path>` (explicit override)
+2. `.wpilog-mcp.json` (project-local)
+3. `~/.wpilog-mcp/servers.json` (install directory)
+
+**Config fields:**
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `logdir` | Directory containing log files (scans subdirectories) | — |
+| `team` | Default team number | — |
+| `tba_key` | The Blue Alliance API key (supports `${TBA_API_KEY}`) | — |
+| `transport` | `"stdio"` or `"http"` | `"stdio"` |
+| `port` | HTTP port | `2363` |
+| `maxlogs` | Max logs in memory cache | `20` |
+| `maxmemory` | Max memory (MB) for log cache (alternative to `maxlogs`) | — |
+| `diskcachedir` | Directory for persistent disk cache | OS default |
+| `diskcachesize` | Max disk cache size (MB) | `8192` |
+| `diskcachedisable` | Disable persistent disk cache | `false` |
+| `exportdir` | Directory for CSV exports | `{tmpdir}/wpilog-export/` |
+| `scandepth` | Max directory depth for log/revlog file scanning | `5` |
+| `debug` | Enable debug logging | `false` |
+
+String values support `${ENV_VAR}` interpolation and `~/` tilde expansion.
+
+### Command-Line Overrides
+
+Any config field can also be passed as a CLI flag, which takes precedence over `servers.json` and environment variables:
+
+```bash
+wpilog-mcp -logdir /media/usb/logs -debug
+wpilog-mcp start http --port 9000
 ```
 
-## Configuration Options
+| Flag | Env Variable |
+|------|-------------|
+| `-logdir <path>` | `WPILOG_DIR` |
+| `-team <number>` | `WPILOG_TEAM` |
+| `-tba-key <key>` | `TBA_API_KEY` |
+| `-maxlogs <n>` | `WPILOG_MAX_LOGS` |
+| `-maxmemory <mb>` | `WPILOG_MAX_MEMORY` |
+| `-diskcachedir <path>` | `WPILOG_DISK_CACHE_DIR` |
+| `-diskcachesize <mb>` | `WPILOG_DISK_CACHE_SIZE` |
+| `-diskcachedisable` | `WPILOG_DISK_CACHE_DISABLE` |
+| `-exportdir <path>` | `WPILOG_EXPORT_DIR` |
+| `-scandepth <n>` | `WPILOG_SCAN_DEPTH` |
+| `--http` | `WPILOG_HTTP` |
+| `--port <port>` | `WPILOG_HTTP_PORT` |
+| `-debug` | `WPILOG_DEBUG` |
 
-### Command Line
+The launcher script sets `WPILOG_MAX_HEAP` (default `4g`) for JVM heap size. Large log files (hundreds of MB) may need `8g` or more.
 
-| Option | Description |
-|--------|-------------|
-| `-logdir <path>` | Directory containing `.wpilog` files (scans subdirectories up to 3 levels deep) |
-| `-team <number>` | Default team number for logs missing metadata |
-| `-tba-key <key>` | The Blue Alliance API key for match data enrichment |
-| `-maxlogs <n>` | Max number of logs to cache (default: 20) |
-| `-maxmemory <mb>` | Max memory (MB) for log cache (alternative to `-maxlogs`) |
-| `-debug` | Enable debug logging |
-| `-help` | Show usage information |
+**Precedence:** CLI flags > environment variables > `servers.json` per-server values > `servers.json` defaults.
 
-**Environment variables:**
-- `WPILOG_DIR` - Alternative to `-logdir` (command line takes precedence)
-- `WPILOG_TEAM` - Alternative to `-team`
-- `TBA_API_KEY` - Alternative to `-tba-key`
-- `WPILOG_MAX_HEAP` - JVM max heap size (default: `4g`). Set in the MCP `env` block or export before running the wrapper script. Examples: `2g`, `8g`, `512m`
+**In-memory cache:** Logs are auto-loaded on first reference and auto-evicted after 30 minutes of inactivity. Use `maxlogs` for a count-based limit (default 20) or `maxmemory` for a memory-based limit. The least recently used log is evicted when the limit is reached.
 
-**Cache limits:** The server caches parsed logs in memory for fast access. By default, up to 20 logs are kept. Use `-maxlogs` to change this limit, or `-maxmemory` to set a memory-based limit instead (only used if `-maxlogs` is not set). The least recently used log is evicted when the limit is reached.
-
-**JVM memory:** The wrapper scripts (`run-mcp.sh` / `run-mcp.bat`) set the JVM heap to 4 GB by default. Large log files (hundreds of MB) may need more heap. Set `WPILOG_MAX_HEAP=8g` for heavy use. The server will refuse to load files that would exceed available heap rather than crashing.
+**Disk cache:** Parsed wpilog files and revlog sync results are cached to disk to avoid expensive reparsing on server restart. Enabled by default. Set `diskcachedisable` to turn off.
 
 ### The Blue Alliance Integration
 
@@ -297,18 +321,19 @@ When configured, the server enriches match logs with TBA data:
 - **Win/Loss** - Whether your team won the match
 - **Alliance** - Which alliance (red/blue) your team was on
 
-Team number is extracted from each log file's metadata (DriverStation/FMS data), with the configured `-team` value as a fallback.
+Team number is extracted from each log file's metadata (DriverStation/FMS data), with the configured `team` value as a fallback.
 
 This data is automatically added to `list_available_logs` output for logs that have event/match/team metadata.
 
 ### REV Log Integration
 
-wpilog-mcp can correlate `.revlog` files (from REV's logging library on the roboRIO, or REV Hardware Client on a laptop) with your robot's WPILOG data, giving you access to high-resolution motor controller telemetry with synchronized timestamps.
+wpilog-mcp correlates `.revlog` files (generated by WPILib robot programs using REV hardware) with your WPILOG data, giving you access to high-resolution motor controller telemetry with synchronized timestamps.
 
 **How it works:**
-1. Place `.revlog` files in the same directory as their corresponding `.wpilog` files
-2. Load the wpilog normally — revlog files are discovered and synchronized automatically
+1. Revlog files are discovered automatically via time-based matching — they can be in the same directory, sibling directories, or anywhere within the configured log directory tree (up to the configured scan depth (default 5))
+2. Reference the wpilog in any tool call — matching revlogs are discovered and synchronized automatically on first access
 3. Use `sync_status` to verify synchronization confidence before relying on timestamps
+4. Sync results are cached to disk — reloading the same wpilog+revlog pair skips both parsing and correlation
 
 **Synchronization:** Timestamps are aligned using a two-phase approach:
 1. **Coarse alignment** from `systemTime` entries and revlog filename timestamps (seconds-level)
@@ -340,8 +365,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "wpilog": {
-      "command": "/path/to/wpilog-mcp/run-mcp.sh",
-      "args": ["-logdir", "/path/to/logs"]
+      "command": "wpilog-mcp"
     }
   }
 }
@@ -349,28 +373,32 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 
 ### Other MCP Clients
 
-This server uses **stdio transport** (JSON-RPC over stdin/stdout). Generic config:
+This server supports **stdio transport** (default, JSON-RPC over stdin/stdout) and **HTTP Streamable transport** (multi-client).
 
+**Stdio:**
 ```json
 {
-  "command": "/path/to/wpilog-mcp/run-mcp.sh",
-  "args": [],
+  "command": "wpilog-mcp",
   "transport": "stdio"
 }
+```
+
+**HTTP** (runs as a background daemon):
+```bash
+wpilog-mcp start http
 ```
 
 See [MCP Protocol](https://modelcontextprotocol.io/) for client implementations.
 
 ## Available Tools
 
-wpilog-mcp provides 49 tools organized into categories:
+wpilog-mcp provides 45 tools organized into categories. All log-requiring tools take a `path` parameter — the server auto-loads logs on first reference and auto-evicts idle logs.
 
 | Category | Tools |
 |----------|-------|
 | **Discovery** | `get_server_guide`, `suggest_tools` |
-| **Core** | `load_log`, `list_entries`, `read_entry`, `get_entry_info`, `search_entries`, `get_statistics`, `compare_entries`, `get_types`, `list_struct_types`, `health_check`, `get_game_info` |
-| **Log Browser** | `list_available_logs` |
-| **Multi-Log** | `list_loaded_logs`, `set_active_log`, `unload_log`, `unload_all_logs` |
+| **Core** | `list_entries`, `read_entry`, `get_entry_info`, `search_entries`, `get_statistics`, `compare_entries`, `get_types`, `list_struct_types`, `health_check`, `get_game_info` |
+| **Log Browser** | `list_available_logs`, `list_loaded_logs` |
 | **Search** | `find_condition`, `search_strings` |
 | **Analysis** | `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `get_match_phases` |
 | **FRC-Specific** | `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata`, `moi_regression` |
@@ -443,10 +471,11 @@ For complete tool documentation with parameters and examples, see [TOOLS.md](TOO
 2. **Test manually**:
    ```bash
    echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-     ./run-mcp.sh
+     wpilog-mcp
    ```
 
-3. **Check config location**:
+3. **Check config files**:
+   - Server config: `~/.wpilog-mcp/servers.json`
    - VS Code extension: `.mcp.json` in your project folder
    - Claude Code CLI: `~/.claude/settings.json`
    - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -478,40 +507,54 @@ WPILib JDK locations:
 ```
 wpilog-mcp/
 ├── src/main/java/org/triplehelix/wpilogmcp/
-│   ├── Main.java                 # Entry point
+│   ├── Main.java                   # Entry point (stdio + HTTP modes)
+│   ├── cache/
+│   │   ├── DiskCache.java          # Persistent wpilog cache (MessagePack)
+│   │   ├── SyncDiskCache.java      # Persistent revlog sync cache
+│   │   ├── ContentFingerprint.java # SHA-256 content fingerprinting
+│   │   └── ...                     # Serializers, metadata, directory
+│   ├── config/
+│   │   ├── ConfigLoader.java       # Named server config (JSON)
+│   │   ├── DaemonManager.java      # HTTP daemon lifecycle
+│   │   └── ServerConfig.java       # Config record
+│   ├── game/
+│   │   └── GameKnowledgeBase.java  # FRC game data (2024-2026)
 │   ├── log/
-│   │   ├── LogManager.java       # WPILOG parsing & struct decoding
-│   │   └── LogDirectory.java     # Log file discovery
+│   │   ├── LogManager.java         # WPILOG parsing, caching, revlog sync
+│   │   ├── LogDirectory.java       # Log/revlog file discovery
+│   │   └── subsystems/             # Parser, cache, struct decoders
 │   ├── mcp/
-│   │   ├── McpServer.java        # MCP protocol handling
-│   │   └── JsonRpc.java          # JSON-RPC utilities
+│   │   ├── McpMessageHandler.java  # Transport-independent router
+│   │   ├── McpServer.java          # Stdio transport
+│   │   ├── HttpTransport.java      # HTTP Streamable transport
+│   │   ├── SessionManager.java     # Session lifecycle
+│   │   └── ToolRegistry.java       # Tool registration
 │   ├── revlog/
-│   │   ├── RevLogReader.java     # REV log file parsing
-│   │   └── RevLogSignal.java     # Signal data structures
+│   │   ├── RevLogParser.java       # REV log file parsing
+│   │   └── dbc/                    # DBC-based CAN signal decoding
 │   ├── sync/
-│   │   ├── LogSynchronizer.java  # Cross-correlation timestamp alignment
-│   │   ├── SynchronizedLogs.java # Unified wpilog+revlog access
-│   │   └── SyncResult.java       # Synchronization confidence metrics
+│   │   ├── LogSynchronizer.java    # Cross-correlation timestamp alignment
+│   │   ├── SynchronizedLogs.java   # Unified wpilog+revlog access
+│   │   └── SyncResult.java         # Synchronization confidence metrics
 │   ├── tba/
-│   │   ├── TbaClient.java        # TBA API client with caching
-│   │   ├── TbaConfig.java        # TBA configuration management
-│   │   └── TbaEnrichment.java    # Log enrichment with TBA data
+│   │   ├── TbaClient.java          # TBA API client with caching
+│   │   └── TbaEnrichment.java      # Log enrichment with TBA data
 │   └── tools/
-│       ├── WpilogTools.java      # Tool registration
-│       ├── CoreTools.java        # Log management tools (11)
-│       ├── QueryTools.java       # Search & query tools (4)
-│       ├── StatisticsTools.java  # Statistical analysis tools (6)
+│       ├── WpilogTools.java        # Tool registration
+│       ├── CoreTools.java          # Core tools (8)
+│       ├── QueryTools.java         # Search & query tools (4)
+│       ├── StatisticsTools.java    # Statistical analysis tools (6)
 │       ├── RobotAnalysisTools.java # FRC analysis tools (7)
-│       ├── FrcDomainTools.java   # Advanced FRC tools (9)
-│       ├── ExportTools.java      # CSV/report export (2)
-│       ├── TbaTools.java         # TBA integration (2)
-│       ├── RevLogTools.java      # REV log integration (5)
-│       ├── DiscoveryTools.java   # LLM discoverability (2)
-│       └── ToolUtils.java        # Shared utilities
-├── src/test/java/                # Test suite
-├── build.gradle                  # Build configuration
+│       ├── FrcDomainTools.java     # Advanced FRC tools (9)
+│       ├── ExportTools.java        # CSV/report export (2)
+│       ├── TbaTools.java           # TBA integration (2)
+│       ├── RevLogTools.java        # REV log integration (5)
+│       ├── DiscoveryTools.java     # LLM discoverability (2)
+│       └── ToolUtils.java          # Shared utilities
+├── src/test/java/                  # 1,170+ test cases
+├── build.gradle                    # Build configuration
 ├── README.md
-└── TOOLS.md                      # Complete tool reference
+└── TOOLS.md                        # Complete tool reference
 ```
 
 ### Building
@@ -519,8 +562,14 @@ wpilog-mcp/
 ```bash
 ./gradlew build          # Full build with tests
 ./gradlew shadowJar      # Build fat JAR only
-./gradlew test           # Run tests
+./gradlew install        # Build and install to ~/.wpilog-mcp/
+./gradlew test           # Run unit tests
+./gradlew stressTest     # Run stdio + HTTP integration stress tests
+./gradlew stdioStressTest  # Stdio stress test only
+./gradlew httpStressTest   # HTTP stress test only
 ```
+
+Stress tests require a `"stresstest"` config in `servers.json` with a valid `logdir`.
 
 ## Contributing
 

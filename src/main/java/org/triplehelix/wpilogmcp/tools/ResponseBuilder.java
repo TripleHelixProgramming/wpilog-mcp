@@ -88,14 +88,14 @@ public class ResponseBuilder {
   public ResponseBuilder addProperty(String key, Object value) {
     if (value == null) {
       response.add(key, null);
-    } else if (value instanceof String) {
-      response.addProperty(key, (String) value);
-    } else if (value instanceof Number) {
-      response.addProperty(key, (Number) value);
-    } else if (value instanceof Boolean) {
-      response.addProperty(key, (Boolean) value);
-    } else if (value instanceof Character) {
-      response.addProperty(key, (Character) value);
+    } else if (value instanceof String s) {
+      response.addProperty(key, s);
+    } else if (value instanceof Number n) {
+      response.addProperty(key, n);
+    } else if (value instanceof Boolean b) {
+      response.addProperty(key, b);
+    } else if (value instanceof Character c) {
+      response.addProperty(key, c);
     } else {
       // For complex objects, serialize via GSON
       response.add(key, GSON.toJsonTree(value));
@@ -149,16 +149,16 @@ public class ResponseBuilder {
     if (metadata == null) {
       metadata = new JsonObject();
     }
-    if (value instanceof String) {
-      metadata.addProperty(key, (String) value);
-    } else if (value instanceof Number) {
-      metadata.addProperty(key, (Number) value);
-    } else if (value instanceof Boolean) {
-      metadata.addProperty(key, (Boolean) value);
-    } else if (value instanceof Character) {
-      metadata.addProperty(key, (Character) value);
-    } else if (value instanceof JsonElement) {
-      metadata.add(key, (JsonElement) value);
+    if (value instanceof String s) {
+      metadata.addProperty(key, s);
+    } else if (value instanceof Number n) {
+      metadata.addProperty(key, n);
+    } else if (value instanceof Boolean b) {
+      metadata.addProperty(key, b);
+    } else if (value instanceof Character c) {
+      metadata.addProperty(key, c);
+    } else if (value instanceof JsonElement je) {
+      metadata.add(key, je);
     } else {
       metadata.add(key, GSON.toJsonTree(value));
     }

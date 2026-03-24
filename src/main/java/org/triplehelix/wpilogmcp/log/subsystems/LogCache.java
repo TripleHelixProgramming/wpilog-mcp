@@ -2,6 +2,7 @@ package org.triplehelix.wpilogmcp.log.subsystems;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,7 +12,8 @@ import org.triplehelix.wpilogmcp.log.ParsedLog;
  * Thread-safe LRU cache for parsed robot logs with memory-based and count-based eviction.
  *
  * <p>This cache maintains a fixed maximum number of loaded logs and/or maximum memory usage. When
- * limits are exceeded, the least recently used log is evicted (unless it's the active log).
+ * limits are exceeded, the least recently used log is evicted. Idle entries older than
+ * {@code maxIdleMs} are also evicted periodically.
  *
  * <p>Uses LinkedHashMap with access-order for LRU behavior and ReentrantReadWriteLock for
  * thread safety. Note: {@code get()} requires a write lock because access-ordered
@@ -29,7 +31,12 @@ public class LogCache {
   /** Optional callback invoked when a log is evicted, for cleaning up associated resources. */
   private volatile java.util.function.Consumer<String> evictionCallback;
 
-  private volatile String activeLogPath;
+  /** Tracks the last access time for each cached log path (for idle eviction). */
+  private final ConcurrentHashMap<String, Long> lastAccessTime = new ConcurrentHashMap<>();
+
+  /** Maximum idle time in milliseconds before a log is eligible for idle eviction. */
+  private volatile long maxIdleMs = 1_800_000; // 30 minutes
+
   private volatile int maxLoadedLogs = 20;
   private volatile int maxMemoryMb = 2048;
 
@@ -81,45 +88,6 @@ public class LogCache {
   }
 
   /**
-   * Gets the currently active log path.
-   *
-   * @return The active log path, or null if none
-   */
-  public String getActiveLogPath() {
-    return activeLogPath;
-  }
-
-  /**
-   * Sets the currently active log path.
-   *
-   * @param activeLogPath The active log path
-   */
-  public void setActiveLogPath(String activeLogPath) {
-    this.activeLogPath = activeLogPath;
-  }
-
-  /**
-   * Atomically checks if a log is in the cache and sets it as active if found.
-   * This avoids the TOCTOU race of separate containsKey + setActiveLogPath calls,
-   * where the log could be evicted between the two operations.
-   *
-   * @param path The log file path
-   * @return true if the log was found and made active, false if not in cache
-   */
-  public boolean setActiveIfPresent(String path) {
-    cacheLock.writeLock().lock();
-    try {
-      if (cache.containsKey(path)) {
-        this.activeLogPath = path;
-        return true;
-      }
-      return false;
-    } finally {
-      cacheLock.writeLock().unlock();
-    }
-  }
-
-  /**
    * Gets a log from the cache.
    *
    * @param path The log file path
@@ -132,7 +100,11 @@ public class LogCache {
     // risking ConcurrentModificationException or infinite loops.
     cacheLock.writeLock().lock();
     try {
-      return cache.get(path);
+      ParsedLog log = cache.get(path);
+      if (log != null) {
+        lastAccessTime.put(path, System.currentTimeMillis());
+      }
+      return log;
     } finally {
       cacheLock.writeLock().unlock();
     }
@@ -148,6 +120,7 @@ public class LogCache {
     cacheLock.writeLock().lock();
     try {
       cache.put(path, log);
+      lastAccessTime.put(path, System.currentTimeMillis());
       logger.debug("Added log to cache: {}", path);
     } finally {
       cacheLock.writeLock().unlock();
@@ -165,6 +138,7 @@ public class LogCache {
     try {
       ParsedLog removed = cache.remove(path);
       if (removed != null) {
+        lastAccessTime.remove(path);
         logger.debug("Removed log from cache: {}", path);
       }
       return removed;
@@ -191,7 +165,7 @@ public class LogCache {
         }
       }
       cache.clear();
-      activeLogPath = null;
+      lastAccessTime.clear();
       logger.info("Cleared all logs from cache");
     } finally {
       cacheLock.writeLock().unlock();
@@ -256,26 +230,17 @@ public class LogCache {
   }
 
   /**
-   * Evicts logs if cache limits are exceeded.
+   * Evicts logs until cache is within both count and memory limits, and removes idle entries.
    *
-   * <p>Eviction strategy:
-   *
-   * <ul>
-   *   <li>Count-based: If cache size exceeds maxLoadedLogs, evict LRU log
-   *   <li>Memory-based: If estimated memory exceeds maxMemoryMb, evict LRU log
-   *   <li>Never evicts the active log
-   * </ul>
-   */
-  /**
-   * Evicts logs until cache is within both count and memory limits.
-   *
-   * <p>Loops until all limits are satisfied (or only the active log remains).
-   * This prevents the cache from growing unboundedly when multiple logs need
-   * to be evicted at once.
+   * <p>Loops until all limits are satisfied (or no entries remain to evict).
+   * Also evicts entries that have been idle longer than {@code maxIdleMs}.
    */
   public void evictIfNeeded() {
     cacheLock.writeLock().lock();
     try {
+      // Evict idle entries first
+      evictIdle();
+
       // Snapshot volatile config at method entry for consistent behavior
       int currentMaxLogs = this.maxLoadedLogs;
       int currentMaxMemoryMb = this.maxMemoryMb;
@@ -283,7 +248,7 @@ public class LogCache {
       // Loop for count-based eviction
       while (cache.size() > currentMaxLogs) {
         if (!evictLeastRecentlyUsed("count limit (" + currentMaxLogs + ")")) {
-          break; // Only active log remains
+          break; // No entries remain
         }
       }
 
@@ -301,7 +266,7 @@ public class LogCache {
             estimatedMemoryMb,
             currentMaxMemoryMb);
         if (!evictLeastRecentlyUsed("memory limit (" + currentMaxMemoryMb + " MB)")) {
-          break; // Only active log remains
+          break; // No entries remain
         }
       }
     } finally {
@@ -315,37 +280,18 @@ public class LogCache {
    * <p>Internal method - assumes write lock is already held.
    *
    * @param reason The reason for eviction (for logging)
-   */
-  /**
-   * Evicts the least recently used log from the cache.
-   *
-   * <p>Internal method - assumes write lock is already held.
-   *
-   * @param reason The reason for eviction (for logging)
-   * @return true if a log was evicted, false if only the active log remains
+   * @return true if a log was evicted, false if cache is empty
    */
   private boolean evictLeastRecentlyUsed(String reason) {
     if (cache.isEmpty()) {
       return false;
     }
 
-    // Find LRU entry (first entry in LinkedHashMap with access-order)
-    String pathToEvict = null;
-    for (String path : cache.keySet()) {
-      // Skip active log
-      if (path.equals(activeLogPath)) {
-        continue;
-      }
-      pathToEvict = path;
-      break; // First non-active entry is LRU
-    }
-
-    if (pathToEvict == null) {
-      logger.warn("Cannot evict: only active log remains in cache");
-      return false;
-    }
+    // First entry in LinkedHashMap with access-order is LRU
+    String pathToEvict = cache.keySet().iterator().next();
 
     cache.remove(pathToEvict);
+    lastAccessTime.remove(pathToEvict);
     logger.info("Evicted log '{}' due to {}", pathToEvict, reason);
 
     // Notify callback (e.g., to clean up syncCache entries)
@@ -359,6 +305,40 @@ public class LogCache {
     }
 
     return true;
+  }
+
+  /**
+   * Evicts cache entries that have been idle longer than {@code maxIdleMs}.
+   *
+   * <p>Internal method - assumes write lock is already held.
+   */
+  private void evictIdle() {
+    long now = System.currentTimeMillis();
+    long currentMaxIdleMs = this.maxIdleMs;
+    var idlePaths = new java.util.ArrayList<String>();
+
+    for (String path : cache.keySet()) {
+      Long lastAccess = lastAccessTime.get(path);
+      if (lastAccess != null && (now - lastAccess) > currentMaxIdleMs) {
+        idlePaths.add(path);
+      }
+    }
+
+    for (String path : idlePaths) {
+      long idleMs = now - lastAccessTime.getOrDefault(path, 0L);
+      cache.remove(path);
+      lastAccessTime.remove(path);
+      logger.info("Evicted idle log '{}' (idle for {} ms)", path, idleMs);
+
+      var callback = this.evictionCallback;
+      if (callback != null) {
+        try {
+          callback.accept(path);
+        } catch (Exception e) {
+          logger.warn("Eviction callback failed for '{}': {}", path, e.getMessage());
+        }
+      }
+    }
   }
 
   /**
@@ -380,9 +360,7 @@ public class LogCache {
           "maxLogs",
           maxLoadedLogs,
           "maxMemoryMb",
-          maxMemoryMb,
-          "activeLog",
-          activeLogPath != null ? activeLogPath : "none");
+          maxMemoryMb);
     } finally {
       cacheLock.readLock().unlock();
     }

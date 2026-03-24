@@ -3,9 +3,7 @@ package org.triplehelix.wpilogmcp.integration;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.*;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -19,12 +17,15 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
+import org.triplehelix.wpilogmcp.config.ConfigLoader;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.Main;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
 import org.triplehelix.wpilogmcp.tools.CoreTools;
+import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.FrcDomainTools;
 import org.triplehelix.wpilogmcp.tools.QueryTools;
@@ -65,34 +66,34 @@ class StressTest {
 
   @BeforeAll
   static void setup() {
-    // Stress test only runs when explicitly invoked via:
-    //   ./gradlew stressTest                    (sets stress.logdir system property)
-    //   ./gradlew test -Dstress.logdir=/path    (explicit system property)
-    //   STRESS_LOGDIR=/path ./gradlew test      (environment variable)
-    // Never runs during normal "./gradlew test" to avoid loading real log files.
-    String logDirPath = System.getProperty("stress.logdir");
-    if (logDirPath == null || logDirPath.isEmpty()) {
-      logDirPath = System.getenv("STRESS_LOGDIR");
+    // Stress test loads configuration from the "stresstest" named config in servers.json.
+    // Only runs when explicitly invoked via:
+    //   ./gradlew stressTest
+    //   ./gradlew httpStressTest
+    // Never runs during normal "./gradlew test".
+    boolean enabled = "true".equals(System.getProperty("stress.enabled"));
+    assumeTrue(enabled,
+        "Stress test skipped. Run via: ./gradlew stressTest");
+
+    // Load the "stresstest" configuration from servers.json
+    try {
+      Path configPath = System.getProperty("stress.configpath") != null
+          ? Path.of(System.getProperty("stress.configpath")) : null;
+      var loader = new ConfigLoader();
+      var config = loader.load("stresstest", configPath);
+      Main.applyConfig(config);
+
+      String logDirPath = config.logdir();
+      assumeTrue(logDirPath != null && !logDirPath.isEmpty(),
+          "Stress test skipped: 'stresstest' config has no logdir");
+
+      logDirectory = Path.of(logDirPath);
+      assumeTrue(Files.isDirectory(logDirectory),
+          "Stress test skipped: Log directory does not exist: " + logDirPath);
+    } catch (Exception e) {
+      assumeTrue(false, "Stress test skipped: Failed to load 'stresstest' config: " + e.getMessage());
+      return;
     }
-
-    // Only try .mcp.json when stress.logdir is set (the stressTest gradle task sets it)
-    boolean explicitlyEnabled = logDirPath != null && !logDirPath.isEmpty();
-    if (explicitlyEnabled && ".mcp.json".equals(logDirPath)) {
-      // Special sentinel: the stressTest task sets stress.logdir=.mcp.json to
-      // request auto-configuration from the MCP config file
-      logDirPath = loadFromMcpJson();
-    }
-
-    assumeTrue(logDirPath != null && !logDirPath.isEmpty(),
-        "Stress test skipped: Set -Dstress.logdir=/path or STRESS_LOGDIR, or use ./gradlew stressTest.");
-
-    logDirectory = Path.of(logDirPath);
-    assumeTrue(Files.isDirectory(logDirectory),
-        "Stress test skipped: Log directory does not exist: " + logDirPath);
-
-    // Configure LogDirectory and security
-    LogDirectory.getInstance().setLogDirectory(logDirPath);
-    LogManager.getInstance().addAllowedDirectory(logDirPath);
 
     // Register all tools
     tools = new ArrayList<>();
@@ -111,6 +112,7 @@ class StressTest {
     ExportTools.registerAll(capturingRegistry);
     TbaTools.registerAll(capturingRegistry);
     RevLogTools.registerAll(capturingRegistry);
+    DiscoveryTools.registerAll(capturingRegistry);
 
     System.out.println("\n========================================");
     System.out.println("MCP Server Stress Test");
@@ -120,80 +122,6 @@ class StressTest {
     System.out.println("Disk cache enabled: " + LogManager.getInstance().getDiskCache().isEnabled());
     System.out.println("TBA configured: " + TbaConfig.getInstance().isConfigured());
     System.out.println();
-  }
-
-  /**
-   * Reads log directory, team number, and TBA key from .mcp.json in the project root.
-   */
-  private static String loadFromMcpJson() {
-    // Walk up from CWD or use known project root paths
-    Path[] candidates = {
-        Path.of(".mcp.json"),
-        Path.of(System.getProperty("user.dir"), ".mcp.json"),
-        // Gradle runs tests from the project root
-    };
-
-    for (Path candidate : candidates) {
-      if (Files.exists(candidate)) {
-        try {
-          String json = Files.readString(candidate);
-          var root = new Gson().fromJson(json, JsonObject.class);
-          var servers = root.getAsJsonObject("mcpServers");
-          if (servers == null) continue;
-
-          // Find the wpilog server config
-          for (var entry : servers.entrySet()) {
-            var serverConfig = entry.getValue().getAsJsonObject();
-            var args = serverConfig.getAsJsonArray("args");
-
-            String logDir = null;
-            String teamNumber = null;
-
-            // Parse args array for -logdir and -team
-            if (args != null) {
-              for (int i = 0; i < args.size(); i++) {
-                String arg = args.get(i).getAsString();
-                if ("-logdir".equals(arg) && i + 1 < args.size()) {
-                  logDir = args.get(i + 1).getAsString();
-                }
-                if ("-team".equals(arg) && i + 1 < args.size()) {
-                  teamNumber = args.get(i + 1).getAsString();
-                }
-              }
-            }
-
-            // Apply team number
-            if (teamNumber != null) {
-              try {
-                LogDirectory.getInstance().setDefaultTeamNumber(Integer.parseInt(teamNumber));
-                System.out.println("Team number from .mcp.json: " + teamNumber);
-              } catch (NumberFormatException e) {
-                // ignore
-              }
-            }
-
-            // Apply TBA key from env block
-            if (serverConfig.has("env")) {
-              var env = serverConfig.getAsJsonObject("env");
-              if (env.has("TBA_API_KEY")) {
-                String tbaKey = env.get("TBA_API_KEY").getAsString();
-                TbaConfig.getInstance().setApiKey(tbaKey);
-                TbaConfig.getInstance().applyToClient();
-                System.out.println("TBA API key loaded from .mcp.json");
-              }
-            }
-
-            if (logDir != null) {
-              System.out.println("Log directory from .mcp.json: " + logDir);
-              return logDir;
-            }
-          }
-        } catch (IOException e) {
-          System.err.println("Failed to read .mcp.json: " + e.getMessage());
-        }
-      }
-    }
-    return null;
   }
 
   @BeforeEach
@@ -236,32 +164,22 @@ class StressTest {
   void loadAllLogsSequentially() throws Exception {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
 
-    var tool = findTool("load_log");
     int loaded = 0, failed = 0;
     long totalLoadTime = 0;
 
     System.out.println("\nLoading logs sequentially:");
     for (String path : availableLogPaths) {
-      var args = new JsonObject();
-      args.addProperty("path", path);
-
       long start = System.currentTimeMillis();
       try {
-        var result = executeTool(tool, args);
+        var log = LogManager.getInstance().getOrLoad(path);
         long duration = System.currentTimeMillis() - start;
         totalLoadTime += duration;
 
-        if (result.has("success") && result.get("success").getAsBoolean()) {
-          loaded++;
-          int entryCount = result.get("entry_count").getAsInt();
-          double durationSec = result.getAsJsonObject("time_range_sec").get("duration").getAsDouble();
-          System.out.printf("  [OK] %s - %d entries, %.1fs duration, loaded in %dms%n",
-              Path.of(path).getFileName(), entryCount, durationSec, duration);
-        } else {
-          failed++;
-          System.out.printf("  [FAIL] %s - %s%n", Path.of(path).getFileName(),
-              result.has("error") ? result.get("error").getAsString() : "unknown error");
-        }
+        loaded++;
+        int entryCount = log.entryCount();
+        double durationSec = log.duration();
+        System.out.printf("  [OK] %s - %d entries, %.1fs duration, loaded in %dms%n",
+            Path.of(path).getFileName(), entryCount, durationSec, duration);
       } catch (OutOfMemoryError e) {
         failed++;
         System.gc();
@@ -291,7 +209,9 @@ class StressTest {
 
     System.out.println("\nExercising CoreTools on: " + Path.of(logPath).getFileName());
 
-    testTool("list_entries", new JsonObject(), result -> {
+    var listArgs = new JsonObject();
+    listArgs.addProperty("path", logPath);
+    testTool("list_entries", listArgs, result -> {
       var entries = result.getAsJsonArray("entries");
       loadedEntryNames = new ArrayList<>();
       for (var entry : entries) {
@@ -304,6 +224,7 @@ class StressTest {
       for (int i = 0; i < Math.min(3, loadedEntryNames.size()); i++) {
         String entryName = loadedEntryNames.get(i);
         var args = new JsonObject();
+        args.addProperty("path", logPath);
         args.addProperty("name", entryName);
         testTool("get_entry_info", args, result -> {
           System.out.println("  get_entry_info: " + entryName + " - " +
@@ -313,6 +234,7 @@ class StressTest {
       }
 
       var readArgs = new JsonObject();
+      readArgs.addProperty("path", logPath);
       readArgs.addProperty("name", loadedEntryNames.get(0));
       readArgs.addProperty("limit", 10);
       testTool("read_entry", readArgs, result -> {
@@ -338,6 +260,25 @@ class StressTest {
       String status = result.has("status") ? result.get("status").getAsString() : "unknown";
       System.out.println("  health_check: " + status);
     });
+
+    // Discovery tools
+    testTool("get_server_guide", new JsonObject(), result -> {
+      int categories = result.has("categories") ? result.getAsJsonArray("categories").size() : 0;
+      System.out.println("  get_server_guide: " + categories + " categories");
+    });
+
+    var suggestArgs = new JsonObject();
+    suggestArgs.addProperty("task", "analyze battery health");
+    testTool("suggest_tools", suggestArgs, result -> {
+      int suggestions = result.has("suggestions") ? result.getAsJsonArray("suggestions").size() : 0;
+      System.out.println("  suggest_tools: " + suggestions + " suggestions");
+    });
+
+    // Game info
+    testTool("get_game_info", new JsonObject(), result -> {
+      String gameName = result.has("game_name") ? result.get("game_name").getAsString() : "none";
+      System.out.println("  get_game_info: " + gameName);
+    });
   }
 
   // ==================== 4. QueryTools ====================
@@ -350,26 +291,41 @@ class StressTest {
     assumeTrue(loadedEntryNames != null && !loadedEntryNames.isEmpty());
     loadLog(availableLogPaths.get(0));
 
+    String logPath = availableLogPaths.get(0);
     System.out.println("\nExercising QueryTools:");
 
-    testTool("search_entries", new JsonObject(), result -> {
+    var searchArgs = new JsonObject();
+    searchArgs.addProperty("path", logPath);
+    testTool("search_entries", searchArgs, result -> {
       System.out.println("  search_entries (all): " + result.getAsJsonArray("matches").size());
     });
 
     var pArgs = new JsonObject();
+    pArgs.addProperty("path", logPath);
     pArgs.addProperty("pattern", ".");
     testTool("search_entries", pArgs, result -> {
       System.out.println("  search_entries (pattern '.'): " + result.getAsJsonArray("matches").size());
     });
 
-    testTool("get_types", new JsonObject(), result -> {
+    var typesArgs = new JsonObject();
+    typesArgs.addProperty("path", logPath);
+    testTool("get_types", typesArgs, result -> {
       int count = result.has("types") ? result.getAsJsonArray("types").size() : 0;
       System.out.println("  get_types: " + count + " types");
+    });
+
+    var searchStrArgs = new JsonObject();
+    searchStrArgs.addProperty("path", logPath);
+    searchStrArgs.addProperty("pattern", "error");
+    testTool("search_strings", searchStrArgs, result -> {
+      int matches = result.has("matches") ? result.getAsJsonArray("matches").size() : 0;
+      System.out.println("  search_strings: " + matches + " matches");
     });
 
     var numericForCondition = findNumericEntries(1);
     if (!numericForCondition.isEmpty()) {
       var condArgs = new JsonObject();
+      condArgs.addProperty("path", logPath);
       condArgs.addProperty("name", numericForCondition.get(0));
       condArgs.addProperty("operator", "gt");
       condArgs.addProperty("threshold", 0.0);
@@ -391,11 +347,13 @@ class StressTest {
     assumeTrue(loadedEntryNames != null && !loadedEntryNames.isEmpty());
     loadLog(availableLogPaths.get(0));
 
+    String logPath = availableLogPaths.get(0);
     System.out.println("\nExercising StatisticsTools:");
     var numericEntries = findNumericEntries(5);
 
     for (String entry : numericEntries) {
       var args = new JsonObject();
+      args.addProperty("path", logPath);
       args.addProperty("name", entry);
       testTool("get_statistics", args, result -> {
         if (result.has("mean")) {
@@ -429,6 +387,7 @@ class StressTest {
     // detect_anomalies
     if (!numericEntries.isEmpty()) {
       var anomalyArgs = new JsonObject();
+      anomalyArgs.addProperty("path", logPath);
       anomalyArgs.addProperty("name", numericEntries.get(0));
       anomalyArgs.addProperty("limit", 5);
       testTool("detect_anomalies", anomalyArgs, result -> {
@@ -440,6 +399,7 @@ class StressTest {
     // find_peaks
     if (!numericEntries.isEmpty()) {
       var peakArgs = new JsonObject();
+      peakArgs.addProperty("path", logPath);
       peakArgs.addProperty("name", numericEntries.get(0));
       peakArgs.addProperty("limit", 5);
       testTool("find_peaks", peakArgs, result -> {
@@ -452,6 +412,7 @@ class StressTest {
     // rate_of_change
     if (!numericEntries.isEmpty()) {
       var rateArgs = new JsonObject();
+      rateArgs.addProperty("path", logPath);
       rateArgs.addProperty("name", numericEntries.get(0));
       rateArgs.addProperty("limit", 10);
       testTool("rate_of_change", rateArgs, result -> {
@@ -465,6 +426,7 @@ class StressTest {
     // time_correlate
     if (numericEntries.size() >= 2) {
       var corrArgs = new JsonObject();
+      corrArgs.addProperty("path", logPath);
       corrArgs.addProperty("name1", numericEntries.get(0));
       corrArgs.addProperty("name2", numericEntries.get(1));
       testTool("time_correlate", corrArgs, result -> {
@@ -477,6 +439,7 @@ class StressTest {
     // compare_entries
     if (numericEntries.size() >= 2) {
       var compareArgs = new JsonObject();
+      compareArgs.addProperty("path", logPath);
       compareArgs.addProperty("name1", numericEntries.get(0));
       compareArgs.addProperty("name2", numericEntries.get(1));
       testTool("compare_entries", compareArgs, result -> {
@@ -496,10 +459,13 @@ class StressTest {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
     loadLog(availableLogPaths.get(0));
 
+    String logPath = availableLogPaths.get(0);
     System.out.println("\nExercising FrcDomainTools and RobotAnalysisTools:");
 
     // get_match_phases — now data-driven, not hardcoded
-    testTool("get_match_phases", new JsonObject(), result -> {
+    var matchPhasesArgs = new JsonObject();
+    matchPhasesArgs.addProperty("path", logPath);
+    testTool("get_match_phases", matchPhasesArgs, result -> {
       String source = result.has("source") ? result.get("source").getAsString() : "unknown";
       System.out.println("  get_match_phases (source: " + source + "):");
       if (result.has("phases")) {
@@ -521,7 +487,9 @@ class StressTest {
       }
     });
 
-    testTool("analyze_auto", new JsonObject(), result -> {
+    var autoArgs = new JsonObject();
+    autoArgs.addProperty("path", logPath);
+    testTool("analyze_auto", autoArgs, result -> {
       if (result.has("auto_duration")) {
         System.out.printf("  analyze_auto: %.2fs%n", result.get("auto_duration").getAsDouble());
       } else {
@@ -529,13 +497,17 @@ class StressTest {
       }
     });
 
-    testTool("get_ds_timeline", new JsonObject(), result -> {
+    var dsArgs = new JsonObject();
+    dsArgs.addProperty("path", logPath);
+    testTool("get_ds_timeline", dsArgs, result -> {
       int events = result.has("events") ? result.getAsJsonArray("events").size() : 0;
       System.out.println("  get_ds_timeline: " + events + " events");
     });
 
     // analyze_vision
-    testTool("analyze_vision", new JsonObject(), result -> {
+    var visionArgs = new JsonObject();
+    visionArgs.addProperty("path", logPath);
+    testTool("analyze_vision", visionArgs, result -> {
       if (result.has("target_acquisition")) {
         var acq = result.getAsJsonArray("target_acquisition");
         System.out.println("  analyze_vision: " + acq.size() + " target entries analyzed");
@@ -553,7 +525,9 @@ class StressTest {
     });
 
     // analyze_replay_drift (AdvantageKit)
-    testTool("analyze_replay_drift", new JsonObject(), result -> {
+    var replayArgs = new JsonObject();
+    replayArgs.addProperty("path", logPath);
+    testTool("analyze_replay_drift", replayArgs, result -> {
       int divergent = result.has("divergent_count") ? result.get("divergent_count").getAsInt() : 0;
       System.out.println("  analyze_replay_drift: " + divergent + " divergent entries");
     });
@@ -561,6 +535,7 @@ class StressTest {
     // profile_mechanism
     for (String name : List.of("Arm", "Elevator", "Shooter", "Intake", "Drivetrain", "Swerve")) {
       var mechArgs = new JsonObject();
+      mechArgs.addProperty("path", logPath);
       mechArgs.addProperty("mechanism_name", name);
       testTool("profile_mechanism", mechArgs, result -> {
         if (result.has("following_error")) {
@@ -571,7 +546,9 @@ class StressTest {
     }
 
     // analyze_loop_timing (with unit auto-detect)
-    testTool("analyze_loop_timing", new JsonObject(), result -> {
+    var loopArgs = new JsonObject();
+    loopArgs.addProperty("path", logPath);
+    testTool("analyze_loop_timing", loopArgs, result -> {
       if (result.has("statistics")) {
         var stats = result.getAsJsonObject("statistics");
         System.out.printf("  analyze_loop_timing: avg=%.2fms, p99=%.2fms, %d violations%n",
@@ -583,7 +560,9 @@ class StressTest {
     });
 
     // analyze_can_bus
-    testTool("analyze_can_bus", new JsonObject(), result -> {
+    var canBusArgs = new JsonObject();
+    canBusArgs.addProperty("path", logPath);
+    testTool("analyze_can_bus", canBusArgs, result -> {
       if (result.has("utilization")) {
         System.out.println("  analyze_can_bus: utilization data found");
       } else if (result.has("errors")) {
@@ -594,7 +573,9 @@ class StressTest {
     });
 
     // predict_battery_health
-    testTool("predict_battery_health", new JsonObject(), result -> {
+    var batteryArgs = new JsonObject();
+    batteryArgs.addProperty("path", logPath);
+    testTool("predict_battery_health", batteryArgs, result -> {
       if (result.has("health_score")) {
         int score = result.get("health_score").getAsInt();
         String risk = result.get("risk_level").getAsString();
@@ -615,7 +596,9 @@ class StressTest {
     });
 
     // analyze_swerve
-    testTool("analyze_swerve", new JsonObject(), result -> {
+    var swerveArgs = new JsonObject();
+    swerveArgs.addProperty("path", logPath);
+    testTool("analyze_swerve", swerveArgs, result -> {
       if (result.has("swerve_entries")) {
         System.out.println("  analyze_swerve: swerve entries found");
       } else {
@@ -624,7 +607,9 @@ class StressTest {
     });
 
     // power_analysis
-    testTool("power_analysis", new JsonObject(), result -> {
+    var powerArgs = new JsonObject();
+    powerArgs.addProperty("path", logPath);
+    testTool("power_analysis", powerArgs, result -> {
       if (result.has("voltage_analysis")) {
         var va = result.getAsJsonObject("voltage_analysis");
         System.out.printf("  power_analysis: min=%.2fV, avg=%.2fV, %d below threshold%n",
@@ -635,19 +620,37 @@ class StressTest {
       }
     });
 
-    testTool("can_health", new JsonObject(), result -> {
+    var canHealthArgs = new JsonObject();
+    canHealthArgs.addProperty("path", logPath);
+    testTool("can_health", canHealthArgs, result -> {
       long total = result.has("total_can_errors") ? result.get("total_can_errors").getAsLong() : 0;
       String health = result.has("health_assessment") ? result.get("health_assessment").getAsString() : "unknown";
       System.out.println("  can_health: " + total + " errors, assessment=" + health);
     });
 
-    testTool("get_code_metadata", new JsonObject(), result -> {
+    var codeMetaArgs = new JsonObject();
+    codeMetaArgs.addProperty("path", logPath);
+    testTool("get_code_metadata", codeMetaArgs, result -> {
       if (result.has("metadata")) {
         System.out.println("  get_code_metadata: metadata found");
       } else {
         System.out.println("  get_code_metadata: no metadata");
       }
     });
+
+    // moi_regression (requires angular velocity and current entries — try common names)
+    for (String prefix : List.of("/Drive", "/Arm", "/Shooter")) {
+      var moiArgs = new JsonObject();
+      moiArgs.addProperty("path", logPath);
+      moiArgs.addProperty("angular_velocity_entry", prefix + "/Velocity");
+      moiArgs.addProperty("current_entry", prefix + "/Current");
+      testTool("moi_regression", moiArgs, result -> {
+        if (result.has("J")) {
+          System.out.printf("  moi_regression (%s): J=%.6f, B=%.6f%n",
+              prefix, result.get("J").getAsDouble(), result.get("B").getAsDouble());
+        }
+      });
+    }
 
     // analyze_cycles
     if (loadedEntryNames != null) {
@@ -658,6 +661,7 @@ class StressTest {
           .findFirst();
       if (stateEntry.isPresent()) {
         var cycleArgs = new JsonObject();
+        cycleArgs.addProperty("path", logPath);
         cycleArgs.addProperty("state_entry", stateEntry.get());
         testTool("analyze_cycles", cycleArgs, result -> {
           int samples = result.has("sample_count") ? result.get("sample_count").getAsInt() : 0;
@@ -677,6 +681,7 @@ class StressTest {
     assumeTrue(loadedEntryNames != null && !loadedEntryNames.isEmpty());
     loadLog(availableLogPaths.get(0));
 
+    String logPath = availableLogPaths.get(0);
     System.out.println("\nExercising ExportTools and TbaTools:");
 
     var numericEntry = loadedEntryNames.stream()
@@ -686,16 +691,19 @@ class StressTest {
 
     if (numericEntry.isPresent()) {
       var exportArgs = new JsonObject();
+      exportArgs.addProperty("path", logPath);
       exportArgs.addProperty("name", numericEntry.get());
       exportArgs.addProperty("output_path",
-          System.getProperty("java.io.tmpdir") + "/stress_test_export.csv");
+          System.getProperty("java.io.tmpdir") + "/wpilog-export/stress_test_export.csv");
       testTool("export_csv", exportArgs, result -> {
         int rows = result.has("rows_exported") ? result.get("rows_exported").getAsInt() : 0;
         System.out.println("  export_csv: " + rows + " rows");
       });
     }
 
-    testTool("generate_report", new JsonObject(), result -> {
+    var reportArgs = new JsonObject();
+    reportArgs.addProperty("path", logPath);
+    testTool("generate_report", reportArgs, result -> {
       if (result.has("basic_info")) {
         var info = result.getAsJsonObject("basic_info");
         System.out.printf("  generate_report: %.1fs, %d entries%n",
@@ -707,6 +715,36 @@ class StressTest {
       boolean available = result.has("available") && result.get("available").getAsBoolean();
       System.out.println("  get_tba_status: available=" + available);
     });
+
+    // get_tba_match_data (needs event key + match; try a reasonable default)
+    if (TbaConfig.getInstance().isConfigured()) {
+      var tbaArgs = new JsonObject();
+      tbaArgs.addProperty("event_key", "2026miket");
+      tbaArgs.addProperty("match_type", "qm");
+      tbaArgs.addProperty("match_number", 1);
+      testTool("get_tba_match_data", tbaArgs, result -> {
+        boolean hasData = result.has("match_key");
+        System.out.println("  get_tba_match_data: " + (hasData ? "data found" : "no data"));
+      });
+    }
+
+    // compare_matches (requires path and compare_path)
+    if (availableLogPaths.size() >= 2) {
+      var compareEntry = loadedEntryNames.stream()
+          .filter(name -> name.toLowerCase().contains("voltage") ||
+                          name.toLowerCase().contains("velocity"))
+          .findFirst();
+      if (compareEntry.isPresent()) {
+        var compareArgs = new JsonObject();
+        compareArgs.addProperty("path", availableLogPaths.get(0));
+        compareArgs.addProperty("compare_path", availableLogPaths.get(1));
+        compareArgs.addProperty("name", compareEntry.get());
+        testTool("compare_matches", compareArgs, result -> {
+          int compared = result.has("comparisons") ? result.getAsJsonArray("comparisons").size() : 0;
+          System.out.println("  compare_matches: " + compared + " logs compared");
+        });
+      }
+    }
   }
 
   // ==================== 8. RevLog Tools ====================
@@ -718,15 +756,20 @@ class StressTest {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
     loadLog(availableLogPaths.get(0));
 
+    String logPath = availableLogPaths.get(0);
     System.out.println("\nExercising RevLog tools:");
 
-    testTool("sync_status", new JsonObject(), result -> {
+    var syncArgs = new JsonObject();
+    syncArgs.addProperty("path", logPath);
+    testTool("sync_status", syncArgs, result -> {
       int revlogCount = result.has("revlog_count") ? result.get("revlog_count").getAsInt() : 0;
       System.out.println("  sync_status: " + revlogCount + " revlogs");
     });
 
     List<String> revlogSignalKeys = new ArrayList<>();
-    testTool("list_revlog_signals", new JsonObject(), result -> {
+    var listSigArgs = new JsonObject();
+    listSigArgs.addProperty("path", logPath);
+    testTool("list_revlog_signals", listSigArgs, result -> {
       int signalCount = result.has("signal_count") ? result.get("signal_count").getAsInt() : 0;
       System.out.println("  list_revlog_signals: " + signalCount + " signals");
       if (result.has("signals")) {
@@ -737,8 +780,23 @@ class StressTest {
       }
     });
 
+    var waitArgs = new JsonObject();
+    waitArgs.addProperty("path", logPath);
+    testTool("wait_for_sync", waitArgs, result -> {
+      String status = result.has("status") ? result.get("status").getAsString() : "unknown";
+      System.out.println("  wait_for_sync: " + status);
+    });
+
+    var offsetArgs = new JsonObject();
+    offsetArgs.addProperty("path", logPath);
+    offsetArgs.addProperty("offset_ms", 0.0);
+    testTool("set_revlog_offset", offsetArgs, result -> {
+      System.out.println("  set_revlog_offset: OK");
+    });
+
     for (String key : revlogSignalKeys) {
       var dataArgs = new JsonObject();
+      dataArgs.addProperty("path", logPath);
       dataArgs.addProperty("signal_key", key);
       dataArgs.addProperty("limit", 10);
       testTool("get_revlog_data", dataArgs, result -> {
@@ -786,12 +844,12 @@ class StressTest {
     }
 
     // Verify data integrity: compare entry counts
-    var log1entries = LogManager.getInstance().getActiveLog().entryCount();
+    var log1entries = LogManager.getInstance().getOrLoad(logPath).entryCount();
 
     // Third load from cache
     LogManager.getInstance().unloadAllLogs();
     loadLog(logPath);
-    var log2entries = LogManager.getInstance().getActiveLog().entryCount();
+    var log2entries = LogManager.getInstance().getOrLoad(logPath).entryCount();
 
     assertEquals(log1entries, log2entries,
         "Cached log should have same entry count as original parse");
@@ -863,6 +921,7 @@ class StressTest {
           for (int i = 0; i < operationsPerThread; i++) {
             var tool = tools.get((threadId + i) % tools.size());
             var args = new JsonObject();
+            args.addProperty("path", availableLogPaths.get(0));
             if (tool.name().contains("entry") && !loadedEntryNames.isEmpty()) {
               args.addProperty("name", loadedEntryNames.get(i % loadedEntryNames.size()));
             }
@@ -940,12 +999,17 @@ class StressTest {
   }
 
   private void loadLog(String path) throws Exception {
-    var tool = findTool("load_log");
-    var args = new JsonObject();
-    args.addProperty("path", path);
-    var result = executeTool(tool, args);
-    assertTrue(result.has("success") && result.get("success").getAsBoolean(),
-        "Failed to load log: " + path);
+    totalOperations.incrementAndGet();
+    long start = System.currentTimeMillis();
+    try {
+      LogManager.getInstance().getOrLoad(path);
+      long duration = System.currentTimeMillis() - start;
+      totalTimeMs += duration;
+      successfulOperations.incrementAndGet();
+    } catch (Exception e) {
+      failedOperations.incrementAndGet();
+      throw new AssertionError("Failed to load log: " + path, e);
+    }
   }
 
   private void testTool(String toolName, JsonObject args, ToolResultHandler handler) {

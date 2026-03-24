@@ -47,10 +47,8 @@ class CoreToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(ParsedLog log) {
-    var manager = LogManager.getInstance();
-    manager.testPutLog(log.path(), log);
-    manager.testSetActiveLogPath(log.path());
+  private void putLogInCache(ParsedLog log) {
+    LogManager.getInstance().testPutLog(log.path(), log);
   }
 
   @Nested
@@ -64,10 +62,12 @@ class CoreToolsLogicTest {
           .addNumericEntry("/Drive/Speed", new double[]{0}, new double[]{0})
           .addNumericEntry("/Arm/Angle", new double[]{0}, new double[]{0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("list_entries");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test/core.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -86,10 +86,11 @@ class CoreToolsLogicTest {
           .setPath("/test/core.wpilog")
           .addNumericEntry("/Test/Data", new double[]{0, 1, 2, 3, 4}, new double[]{10, 20, 30, 40, 50})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("read_entry");
       var args = new JsonObject();
+      args.addProperty("path", "/test/core.wpilog");
       args.addProperty("name", "/Test/Data");
       args.addProperty("limit", 2);
       args.addProperty("offset", 1);
@@ -222,7 +223,7 @@ class CoreToolsLogicTest {
           .setPath("/test/health.wpilog")
           .addNumericEntry("/Test/Data", new double[]{0, 1, 2}, new double[]{1, 2, 3})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("health_check");
       var result = tool.execute(new JsonObject());

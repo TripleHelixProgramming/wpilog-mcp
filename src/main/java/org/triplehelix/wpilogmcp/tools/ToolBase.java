@@ -37,7 +37,8 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *
  *     {@literal @}Override
  *     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
- *         var log = requireActiveLog();
+ *         var path = getRequiredString(arguments, "path");
+ *         var log = logManager.getOrLoad(path);
  *         var name = getRequiredString(arguments, "name");
  *         var values = requireEntry(log, name);
  *
@@ -83,10 +84,10 @@ public abstract class ToolBase implements McpServer.Tool {
    * @since 0.4.0
    */
   protected ToolBase(ToolDependencies deps) {
-    this.logManager = deps.getLogManager();
-    this.tbaClient = deps.getTbaClient();
-    this.tbaConfig = deps.getTbaConfig();
-    this.logDirectory = deps.getLogDirectory();
+    this.logManager = deps.logManager();
+    this.tbaClient = deps.tbaClient();
+    this.tbaConfig = deps.tbaConfig();
+    this.logDirectory = deps.logDirectory();
   }
 
   /**
@@ -171,24 +172,6 @@ public abstract class ToolBase implements McpServer.Tool {
   // ===== LOG ACQUISITION HELPERS =====
 
   /**
-   * Gets the active log or throws with a clear error message.
-   *
-   * <p>Throws {@link IllegalArgumentException} if no log is loaded,
-   * which will be automatically converted to an error response.
-   *
-   * @return The active ParsedLog
-   * @throws IllegalArgumentException if no log is loaded
-   */
-  protected ParsedLog requireActiveLog() throws IllegalArgumentException {
-    var log = logManager.getActiveLog();
-    if (log == null) {
-      throw new IllegalArgumentException(
-          "No log file is currently loaded. Use load_log first.");
-    }
-    return log;
-  }
-
-  /**
    * Gets entry values or throws with helpful error message including suggestions.
    *
    * <p>If the entry is not found, searches for similar entry names (case-insensitive
@@ -262,16 +245,6 @@ public abstract class ToolBase implements McpServer.Tool {
 
   // ===== DATA EXTRACTION HELPERS =====
 
-  /**
-   * Extracts numeric values from timestamped data with optional time filtering.
-   *
-   * <p>Filters by time range and includes only values that are instances of {@link Number}.
-   *
-   * @param values The timestamped values
-   * @param startTime Optional start time (inclusive), or null
-   * @param endTime Optional end time (inclusive), or null
-   * @return Array of numeric values
-   */
   /**
    * Extracts numeric values from timestamped data with optional time filtering.
    *

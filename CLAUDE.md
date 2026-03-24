@@ -4,20 +4,34 @@ This document provides context and coding guidelines for Claude Code when workin
 
 ## Project Overview
 
-**wpilog-mcp** is a Java 17+ MCP server that parses WPILib robot telemetry logs (binary `.wpilog` format) and REV motor controller logs (`.revlog`), providing 49 analysis tools for FRC (FIRST Robotics Competition) diagnostics via JSON-RPC 2.0 over stdio.
+**wpilog-mcp** is a Java 17+ MCP server that parses WPILib robot telemetry logs (binary `.wpilog` format) and REV motor controller logs (`.revlog`), providing 45 analysis tools for FRC (FIRST Robotics Competition) diagnostics via JSON-RPC 2.0 over stdio and HTTP transports.
 
-The codebase is ~17,000 lines of production Java and ~17,000 lines of tests (850+ test cases).
+The codebase is ~22,000 lines of production Java and ~25,000 lines of tests (1,170+ test cases).
 
 ## Package Structure
 
-- `cache/` — Persistent disk cache (MessagePack serialization, content fingerprinting, CRC-32 integrity, atomic writes)
-- `game/` — Year-specific FRC game knowledge base (match timing, scoring, field geometry)
-- `log/` — Log loading, binary parsing, LRU caching with memory estimation, struct decoding
-- `mcp/` — MCP JSON-RPC 2.0 protocol implementation over stdio
-- `revlog/` — REV Hardware Client `.revlog` parsing, DBC-based CAN signal decoding
-- `sync/` — Cross-correlation timestamp synchronization between wpilog and revlog (async background processing)
+- `cache/` — Persistent disk cache for wpilog (`DiskCache`, MessagePack serialization, content fingerprinting, CRC-32 integrity, atomic writes) and revlog sync results (`SyncDiskCache`, `SyncCacheSerializer`)
+- `config/` — Named server configurations (`ServerConfig` record, `ConfigLoader` with JSON parsing/env var interpolation/defaults merging, `DaemonManager` for HTTP daemon lifecycle with PID files)
+- `game/` — Year-specific FRC game knowledge base (match timing, scoring, field geometry; 2024 Crescendo, 2025 Reefscape, 2026 REBUILT)
+- `log/` — Log loading, binary parsing, LRU caching with memory estimation and time-based eviction, struct decoding, per-path load locking
+- `mcp/` — MCP JSON-RPC 2.0 protocol: transport-independent message handler, stdio transport, HTTP Streamable transport with session management, tool registry
+- `revlog/` — REV `.revlog` parsing (from WPILib robot programs using REV hardware), DBC-based CAN signal decoding
+- `sync/` — Cross-correlation timestamp synchronization between wpilog and revlog (async background processing, time-based revlog discovery across directory trees)
 - `tba/` — The Blue Alliance API integration with caching
-- `tools/` — 49 MCP tools: statistics, FRC domain analysis, swerve, power, CAN, vision, cycle detection, battery health, MoI regression, loop timing, game info, export, plus LLM epistemological guardrails
+- `tools/` — 45 MCP tools: statistics, FRC domain analysis, swerve, power, CAN, vision, cycle detection, battery health, MoI regression, loop timing, game info, TBA match queries, discovery tools, export, plus LLM epistemological guardrails (data quality metadata, analysis directives, interpretation guidance)
+
+## Java 17 Best Practices
+
+All code should follow JDK 17 idioms:
+
+- **Streams**: Prefer streams over imperative loops unless performance is a concern (e.g., hot paths, large datasets with measurable overhead).
+- **`var`**: Use `var` when it aids readability by reducing redundancy (e.g., `var entries = map.entrySet()`). Never use `var` for primitive types (`int`, `long`, `double`, etc.).
+- **Records**: Use records for immutable data carriers instead of classes with boilerplate getters/equals/hashCode.
+- **Enums**: Prefer enums over string or integer constants for fixed sets of values.
+- **Switch expressions**: Use switch expressions (`->` syntax) over traditional switch statements. Use pattern matching where applicable.
+- **Sealed classes**: Use sealed classes/interfaces when a type hierarchy has a known, fixed set of subtypes.
+- **`Optional`**: Use `Optional` for return types that may have no value. Never use `Optional` as a field or parameter type.
+- **Text blocks**: Use text blocks (`"""`) for multi-line string literals.
 
 ## FRC Domain Knowledge
 
@@ -73,7 +87,7 @@ Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Inc
 When adding new tools, follow existing patterns:
 
 - **`ToolBase`**: Base class for simple tools. Override `execute()`.
-- **`LogRequiringTool`**: For tools that need a loaded log. Override `executeWithLog()`.
+- **`LogRequiringTool`**: For tools that need a loaded log. Override `executeWithLog()`. All log-requiring tools take a required `path` parameter specifying the log file. The server auto-loads logs on first reference and auto-evicts idle logs after 30 minutes. There is no "active log" concept — each tool call is self-contained.
 - **`ResponseBuilder`**: Use for consistent response formatting with data quality and directives.
 - **`ToolUtils`**: Shared utilities for common operations.
 

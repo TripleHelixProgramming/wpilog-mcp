@@ -120,7 +120,9 @@ public final class TbaTools {
       return new SchemaBuilder()
           .addIntegerProperty("year", "Competition year (e.g., 2024)", true, null)
           .addProperty("event_code", "string",
-              "TBA event code (e.g., 'caph' for Poway, 'cmptx' for Houston Championship)", true)
+              "TBA event code — this is NOT the abbreviation from log filenames. "
+              + "Find the correct code at thebluealliance.com/events/{year}. "
+              + "Examples: 'caph' (Poway), 'cmptx' (Houston Championship)", true)
           .addProperty("match_type", "string",
               "Match type: 'Qualification', 'Quarterfinal', 'Semifinal', 'Final', or 'Elimination'", true)
           .addIntegerProperty("match_number", "Match number within the type", true, null)
@@ -182,16 +184,38 @@ public final class TbaTools {
         var result = new JsonObject();
         result.addProperty("success", true);
         result.addProperty("match_found", false);
-        result.addProperty("message",
-            "Match not found. Check that year, event_code, match_type, and match_number are correct. "
-            + "Event code should be lowercase (e.g., 'caph' not 'CAPH').");
 
-        // Provide helpful suggestions
-        var suggestions = new JsonArray();
-        suggestions.add("Verify the event code at thebluealliance.com");
-        suggestions.add("For elimination matches, try 'Semifinal' or 'Final' instead of 'Elimination'");
-        suggestions.add("Match numbers are 1-indexed (first qual is match 1, not 0)");
-        result.add("suggestions", suggestions);
+        // Validate the event code to provide a helpful error
+        var eventOpt = client.getEvent(year, eventCode);
+        if (eventOpt.isEmpty()) {
+          // Event doesn't exist — this is likely the wrong event code
+          result.addProperty("message",
+              "Event '" + eventCode + "' not found on TBA for " + year + ". "
+              + "The event_code must be a TBA event code (e.g., 'caph'), not an abbreviation from log filenames.");
+
+          // Try to find similar events
+          var similar = client.searchEvents(year, eventCode, 5);
+          if (!similar.isEmpty()) {
+            var suggestedEvents = new JsonArray();
+            similar.forEach(suggestedEvents::add);
+            result.add("similar_events", suggestedEvents);
+            result.addProperty("hint", "Did you mean one of these event codes?");
+          } else {
+            result.addProperty("hint",
+                "Search for the correct event code at thebluealliance.com/events/" + year);
+          }
+        } else {
+          // Event exists but match wasn't found
+          result.addProperty("message",
+              "Event '" + eventCode + "' exists but match " + matchType + " " + matchNumber
+              + " was not found. Check match_type and match_number.");
+
+          var suggestions = new JsonArray();
+          suggestions.add("For elimination matches, try 'Semifinal' or 'Final' instead of 'Elimination'");
+          suggestions.add("Match numbers are 1-indexed (first qual is match 1, not 0)");
+          suggestions.add("Verify match exists at thebluealliance.com/event/" + year + eventCode.toLowerCase());
+          result.add("suggestions", suggestions);
+        }
 
         return result;
       }

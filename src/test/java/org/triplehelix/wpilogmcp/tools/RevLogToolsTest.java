@@ -63,9 +63,8 @@ class RevLogToolsTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLogWithRevLog(ParsedLog wpilog, ParsedRevLog revlog, SyncResult syncResult) {
+  private void putLogWithRevLog(ParsedLog wpilog, ParsedRevLog revlog, SyncResult syncResult) {
     logManager.testPutLog(wpilog.path(), wpilog);
-    logManager.testSetActiveLogPath(wpilog.path());
 
     // Create synchronized logs and put in sync cache via reflection-free method
     SynchronizedLogs syncLogs = new SynchronizedLogs.Builder()
@@ -77,9 +76,8 @@ class RevLogToolsTest {
     setSynchronizedLogs(wpilog.path(), syncLogs);
   }
 
-  private void setActiveLogNoRevLog(ParsedLog wpilog) {
+  private void putLogNoRevLog(ParsedLog wpilog) {
     logManager.testPutLog(wpilog.path(), wpilog);
-    logManager.testSetActiveLogPath(wpilog.path());
     // Create synchronized logs with no revlogs
     SynchronizedLogs syncLogs = new SynchronizedLogs(wpilog);
     setSynchronizedLogs(wpilog.path(), syncLogs);
@@ -155,10 +153,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -185,10 +185,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("device_filter", "SparkMax_1");
 
       var result = tool.execute(args);
@@ -204,10 +205,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_filter", "velocity");
 
       var result = tool.execute(args);
@@ -221,10 +223,12 @@ class RevLogToolsTest {
     @DisplayName("returns empty list when no revlogs synchronized")
     void noRevLogs() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -239,10 +243,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createLowConfidenceSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -259,10 +265,12 @@ class RevLogToolsTest {
       var revlog = createMockRevLog();
       var mediumResult = new SyncResult(500_000L, 0.7, ConfidenceLevel.MEDIUM, List.of(),
           SyncMethod.CROSS_CORRELATION, "Medium confidence sync");
-      setActiveLogWithRevLog(wpilog, revlog, mediumResult);
+      putLogWithRevLog(wpilog, revlog, mediumResult);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -278,10 +286,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -296,10 +306,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       var metadata = resultObj.getAsJsonObject("_metadata");
@@ -318,10 +330,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("get_revlog_data");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
 
       var result = tool.execute(args);
@@ -346,10 +359,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("get_revlog_data");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
       args.addProperty("start_time", 0.5);
       args.addProperty("end_time", 1.0);
@@ -373,10 +387,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("get_revlog_data");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
       args.addProperty("limit", 10);
 
@@ -394,10 +409,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("get_revlog_data");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
       args.addProperty("include_stats", true);
 
@@ -420,10 +436,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("get_revlog_data");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_key", "REV/NonExistent_99/fakeSignal");
 
       var result = tool.execute(args);
@@ -437,10 +454,11 @@ class RevLogToolsTest {
     @DisplayName("fails when no revlog synchronized")
     void failsWhenNoRevLog() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("get_revlog_data");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
 
       var result = tool.execute(args);
@@ -460,10 +478,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -490,10 +510,11 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("sync_status");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("include_signal_pairs", true);
 
       var result = tool.execute(args);
@@ -519,10 +540,12 @@ class RevLogToolsTest {
     @DisplayName("reports not synchronized when no revlogs")
     void reportsNotSynchronized() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -536,10 +559,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var failedResult = SyncResult.failed("No matching signals found");
-      setActiveLogWithRevLog(wpilog, revlog, failedResult);
+      putLogWithRevLog(wpilog, revlog, failedResult);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -557,10 +582,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.has("_metadata"));
@@ -575,10 +602,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       double value = resultObj.get("overall_confidence_value").getAsDouble();
@@ -640,10 +669,12 @@ class RevLogToolsTest {
     @DisplayName("returns immediately when no sync in progress")
     void returnsImmediatelyWhenNoSync() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("wait_for_sync");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -657,10 +688,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("wait_for_sync");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -673,10 +706,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("wait_for_sync");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -688,10 +723,11 @@ class RevLogToolsTest {
     @DisplayName("respects custom timeout parameter")
     void respectsTimeoutParameter() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("wait_for_sync");
       var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
       args.addProperty("timeout_ms", 100);
 
       var result = tool.execute(args);
@@ -714,10 +750,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -728,10 +766,12 @@ class RevLogToolsTest {
     @DisplayName("reports sync_in_progress=false when no revlogs")
     void reportsFalseWhenNoRevlogs() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("sync_status");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -749,10 +789,12 @@ class RevLogToolsTest {
     @DisplayName("reports sync_in_progress=false and normal warning when no revlogs")
     void normalWarningWhenNoRevlogs() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -776,10 +818,12 @@ class RevLogToolsTest {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
-      setActiveLogWithRevLog(wpilog, revlog, syncResult);
+      putLogWithRevLog(wpilog, revlog, syncResult);
 
       var tool = findTool("list_revlog_signals");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -794,52 +838,44 @@ class RevLogToolsTest {
   class LogManagerAsyncSyncTests {
 
     @Test
-    @DisplayName("isRevLogSyncInProgress returns false when no active log")
-    void noActiveLogNotInProgress() {
+    @DisplayName("isAnyRevLogSyncInProgress returns false when no logs loaded")
+    void noLogsNotInProgress() {
       logManager.unloadAllLogs();
-      assertFalse(logManager.isRevLogSyncInProgress());
+      assertFalse(logManager.isAnyRevLogSyncInProgress());
     }
 
     @Test
-    @DisplayName("isRevLogSyncInProgress returns false for completed sync")
+    @DisplayName("isRevLogSyncInProgress with path returns false for completed sync")
     void completedSyncNotInProgress() {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
-      assertFalse(logManager.isRevLogSyncInProgress());
+      putLogNoRevLog(wpilog);
+      assertFalse(logManager.isRevLogSyncInProgress(wpilog.path()));
     }
 
     @Test
-    @DisplayName("waitForRevLogSync returns true immediately when no sync running")
-    void waitReturnsImmediatelyWhenNotSyncing() {
-      var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
-      assertTrue(logManager.waitForRevLogSync(100));
-    }
-
-    @Test
-    @DisplayName("waitForRevLogSync returns true when no active log")
-    void waitReturnsTrueWhenNoActiveLog() {
+    @DisplayName("waitForRevLogSync returns true when null path")
+    void waitReturnsTrueWhenNullPath() {
       logManager.unloadAllLogs();
-      assertTrue(logManager.waitForRevLogSync(100));
+      assertTrue(logManager.waitForRevLogSync(null, 100));
     }
 
     @Test
     @DisplayName("clearAllLogs cancels in-progress syncs")
     void clearAllLogsCancelsSyncs() throws Exception {
       var wpilog = createMockWpilog();
-      setActiveLogNoRevLog(wpilog);
+      putLogNoRevLog(wpilog);
 
       // Simulate an in-progress sync via reflection
       var future = new java.util.concurrent.CompletableFuture<Void>();
       setSyncInProgress(wpilog.path(), future);
 
-      assertTrue(logManager.isRevLogSyncInProgress());
+      assertTrue(logManager.isRevLogSyncInProgress(wpilog.path()));
 
       logManager.clearAllLogs();
 
       // Future should be cancelled
       assertTrue(future.isCancelled() || future.isDone());
-      assertFalse(logManager.isRevLogSyncInProgress());
+      assertFalse(logManager.isRevLogSyncInProgress(wpilog.path()));
     }
 
     @Test
@@ -847,7 +883,6 @@ class RevLogToolsTest {
     void unloadLogCancelsSync() throws Exception {
       var wpilog = createMockWpilog();
       logManager.testPutLog(wpilog.path(), wpilog);
-      logManager.testSetActiveLogPath(wpilog.path());
 
       // Create placeholder sync entry
       SynchronizedLogs syncLogs = new SynchronizedLogs(wpilog);
@@ -869,53 +904,14 @@ class RevLogToolsTest {
     void pathBasedSyncCheck() throws Exception {
       var wpilog = createMockWpilog();
       logManager.testPutLog(wpilog.path(), wpilog);
-      // Deliberately don't set as active
 
       var future = new java.util.concurrent.CompletableFuture<Void>();
       setSyncInProgress(wpilog.path(), future);
 
       assertTrue(logManager.isRevLogSyncInProgress(wpilog.path()));
-      assertFalse(logManager.isRevLogSyncInProgress()); // no active log set
 
       future.complete(null);
       assertFalse(logManager.isRevLogSyncInProgress(wpilog.path()));
-    }
-
-    @Test
-    @DisplayName("waitForRevLogSync blocks until future completes")
-    void waitBlocksUntilComplete() throws Exception {
-      var wpilog = createMockWpilog();
-      logManager.testPutLog(wpilog.path(), wpilog);
-      logManager.testSetActiveLogPath(wpilog.path());
-
-      var future = new java.util.concurrent.CompletableFuture<Void>();
-      setSyncInProgress(wpilog.path(), future);
-
-      // Complete the future from another thread after a short delay
-      new Thread(() -> {
-        try { Thread.sleep(100); } catch (InterruptedException e) {}
-        future.complete(null);
-      }).start();
-
-      boolean completed = logManager.waitForRevLogSync(5000);
-      assertTrue(completed, "Should complete after future finishes");
-    }
-
-    @Test
-    @DisplayName("waitForRevLogSync times out when future never completes")
-    void waitTimesOut() throws Exception {
-      var wpilog = createMockWpilog();
-      logManager.testPutLog(wpilog.path(), wpilog);
-      logManager.testSetActiveLogPath(wpilog.path());
-
-      var future = new java.util.concurrent.CompletableFuture<Void>();
-      setSyncInProgress(wpilog.path(), future);
-
-      boolean completed = logManager.waitForRevLogSync(50);
-      assertFalse(completed, "Should time out when future never completes");
-
-      // Clean up
-      future.complete(null);
     }
 
     @Test
@@ -926,7 +922,6 @@ class RevLogToolsTest {
 
       var wpilog1 = createMockWpilog();
       logManager.testPutLog(wpilog1.path(), wpilog1);
-      logManager.testSetActiveLogPath(wpilog1.path());
 
       // Simulate in-progress sync for wpilog1
       var future = new java.util.concurrent.CompletableFuture<Void>();
@@ -938,7 +933,6 @@ class RevLogToolsTest {
       var wpilog2 = new ParsedLog("/test2.wpilog",
           new java.util.HashMap<>(), new java.util.HashMap<>(), 0, 1);
       logManager.testPutLog(wpilog2.path(), wpilog2);
-      logManager.testSetActiveLogPath(wpilog2.path());
 
       // Trigger eviction
       logManager.testEvictIfNeeded();

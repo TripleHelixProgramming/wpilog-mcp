@@ -97,10 +97,10 @@ public class JsonRpc {
   public static JsonObject createRequest(Object id, String method, JsonElement params) {
     var request = new JsonObject();
     request.addProperty("jsonrpc", VERSION);
-    if (id instanceof String) {
-      request.addProperty("id", (String) id);
-    } else if (id instanceof Number) {
-      request.addProperty("id", (Number) id);
+    if (id instanceof String s) {
+      request.addProperty("id", s);
+    } else if (id instanceof Number n) {
+      request.addProperty("id", n);
     }
     request.addProperty("method", method);
     if (params != null) {

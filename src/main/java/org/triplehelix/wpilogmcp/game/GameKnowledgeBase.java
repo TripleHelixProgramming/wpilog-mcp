@@ -57,7 +57,13 @@ public class GameKnowledgeBase {
    * @return The game data, or null if no data is available for that season
    */
   public GameData getGame(int season) {
-    return cache.computeIfAbsent(season, this::loadGame);
+    GameData cached = cache.get(season);
+    if (cached != null) return cached;
+    GameData loaded = loadGame(season);
+    if (loaded != null) {
+      cache.putIfAbsent(season, loaded);
+    }
+    return loaded;
   }
 
   /**

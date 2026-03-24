@@ -3,13 +3,17 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.triplehelix.wpilogmcp.log.LogDirectory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
@@ -26,8 +30,34 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  * </ul>
  */
 public final class ExportTools {
+  private static final Logger logger = LoggerFactory.getLogger(ExportTools.class);
+
+  /** Default export directory: {tmpdir}/wpilog-export/ */
+  private static volatile Path exportDirectory =
+      Path.of(System.getProperty("java.io.tmpdir"), "wpilog-export");
 
   private ExportTools() {}
+
+  /**
+   * Sets the export directory. CSV exports are restricted to this directory.
+   *
+   * @param path The export directory path
+   */
+  public static void setExportDirectory(String path) {
+    if (path != null && !path.isBlank()) {
+      exportDirectory = Path.of(path).toAbsolutePath().normalize();
+      logger.info("Export directory: {}", exportDirectory);
+    }
+  }
+
+  /**
+   * Gets the configured export directory.
+   *
+   * @return The export directory path
+   */
+  public static Path getExportDirectory() {
+    return exportDirectory;
+  }
 
   /**
    * Registers all export tools with the MCP server.
@@ -37,7 +67,7 @@ public final class ExportTools {
     registry.registerTool(new GenerateReportTool());
   }
 
-  static class ExportCsvTool implements Tool {
+  static class ExportCsvTool extends LogRequiringTool {
     @Override
     public String name() {
       return "export_csv";
@@ -49,7 +79,7 @@ public final class ExportTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name to export", true)
           .addProperty("output_path", "string", "Path for output CSV file", true)
@@ -59,12 +89,7 @@ public final class ExportTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) {
-        return errorResult("No log loaded");
-      }
-
+    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
       var name = arguments.get("name").getAsString();
       var outputPath = arguments.get("output_path").getAsString();
       var startTime = arguments.has("start_time") && !arguments.get("start_time").isJsonNull()
@@ -75,7 +100,7 @@ public final class ExportTools {
           : null;
 
       var outputFilePath = Path.of(outputPath).toAbsolutePath().normalize();
-      if (!isPathAllowed(outputFilePath)) {
+      if (!isPathAllowed(outputFilePath, log)) {
         return errorResult(
             "Output path not allowed. CSV files can only be written to the configured log "
                 + "directory or system temp directory. Path: " + outputFilePath);
@@ -112,8 +137,7 @@ public final class ExportTools {
             continue;
           }
 
-          if (tv.value() instanceof List) {
-            var list = (List<?>) tv.value();
+          if (tv.value() instanceof List<?> list) {
             for (int i = 0; i < list.size(); i++) {
               var element = list.get(i);
               if (element instanceof Map) {
@@ -121,11 +145,36 @@ public final class ExportTools {
                 var map = (Map<String, Object>) element;
                 var sb = new StringBuilder();
                 sb.append(t).append(",").append(i);
-                map.values().forEach(v -> sb.append(",").append(v));
+                map.values().forEach(v -> sb.append(",").append(csvEscape(String.valueOf(v))));
                 writer.println(sb);
               } else {
-                writer.println(t + "," + i + "," + element);
+                writer.println(t + "," + i + "," + csvEscape(String.valueOf(element)));
               }
+              rowCount++;
+            }
+          } else if (tv.value() instanceof double[] arr) {
+            for (int i = 0; i < arr.length; i++) {
+              writer.println(t + "," + i + "," + arr[i]);
+              rowCount++;
+            }
+          } else if (tv.value() instanceof long[] arr) {
+            for (int i = 0; i < arr.length; i++) {
+              writer.println(t + "," + i + "," + arr[i]);
+              rowCount++;
+            }
+          } else if (tv.value() instanceof float[] arr) {
+            for (int i = 0; i < arr.length; i++) {
+              writer.println(t + "," + i + "," + arr[i]);
+              rowCount++;
+            }
+          } else if (tv.value() instanceof boolean[] arr) {
+            for (int i = 0; i < arr.length; i++) {
+              writer.println(t + "," + i + "," + arr[i]);
+              rowCount++;
+            }
+          } else if (tv.value() instanceof String[] arr) {
+            for (int i = 0; i < arr.length; i++) {
+              writer.println(t + "," + i + "," + csvEscape(arr[i]));
               rowCount++;
             }
           } else if (tv.value() instanceof Map) {
@@ -133,11 +182,11 @@ public final class ExportTools {
             var map = (Map<String, Object>) tv.value();
             var sb = new StringBuilder();
             sb.append(t);
-            map.values().forEach(v -> sb.append(",").append(v));
+            map.values().forEach(v -> sb.append(",").append(csvEscape(String.valueOf(v))));
             writer.println(sb);
             rowCount++;
           } else {
-            writer.println(t + "," + tv.value());
+            writer.println(t + "," + csvEscape(String.valueOf(tv.value())));
             rowCount++;
           }
         }
@@ -153,38 +202,52 @@ public final class ExportTools {
       return result;
     }
 
-    private boolean isPathAllowed(Path path) {
-      var normalizedPath = path.toAbsolutePath().normalize();
+    /**
+     * Escapes a value for CSV output per RFC 4180.
+     * Wraps in double-quotes if the value contains commas, double-quotes, or newlines.
+     */
+    private static String csvEscape(String value) {
+      if (value == null) return "";
+      if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
+        return "\"" + value.replace("\"", "\"\"") + "\"";
+      }
+      return value;
+    }
 
-      var logDir = LogDirectory.getInstance().getLogDirectory();
-      if (logDir != null) {
-        var normalizedLogDir = logDir.toAbsolutePath().normalize();
-        if (normalizedPath.startsWith(normalizedLogDir)) {
-          return true;
+    private boolean isPathAllowed(Path path, ParsedLog log) {
+      // Exports are restricted to the configured export directory only.
+      // Resolve symlinks to prevent symlink-based path escape:
+      // - If the file already exists, resolve the FULL path (catches symlinks in filename)
+      // - If it doesn't exist, resolve the parent and reject if the filename is a symlink
+      try {
+        var absPath = path.toAbsolutePath().normalize();
+
+        // Auto-create export directory if it doesn't exist
+        var exportDir = exportDirectory;
+        if (!Files.isDirectory(exportDir)) {
+          Files.createDirectories(exportDir);
         }
-      }
+        var resolvedExportDir = exportDir.toRealPath();
 
-      var tempDir = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize();
-      if (normalizedPath.startsWith(tempDir)) {
-        return true;
-      }
-
-      var activeLog = getLogManager().getActiveLog();
-      if (activeLog != null && activeLog.path() != null) {
-        var logFileDir = Path.of(activeLog.path()).getParent();
-        if (logFileDir != null) {
-          var normalizedLogFileDir = logFileDir.toAbsolutePath().normalize();
-          if (normalizedPath.startsWith(normalizedLogFileDir)) {
-            return true;
-          }
+        if (Files.exists(absPath)) {
+          // File exists — resolve entire path to follow all symlinks
+          var resolvedPath = absPath.toRealPath();
+          return resolvedPath.startsWith(resolvedExportDir);
+        } else {
+          // File doesn't exist — resolve parent, reject symlink filenames
+          var parent = absPath.getParent();
+          if (parent == null) return false;
+          if (Files.isSymbolicLink(absPath)) return false;
+          var resolvedPath = parent.toRealPath().resolve(absPath.getFileName());
+          return resolvedPath.startsWith(resolvedExportDir);
         }
+      } catch (IOException e) {
+        return false; // Cannot resolve — deny by default
       }
-
-      return false;
     }
   }
 
-  static class GenerateReportTool implements Tool {
+  static class GenerateReportTool extends LogRequiringTool {
     @Override
     public String name() {
       return "generate_report";
@@ -197,16 +260,12 @@ public final class ExportTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder().build();
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var log = getLogManager().getActiveLog();
-      if (log == null) {
-        return errorResult("No log loaded");
-      }
+    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
 
       var report = new JsonObject();
       report.addProperty("success", true);
@@ -237,12 +296,14 @@ public final class ExportTools {
                 maxV = Math.max(maxV, v);
               }
             }
-            var battery = new JsonObject();
-            battery.addProperty("entry", entryName);
-            battery.addProperty("min_voltage", minV);
-            battery.addProperty("max_voltage", maxV);
-            battery.addProperty("brownout_risk", minV < 7.0 ? "HIGH" : (minV < 9.0 ? "MODERATE" : "LOW"));
-            report.add("battery", battery);
+            if (minV < Double.MAX_VALUE) {
+              var battery = new JsonObject();
+              battery.addProperty("entry", entryName);
+              battery.addProperty("min_voltage", minV);
+              battery.addProperty("max_voltage", maxV);
+              battery.addProperty("brownout_risk", minV < 7.0 ? "HIGH" : (minV < 9.0 ? "MODERATE" : "LOW"));
+              report.add("battery", battery);
+            }
             break;
           }
         }
@@ -305,6 +366,22 @@ public final class ExportTools {
           .limit(10)
           .forEach(e -> types.addProperty(e.getKey(), e.getValue()));
       report.add("top_data_types", types);
+
+      // Add data quality from battery voltage values if available
+      for (var entryName : log.entries().keySet()) {
+        if (entryName.toLowerCase().contains("batteryvoltage") || entryName.toLowerCase().contains("battery_voltage")) {
+          var qualityValues = log.values().get(entryName);
+          if (qualityValues != null && !qualityValues.isEmpty()) {
+            var quality = DataQuality.fromValues(qualityValues);
+            report.add("data_quality", quality.toJson());
+            var directives = AnalysisDirectives.fromQuality(quality)
+                .addSingleMatchCaveat()
+                .addGuidance("Report is a summary — use individual tools for detailed analysis");
+            report.add("server_analysis_directives", directives.toJson());
+            break;
+          }
+        }
+      }
 
       return report;
     }

@@ -49,10 +49,8 @@ class RobotAnalysisToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(ParsedLog log) {
-    var manager = LogManager.getInstance();
-    manager.testPutLog(log.path(), log);
-    manager.testSetActiveLogPath(log.path());
+  private void putLogInCache(ParsedLog log) {
+    LogManager.getInstance().testPutLog(log.path(), log);
   }
 
   @Nested
@@ -76,10 +74,12 @@ class RobotAnalysisToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -106,10 +106,12 @@ class RobotAnalysisToolsLogicTest {
           .setPath("/test/no_ds.wpilog")
           .addNumericEntry("/Motor/Velocity", new double[]{0, 1, 2}, new double[]{10, 20, 30})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -138,10 +140,12 @@ class RobotAnalysisToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -176,10 +180,12 @@ class RobotAnalysisToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -233,10 +239,11 @@ class RobotAnalysisToolsLogicTest {
           .addNumericEntry("/Motor/Current", currTimestamps, currValues)
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("moi_regression");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("velocity_entry", "/Motor/Velocity");
       args.addProperty("current_entry", "/Motor/Current");
       args.addProperty("kt", 0.0194);
@@ -293,10 +300,11 @@ class RobotAnalysisToolsLogicTest {
           .addNumericEntry("/Motor/AppliedVolts", voltTimestamps, voltValues)
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("moi_regression");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("velocity_entry", "/Motor/Velocity");
       args.addProperty("current_entry", "/Motor/Current");
       args.addProperty("applied_volts_entry", "/Motor/AppliedVolts");
@@ -343,10 +351,11 @@ class RobotAnalysisToolsLogicTest {
           .addNumericEntry("/Motor/Current", currTs, currVals)
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("moi_regression");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("velocity_entry", "/Motor/Velocity");
       args.addProperty("current_entry", "/Motor/Current");
       args.addProperty("kt", 0.0194);
@@ -393,10 +402,11 @@ class RobotAnalysisToolsLogicTest {
           .addNumericEntry("/Motor/Current", currTs, currVals)
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("moi_regression");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("velocity_entry", "/Motor/Velocity");
       args.addProperty("current_entry", "/Motor/Current");
       args.addProperty("kt", 0.0194);
@@ -425,11 +435,8 @@ class RobotAnalysisToolsLogicTest {
   class ToolBaseMigrationTests {
 
     @Test
-    @DisplayName("all log-requiring tools return error when no log loaded")
-    void allToolsReturnErrorWhenNoLog() throws Exception {
-      // Ensure no log is loaded
-      LogManager.getInstance().unloadAllLogs();
-
+    @DisplayName("all log-requiring tools return error when path not provided")
+    void allToolsReturnErrorWhenNoPath() throws Exception {
       String[] logRequiringTools = {
           "get_match_phases", "analyze_swerve", "power_analysis",
           "can_health", "moi_regression", "get_code_metadata"
@@ -441,10 +448,10 @@ class RobotAnalysisToolsLogicTest {
         var resultObj = result.getAsJsonObject();
 
         assertFalse(resultObj.get("success").getAsBoolean(),
-            toolName + " should return error when no log loaded");
+            toolName + " should return error when path not provided");
         assertTrue(resultObj.has("error"),
             toolName + " should have error message");
-        assertTrue(resultObj.get("error").getAsString().toLowerCase().contains("no log"),
+        assertTrue(resultObj.get("error").getAsString().toLowerCase().contains("path"),
             toolName + " error should mention no log: " + resultObj.get("error").getAsString());
       }
     }
@@ -464,11 +471,13 @@ class RobotAnalysisToolsLogicTest {
       var manager = LogManager.getInstance();
       manager.testPutLog(log1.path(), log1);
       manager.testPutLog(log2.path(), log2);
-      manager.testSetActiveLogPath(log1.path());
 
       var tool = findTool("compare_matches");
       // No name parameter provided
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log1.path());
+      args.addProperty("compare_path", log2.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
@@ -484,16 +493,17 @@ class RobotAnalysisToolsLogicTest {
           .setPath("/test/single.wpilog")
           .addNumericEntry("/Test", new double[]{0}, new double[]{1})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("compare_path", "/test/nonexistent.wpilog");
       args.addProperty("name", "/Test");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("2 logs"));
     }
 
     @Test
@@ -504,10 +514,12 @@ class RobotAnalysisToolsLogicTest {
           .addEntry("/Metadata/GitSHA", "string",
               java.util.List.of(new org.triplehelix.wpilogmcp.log.TimestampedValue(0.0, "abc123")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_code_metadata");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -523,10 +535,12 @@ class RobotAnalysisToolsLogicTest {
               new double[]{0, 1, 2, 3, 4},
               new double[]{12.5, 12.3, 11.8, 12.1, 12.4})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("power_analysis");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -540,10 +554,12 @@ class RobotAnalysisToolsLogicTest {
           .setPath("/test/can.wpilog")
           .addNumericEntry("/Test/Value", new double[]{0, 1}, new double[]{1, 2})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("can_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -557,10 +573,12 @@ class RobotAnalysisToolsLogicTest {
           .setPath("/test/swerve.wpilog")
           .addNumericEntry("/Drive/Speed", new double[]{0, 1}, new double[]{1, 2})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -580,17 +598,23 @@ class RobotAnalysisToolsLogicTest {
 
       var log = new org.triplehelix.wpilogmcp.log.ParsedLog(
           "/test/empty_meta.wpilog", entries, values, 0.0, 0.0);
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_code_metadata");
-      // This would previously throw IndexOutOfBoundsException; now ToolBase catches it
-      var result = tool.execute(new JsonObject());
+      // Empty value lists should be handled gracefully — returns "unknown" instead of throwing
+      var args = new JsonObject();
+      args.addProperty("path", "/test/empty_meta.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertFalse(resultObj.get("success").getAsBoolean(),
-          "Should return error response, not throw exception");
-      assertTrue(resultObj.has("error"),
-          "Should have error message from caught exception");
+      assertTrue(resultObj.get("success").getAsBoolean(),
+          "Should succeed gracefully with empty value lists");
+      assertTrue(resultObj.has("metadata"),
+          "Should have metadata field");
+      // The value for GitSHA should be "unknown" since the values list was empty
+      var metadata = resultObj.getAsJsonObject("metadata");
+      assertEquals("unknown", metadata.get("GitSHA").getAsString(),
+          "Empty value list should produce 'unknown'");
     }
   }
 
@@ -604,10 +628,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("detects wheel slip between setpoint and measured")
     void detectsWheelSlip() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -621,10 +647,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("detects module sync issues")
     void detectsModuleSyncIssues() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -641,10 +669,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("detects odometry drift")
     void detectsOdometryDrift() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -662,10 +692,12 @@ class RobotAnalysisToolsLogicTest {
           .setPath("/test/no_swerve.wpilog")
           .addNumericEntry("/Motor/Speed", new double[]{0, 1}, new double[]{1, 2})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -679,10 +711,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("includes data quality and directives")
     void includesDataQuality() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.has("data_quality"),
@@ -702,10 +736,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("power_analysis includes data quality")
     void powerAnalysisQuality() throws Exception {
       var log = MockLogBuilder.createBrownoutMatchLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("power_analysis");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -730,10 +766,11 @@ class RobotAnalysisToolsLogicTest {
           .addNumericEntry("/Motor/Velocity", velTs, velVals)
           .addNumericEntry("/Motor/Current", currTs, currVals)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("moi_regression");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("velocity_entry", "/Motor/Velocity");
       args.addProperty("current_entry", "/Motor/Current");
       args.addProperty("kt", 0.0194);
@@ -760,11 +797,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("slip threshold parameter is respected")
     void slipThresholdRespected() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       // Very high threshold — no slip events should be detected
       var tool = findTool("analyze_swerve");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("slip_threshold", 100.0); // impossibly high
       var result = tool.execute(args).getAsJsonObject();
 
@@ -782,11 +820,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("sync threshold parameter is respected")
     void syncThresholdRespected() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       // Very high threshold — no desync events
       var tool = findTool("analyze_swerve");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("sync_threshold_rad", 100.0);
       var result = tool.execute(args).getAsJsonObject();
 
@@ -799,10 +838,11 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("explicit odometry/vision entry names work")
     void explicitOdomVisionEntries() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("odometry_entry", "/Odometry/Pose");
       args.addProperty("vision_entry", "/Vision/Pose");
       var result = tool.execute(args).getAsJsonObject();
@@ -815,10 +855,12 @@ class RobotAnalysisToolsLogicTest {
     @DisplayName("drift analysis reports correct entry names")
     void driftReportsEntryNames() throws Exception {
       var log = MockLogBuilder.createSwerveModuleLog();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_swerve");
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
 
       if (result.has("odometry_drift")) {
         var drift = result.getAsJsonObject("odometry_drift");
@@ -852,10 +894,12 @@ class RobotAnalysisToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
       var phases = result.getAsJsonObject("phases");
@@ -884,10 +928,12 @@ class RobotAnalysisToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
       var phases = result.getAsJsonObject("phases");
@@ -911,10 +957,12 @@ class RobotAnalysisToolsLogicTest {
           .setPath("/test/no_auto.wpilog")
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_match_phases");
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
       var phases = result.getAsJsonObject("phases");
@@ -936,18 +984,18 @@ class RobotAnalysisToolsLogicTest {
           .addNumericEntry("/Robot/BatteryVoltage",
               new double[]{0, 1, 2}, new double[]{12.5, 12.3, 12.1})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("compare_path", "/test/nonexistent.wpilog");
       args.addProperty("name", "/Robot/BatteryVoltage");
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("2 logs"),
-          "Error should indicate need for at least 2 logs");
     }
 
     @Test
@@ -972,10 +1020,11 @@ class RobotAnalysisToolsLogicTest {
 
       manager.testPutLog(log1.path(), log1);
       manager.testPutLog(log2.path(), log2);
-      manager.testSetActiveLogPath(log1.path());
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();
+      args.addProperty("path", log1.path());
+      args.addProperty("compare_path", log2.path());
       args.addProperty("name", "/Robot/BatteryVoltage");
 
       var result = tool.execute(args);

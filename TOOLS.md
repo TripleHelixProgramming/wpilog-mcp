@@ -1,14 +1,12 @@
 # wpilog-mcp Tool Reference
 
-Complete documentation for all 49 tools available in wpilog-mcp.
+Complete documentation for all 45 tools available in wpilog-mcp.
 
 ## Important: Concurrency Limitations
 
 > **⚠️ NOT SAFE FOR CONCURRENT USE**
 >
-> This server maintains shared state (active log, log cache) and is designed for single-client, sequential operation. **Do not call multiple tools in parallel** from the same session—execute tool calls sequentially.
->
-> Any concurrent use would require coarse-grained locking and fully reinitializing state on each request (e.g., clients cannot assume which log is currently loaded between calls).
+> This server maintains shared state (log cache) and is designed for single-client, sequential operation in stdio mode. **Do not call multiple tools in parallel** from the same session—execute tool calls sequentially. Use HTTP transport for multi-client scenarios.
 
 **Workaround:** Running multiple *separate* server instances pointing to the same log directory is safe (disk cache uses file locking and atomic operations).
 
@@ -21,7 +19,7 @@ Complete documentation for all 49 tools available in wpilog-mcp.
   - [suggest_tools](#suggest_tools)
 - [Core Tools](#core-tools)
   - [list_available_logs](#list_available_logs)
-  - [load_log](#load_log)
+  - [list_loaded_logs](#list_loaded_logs)
   - [list_entries](#list_entries)
   - [get_entry_info](#get_entry_info)
   - [read_entry](#read_entry)
@@ -32,11 +30,6 @@ Complete documentation for all 49 tools available in wpilog-mcp.
   - [list_struct_types](#list_struct_types)
   - [health_check](#health_check)
   - [get_game_info](#get_game_info)
-- [Multi-Log Management](#multi-log-management)
-  - [list_loaded_logs](#list_loaded_logs)
-  - [set_active_log](#set_active_log)
-  - [unload_log](#unload_log)
-  - [unload_all_logs](#unload_all_logs)
 - [Search Tools](#search-tools)
   - [find_condition](#find_condition)
   - [search_strings](#search_strings)
@@ -74,6 +67,7 @@ Complete documentation for all 49 tools available in wpilog-mcp.
   - [sync_status](#sync_status)
   - [set_revlog_offset](#set_revlog_offset)
   - [wait_for_sync](#wait_for_sync)
+- [Response Fields](#response-fields)
 
 ---
 
@@ -84,7 +78,7 @@ These tools help LLM agents discover and effectively use the server's capabiliti
 ### `get_server_guide`
 Get a comprehensive overview of all server capabilities, organized by category with usage guidance and anti-patterns to avoid.
 
-**IMPORTANT:** Call this tool first to understand what analysis capabilities are available. This server has 49+ specialized tools—don't write custom analysis code when a built-in tool already exists.
+**IMPORTANT:** Call this tool first to understand what analysis capabilities are available. This server has 45 specialized tools—don't write custom analysis code when a built-in tool already exists.
 
 **Parameters:**
 - `category` (optional): Filter by category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`
@@ -104,7 +98,7 @@ Get a comprehensive overview of all server capabilities, organized by category w
   "overview": {
     "server_name": "wpilog-mcp",
     "version": "0.6.1",
-    "total_tools": 49,
+    "total_tools": 45,
     "purpose": "Parse and analyze FRC robot telemetry logs"
   },
   "critical_guidance": {
@@ -159,9 +153,8 @@ Given a natural language description of what you want to analyze, this tool reco
   ],
   "suggested_workflow": [
     "1. list_available_logs - Find available logs",
-    "2. load_log - Load the specific match",
-    "3. power_analysis - Check for brownouts and current peaks",
-    "4. find_condition - Find exact timestamps of voltage drops"
+    "2. power_analysis - Check for brownouts and current peaks",
+    "3. find_condition - Find exact timestamps of voltage drops"
   ],
   "anti_patterns": [
     "Don't manually check voltage thresholds—use power_analysis"
@@ -236,6 +229,37 @@ List WPILOG files in the configured log directory with user-friendly names.
 
 **Note:** Requires `-logdir` to be configured. Team numbers and friendly names are extracted from DriverStation metadata in the log file, or parsed from common filename patterns.
 
+### `list_loaded_logs`
+List all currently loaded log files with detailed metadata.
+
+**Parameters:** None
+
+**Returns:** List of loaded logs with entry count, duration, estimated memory usage
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "loaded_log_count": 3,
+  "logs": [
+    {
+      "path": "/Users/team2363/logs/2026vadc_qm42.wpilog",
+      "entry_count": 156,
+      "duration_sec": 154.32,
+      "estimated_memory_mb": 12.5
+    },
+    {
+      "path": "/Users/team2363/logs/2026vadc_qm68.wpilog",
+      "entry_count": 148,
+      "duration_sec": 149.87,
+      "estimated_memory_mb": 11.8
+    }
+  ]
+}
+```
+
+**Use Case:** Monitor which logs are currently loaded and their memory footprint. Idle logs are automatically evicted after 30 minutes.
+
 **Supported filename patterns:**
 - Match types: `qm`/`q` (Qualification), `pm`/`p` (Practice), `sf` (Semifinal), `f` (Final), `em`/`e` (Elimination)
 - Modes: `sim`/`simulation` (Simulation), `replay` (Replay)
@@ -246,32 +270,11 @@ List WPILOG files in the configured log directory with user-friendly names.
   - `replay_2024vadc_qm42.wpilog` → "VADC Qualification 42 Replay"
   - `2024dcmp_f1_sim.wpilog` → "DCMP Final 1 Simulation"
 
-### `load_log`
-Load a WPILOG file for analysis.
-
-**Parameters:**
-- `path` (required): Path to the WPILOG file
-
-**Returns:** Log summary including entry count and time range
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "path": "/Users/team2363/logs/match.wpilog",
-  "entry_count": 156,
-  "time_range_sec": {
-    "start": 0.0,
-    "end": 154.32,
-    "duration": 154.32
-  }
-}
-```
-
 ### `list_entries`
-List all entries in the currently loaded log file.
+List all entries in the specified log file.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `pattern` (optional): Filter entries by name pattern (substring match)
 
 **Returns:** List of entries with name, type, and sample count
@@ -280,6 +283,7 @@ List all entries in the currently loaded log file.
 Get detailed information about a specific entry.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): The entry name (e.g., `/Drive/Odometry/Pose`)
 
 **Returns:** Entry metadata, sample count, time range, and sample values
@@ -288,6 +292,7 @@ Get detailed information about a specific entry.
 Read values from an entry with time range filtering and pagination.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): The entry name
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
@@ -320,6 +325,7 @@ Read values from an entry with time range filtering and pagination.
 Search for entries matching criteria.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `type_filter` (optional): Filter by type (e.g., `Pose3d`, `double`)
 - `name_contains` (optional): Filter by name substring
 - `min_samples` (optional): Minimum sample count
@@ -330,6 +336,7 @@ Search for entries matching criteria.
 Get statistics for a numeric entry.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): The entry name
 
 **Returns:** Statistics including min, max, mean, median, std_dev
@@ -356,6 +363,7 @@ Get statistics for a numeric entry.
 Compare two entries (useful for RealOutputs vs ReplayOutputs).
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name1` (required): First entry name
 - `name2` (required): Second entry name
 
@@ -363,6 +371,9 @@ Compare two entries (useful for RealOutputs vs ReplayOutputs).
 
 ### `get_types`
 Get all data types used in the log file.
+
+**Parameters:**
+- `path` (required): Path to the log file
 
 **Returns:** Types with entry counts and entry names
 
@@ -442,7 +453,7 @@ Get system health status including JVM memory usage, loaded log count, cache mem
   - `loadedLogCount`: Number of logs in cache
 - `_execution_time_ms`: Tool execution time in milliseconds
 
-**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `disk_cache` section shows persistent cache status. If memory is getting low, use `unload_log` or `unload_all_logs` to free resources.
+**Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. The `disk_cache` section shows persistent cache status. Idle logs are automatically evicted after 30 minutes.
 
 ### `get_game_info`
 Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
@@ -450,7 +461,7 @@ Get year-specific FRC game information including match timing, scoring values, f
 **Parameters:**
 - `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
 
-**Bundled game data:** 2026 REBUILT (from official game manual TU17)
+**Bundled game data:** 2024 Crescendo, 2025 Reefscape, 2026 REBUILT
 
 **Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values (fuel, tower, ranking points), field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
 
@@ -482,70 +493,13 @@ Get year-specific FRC game information including match timing, scoring values, f
 
 ---
 
-## Multi-Log Management
-
-### `list_loaded_logs`
-List all currently loaded log files with detailed metadata.
-
-**Parameters:** None
-
-**Returns:** List of loaded logs with entry count, duration, estimated memory usage, and active status
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "loaded_log_count": 3,
-  "logs": [
-    {
-      "path": "/Users/team2363/logs/2026vadc_qm42.wpilog",
-      "entry_count": 156,
-      "duration_sec": 154.32,
-      "estimated_memory_mb": 12.5,
-      "is_active": true
-    },
-    {
-      "path": "/Users/team2363/logs/2026vadc_qm68.wpilog",
-      "entry_count": 148,
-      "duration_sec": 149.87,
-      "estimated_memory_mb": 11.8,
-      "is_active": false
-    }
-  ]
-}
-```
-
-**Use Case:** Monitor which logs are currently loaded and their memory footprint. Use with `set_active_log` to switch between loaded logs, or `unload_log` to free memory.
-
-### `set_active_log`
-Set which loaded log to use for queries.
-
-**Parameters:**
-- `path` (required): Path to a loaded log file
-
-### `unload_log`
-Unload a log file from memory to free resources. Use this when done analyzing a log to prevent memory exhaustion during long sessions.
-
-**Parameters:**
-- `path` (required): Path to the log file to unload
-
-**Returns:** Confirmation with remaining loaded log count
-
-### `unload_all_logs`
-Unload all log files from memory. Use this to clean up memory during long analysis sessions.
-
-**Parameters:** None
-
-**Returns:** Count of logs unloaded
-
----
-
 ## Search Tools
 
 ### `find_condition`
 Find timestamps where a numeric entry crosses a threshold. Useful for questions like "When did battery voltage drop below 11V?"
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): Entry name (e.g., `/Robot/BatteryVoltage`)
 - `operator` (required): Comparison operator: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==)
 - `threshold` (required): Threshold value to compare against
@@ -572,6 +526,7 @@ Find timestamps where a numeric entry crosses a threshold. Useful for questions 
 Search string entries for text patterns. Useful for finding errors, warnings, or specific messages in console output logs.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `pattern` (required): Text pattern to search for (case-insensitive substring match)
 - `entry_pattern` (optional): Filter which entries to search (e.g., `Console` or `Output`)
 - `limit` (optional): Maximum matches to return (default 50)
@@ -609,6 +564,7 @@ Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) 
 **Note:** IQR calculation uses linear interpolation between data points for accurate percentile estimates, ensuring reliable outlier detection even with small datasets.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): Entry name to analyze (must be numeric type)
 - `iqr_multiplier` (optional): Multiplier for IQR bounds (default 1.5). Use 3.0 for extreme outliers only
 - `spike_threshold` (optional): Detect spikes larger than this percentage change (e.g., 50 for 50% change)
@@ -655,7 +611,8 @@ Detect match phases from DriverStation/FMS data in the log. Phases are derived f
 - Match start/end come from enable/disable transitions
 - If DriverStation data is not present in the log, returns a warning instead of guessing
 
-**Parameters:** None
+**Parameters:**
+- `path` (required): Path to the log file
 
 **Returns:** Time ranges for detected phases, match duration, and source indicator
 
@@ -694,6 +651,7 @@ Detect match phases from DriverStation/FMS data in the log. Phases are derived f
 Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are sorted by height difference (how much they stand out from neighboring values).
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): Entry name to analyze (must be numeric type)
 - `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
 - `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
@@ -732,6 +690,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
 Compute rate of change (derivative) of numeric data over time. Calculates dv/dt for each sample. Useful for computing velocity from position, acceleration from velocity, or detecting rapid changes in any value.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): Entry name to analyze (must be numeric type)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
@@ -774,6 +733,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - |r| < 0.3: No significant correlation
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name1` (required): First entry name (must be numeric)
 - `name2` (required): Second entry name (must be numeric)
 - `start_time` (optional): Start timestamp in seconds
@@ -802,6 +762,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 Analyze swerve drive module performance. Searches for entries containing SwerveModuleState, SwerveModulePosition, ChassisSpeeds, or entries with "swerve"/"module" in the name. Reports statistics for each module found.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `module_prefix` (optional): Entry path prefix for swerve modules (e.g., `/Drive/Module` or `/Swerve`). If omitted, searches all entries
 
 **Returns:** Lists of found swerve-related entries and per-module statistics (max/avg speed)
@@ -845,6 +806,7 @@ Analyze power distribution (PDP/PDH) data. Finds battery voltage entries, per-ch
 - **LOW**: Voltage stayed above threshold + 1V
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
 - `brownout_threshold` (optional): Voltage threshold for brownout warning (default 6.8V for roboRIO 1; set to 6.3V for roboRIO 2)
 
@@ -892,7 +854,8 @@ Analyze CAN bus health by searching for CAN-related entries and string entries c
 - **CONCERNING**: Multiple CAN errors (10-50)
 - **POOR**: Many CAN errors (> 50)
 
-**Parameters:** None
+**Parameters:**
+- `path` (required): Path to the log file
 
 **Returns:** List of CAN entries, error counts by entry, sample error messages, and health assessment
 
@@ -922,12 +885,14 @@ Analyze CAN bus health by searching for CAN-related entries and string entries c
 ```
 
 ### `compare_matches`
-Compare statistics for an entry across multiple loaded log files. Useful for comparing robot performance across different matches. Requires at least 2 logs to be loaded.
+Compare statistics for an entry across two log files. Useful for comparing robot performance across different matches.
 
 **Parameters:**
+- `path` (required): Path to the first log file
+- `compare_path` (required): Path to the second log file
 - `name` (required): Entry name to compare across logs
 
-**Returns:** Statistics (min, max, mean) for each loaded log file
+**Returns:** Statistics (min, max, mean) for each log file
 
 **Example Response:**
 ```json
@@ -965,7 +930,8 @@ Compare statistics for an entry across multiple loaded log files. Useful for com
 ### `get_code_metadata`
 Extract code metadata from the log. WPILib and AdvantageKit typically log Git information at startup. This tool searches for entries containing GitSHA, GitBranch, GitDirty, BuildDate, RuntimeType, ProjectName, MavenGroup, MavenName, and Version.
 
-**Parameters:** None
+**Parameters:**
+- `path` (required): Path to the log file
 
 **Returns:** Found metadata values and list of all metadata-related entries
 
@@ -1166,8 +1132,9 @@ Export entry data to a CSV file for external analysis in Excel, Python, MATLAB, 
 - **Other types**: `timestamp_sec,value`
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `name` (required): Entry name to export
-- `output_path` (required): Path for output CSV file (will be created or overwritten)
+- `output_path` (required): Path for output CSV file (must be within the configured export directory). Default export directory: `{tmpdir}/wpilog-export/`. Configure with `-exportdir`, `WPILOG_EXPORT_DIR`, or `"exportdir"` in `servers.json`.
 - `start_time` (optional): Start timestamp in seconds (filters data)
 - `end_time` (optional): End timestamp in seconds (filters data)
 
@@ -1194,7 +1161,8 @@ Generate a comprehensive match summary report. Collects key metrics from the log
 - **code_info**: Git SHA and branch (if available)
 - **top_data_types**: Most common data types in the log
 
-**Parameters:** None
+**Parameters:**
+- `path` (required): Path to the log file
 
 **Returns:** Comprehensive JSON report with all sections
 
@@ -1246,6 +1214,7 @@ Generate a comprehensive match summary report. Collects key metrics from the log
 Generate a chronological timeline of critical robot events. Detects enable/disable transitions, match phase changes, brownout events, joystick disconnects, and errors/warnings.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `brownout_threshold` (optional): Voltage threshold for brownout detection (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
@@ -1299,6 +1268,7 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 Analyze vision system reliability and pose estimation quality. Detects target acquisition rate, flicker (rapid loss/reacquisition), and sudden pose jumps ("teleportation"). Enhanced with pose jump detection to identify unreliable vision estimates that can cause odometry drift.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `vision_prefix` (optional): Entry path prefix for vision data (auto-detect if not specified)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
@@ -1359,10 +1329,10 @@ Analyze vision system reliability and pose estimation quality. Detects target ac
 Analyze closed-loop mechanism performance including following error RMSE, stall detection, settling time, overshoot calculations, and temperature profiling. Enhanced with advanced control system metrics for PID tuning and mechanism health monitoring.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `mechanism_name` (required): Name or prefix of mechanism to analyze (e.g., "Elevator", "Arm", "Shooter")
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
-- `settling_threshold` (optional): Position error threshold for settling time calculation (default: 0.02 or 2%)
 - `stall_current_threshold` (optional): Current threshold for stall detection in amperes (default: 30A)
 
 **Searches for entries containing the mechanism name plus:**
@@ -1434,8 +1404,8 @@ Analyze closed-loop mechanism performance including following error RMSE, stall 
 Analyze autonomous routine performance including path following error RMSE, maximum deviation, and completion timing. Enhanced with detailed path following metrics for tuning trajectory following controllers.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `auto_prefix` (optional): Entry path prefix for auto data (auto-detect if not specified)
-- `auto_duration` (optional): Expected autonomous duration in seconds (default: 15)
 
 **Searches for entries containing:**
 - Auto selector: `chooser`, `auto` + `select`
@@ -1476,6 +1446,7 @@ Analyze game piece handling cycle times with flexible cycle detection modes, dat
 - **start_to_end**: Measures from `cycle_start_state` to `cycle_end_state`. More semantically correct for workflows with distinct start and end states.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `state_entry` (required): Entry name for mechanism state machine
 - `cycle_mode` (optional, default: `"start_to_start"`): Cycle detection mode (`"start_to_start"` or `"start_to_end"`)
 - `cycle_start_state` (optional): State value marking cycle start (e.g., `"INTAKING"`) - required for both modes
@@ -1585,8 +1556,7 @@ Incomplete cycles are still included in the output for visibility, but excluded 
 Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. Identifies entries that diverged and their first divergence timestamp.
 
 **Parameters:**
-- `tolerance` (optional): Numeric tolerance for comparison (default: 1e-6)
-- `max_divergences` (optional): Maximum divergent entries to report (default: 50)
+- `path` (required): Path to the log file
 
 **Pairs entries matching:**
 - `/RealOutputs/*` with `/ReplayOutputs/*`
@@ -1625,7 +1595,7 @@ Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOut
 Analyze robot code loop timing performance. Detects loop overruns (> 20ms), measures jitter, and provides timing statistics. Critical for diagnosing real-time performance issues that can cause stuttering, dropped commands, or unstable control.
 
 **Parameters:**
-- `loop_time_entry` (optional): Entry name for loop time (auto-detects common patterns if not specified)
+- `path` (required): Path to the log file
 - `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20ms for standard 50Hz loop)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
@@ -1690,7 +1660,8 @@ Analyze robot code loop timing performance. Detects loop overruns (> 20ms), meas
 Analyze CAN bus health, utilization, and error rates. Monitors bus loading and detects communication errors that can cause device timeouts or unreliable sensor readings.
 
 **Parameters:**
-- `utilization_threshold` (optional): Bus utilization percentage threshold for warnings (default: 80%)
+- `path` (required): Path to the log file
+- `bus_name` (optional): CAN bus name (default: `"rio"`)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 
@@ -1770,6 +1741,7 @@ Analyze CAN bus health, utilization, and error rates. Monitors bus loading and d
 Analyze battery voltage and current draw to predict brownout risk and estimate battery health. Returns a health score (0–100), risk level, voltage statistics, recovery analysis, and actionable recommendations.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
@@ -1813,57 +1785,6 @@ Brownout detection uses 0.2V hysteresis — voltage must rise 0.2V above the thr
   "data_quality": { "sample_count": 7500, "quality_score": 0.92 }
 }
 ```
-
----
-
-## Response Metadata
-
-All analytical tools (15+) include two metadata sections in their responses that help LLMs calibrate their confidence when interpreting results.
-
-### `data_quality`
-
-Computed from the primary data entry's timestamped values. Includes:
-
-| Field | Description |
-|-------|-------------|
-| `sample_count` | Number of data points |
-| `time_span_seconds` | Duration of the data |
-| `gap_count` | Number of data gaps (intervals > 5× the median sample interval) |
-| `max_gap_ms` | Largest gap in milliseconds (only present if gaps > 0) |
-| `nan_filtered` | Count of NaN/Infinity values filtered (only present if > 0) |
-| `effective_sample_rate_hz` | Actual sample rate based on median interval |
-| `quality_score` | Composite score 0.0–1.0 (see formula below) |
-
-**Quality Score Formula:**
-```
-score = 1.0
-  - 0.3 × min(gap_count / 20, 1)       // Gaps: 20+ gaps = full penalty
-  - 0.2 × min(nan_count / total, 1)     // NaN: ratio of non-finite values
-  - 0.3 × (n<100 ? 1 : n<500 ? 0.5 : 0) // Samples: statistical confidence
-  - 0.2 × min(jitter / median_dt, 1)    // Jitter: timing irregularity
-```
-
-**Confidence levels** derived from quality score:
-- `"high"` (> 0.8): Reliable data, results can be stated with confidence
-- `"moderate"` (0.5–0.8): Usable data, note caveats in analysis
-- `"low"` (< 0.5): Poor data, results should be treated as preliminary
-
-### `server_analysis_directives`
-
-Auto-generated LLM guidance based on data quality issues detected:
-
-| Field | Description |
-|-------|-------------|
-| `confidence_level` | "high", "moderate", or "low" |
-| `sample_context` | Human-readable summary (e.g., "Based on 4500 samples over 150.0 seconds") |
-| `interpretation_guidance` | Array of warnings about data quality issues detected |
-| `suggested_followup` | Array of recommended next tools to call |
-
-Auto-generated guidance triggers:
-- Sample count < 100 → "Low sample count" warning
-- Gap count > 5 → "Data gaps detected" warning
-- NaN values present → "Non-finite values filtered" warning
-- Time span < 10 seconds → "Short time span" warning
 
 ---
 
@@ -1927,6 +1848,7 @@ The revlog parser includes guards against corrupted or truncated files:
 List all available signals from synchronized REV log files. Shows signal names, device info, sample counts, and synchronization confidence.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `device_filter` (optional): Filter signals by device key substring (e.g., "SparkMax_1")
 - `signal_filter` (optional): Filter signals by signal name substring (e.g., "velocity")
 
@@ -1988,6 +1910,7 @@ List all available signals from synchronized REV log files. Shows signal names, 
 Get data from a REV log signal with timestamps converted to FPGA time. Similar to `read_entry` but for REV motor controller data.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `signal_key` (required): Signal key from `list_revlog_signals` (e.g., "REV/SparkMax_1/appliedOutput")
 - `start_time` (optional): Start timestamp in seconds (FPGA time)
 - `end_time` (optional): End timestamp in seconds (FPGA time)
@@ -2031,6 +1954,7 @@ Get data from a REV log signal with timestamps converted to FPGA time. Similar t
 Get detailed synchronization status for all synchronized REV log files. Shows confidence levels, timing offsets, and the signal pairs used for correlation.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `include_signal_pairs` (optional): Include details about which signal pairs were used for correlation
 
 **Returns:** Detailed sync status with confidence assessment and offset information
@@ -2095,17 +2019,17 @@ Get detailed synchronization status for all synchronized REV log files. Shows co
 
 **Example Workflow:**
 ```
-1. load_log("/logs/match.wpilog")           # Auto-syncs revlogs in same dir
-2. sync_status()                             # Check sync confidence
-3. list_revlog_signals()                     # See available signals
-4. get_revlog_data(signal_key="REV/SparkMax_1/appliedOutput", start_time=15.0, end_time=30.0)
-5. compare with read_entry(name="/drive/frontLeft/output", start_time=15.0, end_time=30.0)
+1. sync_status(path="/logs/match.wpilog")    # Check sync confidence (auto-loads log)
+2. list_revlog_signals(path="/logs/match.wpilog")  # See available signals
+3. get_revlog_data(path="/logs/match.wpilog", signal_key="REV/SparkMax_1/appliedOutput", start_time=15.0, end_time=30.0)
+4. compare with read_entry(path="/logs/match.wpilog", name="/drive/frontLeft/output", start_time=15.0, end_time=30.0)
 ```
 
 ### `set_revlog_offset`
 Manually set the synchronization offset for a REV log file, overriding automatic synchronization. Use this when automatic sync fails, produces incorrect results, or when you have determined the correct offset through other means (e.g., by visually aligning a known event in both logs).
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `offset_ms` (required): Time offset in milliseconds to add to revlog timestamps to convert them to FPGA time. Example: if a revlog event appears 500ms after the same event in wpilog, set `offset_ms` to -500
 - `can_bus` (optional): CAN bus name to apply offset to (e.g., "rio"). If omitted, applies to the first/only revlog
 
@@ -2131,9 +2055,10 @@ Manually set the synchronization offset for a REV log file, overriding automatic
 - The recording started with the robot disabled for a long period and correlation was poor
 
 ### `wait_for_sync`
-Wait for background RevLog synchronization to complete. RevLog synchronization runs asynchronously after `load_log` returns, so revlog data may not be immediately available. Call this tool if you need revlog data right away. Returns instantly if sync is already done or no revlogs are present.
+Wait for background RevLog synchronization to complete. RevLog synchronization runs asynchronously after a log is first loaded, so revlog data may not be immediately available. Call this tool if you need revlog data right away. Returns instantly if sync is already done or no revlogs are present.
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `timeout_ms` (optional): Maximum time to wait in milliseconds (default: 30000)
 
 **Returns:** Completion status and revlog count
@@ -2150,6 +2075,57 @@ Wait for background RevLog synchronization to complete. RevLog synchronization r
 ```
 
 **When to use this:**
-- After `load_log`, when you need to immediately query revlog signals
+- After loading a log, when you need to immediately query revlog signals
 - When `sync_status` or `list_revlog_signals` shows `sync_in_progress: true`
 - Not needed if you call other tools first — sync usually completes within a few seconds
+
+---
+
+## Response Fields
+
+The following are **not callable MCP tools**. They are metadata fields embedded in the JSON responses of analytical tools to help LLMs calibrate their confidence when interpreting results.
+
+### `data_quality`
+
+Computed from the primary data entry's timestamped values. Included in responses from all analytical tools (15+).
+
+| Field | Description |
+|-------|-------------|
+| `sample_count` | Number of data points |
+| `time_span_seconds` | Duration of the data |
+| `gap_count` | Number of data gaps (intervals > 5x the median sample interval) |
+| `max_gap_ms` | Largest gap in milliseconds (only present if gaps > 0) |
+| `nan_filtered` | Count of NaN/Infinity values filtered (only present if > 0) |
+| `effective_sample_rate_hz` | Actual sample rate based on median interval |
+| `quality_score` | Composite score 0.0-1.0 (see formula below) |
+
+**Quality Score Formula:**
+```
+score = 1.0
+  - 0.3 x min(gap_count / 20, 1)       // Gaps: 20+ gaps = full penalty
+  - 0.2 x min(nan_count / total, 1)     // NaN: ratio of non-finite values
+  - 0.3 x (n<100 ? 1 : n<500 ? 0.5 : 0) // Samples: statistical confidence
+  - 0.2 x min(jitter / median_dt, 1)    // Jitter: timing irregularity
+```
+
+**Confidence levels** derived from quality score:
+- `"high"` (> 0.8): Reliable data, results can be stated with confidence
+- `"moderate"` (0.5-0.8): Usable data, note caveats in analysis
+- `"low"` (< 0.5): Poor data, results should be treated as preliminary
+
+### `server_analysis_directives`
+
+Auto-generated LLM guidance based on data quality issues detected. Included alongside `data_quality` in analytical tool responses.
+
+| Field | Description |
+|-------|-------------|
+| `confidence_level` | "high", "moderate", or "low" |
+| `sample_context` | Human-readable summary (e.g., "Based on 4500 samples over 150.0 seconds") |
+| `interpretation_guidance` | Array of warnings about data quality issues detected |
+| `suggested_followup` | Array of recommended next tools to call |
+
+Auto-generated guidance triggers:
+- Sample count < 100 -> "Low sample count" warning
+- Gap count > 5 -> "Data gaps detected" warning
+- NaN values present -> "Non-finite values filtered" warning
+- Time span < 10 seconds -> "Short time span" warning

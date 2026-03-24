@@ -43,6 +43,7 @@ public class HttpTransport {
   private final int port;
   private HttpServer server;
   private ScheduledExecutorService scheduler;
+  private java.util.concurrent.ExecutorService sseExecutor;
 
   public HttpTransport(ToolRegistry toolRegistry, int port) {
     this.gson = new GsonBuilder().serializeNulls().create();
@@ -54,8 +55,18 @@ public class HttpTransport {
   public void start() throws IOException {
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
     server.createContext("/mcp", this::handleRequest);
-    server.setExecutor(Executors.newCachedThreadPool());
+    server.createContext("/health", this::handleHealthCheck);
+    server.setExecutor(Executors.newFixedThreadPool(
+        Math.max(4, Runtime.getRuntime().availableProcessors() * 2)));
     server.start();
+
+    // Separate thread pool for SSE streams — these block indefinitely and must not
+    // starve the main request handler pool.
+    sseExecutor = Executors.newCachedThreadPool(r -> {
+      var t = new Thread(r, "sse-stream");
+      t.setDaemon(true);
+      return t;
+    });
 
     // Schedule periodic session cleanup
     scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -75,6 +86,9 @@ public class HttpTransport {
   }
 
   public void stop() {
+    if (sseExecutor != null) {
+      sseExecutor.shutdownNow();
+    }
     if (scheduler != null) {
       scheduler.shutdownNow();
     }
@@ -175,13 +189,30 @@ public class HttpTransport {
       return;
     }
 
-    // Resolve session from header (batch cannot contain initialize)
+    // Resolve session from header
     var sessionId = exchange.getRequestHeaders().getFirst(SESSION_HEADER);
     McpSession session = null;
     if (sessionId != null) {
       session = sessionManager.getSession(sessionId);
       if (session == null) {
         sendError(exchange, 404, "Session not found or expired");
+        return;
+      }
+    } else {
+      // No session header — check if batch contains an initialize request.
+      // If not, reject (matching handleSinglePost behavior).
+      boolean hasInitialize = false;
+      for (var element : batch) {
+        if (element.isJsonObject()) {
+          var msg = element.getAsJsonObject();
+          if (msg.has("method") && "initialize".equals(msg.get("method").getAsString())) {
+            hasInitialize = true;
+            break;
+          }
+        }
+      }
+      if (!hasInitialize) {
+        sendError(exchange, 400, "Missing " + SESSION_HEADER + " header");
         return;
       }
     }
@@ -248,22 +279,30 @@ public class HttpTransport {
     }
 
     // Open SSE stream with keep-alive
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && isAllowedOrigin(origin)) {
+      exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
+    }
     exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
     exchange.getResponseHeaders().set("Cache-Control", "no-cache");
     exchange.getResponseHeaders().set("Connection", "keep-alive");
     exchange.sendResponseHeaders(200, 0);
 
-    // Keep the stream open with periodic pings until the client disconnects
-    try (OutputStream os = exchange.getResponseBody()) {
-      while (sessionManager.getSession(sessionId) != null) {
-        os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8));
-        os.flush();
-        Thread.sleep(15_000);
+    // Keep the stream open with periodic pings until the client disconnects.
+    // Run on a separate cached thread pool to avoid consuming the main thread pool
+    // indefinitely — each SSE client holds a thread for the session's lifetime.
+    sseExecutor.submit(() -> {
+      try (OutputStream os = exchange.getResponseBody()) {
+        while (sessionManager.getSession(sessionId) != null) {
+          os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8));
+          os.flush();
+          Thread.sleep(15_000);
+        }
+      } catch (IOException | InterruptedException e) {
+        // Client disconnected or thread interrupted — normal
+        logger.debug("SSE stream closed for session {}", sessionId);
       }
-    } catch (IOException | InterruptedException e) {
-      // Client disconnected or thread interrupted — normal
-      logger.debug("SSE stream closed for session {}", sessionId);
-    }
+    });
   }
 
   private void handleDelete(HttpExchange exchange) throws IOException {
@@ -319,8 +358,29 @@ public class HttpTransport {
     error.addProperty("error", message);
     var bytes = gson.toJson(error).getBytes(StandardCharsets.UTF_8);
 
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && isAllowedOrigin(origin)) {
+      exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
+    }
     exchange.getResponseHeaders().set("Content-Type", "application/json");
     exchange.sendResponseHeaders(status, bytes.length);
+    try (OutputStream os = exchange.getResponseBody()) {
+      os.write(bytes);
+    }
+  }
+
+  private void handleHealthCheck(HttpExchange exchange) throws IOException {
+    if (!"GET".equals(exchange.getRequestMethod())) {
+      exchange.sendResponseHeaders(405, -1);
+      exchange.close();
+      return;
+    }
+    var health = new JsonObject();
+    health.addProperty("status", "ok");
+    health.addProperty("sessions", sessionManager.size());
+    var bytes = gson.toJson(health).getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "application/json");
+    exchange.sendResponseHeaders(200, bytes.length);
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }

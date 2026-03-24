@@ -79,8 +79,9 @@ public final class ContentFingerprint {
    * @return The cache filename (e.g., "a3f7b2c1...-157286432.msgpack")
    */
   public static String cacheFileName(String fingerprint, long fileSize) {
-    // Use first 16 chars of fingerprint for brevity
-    String prefix = fingerprint.length() > 16 ? fingerprint.substring(0, 16) : fingerprint;
+    // Use first 32 chars (128 bits) of fingerprint for collision resistance.
+    // 16 chars (64 bits) was too short given the partial-file sampling strategy.
+    String prefix = fingerprint.length() > 32 ? fingerprint.substring(0, 32) : fingerprint;
     return prefix + "-" + fileSize + ".msgpack";
   }
 

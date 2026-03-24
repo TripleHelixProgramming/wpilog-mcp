@@ -3,6 +3,9 @@ package org.triplehelix.wpilogmcp.revlog;
 import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -20,20 +23,16 @@ import org.triplehelix.wpilogmcp.revlog.dbc.DbcDatabase;
 /**
  * Parser for REV .revlog binary files.
  *
- * <p>RevLog files use the WPILOG binary format to store CAN bus data captured
- * from REV SPARK MAX/Flex motor controllers. This parser:
+ * <p>Supports two formats:
  * <ul>
- *   <li>Reads the WPILOG-format binary file</li>
- *   <li>Identifies REV motor controller devices</li>
- *   <li>Decodes periodic status frames using DBC definitions</li>
- *   <li>Extracts named signals with timestamps</li>
+ *   <li><b>WPILOG format</b> — DataLog files containing CAN bus data with entry names
+ *       like "CAN/{DeviceId}/Periodic Status {N}". Parsed via WPILib's DataLogReader.</li>
+ *   <li><b>REV native binary format</b> — Variable-length records with firmware and periodic
+ *       status entries containing raw CAN frames. Format documented by REVrobotics/node-revlog-converter.</li>
  * </ul>
  *
- * <p>Entry naming conventions in revlog files:
- * <ul>
- *   <li>Device entries: "CAN/{DeviceId}" with type "rawBytes"</li>
- *   <li>Status frames: "CAN/{DeviceId}/Periodic Status {N}" with raw CAN data</li>
- * </ul>
+ * <p>Format detection is automatic: the parser tries WPILOG first, then falls back to the
+ * native format. Both paths decode CAN signals using the same DBC-based pipeline.
  *
  * @since 0.5.0
  */
@@ -88,7 +87,9 @@ public class RevLogParser {
     DataLogReader reader = new DataLogReader(pathStr);
 
     if (!reader.isValid()) {
-      throw new IOException("Invalid revlog file: " + pathStr);
+      // Try REV native binary format (not WPILOG)
+      logger.debug("File is not WPILOG format, trying REV native binary: {}", pathStr);
+      return parseNativeFormat(path);
     }
 
     // Extract timestamp from filename
@@ -275,6 +276,236 @@ public class RevLogParser {
     // API Index = statusFrame
     // Device ID = deviceId
     return CanDecoder.buildArbitrationId(2, 5, 6, statusFrame, deviceId);
+  }
+
+  // ==================== REV Native Binary Format ====================
+
+  /**
+   * Parses a .revlog file in REV's native binary format.
+   *
+   * <p>Format specification (from REVrobotics/node-revlog-converter):
+   * <ul>
+   *   <li>Records are variable-length, starting with a 1-byte bitfield</li>
+   *   <li>Bitfield bits 0-1: entry ID byte length - 1</li>
+   *   <li>Bitfield bits 2-3: payload size byte length - 1</li>
+   *   <li>Entry ID 1 = firmware info (10-byte chunks: 4-byte CAN ID + 6-byte data)</li>
+   *   <li>Entry ID 2 = periodic status (16-byte chunks: 4-byte timestamp + 4-byte CAN ID + 8-byte data)</li>
+   * </ul>
+   *
+   * @param path The file path
+   * @return The parsed revlog data
+   * @throws IOException if the file cannot be read or parsed
+   */
+  private ParsedRevLog parseNativeFormat(Path path) throws IOException {
+    byte[] fileData = Files.readAllBytes(path);
+    var buf = ByteBuffer.wrap(fileData).order(ByteOrder.LITTLE_ENDIAN);
+
+    String filenameTimestamp = extractFilenameTimestamp(path.getFileName().toString());
+
+    Map<Integer, RevLogDevice> devices = new LinkedHashMap<>();
+    Map<String, List<TimestampedValue>> signalValues = new LinkedHashMap<>();
+    double minTimestamp = Double.MAX_VALUE;
+    double maxTimestamp = Double.NEGATIVE_INFINITY;
+    long recordCount = 0;
+
+    int pos = 0;
+    while (pos < fileData.length) {
+      if (recordCount > MAX_RECORDS) {
+        logger.warn("Native revlog exceeded maximum record count, truncating");
+        break;
+      }
+
+      try {
+        // Read record header bitfield
+        int bitfield = fileData[pos] & 0xFF;
+        pos++;
+
+        int entryIdLen = (bitfield & 0x03) + 1;
+        int payloadSizeLen = ((bitfield >> 2) & 0x03) + 1;
+
+        if (pos + entryIdLen + payloadSizeLen > fileData.length) break;
+
+        // Read entry ID (variable length, LE)
+        long entryId = readVarInt(fileData, pos, entryIdLen);
+        pos += entryIdLen;
+
+        // Read payload size (variable length, LE)
+        long payloadSize = readVarInt(fileData, pos, payloadSizeLen);
+        pos += payloadSizeLen;
+
+        if (payloadSize < 0 || pos + payloadSize > fileData.length) {
+          logger.debug("Native revlog: invalid payload size {} at offset {}", payloadSize, pos);
+          break;
+        }
+
+        int payloadStart = pos;
+        pos += (int) payloadSize;
+        recordCount++;
+
+        if (entryId == 1) {
+          // Firmware entry: 10-byte chunks (4-byte CAN ID LE + 6-byte data)
+          parseFirmwareEntry(fileData, payloadStart, (int) payloadSize, devices);
+        } else if (entryId == 2) {
+          // Periodic status: 16-byte chunks (4-byte timestamp ms LE + 4-byte CAN ID LE + 8-byte data)
+          parsePeriodicEntry(fileData, payloadStart, (int) payloadSize,
+              devices, signalValues);
+
+          // Update timestamp range from the last chunk in this payload
+          int numChunks = (int) payloadSize / 16;
+          if (numChunks > 0) {
+            int firstChunkOffset = payloadStart;
+            int lastChunkOffset = payloadStart + (numChunks - 1) * 16;
+            double firstTs = readU32LE(fileData, firstChunkOffset) / 1000.0;
+            double lastTs = readU32LE(fileData, lastChunkOffset) / 1000.0;
+            minTimestamp = Math.min(minTimestamp, firstTs);
+            maxTimestamp = Math.max(maxTimestamp, lastTs);
+          }
+        }
+        // Other entry IDs are silently ignored
+      } catch (Exception e) {
+        logger.debug("Native revlog parse error at offset {}: {}", pos, e.getMessage());
+        break;
+      }
+    }
+
+    // Convert signal values to RevLogSignal objects
+    Map<String, RevLogSignal> signals = new LinkedHashMap<>();
+    for (var entry : signalValues.entrySet()) {
+      String key = entry.getKey();
+      int slashIndex = key.lastIndexOf('/');
+      if (slashIndex > 0) {
+        String deviceKey = key.substring(0, slashIndex);
+        String signalName = key.substring(slashIndex + 1);
+        String unit = getSignalUnit(signalName);
+        signals.put(key, new RevLogSignal(signalName, deviceKey, entry.getValue(), unit));
+      }
+    }
+
+    logger.info("Parsed native revlog: {} devices, {} signals, {} records from {}",
+        devices.size(), signals.size(), recordCount, path.getFileName());
+
+    return new ParsedRevLog(
+        path.toString(),
+        filenameTimestamp,
+        devices,
+        signals,
+        minTimestamp == Double.MAX_VALUE ? 0 : minTimestamp,
+        maxTimestamp == Double.NEGATIVE_INFINITY ? 0 : maxTimestamp,
+        recordCount);
+  }
+
+  /**
+   * Parses firmware entry chunks (entry ID 1).
+   * Each chunk: 4-byte CAN ID (LE) + 6-byte firmware data.
+   */
+  private void parseFirmwareEntry(byte[] data, int offset, int size,
+      Map<Integer, RevLogDevice> devices) {
+    for (int i = offset; i + 10 <= offset + size; i += 10) {
+      int canMsgId = readI32LE(data, i);
+      int deviceType = (canMsgId >> 24) & 0x1F;
+      int deviceId = canMsgId & 0x3F;
+
+      String typeName = switch (deviceType) {
+        case 2 -> "SPARK MAX";
+        case 12 -> "Servo Hub";
+        case 7 -> "MAXSpline Encoder";
+        default -> "Unknown (" + deviceType + ")";
+      };
+
+      // Parse firmware version from the 6-byte data
+      String firmware = null;
+      if (deviceType == 2 || deviceType == 12) {
+        // Spark/Servo Hub: byte 0=major, 1=minor, 2-3=build (BE u16)
+        int major = data[i + 4] & 0xFF;
+        int minor = data[i + 5] & 0xFF;
+        int build = ((data[i + 6] & 0xFF) << 8) | (data[i + 7] & 0xFF);
+        firmware = major + "." + minor + "." + build;
+      }
+
+      // Key by composite (deviceType << 6 | deviceId) to avoid collisions
+      // when different device types share the same CAN ID
+      int compositeKey = (deviceType << 6) | deviceId;
+      if (!devices.containsKey(compositeKey)) {
+        devices.put(compositeKey, new RevLogDevice(deviceId, typeName, firmware));
+        logger.debug("Native revlog device: CAN ID {}, type {}, firmware {}",
+            deviceId, typeName, firmware);
+      }
+    }
+  }
+
+  /**
+   * Parses periodic status entry chunks (entry ID 2).
+   * Each chunk: 4-byte timestamp ms (LE) + 4-byte CAN ID (LE) + 8-byte CAN data.
+   */
+  private void parsePeriodicEntry(byte[] data, int offset, int size,
+      Map<Integer, RevLogDevice> devices,
+      Map<String, List<TimestampedValue>> signalValues) {
+    for (int i = offset; i + 16 <= offset + size; i += 16) {
+      long timestampMs = readU32LE(data, i);
+      int canMsgId = readI32LE(data, i + 4);
+      byte[] canData = new byte[8];
+      System.arraycopy(data, i + 8, canData, 0, 8);
+
+      double timestamp = timestampMs / 1000.0;
+
+      // Extract device info from CAN message ID
+      int deviceType = (canMsgId >> 24) & 0x1F;
+      int deviceId = canMsgId & 0x3F;
+      int apiIndex = (canMsgId >> 6) & 0xF;
+
+      // Key by composite (deviceType << 6 | deviceId) to avoid collisions
+      // when different device types share the same CAN ID
+      int compositeKey = (deviceType << 6) | deviceId;
+      if (!devices.containsKey(compositeKey)) {
+        String typeName = switch (deviceType) {
+          case 2 -> "SPARK MAX";
+          case 12 -> "Servo Hub";
+          case 7 -> "MAXSpline Encoder";
+          default -> "Unknown (" + deviceType + ")";
+        };
+        devices.put(compositeKey, new RevLogDevice(deviceId, typeName));
+      }
+
+      String deviceKey = devices.get(compositeKey).deviceKey();
+
+      // The CAN message IDs in native revlog files use a different bit encoding
+      // than the DBC arbitration IDs. Reconstruct the DBC-compatible arb ID
+      // from the extracted fields (device type, manufacturer, API class 6, API index, device ID 0).
+      int dbcArbId = CanDecoder.buildArbitrationId(deviceType, 5, 6, apiIndex, 0);
+      Map<String, Double> decodedSignals = decoder.decode(dbcArbId, canData);
+
+      for (var signalEntry : decodedSignals.entrySet()) {
+        String signalKey = deviceKey + "/" + signalEntry.getKey();
+        signalValues
+            .computeIfAbsent(signalKey, k -> new ArrayList<>())
+            .add(new TimestampedValue(timestamp, signalEntry.getValue()));
+      }
+    }
+  }
+
+  /** Reads a variable-length unsigned integer (LE, 1-4 bytes). */
+  private static long readVarInt(byte[] data, int offset, int len) {
+    long value = 0;
+    for (int i = 0; i < len; i++) {
+      value |= (long) (data[offset + i] & 0xFF) << (8 * i);
+    }
+    return value;
+  }
+
+  /** Reads a 32-bit unsigned integer (LE). */
+  private static long readU32LE(byte[] data, int offset) {
+    return ((long) (data[offset] & 0xFF))
+        | ((long) (data[offset + 1] & 0xFF) << 8)
+        | ((long) (data[offset + 2] & 0xFF) << 16)
+        | ((long) (data[offset + 3] & 0xFF) << 24);
+  }
+
+  /** Reads a 32-bit signed integer (LE). */
+  private static int readI32LE(byte[] data, int offset) {
+    return (data[offset] & 0xFF)
+        | ((data[offset + 1] & 0xFF) << 8)
+        | ((data[offset + 2] & 0xFF) << 16)
+        | ((data[offset + 3] & 0xFF) << 24);
   }
 
   /**

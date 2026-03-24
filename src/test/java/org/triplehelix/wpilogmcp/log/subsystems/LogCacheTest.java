@@ -60,12 +60,9 @@ class LogCacheTest {
   void testClear() {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
-    cache.setActiveLogPath("/log1.wpilog");
-
     cache.clear();
 
     assertEquals(0, cache.size());
-    assertNull(cache.getActiveLogPath());
   }
 
   @Test
@@ -89,19 +86,21 @@ class LogCacheTest {
   }
 
   @Test
-  void testActiveLogNotEvicted() {
+  void testLRUEvictsOldest() {
     cache.setMaxLoadedLogs(2);
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
-    cache.setActiveLogPath("/log1.wpilog"); // Make log1 active
+
+    // Access log1 to make it recently used
+    cache.get("/log1.wpilog");
 
     cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
-    cache.evictIfNeeded(); // Should evict log2, not log1
+    cache.evictIfNeeded(); // Should evict log2 (least recently used)
 
     assertEquals(2, cache.size());
-    assertNotNull(cache.get("/log1.wpilog")); // Active log kept
-    assertNull(cache.get("/log2.wpilog")); // LRU non-active log evicted
+    assertNotNull(cache.get("/log1.wpilog")); // Recently accessed
+    assertNull(cache.get("/log2.wpilog")); // LRU — evicted
     assertNotNull(cache.get("/log3.wpilog"));
   }
 
@@ -137,14 +136,12 @@ class LogCacheTest {
     cache.setMaxLoadedLogs(10);
     cache.setMaxMemoryMb(2048);
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-    cache.setActiveLogPath("/log1.wpilog");
 
     var stats = cache.getStats();
 
     assertEquals(1, stats.get("size"));
     assertEquals(10, stats.get("maxLogs"));
     assertEquals(2048, stats.get("maxMemoryMb"));
-    assertEquals("/log1.wpilog", stats.get("activeLog"));
     assertTrue(stats.containsKey("estimatedMemoryMb"));
   }
 
@@ -160,31 +157,7 @@ class LogCacheTest {
     assertThrows(IllegalArgumentException.class, () -> cache.setMaxMemoryMb(-1));
   }
 
-  @Test
-  void testSetActiveIfPresentWhenPresent() {
-    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-
-    assertTrue(cache.setActiveIfPresent("/log1.wpilog"));
-    assertEquals("/log1.wpilog", cache.getActiveLogPath());
-  }
-
-  @Test
-  void testSetActiveIfPresentWhenAbsent() {
-    assertFalse(cache.setActiveIfPresent("/nonexistent.wpilog"));
-    assertNull(cache.getActiveLogPath());
-  }
-
-  @Test
-  void testSetActiveIfPresentAtomicity() {
-    // Verify that setActiveIfPresent doesn't set active path when log is absent
-    cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
-    cache.setActiveLogPath("/log1.wpilog");
-
-    // Try to set active to a non-existent log
-    assertFalse(cache.setActiveIfPresent("/log2.wpilog"));
-    // Active path should remain unchanged
-    assertEquals("/log1.wpilog", cache.getActiveLogPath());
-  }
+  // Active log path tests removed — active log concept replaced by explicit path parameters
 
   @Test
   void testEvictionDoesNotCallSystemGc() {
@@ -259,7 +232,8 @@ class LogCacheTest {
     for (int i = 0; i < 5; i++) {
       cache.put("/log" + i + ".wpilog", createMockLog("/log" + i + ".wpilog", 1));
     }
-    cache.setActiveLogPath("/log4.wpilog");
+    // Access log4 to make it MRU
+    cache.get("/log4.wpilog");
 
     assertEquals(5, cache.size());
 
@@ -268,7 +242,7 @@ class LogCacheTest {
 
     assertTrue(cache.size() <= 2,
         "Cache should have at most 2 entries after eviction, but has: " + cache.size());
-    // Active log should never be evicted
+    // MRU log should be kept
     assertTrue(cache.containsKey("/log4.wpilog"), "Active log should not be evicted");
   }
 
@@ -281,14 +255,15 @@ class LogCacheTest {
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
-    cache.setActiveLogPath("/log2.wpilog");
+    // Access log2 to make it MRU
+    cache.get("/log2.wpilog");
 
     cache.evictIfNeeded();
 
     assertTrue(evictedPaths.contains("/log1.wpilog"),
-        "Eviction callback should have been called with the evicted path");
+        "Eviction callback should have been called with the LRU path");
     assertFalse(evictedPaths.contains("/log2.wpilog"),
-        "Active log should not have been evicted");
+        "MRU log should not have been evicted");
   }
 
   @Test

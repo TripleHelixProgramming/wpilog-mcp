@@ -296,40 +296,15 @@ class DiskCacheTest {
   class CleanupTests {
 
     @Test
-    @DisplayName("cleanup removes files older than maxAge")
-    void removesOldFiles() throws IOException {
-      Path wpilog = createWpilog("old.wpilog", "old data for cleanup test".getBytes());
-      ParsedLog log = createSimpleLog(wpilog.toString(), 10);
-      cache.save(log, wpilog);
-
-      // Make the cache file look old (2 days ago)
-      try (var stream = Files.list(cacheDir)) {
-        stream.filter(f -> f.toString().endsWith(".msgpack")).forEach(f -> {
-          try {
-            Files.setLastModifiedTime(f,
-                FileTime.from(Instant.now().minusSeconds(2 * 24 * 3600)));
-          } catch (IOException e) { throw new RuntimeException(e); }
-        });
-      }
-
-      // Set maxAge to 1 day = file from 2 days ago is expired
-      cache.setMaxAgeDays(1);
-      cache.cleanup();
-
-      assertEquals(0, countCacheFiles());
-    }
-
-    @Test
-    @DisplayName("cleanup preserves recent files")
-    void preservesRecentFiles() throws IOException {
+    @DisplayName("cleanup preserves valid cache files")
+    void preservesValidFiles() throws IOException {
       Path wpilog = createWpilog("recent.wpilog", "recent data for cache test".getBytes());
       ParsedLog log = createSimpleLog(wpilog.toString(), 10);
       cache.save(log, wpilog);
 
-      // Default maxAge is 30 days, file was just created
       cache.cleanup();
 
-      assertTrue(countCacheFiles() > 0, "Recent files should be preserved");
+      assertTrue(countCacheFiles() > 0, "Valid cache files should be preserved");
     }
 
     @Test

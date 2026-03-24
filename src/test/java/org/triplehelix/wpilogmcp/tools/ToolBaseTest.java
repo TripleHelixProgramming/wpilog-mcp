@@ -111,40 +111,6 @@ class ToolBaseTest {
     }
   }
 
-  // ===== LOG ACQUISITION TESTS =====
-
-  @Nested
-  @DisplayName("Log Acquisition")
-  class LogAcquisitionTests {
-
-    @Test
-    @DisplayName("requireActiveLog throws when no log loaded")
-    void requireActiveLogThrowsWhenNoLog() {
-      var tool = new NoLogTool();
-
-      var exception = assertThrows(IllegalArgumentException.class, tool::requireActiveLog);
-      assertTrue(exception.getMessage().contains("No log file is currently loaded"));
-      assertTrue(exception.getMessage().contains("Use load_log first"));
-    }
-
-    @Test
-    @DisplayName("requireActiveLog returns log when loaded")
-    void requireActiveLogReturnsLogWhenLoaded() throws Exception {
-      var mockLog = mockLogBuilder
-          .setPath("/test/log.wpilog")
-          .addNumericEntry("/test/entry", new double[]{0}, new double[]{1.0})
-          .build();
-      logManager.testPutLog("/test/log.wpilog", mockLog);
-      logManager.testSetActiveLogPath("/test/log.wpilog");
-
-      var tool = new NoLogTool();
-      var log = tool.requireActiveLog();
-
-      assertNotNull(log);
-      assertEquals("/test/log.wpilog", log.path());
-    }
-  }
-
   // ===== ENTRY RETRIEVAL TESTS =====
 
   @Nested
@@ -162,7 +128,7 @@ class ToolBaseTest {
           .addNumericEntry("/Drive/LeftSpeed", new double[]{0, 1}, new double[]{0.5, 1.5})
           .build();
       logManager.testPutLog("/test/log.wpilog", testLog);
-      logManager.testSetActiveLogPath("/test/log.wpilog");
+      // Log is in cache — tools access via path parameter
     }
 
     @Test

@@ -707,7 +707,8 @@ public class LogSynchronizer {
     }
 
     double denom = Math.sqrt(sumX2 * sumY2);
-    return denom < 1e-10 ? 0 : sumXY / denom;
+    if (denom < 1e-10) return 0;
+    return Math.max(-1.0, Math.min(1.0, sumXY / denom));
   }
 
   /**
@@ -777,7 +778,8 @@ public class LogSynchronizer {
 
     int mid = offsets.size() / 2;
     if (offsets.size() % 2 == 0) {
-      return (offsets.get(mid - 1) + offsets.get(mid)) / 2;
+      // Overflow-safe median of two longs
+      return offsets.get(mid - 1) + (offsets.get(mid) - offsets.get(mid - 1)) / 2;
     }
     return offsets.get(mid);
   }

@@ -1,0 +1,17 @@
+import groovy.json.JsonSlurper
+task testSlurper {
+    doLast {
+        def jsonString = '''{
+          "defaults": {
+            "team": 2363
+          },
+          "servers": {
+            "stresstest": {}
+          }
+        }'''
+        def json = new JsonSlurper().parseText(jsonString)
+        println "Type: " + json.servers?.stresstest?.getClass()
+        println "Truthiness: " + (json.servers?.stresstest ? "true" : "false")
+        println "Is null? " + (json.servers?.stresstest == null)
+    }
+}

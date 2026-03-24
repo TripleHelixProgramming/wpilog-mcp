@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Resolution order:
  * <ol>
- *   <li>{@code WPILOG_CACHE_DIR} environment variable</li>
- *   <li>{@code -cachedir} CLI argument (set via {@link #setOverride})</li>
+ *   <li>{@code WPILOG_DISK_CACHE_DIR} environment variable</li>
+ *   <li>{@code -diskcachedir} CLI argument (set via {@link #setOverride})</li>
  *   <li>OS-specific application data directory:
  *     <ul>
  *       <li>macOS: {@code ~/Library/Application Support/wpilog-mcp/cache/}</li>
@@ -58,7 +58,7 @@ public class CacheDirectory {
     if (override != null) {
       dir = override;
     } else {
-      String envDir = System.getenv("WPILOG_CACHE_DIR");
+      String envDir = System.getenv("WPILOG_DISK_CACHE_DIR");
       if (envDir != null && !envDir.isBlank()) {
         dir = Path.of(envDir);
       } else {

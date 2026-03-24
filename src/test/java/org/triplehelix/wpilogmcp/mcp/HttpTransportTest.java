@@ -129,6 +129,33 @@ class HttpTransportTest {
   }
 
   @Test
+  @DisplayName("GET /health returns 200 with status ok")
+  void healthEndpointReturnsOk() throws IOException, InterruptedException {
+    var request = HttpRequest.newBuilder()
+        .uri(URI.create("http://127.0.0.1:" + actualPort + "/health"))
+        .GET()
+        .build();
+    var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+    assertEquals(200, response.statusCode());
+    var body = JsonParser.parseString(response.body()).getAsJsonObject();
+    assertEquals("ok", body.get("status").getAsString());
+    assertTrue(body.has("sessions"), "Response should include sessions count");
+  }
+
+  @Test
+  @DisplayName("POST /health returns 405")
+  void healthEndpointRejectsPost() throws IOException, InterruptedException {
+    var request = HttpRequest.newBuilder()
+        .uri(URI.create("http://127.0.0.1:" + actualPort + "/health"))
+        .POST(HttpRequest.BodyPublishers.ofString("{}"))
+        .build();
+    var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+    assertEquals(405, response.statusCode());
+  }
+
+  @Test
   @DisplayName("DELETE without session returns 400")
   void deleteWithoutSession() throws IOException, InterruptedException {
     var request = HttpRequest.newBuilder()

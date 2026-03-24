@@ -50,10 +50,8 @@ class QueryToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(ParsedLog log) {
-    var manager = LogManager.getInstance();
-    manager.testPutLog(log.path(), log);
-    manager.testSetActiveLogPath(log.path());
+  private void putLogInCache(ParsedLog log) {
+    LogManager.getInstance().testPutLog(log.path(), log);
   }
 
   @Nested
@@ -70,10 +68,11 @@ class QueryToolsLogicTest {
           .addNumericEntry("/Elevator/Height", new double[]{0}, new double[]{0})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("search_entries");
       var args = new JsonObject();
+      args.addProperty("path", "/test/query.wpilog");
       args.addProperty("pattern", "Drive");
 
       var result = tool.execute(args);
@@ -99,10 +98,11 @@ class QueryToolsLogicTest {
           .addNumericEntry("/Drive/Speed", new double[]{0}, new double[]{0})
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("search_entries");
       var args = new JsonObject();
+      args.addProperty("path", "/test/query.wpilog");
       args.addProperty("pattern", "drive"); // lowercase
 
       var result = tool.execute(args);
@@ -123,7 +123,7 @@ class QueryToolsLogicTest {
           .addEntry("/B", "boolean", List.of(new TimestampedValue(0, true)))
           .build();
 
-      setActiveLog(log);
+      putLogInCache(log);
 
       // CoreTools now has list_entries, not QueryTools.
       // But for this test, we care about what list_entries returns.
@@ -140,7 +140,9 @@ class QueryToolsLogicTest {
       CoreTools.registerAll(capturingRegistry);
 
       var tool = findTool("list_entries");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", "/test/query.wpilog");
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -184,6 +186,7 @@ class QueryToolsLogicTest {
 
     private JsonObject makeArgs(String name, String operator, double threshold) {
       var args = new JsonObject();
+      args.addProperty("path", "/test/condition.wpilog");
       args.addProperty("name", name);
       args.addProperty("operator", operator);
       args.addProperty("threshold", threshold);
@@ -198,7 +201,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2, 3},
           new double[]{12.0, 11.0, 10.0, 9.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "lt", 11.0)).getAsJsonObject();
 
@@ -215,7 +218,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2},
           new double[]{12.0, 10.0, 8.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "<", 11.0)).getAsJsonObject();
 
@@ -232,7 +235,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2},
           new double[]{12.0, 11.0, 10.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "lte", 11.0)).getAsJsonObject();
 
@@ -249,7 +252,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2},
           new double[]{12.0, 11.0, 10.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "<=", 11.0)).getAsJsonObject();
 
@@ -263,7 +266,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Current",
           new double[]{0, 1, 2, 3},
           new double[]{10.0, 20.0, 50.0, 60.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Current", "gt", 40.0)).getAsJsonObject();
 
@@ -281,7 +284,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Current",
           new double[]{0, 1, 2},
           new double[]{10.0, 50.0, 60.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Current", ">", 40.0)).getAsJsonObject();
 
@@ -295,7 +298,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Current",
           new double[]{0, 1, 2},
           new double[]{10.0, 40.0, 60.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Current", "gte", 40.0)).getAsJsonObject();
 
@@ -312,7 +315,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Current",
           new double[]{0, 1, 2},
           new double[]{10.0, 40.0, 60.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Current", ">=", 40.0)).getAsJsonObject();
 
@@ -326,7 +329,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1, 2, 3},
           new double[]{1.0, 5.0, 3.0, 5.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "eq", 5.0)).getAsJsonObject();
 
@@ -341,7 +344,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1, 2, 3},
           new double[]{1.0, 5.0, 3.0, 5.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "==", 5.0)).getAsJsonObject();
 
@@ -357,7 +360,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1},
           new double[]{1.0, 2.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "ne", 1.5)).getAsJsonObject();
 
@@ -378,7 +381,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1},
           new double[]{0.0, withinTolerance});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "eq", threshold)).getAsJsonObject();
 
@@ -397,7 +400,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1},
           new double[]{0.0, outsideTolerance});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "eq", threshold)).getAsJsonObject();
 
@@ -416,7 +419,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1},
           new double[]{999.0, withinAbsEpsilon});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "eq", threshold)).getAsJsonObject();
 
@@ -435,7 +438,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1},
           new double[]{999.0, outsideAbsEpsilon});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Sensor", "eq", threshold)).getAsJsonObject();
 
@@ -452,7 +455,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Sensor",
           new double[]{0, 1},
           new double[]{1.0, 2.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/NonExistent", "gt", 0.0)).getAsJsonObject();
 
@@ -471,7 +474,7 @@ class QueryToolsLogicTest {
               List.of(new TimestampedValue(0.0, "hello"),
                   new TimestampedValue(1.0, "world")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Console/Output", "gt", 5.0)).getAsJsonObject();
 
@@ -488,7 +491,7 @@ class QueryToolsLogicTest {
           .setPath("/test/condition.wpilog")
           .addNumericEntry("/EmptyEntry", new double[]{}, new double[]{})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/EmptyEntry", "gt", 0.0)).getAsJsonObject();
 
@@ -505,7 +508,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2, 3, 4, 5, 6, 7},
           new double[]{12.0, 10.0, 12.0, 10.0, 12.0, 10.0, 12.0, 10.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "lt", 11.0)).getAsJsonObject();
 
@@ -526,7 +529,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2, 3, 4, 5, 6, 7},
           new double[]{12.0, 10.0, 12.0, 10.0, 12.0, 10.0, 12.0, 10.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = makeArgs("/Voltage", "lt", 11.0);
       args.addProperty("limit", 2);
@@ -543,7 +546,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2, 3},
           new double[]{12.0, 12.5, 13.0, 12.8});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "lt", 10.0)).getAsJsonObject();
 
@@ -558,7 +561,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1, 2},
           new double[]{5.0, 6.0, 7.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "lt", 11.0)).getAsJsonObject();
 
@@ -575,7 +578,7 @@ class QueryToolsLogicTest {
       var log = buildNumericLog("/Voltage",
           new double[]{0, 1},
           new double[]{12.0, 10.0});
-      setActiveLog(log);
+      putLogInCache(log);
 
       var result = tool.execute(makeArgs("/Voltage", "lte", 11.0)).getAsJsonObject();
 
@@ -608,9 +611,10 @@ class QueryToolsLogicTest {
               new TimestampedValue(2.0, "Teleop enabled"),
               new TimestampedValue(3.0, "ERROR: CAN timeout on device 5")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = new JsonObject();
+      args.addProperty("path", "/test/strings.wpilog");
       args.addProperty("pattern", "ERROR");
 
       var result = tool.execute(args).getAsJsonObject();
@@ -636,9 +640,10 @@ class QueryToolsLogicTest {
           .addEntry("/Other/Log", "string", List.of(
               new TimestampedValue(0.0, "hello from other")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = new JsonObject();
+      args.addProperty("path", "/test/strings.wpilog");
       args.addProperty("pattern", "hello");
       args.addProperty("entry_pattern", "Console");
 
@@ -666,9 +671,10 @@ class QueryToolsLogicTest {
               new TimestampedValue(1.0, "WARNING: CAN bus error"),
               new TimestampedValue(2.0, "warning: encoder disconnect")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = new JsonObject();
+      args.addProperty("path", "/test/strings.wpilog");
       args.addProperty("pattern", "warning");
 
       var result = tool.execute(args).getAsJsonObject();
@@ -688,9 +694,10 @@ class QueryToolsLogicTest {
           .setPath("/test/strings.wpilog")
           .addEntry("/Console/Output", "string", tvs)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = new JsonObject();
+      args.addProperty("path", "/test/strings.wpilog");
       args.addProperty("pattern", "message");
       args.addProperty("limit", 5);
 
@@ -709,9 +716,10 @@ class QueryToolsLogicTest {
               new TimestampedValue(0.0, "all systems nominal"),
               new TimestampedValue(1.0, "teleop active")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = new JsonObject();
+      args.addProperty("path", "/test/strings.wpilog");
       args.addProperty("pattern", "FATAL_CRASH");
 
       var result = tool.execute(args).getAsJsonObject();
@@ -730,9 +738,10 @@ class QueryToolsLogicTest {
           .addEntry("/Flag/Active", "boolean",
               List.of(new TimestampedValue(0.0, true)))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var args = new JsonObject();
+      args.addProperty("path", "/test/strings.wpilog");
       args.addProperty("pattern", "anything");
 
       var result = tool.execute(args).getAsJsonObject();
@@ -768,9 +777,11 @@ class QueryToolsLogicTest {
           .addEntry("/Console/Output", "string",
               List.of(new TimestampedValue(0.0, "hello")))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", "/test/types.wpilog");
+      var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
       assertEquals(3, result.get("type_count").getAsInt());
@@ -816,9 +827,11 @@ class QueryToolsLogicTest {
           .addNumericEntry("/A/First", new double[]{0}, new double[]{0})
           .addNumericEntry("/M/Middle", new double[]{0}, new double[]{0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", "/test/types.wpilog");
+      var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
       var types = result.getAsJsonArray("types");

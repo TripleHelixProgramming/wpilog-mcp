@@ -23,10 +23,10 @@ class ToolDependenciesTest {
       var deps = ToolDependencies.fromSingletons();
 
       assertNotNull(deps);
-      assertNotNull(deps.getLogManager());
-      assertNotNull(deps.getTbaClient());
-      assertNotNull(deps.getTbaConfig());
-      assertNotNull(deps.getLogDirectory());
+      assertNotNull(deps.logManager());
+      assertNotNull(deps.tbaClient());
+      assertNotNull(deps.tbaConfig());
+      assertNotNull(deps.logDirectory());
     }
 
     @Test
@@ -34,10 +34,10 @@ class ToolDependenciesTest {
     void returnsSingletonInstances() {
       var deps = ToolDependencies.fromSingletons();
 
-      assertSame(LogManager.getInstance(), deps.getLogManager());
-      assertSame(TbaClient.getInstance(), deps.getTbaClient());
-      assertSame(TbaConfig.getInstance(), deps.getTbaConfig());
-      assertSame(LogDirectory.getInstance(), deps.getLogDirectory());
+      assertSame(LogManager.getInstance(), deps.logManager());
+      assertSame(TbaClient.getInstance(), deps.tbaClient());
+      assertSame(TbaConfig.getInstance(), deps.tbaConfig());
+      assertSame(LogDirectory.getInstance(), deps.logDirectory());
     }
 
     @Test
@@ -55,10 +55,10 @@ class ToolDependenciesTest {
       var deps1 = ToolDependencies.fromSingletons();
       var deps2 = ToolDependencies.fromSingletons();
 
-      assertSame(deps1.getLogManager(), deps2.getLogManager());
-      assertSame(deps1.getTbaClient(), deps2.getTbaClient());
-      assertSame(deps1.getTbaConfig(), deps2.getTbaConfig());
-      assertSame(deps1.getLogDirectory(), deps2.getLogDirectory());
+      assertSame(deps1.logManager(), deps2.logManager());
+      assertSame(deps1.tbaClient(), deps2.tbaClient());
+      assertSame(deps1.tbaConfig(), deps2.tbaConfig());
+      assertSame(deps1.logDirectory(), deps2.logDirectory());
     }
   }
 
@@ -72,10 +72,10 @@ class ToolDependenciesTest {
       var deps = new ToolDependencies(null, null, null, null);
 
       assertNotNull(deps);
-      assertNull(deps.getLogManager());
-      assertNull(deps.getTbaClient());
-      assertNull(deps.getTbaConfig());
-      assertNull(deps.getLogDirectory());
+      assertNull(deps.logManager());
+      assertNull(deps.tbaClient());
+      assertNull(deps.tbaConfig());
+      assertNull(deps.logDirectory());
     }
 
     @Test
@@ -85,10 +85,10 @@ class ToolDependenciesTest {
       var deps = new ToolDependencies(logManager, null, null, null);
 
       assertNotNull(deps);
-      assertSame(logManager, deps.getLogManager());
-      assertNull(deps.getTbaClient());
-      assertNull(deps.getTbaConfig());
-      assertNull(deps.getLogDirectory());
+      assertSame(logManager, deps.logManager());
+      assertNull(deps.tbaClient());
+      assertNull(deps.tbaConfig());
+      assertNull(deps.logDirectory());
     }
 
     @Test
@@ -101,10 +101,10 @@ class ToolDependenciesTest {
 
       var deps = new ToolDependencies(logManager, tbaClient, tbaConfig, logDirectory);
 
-      assertSame(logManager, deps.getLogManager());
-      assertSame(tbaClient, deps.getTbaClient());
-      assertSame(tbaConfig, deps.getTbaConfig());
-      assertSame(logDirectory, deps.getLogDirectory());
+      assertSame(logManager, deps.logManager());
+      assertSame(tbaClient, deps.tbaClient());
+      assertSame(tbaConfig, deps.tbaConfig());
+      assertSame(logDirectory, deps.logDirectory());
     }
 
     @Test
@@ -117,7 +117,7 @@ class ToolDependenciesTest {
       var deps2 = new ToolDependencies(logManager2, null, null, null);
 
       assertNotSame(deps1, deps2);
-      assertSame(deps1.getLogManager(), deps2.getLogManager()); // Both reference same singleton
+      assertSame(deps1.logManager(), deps2.logManager()); // Both reference same singleton
     }
   }
 
@@ -131,7 +131,7 @@ class ToolDependenciesTest {
       var logManager = LogManager.getInstance();
       var deps = new ToolDependencies(logManager, null, null, null);
 
-      assertSame(logManager, deps.getLogManager());
+      assertSame(logManager, deps.logManager());
     }
 
     @Test
@@ -140,7 +140,7 @@ class ToolDependenciesTest {
       var tbaClient = TbaClient.getInstance();
       var deps = new ToolDependencies(null, tbaClient, null, null);
 
-      assertSame(tbaClient, deps.getTbaClient());
+      assertSame(tbaClient, deps.tbaClient());
     }
 
     @Test
@@ -149,7 +149,7 @@ class ToolDependenciesTest {
       var tbaConfig = TbaConfig.getInstance();
       var deps = new ToolDependencies(null, null, tbaConfig, null);
 
-      assertSame(tbaConfig, deps.getTbaConfig());
+      assertSame(tbaConfig, deps.tbaConfig());
     }
 
     @Test
@@ -158,7 +158,7 @@ class ToolDependenciesTest {
       var logDirectory = LogDirectory.getInstance();
       var deps = new ToolDependencies(null, null, null, logDirectory);
 
-      assertSame(logDirectory, deps.getLogDirectory());
+      assertSame(logDirectory, deps.logDirectory());
     }
 
     @Test
@@ -166,10 +166,10 @@ class ToolDependenciesTest {
     void gettersReturnNullWhenDependenciesAreNull() {
       var deps = new ToolDependencies(null, null, null, null);
 
-      assertNull(deps.getLogManager());
-      assertNull(deps.getTbaClient());
-      assertNull(deps.getTbaConfig());
-      assertNull(deps.getLogDirectory());
+      assertNull(deps.logManager());
+      assertNull(deps.tbaClient());
+      assertNull(deps.tbaConfig());
+      assertNull(deps.logDirectory());
     }
 
     @Test
@@ -177,9 +177,9 @@ class ToolDependenciesTest {
     void gettersAreConsistentAcrossMultipleCalls() {
       var deps = ToolDependencies.fromSingletons();
 
-      var logManager1 = deps.getLogManager();
-      var logManager2 = deps.getLogManager();
-      var logManager3 = deps.getLogManager();
+      var logManager1 = deps.logManager();
+      var logManager2 = deps.logManager();
+      var logManager3 = deps.logManager();
 
       assertSame(logManager1, logManager2);
       assertSame(logManager2, logManager3);
@@ -197,8 +197,8 @@ class ToolDependenciesTest {
       var logManager = LogManager.getInstance();
       var deps = new ToolDependencies(logManager, null, null, null);
 
-      assertNotNull(deps.getLogManager());
-      assertNull(deps.getTbaClient()); // Not needed for this test
+      assertNotNull(deps.logManager());
+      assertNull(deps.tbaClient()); // Not needed for this test
     }
 
     @Test
@@ -207,10 +207,10 @@ class ToolDependenciesTest {
       // Scenario: Production usage with default singletons
       var deps = ToolDependencies.fromSingletons();
 
-      assertNotNull(deps.getLogManager());
-      assertNotNull(deps.getTbaClient());
-      assertNotNull(deps.getTbaConfig());
-      assertNotNull(deps.getLogDirectory());
+      assertNotNull(deps.logManager());
+      assertNotNull(deps.tbaClient());
+      assertNotNull(deps.tbaConfig());
+      assertNotNull(deps.logDirectory());
     }
 
     @Test
@@ -219,9 +219,9 @@ class ToolDependenciesTest {
       var logManager = LogManager.getInstance();
       var deps = new ToolDependencies(logManager, null, null, null);
 
-      var ref1 = deps.getLogManager();
-      var ref2 = deps.getLogManager();
-      var ref3 = deps.getLogManager();
+      var ref1 = deps.logManager();
+      var ref2 = deps.logManager();
+      var ref3 = deps.logManager();
 
       assertSame(ref1, ref2);
       assertSame(ref2, ref3);
@@ -238,7 +238,7 @@ class ToolDependenciesTest {
       for (int i = 0; i < 1000; i++) {
         var deps = ToolDependencies.fromSingletons();
         assertNotNull(deps);
-        assertNotNull(deps.getLogManager());
+        assertNotNull(deps.logManager());
       }
     }
 
@@ -247,10 +247,10 @@ class ToolDependenciesTest {
     void handlesAllNullDependenciesWithoutErrors() {
       assertDoesNotThrow(() -> {
         var deps = new ToolDependencies(null, null, null, null);
-        deps.getLogManager();
-        deps.getTbaClient();
-        deps.getTbaConfig();
-        deps.getLogDirectory();
+        deps.logManager();
+        deps.tbaClient();
+        deps.tbaConfig();
+        deps.logDirectory();
       });
     }
 
@@ -258,10 +258,10 @@ class ToolDependenciesTest {
     @DisplayName("dependencies container is independent of singleton state changes")
     void containerIndependentOfSingletonStateChanges() {
       var deps = ToolDependencies.fromSingletons();
-      var originalLogManager = deps.getLogManager();
+      var originalLogManager = deps.logManager();
 
       // Container should still return same reference even after external changes
-      assertSame(originalLogManager, deps.getLogManager());
+      assertSame(originalLogManager, deps.logManager());
     }
   }
 }

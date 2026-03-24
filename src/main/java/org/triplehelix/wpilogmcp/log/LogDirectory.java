@@ -60,6 +60,9 @@ public class LogDirectory {
   /** Default team number to use when file metadata is missing. */
   private volatile Integer defaultTeamNumber = null;
 
+  /** Maximum directory depth for log/revlog file scanning (default: 5). */
+  private volatile int scanDepth = 5;
+
   /** Private constructor for singleton pattern. */
   private LogDirectory() {}
 
@@ -144,6 +147,25 @@ public class LogDirectory {
     return defaultTeamNumber;
   }
 
+  /**
+   * Sets the maximum directory depth for log/revlog file scanning.
+   *
+   * @param depth Maximum depth (default: 5)
+   */
+  public void setScanDepth(int depth) {
+    this.scanDepth = Math.max(1, depth);
+    logger.info("Directory scan depth set to: {}", this.scanDepth);
+  }
+
+  /**
+   * Gets the maximum directory scan depth.
+   *
+   * @return The scan depth
+   */
+  public int getScanDepth() {
+    return scanDepth;
+  }
+
   public boolean isConfigured() {
     return logDirectory != null && Files.isDirectory(logDirectory);
   }
@@ -164,7 +186,7 @@ public class LogDirectory {
   public List<LogFileInfo> listAvailableLogs() throws IOException {
     if (!isConfigured()) throw new IOException("Log directory not configured");
 
-    try (var paths = Files.walk(logDirectory, 3)) {
+    try (var paths = Files.walk(logDirectory, scanDepth)) {
       var logs = paths
           .filter(Files::isRegularFile)
           .filter(p -> p.toString().endsWith(".wpilog"))
@@ -287,7 +309,14 @@ public class LogDirectory {
     return null;
   }
 
-  private Long extractCreationTime(String filename) {
+  /**
+   * Extracts the creation time from a wpilog filename, or null if unparseable.
+   *
+   * @param filename The filename (not full path)
+   * @return Epoch milliseconds, or null if the filename doesn't match the expected pattern
+   * @since 0.8.0
+   */
+  public Long extractCreationTime(String filename) {
     var parsed = parseFilename(filename, Path.of(filename), 0, 0);
     return parsed != null ? parsed.logCreationTime() : null;
   }
@@ -454,7 +483,7 @@ public class LogDirectory {
   public List<RevLogFileInfo> listRevLogFiles() throws IOException {
     if (!isConfigured()) throw new IOException("Log directory not configured");
 
-    try (var paths = Files.walk(logDirectory, 3)) {
+    try (var paths = Files.walk(logDirectory, scanDepth)) {
       var revlogs = paths
           .filter(Files::isRegularFile)
           .filter(p -> p.toString().toLowerCase().endsWith(".revlog"))
@@ -498,9 +527,37 @@ public class LogDirectory {
   }
 
   /**
+   * Lists revlog files in a specific directory (walks up to the configured scan depth).
+   *
+   * <p>This is used for discovering revlogs in directories outside the configured logdir,
+   * such as the parent directory of an ad-hoc wpilog path.
+   *
+   * @param dir The directory to scan
+   * @return List of discovered revlog files, sorted by timestamp (newest first)
+   * @since 0.8.0
+   */
+  public List<RevLogFileInfo> listRevLogFilesInDirectory(Path dir) {
+    if (dir == null || !Files.isDirectory(dir)) return List.of();
+
+    try (var paths = Files.walk(dir, scanDepth)) {
+      return paths
+          .filter(Files::isRegularFile)
+          .filter(p -> p.toString().toLowerCase().endsWith(".revlog"))
+          .map(this::extractRevLogInfo)
+          .sorted(Comparator.comparing(
+              RevLogFileInfo::parsedTimestamp,
+              Comparator.nullsLast(Comparator.reverseOrder())))
+          .toList();
+    } catch (IOException e) {
+      logger.debug("Error scanning for revlogs in {}: {}", dir, e.getMessage());
+      return List.of();
+    }
+  }
+
+  /**
    * Extracts metadata from a revlog file path.
    */
-  private RevLogFileInfo extractRevLogInfo(Path path) {
+  RevLogFileInfo extractRevLogInfo(Path path) {
     var filename = path.getFileName().toString();
     var matcher = REVLOG_FILENAME_PATTERN.matcher(filename);
 

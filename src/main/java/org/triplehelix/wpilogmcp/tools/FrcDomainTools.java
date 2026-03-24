@@ -55,18 +55,9 @@ public final class FrcDomainTools {
 
   // ==================== SHARED HELPER METHODS ====================
 
-  /**
-   * NIST Type 7 percentile with linear interpolation (same method as StatisticsTools).
-   */
+  /** Delegate to shared percentile implementation in ToolUtils. */
   private static double interpolatedPercentile(double[] sortedData, double p) {
-    if (sortedData.length == 0) return 0.0;
-    if (sortedData.length == 1) return sortedData[0];
-    double index = p * (sortedData.length - 1);
-    int lower = (int) Math.floor(index);
-    int upper = Math.min((int) Math.ceil(index), sortedData.length - 1);
-    if (lower == upper) return sortedData[lower];
-    double weight = index - lower;
-    return sortedData[lower] * (1 - weight) + sortedData[upper] * weight;
+    return ToolUtils.percentile(sortedData, p);
   }
 
   /**
@@ -122,7 +113,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
@@ -324,7 +315,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("vision_prefix", "string", "Entry path prefix for vision data", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
@@ -472,7 +463,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("mechanism_name", "string", "Mechanism name or prefix", true)
           .addNumberProperty("start_time", "Start timestamp", false, null)
@@ -649,7 +640,7 @@ public final class FrcDomainTools {
 
         // Detect setpoint change
         if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.abs(lastSetpoint * 0.05)) {
-          if (maxOvershoot != null && lastSetpoint != null && lastSetpoint != 0) {
+          if (maxOvershoot != null && lastSetpoint != null && Math.abs(lastSetpoint) > 0.001) {
             overshoots.add(maxOvershoot * 100.0 / Math.abs(lastSetpoint));
           }
           lastSetpoint = spVal;
@@ -732,7 +723,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("auto_prefix", "string", "Entry path prefix for auto data", false)
           .build();
@@ -830,7 +821,8 @@ public final class FrcDomainTools {
           // If we didn't find auto end, use game knowledge base or 15s default
           double autoDuration = 15.0;
           try {
-            var gameData = GameKnowledgeBase.getInstance().getCurrentGame();
+            int seasonYear = ToolUtils.estimateSeasonYear(log);
+            var gameData = GameKnowledgeBase.getInstance().getGame(seasonYear);
             if (gameData != null) {
               autoDuration = gameData.autoDurationSec();
             }
@@ -938,21 +930,17 @@ public final class FrcDomainTools {
       return errorAnalysis;
     }
 
+    @SuppressWarnings("unchecked")
     private java.util.Map<String, Object> getActualPoseAtTime(
         java.util.List<TimestampedValue> values,
         double timestamp
     ) {
-      // Find closest pose (ZOH)
-      java.util.Map<String, Object> result = null;
-      for (TimestampedValue tv : values) {
-        if (tv.timestamp() > timestamp) break;
-        if (tv.value() instanceof java.util.Map) {
-          @SuppressWarnings("unchecked")
-          var pose = (java.util.Map<String, Object>) tv.value();
-          result = pose;
-        }
+      // Find closest pose (ZOH) using O(log n) binary search
+      var raw = ToolUtils.getValueAtTimeZoh(values, timestamp);
+      if (raw instanceof java.util.Map) {
+        return (java.util.Map<String, Object>) raw;
       }
-      return result;
+      return null;
     }
   }
 
@@ -969,7 +957,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("state_entry", "string", "Entry name for mechanism state", true)
           .addProperty("cycle_mode", "string", "Cycle detection mode: 'start_to_start' or 'start_to_end' (default: 'start_to_start')", false)
@@ -1301,7 +1289,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder().build();
     }
 
@@ -1314,17 +1302,32 @@ public final class FrcDomainTools {
           .map(real -> {
             var replay = real.replace("/RealOutputs/", "/ReplayOutputs/");
             if (!log.entries().containsKey(replay)) return null;
-            
+
             var realVals = log.values().get(real);
             var replayVals = log.values().get(replay);
             if (realVals == null || replayVals == null) return null;
 
-            for (int i = 0; i < Math.min(realVals.size(), replayVals.size()); i++) {
-              if (!Objects.equals(realVals.get(i).value(), replayVals.get(i).value())) {
-                var div = new JsonObject();
-                div.addProperty("entry", real);
-                div.addProperty("timestamp", realVals.get(i).timestamp());
-                return div;
+            // Compare by matching timestamps (within 1ms tolerance) rather than
+            // by array index, since Real and Replay entries may have different
+            // sample counts or logging rates.
+            int replayIdx = 0;
+            double tolerance = 0.001; // 1ms
+            for (var realTv : realVals) {
+              // Advance replay index to find matching timestamp
+              while (replayIdx < replayVals.size()
+                  && replayVals.get(replayIdx).timestamp() < realTv.timestamp() - tolerance) {
+                replayIdx++;
+              }
+              if (replayIdx >= replayVals.size()) break;
+
+              var replayTv = replayVals.get(replayIdx);
+              if (Math.abs(replayTv.timestamp() - realTv.timestamp()) <= tolerance) {
+                if (!Objects.equals(realTv.value(), replayTv.value())) {
+                  var div = new JsonObject();
+                  div.addProperty("entry", real);
+                  div.addProperty("timestamp", realTv.timestamp());
+                  return div;
+                }
               }
             }
             return null;
@@ -1365,7 +1368,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addNumberProperty("threshold_ms", "Loop time threshold in milliseconds (default: 20)", false, 20.0)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
@@ -1501,7 +1504,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("bus_name", "string", "CAN bus name (default: 'rio')", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
@@ -1549,7 +1552,7 @@ public final class FrcDomainTools {
           var utilData = new ArrayList<Double>();
           for (TimestampedValue tv : values) {
             if (startTime != null && tv.timestamp() < startTime) continue;
-            if (endTime != null && tv.timestamp() > endTime) break;
+            if (endTime != null && tv.timestamp() > endTime) continue;
 
             if (tv.value() instanceof Number num) {
               utilData.add(num.doubleValue());
@@ -1597,7 +1600,7 @@ public final class FrcDomainTools {
           int errorsWhileDisabled = 0;
           for (TimestampedValue tv : values) {
             if (startTime != null && tv.timestamp() < startTime) continue;
-            if (endTime != null && tv.timestamp() > endTime) break;
+            if (endTime != null && tv.timestamp() > endTime) continue;
 
             // Count non-zero errors or true boolean errors
             boolean isError = false;
@@ -1666,7 +1669,7 @@ public final class FrcDomainTools {
     }
   }
 
-  static class PredictBatteryHealthTool extends ToolBase {
+  static class PredictBatteryHealthTool extends LogRequiringTool {
     @Override
     public String name() {
       return "predict_battery_health";
@@ -1681,7 +1684,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
@@ -1692,8 +1695,7 @@ public final class FrcDomainTools {
     }
 
     @Override
-    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      var log = requireActiveLog();
+    protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -1884,6 +1886,17 @@ public final class FrcDomainTools {
         }
       }
 
+      // Emit open-ended event if voltage was still below threshold at end of log
+      if (inEvent && !voltageValues.isEmpty()) {
+        double lastTime = voltageValues.get(voltageValues.size() - 1).timestamp();
+        var event = new JsonObject();
+        event.addProperty("start_time", eventStartTime);
+        event.addProperty("end_time", lastTime);
+        event.addProperty("duration", lastTime - eventStartTime);
+        event.addProperty("min_voltage", eventMinVoltage);
+        events.add(event);
+      }
+
       return events;
     }
 
@@ -1898,8 +1911,8 @@ public final class FrcDomainTools {
       // Find load changes (significant voltage drops)
       var recoveryTimes = new ArrayList<Double>();
 
-      // Scan entire match (10000 samples covers ~200s at 50Hz, sufficient for full match)
-      for (int i = 1; i < voltageValues.size() - 10 && i < 10000; i++) {
+      // Scan all voltage samples (no arbitrary limit — supports any logging rate)
+      for (int i = 1; i < voltageValues.size() - 10; i++) {
         var voltageBefore = toDouble(voltageValues.get(i - 1).value());
         var voltageAtLoad = toDouble(voltageValues.get(i).value());
 

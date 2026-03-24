@@ -48,10 +48,8 @@ class FrcDomainToolsLogicTest {
         .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
-  private void setActiveLog(ParsedLog log) {
-    var manager = LogManager.getInstance();
-    manager.testPutLog(log.path(), log);
-    manager.testSetActiveLogPath(log.path());
+  private void putLogInCache(ParsedLog log) {
+    LogManager.getInstance().testPutLog(log.path(), log);
   }
 
   @Nested
@@ -69,10 +67,12 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/vision.wpilog")
           .addEntry("/Limelight/tv", "boolean", tvValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_vision");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -97,15 +97,17 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/ds.wpilog")
           .addEntry("/DriverStation/Enabled", "boolean", values)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_ds_timeline");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
       var events = resultObj.getAsJsonArray("events");
-      
+
       // Should have 3 events: INITIAL (false), ENABLED, DISABLED
       assertEquals(3, events.size());
       assertEquals("ENABLED", events.get(1).getAsJsonObject().get("type").getAsString());
@@ -134,10 +136,12 @@ class FrcDomainToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_ds_timeline");
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
       var events = result.getAsJsonArray("events");
@@ -172,10 +176,12 @@ class FrcDomainToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_ds_timeline");
-      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
 
       var events = result.getAsJsonArray("events");
       boolean foundAutoStart = false;
@@ -202,10 +208,11 @@ class FrcDomainToolsLogicTest {
           .addNumericEntry("/Elevator/Setpoint", new double[]{0, 1, 2}, new double[]{10, 10, 10})
           .addNumericEntry("/Elevator/Position", new double[]{0, 1, 2}, new double[]{9, 11, 10})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("mechanism_name", "Elevator");
 
       var result = tool.execute(args);
@@ -229,10 +236,11 @@ class FrcDomainToolsLogicTest {
           .addNumericEntry("/Elevator/Velocity", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0.1, 0.005, 0.005, 0.005, 0.005, 0.1})
           .addNumericEntry("/Elevator/Current", new double[]{0, 1, 2, 3, 4, 5}, new double[]{5, 35, 40, 35, 35, 5})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("mechanism_name", "Elevator");
       args.addProperty("stall_current_threshold", 30.0);
 
@@ -256,10 +264,11 @@ class FrcDomainToolsLogicTest {
           .addNumericEntry("/Arm/Setpoint", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 10, 10, 10, 10, 10})
           .addNumericEntry("/Arm/Position", new double[]{0, 1, 2, 3, 4, 5}, new double[]{0, 2, 6, 9.8, 9.9, 10})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("mechanism_name", "Arm");
 
       var result = tool.execute(args);
@@ -291,10 +300,11 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4, 5, 6, 7},
               new double[]{0, 90, 130, 100, 190, 230, 200, 200})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("mechanism_name", "Shooter");
 
       var result = tool.execute(args);
@@ -330,10 +340,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/vision_jumps.wpilog")
           .addEntry("/Vision/Pose", "struct:Pose2d", poseTvs)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_vision");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("jump_threshold", 1.0); // 1 meter threshold
 
       var result = tool.execute(args);
@@ -378,10 +389,11 @@ class FrcDomainToolsLogicTest {
           .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
           .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_auto");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -417,10 +429,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/cycles.wpilog")
           .addEntry("/Superstructure/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/Superstructure/State");
       args.addProperty("cycle_start_state", "Intake");
       args.addProperty("idle_state", "Idle");
@@ -458,10 +471,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/cycles_start_to_start.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_start");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -502,10 +516,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/cycles_start_to_end.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_end");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -539,10 +554,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/incomplete.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_end");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -575,10 +591,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/case_insensitive.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_start");
       args.addProperty("cycle_start_state", "intake");  // lowercase
@@ -609,10 +626,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/time_filter.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_start");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -642,10 +660,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/rapid.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_start");
       args.addProperty("cycle_start_state", "A");
@@ -684,10 +703,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/unknown.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_start");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -725,10 +745,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/many_cycles.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_start");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -758,10 +779,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/invalid.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "invalid_mode");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -783,10 +805,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/missing_end.wpilog")
           .addEntry("/State", "string", stateValues)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/State");
       args.addProperty("cycle_mode", "start_to_end");
       args.addProperty("cycle_start_state", "INTAKE");
@@ -813,10 +836,11 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10},
               new double[]{15, 18, 25, 19, 30, 16}) // ms
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -842,10 +866,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18},
               new double[]{18, 19, 17, 18, 19, 18, 17, 19, 18, 17}) // ms, all < 20ms
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -870,10 +896,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10},
               new double[]{0.018, 0.019, 0.025, 0.017, 0.030, 0.016}) // seconds
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -899,10 +927,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14},
               new double[]{15, 18, 25, 19, 30, 16, 22, 17}) // 25, 30, 22 are violations
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -925,10 +955,12 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/no_loop_time.wpilog")
           .addNumericEntry("/Motor/Velocity", new double[]{0, 1, 2}, new double[]{10, 20, 30})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
@@ -950,10 +982,11 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4, 5},
               new double[]{20, 35, 50, 45, 60, 30})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_can_bus");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -979,10 +1012,11 @@ class FrcDomainToolsLogicTest {
           .addNumericEntry("/CANBus/Error/Tx", new double[]{0, 1, 2, 3}, new double[]{0, 0, 5, 5})
           .addNumericEntry("/CANBus/Error/Rx", new double[]{0, 1, 2, 3}, new double[]{0, 2, 2, 10})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_can_bus");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -1019,10 +1053,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08},
               new double[]{25, 30, 35, 40, 50}) // all > 20ms
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1041,10 +1077,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08, 0.10},
               new double[]{15, 25, 18, 30, 19, 35}) // 3 of 6 are violations
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1063,10 +1101,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 0.02, 0.04, 0.06, 0.08},
               new double[]{15, 18, 19, 17, 16}) // all < 20ms
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_loop_timing");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1088,10 +1128,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
               new double[]{12.5, 11.8, 11.5, 11.2, 11.5, 11.8, 12.0, 11.5, 11.3, 11.6})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1111,10 +1153,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
               new double[]{10.5, 9.5, 8.0, 7.5, 6.5, 7.0, 8.5, 9.0, 10.0, 10.5})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1132,10 +1176,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4},
               new double[]{12.5, 12.3, 12.1, 12.4, 12.2})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1166,10 +1212,12 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/battery_hysteresis.wpilog")
           .addEntry("/Robot/BatteryVoltage", "double", tvs)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1192,10 +1240,12 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/extreme_brownout.wpilog")
           .addEntry("/Robot/BatteryVoltage", "double", tvs)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1211,10 +1261,12 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/no_voltage.wpilog")
           .addNumericEntry("/Motor/Velocity", new double[]{0, 1, 2}, new double[]{10, 20, 30})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
@@ -1232,10 +1284,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
               new double[]{12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1262,10 +1316,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
               new double[]{10.0, 7.5, 6.0, 7.0, 6.5, 7.8, 6.2, 7.2, 6.8, 8.0})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
@@ -1286,10 +1342,12 @@ class FrcDomainToolsLogicTest {
               new double[]{0, 1, 2, 3, 4},
               new double[]{12.5, 12.3, 12.1, 12.4, 12.2})
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("predict_battery_health");
-      var result = tool.execute(new JsonObject());
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.has("data_quality"));
@@ -1316,10 +1374,11 @@ class FrcDomainToolsLogicTest {
           .setPath("/test/incomplete_cycle.wpilog")
           .addEntry("/Robot/State", "string", values)
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("analyze_cycles");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("state_entry", "/Robot/State");
       args.addProperty("cycle_start_state", "INTAKING");
       args.addProperty("cycle_mode", "start_to_start");
@@ -1369,10 +1428,11 @@ class FrcDomainToolsLogicTest {
           .addEntry("/DriverStation/Enabled", "boolean",
               java.util.List.of(new TimestampedValue(0.0, true), new TimestampedValue(6.0, false)))
           .build();
-      setActiveLog(log);
+      putLogInCache(log);
 
       var tool = findTool("get_ds_timeline");
       var args = new JsonObject();
+      args.addProperty("path", log.path());
       args.addProperty("brownout_threshold", 6.8);
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();

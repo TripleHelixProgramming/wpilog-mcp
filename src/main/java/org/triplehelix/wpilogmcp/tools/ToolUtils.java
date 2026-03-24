@@ -22,6 +22,9 @@ import java.util.List;
  */
 public final class ToolUtils {
 
+  /** Pre-compiled pattern for extracting 4-digit year from log file paths. */
+  private static final java.util.regex.Pattern YEAR_PATTERN = java.util.regex.Pattern.compile("(20\\d{2})");
+
   /** JSON serializer with null serialization (important for optional fields). */
   public static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
@@ -71,6 +74,27 @@ public final class ToolUtils {
    */
   public static LogManager getLogManager() {
     return LOG_MANAGER;
+  }
+
+  /**
+   * Estimates the FRC season year from a log's file path.
+   * WPILib log filenames typically contain a date (e.g., "FRC_20260321_123456.wpilog").
+   * Falls back to the current system clock year if no date can be extracted.
+   *
+   * @param log The parsed log
+   * @return The estimated season year
+   */
+  public static int estimateSeasonYear(org.triplehelix.wpilogmcp.log.ParsedLog log) {
+    if (log.path() != null) {
+      var matcher = YEAR_PATTERN.matcher(log.path());
+      if (matcher.find()) {
+        int year = Integer.parseInt(matcher.group(1));
+        if (year >= 2020 && year <= 2099) {
+          return year;
+        }
+      }
+    }
+    return java.time.Year.now().getValue();
   }
 
   /**
@@ -149,26 +173,6 @@ public final class ToolUtils {
     return "double".equals(type) || "float".equals(type) || "int64".equals(type);
   }
 
-  /**
-   * Gets the active log or returns an error result.
-   *
-   * @return The active log, or null if none is loaded
-   */
-  public static ParsedLog getActiveLogOrNull() {
-    return LOG_MANAGER.getActiveLog();
-  }
-
-  /**
-   * Checks if a log is loaded and returns an error result if not.
-   *
-   * @return Error result if no log is loaded, null otherwise
-   */
-  public static JsonObject checkLogLoaded() {
-    if (LOG_MANAGER.getActiveLog() == null) {
-      return errorResult("No log file is currently loaded. Use load_log first.");
-    }
-    return null;
-  }
 
   // ==================== MATCH PHASE DETECTION UTILITIES ====================
 
@@ -209,6 +213,26 @@ public final class ToolUtils {
     return null;
   }
 
+  // ==================== PERCENTILE UTILITY ====================
+
+  /**
+   * NIST Type 7 percentile with linear interpolation (same as R default and numpy method='linear').
+   *
+   * @param sortedData Array of sorted numeric values
+   * @param p Percentile (0.0 to 1.0, e.g., 0.25 for Q1, 0.75 for Q3)
+   * @return The interpolated percentile value
+   */
+  public static double percentile(double[] sortedData, double p) {
+    if (sortedData.length == 0) return 0.0;
+    if (sortedData.length == 1) return sortedData[0];
+    double index = p * (sortedData.length - 1);
+    int lower = (int) Math.floor(index);
+    int upper = Math.min((int) Math.ceil(index), sortedData.length - 1);
+    if (lower == upper) return sortedData[lower];
+    double weight = index - lower;
+    return sortedData[lower] * (1 - weight) + sortedData[upper] * weight;
+  }
+
   // ==================== SIGNAL ALIGNMENT UTILITIES ====================
 
   /**
@@ -224,14 +248,20 @@ public final class ToolUtils {
       return null;
     }
 
-    var result = (Object) null;
-    for (var tv : values) {
-      if (tv.timestamp() > targetTimestamp) {
-        break;
-      }
-      result = tv.value();
+    // Binary search for the last value at or before targetTimestamp (O(log n)).
+    int lo = 0, hi = values.size() - 1;
+    if (values.get(0).timestamp() > targetTimestamp) {
+      return null; // All values are after the target
     }
-    return result;
+    while (lo < hi) {
+      int mid = (lo + hi + 1) >>> 1; // upper-mid to find last <= target
+      if (values.get(mid).timestamp() <= targetTimestamp) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return values.get(lo).value();
   }
 
   /**
@@ -300,11 +330,11 @@ public final class ToolUtils {
     if (value == null) {
       return null;
     }
-    if (value instanceof Number) {
-      return ((Number) value).doubleValue();
+    if (value instanceof Number n) {
+      return n.doubleValue();
     }
-    if (value instanceof Boolean) {
-      return ((Boolean) value) ? 1.0 : 0.0;
+    if (value instanceof Boolean b) {
+      return b ? 1.0 : 0.0;
     }
     return null;
   }
@@ -332,44 +362,6 @@ public final class ToolUtils {
     for (var tv : reference) {
       var refValue = toDouble(tv.value());
       var otherValue = getValueAtTimeLinear(other, tv.timestamp());
-
-      if (refValue != null && otherValue != null) {
-        double error = refValue - otherValue;
-        sumSquaredError += error * error;
-        count++;
-      }
-    }
-
-    if (count == 0) {
-      return Double.NaN;
-    }
-
-    return Math.sqrt(sumSquaredError / count);
-  }
-
-  /**
-   * Calculates RMSE between two aligned time series using ZOH (legacy method).
-   *
-   * @param series1 The first time series
-   * @param series2 The second time series
-   * @return The RMSE, or NaN if calculation not possible
-   */
-  public static double calculateRmseZoh(
-      List<TimestampedValue> series1, List<TimestampedValue> series2) {
-    if (series1 == null || series2 == null || series1.isEmpty() || series2.isEmpty()) {
-      return Double.NaN;
-    }
-
-    var reference = series1.size() >= series2.size() ? series1 : series2;
-    var other = series1.size() >= series2.size() ? series2 : series1;
-
-    double sumSquaredError = 0.0;
-    int count = 0;
-
-    for (var tv : reference) {
-      var refValue = toDouble(tv.value());
-      var otherObj = getValueAtTimeZoh(other, tv.timestamp());
-      var otherValue = toDouble(otherObj);
 
       if (refValue != null && otherValue != null) {
         double error = refValue - otherValue;

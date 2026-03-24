@@ -14,7 +14,7 @@ import java.util.List;
  * <p>Example output:
  * <pre>{@code
  * "server_analysis_directives": {
- *   "confidence_level": "moderate",
+ *   "confidence_level": "medium",
  *   "sample_context": "Based on 4500 samples over 150.0 seconds",
  *   "interpretation_guidance": [
  *     "Sample count is adequate for basic statistics but insufficient for rare-event detection"

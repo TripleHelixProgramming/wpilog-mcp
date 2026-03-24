@@ -259,11 +259,11 @@ class ContentFingerprintTest {
     }
 
     @Test
-    @DisplayName("cacheFileName uses first 16 chars of fingerprint")
+    @DisplayName("cacheFileName uses first 32 chars of fingerprint")
     void cacheFileNameFormat() {
       String fp = "a3f7b2c1d4e5f6a7890123456789abcdef0123456789abcdef0123456789abcd";
       String name = ContentFingerprint.cacheFileName(fp, 157286432);
-      assertEquals("a3f7b2c1d4e5f6a7-157286432.msgpack", name);
+      assertEquals("a3f7b2c1d4e5f6a7890123456789abcd-157286432.msgpack", name);
     }
 
     @Test

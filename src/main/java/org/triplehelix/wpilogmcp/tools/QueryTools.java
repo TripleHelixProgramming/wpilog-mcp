@@ -49,7 +49,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty(
               "type", "string", "Filter by type (substring match, e.g., 'Pose3d')", false)
@@ -61,11 +61,11 @@ public final class QueryTools {
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.ParsedLog log, JsonObject arguments) throws Exception {
       var typeFilter =
-          arguments.has("type") ? arguments.get("type").getAsString() : null;
+          arguments.has("type") && !arguments.get("type").isJsonNull() ? arguments.get("type").getAsString() : null;
       var nameContains =
-          arguments.has("pattern") ? arguments.get("pattern").getAsString() : null;
+          arguments.has("pattern") && !arguments.get("pattern").isJsonNull() ? arguments.get("pattern").getAsString() : null;
       var minSamples =
-          arguments.has("min_samples") ? arguments.get("min_samples").getAsInt() : null;
+          arguments.has("min_samples") && !arguments.get("min_samples").isJsonNull() ? arguments.get("min_samples").getAsInt() : null;
 
       var matches = new ArrayList<String>();
 
@@ -105,7 +105,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder().build();
     }
 
@@ -148,7 +148,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name (e.g., /Robot/BatteryVoltage)", true)
           .addProperty(
@@ -252,7 +252,7 @@ public final class QueryTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty(
               "pattern",

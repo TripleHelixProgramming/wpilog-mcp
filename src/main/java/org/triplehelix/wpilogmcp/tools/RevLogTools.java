@@ -24,6 +24,8 @@ import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
  *   <li>{@code list_revlog_signals} - List available REV signals with sync status</li>
  *   <li>{@code get_revlog_data} - Query REV signal data with FPGA timestamps</li>
  *   <li>{@code sync_status} - Get synchronization confidence and details</li>
+ *   <li>{@code set_revlog_offset} - Manually set revlog timestamp offset</li>
+ *   <li>{@code wait_for_sync} - Wait for background sync to complete</li>
  * </ul>
  *
  * <p>All timestamps returned from these tools are converted to FPGA time using the
@@ -68,7 +70,7 @@ public final class RevLogTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty(
               "device_filter",
@@ -85,8 +87,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
-      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs();
-      boolean syncInProgress = logManager.isRevLogSyncInProgress();
+      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
+      boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
         var response = success()
@@ -98,8 +100,9 @@ public final class RevLogTools {
           response.addWarning("RevLog synchronization is in progress. "
               + "Call list_revlog_signals again in a moment to see available signals.");
         } else {
-          response.addWarning("No REV log files are synchronized with the active wpilog. "
-              + "Place .revlog files in the same directory as the .wpilog file to enable auto-sync.");
+          response.addWarning("No REV log files found for this wpilog. "
+              + "Revlog files are discovered automatically within the configured log directory tree. "
+              + "Ensure .revlog files are present and timestamps overlap.");
         }
         return response.build();
       }
@@ -191,7 +194,7 @@ public final class RevLogTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty(
               "signal_key",
@@ -223,7 +226,7 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
-      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs();
+      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
         throw new IllegalArgumentException(
@@ -258,8 +261,8 @@ public final class RevLogTools {
       for (TimestampedValue tv : filtered) {
         JsonObject point = new JsonObject();
         point.addProperty("timestamp", tv.timestamp());
-        if (tv.value() instanceof Number) {
-          point.addProperty("value", ((Number) tv.value()).doubleValue());
+        if (tv.value() instanceof Number n) {
+          point.addProperty("value", n.doubleValue());
         } else {
           point.addProperty("value", String.valueOf(tv.value()));
         }
@@ -296,6 +299,15 @@ public final class RevLogTools {
           stats.addProperty("mean", mean);
           stats.addProperty("count", numericData.length);
           response.addData("statistics", stats);
+
+          // Attach data quality and analysis directives when returning statistics
+          var quality = DataQuality.fromValues(filtered);
+          var directives = AnalysisDirectives.fromQuality(quality)
+              .addSingleMatchCaveat()
+              .addGuidance("Revlog timestamps are synchronized via cross-correlation "
+                  + "(confidence: " + confidence.getLabel() + "). "
+                  + "Accuracy depends on sync quality.");
+          response.addDataQuality(quality).addDirectives(directives);
         }
       }
 
@@ -328,7 +340,7 @@ public final class RevLogTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty(
               "include_signal_pairs",
@@ -340,8 +352,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
-      boolean syncInProgress = logManager.isRevLogSyncInProgress();
-      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs();
+      boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
+      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null) {
         return success()
@@ -465,7 +477,7 @@ public final class RevLogTools {
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addNumberProperty(
               "offset_ms",
@@ -483,12 +495,12 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
-      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs();
+      SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
         throw new IllegalArgumentException(
-            "No REV log files are loaded. Place .revlog files in the same directory "
-                + "as the .wpilog file and reload, or use load_log to trigger auto-sync.");
+            "No REV log files found for this wpilog. "
+                + "Ensure .revlog files are present in the log directory tree with overlapping timestamps.");
       }
 
       double offsetMs = getOptDouble(arguments, "offset_ms", 0.0);
@@ -557,12 +569,12 @@ public final class RevLogTools {
     @Override
     public String description() {
       return "Wait for background RevLog synchronization to complete. "
-          + "Call this after load_log if you need revlog data immediately. "
+          + "Call this before querying revlog data if synchronization may still be in progress. "
           + "Returns instantly if sync is already done or no revlogs are present.";
     }
 
     @Override
-    public JsonObject inputSchema() {
+    protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addIntegerProperty("timeout_ms",
               "Maximum time to wait in milliseconds (default: 30000)", false, 30000)
@@ -573,8 +585,8 @@ public final class RevLogTools {
     protected JsonElement executeWithLog(ParsedLog log, JsonObject arguments) throws Exception {
       int timeoutMs = getOptInt(arguments, "timeout_ms", 30000);
 
-      boolean wasInProgress = logManager.isRevLogSyncInProgress();
-      boolean completed = logManager.waitForRevLogSync(timeoutMs);
+      boolean wasInProgress = logManager.isRevLogSyncInProgress(log.path());
+      boolean completed = logManager.waitForRevLogSync(log.path(), timeoutMs);
 
       var response = success()
           .addProperty("completed", completed)
@@ -586,7 +598,7 @@ public final class RevLogTools {
       }
 
       // Include current sync status summary
-      var syncLogs = logManager.getSynchronizedLogs();
+      var syncLogs = logManager.getSynchronizedLogs(log.path());
       if (syncLogs != null) {
         response.addProperty("revlog_count", syncLogs.revlogCount());
         response.addProperty("synchronized", syncLogs.hasAnySynchronized());

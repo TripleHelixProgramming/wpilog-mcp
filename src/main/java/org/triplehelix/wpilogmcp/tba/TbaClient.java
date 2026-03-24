@@ -168,6 +168,58 @@ public class TbaClient {
   }
 
   /**
+   * Gets all events for a year from TBA. Results are cached.
+   *
+   * @param year The competition year
+   * @return Array of event objects, or empty if unavailable
+   */
+  public Optional<JsonArray> getEventsForYear(int year) {
+    if (!isAvailable()) return Optional.empty();
+
+    try {
+      return Optional.ofNullable(fetchJson("/events/" + year, JsonArray.class));
+    } catch (Exception e) {
+      logger.debug("Failed to fetch events for year {}: {}", year, e.getMessage());
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * Searches for events matching a partial name or code for a given year.
+   *
+   * @param year The competition year
+   * @param query The search string (matched against event code, name, and city)
+   * @param maxResults Maximum number of results to return
+   * @return List of matching event codes with names
+   */
+  public List<String> searchEvents(int year, String query, int maxResults) {
+    var eventsOpt = getEventsForYear(year);
+    if (eventsOpt.isEmpty()) return List.of();
+
+    var lowerQuery = query.toLowerCase();
+    var results = new java.util.ArrayList<String>();
+
+    for (var element : eventsOpt.get()) {
+      if (!element.isJsonObject()) continue;
+      var event = element.getAsJsonObject();
+
+      String eventCode = event.has("event_code") ? event.get("event_code").getAsString() : "";
+      String name = event.has("name") ? event.get("name").getAsString() : "";
+      String city = event.has("city") && !event.get("city").isJsonNull()
+          ? event.get("city").getAsString() : "";
+      String key = event.has("key") ? event.get("key").getAsString() : "";
+
+      if (eventCode.toLowerCase().contains(lowerQuery)
+          || name.toLowerCase().contains(lowerQuery)
+          || city.toLowerCase().contains(lowerQuery)) {
+        results.add(eventCode + " (" + name + ")");
+        if (results.size() >= maxResults) break;
+      }
+    }
+    return results;
+  }
+
+  /**
    * Gets all matches for an event from TBA.
    */
   public Optional<JsonArray> getEventMatches(int year, String eventCode) {
