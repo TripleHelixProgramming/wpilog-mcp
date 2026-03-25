@@ -4,7 +4,7 @@
 
 wpilog-mcp lets you ask those questions in plain English. Load your robot's telemetry logs and have a conversation with your data.  Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's official `DataLogReader` for guaranteed format compatibility.
 
-**See what's possible:** [Example Analysis Report](EXAMPLE.md) - A complete match analysis generated from real robot logs.
+**See what's possible:** Check out the [example analyses](doc/) generated from real robot logs — in particular, the [VACHE Power Analysis](doc/VACHE_POWER_ANALYSIS.md) is a stellar demonstration of the system's strict insistence against over-interpretation, conducted using the most recent version.
 
 ## Table of Contents
 
@@ -268,7 +268,7 @@ The system reports confidence levels (HIGH/MEDIUM/LOW/FAILED) based on correlati
 - Bus voltage, output current, temperature
 - Faults and sticky faults
 
-See [TOOLS.md](TOOLS.md#revlog-tools) for detailed tool documentation and a technical explanation of the synchronization algorithm.
+See [TOOLS.md](doc/TOOLS.md#revlog-tools) for detailed tool documentation and a technical explanation of the synchronization algorithm.
 
 ### Claude Desktop
 
@@ -505,7 +505,8 @@ MIT License - see [LICENSE](LICENSE)
 
 ## See Also
 
-- [TOOLS.md](TOOLS.md) - Complete tool reference
-- [EXAMPLE.md](EXAMPLE.md) - Sample analysis report showing tool capabilities
+- [TOOLS.md](doc/TOOLS.md) - Complete tool reference
+- [VAALE Event Analysis](doc/VAALE_EVENT_ANALYSIS.md) - Comprehensive event analysis from real robot logs
+- [VACHE Power Analysis](doc/VACHE_POWER_ANALYSIS.md) - In-depth power & voltage analysis showcasing epistemic guardrails
 - [WPILib DataLog Docs](https://docs.wpilib.org/en/stable/docs/software/telemetry/datalog.html)
 - [MCP Protocol](https://modelcontextprotocol.io/)

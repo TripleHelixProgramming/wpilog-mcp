@@ -118,6 +118,6 @@ This server handles concurrent access from multiple MCP clients (especially in H
 When modifying tools or features, keep all documentation in sync:
 - Tool descriptions in Java code (shown to LLM agents via MCP)
 - `README.md` for end-user installation, configuration, and usage
-- `TOOLS.md` for human reference on tool parameters and behavior
+- `doc/TOOLS.md` for human reference on tool parameters and behavior
 - `CHANGELOG.md` for release notes
-- `IDEAS.md` for planned/proposed work (update or remove items as they are completed)
+- `doc/IDEAS.md` for planned/proposed work (update or remove items as they are completed)
