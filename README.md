@@ -13,6 +13,7 @@ wpilog-mcp lets you ask those questions in plain English. Load your robot's tele
 - [Configuration](#configuration)
 - [Available Tools](#available-tools)
 - [Supported Data Types](#supported-data-types)
+- [Containerization](#containerization)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -355,6 +356,59 @@ wpilog-mcp provides 45 tools organized into categories. All log-requiring tools 
 | `SwerveSample` | `timestamp`, `x`, `y`, `heading`, `heading_deg`, `vx`, `vy`, `omega`, `ax`, `ay`, `alpha`, `moduleForcesX[4]`, `moduleForcesY[4]` |
 
 *Note: `PoseObservation.type` is decoded as an enum string: `MEGATAG_1`, `MEGATAG_2`, or `PHOTONVISION`.*
+
+## Containerization
+
+You can run wpilog-mcp in a Docker container for team-shared or cloud-hosted deployments. The following `Dockerfile` uses a multi-stage build to keep the runtime image small.
+
+*Thanks to [Godmar Back](https://github.com/godmar) for contributing this setup.*
+
+**`Dockerfile`:**
+```dockerfile
+FROM eclipse-temurin:17-jdk AS build
+WORKDIR /app
+
+# Copy Gradle wrapper and config first for dependency caching
+COPY gradlew settings.gradle build.gradle gradle.properties ./
+COPY gradle/ gradle/
+RUN chmod +x gradlew && ./gradlew --no-daemon dependencies
+
+# Copy source and build fat JAR
+COPY src/ src/
+RUN ./gradlew --no-daemon shadowJar -x test && \
+    cp build/libs/wpilog-mcp-*-all.jar build/libs/wpilog-mcp.jar
+
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+
+COPY --from=build /app/build/libs/wpilog-mcp.jar ./wpilog-mcp.jar
+
+RUN mkdir -p /logs
+
+ENV WPILOG_DIR=/logs
+ENV TBA_API_KEY=""
+ENV WPILOG_TEAM=""
+ENV WPILOG_HTTP=true
+ENV WPILOG_HTTP_PORT=8000
+ENV WPILOG_HTTP_BIND=0.0.0.0
+ENV WPILOG_HTTP_PATH=/wpilogmcp
+
+EXPOSE 8000
+
+ENTRYPOINT ["java", "-Xmx4g", "-jar", "/app/wpilog-mcp.jar", "--http", "--port", "8000"]
+```
+
+**Build and run:**
+```bash
+docker build -t wpilog-mcp .
+docker run -p 8000:8000 \
+  -v /path/to/your/logs:/logs \
+  -e TBA_API_KEY=your_key_here \
+  -e WPILOG_TEAM=2363 \
+  wpilog-mcp
+```
+
+The server will be available at `http://localhost:8000/wpilogmcp`. Mount your log directory to `/logs` and pass configuration via environment variables.
 
 ## Troubleshooting
 

@@ -95,7 +95,7 @@ public class Main {
         // Stdio transport: run in foreground
         logger.info("Starting wpilog-mcp server (config: {})...", configName);
         applyConfig(config);
-        initializeAndRun(false, 2363);
+        initializeAndRun(false, 2363, null, null, null);
       }
     } catch (ConfigException e) {
       logger.error("{}", e.getMessage());
@@ -122,7 +122,10 @@ public class Main {
       var loader = new ConfigLoader();
       var config = loader.load(configName, configPath);
       applyConfig(config);
-      initializeAndRun(config.isHttp(), config.effectivePort());
+      var daemonBind = System.getenv("WPILOG_HTTP_BIND");
+      var daemonPath = System.getenv("WPILOG_HTTP_PATH");
+      var daemonOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
+      initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath, daemonOrigins);
     } catch (ConfigException e) {
       logger.error("{}", e.getMessage());
       System.exit(1);
@@ -199,6 +202,9 @@ public class Main {
     var logDir = System.getenv("WPILOG_DIR");
     boolean httpMode = "true".equalsIgnoreCase(System.getenv("WPILOG_HTTP"));
     int httpPort = parseEnvInt("WPILOG_HTTP_PORT", 2363);
+    String httpBind = System.getenv("WPILOG_HTTP_BIND");
+    String httpPath = System.getenv("WPILOG_HTTP_PATH");
+    var allowedOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
     boolean debugMode = "true".equalsIgnoreCase(System.getenv("WPILOG_DEBUG"));
 
     applyEnvLong("WPILOG_DISK_CACHE_SIZE", v -> logManager.getDiskCache().setMaxTotalSizeMb(v));
@@ -384,7 +390,7 @@ public class Main {
       logger.info("TBA enrichment disabled (no API key found in env or args)");
     }
 
-    initializeAndRun(httpMode, httpPort);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins);
   }
 
   // ==================== Shared Startup ====================
@@ -392,7 +398,8 @@ public class Main {
   /**
    * Initializes subsystems and starts the server. Called by both CLI and config modes.
    */
-  private static void initializeAndRun(boolean httpMode, int httpPort) {
+  private static void initializeAndRun(boolean httpMode, int httpPort,
+      String httpBind, String httpPath, java.util.Set<String> allowedOrigins) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -423,7 +430,7 @@ public class Main {
     logger.debug("Registered all MCP tools");
 
     if (httpMode) {
-      var httpTransport = new HttpTransport(toolRegistry, httpPort);
+      var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
         logger.info("Shutdown signal received");
         httpTransport.stop();
@@ -493,11 +500,26 @@ public class Main {
     logger.info("  WPILOG_SCAN_DEPTH      Max directory depth for scanning (default: 5)");
     logger.info("  WPILOG_HTTP            Set to 'true' to use HTTP transport");
     logger.info("  WPILOG_HTTP_PORT       HTTP port (default: 2363)");
+    logger.info("  WPILOG_HTTP_BIND       HTTP bind address (default: 127.0.0.1, use 0.0.0.0 for containers)");
+    logger.info("  WPILOG_HTTP_PATH       HTTP endpoint path (default: /mcp)");
+    logger.info("  WPILOG_HTTP_ALLOWED_ORIGINS  Comma-separated hostnames for Origin validation");
     logger.info("  WPILOG_DEBUG           Set to 'true' to enable debug logging");
     logger.info("  WPILOG_MAX_HEAP        Max JVM heap size (default: 4g, used by run-mcp.sh/bat)");
     logger.info("");
     logger.info("Memory management is automatic — the server adapts to available JVM heap.");
     logger.info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");
+  }
+
+  private static java.util.Set<String> parseAllowedOrigins(String value) {
+    if (value == null || value.isEmpty()) return java.util.Set.of();
+    var origins = new java.util.HashSet<String>();
+    for (var part : value.split(",")) {
+      var trimmed = part.trim();
+      if (!trimmed.isEmpty()) {
+        origins.add(trimmed);
+      }
+    }
+    return java.util.Set.copyOf(origins);
   }
 
   private static int parseEnvInt(String name, int defaultValue) {

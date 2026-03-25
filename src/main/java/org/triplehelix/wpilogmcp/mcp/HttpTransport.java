@@ -41,20 +41,32 @@ public class HttpTransport {
   private final McpMessageHandler handler;
   private final SessionManager sessionManager;
   private final int port;
+  private final String bindAddress;
+  private final String mcpPath;
+  private final java.util.Set<String> allowedOriginHosts;
   private HttpServer server;
   private ScheduledExecutorService scheduler;
   private java.util.concurrent.ExecutorService sseExecutor;
 
   public HttpTransport(ToolRegistry toolRegistry, int port) {
+    this(toolRegistry, port, "127.0.0.1", null, null);
+  }
+
+  public HttpTransport(ToolRegistry toolRegistry, int port, String bindAddress,
+      java.util.Set<String> allowedOriginHosts, String mcpPath) {
     this.gson = new GsonBuilder().serializeNulls().create();
     this.sessionManager = new SessionManager();
     this.handler = new McpMessageHandler(toolRegistry, sessionManager);
     this.port = port;
+    this.bindAddress = bindAddress != null ? bindAddress : "127.0.0.1";
+    this.mcpPath = mcpPath != null && !mcpPath.isEmpty() ? mcpPath : "/mcp";
+    this.allowedOriginHosts = allowedOriginHosts != null
+        ? allowedOriginHosts : java.util.Set.of();
   }
 
   public void start() throws IOException {
-    server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-    server.createContext("/mcp", this::handleRequest);
+    server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
+    server.createContext(this.mcpPath, this::handleRequest);
     server.createContext("/health", this::handleHealthCheck);
     server.setExecutor(Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2)));
@@ -78,7 +90,7 @@ public class HttpTransport {
         () -> sessionManager.cleanupExpired(SESSION_IDLE_TIMEOUT),
         CLEANUP_INTERVAL_MINUTES, CLEANUP_INTERVAL_MINUTES, TimeUnit.MINUTES);
 
-    logger.info("MCP HTTP server listening on http://127.0.0.1:{}/mcp", getPort());
+    logger.info("MCP HTTP server listening on http://{}:{}{}", this.bindAddress, getPort(), this.mcpPath);
   }
 
   public int getPort() {
@@ -391,7 +403,10 @@ public class HttpTransport {
     try {
       java.net.URI uri = java.net.URI.create(origin);
       String host = uri.getHost();
-      return "localhost".equals(host) || "127.0.0.1".equals(host) || "[::1]".equals(host);
+      if ("localhost".equals(host) || "127.0.0.1".equals(host) || "[::1]".equals(host)) {
+        return true;
+      }
+      return allowedOriginHosts.contains(host);
     } catch (Exception e) {
       return false;
     }
