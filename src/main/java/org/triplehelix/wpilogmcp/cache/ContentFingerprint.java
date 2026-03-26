@@ -11,9 +11,10 @@ import java.security.NoSuchAlgorithmException;
 /**
  * Computes a fast content fingerprint for cache identity.
  *
- * <p>Reads the first 64 KB and last 64 KB of the file plus the file size,
- * then computes SHA-256 over those bytes. This is fast even for 500 MB files
- * (reads only 128 KB from disk) while being collision-resistant in practice.
+ * <p>Reads the first 64 KB, middle 64 KB (for files &gt; 192 KB), and last 64 KB
+ * of the file plus the file size, then computes SHA-256 over those bytes.
+ * This is fast even for 500 MB files (reads at most 192 KB from disk) while
+ * being collision-resistant in practice.
  *
  * <p>Two copies of the same .wpilog file in different directories produce
  * identical fingerprints, enabling cache sharing.
@@ -51,6 +52,18 @@ public final class ContentFingerprint {
         }
         buffer.flip();
         digest.update(buffer);
+
+        // Read middle chunk (if file is large enough for 3 distinct chunks)
+        if (fileSize > 3L * CHUNK_SIZE) {
+          long middleChunkStart = fileSize / 2;
+          buffer.clear();
+          while (buffer.hasRemaining()) {
+            int bytesRead = channel.read(buffer, middleChunkStart + buffer.position());
+            if (bytesRead <= 0) break;
+          }
+          buffer.flip();
+          digest.update(buffer);
+        }
 
         // Read last chunk (if file is larger than one chunk)
         if (fileSize > CHUNK_SIZE) {

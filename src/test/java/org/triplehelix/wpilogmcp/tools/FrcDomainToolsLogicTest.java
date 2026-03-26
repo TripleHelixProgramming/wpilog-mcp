@@ -4,52 +4,20 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
-import java.util.List;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
-import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for FrcDomainTools using synthetic log data.
  */
-class FrcDomainToolsLogicTest {
+class FrcDomainToolsLogicTest extends ToolTestBase {
 
-  private List<Tool> tools;
-
-  @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-    FrcDomainTools.registerAll(capturingRegistry);
-  }
-
-  @AfterEach
-  void tearDown() {
-    LogManager.getInstance().unloadAllLogs();
-  }
-
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
-  }
-
-  private void putLogInCache(ParsedLog log) {
-    LogManager.getInstance().testPutLog(log.path(), log);
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    FrcDomainTools.registerAll(registry);
   }
 
   @Nested
@@ -1590,6 +1558,173 @@ class FrcDomainToolsLogicTest {
 
       assertTrue(resultObj.has("data_quality"), "Should include data quality");
       assertTrue(resultObj.has("server_analysis_directives"), "Should include analysis directives");
+    }
+  }
+
+  @Nested
+  @DisplayName("get_ds_timeline teleop start deferred during FMS gap")
+  class GetDsTimelineTeleopDeferredTests {
+    @Test
+    @DisplayName("TELEOP_START appears at re-enable time, not at auto-end")
+    void testDsTimelineTeleopStartDeferredDuringFmsGap() throws Exception {
+      // FMS disables between auto and teleop: auto ends at t=15, robot re-enabled at t=17
+      var enabledValues = new ArrayList<TimestampedValue>();
+      enabledValues.add(new TimestampedValue(0.0, true));   // auto enable
+      enabledValues.add(new TimestampedValue(15.0, false)); // auto disable
+      enabledValues.add(new TimestampedValue(17.0, true));  // teleop enable
+
+      var autoValues = new ArrayList<TimestampedValue>();
+      autoValues.add(new TimestampedValue(0.0, true));   // auto starts
+      autoValues.add(new TimestampedValue(15.0, false)); // auto ends
+
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_fms_gap.wpilog")
+          .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
+          .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var result = tool.execute(args).getAsJsonObject();
+
+      assertTrue(result.get("success").getAsBoolean());
+      var events = result.getAsJsonArray("events");
+
+      // Find TELEOP_START — should be at t=17 (re-enable), not t=15 (auto-end)
+      boolean foundTeleopStart = false;
+      for (var e : events) {
+        var ev = e.getAsJsonObject();
+        if ("TELEOP_START".equals(ev.get("type").getAsString())) {
+          assertEquals(17.0, ev.get("timestamp").getAsDouble(), 0.01,
+              "TELEOP_START should be deferred to re-enable time (17s), not auto-end (15s)");
+          foundTeleopStart = true;
+        }
+      }
+      assertTrue(foundTeleopStart, "Should have a TELEOP_START event");
+    }
+  }
+
+  @Nested
+  @DisplayName("analyze_loop_timing microsecond detection")
+  class AnalyzeLoopTimingMicrosecondTests {
+    @Test
+    @DisplayName("detects microseconds and converts to ms")
+    void testLoopTimingMicrosecondDetection() throws Exception {
+      // Loop time values around 20000 microseconds (20ms)
+      int n = 50;
+      double[] timestamps = new double[n];
+      double[] values = new double[n];
+      for (int i = 0; i < n; i++) {
+        timestamps[i] = i * 0.02;
+        values[i] = 19500 + 1000 * Math.random(); // ~19500-20500 microseconds
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/loop_us.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime", timestamps, values)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_loop_timing");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var result = tool.execute(args).getAsJsonObject();
+
+      assertTrue(result.get("success").getAsBoolean());
+      // Should have the units_note about microsecond detection
+      assertTrue(result.has("units_note"), "Should include units_note for microsecond detection");
+      assertTrue(result.get("units_note").getAsString().contains("microseconds"),
+          "units_note should mention microseconds");
+
+      // Statistics should be in ms range (~20ms), not microseconds (~20000)
+      var statistics = result.getAsJsonObject("statistics");
+      double avgMs = statistics.get("avg_ms").getAsDouble();
+      assertTrue(avgMs > 15 && avgMs < 25,
+          "Average should be ~20ms after conversion, got: " + avgMs);
+    }
+  }
+
+  @Nested
+  @DisplayName("analyze_cycles incomplete cycle bounded by end_time")
+  class AnalyzeCyclesEndTimeBoundedTests {
+    @Test
+    @DisplayName("incomplete cycle end_time equals provided end_time parameter")
+    void testIncompleteCycleBoundedByEndTime() throws Exception {
+      // State machine: IDLE -> INTAKE -> TRANSFER (never completes)
+      // Data extends to t=10 but we pass end_time=8
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "IDLE"));
+      stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(3.0, "TRANSFER"));
+      stateValues.add(new TimestampedValue(5.0, "TRANSFER"));
+      stateValues.add(new TimestampedValue(10.0, "TRANSFER"));
+
+      var log = new MockLogBuilder()
+          .setPath("/test/cycles_endtime.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_mode", "start_to_end");
+      args.addProperty("cycle_start_state", "INTAKE");
+      args.addProperty("cycle_end_state", "SCORE");
+      args.addProperty("end_time", 8.0);
+
+      var result = tool.execute(args).getAsJsonObject();
+
+      assertTrue(result.get("success").getAsBoolean());
+      var cycles = result.getAsJsonArray("cycles");
+      assertEquals(1, cycles.size(), "Should have 1 incomplete cycle");
+
+      var cycle = cycles.get(0).getAsJsonObject();
+      assertTrue(cycle.get("incomplete").getAsBoolean(), "Cycle should be incomplete");
+      assertEquals(8.0, cycle.get("end_time").getAsDouble(), 0.01,
+          "Incomplete cycle end_time should be bounded by the provided end_time parameter, not the last data timestamp (10.0)");
+    }
+  }
+
+  @Nested
+  @DisplayName("profile_mechanism settling detection near zero setpoint")
+  class ProfileMechanismNearZeroSettlingTests {
+    @Test
+    @DisplayName("settling detected with absolute minimum threshold for near-zero setpoint")
+    void testSettlingDetectionNearZeroSetpoint() throws Exception {
+      // Setpoint changes from 10.0 to 0.0 at t=5
+      // Position approaches 0.0: at t=7 it's within 0.01 of setpoint (absolute min threshold)
+      // Need a second setpoint change to flush the settling calculation
+      var log = new MockLogBuilder()
+          .setPath("/test/settling_zero.wpilog")
+          .addNumericEntry("/Mech/Setpoint",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+              new double[]{10, 10, 10, 10, 10, 0, 0, 0, 0, 0, 5})
+          .addNumericEntry("/Mech/Position",
+              new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+              new double[]{10, 10, 10, 10, 10, 3, 0.5, 0.005, 0.003, 0.001, 0.5})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("profile_mechanism");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("mechanism_name", "Mech");
+
+      var result = tool.execute(args).getAsJsonObject();
+
+      assertTrue(result.get("success").getAsBoolean());
+      assertTrue(result.has("following_error"), "Expected following_error in response");
+      var followingError = result.getAsJsonObject("following_error");
+      assertTrue(followingError.has("settling_time_sec"),
+          "Should detect settling even with near-zero setpoint using 0.01 absolute minimum threshold");
+      var settlingStats = followingError.getAsJsonObject("settling_time_sec");
+      double avgSettling = settlingStats.get("avg").getAsDouble();
+      assertTrue(avgSettling > 0, "Settling time should be positive, got: " + avgSettling);
     }
   }
 }

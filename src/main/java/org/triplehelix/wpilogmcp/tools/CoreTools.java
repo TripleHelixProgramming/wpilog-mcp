@@ -4,13 +4,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.Comparator;
-import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
-import org.triplehelix.wpilogmcp.tba.TbaClient;
+
 import org.triplehelix.wpilogmcp.tba.TbaEnrichment;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
@@ -27,7 +25,6 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *   <li>{@code list_loaded_logs} - Show cache status</li>
  *   <li>{@code list_struct_types} - List supported struct types</li>
  *   <li>{@code health_check} - Server status and diagnostics</li>
- *   <li>{@code get_game_info} - Year-specific FRC game data</li>
  * </ul>
  */
 public final class CoreTools {
@@ -45,10 +42,10 @@ public final class CoreTools {
     registry.registerTool(new ListLoadedLogsTool());
     registry.registerTool(new ListStructTypesTool());
     registry.registerTool(new HealthCheckTool());
-    registry.registerTool(new GetGameInfoTool());
+    // GetGameInfoTool is registered in FrcDomainTools to match the discovery catalog category
   }
 
-  static class ListAvailableLogsTool implements Tool {
+  static class ListAvailableLogsTool extends ToolBase {
     @Override
     public String name() {
       return "list_available_logs";
@@ -69,10 +66,8 @@ public final class CoreTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var logDir = LogDirectory.getInstance();
-
-      if (!logDir.isConfigured()) {
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      if (!logDirectory.isConfigured()) {
         var result = new JsonObject();
         result.addProperty("success", false);
         result.addProperty("error", "Log directory not configured. Start server with -logdir /path/to/logs");
@@ -80,8 +75,7 @@ public final class CoreTools {
         return result;
       }
 
-      var logs = logDir.listAvailableLogs();
-      var tbaClient = TbaClient.getInstance();
+      var logs = logDirectory.listAvailableLogs();
       var tbaEnrichment = TbaEnrichment.getInstance();
       boolean tbaAvailable = tbaClient.isAvailable();
 
@@ -108,12 +102,12 @@ public final class CoreTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("log_directory", logDir.getLogDirectory().toString());
+      result.addProperty("log_directory", logDirectory.getLogDirectory().toString());
       result.addProperty("log_count", logs.size());
       if (tbaAvailable) result.addProperty("tba_enrichment", true);
 
       var cacheStats = new JsonObject();
-      for (var entry : logDir.getCacheStats().entrySet()) {
+      for (var entry : logDirectory.getCacheStats().entrySet()) {
         cacheStats.addProperty(entry.getKey(), entry.getValue());
       }
       result.add("metadata_cache", cacheStats);
@@ -154,11 +148,10 @@ public final class CoreTools {
           .toList();
 
       for (var entry : sortedEntries) {
-        var values = log.values().get(entry.name());
         var entryObj = new JsonObject();
         entryObj.addProperty("name", entry.name());
         entryObj.addProperty("type", entry.type());
-        entryObj.addProperty("sample_count", values != null ? values.size() : 0);
+        entryObj.addProperty("sample_count", log.sampleCount(entry.name()));
         entriesArray.add(entryObj);
       }
 
@@ -236,7 +229,8 @@ public final class CoreTools {
         result.add("time_range_sec", timeRange);
 
         var samples = new JsonArray();
-        int[] indices = {0, values.size() / 2, values.size() - 1};
+        int[] rawIndices = {0, values.size() / 2, values.size() - 1};
+        var indices = java.util.Arrays.stream(rawIndices).distinct().toArray();
         for (int idx : indices) {
           if (idx >= 0 && idx < values.size()) {
             var tv = values.get(idx);
@@ -327,7 +321,7 @@ public final class CoreTools {
     }
   }
 
-  static class ListLoadedLogsTool implements Tool {
+  static class ListLoadedLogsTool extends ToolBase {
     @Override
     public String name() {
       return "list_loaded_logs";
@@ -344,9 +338,7 @@ public final class CoreTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var logManager = getLogManager();
-
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       var paths = logManager.getLoadedLogPaths();
 
       var logsArray = new JsonArray();
@@ -364,7 +356,7 @@ public final class CoreTools {
     }
   }
 
-  static class ListStructTypesTool implements Tool {
+  static class ListStructTypesTool extends ToolBase {
     @Override
     public String name() {
       return "list_struct_types";
@@ -381,7 +373,7 @@ public final class CoreTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       var result = new JsonObject();
       result.addProperty("success", true);
 
@@ -417,7 +409,7 @@ public final class CoreTools {
     }
   }
 
-  static class HealthCheckTool implements Tool {
+  static class HealthCheckTool extends ToolBase {
     @Override
     public String name() {
       return "health_check";
@@ -434,17 +426,15 @@ public final class CoreTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("status", "OK");
       result.addProperty("server_version", org.triplehelix.wpilogmcp.Version.VERSION);
 
-      var logManager = getLogManager();
       result.addProperty("loaded_logs", logManager.getLoadedLogPaths().size());
 
       // TBA availability
-      var tbaConfig = org.triplehelix.wpilogmcp.tba.TbaConfig.getInstance();
       result.addProperty("tba_available", tbaConfig.isConfigured());
 
       // RevLog sync status
@@ -459,8 +449,8 @@ public final class CoreTools {
       memory.addProperty("free_mb", runtime.freeMemory() / (1024L * 1024L));
       result.add("jvm_memory", memory);
 
-      // In-memory cache info
-      result.addProperty("cache_memory_mb", logManager.getEstimatedMemoryUsageMb());
+      // JVM heap usage (includes caches, tool execution, and all other allocations)
+      result.addProperty("jvm_heap_used_mb", logManager.getEstimatedMemoryUsageMb());
 
       // Disk cache info
       var diskCache = logManager.getDiskCache();
@@ -493,70 +483,4 @@ public final class CoreTools {
     }
   }
 
-  /**
-   * Provides year-specific FRC game information for contextual log analysis.
-   */
-  static class GetGameInfoTool implements Tool {
-    @Override
-    public String name() {
-      return "get_game_info";
-    }
-
-    @Override
-    public String description() {
-      return "Get year-specific FRC game information (match timing, scoring values, field geometry, "
-          + "game pieces, and analysis hints). Use this to understand the context of a log file: "
-          + "what the match phases are, what scoring actions look like, and what mechanisms to expect. "
-          + "Defaults to the current season if no year is specified.";
-    }
-
-    @Override
-    public JsonObject inputSchema() {
-      return new SchemaBuilder()
-          .addIntegerProperty("season", "FRC season year (e.g., 2026). Defaults to current year.", false, null)
-          .build();
-    }
-
-    @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
-
-      int season = arguments.has("season") && !arguments.get("season").isJsonNull()
-          ? arguments.get("season").getAsInt()
-          : java.time.Year.now().getValue();
-
-      var game = kb.getGame(season);
-      if (game == null) {
-        var result = new JsonObject();
-        result.addProperty("success", false);
-        result.addProperty("error", "No game data available for season " + season);
-        var available = kb.availableSeasons();
-        if (available.length > 0) {
-          var arr = new com.google.gson.JsonArray();
-          for (int s : available) arr.add(s);
-          result.add("available_seasons", arr);
-        }
-        return result;
-      }
-
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("season", game.season());
-      result.addProperty("game_name", game.gameName());
-      result.add("match_timing", game.raw().getAsJsonObject("match_timing"));
-      result.add("scoring", game.scoring());
-      result.add("field_geometry", game.raw().getAsJsonObject("field_geometry"));
-      result.add("game_pieces", game.gamePieces());
-      if (game.analysisHints() != null) {
-        result.add("analysis_hints", game.analysisHints());
-      }
-      if (game.raw().has("typical_mechanisms")) {
-        result.add("typical_mechanisms", game.raw().getAsJsonArray("typical_mechanisms"));
-      }
-      if (game.raw().has("hub_mechanics")) {
-        result.add("hub_mechanics", game.raw().getAsJsonObject("hub_mechanics"));
-      }
-      return result;
-    }
-  }
 }

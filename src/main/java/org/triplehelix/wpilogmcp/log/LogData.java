@@ -45,6 +45,20 @@ public interface LogData {
   /** Message explaining truncation, or null. */
   String truncationMessage();
 
+  /**
+   * Returns the sample count for an entry without decoding values.
+   *
+   * <p>For {@link LazyParsedLog}, this returns the record offset count directly,
+   * avoiding the expensive full decode that {@code values().get(name).size()} triggers.
+   *
+   * @param entryName The entry name
+   * @return The number of samples, or 0 if the entry does not exist
+   */
+  default int sampleCount(String entryName) {
+    var vals = values().get(entryName);
+    return vals != null ? vals.size() : 0;
+  }
+
   /** Number of entries in the log. */
   default int entryCount() {
     return entries().size();

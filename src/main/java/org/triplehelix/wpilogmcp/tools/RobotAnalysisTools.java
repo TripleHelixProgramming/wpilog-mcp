@@ -526,7 +526,9 @@ public final class RobotAnalysisTools {
 
       if (moduleAngles.size() < 2 || minLen == 0) return null;
 
-      // At each timestamp, compute max deviation from mean angle
+      // At each timestamp, compute max deviation from mean angle.
+      // Note: index-based alignment assumes all modules are logged at the same rate.
+      // If modules have different sample rates, this analysis may be inaccurate.
       int desyncEvents = 0;
       double maxDeviation = 0;
       String worstModule = "";
@@ -538,7 +540,7 @@ public final class RobotAnalysisTools {
           sinSum += Math.sin(angles[i]);
           cosSum += Math.cos(angles[i]);
         }
-        double circularMean = Math.atan2(sinSum / moduleAngles.size(), cosSum / moduleAngles.size());
+        double circularMean = Math.atan2(sinSum, cosSum);
 
         for (int m = 0; m < moduleAngles.size(); m++) {
           // Angular distance (handles wrapping at +/- pi)
@@ -604,16 +606,15 @@ public final class RobotAnalysisTools {
       double maxDrift = 0;
 
       for (var vTv : visionVals) {
-        if (!(vTv.value() instanceof Map)) continue;
-        var visionPose = (Map<String, Object>) vTv.value();
+        if (!(vTv.value() instanceof Map<?, ?> rawVisionPose)) continue;
+        @SuppressWarnings("unchecked")
+        var visionPose = (Map<String, Object>) rawVisionPose;
 
         // Find nearest odometry pose (ZOH) using binary search
         var odomRaw = ToolUtils.getValueAtTimeZoh(odomVals, vTv.timestamp());
-        if (!(odomRaw instanceof Map)) continue;
+        if (!(odomRaw instanceof Map<?, ?> rawOdomPose)) continue;
         @SuppressWarnings("unchecked")
-        var odomPose = (Map<String, Object>) odomRaw;
-
-        if (odomPose == null) continue;
+        var odomPose = (Map<String, Object>) rawOdomPose;
 
         double dist = poseDistance(odomPose, visionPose);
         totalDrift += dist;
@@ -717,16 +718,28 @@ public final class RobotAnalysisTools {
           .toArray();
     }
 
-    /** Distance between two Pose2d/3d maps. */
+    /** Distance between two Pose2d/3d maps. Handles both nested {translation:{x,y}} and flat {x,y} layouts. */
     @SuppressWarnings("unchecked")
     private double poseDistance(Map<String, Object> p1, Map<String, Object> p2) {
+      double x1, y1, x2, y2;
+      // Nested layout: {translation: {x, y}}
       var t1 = (Map<String, Object>) p1.get("translation");
       var t2 = (Map<String, Object>) p2.get("translation");
-      if (t1 == null || t2 == null) return 0;
-      double dx = ((Number) t1.getOrDefault("x", 0.0)).doubleValue()
-                 - ((Number) t2.getOrDefault("x", 0.0)).doubleValue();
-      double dy = ((Number) t1.getOrDefault("y", 0.0)).doubleValue()
-                 - ((Number) t2.getOrDefault("y", 0.0)).doubleValue();
+      if (t1 != null && t2 != null) {
+        x1 = ((Number) t1.getOrDefault("x", 0.0)).doubleValue();
+        y1 = ((Number) t1.getOrDefault("y", 0.0)).doubleValue();
+        x2 = ((Number) t2.getOrDefault("x", 0.0)).doubleValue();
+        y2 = ((Number) t2.getOrDefault("y", 0.0)).doubleValue();
+      } else if (p1.containsKey("x") && p2.containsKey("x")) {
+        // Flat layout from struct decoders: {x, y, rotation_rad, ...}
+        x1 = ((Number) p1.getOrDefault("x", 0.0)).doubleValue();
+        y1 = ((Number) p1.getOrDefault("y", 0.0)).doubleValue();
+        x2 = ((Number) p2.getOrDefault("x", 0.0)).doubleValue();
+        y2 = ((Number) p2.getOrDefault("y", 0.0)).doubleValue();
+      } else {
+        return 0;
+      }
+      double dx = x1 - x2, dy = y1 - y2;
       return Math.sqrt(dx * dx + dy * dy);
     }
 
@@ -817,7 +830,8 @@ public final class RobotAnalysisTools {
     @Override
     public String description() {
       return "Analyze CAN bus health by looking for timeout errors and communication issues. "
-          + "Returns 'no CAN data found' if log does not contain CAN bus utilization or error entries."
+          + "Returns 'no CAN data found' if log does not contain CAN bus utilization or error entries. "
+          + "See also: analyze_can_bus for numeric utilization analysis."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -925,6 +939,7 @@ public final class RobotAnalysisTools {
     }
   }
 
+  // Extends ToolBase directly because this tool requires TWO log paths, not one
   static class CompareMatchesTool extends ToolBase {
     @Override
     public String name() { return "compare_matches"; }
@@ -1108,7 +1123,7 @@ public final class RobotAnalysisTools {
       var velFiltered = velValues.stream()
           .filter(tv -> tv.timestamp() >= tStart && tv.timestamp() <= tEnd
                         && tv.value() instanceof Number)
-          .collect(Collectors.toList());
+          .toList();
 
       if (velFiltered.size() < 10)
         return errorResult("Too few velocity samples in window: " + velFiltered.size() + " (need ≥10)");
@@ -1160,7 +1175,9 @@ public final class RobotAnalysisTools {
         if (Math.abs(alpha[i]) < alphaThr) { filtByThr++;  continue; }
         if (voltsValues != null && Math.abs(tauSign[i]) < 0.5) { filtBySign++; continue; }
 
-        double tau = torqueScale * tauSign[i] * Math.abs(curr[i]);
+        double tau = voltsValues != null
+            ? torqueScale * tauSign[i] * Math.abs(curr[i])
+            : torqueScale * curr[i];
         sumA2 += alpha[i] * alpha[i];
         sumAW += alpha[i] * omegaS[i];
         sumW2 += omegaS[i] * omegaS[i];
@@ -1200,7 +1217,9 @@ public final class RobotAnalysisTools {
           continue;
         if (Math.abs(alpha[i]) < alphaThr) continue;
         if (voltsValues != null && Math.abs(tauSign[i]) < 0.5) continue;
-        double y    = torqueScale * tauSign[i] * Math.abs(curr[i]);
+        double y    = voltsValues != null
+            ? torqueScale * tauSign[i] * Math.abs(curr[i])
+            : torqueScale * curr[i];
         double yHat = J * alpha[i] + B * omegaS[i];
         ssY2  += y * y;
         double residual = y - yHat;
@@ -1230,6 +1249,8 @@ public final class RobotAnalysisTools {
             + "raise alpha_threshold, or increase smooth_window.", r2));
       if (nUsed < 20)
         warnings.add("Only " + nUsed + " samples used. Consider widening the window or lowering alpha_threshold.");
+      if (Math.abs(J) > 1000 || Math.abs(B) > 100)
+        warnings.add("Extreme values detected — results may be unreliable due to near-singular data");
       if (warnings.size() > 0) result.add("warnings", warnings);
 
       var ctx = new JsonObject();

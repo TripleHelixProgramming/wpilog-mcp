@@ -433,8 +433,10 @@ public class Main {
       var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
         logger.info("Shutdown signal received");
+        // Order matters: drain in-flight HTTP requests first, then shut down LogManager
+        // so that in-flight tool calls don't encounter closed logs.
         httpTransport.stop();
-        logManager.getDiskCache().shutdown();
+        logManager.shutdown();
       }, "shutdown-hook"));
       try {
         httpTransport.start();
@@ -449,8 +451,8 @@ public class Main {
     } else {
       var finalLogManager = logManager;
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-        logger.debug("Stdio shutdown: flushing disk cache");
-        finalLogManager.getDiskCache().shutdown();
+        logger.debug("Stdio shutdown: shutting down LogManager");
+        finalLogManager.shutdown();
       }, "stdio-shutdown-hook"));
       var server = new McpServer(toolRegistry);
       try {
@@ -471,7 +473,7 @@ public class Main {
     logger.info("With no arguments, starts the \"default\" server configuration.");
     logger.info("");
     logger.info("Commands:");
-    logger.info("  start <name>        Start a named server from servers.json");
+    logger.info("  start <name>        Start a named server from servers.yaml");
     logger.info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger.info("");
     logger.info("Options:");

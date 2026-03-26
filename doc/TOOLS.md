@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Reference
 
-Complete documentation for all 45 tools available in wpilog-mcp.
+Complete documentation for all tools available in wpilog-mcp.
 
 ## Table of Contents
 
@@ -13,44 +13,45 @@ Complete documentation for all 45 tools available in wpilog-mcp.
   - [list_entries](#list_entries)
   - [get_entry_info](#get_entry_info)
   - [read_entry](#read_entry)
-  - [search_entries](#search_entries)
-  - [get_statistics](#get_statistics)
-  - [compare_entries](#compare_entries)
-  - [get_types](#get_types)
   - [list_struct_types](#list_struct_types)
   - [health_check](#health_check)
-  - [get_game_info](#get_game_info)
-- [Search Tools](#search-tools)
+- [Query Tools](#query-tools)
+  - [search_entries](#search_entries)
+  - [get_types](#get_types)
   - [find_condition](#find_condition)
   - [search_strings](#search_strings)
-- [Advanced Analysis Tools](#advanced-analysis-tools)
+- [Statistics Tools](#statistics-tools)
+  - [get_statistics](#get_statistics)
+  - [compare_entries](#compare_entries)
   - [detect_anomalies](#detect_anomalies)
-  - [get_match_phases](#get_match_phases)
   - [find_peaks](#find_peaks)
   - [rate_of_change](#rate_of_change)
   - [time_correlate](#time_correlate)
+- [Robot Analysis Tools](#robot-analysis-tools)
+  - [get_match_phases](#get_match_phases)
   - [analyze_swerve](#analyze_swerve)
   - [power_analysis](#power_analysis)
   - [can_health](#can_health)
   - [compare_matches](#compare_matches)
   - [get_code_metadata](#get_code_metadata)
   - [moi_regression](#moi_regression)
-- [TBA Integration](#tba-integration)
-  - [get_tba_status](#get_tba_status)
-  - [get_tba_match_data](#get_tba_match_data)
-- [Export Tools](#export-tools)
-  - [export_csv](#export_csv)
-  - [generate_report](#generate_report)
-- [FRC Domain-Specific Tools](#frc-domain-specific-tools)
+  - [analyze_can_bus](#analyze_can_bus)
+- [FRC Domain Tools](#frc-domain-tools)
   - [get_ds_timeline](#get_ds_timeline)
   - [analyze_vision](#analyze_vision)
   - [profile_mechanism](#profile_mechanism)
   - [analyze_auto](#analyze_auto)
   - [analyze_cycles](#analyze_cycles)
   - [analyze_replay_drift](#analyze_replay_drift)
-  - [analyze_loop_timing](#analyze_loop_timing)
-  - [analyze_can_bus](#analyze_can_bus)
   - [predict_battery_health](#predict_battery_health)
+  - [analyze_loop_timing](#analyze_loop_timing)
+  - [get_game_info](#get_game_info)
+- [Export Tools](#export-tools)
+  - [export_csv](#export_csv)
+  - [generate_report](#generate_report)
+- [TBA Tools](#tba-tools)
+  - [get_tba_status](#get_tba_status)
+  - [get_tba_match_data](#get_tba_match_data)
 - [RevLog Tools](#revlog-tools)
   - [list_revlog_signals](#list_revlog_signals)
   - [get_revlog_data](#get_revlog_data)
@@ -68,7 +69,7 @@ These tools help LLM agents discover and effectively use the server's capabiliti
 ### `get_server_guide`
 Get a comprehensive overview of all server capabilities, organized by category with usage guidance and anti-patterns to avoid.
 
-**IMPORTANT:** Call this tool first to understand what analysis capabilities are available. This server has 45 specialized tools—don't write custom analysis code when a built-in tool already exists.
+**IMPORTANT:** Call this tool first to understand what analysis capabilities are available. This server has many specialized tools--don't write custom analysis code when a built-in tool already exists.
 
 **Parameters:**
 - `category` (optional): Filter by category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`
@@ -277,68 +278,12 @@ Read values from an entry with time range filtering and pagination.
 }
 ```
 
-### `search_entries`
-Search for entries matching criteria.
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `type_filter` (optional): Filter by type (e.g., `Pose3d`, `double`)
-- `name_contains` (optional): Filter by name substring
-- `min_samples` (optional): Minimum sample count
-
-**Returns:** Matching entries sorted by sample count
-
-### `get_statistics`
-Get statistics for a numeric entry.
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `name` (required): The entry name
-
-**Returns:** Statistics including min, max, mean, median, std_dev
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "name": "/Robot/BatteryVoltage",
-  "type": "double",
-  "statistics": {
-    "count": 7716,
-    "min": 11.23,
-    "max": 12.89,
-    "mean": 12.34,
-    "median": 12.41,
-    "std_dev": 0.28,
-    "variance": 0.078
-  }
-}
-```
-
-### `compare_entries`
-Compare two entries (useful for RealOutputs vs ReplayOutputs).
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `name1` (required): First entry name
-- `name2` (required): Second entry name
-
-**Returns:** Comparison of sample counts and value statistics
-
-### `get_types`
-Get all data types used in the log file.
-
-**Parameters:**
-- `path` (required): Path to the log file
-
-**Returns:** Types with entry counts and entry names
-
 ### `list_struct_types`
 List all supported WPILib struct types organized by category. Useful for discovering what struct types can be decoded and what fields they contain.
 
 **Parameters:** None
 
-**Returns:** Struct types organized into categories (geometry, kinematics, vision, autonomous)
+**Returns:** Struct types organized into categories (geometry, kinematics, vision)
 
 **Example Response:**
 ```json
@@ -346,23 +291,17 @@ List all supported WPILib struct types organized by category. Useful for discove
   "success": true,
   "struct_types": {
     "geometry": [
-      "Pose2d", "Pose3d", "Transform2d", "Transform3d",
-      "Translation2d", "Translation3d", "Rotation2d", "Rotation3d",
+      "Pose2d", "Pose3d", "Translation2d", "Translation3d",
+      "Rotation2d", "Rotation3d", "Transform2d", "Transform3d",
       "Twist2d", "Twist3d"
     ],
     "kinematics": [
-      "ChassisSpeeds", "DifferentialDriveWheelSpeeds",
-      "MecanumDriveWheelSpeeds", "SwerveModuleState",
-      "SwerveModulePosition"
+      "ChassisSpeeds", "SwerveModuleState", "SwerveModulePosition"
     ],
     "vision": [
-      "TargetObservation", "PoseObservation"
-    ],
-    "autonomous": [
-      "SwerveSample"
+      "TargetObservation", "PoseObservation", "SwerveSample"
     ]
-  },
-  "_execution_time_ms": 2
+  }
 }
 ```
 
@@ -375,84 +314,32 @@ Get system health status including JVM memory usage, loaded log count, disk cach
 
 **Returns:** System status, JVM memory info, loaded log count, disk cache status, and TBA availability
 
-**Example Response:**
-```json
-{
-  "success": true,
-  "status": "OK",
-  "server_version": "0.8.0",
-  "loaded_logs": 3,
-  "tba_available": true,
-  "revlog_sync_in_progress": false,
-  "jvm_memory": {
-    "used_mb": 512,
-    "total_mb": 1024,
-    "max_mb": 4096,
-    "free_mb": 512
-  },
-  "cache_memory_mb": 512,
-  "disk_cache": {
-    "enabled": true,
-    "directory": "/Users/team2363/.wpilog-mcp/cache",
-    "cached_files": 5,
-    "total_size_mb": 42,
-    "format_version": 3
-  },
-  "_execution_time_ms": 5
-}
-```
-
-**Response Fields:**
-- `status`: Always "OK" if the tool executes successfully
-- `server_version`: Server version string
-- `loaded_logs`: Number of logs currently cached in memory
-- `tba_available`: Whether The Blue Alliance API is configured
-- `revlog_sync_in_progress`: Whether any revlog sync is currently running
-- `jvm_memory`: JVM heap memory info (`used_mb`, `total_mb`, `max_mb`, `free_mb`)
-- `cache_memory_mb`: Estimated heap memory used by cached logs
-- `disk_cache`: Persistent disk cache status (enabled, directory, file count, size, format version)
-
 **Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. Idle logs are automatically evicted after 30 minutes.
-
-### `get_game_info`
-Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
-
-**Parameters:**
-- `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
-
-**Bundled game data:** 2024 Crescendo, 2025 Reefscape, 2026 REBUILT
-
-**Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values (fuel, tower, ranking points), field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "season": 2026,
-  "game_name": "REBUILT",
-  "match_timing": {
-    "auto_duration_sec": 20,
-    "teleop_duration_sec": 140,
-    "total_duration_sec": 160,
-    "endgame_duration_sec": 30,
-    "shifts": { "auto": {"start_sec": 0, "end_sec": 20}, "..." : "..." }
-  },
-  "scoring": {
-    "match_points": { "auto": {"fuel_active_hub": 1, "tower_level_1": 15}, "..." : "..." },
-    "ranking_points": { "energized_rp": {"regional_threshold": 100}, "..." : "..." }
-  },
-  "analysis_hints": {
-    "endgame_activity": "Tower climbing attempts in final 30 seconds",
-    "fuel_context": "100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP"
-  }
-}
-```
-
-**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API.
 
 ---
 
-## Search Tools
+## Query Tools
+
+Search and filter log data. Find specific entries, types, and events.
+
+### `search_entries`
+Search for entries matching criteria.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `type` (optional): Filter by type (substring match, e.g., `Pose3d`, `double`)
+- `pattern` (optional): Filter by name containing this string
+- `min_samples` (optional): Minimum number of samples required
+
+**Returns:** Matching entries sorted alphabetically
+
+### `get_types`
+Get all data types used in the log file.
+
+**Parameters:**
+- `path` (required): Path to the log file
+
+**Returns:** Types with entry counts and entry names
 
 ### `find_condition`
 Find timestamps where a numeric entry crosses a threshold. Useful for questions like "When did battery voltage drop below 11V?"
@@ -515,7 +402,51 @@ Search string entries for text patterns. Useful for finding errors, warnings, or
 
 ---
 
-## Advanced Analysis Tools
+## Statistics Tools
+
+Statistical analysis on numeric data. Compute stats, find correlations, detect anomalies.
+
+### `get_statistics`
+Get statistics for a numeric entry. Supports optional time range filtering. Includes data quality metrics and analysis directives for confidence assessment.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `name` (required): The entry name
+- `start_time` (number, optional): Start timestamp in seconds
+- `end_time` (number, optional): End timestamp in seconds
+
+**Returns:** Statistics including count, min, max, mean, median, std_dev, quartiles, and percentiles
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "name": "/Robot/BatteryVoltage",
+  "count": 7716,
+  "min": 11.23,
+  "max": 12.89,
+  "mean": 12.34,
+  "median": 12.41,
+  "std_dev": 0.28,
+  "q1": 12.1,
+  "q3": 12.6,
+  "iqr": 0.5,
+  "p5": 11.5,
+  "p95": 12.8,
+  "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
+  "server_analysis_directives": { "confidence": "high" }
+}
+```
+
+### `compare_entries`
+Compare two entries (useful for RealOutputs vs ReplayOutputs).
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `name1` (required): First entry name
+- `name2` (required): Second entry name
+
+**Returns:** RMSE (root mean square error) and max difference between the two entries, with data quality and analysis directives
 
 ### `detect_anomalies`
 Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) method with proper linear percentile interpolation. Values outside Q1 - 1.5xIQR or Q3 + 1.5xIQR are flagged as outliers. Optionally detects sudden spikes (large percentage changes between consecutive samples).
@@ -529,37 +460,138 @@ Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) 
 - `spike_threshold` (optional): Detect spikes larger than this percentage change (e.g., 50 for 50% change)
 - `limit` (optional): Maximum anomalies to return (default 50)
 
-**Returns:** IQR bounds (Q1, Q3, lower/upper bounds) and list of anomalies with timestamps, values, and type
+**Returns:** Anomaly count, non-finite count, and list of anomalies with timestamps, values, and type
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "name": "/Robot/BatteryVoltage",
   "anomaly_count": 3,
-  "iqr_bounds": {
-    "q1": 11.8,
-    "q3": 12.4,
-    "iqr": 0.6,
-    "lower_bound": 10.9,
-    "upper_bound": 13.3
-  },
+  "non_finite_count": 0,
   "anomalies": [
     {
       "timestamp_sec": 45.23,
       "value": 10.5,
-      "type": "below_lower_bound",
-      "bound": 10.9
+      "type": "below_lower_bound"
     },
     {
       "timestamp_sec": 89.1,
       "value": 9.8,
-      "type": "below_lower_bound",
-      "bound": 10.9
+      "type": "below_lower_bound"
     }
-  ]
+  ],
+  "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
+  "server_analysis_directives": { "confidence": "high" }
 }
 ```
+
+### `find_peaks`
+Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are sorted by height difference (how much they stand out from neighboring values).
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `name` (required): Entry name to analyze (must be numeric type)
+- `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
+- `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
+- `limit` (optional): Maximum peaks to return per type (default 20)
+
+**Returns:** Lists of maxima and/or minima with height difference from neighbors
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "maxima": [
+    {
+      "timestamp_sec": 2.34,
+      "value": 12.89,
+      "height_diff": 0.45
+    }
+  ],
+  "minima": [
+    {
+      "timestamp_sec": 89.45,
+      "value": 10.23,
+      "height_diff": 1.2
+    }
+  ],
+  "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
+  "server_analysis_directives": { "confidence": "high" }
+}
+```
+
+### `rate_of_change`
+Compute rate of change (derivative) of numeric data over time. Calculates dv/dt for each sample. Useful for computing velocity from position, acceleration from velocity, or detecting rapid changes in any value.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `name` (required): Entry name to analyze (must be numeric type)
+- `start_time` (optional): Start timestamp in seconds
+- `end_time` (optional): End timestamp in seconds
+- `window_size` (optional): Number of samples to average for smoothing (default 1 = no smoothing). Higher values reduce noise but may miss short events
+- `limit` (optional): Maximum samples to return (default 100)
+
+**Returns:** Derivative values with timestamp and statistics
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "statistics": {
+    "avg_rate": 0.02
+  },
+  "samples": [
+    {
+      "timestamp_sec": 0.04,
+      "rate": 25.0
+    }
+  ],
+  "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
+  "server_analysis_directives": { "confidence": "high" }
+}
+```
+
+### `time_correlate`
+Compute Pearson correlation coefficient between two numeric entries. Aligns samples by timestamp using linear interpolation and calculates correlation with statistical significance (p-value). Values range from -1 (perfect negative correlation) to +1 (perfect positive correlation).
+
+**Interpretation:**
+- |r| >= 0.9: Very strong correlation
+- |r| >= 0.7: Strong correlation
+- |r| >= 0.5: Moderate correlation
+- |r| >= 0.3: Weak correlation
+- |r| < 0.3: No significant correlation
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `name1` (required): First entry name (must be numeric)
+- `name2` (required): Second entry name (must be numeric)
+- `start_time` (optional): Start timestamp in seconds
+- `end_time` (optional): End timestamp in seconds
+
+**Returns:** Correlation coefficient, sample count, and p-value
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "sample_count": 5432,
+  "correlation": -0.81,
+  "p_value": 0.0001,
+  "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
+  "server_analysis_directives": { "confidence": "high" }
+}
+```
+
+**Common correlations in FRC:**
+- Battery voltage vs motor current: Strong negative (voltage drops as current increases)
+- Drive velocity vs motor power: Strong positive
+- Arm position vs arm motor current: Variable (depends on mechanism)
+
+---
+
+## Robot Analysis Tools
+
+Robot-specific analysis: power, swerve, CAN health, match phases.
 
 ### `get_match_phases`
 Detect match phases from DriverStation/FMS data in the log. Phases are derived from actual DS mode transitions (Enabled, Autonomous, Teleop), not hardcoded durations, so they reflect the real match regardless of game year.
@@ -606,125 +638,18 @@ Detect match phases from DriverStation/FMS data in the log. Phases are derived f
 }
 ```
 
-### `find_peaks`
-Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are sorted by height difference (how much they stand out from neighboring values).
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `name` (required): Entry name to analyze (must be numeric type)
-- `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
-- `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
-- `limit` (optional): Maximum peaks to return per type (default 20)
-
-**Returns:** Lists of maxima and/or minima with height difference from neighbors
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "name": "/Robot/BatteryVoltage",
-  "total_data_points": 7716,
-  "maxima_count": 5,
-  "maxima": [
-    {
-      "timestamp_sec": 2.34,
-      "value": 12.89,
-      "height_diff": 0.45,
-      "index": 117
-    }
-  ],
-  "minima_count": 5,
-  "minima": [
-    {
-      "timestamp_sec": 89.45,
-      "value": 10.23,
-      "height_diff": 1.2,
-      "index": 4472
-    }
-  ]
-}
-```
-
-### `rate_of_change`
-Compute rate of change (derivative) of numeric data over time. Calculates dv/dt for each sample. Useful for computing velocity from position, acceleration from velocity, or detecting rapid changes in any value.
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `name` (required): Entry name to analyze (must be numeric type)
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
-- `window_size` (optional): Number of samples to average for smoothing (default 1 = no smoothing). Higher values reduce noise but may miss short events
-- `limit` (optional): Maximum samples to return (default 100)
-
-**Returns:** Derivative values with timestamp and statistics (min, max, avg rate)
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "name": "/Drive/Velocity",
-  "window_size": 1,
-  "samples_analyzed": 7716,
-  "statistics": {
-    "min_rate": -5.2,
-    "max_rate": 8.1,
-    "avg_rate": 0.02
-  },
-  "returned_count": 100,
-  "samples": [
-    {
-      "timestamp_sec": 0.04,
-      "value": 0.5,
-      "rate": 25.0
-    }
-  ]
-}
-```
-
-### `time_correlate`
-Compute Pearson correlation coefficient between two numeric entries. Aligns samples by timestamp (10ms buckets) and calculates correlation. Values range from -1 (perfect negative correlation) to +1 (perfect positive correlation).
-
-**Interpretation:**
-- |r| >= 0.9: Very strong correlation
-- |r| >= 0.7: Strong correlation
-- |r| >= 0.5: Moderate correlation
-- |r| >= 0.3: Weak correlation
-- |r| < 0.3: No significant correlation
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `name1` (required): First entry name (must be numeric)
-- `name2` (required): Second entry name (must be numeric)
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
-
-**Returns:** Correlation coefficient with interpretation and sample count
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "entry1": "/Robot/BatteryVoltage",
-  "entry2": "/Drive/MotorCurrent",
-  "correlation": -0.81,
-  "paired_samples": 5432,
-  "interpretation": "Strong negative correlation"
-}
-```
-
-**Common correlations in FRC:**
-- Battery voltage vs motor current: Strong negative (voltage drops as current increases)
-- Drive velocity vs motor power: Strong positive
-- Arm position vs arm motor current: Variable (depends on mechanism)
-
 ### `analyze_swerve`
 Analyze swerve drive module performance. Searches for entries containing SwerveModuleState, SwerveModulePosition, ChassisSpeeds, or entries with "swerve"/"module" in the name. Reports statistics for each module found.
 
 **Parameters:**
 - `path` (required): Path to the log file
 - `module_prefix` (optional): Entry path prefix for swerve modules (e.g., `/Drive/Module` or `/Swerve`). If omitted, searches all entries
+- `slip_threshold` (number, optional): Speed difference threshold for slip detection in m/s (default: 0.5)
+- `sync_threshold_rad` (number, optional): Angle threshold for sync deviation in radians (default: 0.1)
+- `odometry_entry` (string, optional): Explicit odometry pose entry name for drift analysis
+- `vision_entry` (string, optional): Explicit vision pose entry name for drift analysis
 
-**Returns:** Lists of found swerve-related entries and per-module statistics (max/avg speed)
+**Returns:** Lists of found swerve-related entries, per-module statistics (max/avg speed), wheel slip analysis, module sync analysis, and odometry drift analysis
 
 **Example Response:**
 ```json
@@ -946,9 +871,81 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 - Samples where current or voltage interpolation returns null (e.g., when a log starts later than the velocity log) are skipped rather than zero-filled, preventing silent corruption of the OLS fit.
 - Provide `applied_volts_entry` when using motor controllers that report unsigned current (TalonFX, SparkMax) so torque direction can be recovered from voltage sign.
 
+### `analyze_can_bus`
+Analyze CAN bus health, utilization, and error rates. Monitors bus loading and detects communication errors that can cause device timeouts or unreliable sensor readings.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `bus_name` (optional): CAN bus name (default: `"rio"`)
+- `start_time` (optional): Start timestamp in seconds
+- `end_time` (optional): End timestamp in seconds
+
+**Searches for entries containing:**
+- Bus utilization: `CANBus/Utilization`, `CAN/Usage`, `CAN/BusPercent`
+- Transmit errors: `CAN/Error/Tx`, `CANBus/TxError`, `CAN/TEC`
+- Receive errors: `CAN/Error/Rx`, `CANBus/RxError`, `CAN/REC`
+- Bus off events: `CAN/BusOff`, `CANBus/Status`
+
+**Returns:** Bus utilization analysis, error counts with enabled/disabled breakdown, and assessment
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "utilization": [
+    {
+      "entry": "/CANBus/Utilization",
+      "avg_percent": 45.2,
+      "max_percent": 78.5,
+      "sample_count": 7500
+    }
+  ],
+  "errors": [
+    {
+      "entry": "/CANBus/Error/Tx",
+      "error_count": 15,
+      "errors_while_enabled": 3,
+      "errors_while_disabled": 12
+    },
+    {
+      "entry": "/CANBus/Error/Rx",
+      "error_count": 8,
+      "errors_while_enabled": 0,
+      "errors_while_disabled": 8
+    }
+  ],
+  "enabled_error_total": 3,
+  "assessment": "CAN errors detected while robot was enabled — investigate device connections",
+  "data_quality": { "sample_count": 7500, "quality_score": 0.92 },
+  "server_analysis_directives": { "confidence": "high" }
+}
+```
+
+**Assessment Values:**
+- `"CAN errors only during disabled state — likely normal timeout behavior"` -- when all errors occurred while disabled
+- `"CAN errors detected while robot was enabled — investigate device connections"` -- when errors occurred while enabled
+
+**Utilization Guidelines:**
+- **< 50%**: Healthy, plenty of bandwidth
+- **50-70%**: Good, monitor if adding devices
+- **70-85%**: Concerning, reduce status frame rates
+- **> 85%**: Critical, high risk of timeouts and errors
+
+**Common Solutions for High Utilization:**
+- Reduce motor controller status frame rates (default is often too high)
+- Use CAN FD bus (if supported by hardware)
+- Minimize unnecessary CAN devices
+- Optimize PDH/PDP current monitoring rates
+
+**Use Case:** Run this tool if experiencing:
+- Intermittent motor controller disconnects
+- Sensor reading timeouts
+- "CAN timeout" errors in Driver Station
+- Unreliable device communication
+
 ---
 
-## TBA Integration
+## TBA Tools
 
 ### `get_tba_status`
 Get The Blue Alliance API integration status, including configuration and cache statistics.
@@ -1093,7 +1090,7 @@ Export entry data to a CSV file for external analysis in Excel, Python, MATLAB, 
 **Parameters:**
 - `path` (required): Path to the log file
 - `name` (required): Entry name to export
-- `output_path` (required): Path for output CSV file (must be within the configured export directory). Default export directory: `{tmpdir}/wpilog-export/`. Configure with `-exportdir`, `WPILOG_EXPORT_DIR`, or `"exportdir"` in `servers.json`.
+- `output_path` (required): Path for output CSV file (must be within the configured export directory). Default export directory: `{tmpdir}/wpilog-export/`. Configure with `-exportdir`, `WPILOG_EXPORT_DIR`, or `"exportdir"` in `servers.yaml`.
 - `start_time` (optional): Start timestamp in seconds (filters data)
 - `end_time` (optional): End timestamp in seconds (filters data)
 
@@ -1167,7 +1164,7 @@ Generate a comprehensive match summary report. Collects key metrics from the log
 
 ---
 
-## FRC Domain-Specific Tools
+## FRC Domain Tools
 
 ### `get_ds_timeline`
 Generate a chronological timeline of critical robot events. Detects enable/disable transitions, match phase changes, brownout events, joystick disconnects, and errors/warnings.
@@ -1357,7 +1354,6 @@ Analyze closed-loop mechanism performance including following error RMSE, stall 
 - **Slow settling time**: Increase P gain or add feedforward
 - **Stall events**: Check for mechanical binding, insufficient power, or incorrect current limits
 - **High overshoot with fast settling**: Well-tuned but aggressive - acceptable for many mechanisms
-```
 
 ### `analyze_auto`
 Analyze autonomous routine performance including path following error RMSE, maximum deviation, and completion timing. Enhanced with detailed path following metrics for tuning trajectory following controllers.
@@ -1615,87 +1611,6 @@ Analyze robot code loop timing performance. Detects loop overruns (> 20ms), meas
 - Unoptimized algorithms (O(n²) in periodic)
 - Garbage collection pauses (check JVM memory)
 
-### `analyze_can_bus`
-Analyze CAN bus health, utilization, and error rates. Monitors bus loading and detects communication errors that can cause device timeouts or unreliable sensor readings.
-
-**Parameters:**
-- `path` (required): Path to the log file
-- `bus_name` (optional): CAN bus name (default: `"rio"`)
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
-
-**Searches for entries containing:**
-- Bus utilization: `CANBus/Utilization`, `CAN/Usage`, `CAN/BusPercent`
-- Transmit errors: `CAN/Error/Tx`, `CANBus/TxError`, `CAN/TEC`
-- Receive errors: `CAN/Error/Rx`, `CANBus/RxError`, `CAN/REC`
-- Bus off events: `CAN/BusOff`, `CANBus/Status`
-
-**Returns:** Bus utilization analysis, error counts by type, health assessment, and recommendations
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "utilization": [
-    {
-      "entry": "/CANBus/Utilization",
-      "avg_percent": 45.2,
-      "max_percent": 78.5,
-      "min_percent": 15.3,
-      "sample_count": 7500,
-      "exceeded_threshold": false
-    }
-  ],
-  "errors": [
-    {
-      "entry": "/CANBus/Error/Tx",
-      "type": "transmit",
-      "error_count": 15,
-      "first_error_timestamp": 23.4,
-      "last_error_timestamp": 89.2
-    },
-    {
-      "entry": "/CANBus/Error/Rx",
-      "type": "receive",
-      "error_count": 8,
-      "first_error_timestamp": 34.5,
-      "last_error_timestamp": 92.1
-    }
-  ],
-  "total_errors": 23,
-  "health_assessment": "GOOD - Low error rate, utilization within limits",
-  "recommendations": [
-    "Monitor CAN utilization if adding more devices",
-    "Consider reducing status frame rates if utilization approaches 80%"
-  ],
-  "_execution_time_ms": 28
-}
-```
-
-**Health Assessment Levels:**
-- **EXCELLENT**: No errors, utilization < 50%
-- **GOOD**: Few errors (< 10), utilization < 80%
-- **FAIR**: Some errors (10-100), utilization 80-90%
-- **POOR**: Many errors (> 100) or utilization > 90%
-
-**Utilization Guidelines:**
-- **< 50%**: Healthy, plenty of bandwidth
-- **50-70%**: Good, monitor if adding devices
-- **70-85%**: Concerning, reduce status frame rates
-- **> 85%**: Critical, high risk of timeouts and errors
-
-**Common Solutions for High Utilization:**
-- Reduce motor controller status frame rates (default is often too high)
-- Use CAN FD bus (if supported by hardware)
-- Minimize unnecessary CAN devices
-- Optimize PDH/PDP current monitoring rates
-
-**Use Case:** Run this tool if experiencing:
-- Intermittent motor controller disconnects
-- Sensor reading timeouts
-- "CAN timeout" errors in Driver Station
-- Unreliable device communication
-
 ### `predict_battery_health`
 Analyze battery voltage and current draw to predict brownout risk and estimate battery health. Returns a health score (0–100), risk level, voltage statistics, recovery analysis, and actionable recommendations.
 
@@ -1744,6 +1659,42 @@ Brownout detection uses 0.2V hysteresis — voltage must rise 0.2V above the thr
   "data_quality": { "sample_count": 7500, "quality_score": 0.92 }
 }
 ```
+
+### `get_game_info`
+Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
+
+**Parameters:**
+- `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
+
+**Bundled game data:** 2024 Crescendo, 2025 Reefscape, 2026 REBUILT
+
+**Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values, field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "season": 2026,
+  "game_name": "REBUILT",
+  "match_timing": {
+    "auto_duration_sec": 20,
+    "teleop_duration_sec": 140,
+    "total_duration_sec": 160,
+    "endgame_duration_sec": 30,
+    "shifts": { "auto": {"start_sec": 0, "end_sec": 20}, "..." : "..." }
+  },
+  "scoring": {
+    "match_points": { "auto": {"fuel_active_hub": 1, "tower_level_1": 15}, "..." : "..." },
+    "ranking_points": { "energized_rp": {"regional_threshold": 100}, "..." : "..." }
+  },
+  "analysis_hints": {
+    "endgame_activity": "Tower climbing attempts in final 30 seconds",
+    "fuel_context": "100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP"
+  }
+}
+```
+
+**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API.
 
 ---
 
@@ -2069,8 +2020,9 @@ score = 1.0
 
 **Confidence levels** derived from quality score:
 - `"high"` (> 0.8): Reliable data, results can be stated with confidence
-- `"moderate"` (0.5-0.8): Usable data, note caveats in analysis
-- `"low"` (< 0.5): Poor data, results should be treated as preliminary
+- `"medium"` (0.5-0.8): Usable data, note caveats in analysis
+- `"low"` (0.2-0.5): Poor data, results should be treated as preliminary
+- `"insufficient"` (<= 0.2): Too little data for meaningful analysis
 
 ### `server_analysis_directives`
 
@@ -2078,7 +2030,7 @@ Auto-generated LLM guidance based on data quality issues detected. Included alon
 
 | Field | Description |
 |-------|-------------|
-| `confidence_level` | "high", "moderate", or "low" |
+| `confidence_level` | `"high"`, `"medium"`, `"low"`, or `"insufficient"` |
 | `sample_context` | Human-readable summary (e.g., "Based on 4500 samples over 150.0 seconds") |
 | `interpretation_guidance` | Array of warnings about data quality issues detected |
 | `suggested_followup` | Array of recommended next tools to call |

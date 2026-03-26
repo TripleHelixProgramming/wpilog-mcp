@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -30,37 +29,18 @@ import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 /**
  * Unit tests for RevLogTools.
  */
-class RevLogToolsTest {
+class RevLogToolsTest extends ToolTestBase {
 
-  private List<Tool> tools;
   private LogManager logManager;
 
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    RevLogTools.registerAll(registry);
+  }
+
   @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
+  void setUpLogManager() {
     logManager = LogManager.getInstance();
-
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-
-    RevLogTools.registerAll(capturingRegistry);
-  }
-
-  @AfterEach
-  void tearDown() {
-    logManager.unloadAllLogs();
-  }
-
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
   }
 
   private void putLogWithRevLog(ParsedLog wpilog, ParsedRevLog revlog, SyncResult syncResult) {
@@ -90,7 +70,9 @@ class RevLogToolsTest {
       field.setAccessible(true);
       @SuppressWarnings("unchecked")
       var cache = (Map<String, SynchronizedLogs>) field.get(logManager);
-      cache.put(wpilogPath, syncLogs);
+      // Normalize path the same way LogManager.getSynchronizedLogs() does
+      String normalized = java.nio.file.Path.of(wpilogPath).toAbsolutePath().normalize().toString();
+      cache.put(normalized, syncLogs);
     } catch (Exception e) {
       throw new RuntimeException("Failed to set synchronized logs", e);
     }
@@ -659,6 +641,253 @@ class RevLogToolsTest {
     }
   }
 
+  // ==================== set_revlog_offset Tool ====================
+
+  @Nested
+  @DisplayName("set_revlog_offset Tool")
+  class SetRevlogOffsetTests {
+
+    @Test
+    @DisplayName("tool exists with correct name and description")
+    void toolExistsWithCorrectNameAndDescription() {
+      var tool = findTool("set_revlog_offset");
+      assertEquals("set_revlog_offset", tool.name());
+      assertNotNull(tool.description());
+      assertFalse(tool.description().isEmpty());
+      assertTrue(tool.description().contains("offset"),
+          "Description should mention offset");
+      assertTrue(tool.description().contains("REV log"),
+          "Description should mention REV log");
+    }
+
+    @Test
+    @DisplayName("returns error when no log is loaded (path not found)")
+    void returnsErrorWhenNoLogLoaded() throws Exception {
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/nonexistent.wpilog");
+      args.addProperty("offset_ms", 100.0);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      // Should return an error since the log is not loaded
+      assertTrue(resultObj.has("error") || !resultObj.get("success").getAsBoolean(),
+          "Should return error when log is not loaded");
+    }
+
+    @Test
+    @DisplayName("returns error when log has no revlogs")
+    void returnsErrorWhenNoRevLogs() throws Exception {
+      var wpilog = createMockWpilog();
+      putLogNoRevLog(wpilog);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", 100.0);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.has("error") || !resultObj.get("success").getAsBoolean(),
+          "Should return error when no revlogs are synchronized");
+    }
+
+    @Test
+    @DisplayName("successfully sets offset with valid log and revlog data")
+    void successfullySetsOffset() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", -500.0);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals("rio", resultObj.get("can_bus").getAsString());
+      assertEquals(-500.0, resultObj.get("offset_ms").getAsDouble(), 0.001);
+      assertEquals(-500_000L, resultObj.get("offset_us").getAsLong());
+      assertEquals("USER_PROVIDED", resultObj.get("new_method").getAsString());
+      assertEquals("CROSS_CORRELATION", resultObj.get("previous_method").getAsString());
+    }
+
+    @Test
+    @DisplayName("records previous offset in response")
+    void recordsPreviousOffset() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      double previousOffsetMs = syncResult.offsetMillis();
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", 250.0);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(previousOffsetMs, resultObj.get("previous_offset_ms").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("calls updateSynchronizedLogs to persist offset change")
+    void callsUpdateSynchronizedLogs() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", 123.456);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      // The response confirms the new method is USER_PROVIDED, which means
+      // a new SyncResult was created and updateSynchronizedLogs was called
+      assertEquals("USER_PROVIDED", resultObj.get("new_method").getAsString());
+      assertEquals("CROSS_CORRELATION", resultObj.get("previous_method").getAsString());
+      assertEquals(123.456, resultObj.get("offset_ms").getAsDouble(), 0.001);
+      assertEquals(123_456L, resultObj.get("offset_us").getAsLong());
+    }
+
+    @Test
+    @DisplayName("defaults offset_ms to 0.0 when not provided")
+    void defaultsOffsetToZero() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      // offset_ms is required per schema, but getOptDouble defaults to 0.0
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(0.0, resultObj.get("offset_ms").getAsDouble(), 0.001);
+      assertEquals(0L, resultObj.get("offset_us").getAsLong());
+    }
+
+    @Test
+    @DisplayName("returns error for invalid CAN bus name")
+    void returnsErrorForInvalidCanBus() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", 100.0);
+      args.addProperty("can_bus", "nonexistent_bus");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.has("error") || !resultObj.get("success").getAsBoolean(),
+          "Should return error for non-existent CAN bus");
+    }
+
+    @Test
+    @DisplayName("applies offset to specified CAN bus")
+    void appliesToSpecifiedCanBus() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", 200.0);
+      args.addProperty("can_bus", "rio");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals("rio", resultObj.get("can_bus").getAsString());
+      assertEquals(200.0, resultObj.get("offset_ms").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("handles negative offset correctly")
+    void handlesNegativeOffset() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", -1000.0);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(-1000.0, resultObj.get("offset_ms").getAsDouble(), 0.001);
+      assertEquals(-1_000_000L, resultObj.get("offset_us").getAsLong());
+    }
+
+    @Test
+    @DisplayName("handles fractional millisecond offset")
+    void handlesFractionalOffset() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      var syncResult = createGoodSyncResult();
+      putLogWithRevLog(wpilog, revlog, syncResult);
+
+      var tool = findTool("set_revlog_offset");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("offset_ms", 1.5);
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals(1.5, resultObj.get("offset_ms").getAsDouble(), 0.001);
+      // 1.5ms * 1000 = 1500 microseconds
+      assertEquals(1500L, resultObj.get("offset_us").getAsLong());
+    }
+
+    @Test
+    @DisplayName("has correct input schema with offset_ms and can_bus parameters")
+    void hasCorrectInputSchema() {
+      var tool = findTool("set_revlog_offset");
+      var schema = tool.inputSchema();
+
+      assertEquals("object", schema.get("type").getAsString());
+      assertTrue(schema.has("properties"));
+
+      var properties = schema.getAsJsonObject("properties");
+      assertTrue(properties.has("offset_ms"), "Schema should have offset_ms parameter");
+      assertTrue(properties.has("can_bus"), "Schema should have can_bus parameter");
+      assertTrue(properties.has("path"), "Schema should have path parameter (from LogRequiringTool)");
+    }
+  }
+
   // ==================== wait_for_sync Tool ====================
 
   @Nested
@@ -956,7 +1185,9 @@ class RevLogToolsTest {
         field.setAccessible(true);
         @SuppressWarnings("unchecked")
         var map = (Map<String, java.util.concurrent.CompletableFuture<Void>>) field.get(logManager);
-        map.put(path, future);
+        // Normalize path the same way LogManager does internally
+        String normalized = java.nio.file.Path.of(path).toAbsolutePath().normalize().toString();
+        map.put(normalized, future);
       } catch (Exception e) {
         throw new RuntimeException("Failed to set syncInProgress", e);
       }

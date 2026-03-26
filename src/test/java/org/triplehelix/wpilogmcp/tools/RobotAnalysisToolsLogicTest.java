@@ -4,53 +4,20 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
-import java.util.List;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
-import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for RobotAnalysisTools using synthetic log data.
  */
-class RobotAnalysisToolsLogicTest {
+class RobotAnalysisToolsLogicTest extends ToolTestBase {
 
-  private List<Tool> tools;
-
-  @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
-
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-
-    RobotAnalysisTools.registerAll(capturingRegistry);
-  }
-
-  @AfterEach
-  void tearDown() {
-    LogManager.getInstance().unloadAllLogs();
-  }
-
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
-  }
-
-  private void putLogInCache(ParsedLog log) {
-    LogManager.getInstance().testPutLog(log.path(), log);
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    RobotAnalysisTools.registerAll(registry);
   }
 
   @Nested
@@ -1054,6 +1021,91 @@ class RobotAnalysisToolsLogicTest {
           stats2.get("mean").getAsDouble(),
           0.001,
           "The two logs should have different mean voltages");
+    }
+  }
+
+  @Nested
+  @DisplayName("moi_regression extreme value warnings")
+  class MoiRegressionExtremeValueTests {
+
+    @Test
+    @DisplayName("warns for extreme J values from near-collinear data")
+    void testMoiRegressionWarnsForExtremeValues() throws Exception {
+      // Create velocity/current data that produces extreme J (|J| > 1000).
+      // The physics model: tau = J*alpha + B*omega, where tau = torqueScale * current.
+      // If we simulate current as proportional to alpha (acceleration-dominated mechanism),
+      // the regression should recover J ≈ torqueScale * currentScale / 1.
+      // By making torqueScale (= G * kt) large and current large, we get |J| > 1000.
+      int n = 200;
+      double dt = 0.01;
+      double[] velTs = new double[n];
+      double[] velVals = new double[n];
+      double[] currTs = new double[n];
+      double[] currVals = new double[n];
+      double w = 2 * Math.PI; // 1 Hz oscillation
+
+      double[] voltTs = new double[n];
+      double[] voltVals = new double[n];
+
+      for (int i = 0; i < n; i++) {
+        velTs[i] = i * dt;
+        double t = velTs[i];
+        // Sinusoidal velocity
+        velVals[i] = 10.0 * Math.sin(w * t);
+        currTs[i] = t;
+        voltTs[i] = t;
+        // Current proportional to |acceleration|, always positive (like TalonFX)
+        // true alpha = 10*w*cos(w*t)
+        currVals[i] = 100.0 * Math.abs(Math.cos(w * t)) + 5.0;
+        // Voltage sign matches acceleration direction
+        voltVals[i] = 12.0 * Math.signum(Math.cos(w * t) + 0.001);
+      }
+
+      var log = new MockLogBuilder()
+          .setPath("/test/moi_extreme.wpilog")
+          .addNumericEntry("/Motor/Velocity", velTs, velVals)
+          .addNumericEntry("/Motor/Current", currTs, currVals)
+          .addNumericEntry("/Motor/Voltage", voltTs, voltVals)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("moi_regression");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("velocity_entry", "/Motor/Velocity");
+      args.addProperty("current_entry", "/Motor/Current");
+      args.addProperty("applied_volts_entry", "/Motor/Voltage");
+      // Extreme physical parameters: torqueScale = G * motors * kt = 1000 * 1 * 1.0 = 1000
+      // With current ~10 and signed correctly, tau ~ 10000 for each sample.
+      // The regression recovers J ≈ torqueScale * I / alpha which will be > 1000.
+      args.addProperty("kt", 1.0);
+      args.addProperty("gear_ratio", 1000.0);
+      args.addProperty("alpha_threshold", 0.01);
+      args.addProperty("smooth_window", 0);
+
+      var result = tool.execute(args).getAsJsonObject();
+
+      // The result should either:
+      // 1. Succeed with extreme values (|J| > 1000 or |B| > 100) and include a warning
+      // 2. Fail due to singular matrix (near-collinear data)
+      // Both outcomes validate that the tool handles near-singular data appropriately.
+      if (result.get("success").getAsBoolean()) {
+        assertTrue(result.has("warnings"), "Should have warnings for extreme values");
+        var warnings = result.getAsJsonArray("warnings");
+        boolean foundExtremeWarning = false;
+        for (var warn : warnings) {
+          if (warn.getAsString().toLowerCase().contains("extreme")) {
+            foundExtremeWarning = true;
+          }
+        }
+        assertTrue(foundExtremeWarning,
+            "Should warn about extreme values when |J| > 1000 or |B| > 100");
+      } else {
+        // Singular matrix or insufficient samples — both acceptable
+        var error = result.get("error").getAsString();
+        assertTrue(error.toLowerCase().contains("singular") || error.toLowerCase().contains("insufficient"),
+            "If regression fails, it should be due to singularity or insufficient samples");
+      }
     }
   }
 }

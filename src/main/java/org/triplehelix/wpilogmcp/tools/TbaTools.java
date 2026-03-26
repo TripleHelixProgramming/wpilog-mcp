@@ -5,8 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
-import org.triplehelix.wpilogmcp.tba.TbaClient;
+
 
 import java.time.Instant;
 import java.time.ZoneId;
@@ -37,7 +36,7 @@ public final class TbaTools {
     registry.registerTool(new GetTbaMatchDataTool());
   }
 
-  static class GetTbaStatusTool implements Tool {
+  static class GetTbaStatusTool extends ToolBase {
     @Override
     public String name() {
       return "get_tba_status";
@@ -58,8 +57,8 @@ public final class TbaTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var client = TbaClient.getInstance();
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var client = tbaClient;
 
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -98,7 +97,7 @@ public final class TbaTools {
    *   <li>Team lists per alliance</li>
    * </ul>
    */
-  static class GetTbaMatchDataTool implements Tool {
+  static class GetTbaMatchDataTool extends ToolBase {
     @Override
     public String name() {
       return "get_tba_match_data";
@@ -132,8 +131,8 @@ public final class TbaTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
-      var client = TbaClient.getInstance();
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var client = tbaClient;
 
       if (!client.isAvailable()) {
         return errorResult("TBA API not configured. Set TBA_API_KEY environment variable or use -tba-key argument. "

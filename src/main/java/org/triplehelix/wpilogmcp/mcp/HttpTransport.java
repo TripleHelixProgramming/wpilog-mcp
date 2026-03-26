@@ -16,7 +16,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,6 +39,7 @@ public class HttpTransport {
   private static final String SESSION_HEADER = "Mcp-Session-Id";
   private static final Duration SESSION_IDLE_TIMEOUT = Duration.ofHours(1);
   private static final long CLEANUP_INTERVAL_MINUTES = 5;
+  private static final AtomicInteger SSE_THREAD_COUNTER = new AtomicInteger(0);
 
   private final Gson gson;
   private final McpMessageHandler handler;
@@ -45,6 +49,7 @@ public class HttpTransport {
   private final String mcpPath;
   private final java.util.Set<String> allowedOriginHosts;
   private HttpServer server;
+  private java.util.concurrent.ExecutorService httpExecutor;
   private ScheduledExecutorService scheduler;
   private java.util.concurrent.ExecutorService sseExecutor;
 
@@ -68,17 +73,19 @@ public class HttpTransport {
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, this::handleRequest);
     server.createContext("/health", this::handleHealthCheck);
-    server.setExecutor(Executors.newFixedThreadPool(
-        Math.max(4, Runtime.getRuntime().availableProcessors() * 2)));
+    httpExecutor = Executors.newFixedThreadPool(
+        Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+    server.setExecutor(httpExecutor);
     server.start();
 
-    // Separate thread pool for SSE streams — these block indefinitely and must not
-    // starve the main request handler pool.
-    sseExecutor = Executors.newCachedThreadPool(r -> {
-      var t = new Thread(r, "sse-stream");
-      t.setDaemon(true);
-      return t;
-    });
+    // Separate bounded thread pool for SSE streams — these block indefinitely and must not
+    // starve the main request handler pool. Capped at 64 concurrent SSE connections.
+    sseExecutor = new ThreadPoolExecutor(0, 64, 60L, TimeUnit.SECONDS,
+        new SynchronousQueue<>(), r -> {
+          var t = new Thread(r, "mcp-sse-" + SSE_THREAD_COUNTER.getAndIncrement());
+          t.setDaemon(true);
+          return t;
+        });
 
     // Schedule periodic session cleanup
     scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -98,15 +105,30 @@ public class HttpTransport {
   }
 
   public void stop() {
+    // 1. Stop accepting new connections
+    if (server != null) {
+      // Give in-flight requests up to 5 seconds to complete
+      server.stop(5);
+      logger.info("MCP HTTP server stopped");
+    }
+    // 2. Drain the main request executor (requests are already completing via server.stop delay)
+    if (httpExecutor != null) {
+      httpExecutor.shutdown();
+      try {
+        if (!httpExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+          httpExecutor.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        httpExecutor.shutdownNow();
+        Thread.currentThread().interrupt();
+      }
+    }
+    // 3. Shut down SSE streams and scheduler (safe to tear down after requests drain)
     if (sseExecutor != null) {
       sseExecutor.shutdownNow();
     }
     if (scheduler != null) {
       scheduler.shutdownNow();
-    }
-    if (server != null) {
-      server.stop(2);
-      logger.info("MCP HTTP server stopped");
     }
   }
 
@@ -290,31 +312,38 @@ public class HttpTransport {
       return;
     }
 
-    // Open SSE stream with keep-alive
-    var origin = exchange.getRequestHeaders().getFirst("Origin");
-    if (origin != null && isAllowedOrigin(origin)) {
-      exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
-    }
-    exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
-    exchange.getResponseHeaders().set("Cache-Control", "no-cache");
-    exchange.getResponseHeaders().set("Connection", "keep-alive");
-    exchange.sendResponseHeaders(200, 0);
-
     // Keep the stream open with periodic pings until the client disconnects.
     // Run on a separate cached thread pool to avoid consuming the main thread pool
     // indefinitely — each SSE client holds a thread for the session's lifetime.
-    sseExecutor.submit(() -> {
-      try (OutputStream os = exchange.getResponseBody()) {
-        while (sessionManager.getSession(sessionId) != null) {
-          os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8));
-          os.flush();
-          Thread.sleep(15_000);
+    //
+    // Headers and sendResponseHeaders are inside the submitted task so that if the
+    // pool is full, we can return 503 before committing to a 200 response.
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    try {
+      sseExecutor.submit(() -> {
+        try {
+          if (origin != null && isAllowedOrigin(origin)) {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
+          }
+          exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+          exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+          exchange.getResponseHeaders().set("Connection", "keep-alive");
+          exchange.sendResponseHeaders(200, 0);
+          try (OutputStream os = exchange.getResponseBody()) {
+            while (sessionManager.getSession(sessionId) != null) {
+              os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8));
+              os.flush();
+              Thread.sleep(15_000);
+            }
+          }
+        } catch (IOException | InterruptedException e) {
+          // Client disconnected or thread interrupted — normal
+          logger.debug("SSE stream closed for session {}", sessionId);
         }
-      } catch (IOException | InterruptedException e) {
-        // Client disconnected or thread interrupted — normal
-        logger.debug("SSE stream closed for session {}", sessionId);
-      }
-    });
+      });
+    } catch (java.util.concurrent.RejectedExecutionException e) {
+      sendError(exchange, 503, "Too many concurrent SSE connections. Try again later.");
+    }
   }
 
   private void handleDelete(HttpExchange exchange) throws IOException {

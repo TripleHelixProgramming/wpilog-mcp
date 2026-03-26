@@ -53,7 +53,8 @@ public class AnalysisDirectives {
           "Low sample count (" + quality.sampleCount() + "). "
           + "Statistical measures have high uncertainty.");
     }
-    if (quality.gapCount() > 5) {
+    if (quality.gapCount() > 0 && quality.sampleCount() > 0
+        && (double) quality.gapCount() / quality.sampleCount() > 0.02) {
       d.interpretationGuidance.add(
           quality.gapCount() + " data gaps detected (max "
           + String.format("%.1f", quality.maxGapMs()) + "ms). "

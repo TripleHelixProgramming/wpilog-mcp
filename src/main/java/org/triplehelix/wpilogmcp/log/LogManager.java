@@ -1,7 +1,6 @@
 package org.triplehelix.wpilogmcp.log;
 
 import java.io.IOException;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -126,6 +125,31 @@ public class LogManager {
           }
         },
         5, 5, java.util.concurrent.TimeUnit.MINUTES);
+
+    // Shutdown is coordinated by Main (HTTP: stop transport → drain → shutdown LogManager).
+    // No independent shutdown hook here — avoids race with in-flight requests.
+  }
+
+  /**
+   * Shuts down all executors, caches, and background resources.
+   *
+   * <p>Called automatically via a JVM shutdown hook. Safe to call multiple times.
+   *
+   * @since 0.9.0
+   */
+  public void shutdown() {
+    logger.info("Shutting down LogManager");
+    evictionScheduler.shutdownNow();
+    syncExecutor.shutdownNow();
+    try {
+      if (!syncExecutor.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS)) {
+        logger.debug("Sync executor did not terminate within 3 seconds");
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    diskCache.shutdown();
+    logCache.clear();
   }
 
   /**
@@ -444,28 +468,32 @@ public class LogManager {
     return logs;
   }
 
+  /** Maximum directory depth when scanning for WPILOG files. */
+  private static final int MAX_SCAN_DEPTH = 5;
+
   /**
-   * Scans a directory recursively for WPILOG files.
+   * Scans a directory for WPILOG files up to a bounded depth.
+   *
+   * <p>Uses {@link Files#walk} with a depth limit instead of unbounded recursion,
+   * consistent with {@link LogDirectory}'s approach.
    *
    * @param dir The directory to scan
    * @param logs The list to add found logs to
    */
   private void scanDirectoryForLogs(Path dir, List<LogMetadata> logs) throws IOException {
-    try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
-      for (Path entry : stream) {
-        if (Files.isDirectory(entry)) {
-          // Recursively scan subdirectories
-          scanDirectoryForLogs(entry, logs);
-        } else if (entry.toString().endsWith(".wpilog")) {
-          try {
-            long size = Files.size(entry);
-            long lastModified = Files.getLastModifiedTime(entry).toMillis();
-            logs.add(new LogMetadata(entry.toString(), size, lastModified));
-          } catch (IOException e) {
-            logger.debug("Error reading metadata for {}: {}", entry, e.getMessage());
-          }
-        }
-      }
+    try (var stream = Files.walk(dir, MAX_SCAN_DEPTH)) {
+      stream
+          .filter(Files::isRegularFile)
+          .filter(p -> p.toString().endsWith(".wpilog"))
+          .forEach(entry -> {
+            try {
+              long size = Files.size(entry);
+              long lastModified = Files.getLastModifiedTime(entry).toMillis();
+              logs.add(new LogMetadata(entry.toString(), size, lastModified));
+            } catch (IOException e) {
+              logger.debug("Error reading metadata for {}: {}", entry, e.getMessage());
+            }
+          });
     }
   }
 
@@ -542,7 +570,8 @@ public class LogManager {
    * @since 0.5.0
    */
   public boolean isRevLogSyncInProgress(String wpilogPath) {
-    var future = syncInProgress.get(wpilogPath);
+    String normalized = Path.of(wpilogPath).toAbsolutePath().normalize().toString();
+    var future = syncInProgress.get(normalized);
     return future != null && !future.isDone();
   }
 

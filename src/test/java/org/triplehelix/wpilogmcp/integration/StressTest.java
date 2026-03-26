@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
+import org.triplehelix.wpilogmcp.config.ServerConfig;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.Main;
@@ -66,32 +67,39 @@ class StressTest {
 
   @BeforeAll
   static void setup() {
-    // Stress test loads configuration from the "stresstest" named config in servers.json.
-    // Only runs when explicitly invoked via:
-    //   ./gradlew stressTest
-    //   ./gradlew httpStressTest
+    // Only runs when explicitly invoked via ./gradlew stressTest.
     // Never runs during normal "./gradlew test".
     boolean enabled = "true".equals(System.getProperty("stress.enabled"));
     assumeTrue(enabled,
         "Stress test skipped. Run via: ./gradlew stressTest");
 
-    // Load the "stresstest" configuration from servers.json
+    // Load configuration: try "stresstest" named config from config file,
+    // fall back to synthesized defaults (~/riologs, team 2363, TBA from env).
     try {
       Path configPath = System.getProperty("stress.configpath") != null
           ? Path.of(System.getProperty("stress.configpath")) : null;
       var loader = new ConfigLoader();
-      var config = loader.load("stresstest", configPath);
+      ServerConfig config;
+      try {
+        config = loader.load("stresstest", configPath);
+      } catch (Exception e) {
+        // No config file or no "stresstest" entry — use defaults
+        String home = System.getProperty("user.home");
+        config = new ServerConfig("stresstest",
+            home + "/riologs", 2363, System.getenv("TBA_API_KEY"),
+            "stdio", null, null, null, null, null, null, null);
+      }
       Main.applyConfig(config);
 
       String logDirPath = config.logdir();
       assumeTrue(logDirPath != null && !logDirPath.isEmpty(),
-          "Stress test skipped: 'stresstest' config has no logdir");
+          "Stress test skipped: no logdir configured");
 
       logDirectory = Path.of(logDirPath);
       assumeTrue(Files.isDirectory(logDirectory),
           "Stress test skipped: Log directory does not exist: " + logDirPath);
     } catch (Exception e) {
-      assumeTrue(false, "Stress test skipped: Failed to load 'stresstest' config: " + e.getMessage());
+      assumeTrue(false, "Stress test skipped: " + e.getMessage());
       return;
     }
 

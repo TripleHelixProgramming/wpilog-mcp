@@ -3,55 +3,21 @@ package org.triplehelix.wpilogmcp.tools;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
-import java.util.ArrayList;
-import java.util.List;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
-import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Logic-level unit tests for StatisticsTools using synthetic log data.
  * These tests verify the mathematical correctness of statistics calculations.
  */
-class StatisticsToolsLogicTest {
+class StatisticsToolsLogicTest extends ToolTestBase {
 
-  private List<Tool> tools;
-
-  @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
-
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-
-    StatisticsTools.registerAll(capturingRegistry);
-  }
-
-  @AfterEach
-  void tearDown() {
-    LogManager.getInstance().unloadAllLogs();
-  }
-
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
-  }
-
-  private void putLogInCache(ParsedLog log) {
-    LogManager.getInstance().testPutLog(log.path(), log);
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    StatisticsTools.registerAll(registry);
   }
 
   @Nested
@@ -300,6 +266,32 @@ class StatisticsToolsLogicTest {
       assertEquals(3.0, resultObj.get("median").getAsDouble(), 0.001);
       // Std dev of [1, 3, 5] with Bessel's: sqrt(((1-3)^2 + (3-3)^2 + (5-3)^2) / 2) = sqrt(4) = 2.0
       assertEquals(2.0, resultObj.get("std_dev").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("returns error when all values are NaN")
+    void returnsErrorForAllNaNValues() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/stats_allnan.wpilog")
+          .addNumericEntry("/Test/Values",
+              new double[]{0, 1, 2, 3},
+              new double[]{Double.NaN, Double.NaN, Double.NaN, Double.NaN})
+          .build();
+
+      putLogInCache(log);
+
+      var tool = findTool("get_statistics");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Test/Values");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean(),
+          "Should fail when all values are NaN");
+      assertTrue(resultObj.get("error").getAsString().contains("No numeric data in range"),
+          "Error should mention 'No numeric data in range'");
     }
   }
 
@@ -1126,6 +1118,137 @@ class StatisticsToolsLogicTest {
       var result = tool.execute(args).getAsJsonObject();
       assertTrue(result.has("data_quality"));
       assertTrue(result.has("server_analysis_directives"));
+    }
+  }
+
+  @Nested
+  @DisplayName("rate_of_change Non-Finite Filtering")
+  class RateOfChangeNonFiniteTests {
+
+    @Test
+    @DisplayName("filters NaN and Infinity from input values")
+    void testRateOfChangeFiltersNonFiniteInputs() throws Exception {
+      // Values: [1.0, NaN, 3.0, Infinity, 5.0] at regular timestamps.
+      // After filtering non-finite: [1.0 @ t=0, 3.0 @ t=2, 5.0 @ t=4] (3 finite values).
+      // With central differences (window=1):
+      //   i=0: forward diff = (3.0-1.0)/(2.0-0.0) = 1.0
+      //   i=1: central diff = (5.0-1.0)/(4.0-0.0) = 1.0
+      //   i=2: backward diff = (5.0-3.0)/(4.0-2.0) = 1.0
+      // So 3 valid rate samples.
+      var log = new MockLogBuilder()
+          .setPath("/test/roc_nan.wpilog")
+          .addNumericEntry("/Sensor",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{1.0, Double.NaN, 3.0, Double.POSITIVE_INFINITY, 5.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("rate_of_change");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Sensor");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      var samples = resultObj.getAsJsonArray("samples");
+      assertEquals(3, samples.size(),
+          "Should have 3 rate samples from 3 finite data points with central differences");
+    }
+
+    @Test
+    @DisplayName("all NaN values returns error (not enough data)")
+    void testRateOfChangeAllNonFiniteReturnsError() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/roc_all_nan.wpilog")
+          .addNumericEntry("/Sensor",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("rate_of_change");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Sensor");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      // All values are NaN so after filtering there are < 2 data points.
+      // The tool should return an error (success=false).
+      assertFalse(resultObj.get("success").getAsBoolean(),
+          "Should fail when all values are non-finite");
+    }
+  }
+
+  @Nested
+  @DisplayName("time_correlate Small-Scale and Constant Signals")
+  class TimeCorrelateSmallScaleTests {
+
+    @Test
+    @DisplayName("computes correlation for very small-scale signals")
+    void testCorrelationWithSmallScaleSignals() throws Exception {
+      // Two perfectly correlated signals at small scale.
+      // The variance threshold is 1e-15 * n, so we need denX > 5e-15.
+      // Using 1e-5 scale: denX = sum((xi-mean)^2) ~ 1e-9, well above threshold.
+      var log = new MockLogBuilder()
+          .setPath("/test/corr_small.wpilog")
+          .addNumericEntry("/A",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{1e-5, 2e-5, 3e-5, 4e-5, 5e-5})
+          .addNumericEntry("/B",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{2e-5, 4e-5, 6e-5, 8e-5, 10e-5})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("time_correlate");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name1", "/A");
+      args.addProperty("name2", "/B");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      double correlation = resultObj.get("correlation").getAsDouble();
+      assertFalse(Double.isNaN(correlation),
+          "Correlation should be computable for small-scale signals (not NaN)");
+      assertEquals(1.0, correlation, 0.01,
+          "Perfectly correlated small-scale signals should have correlation near 1.0");
+    }
+
+    @Test
+    @DisplayName("correlation with tiny constant signal returns NaN")
+    void testCorrelationWithTinyConstantSignal() throws Exception {
+      // One signal is constant at 1e-20 (zero variance), the other varies
+      var log = new MockLogBuilder()
+          .setPath("/test/corr_const_tiny.wpilog")
+          .addNumericEntry("/Constant",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{1e-20, 1e-20, 1e-20, 1e-20, 1e-20})
+          .addNumericEntry("/Varying",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{1.0, 2.0, 3.0, 4.0, 5.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("time_correlate");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name1", "/Constant");
+      args.addProperty("name2", "/Varying");
+
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      double correlation = resultObj.get("correlation").getAsDouble();
+      assertTrue(Double.isNaN(correlation),
+          "Correlation with a constant signal (zero variance) should be NaN");
     }
   }
 }

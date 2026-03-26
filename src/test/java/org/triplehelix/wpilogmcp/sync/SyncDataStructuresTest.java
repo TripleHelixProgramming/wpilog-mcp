@@ -117,6 +117,38 @@ class SyncDataStructuresTest {
     assertEquals(0, failed.samplesUsed());
   }
 
+  @Test
+  void testFiveArgConstructorWarningIsNull() {
+    var result = new SignalPairResult("e", "s", 1000L, 0.9, 100);
+    assertNull(result.warning(), "5-arg constructor should set warning to null");
+  }
+
+  @Test
+  void testSixArgConstructorWarningIsSet() {
+    var result = new SignalPairResult("e", "s", 1000L, 0.9, 100, "boundary peak");
+    assertEquals("boundary peak", result.warning());
+  }
+
+  @Test
+  void testSixArgConstructorWarningNull() {
+    var result = new SignalPairResult("e", "s", 1000L, 0.9, 100, null);
+    assertNull(result.warning());
+  }
+
+  @Test
+  void testFiveArgEqualsCanonicalSixArg() {
+    var fiveArg = new SignalPairResult("e", "s", 5000L, 0.85, 200);
+    var sixArg = new SignalPairResult("e", "s", 5000L, 0.85, 200, null);
+    assertEquals(fiveArg, sixArg, "5-arg constructor should produce same record as 6-arg with null warning");
+    assertEquals(fiveArg.hashCode(), sixArg.hashCode());
+  }
+
+  @Test
+  void testFailedWarningIsNull() {
+    var failed = SignalPairResult.failed("entry", "signal");
+    assertNull(failed.warning(), "failed() should produce a result with null warning");
+  }
+
   // ========== SyncResult Tests ==========
 
   @Test

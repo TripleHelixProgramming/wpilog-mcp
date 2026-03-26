@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,32 +16,11 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 /**
  * Tests for advanced WPILOG analysis tools.
  */
-class AdvancedToolsTest {
+class AdvancedToolsTest extends ToolTestBase {
 
-  private List<Tool> registeredTools;
-
-  @BeforeEach
-  void setUp() {
-    registeredTools = new ArrayList<>();
-
-    // Capture registered tools
-    var capturingRegistry =
-        new ToolRegistry() {
-          @Override
-          public void registerTool(Tool tool) {
-            registeredTools.add(tool);
-            super.registerTool(tool);
-          }
-        };
-
-    WpilogTools.registerAll(capturingRegistry);
-  }
-
-  private Tool findTool(String name) {
-    return registeredTools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    WpilogTools.registerAll(registry);
   }
 
   @Nested
@@ -67,7 +45,7 @@ class AdvancedToolsTest {
               "export_csv",
               "generate_report");
 
-      var actualTools = registeredTools.stream().map(Tool::name).toList();
+      var actualTools = tools.stream().map(Tool::name).toList();
 
       for (var expected : newTools) {
         assertTrue(actualTools.contains(expected), "Missing tool: " + expected);
@@ -81,7 +59,7 @@ class AdvancedToolsTest {
       // Core tools: list_available_logs, list_entries, get_entry_info, read_entry,
       //   list_loaded_logs, list_struct_types, health_check, get_game_info
       // (load_log, set_active_log, unload_log, unload_all_logs removed in path-per-call refactor)
-      assertEquals(45, registeredTools.size());
+      assertEquals(45, tools.size());
     }
   }
 
@@ -599,7 +577,7 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("all tools have valid input schemas")
     void allToolsHaveValidInputSchemas() {
-      for (var tool : registeredTools) {
+      for (var tool : tools) {
         var schema = tool.inputSchema();
         assertNotNull(schema, tool.name() + " has null schema");
         assertEquals("object", schema.get("type").getAsString(), tool.name() + " schema type is not 'object'");
@@ -610,7 +588,7 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("all tools have non-empty descriptions")
     void allToolsHaveDescriptions() {
-      for (var tool : registeredTools) {
+      for (var tool : tools) {
         assertNotNull(tool.description(), tool.name() + " has null description");
         assertFalse(tool.description().isEmpty(), tool.name() + " has empty description");
         assertTrue(tool.description().length() > 10, tool.name() + " description is too short");
@@ -620,7 +598,7 @@ class AdvancedToolsTest {
     @Test
     @DisplayName("all tool names follow convention")
     void allToolNamesFollowConvention() {
-      for (var tool : registeredTools) {
+      for (var tool : tools) {
         var name = tool.name();
         assertTrue(name.matches("[a-z_]+"), tool.name() + " name should be lowercase with underscores");
         assertFalse(name.startsWith("_"), tool.name() + " name should not start with underscore");

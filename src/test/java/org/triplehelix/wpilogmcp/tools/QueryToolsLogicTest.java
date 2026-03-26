@@ -5,12 +5,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
@@ -19,39 +17,11 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 /**
  * Logic-level unit tests for QueryTools using synthetic log data.
  */
-class QueryToolsLogicTest {
+class QueryToolsLogicTest extends ToolTestBase {
 
-  private List<Tool> tools;
-
-  @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
-
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-
-    QueryTools.registerAll(capturingRegistry);
-  }
-
-  @AfterEach
-  void tearDown() {
-    LogManager.getInstance().unloadAllLogs();
-  }
-
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
-  }
-
-  private void putLogInCache(ParsedLog log) {
-    LogManager.getInstance().testPutLog(log.path(), log);
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    QueryTools.registerAll(registry);
   }
 
   @Nested

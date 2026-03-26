@@ -7,51 +7,72 @@ import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
-import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
-class ExportToolsLogicTest {
+class ExportToolsLogicTest extends ToolTestBase {
 
-  private List<Tool> tools;
-
-  @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-    ExportTools.registerAll(capturingRegistry);
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    ExportTools.registerAll(registry);
   }
 
-  @AfterEach
-  void tearDown() {
-    LogManager.getInstance().unloadAllLogs();
-  }
+  @Nested
+  @DisplayName("generate_report Brownout Threshold")
+  class GenerateReportBrownoutTests {
 
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
-  }
+    @Test
+    @DisplayName("voltage 6.9V is NOT high brownout risk (above 6.8V threshold)")
+    void testBrownoutNotHighAt6_9V() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/brownout_safe.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{12.0, 11.5, 6.9, 10.0, 12.0})
+          .build();
+      putLogInCache(log);
 
-  private void putLogInCache(ParsedLog log) {
-    LogManager.getInstance().testPutLog(log.path(), log);
+      var tool = findTool("generate_report");
+      var args = new JsonObject();
+      args.addProperty("path", "/test/brownout_safe.wpilog");
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.has("battery"), "Should have battery section");
+      var battery = resultObj.getAsJsonObject("battery");
+      assertNotEquals("HIGH", battery.get("brownout_risk").getAsString(),
+          "6.9V min should NOT be HIGH brownout risk (threshold is 6.8V)");
+    }
+
+    @Test
+    @DisplayName("voltage 6.7V IS high brownout risk (below 6.8V threshold)")
+    void testBrownoutHighAt6_7V() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/brownout_danger.wpilog")
+          .addNumericEntry("/Robot/BatteryVoltage",
+              new double[]{0, 1, 2, 3, 4},
+              new double[]{12.0, 11.5, 6.7, 10.0, 12.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("generate_report");
+      var args = new JsonObject();
+      args.addProperty("path", "/test/brownout_danger.wpilog");
+      var result = tool.execute(args);
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.has("battery"), "Should have battery section");
+      var battery = resultObj.getAsJsonObject("battery");
+      assertEquals("HIGH", battery.get("brownout_risk").getAsString(),
+          "6.7V min should be HIGH brownout risk (below 6.8V threshold)");
+    }
   }
 
   @Test
@@ -344,6 +365,55 @@ class ExportToolsLogicTest {
       } finally {
         ExportTools.setExportDirectory(savedExportDir.toString());
         Files.deleteIfExists(exportDir.resolve("normal_output.csv"));
+      }
+    }
+
+    @Test
+    @DisplayName("struct Map entries have deterministic alphabetically sorted column order")
+    void testCsvExportStructDeterministicColumnOrder() throws Exception {
+      // Create a Map with keys in non-alphabetical insertion order: z, a, m
+      var maps = List.of(
+          java.util.Map.of("z", (Object) 30.0, "a", (Object) 10.0, "m", (Object) 20.0),
+          java.util.Map.of("z", (Object) 60.0, "a", (Object) 40.0, "m", (Object) 50.0));
+      var log = new MockLogBuilder()
+          .setPath("/test/export_csv.wpilog")
+          .addStructEntry("/Test/Struct", "struct:TestStruct",
+              new double[]{0.0, 1.0}, maps)
+          .build();
+      putLogInCache(log);
+
+      var outputPath = java.nio.file.Path.of(System.getProperty("java.io.tmpdir"),
+          "wpilog-export", "test_export_struct_order_" + System.nanoTime() + ".csv");
+      try {
+        var tool = findTool("export_csv");
+        var args = new JsonObject();
+        args.addProperty("path", "/test/export_csv.wpilog");
+        args.addProperty("name", "/Test/Struct");
+        args.addProperty("output_path", outputPath.toString());
+
+        var result = tool.execute(args);
+        var resultObj = result.getAsJsonObject();
+
+        assertTrue(resultObj.get("success").getAsBoolean());
+        assertEquals(2, resultObj.get("rows_exported").getAsInt());
+
+        var lines = java.nio.file.Files.readAllLines(outputPath);
+        assertEquals(3, lines.size(), "Should have 1 header + 2 data rows");
+
+        // Data rows should have values in alphabetically sorted key order: a, m, z
+        // Format: timestamp,a_value,m_value,z_value
+        var row1Parts = lines.get(1).split(",");
+        assertEquals(4, row1Parts.length, "Row should have timestamp + 3 value columns");
+        assertEquals("10.0", row1Parts[1], "First value column should be 'a' (alphabetically first)");
+        assertEquals("20.0", row1Parts[2], "Second value column should be 'm'");
+        assertEquals("30.0", row1Parts[3], "Third value column should be 'z' (alphabetically last)");
+
+        var row2Parts = lines.get(2).split(",");
+        assertEquals("40.0", row2Parts[1], "Second row: 'a' column");
+        assertEquals("50.0", row2Parts[2], "Second row: 'm' column");
+        assertEquals("60.0", row2Parts[3], "Second row: 'z' column");
+      } finally {
+        java.nio.file.Files.deleteIfExists(outputPath);
       }
     }
 

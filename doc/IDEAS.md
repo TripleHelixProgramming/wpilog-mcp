@@ -436,37 +436,14 @@ Build a library of reference log files for testing.
 ## 8. Operational
 
 ### 8.1 Configuration Management
-**Priority:** Medium
-**Complexity:** Low
-
-Centralized configuration file.
-
-**Format:** YAML or TOML
-```yaml
-cache:
-  max_memory_mb: 2048
-  max_logs: 20
-  persist_to_disk: true
-
-thresholds:
-  brownout_voltage: 6.8
-  loop_time_warning_ms: 20
-
-tba:
-  api_key: ${TBA_API_KEY}
-  cache_ttl_hours: 24
-```
+*Completed in v0.8.2 — YAML config with named servers, defaults merging, env var interpolation.*
 
 ### 8.3 Graceful Degradation
-**Priority:** Medium
-**Complexity:** Low
+*Partially completed in v0.8.0 — heap-pressure-based eviction.*
 
-Handle resource constraints gracefully.
-
-**Behaviors:**
+Remaining work:
 - Disable memory-intensive tools when heap is low
 - Warn when approaching limits
-- Automatic cache cleanup under pressure
 - Streaming mode for very large logs
 
 ---

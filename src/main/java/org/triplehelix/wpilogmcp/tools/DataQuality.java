@@ -25,6 +25,7 @@ public record DataQuality(
     double timeSpanSeconds,
     int gapCount,
     double maxGapMs,
+    double totalGapMs,
     int nanFiltered,
     double effectiveSampleRateHz,
     double qualityScore) {
@@ -40,7 +41,7 @@ public record DataQuality(
    */
   public static DataQuality fromValues(List<TimestampedValue> values) {
     if (values == null || values.isEmpty()) {
-      return new DataQuality(0, 0, 0, 0, 0, 0, 0);
+      return new DataQuality(0, 0, 0, 0, 0, 0, 0, 0);
     }
 
     int n = values.size();
@@ -60,7 +61,7 @@ public record DataQuality(
     // Compute sample intervals for gap and jitter detection
     if (n < 2) {
       double score = n == 0 ? 0.0 : 0.4; // Single sample = low confidence
-      return new DataQuality(n, timeSpan, 0, 0, nanCount, 0, score);
+      return new DataQuality(n, timeSpan, 0, 0, 0, nanCount, 0, score);
     }
 
     double[] intervals = new double[n - 1];
@@ -85,10 +86,12 @@ public record DataQuality(
     double gapThreshold = medianDt * 5.0;
     int gapCount = 0;
     double maxGap = 0;
+    double totalGap = 0;
     for (double dt : intervals) {
       if (dt > gapThreshold) {
         gapCount++;
         maxGap = Math.max(maxGap, dt);
+        totalGap += dt;
       }
     }
 
@@ -126,6 +129,7 @@ public record DataQuality(
         timeSpan,
         gapCount,
         maxGap * 1000.0, // convert to ms
+        totalGap * 1000.0, // convert to ms
         nanCount,
         sampleRate,
         score);
@@ -159,7 +163,11 @@ public record DataQuality(
    * @return "high" (&gt;0.8), "medium" (0.5-0.8), "low" (0.2-0.5), or "insufficient" (&le;0.2)
    */
   public String confidenceLevel() {
-    if (qualityScore > 0.8) return "high";
+    // Cap at "medium" if gap duration exceeds 10% of total time, regardless of composite score.
+    // Uses duration-based ratio (not count-based) so that one long gap is correctly flagged
+    // even when the count-to-sample ratio is low.
+    boolean highGapRatio = timeSpanSeconds > 0 && totalGapMs / 1000.0 / timeSpanSeconds > 0.10;
+    if (qualityScore > 0.8 && !highGapRatio) return "high";
     if (qualityScore > 0.5) return "medium";
     if (qualityScore > 0.2) return "low";
     return "insufficient";

@@ -148,4 +148,68 @@ class SecurityValidatorTest {
     assertDoesNotThrow(() -> validator.addAllowedDirectory(""));
     assertDoesNotThrow(() -> validator.addAllowedDirectory("   "));
   }
+
+  @Test
+  void testConcurrentAddAndValidate() throws Exception {
+    int threadCount = 8;
+    var latch = new java.util.concurrent.CountDownLatch(threadCount);
+    var errors = new java.util.concurrent.CopyOnWriteArrayList<Throwable>();
+
+    for (int i = 0; i < threadCount; i++) {
+      int idx = i;
+      new Thread(() -> {
+        try {
+          if (idx % 2 == 0) {
+            // Half the threads add directories
+            Path dir = tempDir.resolve("concurrent_dir_" + idx);
+            Files.createDirectories(dir);
+            validator.addAllowedDirectory(dir);
+          } else {
+            // Other half validate paths within a known-good directory
+            // First ensure the directory exists and is allowed
+            Path dir = tempDir.resolve("concurrent_dir_0");
+            Files.createDirectories(dir);
+            validator.addAllowedDirectory(dir);
+            validator.validate(dir.resolve("test.wpilog"));
+          }
+        } catch (java.util.ConcurrentModificationException e) {
+          errors.add(e);
+        } catch (IOException e) {
+          // IOException from validate is expected if directory not yet added
+        }
+        latch.countDown();
+      }).start();
+    }
+
+    latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+    assertTrue(errors.isEmpty(),
+        "Should have no ConcurrentModificationException, got: " + errors);
+  }
+
+  @Test
+  void testConcurrentValidateFromMultipleThreads() throws Exception {
+    Path dir = tempDir.resolve("shared_dir");
+    Files.createDirectories(dir);
+    validator.addAllowedDirectory(dir);
+
+    int threadCount = 8;
+    var latch = new java.util.concurrent.CountDownLatch(threadCount);
+    var errors = new java.util.concurrent.CopyOnWriteArrayList<Throwable>();
+
+    for (int i = 0; i < threadCount; i++) {
+      int idx = i;
+      new Thread(() -> {
+        try {
+          validator.validate(dir.resolve("file_" + idx + ".wpilog"));
+        } catch (Throwable e) {
+          errors.add(e);
+        }
+        latch.countDown();
+      }).start();
+    }
+
+    latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+    assertTrue(errors.isEmpty(),
+        "All concurrent validates should succeed, got: " + errors);
+  }
 }

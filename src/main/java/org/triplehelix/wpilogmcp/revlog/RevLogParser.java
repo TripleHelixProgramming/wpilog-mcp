@@ -84,11 +84,22 @@ public class RevLogParser {
    */
   public ParsedRevLog parse(String pathStr) throws IOException {
     Path path = Path.of(pathStr);
+
+    // Check for WPILOG magic header ("WPILOG") before creating a DataLogReader.
+    // DataLogReader memory-maps the file without a close() method, so on Windows
+    // the file handle persists until GC finalizes the MappedByteBuffer (JDK limitation:
+    // JDK-4724038). This prevents file deletion/moves until GC runs. Skip it for
+    // non-WPILOG files to minimize the impact.
+    if (!hasWpilogMagic(path)) {
+      logger.debug("File lacks WPILOG magic header, trying REV native binary: {}", pathStr);
+      return parseNativeFormat(path);
+    }
+
     DataLogReader reader = new DataLogReader(pathStr);
 
     if (!reader.isValid()) {
-      // Try REV native binary format (not WPILOG)
-      logger.debug("File is not WPILOG format, trying REV native binary: {}", pathStr);
+      // Has magic header but DataLogReader rejects it — try native format as fallback
+      logger.debug("File has WPILOG header but is not valid, trying REV native binary: {}", pathStr);
       return parseNativeFormat(path);
     }
 
@@ -470,7 +481,10 @@ public class RevLogParser {
 
       // The CAN message IDs in native revlog files use a different bit encoding
       // than the DBC arbitration IDs. Reconstruct the DBC-compatible arb ID
-      // from the extracted fields (device type, manufacturer, API class 6, API index, device ID 0).
+      // from the extracted fields. Manufacturer (5=REV) and API class (6=periodic status)
+      // are hardcoded because the native CAN frame ID bit layout does not directly
+      // encode these fields in DBC-compatible positions. Device ID is passed as 0
+      // because CanDecoder.decode() falls back to masked lookup (ignoring device ID bits).
       int dbcArbId = CanDecoder.buildArbitrationId(deviceType, 5, 6, apiIndex, 0);
       Map<String, Double> decodedSignals = decoder.decode(dbcArbId, canData);
 
@@ -523,6 +537,31 @@ public class RevLogParser {
       case "dutycyclefrequency" -> "Hz";
       default -> "";
     };
+  }
+
+  /** WPILOG magic header bytes: "WPILOG" in ASCII. */
+  private static final byte[] WPILOG_MAGIC = {'W', 'P', 'I', 'L', 'O', 'G'};
+
+  /**
+   * Checks if a file starts with the WPILOG magic header.
+   *
+   * @param path The file to check
+   * @return true if the file starts with "WPILOG"
+   */
+  private static boolean hasWpilogMagic(Path path) {
+    try {
+      byte[] header = new byte[WPILOG_MAGIC.length];
+      try (var is = Files.newInputStream(path)) {
+        int read = is.read(header);
+        if (read < WPILOG_MAGIC.length) return false;
+      }
+      for (int i = 0; i < WPILOG_MAGIC.length; i++) {
+        if (header[i] != WPILOG_MAGIC[i]) return false;
+      }
+      return true;
+    } catch (IOException e) {
+      return false;
+    }
   }
 
   /**

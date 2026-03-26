@@ -1377,4 +1377,82 @@ class LogManagerTest {
       assertEquals(0, parsedLog.entryCount());
     }
   }
+
+  @Nested
+  @DisplayName("Shutdown")
+  class Shutdown {
+
+    @Test
+    @DisplayName("shutdown does not throw")
+    void testShutdownDoesNotThrow() {
+      // LogManager is a singleton; setUp() already resets state via resetConfiguration().
+      // Calling shutdown() should complete without exception.
+      assertDoesNotThrow(() -> logManager.shutdown());
+    }
+
+    @Test
+    @DisplayName("shutdown is idempotent")
+    void testShutdownIsIdempotent() {
+      assertDoesNotThrow(() -> {
+        logManager.shutdown();
+        logManager.shutdown();
+      });
+    }
+  }
+
+  @Nested
+  @DisplayName("Directory Scanning")
+  class DirectoryScanning {
+
+    @Test
+    @DisplayName("scan directory respects depth limit")
+    void testScanDirectoryRespectsDepthLimit(@TempDir Path tempDir) throws IOException, InterruptedException {
+      // scanDirectoryForLogs is private and uses MAX_SCAN_DEPTH = 5.
+      // Test through the public listAvailableLogs() API.
+      //
+      // Files.walk(dir, 5) counts depth from the starting directory:
+      //   dir itself = depth 0, dir/a = depth 1, dir/a/b = depth 2, etc.
+      // A file at dir/l1/l2/l3/l4/file.wpilog is at depth 5 (just within limit).
+      // A file at dir/l1/l2/l3/l4/l5/file.wpilog is at depth 6 (beyond limit).
+      //
+      // Create nested directories 1..7 levels deep, each with a .wpilog file.
+      for (int depth = 1; depth <= 7; depth++) {
+        StringBuilder sb = new StringBuilder();
+        for (int d = 1; d <= depth; d++) {
+          if (d > 1) sb.append("/");
+          sb.append("level").append(d);
+        }
+        Path dir = tempDir.resolve(sb.toString());
+        Files.createDirectories(dir);
+
+        Path logFile = dir.resolve("depth" + depth + ".wpilog");
+        try (var log = new DataLogWriter(logFile.toString())) {
+          var entry = new DoubleLogEntry(log, "/test", 0);
+          entry.append(1.0, 1000);
+        }
+      }
+      Thread.sleep(50); // Allow file system to sync
+
+      logManager.addAllowedDirectory(tempDir);
+      var logs = logManager.listAvailableLogs();
+
+      // File at "levelN dirs + file" = depth (N+1) from tempDir via Files.walk.
+      // With MAX_SCAN_DEPTH=5: depths 1..4 directories (file at walk-depth 2..5) are found.
+      // Depth 5+ directories (file at walk-depth 6+) are NOT found.
+      var foundPaths = logs.stream()
+          .map(LogManager.LogMetadata::path)
+          .toList();
+
+      for (int depth = 1; depth <= 4; depth++) {
+        int d = depth;
+        assertTrue(foundPaths.stream().anyMatch(p -> p.contains("depth" + d + ".wpilog")),
+            "Should find file at directory depth " + depth + " (walk depth " + (depth + 1) + ")");
+      }
+      for (int depth = 5; depth <= 7; depth++) {
+        int d = depth;
+        assertFalse(foundPaths.stream().anyMatch(p -> p.contains("depth" + d + ".wpilog")),
+            "Should NOT find file at directory depth " + depth + " (walk depth " + (depth + 1) + ")");
+      }
+    }
+  }
 }

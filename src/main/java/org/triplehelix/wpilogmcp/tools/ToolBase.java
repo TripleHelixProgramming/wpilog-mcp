@@ -11,7 +11,6 @@ import org.triplehelix.wpilogmcp.tba.TbaClient;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
@@ -190,7 +189,7 @@ public abstract class ToolBase implements McpServer.Tool {
       var suggestions = log.entries().keySet().stream()
           .filter(n -> n.toLowerCase().contains(name.toLowerCase()))
           .limit(5)
-          .collect(Collectors.toList());
+          .toList();
 
       var msg = "Entry not found: " + name;
       if (!suggestions.isEmpty()) {
@@ -220,7 +219,7 @@ public abstract class ToolBase implements McpServer.Tool {
       Double endTime) {
     return values.stream()
         .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime))
-        .collect(Collectors.toList());
+        .toList();
   }
 
   /**
@@ -309,7 +308,7 @@ public abstract class ToolBase implements McpServer.Tool {
     var lowerPattern = pattern.toLowerCase();
     return log.entries().keySet().stream()
         .filter(name -> name.toLowerCase().contains(lowerPattern))
-        .collect(Collectors.toList());
+        .toList();
   }
 
   // ===== RESPONSE BUILDING HELPERS =====

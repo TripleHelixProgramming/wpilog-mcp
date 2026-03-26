@@ -5,7 +5,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
 
 import java.util.*;
 
@@ -14,7 +13,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 /**
  * Discovery tools to help LLM agents understand and use the server's capabilities.
  *
- * <p>These tools address a fundamental discoverability problem: MCP exposes a flat list of 45
+ * <p>These tools address a fundamental discoverability problem: MCP exposes a flat list of
  * tools, and LLM agents often don't know which tools exist, what they can do, or when to use
  * them instead of fetching raw data and writing custom analysis code.
  *
@@ -218,6 +217,12 @@ public final class DiscoveryTools {
         List.of("Estimate mechanism inertia", "Characterize motor load", "System identification"),
         true, List.of("profile_mechanism")));
 
+    tools.add(new ToolInfo("analyze_can_bus", "robot_analysis",
+        "Analyze CAN bus utilization and error patterns",
+        List.of("can", "bus", "utilization", "error", "bandwidth"),
+        List.of("Check CAN bus utilization", "Find CAN error patterns", "Diagnose bus congestion"),
+        true, List.of("can_health", "power_analysis")));
+
     // === FRC DOMAIN TOOLS ===
     tools.add(new ToolInfo("get_ds_timeline", "frc_domain",
         "Get DriverStation event timeline with mode transitions",
@@ -330,13 +335,6 @@ public final class DiscoveryTools {
         List.of("Wait until REV sync is done", "Block until synchronization completes"),
         true, List.of("sync_status", "list_revlog_signals")));
 
-    // === ROBOT ANALYSIS - additional ===
-    tools.add(new ToolInfo("analyze_can_bus", "robot_analysis",
-        "Analyze CAN bus utilization and error patterns",
-        List.of("can", "bus", "utilization", "error", "bandwidth"),
-        List.of("Check CAN bus utilization", "Find CAN error patterns", "Diagnose bus congestion"),
-        true, List.of("can_health", "power_analysis")));
-
     // === DISCOVERY TOOLS ===
     tools.add(new ToolInfo("get_server_guide", "discovery",
         "Get comprehensive overview of server capabilities",
@@ -415,7 +413,7 @@ public final class DiscoveryTools {
   /**
    * Provides a comprehensive overview of all server capabilities.
    */
-  static class GetServerGuideTool implements Tool {
+  static class GetServerGuideTool extends ToolBase {
 
     @Override
     public String name() {
@@ -425,7 +423,7 @@ public final class DiscoveryTools {
     @Override
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
-          + "Returns a structured overview of all 45 tools organized by category, with usage guidance "
+          + "Returns a structured overview of all " + TOOL_CATALOG.size() + " tools organized by category, with usage guidance "
           + "and anti-patterns to avoid. This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
     }
@@ -442,7 +440,7 @@ public final class DiscoveryTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       String categoryFilter = getOptString(arguments, "category", null);
       boolean includeExamples = !arguments.has("include_examples")
           || arguments.get("include_examples").getAsBoolean();
@@ -569,7 +567,7 @@ public final class DiscoveryTools {
   /**
    * Recommends tools based on a natural language task description.
    */
-  static class SuggestToolsTool implements Tool {
+  static class SuggestToolsTool extends ToolBase {
 
     @Override
     public String name() {
@@ -595,7 +593,7 @@ public final class DiscoveryTools {
     }
 
     @Override
-    public JsonElement execute(JsonObject arguments) throws Exception {
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       String task = getRequiredString(arguments, "task").toLowerCase();
       int maxSuggestions = getOptInt(arguments, "max_suggestions", 5);
 

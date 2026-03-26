@@ -3,7 +3,6 @@ package org.triplehelix.wpilogmcp.tools;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
-import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -15,32 +14,11 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 /**
  * Basic tests for WPILOG analysis tools.
  */
-class WpilogToolsTest {
+class WpilogToolsTest extends ToolTestBase {
 
-  private List<Tool> registeredTools;
-
-  @BeforeEach
-  void setUp() {
-    registeredTools = new ArrayList<>();
-
-    // Use a special ToolRegistry that captures registered tools
-    var capturingRegistry =
-        new ToolRegistry() {
-          @Override
-          public void registerTool(Tool tool) {
-            registeredTools.add(tool);
-            super.registerTool(tool);
-          }
-        };
-
-    WpilogTools.registerAll(capturingRegistry);
-  }
-
-  private Tool findTool(String name) {
-    return registeredTools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    WpilogTools.registerAll(registry);
   }
 
   @Nested
@@ -64,7 +42,7 @@ class WpilogToolsTest {
               "list_loaded_logs",
               "compare_entries");
 
-      var actualTools = registeredTools.stream().map(Tool::name).toList();
+      var actualTools = tools.stream().map(Tool::name).toList();
 
       for (var expected : expectedTools) {
         assertTrue(actualTools.contains(expected), "Missing tool: " + expected);

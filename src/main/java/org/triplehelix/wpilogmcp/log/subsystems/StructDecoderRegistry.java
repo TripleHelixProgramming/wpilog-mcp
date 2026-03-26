@@ -88,10 +88,10 @@ public class StructDecoderRegistry {
    */
   public void register(StructDecoder decoder) {
     String typeName = decoder.getTypeName();
-    if (decoders.containsKey(typeName)) {
+    var existing = decoders.putIfAbsent(typeName, decoder);
+    if (existing != null) {
       throw new IllegalArgumentException("Decoder already registered for type: " + typeName);
     }
-    decoders.put(typeName, decoder);
   }
 
   /**

@@ -47,6 +47,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final StructDecoderRegistry decoderRegistry;
   private final Cache<String, List<TimestampedValue>> valueCache;
   private final LazyValuesMap valuesView;
+  private volatile boolean closed = false;
 
   /**
    * Creates a LazyParsedLog by scanning the file once.
@@ -97,7 +98,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
     // Walk byte offsets in parallel with the WPILib iterator, using DataLogAccess
     // to call the package-private getNextRecord() for offset tracking.
-    // The extra header length determines where records start.
+    // WPILOG header layout: [magic:6 "WPILOG"][version:2][extraHeaderLen:4][extraHeaderBytes:N]
+    // Initial offset = 6 + 2 + 4 = 12, plus the byte length of the extra header content.
+    // getExtraHeader().getBytes(UTF_8).length returns the byte count of the extra header
+    // content (not including the 4-byte length prefix, which is already in the 12-byte base).
     int pos = 12 + reader.getExtraHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
 
     try {
@@ -125,18 +129,20 @@ public class LazyParsedLog implements LogData, AutoCloseable {
         // Advance our byte offset tracker in lockstep with the iterator
         pos = DataLogAccess.getNextRecord(reader, pos);
       }
-    } catch (IllegalArgumentException e) {
-      String msg = e.getMessage();
-      if (msg != null && (msg.contains("capacity") || msg.contains("truncat")
-              || msg.contains("incomplete") || msg.contains("buffer"))) {
-        trunc = true;
-        truncMsg = "Log file is truncated (incomplete write). Data up to "
-            + String.format("%.2f", maxTs) + " seconds was recovered.";
-        logger.warn("Log file '{}' is truncated: {}", path, truncMsg);
-      } else {
-        throw new IOException("Error scanning log file: " + e.getMessage(), e);
-      }
+    } catch (java.util.NoSuchElementException | java.nio.BufferUnderflowException
+             | IndexOutOfBoundsException | IllegalArgumentException e) {
+      // WPILib's DataLogReader may throw various exceptions when encountering truncated data:
+      // - NoSuchElementException: getRecord() catches BufferUnderflowException and rethrows
+      // - BufferUnderflowException: direct buffer access past end
+      // - IndexOutOfBoundsException: array/buffer index past bounds
+      // - IllegalArgumentException: ByteBuffer.limit() past capacity (truncated record payload)
+      // All indicate the file was truncated mid-record. Recover what we have so far.
+      trunc = true;
+      truncMsg = "Log file is truncated (incomplete write). Data up to "
+          + String.format("%.2f", maxTs) + " seconds was recovered.";
+      logger.warn("Log file '{}' is truncated: {}", path, truncMsg);
     }
+
 
     this.entries = Collections.unmodifiableMap(entriesByName);
     this.minTimestamp = minTs == Double.MAX_VALUE ? 0 : minTs;
@@ -151,6 +157,34 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       int[] arr = new int[list.size()];
       for (int i = 0; i < list.size(); i++) arr[i] = list.get(i);
       recordOffsets.put(entry.getKey(), arr);
+    }
+
+    // Spot-check: validate a few random offsets to ensure entry IDs match.
+    // Pick up to 3 records (first, middle, last) from a non-empty entry.
+    for (var offsetEntry : recordOffsets.entrySet()) {
+      int[] offsets = offsetEntry.getValue();
+      if (offsets.length == 0) continue;
+      var expectedInfo = entriesByName.get(offsetEntry.getKey());
+      if (expectedInfo == null) continue;
+
+      int[] sampleIndices = offsets.length == 1
+          ? new int[]{0}
+          : offsets.length == 2
+              ? new int[]{0, offsets.length - 1}
+              : new int[]{0, offsets.length / 2, offsets.length - 1};
+      for (int idx : sampleIndices) {
+        try {
+          var record = DataLogAccess.getRecord(reader, offsets[idx]);
+          if (record.getEntry() != expectedInfo.id()) {
+            logger.warn("Offset validation mismatch for '{}': expected entry ID {} but found {} at offset {}",
+                offsetEntry.getKey(), expectedInfo.id(), record.getEntry(), offsets[idx]);
+          }
+        } catch (Exception e) {
+          logger.warn("Offset validation failed for '{}' at offset {}: {}",
+              offsetEntry.getKey(), offsets[idx], e.getMessage());
+        }
+      }
+      break; // Only spot-check one entry to keep startup fast
     }
 
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
@@ -178,6 +212,12 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   @Override public double minTimestamp() { return minTimestamp; }
   @Override public double maxTimestamp() { return maxTimestamp; }
   @Override public boolean truncated() { return truncated; }
+
+  @Override
+  public int sampleCount(String entryName) {
+    int[] offsets = recordOffsets.get(entryName);
+    return offsets != null ? offsets.length : 0;
+  }
   @Override public String truncationMessage() { return truncationMessage; }
 
   @Override
@@ -187,8 +227,11 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   @Override
   public void close() {
+    closed = true;
     valueCache.invalidateAll();
-    recordOffsets.clear();
+    // Don't clear recordOffsets — in-flight decodeEntry() calls may race with close().
+    // The volatile 'closed' flag short-circuits new requests, and GC handles cleanup
+    // when this object is unreferenced.
     logger.debug("Closed LazyParsedLog: {}", path);
   }
 
@@ -197,6 +240,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    * No file re-scan — reads only the records for the requested entry.
    */
   private List<TimestampedValue> decodeEntry(String entryName) {
+    if (closed) return List.of();
+
     var info = entries.get(entryName);
     if (info == null) return null;
 
@@ -233,14 +278,16 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private int estimateMemoryBytes(String key, List<TimestampedValue> values) {
     if (values == null || values.isEmpty()) return 64;
 
+    // For types with variable size (String, Map), sample up to 3 values
+    // (first, middle, last) and average the per-value estimate.
     long perValue = 32;
     var firstValue = values.get(0).value();
     if (firstValue instanceof Double || firstValue instanceof Long) {
       perValue += 24;
-    } else if (firstValue instanceof String s) {
-      perValue += 40 + s.length() * 2L;
-    } else if (firstValue instanceof Map<?, ?> m) {
-      perValue += 200 + m.size() * 50L;
+    } else if (firstValue instanceof String) {
+      perValue += averageStringEstimate(values);
+    } else if (firstValue instanceof Map<?, ?>) {
+      perValue += averageMapEstimate(values);
     } else if (firstValue instanceof byte[] b) {
       perValue += 16 + b.length;
     } else if (firstValue instanceof double[] d) {
@@ -251,6 +298,41 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
     long total = (long) values.size() * perValue + 200;
     return (int) Math.min(total, Integer.MAX_VALUE);
+  }
+
+  /** Samples up to 3 String values (first, middle, last) and returns the average size estimate. */
+  private long averageStringEstimate(List<TimestampedValue> values) {
+    long sum = 0;
+    int count = 0;
+    int[] indices = sampleIndices(values.size());
+    for (int idx : indices) {
+      if (values.get(idx).value() instanceof String s) {
+        sum += 40 + s.length() * 2L;
+        count++;
+      }
+    }
+    return count > 0 ? sum / count : 40;
+  }
+
+  /** Samples up to 3 Map values (first, middle, last) and returns the average size estimate. */
+  private long averageMapEstimate(List<TimestampedValue> values) {
+    long sum = 0;
+    int count = 0;
+    int[] indices = sampleIndices(values.size());
+    for (int idx : indices) {
+      if (values.get(idx).value() instanceof Map<?, ?> m) {
+        sum += 200 + m.size() * 50L;
+        count++;
+      }
+    }
+    return count > 0 ? sum / count : 200;
+  }
+
+  /** Returns up to 3 sample indices (first, middle, last) for the given size. */
+  private static int[] sampleIndices(int size) {
+    if (size <= 1) return new int[]{0};
+    if (size == 2) return new int[]{0, 1};
+    return new int[]{0, size / 2, size - 1};
   }
 
   /**

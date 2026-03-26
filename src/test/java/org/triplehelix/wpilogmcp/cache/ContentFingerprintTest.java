@@ -197,10 +197,10 @@ class ContentFingerprintTest {
     }
 
     @Test
-    @DisplayName("files differing only in the middle produce same fingerprint (known limitation)")
-    void middleDifferenceNotDetected() throws IOException {
-      // Files that differ only in the middle 128KB (outside first/last 64KB)
-      // will produce the same fingerprint. This is a known tradeoff for speed.
+    @DisplayName("files differing only in the middle produce different fingerprints")
+    void middleDifferenceDetected() throws IOException {
+      // Now that a middle chunk is included in the fingerprint, files that
+      // differ only in the middle region are correctly distinguished.
       byte[] data1 = new byte[256 * 1024];
       byte[] data2 = new byte[256 * 1024];
       // Same head and tail
@@ -216,9 +216,58 @@ class ContentFingerprintTest {
       Files.write(file1, data1);
       Files.write(file2, data2);
 
-      // This documents the known limitation — not a bug
+      // Middle chunk is now included in the fingerprint, so differences are detected
+      assertNotEquals(ContentFingerprint.compute(file1), ContentFingerprint.compute(file2),
+          "Files differing in the middle should produce different fingerprints");
+    }
+
+    @Test
+    @DisplayName("file exactly 3*CHUNK_SIZE: middle NOT included, so middle-only diff produces SAME fingerprint")
+    void testFileExactlyThreeChunksMiddleNotIncluded() throws IOException {
+      // CHUNK_SIZE = 64*1024 = 65536, so 3*CHUNK_SIZE = 196608
+      // The condition for middle chunk is strictly > 3*CHUNK_SIZE, so at exactly
+      // 3*CHUNK_SIZE the middle is NOT read.
+      int size = 3 * 64 * 1024; // 196608
+      byte[] data1 = new byte[size];
+      byte[] data2 = new byte[size];
+      for (int i = 0; i < size; i++) {
+        data1[i] = (byte) (i % 251);
+        data2[i] = (byte) (i % 251);
+      }
+      // Differ only in the middle
+      int mid = size / 2;
+      data2[mid] = (byte) (data1[mid] + 1);
+
+      Path file1 = tempDir.resolve("exact3_a.bin");
+      Path file2 = tempDir.resolve("exact3_b.bin");
+      Files.write(file1, data1);
+      Files.write(file2, data2);
+
       assertEquals(ContentFingerprint.compute(file1), ContentFingerprint.compute(file2),
-          "Files differing only in the middle are expected to have same fingerprint (speed tradeoff)");
+          "At exactly 3*CHUNK_SIZE, middle chunk is not read, so middle-only difference is invisible");
+    }
+
+    @Test
+    @DisplayName("file 3*CHUNK_SIZE+1: middle IS included, so middle-only diff produces DIFFERENT fingerprint")
+    void testFileJustOverThreeChunksMiddleIncluded() throws IOException {
+      int size = 3 * 64 * 1024 + 1; // 196609
+      byte[] data1 = new byte[size];
+      byte[] data2 = new byte[size];
+      for (int i = 0; i < size; i++) {
+        data1[i] = (byte) (i % 251);
+        data2[i] = (byte) (i % 251);
+      }
+      // Differ only in the middle
+      int mid = size / 2;
+      data2[mid] = (byte) (data1[mid] + 1);
+
+      Path file1 = tempDir.resolve("over3_a.bin");
+      Path file2 = tempDir.resolve("over3_b.bin");
+      Files.write(file1, data1);
+      Files.write(file2, data2);
+
+      assertNotEquals(ContentFingerprint.compute(file1), ContentFingerprint.compute(file2),
+          "At 3*CHUNK_SIZE+1, middle chunk IS read, so middle-only difference should be detected");
     }
 
     @Test

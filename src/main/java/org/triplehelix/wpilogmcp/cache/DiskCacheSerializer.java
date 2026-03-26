@@ -344,13 +344,16 @@ public class DiskCacheSerializer {
    * {@code List<Object>}, which breaks code expecting the original array type.
    */
   private Object unpackTypedValue(MessageUnpacker unpacker, String entryType) throws IOException {
-    // For primitive array types, reconstruct the original Java array type
+    // For primitive array types, reconstruct the original Java array type.
+    // For int64, force Long to avoid MessagePack narrowing small values to Integer
+    // (which would break instanceof Long checks in numeric extraction).
     return switch (entryType) {
       case "double[]" -> unpackDoubleArray(unpacker);
       case "float[]" -> unpackFloatArray(unpacker);
       case "int64[]" -> unpackLongArray(unpacker);
       case "boolean[]" -> unpackBooleanArray(unpacker);
       case "string[]" -> unpackStringArray(unpacker);
+      case "int64" -> unpacker.unpackLong();
       default -> unpackValue(unpacker);
     };
   }

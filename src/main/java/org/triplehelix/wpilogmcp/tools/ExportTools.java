@@ -16,8 +16,6 @@ import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
-import org.triplehelix.wpilogmcp.mcp.McpServer.Tool;
-
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
 /**
@@ -90,8 +88,8 @@ public final class ExportTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-      var name = arguments.get("name").getAsString();
-      var outputPath = arguments.get("output_path").getAsString();
+      var name = getRequiredString(arguments, "name");
+      var outputPath = getRequiredString(arguments, "output_path");
       var startTime = arguments.has("start_time") && !arguments.get("start_time").isJsonNull()
           ? arguments.get("start_time").getAsDouble()
           : null;
@@ -128,7 +126,16 @@ public final class ExportTools {
         } else if (isArray) {
           writer.println("timestamp_sec,index,value");
         } else {
-          writer.println("timestamp_sec,value");
+          // For Map-typed values (generic structs), discover keys from first value
+          // to write a correct header with one column per field.
+          if (!values.isEmpty() && values.get(0).value() instanceof Map<?, ?> firstRawMap) {
+            @SuppressWarnings("unchecked")
+            var firstMap = (Map<String, Object>) firstRawMap;
+            var sortedKeys = new java.util.TreeSet<>(firstMap.keySet());
+            writer.println("timestamp_sec," + String.join(",", sortedKeys));
+          } else {
+            writer.println("timestamp_sec,value");
+          }
         }
 
         for (var tv : values) {
@@ -140,12 +147,12 @@ public final class ExportTools {
           if (tv.value() instanceof List<?> list) {
             for (int i = 0; i < list.size(); i++) {
               var element = list.get(i);
-              if (element instanceof Map) {
+              if (element instanceof Map<?, ?> rawMap) {
                 @SuppressWarnings("unchecked")
-                var map = (Map<String, Object>) element;
+                var map = (Map<String, Object>) rawMap;
                 var sb = new StringBuilder();
                 sb.append(t).append(",").append(i);
-                map.values().forEach(v -> sb.append(",").append(csvEscape(String.valueOf(v))));
+                writeStructFields(sb, map, type);
                 writer.println(sb);
               } else {
                 writer.println(t + "," + i + "," + csvEscape(String.valueOf(element)));
@@ -177,12 +184,12 @@ public final class ExportTools {
               writer.println(t + "," + i + "," + csvEscape(arr[i]));
               rowCount++;
             }
-          } else if (tv.value() instanceof Map) {
+          } else if (tv.value() instanceof Map<?, ?> rawMap) {
             @SuppressWarnings("unchecked")
-            var map = (Map<String, Object>) tv.value();
+            var map = (Map<String, Object>) rawMap;
             var sb = new StringBuilder();
             sb.append(t);
-            map.values().forEach(v -> sb.append(",").append(csvEscape(String.valueOf(v))));
+            writeStructFields(sb, map, type);
             writer.println(sb);
             rowCount++;
           } else {
@@ -200,6 +207,36 @@ public final class ExportTools {
       result.addProperty("type", type);
 
       return result;
+    }
+
+    /**
+     * Writes struct fields to the StringBuilder in the correct order for the entry type.
+     * Known struct types use explicit field ordering matching their CSV headers.
+     * Unknown struct types use alphabetically sorted keys for deterministic output.
+     */
+    private static void writeStructFields(StringBuilder sb, Map<String, Object> map, String type) {
+      if (type.contains("SwerveModuleState")) {
+        sb.append(",").append(map.get("speed_mps"));
+        sb.append(",").append(map.get("angle_rad"));
+        sb.append(",").append(map.get("angle_deg"));
+      } else if (type.contains("Pose2d")) {
+        sb.append(",").append(map.get("x"));
+        sb.append(",").append(map.get("y"));
+        sb.append(",").append(map.get("rotation_rad"));
+        sb.append(",").append(map.get("rotation_deg"));
+      } else if (type.contains("Pose3d")) {
+        sb.append(",").append(map.get("x"));
+        sb.append(",").append(map.get("y"));
+        sb.append(",").append(map.get("z"));
+        sb.append(",").append(map.get("qw"));
+        sb.append(",").append(map.get("qx"));
+        sb.append(",").append(map.get("qy"));
+        sb.append(",").append(map.get("qz"));
+      } else {
+        // Generic struct: alphabetically sorted keys for deterministic column order
+        var sortedKeys = new java.util.TreeSet<>(map.keySet());
+        sortedKeys.forEach(key -> sb.append(",").append(csvEscape(String.valueOf(map.get(key)))));
+      }
     }
 
     /**
@@ -301,7 +338,8 @@ public final class ExportTools {
               battery.addProperty("entry", entryName);
               battery.addProperty("min_voltage", minV);
               battery.addProperty("max_voltage", maxV);
-              battery.addProperty("brownout_risk", minV < 7.0 ? "HIGH" : (minV < 9.0 ? "MODERATE" : "LOW"));
+              // Brownout threshold: 6.8V for roboRIO 1 (roboRIO 2 uses 6.3V)
+              battery.addProperty("brownout_risk", minV < 6.8 ? "HIGH" : (minV < 9.0 ? "MODERATE" : "LOW"));
               report.add("battery", battery);
             }
             break;
@@ -309,11 +347,12 @@ public final class ExportTools {
         }
       }
 
-      // Error count
+      // Error count — only scan string entries likely to contain errors to avoid
+      // decoding all string entries (which defeats lazy loading on large logs).
       int errorCount = 0;
       var errorSamples = new ArrayList<String>();
       for (var e : log.entries().entrySet()) {
-        if ("string".equals(e.getValue().type())) {
+        if ("string".equals(e.getValue().type()) && log.sampleCount(e.getKey()) > 0) {
           var values = log.values().get(e.getKey());
           if (values != null) {
             for (var tv : values) {

@@ -263,7 +263,9 @@ public class LogSynchronizer {
 
       if (wpiFirstHalf.size() < 100 || wpiSecondHalf.size() < 100) continue;
 
-      // Cross-correlate each half
+      // Cross-correlate each half, using the base result's offset as center
+      // (more accurate than the coarse offset, which may be zero/estimated)
+      long refinedOffset = baseResult.offsetMicros();
       SignalPair firstPair = new SignalPair(
           pair.wpilogEntry(), pair.revlogSignal(),
           wpiFirstHalf, firstHalf, pair.signalType(), pair.matchScore());
@@ -271,13 +273,17 @@ public class LogSynchronizer {
           pair.wpilogEntry(), pair.revlogSignal(),
           wpiSecondHalf, secondHalf, pair.signalType(), pair.matchScore());
 
-      SignalPairResult firstResult = crossCorrelate(firstPair, coarseOffset);
-      SignalPairResult secondResult = crossCorrelate(secondPair, coarseOffset);
+      SignalPairResult firstResult = crossCorrelate(firstPair, refinedOffset);
+      SignalPairResult secondResult = crossCorrelate(secondPair, refinedOffset);
 
       if (!firstResult.isUsableCorrelation() || !secondResult.isUsableCorrelation()) continue;
 
-      // Compute drift rate — time delta between midpoints of each half
-      double timeDelta = (revEnd - revStart) / 2.0;
+      // Compute drift rate — time delta between median timestamps of each half.
+      // Using actual medians instead of geometric midpoint handles non-uniform
+      // sample distribution (e.g., robot disabled gaps).
+      double firstHalfMedianTime = medianTimestamp(firstHalf);
+      double secondHalfMedianTime = medianTimestamp(secondHalf);
+      double timeDelta = secondHalfMedianTime - firstHalfMedianTime;
 
       if (timeDelta < 60) continue; // Too close together
 
@@ -478,6 +484,16 @@ public class LogSynchronizer {
     int centerLag = (int) Math.round(
         (revStartTime + centerOffsetSec - wpiStartTime) * sampleRateHz);
 
+    // If the center lag is so far from the data that the entire search window
+    // falls outside both arrays, correlation would be meaningless — skip.
+    int maxArrayLen = Math.max(wpilogSamples.length, revlogSamples.length);
+    if (Math.abs(centerLag) > maxArrayLen + searchWindowSamples) {
+      logger.warn("Center lag {} samples is far beyond array bounds ({}) — "
+          + "skipping cross-correlation for {} <-> {}",
+          centerLag, maxArrayLen, pair.wpilogEntry(), pair.revlogSignal());
+      return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
+    }
+
     // Coarse search: every sample lag in ±searchWindow
     int bestLag = centerLag;
     double bestCorr = -2;
@@ -490,6 +506,16 @@ public class LogSynchronizer {
         bestCorr = corr;
         bestLag = lag;
       }
+    }
+
+    // Check if the best lag is at the search window boundary, which suggests
+    // the true peak may lie outside the window — reduce confidence.
+    String warning = null;
+    boolean atBoundary = (bestLag == centerLag - searchWindowSamples)
+        || (bestLag == centerLag + searchWindowSamples);
+    if (atBoundary) {
+      warning = "Correlation peak at search window boundary — true offset may be outside search range";
+      bestCorr *= 0.7;
     }
 
     // Parabolic interpolation for sub-sample accuracy
@@ -518,7 +544,8 @@ public class LogSynchronizer {
         pair.revlogSignal(),
         offsetMicros,
         bestCorr,
-        Math.min(wpilogSamples.length, revlogSamples.length)
+        Math.min(wpilogSamples.length, revlogSamples.length),
+        warning
     );
   }
 
@@ -547,15 +574,20 @@ public class LogSynchronizer {
     // Step size: jump by ~10% of window each time
     int stepSize = Math.max(1, values.size() / 50);
 
+    // Carry endIdx forward between iterations — since startIdx only increases,
+    // the window end can only move forward, so we never need to scan backward.
+    int carriedEndIdx = 0;
+
     for (int startIdx = 0; startIdx < values.size(); startIdx += stepSize) {
       double windowStart = values.get(startIdx).timestamp();
       double windowEnd = windowStart + maxDurationSec;
 
-      // Find end index for this window
-      int endIdx = startIdx;
+      // Advance end index from where we left off (or from startIdx if it jumped ahead)
+      int endIdx = Math.max(carriedEndIdx, startIdx);
       while (endIdx < values.size() && values.get(endIdx).timestamp() <= windowEnd) {
         endIdx++;
       }
+      carriedEndIdx = endIdx;
       if (endIdx - startIdx < 10) continue;
 
       // Compute variance for this window (sample every 10th point for speed)
@@ -709,6 +741,19 @@ public class LogSynchronizer {
     double denom = Math.sqrt(sumX2 * sumY2);
     if (denom < 1e-10) return 0;
     return Math.max(-1.0, Math.min(1.0, sumXY / denom));
+  }
+
+  /**
+   * Computes the median timestamp from a list of timestamped values.
+   * Assumes the list is sorted by timestamp.
+   */
+  private static double medianTimestamp(List<TimestampedValue> values) {
+    int n = values.size();
+    if (n == 0) return 0.0;
+    if (n % 2 == 1) {
+      return values.get(n / 2).timestamp();
+    }
+    return (values.get(n / 2 - 1).timestamp() + values.get(n / 2).timestamp()) / 2.0;
   }
 
   /**

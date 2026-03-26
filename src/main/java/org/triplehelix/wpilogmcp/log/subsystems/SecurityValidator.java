@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,7 +30,7 @@ import org.slf4j.LoggerFactory;
 public class SecurityValidator {
   private static final Logger logger = LoggerFactory.getLogger(SecurityValidator.class);
 
-  private final Set<Path> allowedDirectories = new HashSet<>();
+  private final Set<Path> allowedDirectories = new CopyOnWriteArraySet<>();
 
   /**
    * Adds a directory to the list of allowed directories for loading logs.
@@ -39,7 +40,7 @@ public class SecurityValidator {
    *
    * @param directory The directory to allow (will be normalized to absolute path)
    */
-  public synchronized void addAllowedDirectory(Path directory) {
+  public void addAllowedDirectory(Path directory) {
     if (directory != null) {
       // Use toRealPath() to resolve symlinks if the directory exists,
       // so that the allowed path matches what toRealPath() returns during validation
@@ -68,7 +69,7 @@ public class SecurityValidator {
   }
 
   /** Clears all allowed directories. */
-  public synchronized void clearAllowedDirectories() {
+  public void clearAllowedDirectories() {
     allowedDirectories.clear();
     logger.info("Cleared all allowed directories");
   }
@@ -78,7 +79,7 @@ public class SecurityValidator {
    *
    * @return A new set containing the allowed directories
    */
-  public synchronized Set<Path> getAllowedDirectories() {
+  public Set<Path> getAllowedDirectories() {
     return new HashSet<>(allowedDirectories);
   }
 
@@ -91,7 +92,7 @@ public class SecurityValidator {
    * @param filePath The path to validate
    * @throws IOException if the path is outside allowed directories
    */
-  public synchronized void validate(Path filePath) throws IOException {
+  public void validate(Path filePath) throws IOException {
     if (allowedDirectories.isEmpty()) {
       // No restrictions configured - allow all paths (backwards compatibility)
       return;
@@ -149,7 +150,7 @@ public class SecurityValidator {
    * @param isInCache Function that returns true if the path is already cached
    * @throws IOException if the path is outside allowed directories and not cached
    */
-  public synchronized void validateOrAllowCached(Path filePath, java.util.function.Predicate<String> isInCache)
+  public void validateOrAllowCached(Path filePath, java.util.function.Predicate<String> isInCache)
       throws IOException {
     if (allowedDirectories.isEmpty()) {
       return;

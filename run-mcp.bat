@@ -41,7 +41,15 @@ if defined JAVA_HOME (
     )
 )
 
-:: 2. Check standard installation path for Windows
+:: 2. Check per-user WPILib installation
+if not defined JAVA_EXEC (
+    set WPILIB_JDK_PATH=%USERPROFILE%\wpilib\2026\jdk\bin\java.exe
+    if exist "!WPILIB_JDK_PATH!" (
+        set JAVA_EXEC="!WPILIB_JDK_PATH!"
+    )
+)
+
+:: 3. Check shared installation path (C:\Users\Public)
 if not defined JAVA_EXEC (
     set WPILIB_JDK_PATH=C:\Users\Public\wpilib\2026\jdk\bin\java.exe
     if exist "!WPILIB_JDK_PATH!" (
@@ -49,7 +57,7 @@ if not defined JAVA_EXEC (
     )
 )
 
-:: 3. Fallback to system java
+:: 4. Fallback to system java
 if not defined JAVA_EXEC (
     set JAVA_EXEC=java
 )

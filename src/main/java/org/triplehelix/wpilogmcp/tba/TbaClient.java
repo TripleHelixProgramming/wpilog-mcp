@@ -53,8 +53,8 @@ public class TbaClient {
   /** Cache for event matches list. */
   private final Map<String, CachedData<JsonArray>> eventMatchesCache;
 
-  /** API key for TBA access. */
-  private String apiKey;
+  /** API key for TBA access. Volatile for safe publication to HTTP handler threads. */
+  private volatile String apiKey;
 
   /** Private constructor for singleton pattern. */
   private TbaClient() {
@@ -517,8 +517,12 @@ public class TbaClient {
     if ("qm".equals(compLevel)) {
       matchKey = eventKey + "_qm" + matchNumber;
     } else if ("sf".equals(compLevel)) {
-      // Since 2023, FRC uses double-elimination where semifinal keys are sequential
+      // sf{N}m1 refers to the Nth semifinal series, not necessarily the team's Nth
+      // semifinal match. For double-elimination (2023+), series numbers are sequential.
       matchKey = eventKey + "_sf" + matchNumber + "m1";
+    } else if ("qf".equals(compLevel)) {
+      // qf{N}m1 refers to the Nth quarterfinal series (same pattern as semifinal).
+      matchKey = eventKey + "_qf" + matchNumber + "m1";
     } else if ("f".equals(compLevel)) {
       matchKey = eventKey + "_f1m" + matchNumber;
     } else {
@@ -539,14 +543,14 @@ public class TbaClient {
     if (lower.contains("qualification") || lower.contains("qual")) {
       return "qm";
     }
+    if (lower.contains("quarterfinal") || lower.contains("quarter")) {
+      return "qf";
+    }
     if (lower.contains("semifinal") || lower.contains("semi")) {
       return "sf";
     }
-    if (lower.contains("final") && !lower.contains("semi")) {
+    if (lower.contains("final") && !lower.contains("semi") && !lower.contains("quarter")) {
       return "f";
-    }
-    if (lower.contains("quarterfinal") || lower.contains("quarter")) {
-      return "qf";
     }
     if (lower.contains("elimination") || lower.contains("elim")) {
       return null;

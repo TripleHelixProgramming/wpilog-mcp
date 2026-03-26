@@ -73,23 +73,32 @@ class HttpStressTest {
     assumeTrue(enabled,
         "HTTP stress test skipped. Run via: ./gradlew httpStressTest");
 
-    // Load the "stresstest" configuration from servers.json
+    // Load configuration: try "stresstest" named config from config file,
+    // fall back to synthesized defaults (~/riologs, team 2363, TBA from env).
     try {
       Path configPath = System.getProperty("stress.configpath") != null
           ? Path.of(System.getProperty("stress.configpath")) : null;
       var loader = new org.triplehelix.wpilogmcp.config.ConfigLoader();
-      var config = loader.load("stresstest", configPath);
+      org.triplehelix.wpilogmcp.config.ServerConfig config;
+      try {
+        config = loader.load("stresstest", configPath);
+      } catch (Exception e) {
+        String home = System.getProperty("user.home");
+        config = new org.triplehelix.wpilogmcp.config.ServerConfig("stresstest",
+            home + "/riologs", 2363, System.getenv("TBA_API_KEY"),
+            "stdio", null, null, null, null, null, null, null);
+      }
       org.triplehelix.wpilogmcp.Main.applyConfig(config);
 
       String logDirPath = config.logdir();
       assumeTrue(logDirPath != null && !logDirPath.isEmpty(),
-          "HTTP stress test skipped: 'stresstest' config has no logdir");
+          "HTTP stress test skipped: no logdir configured");
 
       logDirectory = Path.of(logDirPath);
       assumeTrue(Files.isDirectory(logDirectory),
           "HTTP stress test skipped: directory does not exist: " + logDirPath);
     } catch (Exception e) {
-      assumeTrue(false, "HTTP stress test skipped: Failed to load 'stresstest' config: " + e.getMessage());
+      assumeTrue(false, "HTTP stress test skipped: " + e.getMessage());
       return;
     }
 

@@ -1,0 +1,90 @@
+{
+  "name": "wpilog-analyzer",
+  "displayName": "WPILog Analyzer",
+  "description": "AI-powered FRC robot log analysis via MCP. Analyzes .wpilog telemetry from the roboRIO.",
+  "version": "0.8.2",
+  "publisher": "TripleHelixProgramming",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TripleHelixProgramming/wpilog-mcp"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Data Science",
+    "Other"
+  ],
+  "keywords": [
+    "FRC",
+    "FIRST",
+    "WPILib",
+    "robot",
+    "telemetry",
+    "MCP",
+    "wpilog"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "wpilog-analyzer.mcpServer",
+        "label": "WPILog Analyzer"
+      }
+    ],
+    "configuration": [
+      {
+        "title": "WPILog Analyzer",
+        "properties": {
+          "wpilog-mcp.javaPath": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Path to the `java` executable. Leave blank to auto-detect the WPILib JDK."
+          },
+          "wpilog-mcp.wpiLibYear": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "WPILib installation year (e.g., `2026`). Leave blank to auto-detect the latest installed year."
+          },
+          "wpilog-mcp.logDirectory": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect."
+          },
+          "wpilog-mcp.teamNumber": {
+            "type": "number",
+            "default": 2363,
+            "markdownDescription": "Your FRC team number for TBA match data lookups."
+          },
+          "wpilog-mcp.tbaApiKey": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "The Blue Alliance API key for match data enrichment. Get one at [thebluealliance.com/account](https://www.thebluealliance.com/account)."
+          },
+          "wpilog-mcp.maxHeap": {
+            "type": "string",
+            "default": "4g",
+            "markdownDescription": "Maximum JVM heap size. Examples: `2g`, `4g`, `8g`."
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.100.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

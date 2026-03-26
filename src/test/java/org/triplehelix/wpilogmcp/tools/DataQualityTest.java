@@ -170,6 +170,48 @@ class DataQualityTest {
   }
 
   @Nested
+  @DisplayName("Gap Ratio Confidence Capping")
+  class GapRatioConfidence {
+
+    @Test
+    @DisplayName("high gap duration ratio caps confidence at medium")
+    void testHighGapDurationRatioCapsConfidenceAtMedium() {
+      // Construct DataQuality where qualityScore > 0.8 but gap duration > 10% of time span.
+      // totalGapMs = 1500ms out of 10s time span = 15% gap duration.
+      var quality = new DataQuality(100, 10.0, 3, 500.0, 1500.0, 0, 50.0, 0.85);
+      assertEquals("medium", quality.confidenceLevel(),
+          "Gap duration 15% (> 10%) should cap confidence at medium despite quality 0.85");
+    }
+
+    @Test
+    @DisplayName("gap duration exactly at 10% allows high")
+    void testGapDurationExactlyAtTenPercentAllowsHigh() {
+      // totalGapMs = 1000ms out of 10s = exactly 10%. The check is > 0.10, not >=.
+      var quality = new DataQuality(100, 10.0, 2, 500.0, 1000.0, 0, 50.0, 0.85);
+      assertEquals("high", quality.confidenceLevel(),
+          "Gap duration exactly 10% (not > 10%) should allow high confidence");
+    }
+
+    @Test
+    @DisplayName("gap duration just above 10% caps at medium")
+    void testGapDurationJustAboveTenPercentCapsMedium() {
+      // totalGapMs = 1100ms out of 10s = 11% gap duration.
+      var quality = new DataQuality(100, 10.0, 2, 600.0, 1100.0, 0, 50.0, 0.85);
+      assertEquals("medium", quality.confidenceLevel(),
+          "Gap duration 11% (> 10%) should cap confidence at medium");
+    }
+
+    @Test
+    @DisplayName("zero samples does not divide by zero")
+    void testZeroSamplesDoesNotDivideByZero() {
+      var quality = new DataQuality(0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0.0);
+      assertDoesNotThrow(quality::confidenceLevel);
+      assertEquals("insufficient", quality.confidenceLevel(),
+          "Zero samples with zero quality should be insufficient");
+    }
+  }
+
+  @Nested
   @DisplayName("JSON Serialization")
   class JsonTests {
 

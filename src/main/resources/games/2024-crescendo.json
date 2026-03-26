@@ -31,7 +31,7 @@
     "match_points": {
       "auto": {
         "leave": 2,
-        "amp": 5,
+        "amp": 2,
         "speaker": 5
       },
       "teleop": {

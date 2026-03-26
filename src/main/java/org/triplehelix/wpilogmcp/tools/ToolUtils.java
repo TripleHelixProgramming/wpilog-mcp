@@ -41,7 +41,8 @@ public final class ToolUtils {
   /** Additional guidance for statistical tools. */
   public static final String GUIDANCE_STATISTICAL =
       " Sample sizes below 100 have high uncertainty. "
-      + "Correlations below |0.7| are weak and may be coincidental.";
+      + "Correlations below |0.7| are moderate to weak — interpret cautiously, "
+      + "especially with small samples. Consider whether a physical relationship is expected.";
 
   /** Additional guidance for power/battery tools. */
   public static final String GUIDANCE_POWER =

@@ -115,17 +115,17 @@ class LogCacheTest {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
     // Small sleep to ensure different access times
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
 
     // Access log1 and log3 to make log2 the LRU
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.get("/log1.wpilog");
 
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.get("/log3.wpilog");
 
     cache.evictOne();
@@ -143,14 +143,14 @@ class LogCacheTest {
   void testLRUOrder() {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
 
     // Access log1 to move it to MRU
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.get("/log1.wpilog");
 
     // Evict should remove log2 (oldest not-recently-accessed)
@@ -218,11 +218,11 @@ class LogCacheTest {
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
     // Access log2 to make it MRU
-    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
     cache.get("/log2.wpilog");
 
     cache.evictOne();

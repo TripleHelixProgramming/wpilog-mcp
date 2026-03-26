@@ -84,10 +84,12 @@ public final class StatisticsTools {
       var values = requireEntry(log, name);
       var filtered = filterTimeRange(values, start, end);
       var numericFiltered = filtered.stream()
-          .filter(tv -> tv.value() instanceof Number && Double.isFinite(((Number) tv.value()).doubleValue()))
+          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .toList();
       var quality = DataQuality.fromValues(numericFiltered);
-      var data = extractNumericData(values, start, end);
+      var data = numericFiltered.stream()
+          .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
+          .toArray();
 
       if (data.length == 0) {
         throw new IllegalArgumentException("No numeric data in range");
@@ -102,7 +104,7 @@ public final class StatisticsTools {
       double mean = stats.getAverage();
       // Use sample standard deviation (Bessel's correction: n-1) for more accurate estimates
       // from sample data. For n=1, return 0 to avoid division by zero.
-      double sumSquaredDiff = java.util.Arrays.stream(data).map(v -> Math.pow(v - mean, 2)).sum();
+      double sumSquaredDiff = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
       double variance = data.length > 1 ? sumSquaredDiff / (data.length - 1) : 0.0;
       double stdDev = Math.sqrt(variance);
 
@@ -110,6 +112,9 @@ public final class StatisticsTools {
           .addSingleMatchCaveat()
           .addFollowup("Use detect_anomalies to check for outliers that may skew these statistics")
           .addFollowup("Use time_correlate to check relationships with other entries");
+
+      double q1 = percentile(data, 0.25);
+      double q3 = percentile(data, 0.75);
 
       return success()
           .addProperty("name", name)
@@ -119,9 +124,9 @@ public final class StatisticsTools {
           .addProperty("mean", mean)
           .addProperty("median", median)
           .addProperty("std_dev", stdDev)
-          .addProperty("q1", percentile(data, 0.25))
-          .addProperty("q3", percentile(data, 0.75))
-          .addProperty("iqr", percentile(data, 0.75) - percentile(data, 0.25))
+          .addProperty("q1", q1)
+          .addProperty("q3", q3)
+          .addProperty("iqr", q3 - q1)
           .addProperty("p5", percentile(data, 0.05))
           .addProperty("p95", percentile(data, 0.95))
           .addDataQuality(quality)
@@ -382,7 +387,7 @@ public final class StatisticsTools {
       var values = requireEntry(log, name);
 
       var data = filterTimeRange(values, start, end).stream()
-          .filter(tv -> tv.value() instanceof Number)
+          .filter(tv -> tv.value() instanceof Number && Double.isFinite(((Number) tv.value()).doubleValue()))
           .map(tv -> new double[]{tv.timestamp(), ((Number) tv.value()).doubleValue()})
           .toList();
 
@@ -502,10 +507,10 @@ public final class StatisticsTools {
       }
 
       var d1 = filterTimeRange(v1, start, end).stream()
-          .filter(tv -> tv.value() instanceof Number)
+          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .toList();
       var d2 = filterTimeRange(v2, start, end).stream()
-          .filter(tv -> tv.value() instanceof Number)
+          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .toList();
 
       if (d1.isEmpty() || d2.isEmpty()) {
@@ -523,7 +528,7 @@ public final class StatisticsTools {
       var x = new ArrayList<Double>();
       var y = new ArrayList<Double>();
       for (var tv1 : d1) {
-        var val2 = getValueAtTimeLinear(v2, tv1.timestamp());
+        var val2 = getValueAtTimeLinear(d2, tv1.timestamp());
         if (val2 != null) {
           x.add(((Number) tv1.value()).doubleValue());
           y.add(val2);
@@ -566,12 +571,15 @@ public final class StatisticsTools {
       int sampleCount = x.size();
       builder.addProperty("sample_count", sampleCount);
 
-      // Handle edge case: zero variance means correlation is undefined (NaN)
-      if (denX < 1e-20 || denY < 1e-20) {
+      // Handle edge case: zero variance means correlation is undefined (NaN).
+      // Use a relative threshold (variance = denX / n < 1e-15) to avoid
+      // scale-dependent false positives with unnormalized sum-of-squares.
+      double varianceThreshold = 1e-15 * x.size();
+      if (denX < varianceThreshold || denY < varianceThreshold) {
         builder.addProperty("correlation", Double.NaN);
         builder.addProperty("p_value", 1.0);
         builder.addWarning("Correlation undefined: " +
-            (denX < 1e-20 && denY < 1e-20 ? "both entries" : (denX < 1e-20 ? "first entry" : "second entry")) +
+            (denX < varianceThreshold && denY < varianceThreshold ? "both entries" : (denX < varianceThreshold ? "first entry" : "second entry")) +
             " has near-zero variance (all values are effectively identical)");
       } else {
         double corr = Math.max(-1.0, Math.min(1.0, num / Math.sqrt(denX * denY)));
@@ -586,7 +594,9 @@ public final class StatisticsTools {
         }
       }
 
-      var quality = DataQuality.fromValues(v1);
+      var q1 = DataQuality.fromValues(v1);
+      var q2 = DataQuality.fromValues(v2);
+      var quality = q1.qualityScore() <= q2.qualityScore() ? q1 : q2;
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Correlation does not imply causation — consider confounding variables");
@@ -620,7 +630,9 @@ public final class StatisticsTools {
     double b = 48.0 * a * a;
     double z2 = a * Math.log1p(t * t / df);
     double z = Math.sqrt(z2);
-    // Full correction: first-order + second-order terms from A&S 26.7.5
+    // Full correction: first-order + second-order terms from A&S 26.7.5.
+    // Coefficients (4, 33, 240, 855) are from Abramowitz & Stegun Table 26.7.4/26.7.5
+    // and should be validated against the original reference if modifying this code.
     double z3 = z * z * z;
     z = z + (z3 + 3.0 * z) / b - (4.0 * z3 * z * z * z * z + 33.0 * z3 * z * z + 240.0 * z3 + 855.0 * z) / (10.0 * b * b);
     // Two-tailed p-value

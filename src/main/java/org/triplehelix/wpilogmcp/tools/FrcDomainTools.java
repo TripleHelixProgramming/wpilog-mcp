@@ -1,5 +1,6 @@
 package org.triplehelix.wpilogmcp.tools;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
@@ -30,6 +31,9 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *   <li>{@code analyze_auto} - Analyze autonomous routine performance</li>
  *   <li>{@code analyze_cycles} - Analyze game piece cycle times</li>
  *   <li>{@code analyze_replay_drift} - Detect AdvantageKit replay divergence</li>
+ *   <li>{@code analyze_loop_timing} - Detect robot code loop timing violations</li>
+ *   <li>{@code analyze_can_bus} - Analyze CAN bus utilization and error patterns</li>
+ *   <li>{@code predict_battery_health} - Predict battery health from voltage/current data</li>
  * </ul>
  */
 public final class FrcDomainTools {
@@ -51,6 +55,7 @@ public final class FrcDomainTools {
     registry.registerTool(new AnalyzeLoopTimingTool());
     registry.registerTool(new AnalyzeCanBusTool());
     registry.registerTool(new PredictBatteryHealthTool());
+    registry.registerTool(new GetGameInfoTool());
   }
 
   // ==================== SHARED HELPER METHODS ====================
@@ -80,21 +85,26 @@ public final class FrcDomainTools {
    * Extract translation components from a Pose2d or Pose3d struct.
    */
   private static double[] extractTranslation(java.util.Map<String, Object> pose) {
+    // Try nested layout first (e.g., from protobuf or WPILib network tables)
     Object translationObj = pose.get("translation");
-    if (translationObj instanceof java.util.Map) {
+    if (translationObj instanceof java.util.Map<?, ?> rawTranslation) {
       @SuppressWarnings("unchecked")
-      var translation = (java.util.Map<String, Object>) translationObj;
+      var translation = (java.util.Map<String, Object>) rawTranslation;
 
       var x = toDouble(translation.get("x"));
       var y = toDouble(translation.get("y"));
       var z = toDouble(translation.get("z"));
 
       if (x != null && y != null) {
-        if (z != null) {
-          return new double[]{x, y, z};
-        }
-        return new double[]{x, y};
+        return z != null ? new double[]{x, y, z} : new double[]{x, y};
       }
+    }
+    // Fall back to flat layout (from struct decoder: Pose2dDecoder/Pose3dDecoder)
+    var x = toDouble(pose.get("x"));
+    var y = toDouble(pose.get("y"));
+    var z = toDouble(pose.get("z"));
+    if (x != null && y != null) {
+      return z != null ? new double[]{x, y, z} : new double[]{x, y};
     }
     return null;
   }
@@ -205,12 +215,54 @@ public final class FrcDomainTools {
                     }
                     pendingAutoStart = false;
                   }
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", isAuto ? "AUTO_START" : "TELEOP_START");
-                  event.addProperty("category", "match_phase");
-                  event.addProperty("source", autoSource);
-                  events.add(event);
+                  if (isAuto) {
+                    var event = new JsonObject();
+                    event.addProperty("timestamp", tv.timestamp());
+                    event.addProperty("type", "AUTO_START");
+                    event.addProperty("category", "match_phase");
+                    event.addProperty("source", autoSource);
+                    events.add(event);
+                  } else {
+                    // Auto flag cleared — defer TELEOP_START until next Enabled=true,
+                    // matching get_match_phases behavior (FMS disabled gap between auto/teleop)
+                    if (enabledValuesForTimeline != null) {
+                      boolean emitted = false;
+                      // Start scan from the auto-end timestamp rather than the beginning
+                      // to avoid matching enable events from earlier auto/teleop cycles.
+                      int startIdx = findFirstIndexAtOrAfter(enabledValuesForTimeline, tv.timestamp());
+                      for (int idx = startIdx; idx < enabledValuesForTimeline.size(); idx++) {
+                        var ev = enabledValuesForTimeline.get(idx);
+                        if (ev.value() instanceof Boolean en && en) {
+                          var teleopEvent = new JsonObject();
+                          teleopEvent.addProperty("timestamp", ev.timestamp());
+                          teleopEvent.addProperty("type", "TELEOP_START");
+                          teleopEvent.addProperty("category", "match_phase");
+                          teleopEvent.addProperty("source", autoSource);
+                          events.add(teleopEvent);
+                          emitted = true;
+                          break;
+                        }
+                      }
+                      // Fallback: if no enabled transition found (practice mode / no FMS),
+                      // emit at the auto-end timestamp
+                      if (!emitted) {
+                        var teleopEvent = new JsonObject();
+                        teleopEvent.addProperty("timestamp", tv.timestamp());
+                        teleopEvent.addProperty("type", "TELEOP_START");
+                        teleopEvent.addProperty("category", "match_phase");
+                        teleopEvent.addProperty("source", autoSource);
+                        events.add(teleopEvent);
+                      }
+                    } else {
+                      // No enabled data available — emit immediately as fallback
+                      var teleopEvent = new JsonObject();
+                      teleopEvent.addProperty("timestamp", tv.timestamp());
+                      teleopEvent.addProperty("type", "TELEOP_START");
+                      teleopEvent.addProperty("category", "match_phase");
+                      teleopEvent.addProperty("source", autoSource);
+                      events.add(teleopEvent);
+                    }
+                  }
                   lastState = isAuto;
                 }
               }
@@ -301,6 +353,22 @@ public final class FrcDomainTools {
 
       return builder.build();
     }
+
+    /**
+     * Binary search for the first index in a sorted timestamped list at or after the given time.
+     */
+    private static int findFirstIndexAtOrAfter(List<TimestampedValue> values, double time) {
+      int lo = 0, hi = values.size();
+      while (lo < hi) {
+        int mid = (lo + hi) >>> 1;
+        if (values.get(mid).timestamp() < time) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return lo;
+    }
   }
 
   static class AnalyzeVisionTool extends LogRequiringTool {
@@ -347,7 +415,7 @@ public final class FrcDomainTools {
         var lower = lowerEntryNames.get(entryName);
         boolean matchesPrefix = visionPrefix == null || entryName.startsWith(visionPrefix);
 
-        if (matchesPrefix && (lower.contains("hastarget") || lower.contains("tv") || lower.contains("targetvalid"))) {
+        if (matchesPrefix && (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv") || lower.contains("targetvalid"))) {
           targetValidEntries.add(entryName);
         }
 
@@ -437,14 +505,17 @@ public final class FrcDomainTools {
         builder.addProperty("jump_count", poseJumps.size());
       }
 
-      // Data quality from first target entry
+      // Data quality from first target entry, or first pose entry as fallback
+      List<TimestampedValue> qualitySource = null;
       if (!targetValidEntries.isEmpty()) {
-        var tvVals = log.values().get(targetValidEntries.get(0));
-        if (tvVals != null) {
-          var quality = DataQuality.fromValues(tvVals);
-          builder.addDataQuality(quality)
-              .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
-        }
+        qualitySource = log.values().get(targetValidEntries.get(0));
+      } else if (!poseEntries.isEmpty()) {
+        qualitySource = log.values().get(poseEntries.get(0));
+      }
+      if (qualitySource != null) {
+        var quality = DataQuality.fromValues(qualitySource);
+        builder.addDataQuality(quality)
+            .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
       }
 
       return builder.build();
@@ -588,14 +659,14 @@ public final class FrcDomainTools {
 
         if (spVal == null || measVal == null) continue;
 
-        // Detect setpoint change (more than 5% change)
-        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.abs(lastSetpoint * 0.05)) {
+        // Detect setpoint change (more than 5% change, with absolute minimum threshold)
+        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.max(Math.abs(lastSetpoint * 0.05), 0.01)) {
           lastSetpoint = spVal;
           setpointChangeTime = spTv.timestamp();
         }
 
-        // Check if settled (within 5% of setpoint)
-        if (setpointChangeTime != null && Math.abs(measVal - spVal) <= Math.abs(spVal * 0.05)) {
+        // Check if settled (within 5% of setpoint, with absolute minimum threshold)
+        if (setpointChangeTime != null && Math.abs(measVal - spVal) <= Math.max(Math.abs(spVal * 0.05), 0.01)) {
           double settlingTime = spTv.timestamp() - setpointChangeTime;
           if (settlingTime > 0.01) { // Ignore very quick "settling" (likely noise)
             settlingTimes.add(settlingTime);
@@ -639,7 +710,7 @@ public final class FrcDomainTools {
         if (spVal == null || measVal == null) continue;
 
         // Detect setpoint change
-        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.abs(lastSetpoint * 0.05)) {
+        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.max(Math.abs(lastSetpoint * 0.05), 0.01)) {
           if (maxOvershoot != null && lastSetpoint != null && Math.abs(lastSetpoint) > 0.001) {
             overshoots.add(maxOvershoot * 100.0 / Math.abs(lastSetpoint));
           }
@@ -1040,11 +1111,13 @@ public final class FrcDomainTools {
 
         // Handle incomplete final cycle
         if (cycleIncomplete && cycleStartTime != null) {
-          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - cycleStartTime;
+          double lastTimestamp = vals.get(vals.size() - 1).timestamp();
+          double boundedEnd = endTime != null ? Math.min(lastTimestamp, endTime) : lastTimestamp;
+          double incompleteDuration = boundedEnd - cycleStartTime;
 
           var cycleDetail = new JsonObject();
           cycleDetail.addProperty("start_time", cycleStartTime);
-          cycleDetail.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          cycleDetail.addProperty("end_time", boundedEnd);
           cycleDetail.addProperty("duration", incompleteDuration);
           cycleDetail.addProperty("incomplete", true);
           cycleDetails.add(cycleDetail);
@@ -1083,11 +1156,13 @@ public final class FrcDomainTools {
 
         // Handle incomplete cycle (started but never ended)
         if (inCycle && cycleStartTime != null) {
-          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - cycleStartTime;
+          double lastTimestamp = vals.get(vals.size() - 1).timestamp();
+          double boundedEnd = endTime != null ? Math.min(lastTimestamp, endTime) : lastTimestamp;
+          double incompleteDuration = boundedEnd - cycleStartTime;
 
           var cycleDetail = new JsonObject();
           cycleDetail.addProperty("start_time", cycleStartTime);
-          cycleDetail.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          cycleDetail.addProperty("end_time", boundedEnd);
           cycleDetail.addProperty("duration", incompleteDuration);
           cycleDetail.addProperty("incomplete", true);
           cycleDetails.add(cycleDetail);
@@ -1284,8 +1359,10 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs."
-          + GUIDANCE_UNIVERSAL;
+      return "Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. "
+          + "Small drift may be acceptable due to non-deterministic inputs (vision, joystick timing). "
+          + "Focus on large or systematic divergences rather than isolated small differences."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
@@ -1429,14 +1506,21 @@ public final class FrcDomainTools {
         return errorResult("No numeric loop time data found");
       }
 
+      boolean detectedMicroseconds = false;
       if (needsAutoDetect) {
         // Use median to determine unit (robust to outliers)
         var sortedRaw = rawSamples.stream().mapToDouble(RawSample::value).sorted().toArray();
-        double median = sortedRaw[sortedRaw.length / 2];
+        double median = sortedRaw.length % 2 == 1
+            ? sortedRaw[sortedRaw.length / 2]
+            : (sortedRaw[sortedRaw.length / 2 - 1] + sortedRaw[sortedRaw.length / 2]) / 2.0;
         // Values in 0.001–1.0 range look like seconds (typical: 0.02 for 20ms loop)
         // Below 0.001 could be fractional ms or corrupt data — leave as-is
         if (median >= 0.001 && median < 1.0) {
           conversionFactor = 1000.0; // Values look like seconds, convert to ms
+        } else if (median > 500) {
+          // Values > 500 look like microseconds (typical: 20000 for 20ms loop)
+          conversionFactor = 1.0 / 1000.0; // Convert microseconds to ms
+          detectedMicroseconds = true;
         }
       }
 
@@ -1479,6 +1563,9 @@ public final class FrcDomainTools {
       result.addProperty("health_score", healthScore);
       result.add("statistics", statistics);
       result.add("violations", GSON.toJsonTree(violations.stream().limit(50).toList()));
+      if (detectedMicroseconds) {
+        result.addProperty("units_note", "Raw values were detected as microseconds and converted to milliseconds");
+      }
 
       // Add data quality and analysis directives
       var quality = DataQuality.fromValues(values);
@@ -1499,7 +1586,8 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices. "
-          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries."
+          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries. "
+          + "See also: can_health for string-based error detection."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -1774,6 +1862,7 @@ public final class FrcDomainTools {
       var voltageData = voltageValues.stream()
           .map(tv -> toDouble(tv.value()))
           .filter(v -> v != null)
+          .filter(Double::isFinite)
           .toList();
 
       if (voltageData.isEmpty()) {
@@ -1912,7 +2001,7 @@ public final class FrcDomainTools {
       var recoveryTimes = new ArrayList<Double>();
 
       // Scan all voltage samples (no arbitrary limit — supports any logging rate)
-      for (int i = 1; i < voltageValues.size() - 10; i++) {
+      for (int i = 1; i < voltageValues.size() - 1; i++) {
         var voltageBefore = toDouble(voltageValues.get(i - 1).value());
         var voltageAtLoad = toDouble(voltageValues.get(i).value());
 
@@ -1988,8 +2077,8 @@ public final class FrcDomainTools {
       // Brownout penalty: 20 pts each — indicates serious power delivery issues
       score -= brownoutEvents * 20;
 
-      // Warning-level sag penalty: 5 pts each — cumulative indicator
-      score -= sagEvents * 5;
+      // Warning-level sag penalty: 5 pts each — exclude brownouts to avoid double-counting
+      score -= Math.max(0, sagEvents - brownoutEvents) * 5;
 
       // Deduct for poor recovery time (high internal resistance)
       if (recoveryAnalysis != null) {
@@ -2055,6 +2144,73 @@ public final class FrcDomainTools {
       }
 
       return recommendations;
+    }
+  }
+
+  /**
+   * Provides year-specific FRC game information for contextual log analysis.
+   */
+  static class GetGameInfoTool extends ToolBase {
+    @Override
+    public String name() {
+      return "get_game_info";
+    }
+
+    @Override
+    public String description() {
+      return "Get year-specific FRC game information (match timing, scoring values, field geometry, "
+          + "game pieces, and analysis hints). Use this to understand the context of a log file: "
+          + "what the match phases are, what scoring actions look like, and what mechanisms to expect. "
+          + "Defaults to the current season if no year is specified.";
+    }
+
+    @Override
+    public JsonObject inputSchema() {
+      return new SchemaBuilder()
+          .addIntegerProperty("season", "FRC season year (e.g., 2026). Defaults to current year.", false, null)
+          .build();
+    }
+
+    @Override
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
+
+      int season = arguments.has("season") && !arguments.get("season").isJsonNull()
+          ? arguments.get("season").getAsInt()
+          : java.time.Year.now().getValue();
+
+      var game = kb.getGame(season);
+      if (game == null) {
+        var result = new JsonObject();
+        result.addProperty("success", false);
+        result.addProperty("error", "No game data available for season " + season);
+        var available = kb.availableSeasons();
+        if (available.length > 0) {
+          var arr = new JsonArray();
+          for (int s : available) arr.add(s);
+          result.add("available_seasons", arr);
+        }
+        return result;
+      }
+
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("season", game.season());
+      result.addProperty("game_name", game.gameName());
+      result.add("match_timing", game.raw().getAsJsonObject("match_timing"));
+      result.add("scoring", game.scoring());
+      result.add("field_geometry", game.raw().getAsJsonObject("field_geometry"));
+      result.add("game_pieces", game.gamePieces());
+      if (game.analysisHints() != null) {
+        result.add("analysis_hints", game.analysisHints());
+      }
+      if (game.raw().has("typical_mechanisms")) {
+        result.add("typical_mechanisms", game.raw().getAsJsonArray("typical_mechanisms"));
+      }
+      if (game.raw().has("hub_mechanics")) {
+        result.add("hub_mechanics", game.raw().getAsJsonObject("hub_mechanics"));
+      }
+      return result;
     }
   }
 }

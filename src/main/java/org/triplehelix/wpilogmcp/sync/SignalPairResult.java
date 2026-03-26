@@ -13,6 +13,7 @@ package org.triplehelix.wpilogmcp.sync;
  *        (add to revlog timestamps to get FPGA time)
  * @param correlation The Pearson correlation coefficient at the best offset (-1 to 1)
  * @param samplesUsed The number of samples used in the correlation
+ * @param warning Optional warning about the result quality (e.g., boundary peak), or null
  * @since 0.5.0
  */
 public record SignalPairResult(
@@ -20,7 +21,20 @@ public record SignalPairResult(
     String revlogSignal,
     long estimatedOffsetMicros,
     double correlation,
-    int samplesUsed) {
+    int samplesUsed,
+    String warning) {
+
+  /**
+   * Backward-compatible constructor without warning.
+   */
+  public SignalPairResult(
+      String wpilogEntry,
+      String revlogSignal,
+      long estimatedOffsetMicros,
+      double correlation,
+      int samplesUsed) {
+    this(wpilogEntry, revlogSignal, estimatedOffsetMicros, correlation, samplesUsed, null);
+  }
 
   /**
    * Gets the estimated offset in milliseconds.

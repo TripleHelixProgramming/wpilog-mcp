@@ -121,6 +121,25 @@ class LogSynchronizerTest {
   }
 
   @Test
+  void testSignalPairResultWarningNullForNormalPeak() {
+    // A normal successful sync with well-correlated signals should have
+    // null warnings on all signal pair results (no boundary peak issue).
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+
+    assertTrue(result.isSuccessful(), "Sync should succeed with matching signals");
+    assertFalse(result.signalPairs().isEmpty(), "Should have at least one signal pair");
+
+    for (SignalPairResult pair : result.signalPairs()) {
+      assertNull(pair.warning(),
+          "Normal successful sync should have null warning on signal pair '"
+              + pair.wpilogEntry() + "' <-> '" + pair.revlogSignal() + "'");
+    }
+  }
+
+  @Test
   void testSynchronizeConfidenceLevels() {
     // Test with highly correlated signals
     ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
@@ -474,7 +493,152 @@ class LogSynchronizerTest {
     assertEquals(r1.confidence(), r2.confidence(), 0.001);
   }
 
+  // ========== Drift estimation tests ==========
+
+  @Test
+  void testShortRecordingReturnsNoDrift() {
+    // Recording shorter than 15 minutes should not attempt drift estimation.
+    // 5 minutes of data at 50Hz = 15000 samples
+    int samples = 15000;
+    double duration = 5 * 60.0; // 5 minutes
+
+    ParsedLog wpilog = createWpilogWithSignalDuration("/drive/output", 0.0, samples, duration);
+    ParsedRevLog revlog = createRevlogWithSignalDuration("appliedOutput", 0.0, samples, duration);
+
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+
+    assertTrue(result.isSuccessful());
+    assertEquals(0.0, result.driftRateNanosPerSec(),
+        "Short recording (< 15 min) should have no drift estimate");
+  }
+
+  @Test
+  void testDriftEstimationWithKnownDrift() {
+    // Create a long recording (20 minutes) with known linear drift of 100ppm
+    // (100 microseconds per second = 100,000 ns/s).
+    // At 100ppm, over 20 minutes (1200s), total drift is 120ms.
+    int samples = 60000;
+    double duration = 20 * 60.0; // 20 minutes
+    double driftPpm = 100.0; // 100 microseconds per second
+
+    double wpiStart = 0.0;
+    double revStart = 5.0; // 5s base offset
+
+    Map<String, EntryInfo> entries = new HashMap<>();
+    entries.put("/drive/output", new EntryInfo(1, "/drive/output", "double", ""));
+
+    List<TimestampedValue> wpiVals = new ArrayList<>();
+    for (int i = 0; i < samples; i++) {
+      double t = wpiStart + i * (duration / samples);
+      wpiVals.add(new TimestampedValue(t, longChirpValue(i * (duration / samples))));
+    }
+
+    Map<String, List<TimestampedValue>> values = new HashMap<>();
+    values.put("/drive/output", wpiVals);
+    ParsedLog wpilog = new ParsedLog("/test.wpilog", entries, values,
+        wpiStart, wpiStart + duration);
+
+    // Revlog has same signal but with drift applied:
+    // revlog_time = wpilog_time - base_offset + drift * (wpilog_time - wpiStart)
+    // For each sample i: wpi_t = wpiStart + i * dt
+    //   rev_t = wpi_t - base_offset + drift_rate * wpi_t
+    // But we want the drift to be in the revlog clock, so:
+    //   The same physical moment has wpi_t in FPGA time and rev_t in revlog time.
+    //   offset = wpi_t - rev_t should change over time by driftPpm.
+    // Simplest: rev_t = wpi_t - base_offset - drift_rate * (wpi_t - wpiStart)
+    // where drift_rate = driftPpm * 1e-6
+    double baseOffset = wpiStart - revStart; // -5.0
+    double driftRate = driftPpm * 1e-6; // seconds per second
+
+    List<TimestampedValue> revVals = new ArrayList<>();
+    for (int i = 0; i < samples; i++) {
+      double wpiT = wpiStart + i * (duration / samples);
+      double revT = wpiT - baseOffset + driftRate * (wpiT - wpiStart);
+      revVals.add(new TimestampedValue(revT, longChirpValue(i * (duration / samples))));
+    }
+
+    Map<Integer, RevLogDevice> devices = new HashMap<>();
+    devices.put(1, new RevLogDevice(1, "SPARK MAX"));
+    Map<String, RevLogSignal> signals = new HashMap<>();
+    signals.put("SparkMax_1/appliedOutput",
+        new RevLogSignal("appliedOutput", "SparkMax_1", revVals, ""));
+    double revMin = revVals.get(0).timestamp();
+    double revMax = revVals.get(revVals.size() - 1).timestamp();
+    ParsedRevLog revlog = new ParsedRevLog("/test.revlog", "20260320_143052",
+        devices, signals, revMin, revMax, samples);
+
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+
+    assertTrue(result.isSuccessful(), "Sync with drift should succeed");
+    // If drift was detected, driftRateNanosPerSec should be non-zero
+    // The exact value depends on whether drift estimation finds sufficient data
+    // in each half. This test verifies the path executes without error.
+    // With 20 minutes of varied data, drift estimation should engage.
+    assertNotNull(result.explanation());
+  }
+
+  @Test
+  void testNegligibleDriftReturnsZero() {
+    // Create a long recording (20 minutes) with zero drift.
+    // Drift estimation should find negligible drift and return zero.
+    int samples = 60000;
+    double duration = 20 * 60.0;
+
+    ParsedLog wpilog = createWpilogWithSignalDuration("/drive/output", 0.0, samples, duration);
+    ParsedRevLog revlog = createRevlogWithSignalDuration("appliedOutput", 0.0, samples, duration);
+
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+
+    assertTrue(result.isSuccessful());
+    // With identical clocks (no drift), drift rate should be zero or negligible
+    assertTrue(Math.abs(result.driftRateNanosPerSec()) < 10.0,
+        "Negligible drift should produce near-zero drift rate, got: "
+            + result.driftRateNanosPerSec());
+  }
+
   // ========== Helper Methods ==========
+
+  /**
+   * Creates a wpilog with a chirp signal spanning a specified duration.
+   * Uses longChirpValue to avoid aliasing at the synchronizer's sample rate.
+   */
+  private ParsedLog createWpilogWithSignalDuration(String entryName, double startTime, int samples, double duration) {
+    Map<String, EntryInfo> entries = new HashMap<>();
+    entries.put(entryName, new EntryInfo(1, entryName, "double", ""));
+
+    List<TimestampedValue> vals = new ArrayList<>();
+    for (int i = 0; i < samples; i++) {
+      double t = startTime + i * (duration / samples);
+      vals.add(new TimestampedValue(t, longChirpValue(i * (duration / samples))));
+    }
+
+    Map<String, List<TimestampedValue>> values = new HashMap<>();
+    values.put(entryName, vals);
+    return new ParsedLog("/test.wpilog", entries, values, startTime, startTime + duration);
+  }
+
+  /**
+   * Creates a revlog with a chirp signal spanning a specified duration.
+   * Uses longChirpValue to avoid aliasing at the synchronizer's sample rate.
+   */
+  private ParsedRevLog createRevlogWithSignalDuration(String signalName, double startTime, int samples, double duration) {
+    Map<Integer, RevLogDevice> devices = new HashMap<>();
+    devices.put(1, new RevLogDevice(1, "SPARK MAX"));
+
+    List<TimestampedValue> vals = new ArrayList<>();
+    for (int i = 0; i < samples; i++) {
+      double t = startTime + i * (duration / samples);
+      vals.add(new TimestampedValue(t, longChirpValue(i * (duration / samples))));
+    }
+
+    Map<String, RevLogSignal> signals = new HashMap<>();
+    String deviceKey = "SparkMax_1";
+    signals.put(deviceKey + "/" + signalName,
+        new RevLogSignal(signalName, deviceKey, vals, ""));
+
+    return new ParsedRevLog("/test.revlog", "20260320_143052", devices, signals,
+        startTime, startTime + duration, samples);
+  }
 
   private ParsedLog createWpilogWithSignal(String entryName, double timeOffset, int samples) {
     Map<String, EntryInfo> entries = new HashMap<>();
@@ -536,9 +700,25 @@ class LogSynchronizerTest {
   /**
    * Generates a chirp signal value. The chirp has increasing frequency to create
    * a unique pattern that can only match at one time offset.
+   *
+   * <p>The instantaneous frequency is (1 + 0.5*t) Hz, so this must be used with
+   * signals short enough that the frequency stays below the Nyquist limit of
+   * the synchronizer's sample rate (50 Hz at 100 Hz sample rate). For signals
+   * longer than ~60s, use {@link #longChirpValue(double)} instead.
    */
   private double chirpValue(double t) {
     return Math.sin(t * 2 * Math.PI * (1 + t * 0.5)) + 0.5 * t;
+  }
+
+  /**
+   * Generates a chirp signal suitable for long-duration tests (minutes to hours).
+   * Uses a much lower chirp rate so instantaneous frequency stays well below the
+   * synchronizer's Nyquist limit (50 Hz at 100 Hz sampling) even for 20+ minute signals.
+   *
+   * <p>Instantaneous frequency: 0.5 + 0.001*t Hz. At t=1200s, freq=1.7 Hz.
+   */
+  private double longChirpValue(double t) {
+    return Math.sin(t * 2 * Math.PI * (0.5 + t * 0.001)) + 0.3 * Math.sin(t * 0.7);
   }
 
   private ParsedRevLog createRevlogWithSignal(String signalName, double timeOffset, int samples) {

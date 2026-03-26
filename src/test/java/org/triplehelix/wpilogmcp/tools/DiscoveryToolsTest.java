@@ -3,40 +3,19 @@ package org.triplehelix.wpilogmcp.tools;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
-import java.util.ArrayList;
-import java.util.List;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
-import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 
 /**
  * Tests for DiscoveryTools - tools that help LLM agents discover server capabilities.
  */
-class DiscoveryToolsTest {
+class DiscoveryToolsTest extends ToolTestBase {
 
-  private List<Tool> tools;
-
-  @BeforeEach
-  void setUp() {
-    tools = new ArrayList<>();
-    var capturingRegistry = new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        tools.add(tool);
-        super.registerTool(tool);
-      }
-    };
-    DiscoveryTools.registerAll(capturingRegistry);
-  }
-
-  private Tool findTool(String name) {
-    return tools.stream()
-        .filter(t -> t.name().equals(name))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("Tool not found: " + name));
+  @Override
+  protected void registerTools(ToolRegistry registry) {
+    DiscoveryTools.registerAll(registry);
   }
 
   @Nested
@@ -399,6 +378,36 @@ class DiscoveryToolsTest {
         }
       }
       assertTrue(foundCorrelate, "Should suggest time_correlate for correlation questions");
+    }
+  }
+
+  @Nested
+  @DisplayName("Tool catalog consistency")
+  class ToolCatalogConsistencyTests {
+
+    @Test
+    @DisplayName("total_tools matches count of tools listed in categories")
+    void testToolCountMatchesCatalogSize() throws Exception {
+      var tool = findTool("get_server_guide");
+      var result = tool.execute(new JsonObject());
+      var resultObj = result.getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+
+      // Get total_tools from overview
+      var overview = resultObj.getAsJsonObject("overview");
+      int totalTools = overview.get("total_tools").getAsInt();
+
+      // Count tools across all categories
+      var categories = resultObj.getAsJsonArray("categories");
+      int countedTools = 0;
+      for (var cat : categories) {
+        var category = cat.getAsJsonObject();
+        countedTools += category.getAsJsonArray("tools").size();
+      }
+
+      assertEquals(totalTools, countedTools,
+          "total_tools in overview (" + totalTools + ") should match the sum of tools across all categories (" + countedTools + ")");
     }
   }
 }
