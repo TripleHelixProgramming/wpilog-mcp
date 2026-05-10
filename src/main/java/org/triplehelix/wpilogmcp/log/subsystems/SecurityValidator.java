@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
 package org.triplehelix.wpilogmcp.log.subsystems;
 
 import java.io.IOException;

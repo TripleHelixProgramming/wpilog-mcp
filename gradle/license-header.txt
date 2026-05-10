@@ -1,0 +1,2 @@
+Copyright (c) ${year} Christopher Larrieu and Triple Helix Robotics
+SPDX-License-Identifier: MIT

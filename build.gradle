@@ -8,6 +8,7 @@ plugins {
     id 'application'
     id 'com.gradleup.shadow' version '8.3.5'
     id 'jacoco'
+    id 'com.github.hierynomus.license' version '0.16.1'
 }
 
 group = 'org.triplehelix'
@@ -16,6 +17,17 @@ version = '0.8.2'
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+}
+
+license {
+    header = file('gradle/license-header.txt')
+    include '**/*.java'
+    exclude '**/Version.java'  // Generated file
+    ext.year = Calendar.getInstance().get(Calendar.YEAR)
+    skipExistingHeaders = true
+    mapping {
+        java = 'SLASHSTAR_STYLE'
+    }
 }
 
 // Generate Version.java from the Gradle project version — single source of truth.
