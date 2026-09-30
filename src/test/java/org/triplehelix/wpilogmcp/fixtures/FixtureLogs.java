@@ -1011,7 +1011,22 @@ public final class FixtureLogs {
    */
   public static Path writeRevlogPair(Path dir, String wpilogName, java.time.ZoneOffset zone,
       String clockEntry) throws IOException {
+    return writeRevlogPair(dir, wpilogName, zone, clockEntry, null);
+  }
+
+  /** The date an unset roboRIO clock reads (as in real logs) before the Driver Station sets it. */
+  public static final java.time.LocalDateTime UNSET_CLOCK =
+      java.time.LocalDateTime.of(2024, 12, 18, 14, 8, 5);
+
+  /**
+   * As {@link #writeRevlogPair(Path, String, java.time.ZoneOffset, String)}, with the wall clock
+   * reading {@link #UNSET_CLOCK} (UTC) plus elapsed time until FPGA {@code clockSetAt}, and true
+   * time after.
+   */
+  public static Path writeRevlogPair(Path dir, String wpilogName, java.time.ZoneOffset zone,
+      String clockEntry, Double clockSetAt) throws IOException {
     var path = dir.resolve(wpilogName);
+    long unset0 = UNSET_CLOCK.toInstant(java.time.ZoneOffset.UTC).toEpochMilli() * 1000L;
     double start = 10.0;
     double end = 70.0;
     long wall0 = REVLOG_PAIR_WALL.toInstant(java.time.ZoneOffset.UTC).toEpochMilli() * 1000L;
@@ -1020,7 +1035,10 @@ public final class FixtureLogs {
       for (int i = 0; i < n; i++) {
         double t = loopTime(start, i);
         w.dbl("/Drive/FrontLeft/AppliedOutput", t, revlogPairOutput(t));
-        if (i % 50 == 0) w.i64(clockEntry, t, wall0 + Math.round((t - start) * 1e6));
+        if (i % 50 == 0) {
+          boolean unset = clockSetAt != null && t < clockSetAt;
+          w.i64(clockEntry, t, (unset ? unset0 : wall0) + Math.round((t - start) * 1e6));
+        }
       }
     }
     var revName = "REV_" + namedAt(REVLOG_PAIR_WALL.plusSeconds(5), zone).format(

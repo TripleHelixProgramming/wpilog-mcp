@@ -77,6 +77,37 @@ class WallClockZoneTest {
   }
 
   @Test
+  @DisplayName("a clock read before the Driver Station set it (a default date) is not used: "
+      + "the readings after its last jump are")
+  void unsetClockThenSet() {
+    // As a real log: 2024-12-18 14:08 (the roboRIO's unset clock) for 33 minutes from FPGA 7.8,
+    // then set to 2026-03-21 16:17:29 at FPGA 1988
+    long unset = LocalDateTime.of(2024, 12, 18, 14, 8, 5).toEpochSecond(ZoneOffset.UTC)
+        * 1_000_000L;
+    long set = LocalDateTime.of(2026, 3, 21, 16, 17, 29).toEpochSecond(ZoneOffset.UTC)
+        * 1_000_000L;
+    var values = new ArrayList<TimestampedValue>();
+    for (double t = 7.8; t < 1988; t += 10) {
+      values.add(new TimestampedValue(t, unset + Math.round((t - 7.8) * 1e6)));
+    }
+    for (double t = 1988; t <= 2305; t += 10) {
+      values.add(new TimestampedValue(t, set + Math.round((t - 1988) * 1e6)));
+    }
+    var log = new MockLogBuilder().setPath("/logs/akit_26-03-21_16-17-36_vache.wpilog")
+        .addEntry("/SystemStats/EpochTimeMicros", "int64", values).build();
+    var first = WallClock.first(log).orElseThrow();
+    assertEquals(1988.0, first.logTime(), 1e-9);
+    assertEquals(set, first.epochMicros());
+    assertEquals(32, WallClock.validReadings(log).size());
+    // The filename (named when the clock was set) agrees with the set clock: UTC
+    assertEquals(Optional.of(ZoneOffset.UTC), WallClock.filenameOffset(log));
+    // A clock never set has only its default-date readings: nothing jumps, all are "valid"
+    var never = new MockLogBuilder().setPath("/logs/x.wpilog")
+        .addEntry("/SystemStats/EpochTimeMicros", "int64", values.subList(0, 10)).build();
+    assertEquals(10, WallClock.validReadings(never).size());
+  }
+
+  @Test
   @DisplayName("no inference without both a filename time and a wall clock, or when they "
       + "do not describe the same moment: UTC, the roboRIO's default")
   void fallbacks() {

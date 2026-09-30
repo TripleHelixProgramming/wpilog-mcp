@@ -7,7 +7,9 @@ package org.triplehelix.wpilogmcp.log;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -70,29 +72,49 @@ public final class WallClock {
     return epochMicros > 1_420_070_400_000_000L;
   }
 
-  /** The first plausible wall-clock reading of the log, if it has a wall clock. */
+  /**
+   * A wall clock that moves this much more (or less) than FPGA time between two readings was
+   * set there: the Driver Station sets the roboRIO's clock when it connects.
+   */
+  static final double JUMP_SEC = 60.0;
+
+  /** The first valid wall-clock reading of the log (see {@link #validReadings}). */
   public static Optional<Reading> first(LogData log) {
-    return readings(log, false);
+    var valid = validReadings(log);
+    return valid.isEmpty() ? Optional.empty() : Optional.of(valid.get(0));
   }
 
-  /** The last plausible wall-clock reading of the log, if it has a wall clock. */
+  /** The last valid wall-clock reading of the log. */
   public static Optional<Reading> last(LogData log) {
-    return readings(log, true);
+    var valid = validReadings(log);
+    return valid.isEmpty() ? Optional.empty() : Optional.of(valid.get(valid.size() - 1));
   }
 
-  private static Optional<Reading> readings(LogData log, boolean last) {
+  /**
+   * The wall-clock readings of the clock as set: the plausible readings after its last jump.
+   * Before the Driver Station sets it, a roboRIO's clock reads 1970 or a fixed default date (a
+   * real log read 2024-12-18 for 33 minutes, then jumped to 2026-03-21): those readings, and REV
+   * log names from that time, place nothing in real time.
+   */
+  public static List<Reading> validReadings(LogData log) {
     var clock = entry(log);
-    if (clock.isEmpty()) return Optional.empty();
+    if (clock.isEmpty()) return List.of();
     var values = log.values().get(clock.get());
-    if (values == null) return Optional.empty();
-    Reading found = null;
+    if (values == null) return List.of();
+    var valid = new ArrayList<Reading>();
+    Reading previous = null;
     for (var tv : values) {
-      if (tv.value() instanceof Number num && plausible(num.longValue())) {
-        found = new Reading(tv.timestamp(), num.longValue());
-        if (!last) break;
+      if (!(tv.value() instanceof Number num) || !plausible(num.longValue())) continue;
+      var reading = new Reading(tv.timestamp(), num.longValue());
+      if (previous != null) {
+        double wallStep = (reading.epochMicros() - previous.epochMicros()) / 1e6;
+        double fpgaStep = reading.logTime() - previous.logTime();
+        if (Math.abs(wallStep - fpgaStep) > JUMP_SEC) valid.clear();
       }
+      valid.add(reading);
+      previous = reading;
     }
-    return Optional.ofNullable(found);
+    return valid;
   }
 
   /**

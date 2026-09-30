@@ -960,24 +960,17 @@ public class LogManager {
   private long[] estimateWallClockRange(LogData wpilog, java.time.ZoneOffset filenameZone) {
     long durationMillis = (long) (wpilog.duration() * 1000);
 
-    // Strategy 1: the wall-clock entry (WPILib systemTime, AdvantageKit EpochTimeMicros)
-    var clock = WallClock.entry(wpilog);
-    List<TimestampedValue> clockValues = clock.map(c -> wpilog.values().get(c)).orElse(List.of());
-    // The first plausible sample anchors the time range (before the roboRIO's clock is set, it
-    // reads near 1970)
-    for (var tv : clockValues) {
-      if (tv.value() instanceof Number num && WallClock.plausible(num.longValue())) {
-        long wallClockMicros = num.longValue();
-        double fpgaTime = tv.timestamp();
-        // Compute wall-clock time at log start and end
-        long startMillis = (wallClockMicros / 1000)
-            - (long) ((fpgaTime - wpilog.minTimestamp()) * 1000);
-        long endMillis = startMillis + durationMillis;
-        logger.debug("Wpilog wall-clock range from {}: {} to {}", clock.get(),
-            java.time.Instant.ofEpochMilli(startMillis),
-            java.time.Instant.ofEpochMilli(endMillis));
-        return new long[]{startMillis, endMillis, 0};
-      }
+    // Strategy 1: the wall-clock entry (WPILib systemTime, AdvantageKit EpochTimeMicros), read
+    // from its first reading after the clock was set (earlier readings are 1970 or a default
+    // date, and extrapolation back to the log's start uses FPGA time)
+    var anchor = WallClock.first(wpilog);
+    if (anchor.isPresent()) {
+      long startMillis = (anchor.get().epochMicros() / 1000)
+          - (long) ((anchor.get().logTime() - wpilog.minTimestamp()) * 1000);
+      long endMillis = startMillis + durationMillis;
+      logger.debug("Wpilog wall-clock range from {}: {} to {}", WallClock.entry(wpilog).orElse("?"),
+          java.time.Instant.ofEpochMilli(startMillis), java.time.Instant.ofEpochMilli(endMillis));
+      return new long[]{startMillis, endMillis, 0};
     }
 
     // Strategy 2: Parse filename timestamp

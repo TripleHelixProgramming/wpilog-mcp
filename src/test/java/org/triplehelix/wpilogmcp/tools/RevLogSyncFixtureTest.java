@@ -120,6 +120,30 @@ class RevLogSyncFixtureTest extends FixtureToolTestBase {
         revlog.toString());
   }
 
+  @Test
+  @DisplayName("a wall clock read before the Driver Station set it does not place the log: a "
+      + "REV log named by the unset clock is not matched, the one named by the set clock is")
+  void unsetClock(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+    // The clock reads the roboRIO's default date until FPGA 40 s, then true time (UTC)
+    var wpilog = FixtureLogs.writeRevlogPair(dir, "2026-unset_clock.wpilog",
+        java.time.ZoneOffset.UTC, "/SystemStats/EpochTimeMicros", 40.0);
+    // A REV log another boot named with the same unset clock, 5 s after the default time
+    var decoy = "REV_" + FixtureLogs.UNSET_CLOCK.plusSeconds(5).format(
+        java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".revlog";
+    FixtureLogs.writeRevlog(dir.resolve(decoy));
+    org.triplehelix.wpilogmcp.log.LogManager.getInstance().addAllowedDirectory(dir);
+
+    var wait = callPath("wait_for_sync", wpilog, "timeout_ms", 30_000);
+    assertTrue(wait.get("completed").getAsBoolean(), wait.toString());
+    var r = callPath("sync_status", wpilog);
+    assertEquals(1, r.get("revlog_count").getAsInt(), r.toString());
+    var revlog = r.getAsJsonArray("revlogs").get(0).getAsJsonObject();
+    assertFalse(revlog.get("path").getAsString().endsWith(decoy), revlog.toString());
+    assertEquals(FixtureLogs.REVLOG_PAIR_OFFSET_SEC,
+        revlog.getAsJsonObject("sync").get("offset_seconds").getAsDouble(), 0.02,
+        revlog.toString());
+  }
+
   static com.google.gson.JsonObject callPath(String tool, java.nio.file.Path path,
       Object... keyValues) throws Exception {
     var args = new com.google.gson.JsonObject();
