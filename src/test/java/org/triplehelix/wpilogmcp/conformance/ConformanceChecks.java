@@ -40,6 +40,8 @@ public final class ConformanceChecks {
     LIMITS,
     /** A list has exactly as many items as the requested limit but no {@code limits} entry. */
     UNREPORTED_TRUNCATION,
+    /** A successful result from a log-reading tool does not say what it used (rule R3). */
+    INPUTS,
     /** The call did not finish in time. */
     TIMEOUT;
 
@@ -55,8 +57,11 @@ public final class ConformanceChecks {
 
   static final Set<String> STATUSES = Set.of("ok", "partial", "not_applicable", "no_match", "error");
 
-  /** Runs the single-result checks. {@code limit} is the limit the call requested, or null. */
-  public static List<Check> check(JsonElement result, Integer limit) {
+  /**
+   * Runs the single-result checks. {@code limit} is the limit the call requested, or null;
+   * {@code readsLog} is whether the tool reads a log (and so must report its inputs).
+   */
+  public static List<Check> check(JsonElement result, Integer limit, boolean readsLog) {
     var failed = check(result);
     if (result == null || !result.isJsonObject()) return failed;
     var obj = result.getAsJsonObject();
@@ -65,7 +70,19 @@ public final class ConformanceChecks {
     if (limit != null && hasUnreportedTruncation(obj, limit)) {
       failed.add(Check.UNREPORTED_TRUNCATION);
     }
+    if (readsLog && succeeded(obj) && !hasInputs(obj)) failed.add(Check.INPUTS);
     return failed;
+  }
+
+  static boolean succeeded(JsonObject obj) {
+    var success = obj.get("success");
+    return success != null && success.isJsonPrimitive() && success.getAsBoolean();
+  }
+
+  /** An {@code inputs} object with at least one field. */
+  static boolean hasInputs(JsonObject obj) {
+    var inputs = obj.get("inputs");
+    return inputs != null && inputs.isJsonObject() && !inputs.getAsJsonObject().isEmpty();
   }
 
   static boolean statusConsistent(JsonObject obj) {
@@ -173,9 +190,10 @@ public final class ConformanceChecks {
   }
 
   /**
-   * True when a successful result's content keys carry no information. A tool that found nothing
-   * to analyze must say so with {@code status: no_match} or {@code not_applicable}, not with an
-   * empty success (with or without a warning).
+   * True when a successful result's content keys carry no information: nothing but nulls, zeros,
+   * {@code false}, blank strings, and empty lists and objects — "found nothing" dressed as a
+   * success. A tool that found nothing to analyze must say so with {@code status: no_match} or
+   * {@code not_applicable}, not with an empty success (with or without a warning).
    */
   static boolean isSilentEmpty(JsonObject obj) {
     for (var entry : obj.entrySet()) {
@@ -189,7 +207,9 @@ public final class ConformanceChecks {
     if (e == null || e.isJsonNull()) return false;
     if (e.isJsonPrimitive()) {
       var p = e.getAsJsonPrimitive();
-      return !p.isString() || !p.getAsString().isBlank();
+      if (p.isBoolean()) return p.getAsBoolean();
+      if (p.isNumber()) return p.getAsDouble() != 0.0;
+      return !p.getAsString().isBlank();
     }
     if (e.isJsonArray()) {
       JsonArray a = e.getAsJsonArray();

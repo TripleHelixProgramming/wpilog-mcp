@@ -10,6 +10,7 @@ import com.google.gson.JsonObject;
 import java.util.Comparator;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
@@ -571,7 +572,10 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List all currently cached log files and cache status.";
+      return "List the log files currently loaded in the server's cache (path, entry count, "
+          + "duration) and the cache status: how many are loaded and the JVM heap they share "
+          + "(logs are evicted when idle or when the heap runs short). Logs load on demand, so "
+          + "an empty list is normal.";
     }
 
     @Override
@@ -581,19 +585,30 @@ public final class CoreTools {
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      var paths = logManager.getLoadedLogPaths();
+      var loaded = logManager.listLoadedLogs().stream()
+          .sorted(Comparator.comparing(LogManager.LoadedLogInfo::path)).toList();
 
       var logsArray = new JsonArray();
-      for (var path : paths) {
+      for (var info : loaded) {
         var logObj = new JsonObject();
-        logObj.addProperty("path", path);
+        logObj.addProperty("path", info.path());
+        logObj.addProperty("entry_count", info.entryCount());
+        logObj.addProperty("duration_sec", info.duration());
         logsArray.add(logObj);
       }
 
+      var runtime = Runtime.getRuntime();
+      var cache = new JsonObject();
+      cache.addProperty("loaded_count", loaded.size());
+      cache.addProperty("heap_used_mb",
+          (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L));
+      cache.addProperty("heap_max_mb", runtime.maxMemory() / (1024L * 1024L));
+
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("loaded_count", paths.size());
+      result.addProperty("loaded_count", loaded.size());
       result.add("logs", logsArray);
+      result.add("cache", cache);
       return result;
     }
   }
@@ -681,6 +696,9 @@ public final class CoreTools {
         }
       }
       result.addProperty("log_path", log.path());
+      var inputs = new JsonObject();
+      inputs.addProperty("log", log.path());
+      result.add("inputs", inputs);
       result.addProperty("struct_type_count", types.size());
       result.add("struct_types", types);
       if (!warnings.isEmpty()) result.add("warnings", warnings);

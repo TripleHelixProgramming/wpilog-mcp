@@ -995,7 +995,7 @@ class StressTest {
       // The robustness rules hold on real logs too (see ToolConformanceTest)
       Integer limit = args.has("limit") ? args.get("limit").getAsInt() : null;
       for (var check : org.triplehelix.wpilogmcp.conformance.ConformanceChecks.check(result,
-          limit)) {
+          limit, args.has("path"))) {
         violations.add(tool.name() + " | " + check.label());
       }
       if (result.isJsonObject()) {

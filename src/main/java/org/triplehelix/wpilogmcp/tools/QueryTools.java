@@ -52,7 +52,9 @@ public final class QueryTools {
 
     @Override
     public String description() {
-      return "Search for entries matching various criteria.";
+      return "Search for entries by type (substring of the type, e.g. 'Pose3d' or 'double'), "
+          + "name (case-insensitive substring), and minimum sample count. Returns the matching "
+          + "entry names in name order, or no_match with the criteria when none match.";
     }
 
     @Override
@@ -80,15 +82,23 @@ public final class QueryTools {
         if (typeFilter != null && !entry.type().contains(typeFilter)) continue;
         if (nameContains != null && !entry.name().toLowerCase().contains(nameContains.toLowerCase())) continue;
 
-        var values = log.values().get(entry.name());
-        int sampleCount = values != null ? values.size() : 0;
-
-        if (minSamples != null && sampleCount < minSamples) continue;
+        if (minSamples != null && log.sampleCount(entry.name()) < minSamples) continue;
 
         matches.add(entry.name());
       }
 
       matches.sort(String::compareTo);
+      if (matches.isEmpty()) {
+        var criteria = new ArrayList<String>();
+        if (typeFilter != null) criteria.add("type containing '" + typeFilter + "'");
+        if (nameContains != null) criteria.add("name containing '" + nameContains + "'");
+        if (minSamples != null) criteria.add("at least " + minSamples + " samples");
+        return ResponseBuilder.noMatch(log.entries().isEmpty() ? "The log has no entries."
+                : "No entry matches " + (criteria.isEmpty() ? "the search"
+                    : String.join(" and ", criteria)) + ".")
+            .hint("list_entries shows every entry with its type; get_types groups them by type.")
+            .build();
+      }
 
       var matchesArray = new JsonArray();
       matches.forEach(matchesArray::add);
@@ -122,6 +132,10 @@ public final class QueryTools {
           .collect(Collectors.groupingBy(
               EntryInfo::type,
               Collectors.mapping(EntryInfo::name, Collectors.toList())));
+
+      if (byType.isEmpty()) {
+        return ResponseBuilder.noMatch("The log has no entries.").build();
+      }
 
       var typesArray = new JsonArray();
       byType.entrySet().stream()

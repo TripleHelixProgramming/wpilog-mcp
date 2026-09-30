@@ -206,7 +206,7 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("returns empty list when no revlogs synchronized")
+    @DisplayName("is not applicable when no revlogs are synchronized")
     void noRevLogs() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -217,10 +217,7 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0, resultObj.get("signal_count").getAsInt());
-      assertEquals(0, resultObj.get("revlog_count").getAsInt());
-      assertTrue(resultObj.has("warnings"));
+      assertNoRevlogs(resultObj);
     }
 
     @Test
@@ -523,7 +520,7 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("reports not synchronized when no revlogs")
+    @DisplayName("is not applicable when no revlogs")
     void reportsNotSynchronized() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -534,9 +531,7 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertFalse(resultObj.get("synchronized").getAsBoolean());
-      assertEquals(0, resultObj.get("revlog_count").getAsInt());
+      assertNoRevlogs(resultObj);
     }
 
     @Test
@@ -899,7 +894,7 @@ class RevLogToolsTest extends ToolTestBase {
   class WaitForSyncToolTests {
 
     @Test
-    @DisplayName("returns immediately when no sync in progress")
+    @DisplayName("returns immediately, not applicable, when the wpilog has no revlogs")
     void returnsImmediatelyWhenNoSync() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -907,12 +902,12 @@ class RevLogToolsTest extends ToolTestBase {
       var tool = findTool("wait_for_sync");
       var args = new JsonObject();
       args.addProperty("path", "/test.wpilog");
+      long start = System.nanoTime();
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("completed").getAsBoolean());
-      assertFalse(resultObj.get("was_in_progress").getAsBoolean());
+      assertTrue(System.nanoTime() - start < 5_000_000_000L);
+      assertNoRevlogs(resultObj);
     }
 
     @Test
@@ -966,8 +961,24 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
+      assertNoRevlogs(resultObj);
+    }
+
+    @Test
+    @DisplayName("caps timeout_ms and states the cap in its description")
+    void capsTimeout() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      putLogWithRevLog(wpilog, revlog, createGoodSyncResult());
+
+      var tool = findTool("wait_for_sync");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("timeout_ms", Integer.MAX_VALUE);
+      var resultObj = tool.execute(args).getAsJsonObject();
+
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("completed").getAsBoolean());
+      assertTrue(tool.description().contains(String.valueOf(RevLogTools.MAX_WAIT_MS)));
     }
   }
 
@@ -996,7 +1007,7 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("reports sync_in_progress=false when no revlogs")
+    @DisplayName("is not applicable (not in progress) when no revlogs")
     void reportsFalseWhenNoRevlogs() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -1007,8 +1018,7 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertFalse(resultObj.get("sync_in_progress").getAsBoolean());
+      assertNoRevlogs(resultObj);
     }
   }
 
@@ -1019,7 +1029,7 @@ class RevLogToolsTest extends ToolTestBase {
   class ListSignalsInProgressTests {
 
     @Test
-    @DisplayName("reports sync_in_progress=false and normal warning when no revlogs")
+    @DisplayName("gives the standard not-applicable reason when no revlogs")
     void normalWarningWhenNoRevlogs() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -1030,19 +1040,8 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertFalse(resultObj.get("sync_in_progress").getAsBoolean());
-      assertEquals(0, resultObj.get("signal_count").getAsInt());
-      // Should have the standard "no revlogs" warning
-      assertTrue(resultObj.has("warnings"));
-      var warnings = resultObj.getAsJsonArray("warnings");
-      boolean hasNoRevlogWarning = false;
-      for (int i = 0; i < warnings.size(); i++) {
-        if (warnings.get(i).getAsString().contains("No REV log files")) {
-          hasNoRevlogWarning = true;
-        }
-      }
-      assertTrue(hasNoRevlogWarning, "Should have 'no revlog files' warning");
+      assertNoRevlogs(resultObj);
+      assertTrue(resultObj.get("hint").getAsString().contains("recording time"));
     }
 
     @Test
@@ -1196,5 +1195,13 @@ class RevLogToolsTest extends ToolTestBase {
         throw new RuntimeException("Failed to set syncInProgress", e);
       }
     }
+  }
+
+  /** A revlog tool's result for a wpilog with no synchronized revlog. */
+  static void assertNoRevlogs(JsonObject resultObj) {
+    assertFalse(resultObj.get("success").getAsBoolean());
+    assertEquals("not_applicable", resultObj.get("status").getAsString());
+    assertTrue(resultObj.get("reason").getAsString().contains("No REV log"),
+        resultObj.get("reason").getAsString());
   }
 }

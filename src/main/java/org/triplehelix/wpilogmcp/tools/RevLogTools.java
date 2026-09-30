@@ -55,6 +55,25 @@ public final class RevLogTools {
     registry.registerTool(new WaitForSyncTool());
   }
 
+  /** Longest wait_for_sync accepts, so a call cannot hold a worker thread indefinitely. */
+  static final int MAX_WAIT_MS = 120_000;
+
+  /**
+   * The result for a wpilog with no synchronized revlog: not applicable, with the same reason from
+   * every revlog tool (or, while synchronization is still running, a pointer to wait_for_sync).
+   */
+  static ResponseBuilder noRevlogs(boolean syncInProgress) {
+    if (syncInProgress) {
+      return ResponseBuilder.notApplicable("REV log synchronization for this wpilog is still in "
+          + "progress, so no revlog signals are available yet.")
+          .hint("Call wait_for_sync, then try again.");
+    }
+    return ResponseBuilder.notApplicable("No REV log (.revlog) files were found for this wpilog.")
+        .hint("Revlogs are discovered in the configured log directory tree by recording time: a "
+            + ".revlog whose time range overlaps this wpilog's is synchronized with it when the "
+            + "wpilog is loaded.");
+  }
+
   /**
    * Lists all available signals from synchronized REV logs.
    */
@@ -95,20 +114,7 @@ public final class RevLogTools {
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        var response = success()
-            .addProperty("signal_count", 0)
-            .addData("signals", new JsonArray())
-            .addProperty("revlog_count", 0)
-            .addProperty("sync_in_progress", syncInProgress);
-        if (syncInProgress) {
-          response.addWarning("RevLog synchronization is in progress. "
-              + "Call list_revlog_signals again in a moment to see available signals.");
-        } else {
-          response.addWarning("No REV log files found for this wpilog. "
-              + "Revlog files are discovered automatically within the configured log directory tree. "
-              + "Ensure .revlog files are present and timestamps overlap.");
-        }
-        return response.build();
+        return noRevlogs(syncInProgress).build();
       }
 
       String deviceFilter = getOptString(arguments, "device_filter", null);
@@ -233,9 +239,7 @@ public final class RevLogTools {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        throw new IllegalArgumentException(
-            "No REV log files are synchronized. Place .revlog files in the same directory "
-                + "as the .wpilog file to enable auto-sync.");
+        return noRevlogs(logManager.isRevLogSyncInProgress(log.path())).build();
       }
 
       String signalKey = getRequiredString(arguments, "signal_key");
@@ -254,8 +258,9 @@ public final class RevLogTools {
       // Filter by time range
       List<TimestampedValue> filtered = filterTimeRange(values, startTime, endTime);
 
-      // Apply limit
+      // Apply limit (statistics, when requested, cover every sample in range)
       int totalCount = filtered.size();
+      var inRange = filtered;
       if (filtered.size() > limit) {
         filtered = filtered.subList(0, limit);
       }
@@ -281,13 +286,13 @@ public final class RevLogTools {
           .addProperty("signal_key", signalKey)
           .addProperty("sample_count", dataArray.size())
           .addProperty("total_samples", totalCount)
-          .addData("data", dataArray)
+          .addLimitedList("data", dataArray, totalCount, limit)
           .addProperty("sync_confidence", confidence.getLabel())
           .addMetadata("timing_accuracy_ms", accuracyEstimate);
 
       // Calculate statistics if requested
-      if (includeStats && !filtered.isEmpty()) {
-        double[] numericData = extractNumericData(filtered);
+      if (includeStats && !inRange.isEmpty()) {
+        double[] numericData = extractNumericData(inRange);
         if (numericData.length > 0) {
           double sum = 0, min = Double.MAX_VALUE, max = Double.NEGATIVE_INFINITY;
           for (double d : numericData) {
@@ -305,7 +310,7 @@ public final class RevLogTools {
           response.addData("statistics", stats);
 
           // Attach data quality and analysis directives when returning statistics
-          var quality = DataQuality.fromValues(filtered);
+          var quality = DataQuality.fromValues(inRange);
           var directives = AnalysisDirectives.fromQuality(quality)
               .addSingleMatchCaveat()
               .addGuidance("Revlog timestamps are synchronized via cross-correlation "
@@ -359,14 +364,8 @@ public final class RevLogTools {
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
-      if (syncLogs == null) {
-        return success()
-            .addProperty("synchronized", false)
-            .addProperty("revlog_count", 0)
-            .addProperty("sync_in_progress", syncInProgress)
-            .addWarning("No synchronization data available. "
-                + "Load a wpilog file with .revlog files in the same directory.")
-            .build();
+      if (syncLogs == null || syncLogs.revlogCount() == 0) {
+        return noRevlogs(syncInProgress).build();
       }
 
       boolean includeSignalPairs = arguments.has("include_signal_pairs")
@@ -443,8 +442,8 @@ public final class RevLogTools {
       if (overall == ConfidenceLevel.FAILED) {
         response.addWarning(
             "Synchronization failed. REV log timestamps cannot be reliably correlated "
-                + "with wpilog timestamps. Consider providing CAN ID hints or checking "
-                + "that both logs were recorded during the same time period.");
+                + "with wpilog timestamps. Check that both logs were recorded during the same "
+                + "time period; if you know the offset, set it with set_revlog_offset.");
       } else if (overall == ConfidenceLevel.LOW) {
         response.addWarning(
             "Low synchronization confidence. Timestamps may be inaccurate by several "
@@ -502,9 +501,7 @@ public final class RevLogTools {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        throw new IllegalArgumentException(
-            "No REV log files found for this wpilog. "
-                + "Ensure .revlog files are present in the log directory tree with overlapping timestamps.");
+        return noRevlogs(logManager.isRevLogSyncInProgress(log.path())).build();
       }
 
       double offsetMs = getOptDouble(arguments, "offset_ms", 0.0);
@@ -574,23 +571,29 @@ public final class RevLogTools {
     public String description() {
       return "Wait for background RevLog synchronization to complete. "
           + "Call this before querying revlog data if synchronization may still be in progress. "
-          + "Returns instantly if sync is already done or no revlogs are present.";
+          + "Returns instantly if sync is already done; returns not_applicable when this wpilog "
+          + "has no revlogs. timeout_ms is capped at " + MAX_WAIT_MS + ".";
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addIntegerProperty("timeout_ms",
-              "Maximum time to wait in milliseconds (default: 30000)", false, 30000)
+              "Maximum time to wait in milliseconds (default: 30000, max: " + MAX_WAIT_MS + ")",
+              false, 30000)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-      int timeoutMs = getOptInt(arguments, "timeout_ms", 30000);
+      int timeoutMs = Math.max(0, Math.min(MAX_WAIT_MS, getOptInt(arguments, "timeout_ms", 30000)));
 
       boolean wasInProgress = logManager.isRevLogSyncInProgress(log.path());
       boolean completed = logManager.waitForRevLogSync(log.path(), timeoutMs);
+      var syncLogs = logManager.getSynchronizedLogs(log.path());
+      if (completed && (syncLogs == null || syncLogs.revlogCount() == 0)) {
+        return noRevlogs(false).build();
+      }
 
       var response = success()
           .addProperty("completed", completed)
@@ -602,7 +605,6 @@ public final class RevLogTools {
       }
 
       // Include current sync status summary
-      var syncLogs = logManager.getSynchronizedLogs(log.path());
       if (syncLogs != null) {
         response.addProperty("revlog_count", syncLogs.revlogCount());
         response.addProperty("synchronized", syncLogs.hasAnySynchronized());

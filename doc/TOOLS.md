@@ -207,21 +207,23 @@ List WPILOG files in the configured log directory with user-friendly names, newe
 **Note:** Requires `-logdir` to be configured. Team numbers and friendly names are extracted from DriverStation metadata in the log file, or parsed from common filename patterns.
 
 ### `list_loaded_logs`
-List all currently cached log files.
+List the log files currently loaded in the server's cache, and the cache status. Logs load on demand, so an empty list is normal.
 
 **Parameters:** None
 
-**Returns:** List of loaded log paths and count
+**Returns:** `loaded_count`; `logs` (path order), each with `path`, `entry_count`, and `duration_sec`; and `cache` with `loaded_count`, `heap_used_mb`, and `heap_max_mb` (logs are evicted when idle or when the heap runs short)
 
 **Example Response:**
 ```json
 {
   "success": true,
+  "status": "ok",
   "loaded_count": 2,
   "logs": [
-    { "path": "/Users/team2363/logs/2026vadc_qm42.wpilog" },
-    { "path": "/Users/team2363/logs/2026vadc_qm68.wpilog" }
-  ]
+    { "path": "/Users/team2363/logs/2026vadc_qm42.wpilog", "entry_count": 412, "duration_sec": 163.2 },
+    { "path": "/Users/team2363/logs/2026vadc_qm68.wpilog", "entry_count": 409, "duration_sec": 158.9 }
+  ],
+  "cache": { "loaded_count": 2, "heap_used_mb": 612, "heap_max_mb": 4096 }
 }
 ```
 
@@ -403,7 +405,7 @@ Get system health status including JVM memory usage, loaded log count, disk cach
 Search and filter log data. Find specific entries, types, and events.
 
 ### `search_entries`
-Search for entries matching criteria.
+Search for entries by type, name, and sample count. Returns `no_match`, naming the criteria, when no entry matches.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -419,7 +421,7 @@ Get all data types used in the log file.
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** Types with entry counts and entry names
+**Returns:** Types with entry counts and entry names (`no_match` for a log with no entries)
 
 ### `find_condition`
 Find when a numeric or boolean entry satisfies a condition — or several entries at once — and for how long. Useful for questions like "When did battery voltage drop below 11V, and for how long?" or "When was the robot disabled and stationary?"
@@ -1652,7 +1654,7 @@ Analyze every autonomous period in the log: when it started and ended, which rou
 Analyze game piece handling cycle times with flexible cycle detection modes, data quality warnings, and comprehensive analysis. Enhanced with configurable cycle definitions, time filtering, case-insensitive matching, and incomplete cycle detection.
 
 **Cycle Detection Modes:**
-- **start_to_start**: Measures from one occurrence of `cycle_start_state` to the next (default). Useful for regular repeating patterns.
+- **start_to_start**: Measures from one change into `cycle_start_state` to the next (default). Useful for regular repeating patterns. The state entry is read as a state: a value repeated every loop (as periodic logging writes) is one state, not a new cycle per sample.
 - **start_to_end**: Measures from `cycle_start_state` to `cycle_end_state`. More semantically correct for workflows with distinct start and end states.
 
 **Parameters:**
@@ -1682,13 +1684,14 @@ Analyze game piece handling cycle times with flexible cycle detection modes, dat
   - `end_time`: Cycle end timestamp
   - `duration`: Cycle duration in seconds
   - `incomplete`: Boolean flag indicating if cycle wasn't completed
-- `cycles_truncated`: true if more cycles exist than returned (optional)
-- `total_cycles`: Total cycle count if truncated (optional)
+- `limits.cycles`, `limits.dead_time_periods`: `{total, returned, limit}` for the two lists
 - `dead_time`: Statistics if `idle_state` provided:
   - `total_sec`: Total dead time
   - `period_count`: Number of dead time periods
   - `avg_duration_sec`: Average dead time duration
 - `dead_time_periods`: Array of dead time period details (limited by `limit` parameter)
+
+Returns `no_match`, listing the states seen (up to 10), when `cycle_start_state` never occurs.
 
 **Data Quality Warnings:**
 The tool automatically detects and warns about potential data quality issues:
@@ -1968,7 +1971,7 @@ This step can fail if: the recording device's wall clock was significantly wrong
 Both logs record overlapping physical quantities — for example, the robot code logs motor output duty cycle to the wpilog, and the SPARK MAX independently records its applied output in the revlog. These are the same physical signal observed through different clocks.
 
 The algorithm:
-1. **Signal matching**: Identifies candidate pairs (e.g., `/drive/frontLeft/output` ↔ `SparkMax_1/appliedOutput`) using naming heuristics and optional CAN ID hints
+1. **Signal matching**: Identifies candidate pairs (e.g., `/drive/frontLeft/output` ↔ `SparkMax_1/appliedOutput`) using naming heuristics
 2. **Resampling**: Both signals are resampled to a uniform 100 Hz rate using linear interpolation. For long recordings, a **high-variance window search** selects the most active portion of the signal (important when logs start with minutes of the robot disabled)
 3. **Cross-correlation**: For each candidate pair, the [Pearson correlation coefficient](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient) is computed at every integer sample lag within a ±60-second search window centered on the coarse estimate. Pearson correlation is invariant to signal scaling and DC offset, making it robust when comparing duty cycle against voltage or velocity
 4. **Sub-sample refinement**: Parabolic interpolation on the correlation peak achieves sub-millisecond accuracy from 100 Hz data
@@ -2012,6 +2015,8 @@ List all available signals from synchronized REV log files. Shows signal names, 
 - `signal_filter` (optional): Filter signals by signal name substring (e.g., "velocity")
 
 **Returns:** List of available signals with sync status and metadata
+
+**No revlog:** when no `.revlog` was found for the wpilog, the result is `status: not_applicable` with the same `reason` from every revlog tool (while synchronization is still running, the reason says so and the `hint` points to `wait_for_sync`).
 
 **Example Response:**
 ```json
@@ -2076,7 +2081,9 @@ Get data from a REV log signal with timestamps converted to FPGA time. Similar t
 - `limit` (optional): Maximum samples to return (default: 1000)
 - `include_stats` (optional): Include basic statistics (min, max, mean)
 
-**Returns:** Timestamped data array with optional statistics
+**Returns:** Timestamped data array (`limits.data` gives the total in range when `limit` cuts it) with optional statistics over every sample in range
+
+**No revlog:** when no `.revlog` was found for the wpilog, the result is `status: not_applicable` with the same `reason` from every revlog tool (while synchronization is still running, the reason says so and the `hint` points to `wait_for_sync`).
 
 **Example Response:**
 ```json
@@ -2117,6 +2124,8 @@ Get detailed synchronization status for all synchronized REV log files. Shows co
 - `include_signal_pairs` (optional): Include details about which signal pairs were used for correlation
 
 **Returns:** Detailed sync status with confidence assessment and offset information
+
+**No revlog:** when no `.revlog` was found for the wpilog, the result is `status: not_applicable` with the same `reason` from every revlog tool (while synchronization is still running, the reason says so and the `hint` points to `wait_for_sync`).
 
 **Example Response:**
 ```json
@@ -2172,9 +2181,8 @@ Get detailed synchronization status for all synchronized REV log files. Shows co
 **Troubleshooting Low Confidence:**
 1. Ensure wpilog and revlog were recorded during the same time period
 2. Check that matching signals exist (e.g., motor outputs logged in both)
-3. Try providing CAN ID hints to improve signal matching
-4. If sync fails, verify motor controllers were connected and reporting data
-5. Use `set_revlog_offset` to manually provide a known offset if automatic sync fails
+3. If sync fails, verify motor controllers were connected and reporting data
+4. Use `set_revlog_offset` to manually provide a known offset if automatic sync fails
 
 **Example Workflow:**
 ```
@@ -2193,6 +2201,8 @@ Manually set the synchronization offset for a REV log file, overriding automatic
 - `can_bus` (optional): CAN bus name to apply offset to (e.g., "rio"). If omitted, applies to the first/only revlog
 
 **Returns:** Confirmation with previous and new offset details
+
+**No revlog:** when no `.revlog` was found for the wpilog, the result is `status: not_applicable` with the same `reason` from every revlog tool (while synchronization is still running, the reason says so and the `hint` points to `wait_for_sync`).
 
 **Example Response:**
 ```json
@@ -2214,11 +2224,11 @@ Manually set the synchronization offset for a REV log file, overriding automatic
 - The recording started with the robot disabled for a long period and correlation was poor
 
 ### `wait_for_sync`
-Wait for background RevLog synchronization to complete. RevLog synchronization runs asynchronously after a log is first loaded, so revlog data may not be immediately available. Call this tool if you need revlog data right away. Returns instantly if sync is already done or no revlogs are present.
+Wait for background RevLog synchronization to complete. RevLog synchronization runs asynchronously after a log is first loaded, so revlog data may not be immediately available. Call this tool if you need revlog data right away. Returns instantly if sync is already done; returns `not_applicable` when the wpilog has no revlogs.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `timeout_ms` (optional): Maximum time to wait in milliseconds (default: 30000)
+- `timeout_ms` (optional): Maximum time to wait in milliseconds (default: 30000, capped at 120000)
 
 **Returns:** Completion status and revlog count
 

@@ -1539,7 +1539,11 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze game piece handling cycle times with configurable cycle detection modes "
           + "(start-to-start or start-to-end), dead time tracking, and data quality warnings. "
-          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection."
+          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection. "
+          + "The state entry is read as a state: a cycle starts when it changes to "
+          + "cycle_start_state (required in the default start_to_start mode), so a state repeated "
+          + "every loop is one state, not a new cycle per sample. Returns no_match, with the "
+          + "states seen, when cycle_start_state never occurs."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -1599,13 +1603,19 @@ public final class FrcDomainTools {
       if (cycleMode.equals("start_to_start")) {
         Double cycleStartTime = null;
         boolean cycleIncomplete = false;
+        String lastState = null;
 
         for (TimestampedValue tv : vals) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
           String currentState = tv.value().toString();
+          // A cycle starts on a change into the start state, so an entry that repeats its value
+          // every loop is not read as a new cycle per sample
+          boolean entering = statesEqual(currentState, cycleStartState, caseSensitive)
+              && !statesEqual(lastState, cycleStartState, caseSensitive);
+          lastState = currentState;
 
-          if (statesEqual(currentState, cycleStartState, caseSensitive)) {
+          if (entering) {
             if (cycleStartTime != null) {
               // Complete previous cycle
               double cycleTime = tv.timestamp() - cycleStartTime;
@@ -1683,6 +1693,19 @@ public final class FrcDomainTools {
           cycleDetail.addProperty("incomplete", true);
           cycleDetails.add(cycleDetail);
         }
+      }
+
+      if (cycleDetails.isEmpty()) {
+        var seen = vals.stream().filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime))
+            .map(tv -> tv.value().toString()).distinct().limit(10).toList();
+        return ResponseBuilder.noMatch("'" + cycleStartState + "' never occurs in " + stateEntry
+                + (startTime != null || endTime != null ? " within the time range" : "")
+                + ", so no cycle starts.")
+            .hint(seen.isEmpty() ? "The entry has no samples in the time range."
+                : "States seen (up to 10): " + String.join(", ", seen)
+                    + (caseSensitive ? ". Matching is case-sensitive (case_sensitive: false "
+                        + "relaxes it)." : "."))
+            .build();
       }
 
       // Detect idle/dead time
@@ -1768,12 +1791,9 @@ public final class FrcDomainTools {
 
       // Add cycle details (includes both complete and incomplete cycles)
       if (!cycleDetails.isEmpty()) {
-        result.add("cycles", GSON.toJsonTree(cycleDetails.stream().limit(limit).toList()));
-
-        if (cycleDetails.size() > limit) {
-          result.addProperty("cycles_truncated", true);
-          result.addProperty("total_cycles", cycleDetails.size());
-        }
+        ResultContract.addLimitedList(result, "cycles",
+            GSON.toJsonTree(cycleDetails.stream().limit(limit).toList()).getAsJsonArray(),
+            cycleDetails.size(), limit);
       }
 
       // Add dead time analysis
@@ -1788,12 +1808,9 @@ public final class FrcDomainTools {
         result.add("dead_time", deadTimeStats);
 
         // Apply configurable limit
-        result.add("dead_time_periods", GSON.toJsonTree(deadTimePeriods.stream().limit(limit).toList()));
-
-        if (deadTimePeriods.size() > limit) {
-          result.addProperty("dead_time_periods_truncated", true);
-          result.addProperty("total_dead_time_periods", deadTimePeriods.size());
-        }
+        ResultContract.addLimitedList(result, "dead_time_periods",
+            GSON.toJsonTree(deadTimePeriods.stream().limit(limit).toList()).getAsJsonArray(),
+            deadTimePeriods.size(), limit);
       }
 
       // Add data quality and analysis directives

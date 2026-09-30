@@ -686,7 +686,8 @@ class HttpStressTest {
       var result = toolCall(sessionId, toolName, args);
       boolean success = result.has("success") && result.get("success").getAsBoolean();
       Integer limit = args.has("limit") ? args.get("limit").getAsInt() : null;
-      var failed = org.triplehelix.wpilogmcp.conformance.ConformanceChecks.check(result, limit);
+      var failed = org.triplehelix.wpilogmcp.conformance.ConformanceChecks.check(result, limit,
+          args.has("path"));
       System.out.printf("  [%s] %-25s %s%s%n", category, toolName, success ? "OK" : "no data",
           failed.isEmpty() ? "" : " CONFORMANCE: " + failed);
       assertTrue(failed.isEmpty(), toolName + " violates " + failed + ": " + result);

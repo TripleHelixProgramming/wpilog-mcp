@@ -58,10 +58,89 @@ final class AccessTrackingLogData implements LogData {
 
       @Override
       public Set<Entry<String, List<TimestampedValue>>> entrySet() {
-        read.addAll(delegate.values().keySet());
-        return delegate.values().entrySet();
+        // An entry counts as read when its values are, not when a tool iterates past it
+        var entries = delegate.values().entrySet();
+        return new java.util.AbstractSet<>() {
+          @Override
+          public java.util.Iterator<Entry<String, List<TimestampedValue>>> iterator() {
+            var it = entries.iterator();
+            return new java.util.Iterator<>() {
+              @Override
+              public boolean hasNext() {
+                return it.hasNext();
+              }
+
+              @Override
+              public Entry<String, List<TimestampedValue>> next() {
+                return new TrackedEntry(it.next());
+              }
+            };
+          }
+
+          @Override
+          public int size() {
+            return entries.size();
+          }
+        };
       }
     };
+  }
+
+  /** A map entry that records its key as read when its value is taken. */
+  private final class TrackedEntry implements Map.Entry<String, List<TimestampedValue>> {
+    private final Map.Entry<String, List<TimestampedValue>> entry;
+
+    TrackedEntry(Map.Entry<String, List<TimestampedValue>> entry) {
+      this.entry = entry;
+    }
+
+    @Override
+    public String getKey() {
+      return entry.getKey();
+    }
+
+    @Override
+    public List<TimestampedValue> getValue() {
+      read.add(entry.getKey());
+      return entry.getValue();
+    }
+
+    @Override
+    public List<TimestampedValue> setValue(List<TimestampedValue> value) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof Map.Entry<?, ?> e && getKey().equals(e.getKey())
+          && java.util.Objects.equals(getValue(), e.getValue());
+    }
+
+    @Override
+    public int hashCode() {
+      return getKey().hashCode() ^ java.util.Objects.hashCode(getValue());
+    }
+  }
+
+  /** Most entry names {@link #recordInputs} lists before giving only the total. */
+  static final int MAX_LISTED_INPUTS = 10;
+
+  /**
+   * Gives a result that does not say what it used an {@code inputs} block: the log, and the
+   * entries whose values the tool read (name order, at most {@value #MAX_LISTED_INPUTS}, with the
+   * total). Tools that record their inputs by role keep their own block.
+   */
+  void recordInputs(JsonObject result) {
+    if (result.has("inputs")) return;
+    var inputs = new JsonObject();
+    inputs.addProperty("log", delegate.path());
+    if (!read.isEmpty()) {
+      var names = new JsonArray();
+      new TreeSet<>(read).stream().limit(MAX_LISTED_INPUTS).forEach(names::add);
+      inputs.add("entries_read", names);
+      if (read.size() > MAX_LISTED_INPUTS) inputs.addProperty("entries_read_total", read.size());
+    }
+    result.add("inputs", inputs);
   }
 
   /** The log being tracked. */

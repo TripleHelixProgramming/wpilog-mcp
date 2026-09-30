@@ -1213,6 +1213,12 @@ public final class RobotAnalysisTools {
         result.add("skipped", skipped);
       }
       result.addProperty("entry", name);
+      var inputs = new JsonObject();
+      var inputLogs = new JsonArray();
+      logs.keySet().forEach(inputLogs::add);
+      inputs.add("logs", inputLogs);
+      inputs.addProperty("entry", name);
+      result.add("inputs", inputs);
       result.addProperty("logs_compared", logs.size());
       result.add("comparisons", comparisons);
       if (found.size() == 2) {

@@ -161,6 +161,29 @@ final class ToolArguments {
         }
         return variants;
       }
+      case "profile_mechanism" -> {
+        // mechanism_name is optional in the schema but the tool needs it (or role entries), so
+        // pass one: the elevator where there is one, else the drive
+        var args = base.deepCopy();
+        args.addProperty("mechanism_name",
+            log.entries().keySet().stream().anyMatch(n -> n.contains("Elevator"))
+                ? "Elevator" : "Drive");
+        variants.add(new Variant("mechanism", args));
+        return variants;
+      }
+      case "analyze_cycles" -> {
+        // cycle_start_state is optional in the schema but needed in the default mode: use the
+        // state entry's second distinct value (the first is usually the idle state)
+        var stateEntry = pick(log, Kind.STRING, n -> n.endsWith("/Command"), 0)
+            .or(() -> pick(log, Kind.STRING));
+        var args = base.deepCopy();
+        args.addProperty("state_entry", stateEntry.orElse("/Missing/Command"));
+        stateEntry.flatMap(e -> log.values().get(e).stream()
+                .map(v -> String.valueOf(v.value())).distinct().skip(1).findFirst())
+            .ifPresent(state -> args.addProperty("cycle_start_state", state));
+        variants.add(new Variant(stateEntry.isPresent() ? "state" : "missing", args));
+        return withLimitVariant(tool, variants);
+      }
       default -> {
         // one variant, below
       }
@@ -196,12 +219,6 @@ final class ToolArguments {
           args.addProperty(param, other.path().toString());
         }
         case "name" -> args.addProperty(param, pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
-        case "mechanism_name" -> args.addProperty(param,
-            log.entries().keySet().stream().anyMatch(n -> n.contains("Elevator"))
-                ? "Elevator" : "Drive");
-        case "state_entry" -> args.addProperty(param,
-            pick(log, Kind.STRING, n -> n.endsWith("/Command"), 0)
-                .or(() -> pick(log, Kind.STRING)).orElse("/Missing/Command"));
         case "velocity_entry" -> args.addProperty(param,
             pick(log, Kind.NUMERIC, n -> n.contains("Velocity"), 0)
                 .or(() -> pick(log, Kind.NUMERIC)).orElse("/Missing/Velocity"));

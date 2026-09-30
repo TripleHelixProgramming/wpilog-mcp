@@ -32,6 +32,7 @@ import org.triplehelix.wpilogmcp.conformance.ConformanceChecks.Check;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs.Fixture;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
+import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
@@ -63,6 +64,7 @@ class ToolConformanceTest {
   static List<Tool> tools;
   static Path exportDir;
   static Path savedExportDir;
+  static Path savedLogDir;
   static ExecutorService executor;
 
   @BeforeAll
@@ -76,6 +78,9 @@ class ToolConformanceTest {
     Files.createDirectories(exportDir);
     savedExportDir = ExportTools.getExportDirectory();
     ExportTools.setExportDirectory(exportDir.toString());
+    // list_available_logs lists the fixture directory
+    savedLogDir = LogDirectory.getInstance().getLogDirectory();
+    LogDirectory.getInstance().setLogDirectory(dir.toString());
 
     var captured = new ArrayList<Tool>();
     WpilogTools.registerAll(new ToolRegistry() {
@@ -98,6 +103,7 @@ class ToolConformanceTest {
   static void tearDown() {
     executor.shutdownNow();
     ExportTools.setExportDirectory(savedExportDir.toString());
+    LogDirectory.getInstance().setLogDirectory(savedLogDir == null ? null : savedLogDir.toString());
     LogManager.getInstance().unloadAllLogs();
   }
 
@@ -139,17 +145,16 @@ class ToolConformanceTest {
           }
         }
         var variants = ToolArguments.variants(tool, fixture, log, fixtures, exportDir);
-        for (int i = 0; i < variants.size(); i++) {
-          var variant = variants.get(i);
+        for (var variant : variants) {
           var call = evaluate(tool, fixture.id(), variant);
           calls.add(call);
-          if (i == 0 && call.result() != null) {
-            // Determinism: same call with the entries iterating in reverse order. The view wraps
-            // its own LazyParsedLog because the cache closes whatever log it replaces; the path
-            // is unloaded afterwards so the next call reloads a fresh log.
-            var inner = new LazyParsedLog(path, new DataLogReader(path),
-                256L * 1024 * 1024);
-            logManager.testPutLog(path, new PermutedLogData(inner));
+          if (call.result() == null) continue;
+          // Determinism: the same call with the entries iterating in other orders. Each view
+          // wraps its own LazyParsedLog because the cache closes whatever log it replaces; the
+          // path is unloaded afterwards so the next call reloads a fresh log.
+          for (long order : PermutedLogData.ORDERS) {
+            var inner = new LazyParsedLog(path, new DataLogReader(path), 256L * 1024 * 1024);
+            logManager.testPutLog(path, new PermutedLogData(inner, order));
             try {
               assertInstanceOf(PermutedLogData.class, logManager.getOrLoad(path));
               var permuted = run(tool, variant.args());
@@ -158,6 +163,7 @@ class ToolConformanceTest {
               if (a == null || !a.equals(b)) {
                 calls.add(new Call(tool.name(), fixture.id(), variant.label(), permuted,
                     List.of(Check.NONDETERMINISTIC)));
+                break;
               }
             } finally {
               logManager.unloadLog(path);
@@ -227,7 +233,7 @@ class ToolConformanceTest {
     var result = run(tool, variant.args());
     Integer limit = variant.args().has("limit") ? variant.args().get("limit").getAsInt() : null;
     List<Check> failed = result == null ? List.of(Check.TIMEOUT)
-        : ConformanceChecks.check(result, limit);
+        : ConformanceChecks.check(result, limit, ToolArguments.takesPath(tool));
     return new Call(tool.name(), fixtureId, variant.label(), result, failed);
   }
 

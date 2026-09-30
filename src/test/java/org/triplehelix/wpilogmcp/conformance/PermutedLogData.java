@@ -20,8 +20,8 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 
 /**
- * A view of a log whose entries iterate in the reverse of their natural order, with every entry
- * keeping its id, name, type, metadata, and values.
+ * A view of a log whose entries iterate in a different order from their natural one (reversed,
+ * or shuffled by a seed), with every entry keeping its id, name, type, metadata, and values.
  *
  * <p>A tool whose result depends on map iteration order (a {@code findFirst} over
  * {@code log.entries()}) gives a different answer on this view. Entry ids are unchanged, so a
@@ -29,14 +29,25 @@ import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
  */
 final class PermutedLogData implements LogData {
 
+  /** The orders the conformance test checks: reversed, then two seeded shuffles. */
+  static final List<Long> ORDERS = List.of(0L, 1L, 2L);
+
   private final LogData delegate;
   private final Map<String, EntryInfo> entries;
   private final Map<String, List<TimestampedValue>> values;
 
-  PermutedLogData(LogData delegate) {
+  /**
+   * @param delegate The log
+   * @param order 0 to reverse the entries; any other value shuffles them with that seed
+   */
+  PermutedLogData(LogData delegate, long order) {
     this.delegate = delegate;
     var names = new ArrayList<>(delegate.entries().keySet());
-    Collections.reverse(names);
+    if (order == 0) {
+      Collections.reverse(names);
+    } else {
+      Collections.shuffle(names, new java.util.Random(order));
+    }
     var reordered = new LinkedHashMap<String, EntryInfo>();
     for (var name : names) reordered.put(name, delegate.entries().get(name));
     this.entries = Collections.unmodifiableMap(reordered);

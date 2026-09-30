@@ -949,7 +949,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var stateValues = new ArrayList<TimestampedValue>();
       stateValues.add(new TimestampedValue(0.0, "idle"));
       stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(1.5, "idle"));
       stateValues.add(new TimestampedValue(2.0, "Intake"));  // Different case
+      stateValues.add(new TimestampedValue(2.5, "idle"));
       stateValues.add(new TimestampedValue(3.0, "intAKE"));  // Different case
 
       var log = new MockLogBuilder()
@@ -982,9 +984,13 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       // Test data: Cycles at different times
       var stateValues = new ArrayList<TimestampedValue>();
       stateValues.add(new TimestampedValue(0.0, "INTAKE"));  // Before start_time
+      stateValues.add(new TimestampedValue(2.0, "IDLE"));
       stateValues.add(new TimestampedValue(5.0, "INTAKE"));  // Before start_time
+      stateValues.add(new TimestampedValue(7.0, "IDLE"));
       stateValues.add(new TimestampedValue(10.0, "INTAKE")); // In range
+      stateValues.add(new TimestampedValue(12.0, "IDLE"));
       stateValues.add(new TimestampedValue(15.0, "INTAKE")); // In range
+      stateValues.add(new TimestampedValue(17.0, "IDLE"));
       stateValues.add(new TimestampedValue(25.0, "INTAKE")); // After end_time
 
       var log = new MockLogBuilder()
@@ -1098,12 +1104,64 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a state repeated every loop is one state, not a cycle per sample")
+    void repeatedStateSamplesAreOneState() throws Exception {
+      // Periodic logging (e.g. StringLogEntry.append every loop) repeats the current state
+      var stateValues = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 300; i++) {
+        double t = i * 0.02;
+        String state = (int) (t / 2.0) % 2 == 0 ? "INTAKE" : "IDLE"; // 2 s intake, 2 s idle
+        stateValues.add(new TimestampedValue(t, state));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/periodic_state.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_start_state", "INTAKE");
+      var resultObj = findTool("analyze_cycles").execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      var cycleTimes = resultObj.getAsJsonObject("cycle_times");
+      assertEquals(1, cycleTimes.get("count").getAsInt()); // starts at 0 s and 4 s
+      assertEquals(4.0, cycleTimes.get("avg_sec").getAsDouble(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("returns no_match with the states seen when the start state never occurs")
+    void startStateNeverOccurs() throws Exception {
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "IDLE"));
+      stateValues.add(new TimestampedValue(1.0, "SCORING"));
+      var log = new MockLogBuilder()
+          .setPath("/test/no_start_state.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_start_state", "INTAKE");
+      var resultObj = findTool("analyze_cycles").execute(args).getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("hint").getAsString().contains("IDLE, SCORING"));
+    }
+
+    @Test
     @DisplayName("configurable output limit")
     void configurableOutputLimit() throws Exception {
       // Test data: Many cycles
       var stateValues = new ArrayList<TimestampedValue>();
       for (int i = 0; i < 20; i++) {
         stateValues.add(new TimestampedValue(i * 1.0, "INTAKE"));
+        stateValues.add(new TimestampedValue(i * 1.0 + 0.5, "IDLE"));
       }
 
       var log = new MockLogBuilder()
@@ -1130,8 +1188,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertEquals(5, cycles.size());
 
       // Should indicate truncation
-      assertTrue(resultObj.get("cycles_truncated").getAsBoolean());
-      assertTrue(resultObj.get("total_cycles").getAsInt() > 5);
+      var cycleLimits = resultObj.getAsJsonObject("limits").getAsJsonObject("cycles");
+      assertEquals(5, cycleLimits.get("returned").getAsInt());
+      assertEquals(20, cycleLimits.get("total").getAsInt()); // 19 complete + 1 incomplete
     }
 
     @Test
