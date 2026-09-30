@@ -631,12 +631,17 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Analyze battery and current distribution data. Reports battery voltage statistics "
-          + "(min/max/avg and samples below the brownout threshold, which comes from the log's "
-          + "BrownoutVoltage entry when logged, else 6.8V for roboRIO 1, with the basis stated), "
-          + "the roboRIO's own brownouts when its flag is logged (rio_brownouts: start and "
-          + "duration of each), and, for every amperage entry, the peak current by magnitude with its "
-          + "timestamp, signed min/max, average, and sample count, sorted by peak. Amperage entries are "
+      return "Analyze battery and current distribution data over a scope (default: enabled "
+          + "time when the log records it, so idle and boot time do not dilute averages). "
+          + "Reports battery voltage statistics (min with its time, max, avg, samples below the "
+          + "brownout threshold, threshold crossings with 0.2 V hysteresis and the seconds spent "
+          + "below; the threshold comes from the log's BrownoutVoltage entry when logged, else "
+          + "6.8V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only "
+          + "from the roboRIO's logged brownout flag, or from crossings when no flag is logged; "
+          + "MODERATE within 1 V; LOW otherwise), the roboRIO's own brownouts in scope when its "
+          + "flag is logged (rio_brownouts: start and duration of each), and, for every amperage "
+          + "entry, the peak current by magnitude with its timestamp, signed min/max, average, "
+          + "and sample count in scope, sorted by peak. Amperage entries are "
           + "named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib "
           + "PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. "
           + "Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. "
@@ -652,6 +657,7 @@ public final class RobotAnalysisTools {
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("power_prefix", "string", "Entry path prefix (e.g., '/PDP')", false)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION + " Default: 'enabled' when the log records enabled state, else 'all'.", false)
           .addProperty("voltage_entry", "string", "Battery voltage entry to use (default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery; other voltage entries are never guessed: when the log has only those, they are listed to confirm and pass here)", false)
           .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
           .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
@@ -674,73 +680,33 @@ public final class RobotAnalysisTools {
       var battery = SignalResolver.batteryVoltage(log, prefix,
           getOptString(arguments, "voltage_entry", null));
       var voltageEntry = battery.chosen();
-      voltageEntry.ifPresent(name -> {
-        var values = log.values().get(name);
-        var stats = values.stream()
-            .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
-            .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-            .summaryStatistics();
-        long belowThreshold = values.stream()
-            .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue())
-                && n.doubleValue() < threshold)
-            .count();
+      var timeline = MatchTimeline.of(log);
+      var scopeArg = getOptString(arguments, "scope", null);
+      if (scopeArg == null) scopeArg = timeline.hasEnabledData() ? "enabled" : "all";
+      var scope = TimeScope.resolve(log, timeline, scopeArg, null, null);
+      result.add("scope", scope.toJson());
+
+      // The roboRIO's own brownouts in scope, when its flag is logged
+      var flag = PowerFacts.flagEntry(log);
+      var flagged = flag.map(f -> PowerFacts.brownouts(log, f, null, null).stream()
+          .filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
+      flag.ifPresent(f -> result.add("rio_brownouts", PowerFacts.brownoutsJson(f, flagged)));
+
+      var voltageFacts = voltageEntry.flatMap(name ->
+          PowerFacts.voltage(log.values().get(name), scope, threshold));
+      voltageFacts.ifPresent(v -> {
         var vObj = new JsonObject();
-        vObj.addProperty("entry", name);
-        vObj.addProperty("min_voltage", stats.getMin());
-        vObj.addProperty("max_voltage", stats.getMax());
-        vObj.addProperty("avg_voltage", stats.getAverage());
-        vObj.addProperty("samples_below_threshold", belowThreshold);
+        vObj.addProperty("entry", voltageEntry.get());
+        v.addTo(vObj);
         brownoutThreshold.addTo(vObj);
-        vObj.addProperty("brownout_risk",
-            belowThreshold > 0 ? "HIGH" : (stats.getMin() < threshold + 1 ? "MODERATE" : "LOW"));
+        PowerFacts.risk(v, brownoutThreshold, flag.orElse(null), flagged).addTo(vObj);
         result.add("voltage_analysis", vObj);
       });
 
-      // The roboRIO's own brownouts, when its flag is logged
-      var flag = PowerFacts.flagEntry(log);
-      flag.ifPresent(f -> result.add("rio_brownouts",
-          PowerFacts.brownoutsJson(f, PowerFacts.brownouts(log, f, null, null))));
-
-      // Currents: every amperage entry in declaration order; arrays expanded per channel index.
-      var currentEntries = log.entries().entrySet().stream()
-          .filter(e -> prefix == null || e.getKey().startsWith(prefix))
-          .filter(e -> isCurrentEntryName(e.getKey()))
-          .sorted(Comparator.comparingInt(e -> e.getValue().id()))
-          .map(Map.Entry::getKey)
-          .toList();
-      var channels = new ArrayList<JsonObject>();
-      String firstScalarCurrentEntry = null;
-      for (var entryName : currentEntries) {
-        var values = log.values().get(entryName);
-        if (values == null || values.isEmpty()) continue;
-        var sample = values.stream().map(TimestampedValue::value)
-            .filter(v -> v instanceof Number || toDoubleArray(v) != null).findFirst().orElse(null);
-        if (sample instanceof Number) {
-          var acc = new CurrentAccumulator();
-          for (var tv : values) {
-            if (tv.value() instanceof Number n) acc.add(n.doubleValue(), tv.timestamp());
-          }
-          if (acc.count > 0) {
-            if (firstScalarCurrentEntry == null) firstScalarCurrentEntry = entryName;
-            channels.add(acc.toJson(entryName, null, null));
-          }
-        } else if (sample != null) {
-          var accumulators = new ArrayList<CurrentAccumulator>();
-          for (var tv : values) {
-            var arr = toDoubleArray(tv.value());
-            if (arr == null) continue;
-            while (accumulators.size() < arr.length) accumulators.add(new CurrentAccumulator());
-            for (int i = 0; i < arr.length; i++) accumulators.get(i).add(arr[i], tv.timestamp());
-          }
-          for (int i = 0; i < accumulators.size(); i++) {
-            var acc = accumulators.get(i);
-            if (acc.count > 0) channels.add(acc.toJson(entryName + "[" + i + "]", entryName, i));
-          }
-        }
-      }
-
-      channels.sort(Comparator.comparingDouble(
-          (JsonObject c) -> Math.abs(c.get("peak_current_A").getAsDouble())).reversed());
+      // Currents: every amperage entry, arrays expanded per channel index, sorted by peak
+      var channelResult = channelAnalysis(log, prefix, scope);
+      var channels = channelResult.channels();
+      String firstScalarCurrentEntry = channelResult.firstScalarEntry();
       result.addProperty("current_entries_analyzed", channels.size());
       if (!channels.isEmpty()) {
         var shown = channels.size() > channelLimit ? channels.subList(0, channelLimit) : channels;
@@ -764,8 +730,10 @@ public final class RobotAnalysisTools {
                 : "Use search_entries with pattern 'voltage' or 'current'.")
             .build();
       }
-      if (voltageEntry.isEmpty()) {
-        var reason = SignalResolver.unresolvedReason(battery, "voltage_entry");
+      if (voltageFacts.isEmpty()) {
+        var reason = voltageEntry.isEmpty()
+            ? SignalResolver.unresolvedReason(battery, "voltage_entry")
+            : "No finite samples of " + voltageEntry.get() + " in scope '" + scope.name() + "'.";
         result.add("skipped", skippedEntry("voltage_analysis", reason));
         warnings.add(reason);
       }
@@ -862,6 +830,60 @@ public final class RobotAnalysisTools {
         return out;
       }
       return null;
+    }
+
+    /** Per-channel current results sorted by peak magnitude, and the first scalar entry. */
+    record Channels(List<JsonObject> channels, String firstScalarEntry) {}
+
+    /**
+     * Current in every amperage entry (declaration order; arrays expanded per channel index)
+     * within the scope, sorted by peak magnitude: the channel_analysis of power_analysis, and the
+     * peak_currents of generate_report.
+     *
+     * @param prefix Only entries under this prefix, or null
+     */
+    static Channels channelAnalysis(LogData log, String prefix, TimeScope scope) {
+      var currentEntries = log.entries().entrySet().stream()
+          .filter(e -> prefix == null || e.getKey().startsWith(prefix))
+          .filter(e -> isCurrentEntryName(e.getKey()))
+          .sorted(Comparator.comparingInt(e -> e.getValue().id()))
+          .map(Map.Entry::getKey)
+          .toList();
+      var channels = new ArrayList<JsonObject>();
+      String firstScalarCurrentEntry = null;
+      for (var entryName : currentEntries) {
+        var values = log.values().get(entryName);
+        if (values == null || values.isEmpty()) continue;
+        var sample = values.stream().map(TimestampedValue::value)
+            .filter(v -> v instanceof Number || toDoubleArray(v) != null).findFirst().orElse(null);
+        if (sample instanceof Number) {
+          var acc = new CurrentAccumulator();
+          for (var tv : values) {
+            if (!scope.contains(tv.timestamp())) continue;
+            if (tv.value() instanceof Number n) acc.add(n.doubleValue(), tv.timestamp());
+          }
+          if (acc.count > 0) {
+            if (firstScalarCurrentEntry == null) firstScalarCurrentEntry = entryName;
+            channels.add(acc.toJson(entryName, null, null));
+          }
+        } else if (sample != null) {
+          var accumulators = new ArrayList<CurrentAccumulator>();
+          for (var tv : values) {
+            if (!scope.contains(tv.timestamp())) continue;
+            var arr = toDoubleArray(tv.value());
+            if (arr == null) continue;
+            while (accumulators.size() < arr.length) accumulators.add(new CurrentAccumulator());
+            for (int i = 0; i < arr.length; i++) accumulators.get(i).add(arr[i], tv.timestamp());
+          }
+          for (int i = 0; i < accumulators.size(); i++) {
+            var acc = accumulators.get(i);
+            if (acc.count > 0) channels.add(acc.toJson(entryName + "[" + i + "]", entryName, i));
+          }
+        }
+      }
+      channels.sort(Comparator.comparingDouble(
+          (JsonObject c) -> Math.abs(c.get("peak_current_A").getAsDouble())).reversed());
+      return new Channels(channels, firstScalarCurrentEntry);
     }
 
     /**

@@ -969,8 +969,9 @@ public final class FrcDomainTools {
       return "Profile one closed-loop mechanism from its numeric entries: following error "
           + "(measurement minus the setpoint in force, as RMSE, bias, and maximum), step response "
           + "for each setpoint step (settling time into a 5% band of the step, percent overshoot "
-          + "of the step), stall events (current above stall_current_threshold while |velocity| "
-          + "is below stall_velocity_threshold), and motor temperature (maximum and final). "
+          + "of the step), stall events (|current| above stall_current_threshold while |velocity| "
+          + "is below stall_velocity_threshold, each with its signed peak current by magnitude), and "
+          + "motor temperature (maximum and final). "
           + "Entries are found among names containing mechanism_name (case-insensitive substring "
           + "anywhere in the name) by role — setpoint (setpoint/goal/target/reference), "
           + "measurement (position/angle/height/...), velocity, current, temperature — and "
@@ -1282,13 +1283,14 @@ public final class FrcDomainTools {
         var cur = getValueAtTimeLinear(currents, velTv.timestamp());
         if (cur == null) continue;
         lastTime = velTv.timestamp();
-        boolean stalled = Math.abs(vel) < velocityThreshold && cur > currentThreshold;
+        // Current may be signed (a motor driven in reverse): a -40 A stall is a 40 A stall
+        boolean stalled = Math.abs(vel) < velocityThreshold && Math.abs(cur) > currentThreshold;
         if (stalled && !inStall) {
           inStall = true;
           stallStart = velTv.timestamp();
           stallMaxCurrent = cur;
         } else if (stalled) {
-          stallMaxCurrent = Math.max(stallMaxCurrent, cur);
+          if (Math.abs(cur) > Math.abs(stallMaxCurrent)) stallMaxCurrent = cur;
         } else if (inStall) {
           stallEvents.add(stall(stallStart, velTv.timestamp(), stallMaxCurrent, false));
           inStall = false;
@@ -2660,8 +2662,10 @@ public final class FrcDomainTools {
 
       int healthScore = calculateHealthScore(avgVoltage, nominalVoltage, minVoltage,
           brownoutCount, dips.size(), recoveryAnalysis);
-      String riskLevel = brownoutCount > 0 ? "CRITICAL"
-          : minVoltage < warningThreshold || healthScore < 30 ? "HIGH"
+      // CRITICAL only when the roboRIO's flag confirms it disabled outputs; crossings without a
+      // flag are HIGH (whether outputs were disabled is unknown)
+      String riskLevel = flag.isPresent() && brownoutCount > 0 ? "CRITICAL"
+          : brownoutCount > 0 || minVoltage < warningThreshold || healthScore < 30 ? "HIGH"
           : healthScore < 60 ? "MODERATE" : healthScore < 80 ? "LOW" : "MINIMAL";
 
       var response = success();
@@ -2698,7 +2702,9 @@ public final class FrcDomainTools {
       }
       response.addProperty("threshold_crossings", crossings.size());
       if (!crossings.isEmpty()) {
-        response.addData("brownout_details", GSON.toJsonTree(crossings.stream().limit(10).toList()));
+        response.addLimitedList("brownout_details",
+            GSON.toJsonTree(crossings.stream().limit(10).toList()).getAsJsonArray(),
+            crossings.size(), 10);
       }
       response.addProperty("warning_events", dips.size());
       if (recoveryAnalysis != null) response.addData("recovery_analysis", recoveryAnalysis);

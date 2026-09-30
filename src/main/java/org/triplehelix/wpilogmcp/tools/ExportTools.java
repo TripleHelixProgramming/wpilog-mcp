@@ -324,10 +324,11 @@ public final class ExportTools {
     public String description() {
       return "Generate a one-call summary of a log: duration and truncation; the DriverStation "
           + "timeline (enabled segments, enabled time, FMS matches, as in get_match_phases); "
-          + "battery voltage (min with time, max, average; entry chosen as power_analysis does, "
-          + "or voltage_entry), "
+          + "battery voltage over enabled time when the log records it (min with time, max, "
+          + "average, threshold crossings; entry chosen as power_analysis does, or "
+          + "voltage_entry) with brownout_risk and its basis as power_analysis gives them, "
           + "brownouts from the roboRIO flag when logged, and the brownout threshold with its "
-          + "basis; the three largest current peaks (power_analysis channel_analysis); error and "
+          + "basis; the three largest current peaks in the same scope (power_analysis channel_analysis, each channel of an array separately); error and "
           + "warning counts from console and message text (one classification per line, as in "
           + "get_ds_timeline and search_strings) with the most frequent messages; code metadata "
           + "(get_code_metadata); and the most common data types. Each section names its source "
@@ -384,46 +385,33 @@ public final class ExportTools {
           getOptString(arguments, "voltage_entry", null));
       var voltageEntry = batteryRole.chosen();
       var threshold = PowerFacts.threshold(log, null);
-      if (voltageEntry.isPresent()) {
-        var values = log.values().get(voltageEntry.get());
-        double min = Double.MAX_VALUE;
-        double max = -Double.MAX_VALUE;
-        double sum = 0;
-        double minTime = 0;
-        int n = 0;
-        for (var tv : values) {
-          if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
-          double v = num.doubleValue();
-          if (v < min) {
-            min = v;
-            minTime = tv.timestamp();
-          }
-          max = Math.max(max, v);
-          sum += v;
-          n++;
-        }
+      var scope = TimeScope.resolve(log, timeline, timeline.hasEnabledData() ? "enabled" : "all",
+          null, null);
+      var flag = PowerFacts.flagEntry(log);
+      var flagged = flag.map(f -> PowerFacts.brownouts(log, f, null, null).stream()
+          .filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
+      var voltageFacts = voltageEntry.flatMap(name ->
+          PowerFacts.voltage(log.values().get(name), scope, threshold.volts()));
+      if (voltageFacts.isPresent()) {
+        var v = voltageFacts.get();
         var battery = new JsonObject();
         battery.addProperty("entry", voltageEntry.get());
-        battery.addProperty("min_voltage", min);
-        battery.addProperty("min_voltage_time_sec", minTime);
-        battery.addProperty("max_voltage", max);
-        battery.addProperty("avg_voltage_whole_log", sum / n);
+        battery.add("scope", scope.toJson());
+        v.addTo(battery);
         threshold.addTo(battery);
-        var flag = PowerFacts.flagEntry(log);
-        if (flag.isPresent()) {
-          battery.add("rio_brownouts", PowerFacts.brownoutsJson(flag.get(),
-              PowerFacts.brownouts(log, flag.get(), null, null)));
-        }
-        battery.addProperty("brownout_risk", min < threshold.volts() ? "HIGH"
-            : (min < 9.0 ? "MODERATE" : "LOW"));
+        flag.ifPresent(f -> battery.add("rio_brownouts", PowerFacts.brownoutsJson(f, flagged)));
+        PowerFacts.risk(v, threshold, flag.orElse(null), flagged).addTo(battery);
         report.add("battery", battery);
+      } else if (voltageEntry.isPresent()) {
+        skipped.add(skippedSection("battery", "No finite samples of " + voltageEntry.get()
+            + " in scope '" + scope.name() + "'."));
       } else {
         skipped.add(skippedSection("battery",
             SignalResolver.unresolvedReason(batteryRole, "voltage_entry")));
       }
 
-      // Peak currents: the same amperage entries and ranking as power_analysis
-      var peaks = peakCurrents(log, 3);
+      // Peak currents: power_analysis's channel_analysis over the same scope
+      var peaks = peakCurrents(log, scope, 3);
       if (!peaks.isEmpty()) {
         report.add("peak_currents", peaks);
       } else {
@@ -550,48 +538,20 @@ public final class ExportTools {
       return o;
     }
 
-    /** The largest current peaks, from the same amperage entries power_analysis analyzes. */
-    static JsonArray peakCurrents(LogData log, int limit) {
-      var peaks = new java.util.ArrayList<JsonObject>();
-      for (var e : log.entries().values().stream()
-          .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .toList()) {
-        if (!RobotAnalysisTools.PowerAnalysisTool.isCurrentEntryName(e.name())) continue;
-        var values = log.values().get(e.name());
-        if (values == null) continue;
-        double best = 0;
-        double bestTime = 0;
-        String bestName = null;
-        for (var tv : values) {
-          if (tv.value() instanceof Number n && Double.isFinite(n.doubleValue())) {
-            if (bestName == null || Math.abs(n.doubleValue()) > Math.abs(best)) {
-              best = n.doubleValue();
-              bestTime = tv.timestamp();
-              bestName = e.name();
-            }
-          } else if (RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value()) != null) {
-            var arr = RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value());
-            for (int i = 0; i < arr.length; i++) {
-              if (Double.isFinite(arr[i]) && (bestName == null || Math.abs(arr[i]) > Math.abs(best))) {
-                best = arr[i];
-                bestTime = tv.timestamp();
-                bestName = e.name() + "[" + i + "]";
-              }
-            }
-          }
-        }
-        if (bestName != null) {
-          var o = new JsonObject();
-          o.addProperty("entry", bestName);
-          o.addProperty("peak_current_A", best);
-          o.addProperty("peak_current_time_sec", bestTime);
-          peaks.add(o);
-        }
-      }
-      peaks.sort(java.util.Comparator.comparingDouble(
-          (JsonObject o) -> -Math.abs(o.get("peak_current_A").getAsDouble())));
+    /**
+     * The largest current peaks: power_analysis's channel_analysis over the same scope (each
+     * channel of an array separately), with the fields power_analysis reports for them.
+     */
+    static JsonArray peakCurrents(LogData log, TimeScope scope, int limit) {
       var out = new JsonArray();
-      peaks.stream().limit(limit).forEach(out::add);
+      RobotAnalysisTools.PowerAnalysisTool.channelAnalysis(log, null, scope).channels().stream()
+          .limit(limit).forEach(c -> {
+            var o = new JsonObject();
+            o.addProperty("entry", c.get("entry").getAsString());
+            o.addProperty("peak_current_A", c.get("peak_current_A").getAsDouble());
+            o.addProperty("peak_current_time_sec", c.get("peak_current_time_sec").getAsDouble());
+            out.add(o);
+          });
       return out;
     }
   }

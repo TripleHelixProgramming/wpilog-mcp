@@ -926,10 +926,11 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 **Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries; `partial` with `skipped` when either the voltage or the current section cannot be produced.
 
 **Returns:**
-- `voltage_analysis`: `{entry, min_voltage, max_voltage, avg_voltage, samples_below_threshold, brownout_threshold, brownout_threshold_basis, brownout_threshold_entry (when logged), brownout_risk}` — statistics and the below-threshold count use finite samples only; absent when no usable voltage entry exists (a warning says why)
-- `rio_brownouts`: `{flag_entry, count, total_sec, events: [{start, end, duration_sec, open_at_log_end?}]}` when the brownout flag is logged
+- `scope`: the time scope analyzed (`scope` parameter; default `enabled` when the log records enabled state, else `all`), so idle and boot time do not dilute averages or peaks
+- `voltage_analysis`: `{entry, samples, min_voltage, min_voltage_time_sec, max_voltage, avg_voltage, samples_below_threshold, threshold_crossings, seconds_below_threshold, brownout_threshold, brownout_threshold_basis, brownout_threshold_entry (when logged), brownout_risk, brownout_risk_basis}` over the scope — finite samples only; a crossing starts below the threshold and ends when the voltage recovers 0.2 V above it; `brownout_risk` and `brownout_risk_basis` — one rule shared with `generate_report`: HIGH when the roboRIO's logged brownout flag was set in scope (outputs were disabled), or, when no flag is logged, when the voltage crossed below the threshold (unconfirmed); MODERATE when it crossed but the logged flag stayed false, or the minimum came within 1 V of the threshold; LOW otherwise. Absent when no battery voltage entry is found or none of its samples fall in scope (`skipped` says why)
+- `rio_brownouts`: `{flag_entry, count, total_sec, events: [{start, end, duration_sec, open_at_log_end?}]}` in scope, when the brownout flag is logged
 - `current_entries_analyzed`: number of current entries/channels found (always present; 0 when none)
-- `channel_analysis`: present when at least one current entry exists; sorted by `|peak_current_A|` descending: `{entry, peak_current_A, peak_current_time_sec, max_current_A, min_current_A, avg_current_A, sample_count}`. `peak_current_A` is the sample with the largest magnitude, signed (a −150 A stall on a direction-signed torque current is reported as −150); `max_current_A`/`min_current_A` are the signed extremes. Entries expanded from an array (`double[]`, `float[]`, `int64[]`) add `source_entry` and `channel` (the index) and are named `<entry>[<index>]`; ragged arrays yield per-channel sample counts. Non-finite samples are ignored.
+- `channel_analysis`: present when at least one current entry exists; sorted by `|peak_current_A|` descending, over the scope: `{entry, peak_current_A, peak_current_time_sec, max_current_A, min_current_A, avg_current_A, sample_count}`. `peak_current_A` is the sample with the largest magnitude, signed (a −150 A stall on a direction-signed torque current is reported as −150); `max_current_A`/`min_current_A` are the signed extremes. Entries expanded from an array (`double[]`, `float[]`, `int64[]`) add `source_entry` and `channel` (the index) and are named `<entry>[<index>]`; ragged arrays yield per-channel sample counts. Non-finite samples are ignored.
 - `warnings`: when no usable voltage entry exists (distinguishing "no voltage-named entry" from "voltage entries exist but none has finite scalar samples"), when no current entries are found, or when the list was truncated by `channel_limit`
 - `data_quality` / `server_analysis_directives`: computed from the voltage entry, or from the first scalar current entry (declaration order) when there is no voltage entry; absent for array-only logs
 
@@ -1393,7 +1394,8 @@ Generate a one-call summary of a log. Each section uses the same entry choice an
 **Report Sections:**
 - **basic_info**: Duration, timestamps, entry count, truncation status
 - **timeline**: Enabled segments, enabled time, FMS matches, and season (as `get_match_phases` derives them)
-- **battery**: The voltage entry `power_analysis` would choose; min voltage with its time, max, whole-log average; the brownout threshold with its basis; `rio_brownouts` when the roboRIO flag is logged; a `brownout_risk` heuristic
+- **battery**: The voltage entry `power_analysis` would choose, over enabled time when the log records it (`scope`): the same fields as `power_analysis`'s `voltage_analysis` (min with its time, max, average, samples below the threshold, crossings, seconds below), the brownout threshold with its basis, `rio_brownouts` in scope when the roboRIO flag is logged, and `brownout_risk` with its basis by the same rule
+- **peak_currents**: The three largest current peaks in the same scope, per channel — the top of `power_analysis`'s `channel_analysis`
 - **peak_currents**: The three largest current peaks (entry, signed peak, time), from the amperage entries `power_analysis` analyzes
 - **errors**: `total_errors` and `total_warnings` (samples classified by the same line rule as `get_ds_timeline` and `search_strings` — a multi-line console batch counts once, by its most severe line, and "default" is not a fault), `distinct_error_messages`, `top_messages` (the five most frequent, numbers normalized), and `samples` (the first five error lines with time and entry)
 - **code_info**: Git SHA, branch, dirty flag, Git date, build date, project name (the entries `get_code_metadata` reads)
@@ -1415,10 +1417,12 @@ Sections that cannot be produced are listed in `skipped` (status `partial`); an 
   "timeline": {"enabled_segments": 4, "enabled_time_sec": 1311.36, "matches": 0, "season": 2026, "source": "/DriverStation/Enabled"},
   "battery": {
     "entry": "/SystemStats/BatteryVoltage",
-    "min_voltage": 6.618, "min_voltage_time_sec": 655.45, "max_voltage": 12.9, "avg_voltage_whole_log": 12.02,
+    "scope": {"scope": "enabled", "...": "..."},
+    "samples": 51234, "min_voltage": 6.618, "min_voltage_time_sec": 655.45, "max_voltage": 12.9, "avg_voltage": 11.84,
+    "samples_below_threshold": 7, "threshold_crossings": 2, "seconds_below_threshold": 0.18,
     "brownout_threshold": 6.75, "brownout_threshold_basis": "logged", "brownout_threshold_entry": "/SystemStats/BrownoutVoltage",
     "rio_brownouts": {"flag_entry": "/SystemStats/BrownedOut", "count": 2, "total_sec": 0.181, "events": ["..."]},
-    "brownout_risk": "HIGH"
+    "brownout_risk": "HIGH", "brownout_risk_basis": "2 roboRIO brownout(s) in scope (/SystemStats/BrownedOut true: outputs were disabled)"
   },
   "peak_currents": [{"entry": "/SystemStats/BatteryCurrent", "peak_current_A": 262.0, "peak_current_time_sec": 655.44}, "..."],
   "errors": {
@@ -1903,7 +1907,7 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 | Slow recovery (> 0.5 s average) | excess × 20 |
 | Min voltage < 10V | deficit × 10 |
 
-**Risk Levels:** CRITICAL (a brownout occurred), HIGH (min voltage below `warning_threshold` or score < 30), MODERATE (score < 60), LOW (score < 80), MINIMAL.
+**Risk Levels:** CRITICAL (the roboRIO's logged brownout flag shows it disabled outputs), HIGH (crossings below the threshold with no flag logged — unconfirmed — or min voltage below `warning_threshold`, or score < 30), MODERATE (score < 60), LOW (score < 80), MINIMAL. `brownout_details` (threshold crossings) lists the first 10, with `limits.brownout_details`.
 
 **Status:** `no_match` when no battery voltage entry exists, or no voltage sample falls in the scope.
 

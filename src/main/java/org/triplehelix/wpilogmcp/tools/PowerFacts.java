@@ -142,4 +142,119 @@ final class PowerFacts {
   static String leaf(String name) {
     return name.substring(name.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
   }
+
+  /** Volts a crossing must recover above the threshold to end (noisy voltage is one crossing). */
+  static final double HYSTERESIS = 0.2;
+
+  /** An interval the battery voltage spent below the threshold (with hysteresis). */
+  record Crossing(double start, double end, double minVolts) {
+    double duration() {
+      return end - start;
+    }
+  }
+
+  /**
+   * Battery voltage over a scope: sample count, minimum (and when), maximum, mean, samples below
+   * the threshold, and crossings below it (each ending when the voltage recovers above the
+   * threshold plus {@value #HYSTERESIS} V, or at the scope's last sample).
+   */
+  record VoltageFacts(int samples, double min, double minTime, double max, double mean,
+      long samplesBelow, List<Crossing> crossings) {
+
+    double secondsBelow() {
+      return crossings.stream().mapToDouble(Crossing::duration).sum();
+    }
+
+    void addTo(JsonObject o) {
+      o.addProperty("samples", samples);
+      o.addProperty("min_voltage", min);
+      o.addProperty("min_voltage_time_sec", minTime);
+      o.addProperty("max_voltage", max);
+      o.addProperty("avg_voltage", mean);
+      o.addProperty("samples_below_threshold", samplesBelow);
+      o.addProperty("threshold_crossings", crossings.size());
+      o.addProperty("seconds_below_threshold", secondsBelow());
+    }
+  }
+
+  /** Voltage facts for the finite samples of {@code values} inside {@code scope}, or empty. */
+  static Optional<VoltageFacts> voltage(List<org.triplehelix.wpilogmcp.log.TimestampedValue> values,
+      TimeScope scope, double threshold) {
+    int n = 0;
+    double min = Double.MAX_VALUE;
+    double minTime = 0;
+    double max = -Double.MAX_VALUE;
+    double sum = 0;
+    long below = 0;
+    var crossings = new ArrayList<Crossing>();
+    Double openedAt = null;
+    double openMin = Double.MAX_VALUE;
+    double lastTime = 0;
+    for (var tv : values) {
+      if (!scope.contains(tv.timestamp())) continue;
+      if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
+      double v = num.doubleValue();
+      double t = tv.timestamp();
+      n++;
+      sum += v;
+      if (v < min) {
+        min = v;
+        minTime = t;
+      }
+      max = Math.max(max, v);
+      if (v < threshold) below++;
+      if (openedAt == null && v < threshold) {
+        openedAt = t;
+        openMin = v;
+      } else if (openedAt != null) {
+        openMin = Math.min(openMin, v);
+        if (v >= threshold + HYSTERESIS) {
+          crossings.add(new Crossing(openedAt, t, openMin));
+          openedAt = null;
+        }
+      }
+      lastTime = t;
+    }
+    if (n == 0) return Optional.empty();
+    if (openedAt != null) crossings.add(new Crossing(openedAt, lastTime, openMin));
+    return Optional.of(new VoltageFacts(n, min, minTime, max, sum / n, below, crossings));
+  }
+
+  /** A brownout risk level and the evidence it rests on. */
+  record Risk(String level, String basis) {
+    void addTo(JsonObject o) {
+      o.addProperty("brownout_risk", level);
+      o.addProperty("brownout_risk_basis", basis);
+    }
+  }
+
+  /**
+   * The brownout risk over a scope, one rule for every power tool. Only the roboRIO's logged
+   * flag confirms a brownout (outputs disabled): with it, HIGH means the flag was set in scope.
+   * Without it, voltage below the threshold is HIGH but unconfirmed. Otherwise MODERATE when the
+   * minimum came within 1 V of the threshold, else LOW.
+   *
+   * @param flagEntry The brownout flag entry, or null when none is logged
+   * @param flagged Flag brownouts inside the scope
+   */
+  static Risk risk(VoltageFacts v, Threshold threshold, String flagEntry, List<Brownout> flagged) {
+    double t = threshold.volts();
+    if (flagEntry != null && !flagged.isEmpty()) {
+      return new Risk("HIGH", flagged.size() + " roboRIO brownout(s) in scope (" + flagEntry
+          + " true: outputs were disabled)");
+    }
+    if (v.crossings().size() > 0) {
+      return new Risk(flagEntry != null ? "MODERATE" : "HIGH", String.format(
+          "%d crossing(s) below %.2f V, %.3f s in all; %s", v.crossings().size(), t,
+          v.secondsBelow(), flagEntry != null
+              ? flagEntry + " stayed false, so the roboRIO did not disable outputs"
+              : "no brownout flag is logged, so whether outputs were disabled is unknown"));
+    }
+    if (v.min() < t + 1.0) {
+      return new Risk("MODERATE", String.format("minimum %.2f V, within 1 V of the %.2f V "
+          + "threshold", v.min(), t));
+    }
+    return new Risk("LOW", String.format("minimum %.2f V, more than 1 V above the %.2f V "
+        + "threshold", v.min(), t));
+  }
 }

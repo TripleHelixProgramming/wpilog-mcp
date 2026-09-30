@@ -594,6 +594,27 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a stall with negative current (motor driven in reverse) is a stall")
+    void detectsNegativeCurrentStall() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/stall_negative.wpilog")
+          .addNumericEntry("/Intake/Velocity", new double[]{0, 1, 2, 3, 4}, new double[]{-2, 0, 0, 0, -2})
+          .addNumericEntry("/Intake/Current", new double[]{0, 1, 2, 3, 4}, new double[]{-5, -38, -45, -40, -5})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("mechanism_name", "Intake");
+      args.addProperty("stall_current_threshold", 30.0);
+      var resultObj = findTool("profile_mechanism").execute(args).getAsJsonObject();
+
+      var stalls = resultObj.getAsJsonArray("stall_events");
+      assertEquals(1, stalls.size(), resultObj.toString());
+      assertEquals(-45.0, stalls.get(0).getAsJsonObject().get("max_current").getAsDouble(), 1e-9);
+    }
+
+    @Test
     @DisplayName("calculates settling time for step response")
     void calculatesSettlingTime() throws Exception {
       // Simulate a step response: setpoint changes, mechanism settles
