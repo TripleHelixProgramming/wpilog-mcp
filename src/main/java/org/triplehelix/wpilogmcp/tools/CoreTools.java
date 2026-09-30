@@ -777,34 +777,50 @@ public final class CoreTools {
       // JVM heap usage (includes caches, tool execution, and all other allocations)
       result.addProperty("jvm_heap_used_mb", logManager.getEstimatedMemoryUsageMb());
 
-      // Disk cache info
-      var diskCache = logManager.getDiskCache();
-      var diskCacheInfo = new JsonObject();
-      diskCacheInfo.addProperty("enabled", diskCache.isEnabled());
+      // Disk caches, both in one directory. The revlog sync cache (SyncDiskCache) is in use.
+      // The parsed-log cache (DiskCache) has not been on the load path since 0.8.0 — logs are
+      // parsed lazily from memory-mapped files — but it is still configured and its directory
+      // cleaned at startup, so its state is reported under a label that says so.
+      var syncCache = new JsonObject();
+      syncCache.addProperty("enabled", logManager.getSyncDiskCache().isEnabled());
+      var parsedLogCache = new JsonObject();
+      parsedLogCache.addProperty("used_by_load_path", false);
+      parsedLogCache.addProperty("enabled", logManager.getDiskCache().isEnabled());
       try {
         var cacheDir = logManager.getCacheDirectory().getPath();
-        diskCacheInfo.addProperty("directory", cacheDir.toString());
+        syncCache.addProperty("directory", cacheDir.toString());
+        parsedLogCache.addProperty("directory", cacheDir.toString());
         if (java.nio.file.Files.isDirectory(cacheDir)) {
-          long fileCount = 0;
-          long totalBytes = 0;
+          java.util.Map<Boolean, java.util.List<java.nio.file.Path>> bySyncCache;
           try (var stream = java.nio.file.Files.list(cacheDir)) {
-            var files = stream.filter(f -> f.toString().endsWith(".msgpack")).toList();
-            fileCount = files.size();
-            for (var f : files) {
-              totalBytes += java.nio.file.Files.size(f);
-            }
+            bySyncCache = stream.filter(f -> f.toString().endsWith(".msgpack"))
+                .collect(java.util.stream.Collectors.partitioningBy(
+                    f -> f.getFileName().toString().endsWith("-sync.msgpack")));
           }
-          diskCacheInfo.addProperty("cached_files", fileCount);
-          diskCacheInfo.addProperty("total_size_mb", totalBytes / (1024L * 1024L));
+          addCacheFileStats(syncCache, bySyncCache.get(true));
+          addCacheFileStats(parsedLogCache, bySyncCache.get(false));
         }
       } catch (Exception e) {
-        diskCacheInfo.addProperty("error", e.getMessage());
+        syncCache.addProperty("error", e.getMessage());
+        parsedLogCache.addProperty("error", e.getMessage());
       }
-      diskCacheInfo.addProperty("format_version",
+      parsedLogCache.addProperty("format_version",
           org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION);
-      result.add("disk_cache", diskCacheInfo);
+      result.add("sync_disk_cache", syncCache);
+      result.add("parsed_log_disk_cache", parsedLogCache);
 
       return result;
+    }
+
+    /** Adds a cache's file count and total size in MB. */
+    private static void addCacheFileStats(JsonObject cache,
+        java.util.List<java.nio.file.Path> files) throws java.io.IOException {
+      long totalBytes = 0;
+      for (var f : files) {
+        totalBytes += java.nio.file.Files.size(f);
+      }
+      cache.addProperty("cached_files", files.size());
+      cache.addProperty("total_size_mb", totalBytes / (1024L * 1024L));
     }
   }
 

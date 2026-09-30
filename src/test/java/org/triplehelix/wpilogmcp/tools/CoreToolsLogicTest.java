@@ -307,13 +307,23 @@ class CoreToolsLogicTest extends ToolTestBase {
       var result = tool.execute(new JsonObject());
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.has("disk_cache"), "Should include disk cache info");
-      var diskCache = resultObj.getAsJsonObject("disk_cache");
-      assertTrue(diskCache.has("enabled"), "Should report enabled status");
-      assertTrue(diskCache.has("format_version"), "Should report format version");
-      assertTrue(diskCache.has("directory"), "Should report cache directory");
+      assertTrue(resultObj.has("sync_disk_cache"), "Should include the revlog sync disk cache");
+      var syncCache = resultObj.getAsJsonObject("sync_disk_cache");
+      assertTrue(syncCache.has("enabled"), "Should report the sync cache's enabled status");
+      assertTrue(syncCache.has("directory"), "Should report the cache directory");
+
+      assertTrue(resultObj.has("parsed_log_disk_cache"),
+          "Should include the parsed-log disk cache under a label that says it is unused");
+      var parsedLogCache = resultObj.getAsJsonObject("parsed_log_disk_cache");
+      assertFalse(parsedLogCache.get("used_by_load_path").getAsBoolean(),
+          "The parsed-log cache has not been on the load path since 0.8.0");
+      assertTrue(parsedLogCache.has("enabled"), "Should report enabled status");
+      assertTrue(parsedLogCache.has("format_version"), "Should report format version");
+      assertTrue(parsedLogCache.has("directory"), "Should report cache directory");
       assertEquals(org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION,
-          diskCache.get("format_version").getAsInt());
+          parsedLogCache.get("format_version").getAsInt());
+      assertFalse(resultObj.has("disk_cache"),
+          "The block that reported the unused cache as the disk cache is gone");
     }
 
     @Test

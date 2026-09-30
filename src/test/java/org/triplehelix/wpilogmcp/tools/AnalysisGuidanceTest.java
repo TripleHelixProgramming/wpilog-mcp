@@ -45,6 +45,7 @@ class AnalysisGuidanceTest {
           "rio_flag",
           "brownout_voltage_entry",
           "brownout_threshold",
+          "brownout_threshold_basis",
           "voltage_entry",
           "effective_sample_size",
           "pose_entry",

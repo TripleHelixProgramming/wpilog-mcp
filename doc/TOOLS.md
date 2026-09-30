@@ -408,11 +408,11 @@ A tool uses an entry for a role only when it was passed explicitly, follows a we
 Each tool's result records the entries it used under `inputs.entries`; tools with an entry parameter (`pose_entry`, `measured_entry`, `entry`, ...) accept an override when a choice is wrong.
 
 ### `health_check`
-Get system health status including JVM memory usage, loaded log count, disk cache status, and TBA availability. Useful for monitoring server performance and resource usage.
+Get system health status: server version, loaded log count, TBA availability, whether a revlog sync is running, JVM memory, and the disk caches. Useful for monitoring server performance and resource usage.
 
 **Parameters:** None
 
-**Returns:** System status, JVM memory info, loaded log count, disk cache status, and TBA availability
+**Returns:** `server_version`, `loaded_logs`, `tba_available`, `revlog_sync_in_progress`, `jvm_memory` (`used_mb`, `total_mb`, `max_mb`, `free_mb`), `jvm_heap_used_mb`, and the two disk caches, which share one directory: `sync_disk_cache` — the revlog sync-result cache, which is in use (`enabled`, `directory`, `cached_files`, `total_size_mb`) — and `parsed_log_disk_cache` — the parsed-log cache of releases before 0.8.0, reported with `used_by_load_path: false` because logs are now parsed lazily from memory-mapped files; it is still configured and its directory cleaned at startup (`enabled`, `directory`, `cached_files`, `total_size_mb`, `format_version`). Each counts only its own files.
 
 **Use Case:** Use this tool periodically during long analysis sessions to monitor memory usage. Idle logs are automatically evicted after 30 minutes.
 
@@ -553,7 +553,7 @@ List or search the text a log holds, completely and in time order across all ent
 
 ### Field paths
 
-`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, and `find_condition` measure a **numeric signal**: a scalar entry (double, float, int64, or boolean read as 1/0), or a number inside a struct or array entry, addressed by a field path.
+`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `find_condition`, `align_entries` (each of its `names`), and `compare_matches` measure a **numeric signal**: a scalar entry (double, float, int64, or boolean read as 1/0), or a number inside a struct or array entry, addressed by a field path.
 
 | Signal | Name |
 |--------|------|
@@ -572,7 +572,7 @@ List or search the text a log holds, completely and in time order across all ent
 
 ### Scopes and windows
 
-The same seven tools take the time they measure from three optional parameters, which intersect:
+`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `find_condition`, `align_entries`, `compare_poses`, and `pose_corrections` take the time they measure from three optional parameters, which intersect (`compare_matches`, `analyze_swerve`, `analyze_loop_timing`, `power_analysis`, and `predict_battery_health` take `scope` — and, except `power_analysis`, `start_time`/`end_time` — but not `windows`):
 
 - `start_time` / `end_time` — one inclusive range.
 - `scope` — `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (the i-th enabled segment of `get_match_phases`, from 0). Segments are half-open: the sample logged at a transition belongs to the new state.
@@ -915,9 +915,9 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 ```
 
 ### `power_analysis`
-Analyze battery and current distribution data. Reports battery voltage statistics and brownout risk, plus the peak current for every amperage entry in the log, sorted by peak magnitude. Per-channel arrays such as AdvantageKit's `/PowerDistribution/ChannelCurrent` are expanded per channel index, so PDH/PDP channel peaks are reported even though the statistics tools cannot read array entries.
+Analyze battery and current distribution data. Reports battery voltage statistics and brownout risk, plus the peak current for every amperage entry in the log, sorted by peak magnitude. Per-channel arrays such as AdvantageKit's `/PowerDistribution/ChannelCurrent` are expanded per channel index, so every PDH/PDP channel's peak is reported in one call (the statistics tools read one channel by [field path](#field-paths), e.g. `/PowerDistribution/ChannelCurrent[3]`).
 
-**Voltage entry selection** (shared with `get_ds_timeline`): candidates are scalar numeric entries (`double`, `float`, `int64`) whose name contains "voltage" and that have at least one finite sample. Battery-named entries (`BatteryVoltage`) are preferred, then input/bus voltage, then any other voltage entry (e.g. WPILib `NT:/SmartDashboard/PowerDistribution[1]/Voltage` or AdvantageKit `/RealOutputs/PDH/Voltage`); rail, regulator, and motor-output voltages (`5vRail`, `3v3`, `AppliedVoltage`, ... — judged on the last two path segments, so `/RealOutputs/` does not count as an "output") are used only as a last resort. Ties are broken by WPILOG declaration order. Pass `power_prefix` to force a specific subtree.
+**Voltage entry selection** (the `battery_voltage` role of [The server does not guess](#the-server-does-not-guess), shared with `predict_battery_health`, `get_ds_timeline`, and `generate_report`): `voltage_entry` when given; otherwise the entry the convention names — a numeric leaf named `BatteryVoltage` (AdvantageKit `/SystemStats/BatteryVoltage`), else `Voltage` whose parent is `PowerDistribution`, `PowerDistribution[<id>]`, `PDH`, `PDP`, or `Battery` (AdvantageKit `/PowerDistribution/Voltage`, WPILib `NT:/SmartDashboard/PowerDistribution[1]/Voltage`) — with at least one finite sample, ties to the entry declared first. Any other entry named `voltage` (an input or bus voltage, say) is never used: when the log has only those, `voltage_analysis` is skipped and the reason lists them as candidates to confirm and pass as `voltage_entry`; rail, regulator, and motor-output voltages are not even candidates. `inputs.entries.voltage` records the entry used. `power_prefix` restricts the search to one subtree.
 
 **Current entry selection:** an entry counts as amperage when its name ends in `Amps`/`Amperes` at a token boundary (`CurrentAmps`, `StatorAmps`, `stator_amps` — but not `OdometryTimestamps` or `SlewRamps`), when the text after the last `Current` is empty or a unit/plural/draw suffix (`OutputCurrent`, `Current_A`, `CurrentDraw`, `Currents`, `Current(A)`), when it is `Current/<sub-path>` that is not a non-amperage quantity (`Current/Stator` yes, `Current/Setpoint` no), or when it is a WPILib PowerDistribution sendable channel (`PowerDistribution[<id>]/Chan<N>`). Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are excluded; anything containing "voltage" is excluded. `power_prefix` narrows the candidates but does not bypass the rule.
 
@@ -925,14 +925,15 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 
 **roboRIO brownouts:** when the log has the roboRIO's brownout flag (a boolean named `BrownedOut`, e.g. `/SystemStats/BrownedOut`), `rio_brownouts` lists each interval it was true — the times the roboRIO actually disabled outputs — with start, end, and duration. Voltage statistics against the threshold are a separate, weaker signal.
 
-**Brownout Risk Levels** (a heuristic on the minimum voltage):
-- **HIGH**: Voltage dropped below brownout threshold
-- **MODERATE**: Voltage within 1V of threshold
-- **LOW**: Voltage stayed above threshold + 1V
+**Brownout risk** (`brownout_risk`, with its evidence in `brownout_risk_basis`; one rule shared with `generate_report`):
+- **HIGH**: the roboRIO's logged brownout flag was true in scope (outputs were disabled); or, when the log has no such flag, the voltage crossed below the threshold — unconfirmed, because whether outputs were disabled is then unknown
+- **MODERATE**: the voltage crossed below the threshold but the logged flag stayed false (the roboRIO did not disable outputs); or it never crossed, but the minimum came within 1 V of the threshold
+- **LOW**: the minimum stayed more than 1 V above the threshold
 
 **Parameters:**
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
+- `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (default: `enabled` when the log records enabled state, else `all`)
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 - `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
@@ -1276,7 +1277,7 @@ When TBA is configured and `list_available_logs` is called, logs that have FRC e
 - Win/loss result
 - Actual match start time (corrects midnight timestamp bug)
 
-Only logs with valid event codes, match types (Qualification, Semifinal, Final), and team numbers in their metadata are enriched. Practice matches, simulations, replays, and logs without FMS metadata are not enriched.
+Only logs whose metadata has an event code, a match number, a team number, and a match type of Qualification, Quarterfinal, Semifinal, Final, or Elimination are enriched. Practice matches, simulations, replays, and logs without FMS metadata are not enriched.
 
 ### `get_tba_match_data`
 Query match scores and detailed results directly from The Blue Alliance. **Use this tool to answer questions about match outcomes**—don't guess or infer match results from telemetry.
@@ -1399,8 +1400,7 @@ Generate a one-call summary of a log. Each section uses the same entry choice an
 - **basic_info**: Duration, timestamps, entry count, truncation status
 - **timeline**: Enabled segments, enabled time, FMS matches, and season (as `get_match_phases` derives them)
 - **battery**: The voltage entry `power_analysis` would choose, over enabled time when the log records it (`scope`): the same fields as `power_analysis`'s `voltage_analysis` (min with its time, max, average, samples below the threshold, crossings, seconds below), the brownout threshold with its basis, `rio_brownouts` in scope when the roboRIO flag is logged, and `brownout_risk` with its basis by the same rule
-- **peak_currents**: The three largest current peaks in the same scope, per channel — the top of `power_analysis`'s `channel_analysis`
-- **peak_currents**: The three largest current peaks (entry, signed peak, time), from the amperage entries `power_analysis` analyzes
+- **peak_currents**: The three largest current peaks (`entry`, signed `peak_current_A`, `peak_current_time_sec`) in the same scope — the top of `power_analysis`'s `channel_analysis`, each channel of an array separately
 - **errors**: `total_errors` and `total_warnings` (samples classified by the same line rule as `get_ds_timeline` and `search_strings` — a multi-line console batch counts once, by its most severe line, and "default" is not a fault), `distinct_error_messages`, `top_messages` (the five most frequent, numbers normalized), and `samples` (the first five error lines with time and entry)
 - **code_info**: Git SHA, branch, dirty flag, Git date, build date, project name (the entries `get_code_metadata` reads)
 - **top_data_types**: Most common data types (ties by name)
@@ -1721,8 +1721,8 @@ Analyze every autonomous period in the log: when it started and ended, which rou
 
 **How it works:**
 - Autonomous periods are the enabled `auto` segments of the same DriverStation timeline `get_match_phases` reports (a log can hold several; all are listed in `auto_periods`, and the top-level `auto_*` fields describe the first).
-- Selected routine: the value, at each period's start, of a string entry chosen by rank — a chooser's `.../active` entry, then a name containing `auto` with `selected`, `mode`, `routine`, or `choice` (e.g. `/RealOutputs/AutoSelector/SelectedAutoMode`), then any name containing `chooser`; ties by entry id. Chooser metadata (`.type`, `default`, `options`) is ignored.
-- Path following: a `struct:Pose2d`/`struct:Pose3d` setpoint (named with `setpoint`, `target`, or `desired`) and actual pose (named with `actual`, `estimated`, `odometry`, or ending in `/Pose`), lowest entry id first. RMSE and maximum distance between them, sampled at each setpoint time with the actual pose held (zero-order hold). Samples whose pose layout cannot be read are counted in `unreadable_samples`, never treated as zero error.
+- Selected routine: the value, at each period's start, of the `auto_chooser` role ([The server does not guess](#the-server-does-not-guess)): `chooser_entry` when given, else the one chooser whose key contains `auto` — a WPILib `SendableChooser`'s `active` entry (its sibling `.type` is `String Chooser`, or it has `options`) or an AdvantageKit dashboard input (`/NetworkInputs/SmartDashboard/<key>`, or `/DashboardInputs/...`). With no such chooser, or more than one, nothing is chosen: the choosers and the string entries named like a selected auto mode (`auto` with `selected`, `mode`, `routine`, or `choice`, or `chooser` — e.g. `/RealOutputs/AutoSelector/SelectedAutoMode`) are listed in `skipped` as candidates to confirm and pass as `chooser_entry`. Chooser metadata (`.type`, `default`, `options`) is never read as the selection.
+- Path following: the `path_setpoint` and `path_actual` roles — `struct:Pose2d`/`struct:Pose3d` entries with at least two samples, under `auto_prefix` when given. Setpoint: `path_setpoint_entry`, else `PathPlanner/targetPose` or AdvantageKit `Odometry/TrajectorySetpoint`; other poses named like a setpoint (`setpoint`, `target`, `desired`) are candidates listed in `skipped`, not used. Actual: `path_actual_entry`, else `PathPlanner/currentPose`, else the robot pose as `resolve_signals` chooses it (the `robot_pose` role). RMSE and maximum distance between them, sampled at each setpoint time with the actual pose held (zero-order hold). Samples whose pose layout cannot be read are counted in `unreadable_samples`, never treated as zero error.
 
 **Returns:** `auto_periods[]` (`start`, `end`, `duration`, `end_reason`, `selected_routine`, `path_following_error`), `auto_start_time`/`auto_end_time`/`auto_duration`/`selected_routine`/`path_following_error` for the first period, `expected_auto_sec` (season timing), `inputs.entries` (DriverStation, chooser, and pose entries used), and `skipped` entries for sections that could not be produced (status `partial`).
 
@@ -2395,7 +2395,7 @@ Every tool result, however the tool built it, is normalized by the server so tha
 
 ### `data_quality`
 
-Computed from the values a result was computed from, within its scope (the time between windows is not a gap). Included in responses from all analytical tools.
+Computed from the values a result was computed from, within its scope (the time between windows is not a gap). Carried by the tools whose result rests on statistics — always by `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `compare_poses`, `pose_corrections`, `analyze_cycles`, `analyze_loop_timing`, `predict_battery_health`, and `moi_regression`, and by `compare_matches` inside each log's statistics; and, when the source entry is there, by `align_entries` (with `difference`), `power_analysis` (the voltage entry, else the first scalar current entry; none for array-only logs), `generate_report` (a battery voltage entry), `get_ds_timeline` (the DriverStation enabled entry), `analyze_vision`, `profile_mechanism`, and `analyze_swerve` (their measured entry, with samples in scope), and `get_revlog_data` (with `include_stats`). Tools that report discrete events, counts, or catalog data — `get_match_phases`, `find_condition`, `search_strings`, `can_health`, `analyze_can_bus`, `analyze_auto`, `analyze_replay_drift`, `get_code_metadata`, `export_csv`, and the core, query, discovery, TBA, and other revlog tools — carry none: an observed event needs no statistic.
 
 | Field | Description |
 |-------|-------------|
@@ -2430,7 +2430,7 @@ The level bounds statistics (means, trends, correlations), not directly observed
 
 ### `server_analysis_directives`
 
-Auto-generated LLM guidance based on data quality issues detected. Included alongside `data_quality` in analytical tool responses.
+Auto-generated LLM guidance based on data quality issues detected. Included alongside `data_quality`, by the same tools.
 
 | Field | Description |
 |-------|-------------|

@@ -1453,7 +1453,14 @@ Response:
     "free_mb": 179
   },
   "jvm_heap_used_mb": 289,
-  "disk_cache": {
+  "sync_disk_cache": {
+    "enabled": true,
+    "directory": "~/th/wpilog-mcp/.claude/worktrees/loose-ends/build/test-disk-cache",
+    "cached_files": 0,
+    "total_size_mb": 0
+  },
+  "parsed_log_disk_cache": {
+    "used_by_load_path": false,
     "enabled": true,
     "directory": "~/th/wpilog-mcp/.claude/worktrees/loose-ends/build/test-disk-cache",
     "cached_files": 0,

@@ -72,7 +72,7 @@ The server provides the tools — the quality of analysis depends on the AI mode
 
 AI models have a natural tendency to find explanations that fit the data — even when the data doesn't support a strong conclusion. wpilog-mcp is designed to work against this bias. Every tool returns **accurate, raw data** (statistics, timestamps, sample counts, p-values) rather than pre-digested conclusions. Built-in guardrails steer the AI toward honest, qualified analysis:
 
-- **Data quality scoring** — Each response includes a quality assessment based on sample count, data gaps, and timing regularity. When data quality is poor, the AI is explicitly told to reduce its confidence.
+- **Data quality scoring** — Results that rest on statistics carry a quality assessment (`data_quality`) based on sample count, data gaps, and timing regularity, with a reason for every penalty; when data quality is poor, the AI is explicitly told to reduce its confidence. Tools that report discrete events or counts (`find_condition`, `can_health`, `analyze_can_bus`, `analyze_auto`, ...) carry none — an observed event needs no statistic. [`doc/TOOLS.md`](doc/TOOLS.md#data_quality) lists which tools carry it.
 - **Epistemic guidance** — Tool descriptions and response metadata embed language like "suggests" and "may indicate" rather than "proves" or "confirms." The AI is reminded that a single match is never enough to draw definitive conclusions.
 - **Primitive tool design** — Instead of a single "diagnose my robot" tool that returns a health score, the server provides building blocks (voltage stats, current stats, correlation coefficients). The AI must reason across multiple tool calls, making its logic transparent and auditable.
 - **Server-level reasoning guidance** — On connect, the server sends MCP `instructions` that clients such as Claude Code and VS Code place in the model's system prompt: verify that the event in the question actually happened, never name an entry or quote a number that no tool returned, test a proposed cause against a rival hypothesis, and state observed events plainly while labeling inferred causes as hypotheses. `get_server_guide` returns the full `analysis_principles` — the method, confidence calibration, and a catalogue of confabulation traps — for clients that don't forward instructions.
@@ -156,8 +156,8 @@ wpilog-mcp provides 49 tools organized into categories. All log-requiring tools 
 | **Core** | `list_available_logs`, `list_loaded_logs`, `list_entries`, `read_entry`, `get_entry_info`, `list_struct_types`, `resolve_signals`, `health_check` |
 | **Query** | `search_entries`, `get_types`, `find_condition`, `search_strings` |
 | **Statistics** | `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries` |
-| **Robot Analysis** | `get_match_phases`, `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata`, `moi_regression` |
-| **FRC Domain** | `get_ds_timeline`, `analyze_vision`, `compare_poses`, `pose_corrections`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `predict_battery_health`, `get_game_info`, `analyze_can_bus` |
+| **Robot Analysis** | `get_match_phases`, `analyze_swerve`, `power_analysis`, `can_health`, `analyze_can_bus`, `compare_matches`, `get_code_metadata`, `moi_regression` |
+| **FRC Domain** | `get_ds_timeline`, `analyze_vision`, `compare_poses`, `pose_corrections`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `predict_battery_health`, `get_game_info` |
 | **TBA** | `get_tba_status`, `get_tba_match_data` |
 | **RevLog** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset`, `wait_for_sync` |
 | **Export** | `export_csv`, `generate_report` |
