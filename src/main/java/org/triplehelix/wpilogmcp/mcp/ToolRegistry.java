@@ -139,6 +139,22 @@ public class ToolRegistry {
       return this;
     }
 
+    /**
+     * An array property with an item schema.
+     *
+     * @since 0.9.0
+     */
+    public SchemaBuilder addArrayProperty(
+        String name, String description, JsonObject items, boolean isRequired) {
+      var prop = new JsonObject();
+      prop.addProperty("type", "array");
+      prop.addProperty("description", description);
+      prop.add("items", items);
+      properties.add(name, prop);
+      if (isRequired) required.add(name);
+      return this;
+    }
+
     public JsonObject build() {
       if (required.size() > 0) schema.add("required", required);
       return schema;

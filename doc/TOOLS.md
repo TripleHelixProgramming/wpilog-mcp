@@ -22,6 +22,7 @@ Complete documentation for all tools available in wpilog-mcp.
   - [search_strings](#search_strings)
 - [Statistics Tools](#statistics-tools)
   - [Field paths](#field-paths)
+  - [Scopes and windows](#scopes-and-windows)
   - [get_statistics](#get_statistics)
   - [compare_entries](#compare_entries)
   - [detect_anomalies](#detect_anomalies)
@@ -409,13 +410,13 @@ Find when a numeric or boolean entry satisfies a condition, and for how long. Us
 - `field` (optional): The field path, instead of appending it to `name`
 - `operator` (required): Comparison operator: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==, with a relative tolerance of 1e-6)
 - `threshold` (required): Threshold value to compare against
-- `start_time`, `end_time` (optional): Time window
+- `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)); each window is searched on its own
 - `limit` (optional): Maximum transitions and intervals to return (default 100)
 
 **Returns:**
 - `transitions[]`: each time the condition becomes true (`timestamp_sec`, `value`; `at_window_start: true` when it was already true at `start_time`); `transition_count` is the true total
 - `intervals[]`: `start`, `end`, `duration`, and `end_reason` (`condition_false`, or `window_end` when still true at the end of the window). Each sample's value holds until the next sample
-- `interval_count`, `total_true_sec`, `fraction_of_window`, `inputs` (entry and window), and `limits` for both lists
+- `interval_count`, `total_true_sec`, `window_sec` (the time searched, after the entry's first sample), `fraction_of_window` (`total_true_sec / window_sec`), `inputs` (entry, field, and scope or window), and `limits` for both lists. The `intervals` can be passed as `windows` to the statistics tools
 
 **Example Response:**
 ```json
@@ -514,6 +515,16 @@ List or search the text logged in string entries (console output, alerts, WPILib
 - **Angles.** A `Rotation2d`'s `value` (radians) and `_derived.degrees`, a `Rotation3d`'s `_derived` roll/pitch/yaw, and a `SwerveSample`'s `heading` are known angles. `get_statistics`, `rate_of_change`, `find_peaks`, `detect_anomalies`, and `time_correlate` unwrap them, so crossing ±180° is not a jump; `compare_entries` compares two angles by their shortest difference; `find_condition` compares thresholds with the value as logged. A heading logged as a plain double is not known to be an angle.
 - Results name the signal (`name` is the entry and path) and record it under `inputs.entries` and `inputs.fields`.
 
+### Scopes and windows
+
+The same seven tools take the time they measure from three optional parameters, which intersect:
+
+- `start_time` / `end_time` — one inclusive range.
+- `scope` — `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (the i-th enabled segment of `get_match_phases`, from 0). Segments are half-open: the sample logged at a transition belongs to the new state.
+- `windows` — a list of `{start, end}` (or `[start, end]`), half-open `[start, end)`; overlapping windows merge. The `intervals` returned by `find_condition` can be passed as-is ("statistics while the battery was below 11 V").
+
+Differences, spikes, peaks, and angle unwrapping are computed within each window, never across the time between two; `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`). `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
+
 ### `get_statistics`
 Get statistics for a numeric entry or field. Supports optional time range filtering. Includes data quality metrics and analysis directives for confidence assessment.
 
@@ -523,6 +534,7 @@ Get statistics for a numeric entry or field. Supports optional time range filter
 - `field` (optional): The field path, instead of appending it to `name`
 - `start_time` (number, optional): Start timestamp in seconds
 - `end_time` (number, optional): End timestamp in seconds
+- `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows)
 
 **Returns:** Statistics including count, min, max, mean, median, std_dev, quartiles, and percentiles. With a `[*]` path, `count` is values and `records_in_window` is records. For an angle, the linear statistics are of the angle unwrapped within the window (so `max - min` is how far it turned), and `angle` gives `unit`, `unwrapped`, `wraps` (steps of more than half a turn), `circular_mean`, `circular_std` (√(−2 ln R), same unit), and `resultant_length` R
 
@@ -555,6 +567,7 @@ Compare two entries (useful for RealOutputs vs ReplayOutputs).
 - `name1` (required): First entry name, optionally with a [field path](#field-paths)
 - `name2` (required): Second entry name, optionally with a field path
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
+- `start_time`, `end_time`, `scope`, `windows` (optional): Only the reference signal's samples in this time are compared ([Scopes and windows](#scopes-and-windows))
 
 **Returns:** RMSE (root mean square error), max difference, `samples_compared`, and `reference_entry` (the denser signal, whose timestamps are used; the other is linearly interpolated, never extrapolated), with data quality and analysis directives. Two angles are compared by their shortest angular difference in the first one's unit (`angle_unit`); an angle against a non-angle is compared as plain numbers, with a warning. A struct entry without a field (e.g. `struct:ChassisSpeeds`) is an error listing its numeric fields, and signals with no overlapping time span are an error naming both spans — never a success with `rmse: NaN`
 
@@ -567,7 +580,7 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 - `field` (optional): The field path, instead of appending it to `name`
 - `iqr_multiplier` (optional): Multiplier k for the IQR fences (default 1.5). Use 3.0 for extreme outliers only
 - `spike_threshold` (optional): Flag consecutive samples that differ by more than this, in the entry's units (off by default)
-- `start_time`, `end_time` (optional): Time window. Boot transients and disabled time count unless the window excludes them — take windows from `get_match_phases`
+- `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)). Boot transients and disabled time count unless the scope excludes them — `scope: "enabled"`. Spikes are jumps within one window
 - `sort` (optional): `time` (default) or `severity` (distance beyond the fence, or jump size)
 - `limit` (optional): Maximum anomalies to return (default 50)
 
@@ -604,6 +617,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
 - `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
 - `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
+- `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)); a peak's neighbors are in its own window
 
 **Returns:** Lists of maxima and/or minima (in time order) with height difference from neighbors; `maxima_count` and `minima_count` are the true totals, and `limits` gives total vs returned for each list. Angles are unwrapped first (`angle_unit`), so a wrap is not a peak. A struct or array entry without a field path is an error listing its numeric fields
 
@@ -639,6 +653,7 @@ Compute rate of change (derivative) of numeric data over time. Calculates dv/dt 
 - `field` (optional): The field path, instead of appending it to `name`
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
+- `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows); derivatives never span the gap between two windows
 - `window_size` (optional): Number of samples to average for smoothing (default 1 = no smoothing). Higher values reduce noise but may miss short events
 - `limit` (optional): Maximum samples to return (default 100)
 
@@ -679,6 +694,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
+- `scope`, `windows` (optional): The first signal's samples in this time are paired with the second, interpolated ([Scopes and windows](#scopes-and-windows))
 
 **Returns:** Correlation coefficient, sample count, and p-value. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` is `null`, `p_value` is 1, and a warning names the constant entry.
 

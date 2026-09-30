@@ -200,6 +200,22 @@ public class ResponseBuilder {
     return this;
   }
 
+  /**
+   * Records the time a result covers: {@code inputs.scope} for a named scope or explicit windows,
+   * {@code inputs.window} for plain start_time/end_time bounds, nothing for the whole log.
+   *
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder addInputScope(TimeScope scope) {
+    if (!scope.isAll()) {
+      inputs().add("scope", scope.toJson());
+    } else if (scope.requestedStart() != null || scope.requestedEnd() != null) {
+      addInputWindow(scope.requestedStart(), scope.requestedEnd());
+    }
+    return this;
+  }
+
   private JsonObject inputs() {
     if (!response.has("inputs")) {
       var inputs = new JsonObject();

@@ -44,34 +44,46 @@ public record DataQuality(
    * @return The computed data quality metrics
    */
   public static DataQuality fromValues(List<TimestampedValue> values) {
-    if (values == null || values.isEmpty()) {
+    return fromSegments(values == null ? List.of() : List.of(values));
+  }
+
+  /**
+   * Computes data quality over several time windows (a scope such as "enabled"): the time between
+   * windows is not a data gap, so intervals are taken only within each window, and the time span
+   * is the sum of the windows' spans.
+   *
+   * @param segments The values in each window, each sorted by timestamp
+   * @return The computed data quality metrics
+   * @since 0.9.0
+   */
+  public static DataQuality fromSegments(List<List<TimestampedValue>> segments) {
+    int n = segments.stream().mapToInt(List::size).sum();
+    if (n == 0) {
       return new DataQuality(0, 0, 0, 0, 0, 0, 0, 0);
     }
 
-    int n = values.size();
-    double firstTime = values.get(0).timestamp();
-    double lastTime = values.get(n - 1).timestamp();
-    double timeSpan = lastTime - firstTime;
-
-    // Count NaN/Infinity
+    double timeSpan = 0;
+    var intervalList = new java.util.ArrayList<Double>();
     int nanCount = 0;
-    for (var tv : values) {
-      if (tv.value() instanceof Number num) {
-        double v = num.doubleValue();
-        if (!Double.isFinite(v)) nanCount++;
+    for (var values : segments) {
+      if (values.isEmpty()) continue;
+      timeSpan += values.get(values.size() - 1).timestamp() - values.get(0).timestamp();
+      for (int i = 0; i < values.size(); i++) {
+        // Count NaN/Infinity
+        if (values.get(i).value() instanceof Number num && !Double.isFinite(num.doubleValue())) {
+          nanCount++;
+        }
+        if (i > 0) intervalList.add(values.get(i).timestamp() - values.get(i - 1).timestamp());
       }
     }
 
     // Compute sample intervals for gap and jitter detection
-    if (n < 2) {
-      double score = n == 0 ? 0.0 : 0.4; // Single sample = low confidence
+    if (intervalList.isEmpty()) {
+      double score = 0.4; // Single sample per window = low confidence
       return new DataQuality(n, timeSpan, 0, 0, 0, nanCount, 0, score);
     }
 
-    double[] intervals = new double[n - 1];
-    for (int i = 0; i < n - 1; i++) {
-      intervals[i] = values.get(i + 1).timestamp() - values.get(i).timestamp();
-    }
+    double[] intervals = intervalList.stream().mapToDouble(Double::doubleValue).toArray();
 
     // Median interval (for adaptive gap threshold)
     double[] sorted = intervals.clone();

@@ -325,13 +325,14 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   fixed in both parsers. Field paths (`NumericSignal`: entry + `FieldPath`, `field` parameters, exact names win)
   in all seven numeric tools, with type errors that list numeric fields (D1, D2), angle unwrapping, circular
   statistics, and shortest-difference angle comparison; `list_entries` notes; guidance traps updated.
-- [ ] **Phase 3 — Roles, one resolver, scope.** Remaining: `SignalResolver`/`resolve_signals`, `resolved` in
-  results, `scope` on the statistical tools, `compare_matches` (E4), vision target streams.
+- [ ] **Phase 3 — Roles, one resolver, scope.** Done: `scope` and `windows` on the seven numeric tools (per-window
+  differences, peaks, unwrapping, and condition search; `DataQuality.fromSegments`). Remaining:
+  `SignalResolver`/`resolve_signals`, `resolved` in results, `compare_matches` (E4), vision target streams.
 - [ ] **Phase 4 — Strings, intervals, alignment, quality.** Remaining: `string[]`/`json` text (F1) and line
   classification in `can_health`; compound conditions; `align_entries`; lag search; `DataQuality` recalibration (G1).
 - [ ] **Phase 5 — Consistency and docs.**
 
-Golden checks on the review log: 12 of 13 pass (timeline, flag brownouts, logged threshold, loop timing
+Golden checks on the review log: 13 of 14 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation
 decode by schema path, per-camera observation counts, pose wander with heading range and circular mean, 189
-heading wraps); pending: the camera alert in `string[]` (Phase 4).
+heading wraps, loop time over scope `enabled` and `segment:0`); pending: the camera alert in `string[]` (Phase 4).

@@ -72,7 +72,7 @@ public final class StatisticsTools {
           + "records_in_window is records). For an angle, min/max/mean/percentiles are of the "
           + "unwrapped angle within the window (so max - min is how far it turned) and angle "
           + "gives the circular mean and standard deviation and the number of wraps."
-          + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
+          + SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
@@ -83,6 +83,9 @@ public final class StatisticsTools {
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .build();
     }
 
@@ -90,27 +93,24 @@ public final class StatisticsTools {
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var signal = signal(log, arguments, "name", "field", null);
       var name = signal.label();
-      var start = getOptDouble(arguments, "start_time");
-      var end = getOptDouble(arguments, "end_time");
+      var scope = TimeScope.fromArguments(log, null, arguments);
 
       var values = signal.values();
-      var filtered = filterTimeRange(values, start, end);
-      var numericFiltered = filtered.stream()
-          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
-          .toList();
-      // Angles: statistics of the continuous angle within the window (a [*] pool has no order)
+      // Angles: statistics of the continuous angle within each window (a [*] pool has no order)
       boolean unwrap = signal.isAngle() && !signal.multiValued();
-      var measured = unwrap ? signal.unwrap(numericFiltered) : numericFiltered;
-      var quality = DataQuality.fromValues(measured);
+      var rawWindows = finiteWindows(signal, scope, false);
+      var measuredWindows = unwrap ? finiteWindows(signal, scope, true) : rawWindows;
+      var numericFiltered = flatten(rawWindows);
+      var measured = flatten(measuredWindows);
+      var quality = DataQuality.fromSegments(measuredWindows);
       var data = measured.stream()
           .mapToDouble(tv -> toDouble(tv.value()))
           .toArray();
 
       if (data.length == 0) {
         throw new IllegalArgumentException("No numeric data in range: no finite samples of " + name
-            + (start != null || end != null ? " between " + (start != null ? start : "start")
-                + " and " + (end != null ? end : "end") + " s" : "") + " (" + values.size()
-            + " value(s) in the log, " + filtered.size() + " in the window"
+            + scopeText(scope) + " (" + values.size() + " value(s) in the log, "
+            + scope.filter(values).size() + " in scope"
             + (signal.recordsWithoutValue() > 0 ? "; " + signal.recordsWithoutValue() + " of "
                 + signal.recordCount() + " records hold no value at " + signal.path() : "")
             + ")");
@@ -153,7 +153,9 @@ public final class StatisticsTools {
             signal.angle());
         angle.addProperty("unit", signal.angle().wire());
         angle.addProperty("unwrapped", unwrap);
-        if (unwrap) angle.addProperty("wraps", signal.wrapCount(numericFiltered));
+        if (unwrap) {
+          angle.addProperty("wraps", rawWindows.stream().mapToInt(signal::wrapCount).sum());
+        }
         builder.addData("angle", angle);
       }
       return builder
@@ -169,6 +171,7 @@ public final class StatisticsTools {
           .addProperty("p5", percentile(data, 0.05))
           .addProperty("p95", percentile(data, 0.95))
           .addInputSignal("entry", signal)
+          .addInputScope(scope)
           .addDataQuality(quality)
           .addDirectives(directives)
           .build();
@@ -185,7 +188,8 @@ public final class StatisticsTools {
           + "evaluated at the denser signal's timestamps with the other linearly interpolated (no "
           + "extrapolation), plus the number of compared samples. Two angles (e.g. a pose "
           + "heading and a gyro's Rotation2d) are compared by their shortest angular difference, "
-          + "in the first one's unit." + NumericSignal.PATH_HELP
+          + "in the first one's unit. With a scope or window, only the reference signal's "
+          + "samples inside it are compared." + NumericSignal.PATH_HELP + SCOPE_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -196,11 +200,17 @@ public final class StatisticsTools {
           .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
+      var scope = TimeScope.fromArguments(log, null, arguments);
       var s1 = signal(log, arguments, "name1", "field1", name());
       var s2 = signal(log, arguments, "name2", "field2", name());
       var n1 = s1.label();
@@ -217,7 +227,7 @@ public final class StatisticsTools {
       double sumSq = 0.0;
       double maxDiff = 0.0;
       int compared = 0;
-      for (var tv : reference) {
+      for (var tv : scope.filter(reference)) {
         var refValue = toDouble(tv.value());
         var otherValue = getValueAtTimeLinear(other, tv.timestamp());
         if (refValue == null || otherValue == null
@@ -232,12 +242,13 @@ public final class StatisticsTools {
       }
       if (compared == 0) {
         throw new IllegalArgumentException("No overlapping samples: " + n1 + " spans "
-            + span(v1) + " and " + n2 + " spans " + span(v2) + " (no extrapolation)");
+            + span(v1) + " and " + n2 + " spans " + span(v2) + " (no extrapolation)"
+            + scopeText(scope));
       }
       double rmse = Math.sqrt(sumSq / compared);
 
-      DataQuality q1 = DataQuality.fromValues(v1);
-      DataQuality q2 = DataQuality.fromValues(v2);
+      DataQuality q1 = DataQuality.fromSegments(scope.split(v1));
+      DataQuality q2 = DataQuality.fromSegments(scope.split(v2));
       var quality = q1.qualityScore() <= q2.qualityScore() ? q1 : q2;
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
@@ -259,6 +270,7 @@ public final class StatisticsTools {
       return builder
           .addInputSignal("entry1", s1)
           .addInputSignal("entry2", s2)
+          .addInputScope(scope)
           .addDataQuality(quality)
           .addDirectives(directives)
           .build();
@@ -279,6 +291,47 @@ public final class StatisticsTools {
       return String.format("%.3f-%.3f s", values.get(0).timestamp(),
           values.get(values.size() - 1).timestamp());
     }
+  }
+
+  /** How the numeric tools take their time scope, for descriptions. */
+  static final String SCOPE_HELP = " Time: start_time/end_time, scope ('enabled', 'disabled', "
+      + "'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals "
+      + "find_condition returns) combine; differences, peaks, and unwrapping stay within each "
+      + "window, and data_quality does not count the time between windows as a gap.";
+
+  static boolean isFinite(org.triplehelix.wpilogmcp.log.TimestampedValue tv) {
+    var d = toDouble(tv.value());
+    return d != null && Double.isFinite(d);
+  }
+
+  /**
+   * A signal's finite values in each window of a scope; an angle is unwrapped within each window
+   * when {@code unwrap} is set.
+   */
+  static List<List<org.triplehelix.wpilogmcp.log.TimestampedValue>> finiteWindows(
+      NumericSignal signal, TimeScope scope, boolean unwrap) {
+    var out = new ArrayList<List<org.triplehelix.wpilogmcp.log.TimestampedValue>>();
+    for (var window : scope.split(signal.values())) {
+      var finite = window.stream().filter(StatisticsTools::isFinite).toList();
+      out.add(unwrap ? signal.unwrap(finite) : finite);
+    }
+    return out;
+  }
+
+  static <T> List<T> flatten(List<List<T>> lists) {
+    var out = new ArrayList<T>();
+    lists.forEach(out::addAll);
+    return out;
+  }
+
+  /** " in scope enabled (4 windows, 1052.3 s)" or " between 10 and 20 s", for messages. */
+  static String scopeText(TimeScope scope) {
+    if (!scope.isAll()) return " in " + scope.describe();
+    var start = scope.requestedStart();
+    var end = scope.requestedEnd();
+    if (start == null && end == null) return "";
+    return " between " + (start != null ? start : "start") + " and " + (end != null ? end : "end")
+        + " s";
   }
 
   /**
@@ -308,8 +361,8 @@ public final class StatisticsTools {
           + "anomaly_count is the true total; the list is sorted by time (default) or severity "
           + "(distance beyond the fence, or jump size) and cut at limit, with limits.anomalies "
           + "giving total and returned. Boot transients and disabled periods count unless the "
-          + "window excludes them: take windows from get_match_phases." + NumericSignal.PATH_HELP
-          + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
+          + "window excludes them: pass scope 'enabled' or windows from get_match_phases."
+          + NumericSignal.PATH_HELP + SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
@@ -322,6 +375,9 @@ public final class StatisticsTools {
               "Flag sample-to-sample jumps larger than this, in the entry's units (off by default)", false, null)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .addProperty("sort", "string", "'time' (default) or 'severity'", false)
           .addIntegerProperty("limit", "Max anomalies to return", false, 50)
           .build();
@@ -333,8 +389,7 @@ public final class StatisticsTools {
       var name = signal.label();
       double iqrMult = getOptDouble(arguments, "iqr_multiplier", 1.5);
       var spikeThreshold = getOptDouble(arguments, "spike_threshold");
-      var start = getOptDouble(arguments, "start_time");
-      var end = getOptDouble(arguments, "end_time");
+      var scope = TimeScope.fromArguments(log, null, arguments);
       var sort = getOptString(arguments, "sort", "time");
       if (!sort.equals("time") && !sort.equals("severity")) {
         throw new IllegalArgumentException("sort must be 'time' or 'severity'");
@@ -345,16 +400,13 @@ public final class StatisticsTools {
         throw new IllegalArgumentException("spike_threshold must be positive");
       }
 
-      var inWindow = signal.unwrap(filterTimeRange(signal.values(), start, end));
-      long nonFiniteCount = inWindow.stream()
-          .filter(tv -> toDouble(tv.value()) != null && !Double.isFinite(toDouble(tv.value())))
-          .count();
-      var finite = inWindow.stream()
-          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
-          .toList();
+      var inScope = scope.filter(signal.values());
+      long nonFiniteCount = inScope.stream().filter(tv -> !isFinite(tv)).count();
+      var finiteWindows = finiteWindows(signal, scope, true);
+      var finite = flatten(finiteWindows);
       if (finite.size() < 4) {
         throw new IllegalArgumentException("Not enough data for IQR calculation: "
-            + finite.size() + " finite sample(s) in the window (need 4)");
+            + finite.size() + " finite sample(s)" + scopeText(scope) + " (need 4)");
       }
       var sortedData = finite.stream().mapToDouble(tv -> toDouble(tv.value())).sorted().toArray();
       double q1 = percentile(sortedData, 0.25);
@@ -366,29 +418,31 @@ public final class StatisticsTools {
       var anomalies = new ArrayList<JsonObject>();
       long outliers = 0;
       long spikes = 0;
-      Double previous = null;
-      for (var tv : finite) {
-        double v = toDouble(tv.value());
-        if (v < low || v > high) {
-          var obj = new JsonObject();
-          obj.addProperty("timestamp_sec", tv.timestamp());
-          obj.addProperty("value", v);
-          obj.addProperty("type", v < low ? "below_lower_bound" : "above_upper_bound");
-          obj.addProperty("severity", v < low ? low - v : v - high);
-          anomalies.add(obj);
-          outliers++;
+      for (var window : finiteWindows) {
+        Double previous = null; // spikes are jumps within one window
+        for (var tv : window) {
+          double v = toDouble(tv.value());
+          if (v < low || v > high) {
+            var obj = new JsonObject();
+            obj.addProperty("timestamp_sec", tv.timestamp());
+            obj.addProperty("value", v);
+            obj.addProperty("type", v < low ? "below_lower_bound" : "above_upper_bound");
+            obj.addProperty("severity", v < low ? low - v : v - high);
+            anomalies.add(obj);
+            outliers++;
+          }
+          if (spikeThreshold != null && previous != null && Math.abs(v - previous) > spikeThreshold) {
+            var obj = new JsonObject();
+            obj.addProperty("timestamp_sec", tv.timestamp());
+            obj.addProperty("value", v);
+            obj.addProperty("type", v > previous ? "spike_up" : "spike_down");
+            obj.addProperty("jump", v - previous);
+            obj.addProperty("severity", Math.abs(v - previous));
+            anomalies.add(obj);
+            spikes++;
+          }
+          previous = v;
         }
-        if (spikeThreshold != null && previous != null && Math.abs(v - previous) > spikeThreshold) {
-          var obj = new JsonObject();
-          obj.addProperty("timestamp_sec", tv.timestamp());
-          obj.addProperty("value", v);
-          obj.addProperty("type", v > previous ? "spike_up" : "spike_down");
-          obj.addProperty("jump", v - previous);
-          obj.addProperty("severity", Math.abs(v - previous));
-          anomalies.add(obj);
-          spikes++;
-        }
-        previous = v;
       }
       if (sort.equals("severity")) {
         anomalies.sort(java.util.Comparator.comparingDouble(
@@ -404,7 +458,7 @@ public final class StatisticsTools {
       bounds.addProperty("lower", low);
       bounds.addProperty("upper", high);
 
-      var quality = DataQuality.fromValues(inWindow);
+      var quality = DataQuality.fromSegments(scope.split(signal.values()));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addFollowup("Use find_peaks if looking for signal extrema rather than statistical outliers");
@@ -419,9 +473,8 @@ public final class StatisticsTools {
           .addLimitedList("anomalies", list, anomalies.size(), limit);
       if (spikeThreshold != null) builder.addProperty("spike_count", spikes);
       if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
-      if (start != null || end != null) builder.addInputWindow(start, end);
       return builder.addProperty("name", name).addInputSignal("entry", signal)
-          .addDataQuality(quality).addDirectives(directives).build();
+          .addInputScope(scope).addDataQuality(quality).addDirectives(directives).build();
     }
   }
 
@@ -434,7 +487,7 @@ public final class StatisticsTools {
       return "Find local maxima and minima (peaks and valleys) in numeric data, in time order. "
           + "maxima_count and minima_count are the true totals; each list is cut at limit "
           + "(limits gives total and returned). A flat signal has none." + NumericSignal.PATH_HELP
-          + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
+          + SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
@@ -445,6 +498,11 @@ public final class StatisticsTools {
           .addProperty("type", "string", "Type: 'max', 'min', or 'both'", false)
           .addNumberProperty("min_height_diff", "Minimum height difference from neighbors to count as a peak. Filters out noise", false, null)
           .addIntegerProperty("limit", "Max peaks to return", false, 20)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .build();
     }
 
@@ -455,45 +513,48 @@ public final class StatisticsTools {
       var peakType = getOptString(arguments, "type", "both");
       var minHeightDiff = getOptDouble(arguments, "min_height_diff");
       int limit = getOptInt(arguments, "limit", 20);
+      var scope = TimeScope.fromArguments(log, null, arguments);
 
-      var values = signal.unwrap(signal.values());
-
-      var data = values.stream()
-          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
-          .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
-          .toList();
-
-      if (data.size() < 3) {
-        throw new IllegalArgumentException("Not enough data: " + data.size()
-            + " finite sample(s), need 3");
+      var windows = finiteWindows(signal, scope, true);
+      int finiteCount = windows.stream().mapToInt(List::size).sum();
+      if (windows.stream().noneMatch(w -> w.size() >= 3)) {
+        throw new IllegalArgumentException("Not enough data: " + finiteCount
+            + " finite sample(s)" + scopeText(scope) + ", need 3 in one window");
       }
 
       var maxima = new ArrayList<JsonObject>();
       var minima = new ArrayList<JsonObject>();
 
-      for (int i = 1; i < data.size() - 1; i++) {
-        double prev = data.get(i-1)[1], curr = data.get(i)[1], next = data.get(i+1)[1];
-        boolean isMax = curr > prev && curr > next;
-        boolean isMin = curr < prev && curr < next;
+      // A peak's neighbors are in its own window
+      for (var window : windows) {
+        var data = window.stream()
+            .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
+            .toList();
+        for (int i = 1; i < data.size() - 1; i++) {
+          double prev = data.get(i-1)[1], curr = data.get(i)[1], next = data.get(i+1)[1];
+          boolean isMax = curr > prev && curr > next;
+          boolean isMin = curr < prev && curr < next;
 
-        if (isMax || isMin) {
-          double heightDiff = Math.max(Math.abs(curr - prev), Math.abs(curr - next));
-          if (minHeightDiff == null || heightDiff >= minHeightDiff) {
-            var obj = new JsonObject();
-            obj.addProperty("timestamp_sec", data.get(i)[0]);
-            obj.addProperty("value", curr);
-            obj.addProperty("height_diff", heightDiff);
-            if (isMax) maxima.add(obj); else minima.add(obj);
+          if (isMax || isMin) {
+            double heightDiff = Math.max(Math.abs(curr - prev), Math.abs(curr - next));
+            if (minHeightDiff == null || heightDiff >= minHeightDiff) {
+              var obj = new JsonObject();
+              obj.addProperty("timestamp_sec", data.get(i)[0]);
+              obj.addProperty("value", curr);
+              obj.addProperty("height_diff", heightDiff);
+              if (isMax) maxima.add(obj); else minima.add(obj);
+            }
           }
         }
       }
 
-      var quality = DataQuality.fromValues(values);
+      var quality = DataQuality.fromSegments(windows);
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addFollowup("Use get_statistics to understand baseline before interpreting peaks");
 
-      var builder = success().addProperty("name", name).addInputSignal("entry", signal);
+      var builder = success().addProperty("name", name).addInputSignal("entry", signal)
+          .addInputScope(scope);
       if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
       if (!"min".equals(peakType)) {
         var list = new com.google.gson.JsonArray();
@@ -518,7 +579,7 @@ public final class StatisticsTools {
     @Override
     public String description() {
       return "Compute rate of change (derivative) of numeric data over time, in the signal's "
-          + "units per second." + NumericSignal.PATH_HELP
+          + "units per second." + NumericSignal.PATH_HELP + SCOPE_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -529,6 +590,9 @@ public final class StatisticsTools {
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .addIntegerProperty("window_size", "Smoothing window (default 1)", false, 1)
           .addIntegerProperty("limit", "Max samples to return", false, 100)
           .build();
@@ -537,75 +601,77 @@ public final class StatisticsTools {
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var signal = signal(log, arguments, "name", "field", name());
-      var start = getOptDouble(arguments, "start_time");
-      var end = getOptDouble(arguments, "end_time");
+      var scope = TimeScope.fromArguments(log, null, arguments);
       int window = getOptInt(arguments, "window_size", 1);
       int limit = getOptInt(arguments, "limit", 100);
+      validatePositive(window, "window_size");
 
-      var values = signal.values();
-
-      var data = signal.unwrap(filterTimeRange(values, start, end)).stream()
-          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
-          .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
-          .toList();
-
-      if (data.size() < 2) {
-        throw new IllegalArgumentException("Not enough data: " + data.size()
-            + " finite sample(s) in the window, need 2");
+      var windows = finiteWindows(signal, scope, true);
+      if (windows.stream().noneMatch(w -> w.size() >= 2)) {
+        throw new IllegalArgumentException("Not enough data: "
+            + windows.stream().mapToInt(List::size).sum() + " finite sample(s)" + scopeText(scope)
+            + ", need 2 in one window");
       }
 
       var samples = new ArrayList<JsonObject>();
       double sumRate = 0;
       int rateCount = 0;
-      if (window == 1) {
-        // Use central differences for interior points (more accurate, O(h^2) vs O(h))
-        // Forward difference for first point, backward difference for last point
-        for (int i = 0; i < data.size(); i++) {
-          double rate;
-          double timestamp;
-          if (i == 0) {
-            // Forward difference for first point
-            double dt = data.get(1)[0] - data.get(0)[0];
-            if (dt <= 0) continue;
-            rate = (data.get(1)[1] - data.get(0)[1]) / dt;
-            timestamp = data.get(0)[0];
-          } else if (i == data.size() - 1) {
-            // Backward difference for last point
-            double dt = data.get(i)[0] - data.get(i - 1)[0];
-            if (dt <= 0) continue;
-            rate = (data.get(i)[1] - data.get(i - 1)[1]) / dt;
-            timestamp = data.get(i)[0];
-          } else {
-            // Central difference for interior points
-            double dt = data.get(i + 1)[0] - data.get(i - 1)[0];
-            if (dt <= 0) continue;
-            rate = (data.get(i + 1)[1] - data.get(i - 1)[1]) / dt;
-            timestamp = data.get(i)[0];
-          }
-          if (!Double.isFinite(rate)) continue;
-          sumRate += rate;
-          rateCount++;
-          if (samples.size() < limit) {
-            var obj = new JsonObject();
-            obj.addProperty("timestamp_sec", timestamp);
-            obj.addProperty("rate", rate);
-            samples.add(obj);
-          }
-        }
-      } else {
-        // Windowed forward difference (already smooths via averaging)
-        for (int i = window; i < data.size(); i++) {
-          double dt = data.get(i)[0] - data.get(i - window)[0];
-          if (dt > 0) {
-            double rate = (data.get(i)[1] - data.get(i - window)[1]) / dt;
+      // Derivatives within each window, never across the gap between two
+      for (var windowValues : windows) {
+        var data = windowValues.stream()
+            .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
+            .toList();
+        if (data.size() < 2) continue;
+        if (window == 1) {
+          // Use central differences for interior points (more accurate, O(h^2) vs O(h))
+          // Forward difference for first point, backward difference for last point
+          for (int i = 0; i < data.size(); i++) {
+            double rate;
+            double timestamp;
+            if (i == 0) {
+              // Forward difference for first point
+              double dt = data.get(1)[0] - data.get(0)[0];
+              if (dt <= 0) continue;
+              rate = (data.get(1)[1] - data.get(0)[1]) / dt;
+              timestamp = data.get(0)[0];
+            } else if (i == data.size() - 1) {
+              // Backward difference for last point
+              double dt = data.get(i)[0] - data.get(i - 1)[0];
+              if (dt <= 0) continue;
+              rate = (data.get(i)[1] - data.get(i - 1)[1]) / dt;
+              timestamp = data.get(i)[0];
+            } else {
+              // Central difference for interior points
+              double dt = data.get(i + 1)[0] - data.get(i - 1)[0];
+              if (dt <= 0) continue;
+              rate = (data.get(i + 1)[1] - data.get(i - 1)[1]) / dt;
+              timestamp = data.get(i)[0];
+            }
             if (!Double.isFinite(rate)) continue;
             sumRate += rate;
             rateCount++;
             if (samples.size() < limit) {
               var obj = new JsonObject();
-              obj.addProperty("timestamp_sec", data.get(i)[0]);
+              obj.addProperty("timestamp_sec", timestamp);
               obj.addProperty("rate", rate);
               samples.add(obj);
+            }
+          }
+        } else {
+          // Windowed forward difference (already smooths via averaging)
+          for (int i = window; i < data.size(); i++) {
+            double dt = data.get(i)[0] - data.get(i - window)[0];
+            if (dt > 0) {
+              double rate = (data.get(i)[1] - data.get(i - window)[1]) / dt;
+              if (!Double.isFinite(rate)) continue;
+              sumRate += rate;
+              rateCount++;
+              if (samples.size() < limit) {
+                var obj = new JsonObject();
+                obj.addProperty("timestamp_sec", data.get(i)[0]);
+                obj.addProperty("rate", rate);
+                samples.add(obj);
+              }
             }
           }
         }
@@ -615,7 +681,7 @@ public final class StatisticsTools {
       stats.addProperty("avg_rate", rateCount == 0 ? 0 : sumRate / rateCount);
       stats.addProperty("rate_count", rateCount);
 
-      var quality = DataQuality.fromValues(filterTimeRange(values, start, end));
+      var quality = DataQuality.fromSegments(windows);
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Derivatives amplify noise — increase window_size for smoother results");
@@ -626,9 +692,9 @@ public final class StatisticsTools {
           .addProperty("name", signal.label())
           .addData("statistics", stats)
           .addLimitedList("samples", sampleList, rateCount, limit)
-          .addInputSignal("entry", signal);
+          .addInputSignal("entry", signal)
+          .addInputScope(scope);
       if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
-      if (start != null || end != null) builder.addInputWindow(start, end);
       return builder.addDataQuality(quality).addDirectives(directives).build();
     }
   }
@@ -643,7 +709,7 @@ public final class StatisticsTools {
           + "Computes Pearson correlation coefficient with statistical significance (p-value). "
           + "Handles timestamp alignment automatically via linear interpolation. "
           + "Returns sample count for confidence assessment." + NumericSignal.PATH_HELP
-          + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL
+          + SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL
           + " Correlation does not imply causation—consider confounding variables.";
     }
 
@@ -656,6 +722,9 @@ public final class StatisticsTools {
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
           .addNumberProperty("start_time", "Start time", false, null)
           .addNumberProperty("end_time", "End time", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .build();
     }
 
@@ -665,25 +734,19 @@ public final class StatisticsTools {
       var s2 = signal(log, arguments, "name2", "field2", name());
       var n1 = s1.label();
       var n2 = s2.label();
-      var start = getOptDouble(arguments, "start_time");
-      var end = getOptDouble(arguments, "end_time");
+      var scope = TimeScope.fromArguments(log, null, arguments);
 
       var v1 = s1.values();
       var v2 = s2.values();
 
-      var d1 = s1.unwrap(filterTimeRange(v1, start, end)).stream()
-          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
-          .map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(tv.timestamp(),
-              toDouble(tv.value())))
-          .toList();
-      var d2 = s2.unwrap(filterTimeRange(v2, start, end)).stream()
-          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
-          .map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(tv.timestamp(),
-              toDouble(tv.value())))
-          .toList();
+      // The first signal's samples in scope, each paired with the second interpolated at its
+      // time (angles unwrapped over the whole log, so both keep a consistent branch)
+      var d1 = scope.filter(s1.unwrap(v1.stream().filter(StatisticsTools::isFinite).toList()));
+      var d2Full = s2.unwrap(v2.stream().filter(StatisticsTools::isFinite).toList());
+      var d2 = scope.filter(d2Full);
 
       if (d1.isEmpty() || d2.isEmpty()) {
-        throw new IllegalArgumentException("No finite samples in the window for "
+        throw new IllegalArgumentException("No finite samples" + scopeText(scope) + " for "
             + (d1.isEmpty() ? n1 : n2));
       }
 
@@ -698,7 +761,7 @@ public final class StatisticsTools {
       var x = new ArrayList<Double>();
       var y = new ArrayList<Double>();
       for (var tv1 : d1) {
-        var val2 = getValueAtTimeLinear(d2, tv1.timestamp());
+        var val2 = getValueAtTimeLinear(d2Full, tv1.timestamp());
         if (val2 != null) {
           x.add(((Number) tv1.value()).doubleValue());
           y.add(val2);
@@ -767,14 +830,15 @@ public final class StatisticsTools {
         }
       }
 
-      var q1 = DataQuality.fromValues(v1);
-      var q2 = DataQuality.fromValues(v2);
+      var q1 = DataQuality.fromSegments(scope.split(v1));
+      var q2 = DataQuality.fromSegments(scope.split(v2));
       var quality = q1.qualityScore() <= q2.qualityScore() ? q1 : q2;
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Correlation does not imply causation — consider confounding variables");
 
-      return builder.addDataQuality(quality).addDirectives(directives).build();
+      return builder.addInputScope(scope).addDataQuality(quality).addDirectives(directives)
+          .build();
     }
   }
 

@@ -156,7 +156,10 @@ public final class QueryTools {
           + "fraction_of_window. transition_count and interval_count are true totals; lists are "
           + "cut at limit, with limits giving total and returned. Useful for questions like "
           + "'When did battery voltage drop below 11V, and for how long?'" + NumericSignal.PATH_HELP
-          + " Thresholds on an angle apply to the value as logged (not unwrapped).";
+          + " Thresholds on an angle apply to the value as logged (not unwrapped). scope and "
+          + "windows restrict the time (each window is searched on its own; window_sec is the "
+          + "time searched after the entry's first sample), and the intervals returned can be "
+          + "passed as windows to the statistics tools.";
     }
 
     @Override
@@ -173,6 +176,9 @@ public final class QueryTools {
           .addNumberProperty("threshold", "Threshold value to compare against", true, null)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
           .addIntegerProperty("limit", "Maximum number of transitions and intervals to return", false, 100)
           .build();
     }
@@ -183,8 +189,6 @@ public final class QueryTools {
       var thresholdArg = getOptDouble(arguments, "threshold");
       if (thresholdArg == null) throw new IllegalArgumentException("Missing required parameter: threshold");
       double threshold = thresholdArg;
-      var startTime = getOptDouble(arguments, "start_time");
-      var endTime = getOptDouble(arguments, "end_time");
       int limit = getOptInt(arguments, "limit", 100);
       validatePositive(limit, "limit");
       evaluateCondition(0, operator, threshold); // validates the operator up front
@@ -195,54 +199,62 @@ public final class QueryTools {
       if (values.isEmpty()) {
         throw new IllegalArgumentException("No values for entry: " + name);
       }
+      var scope = TimeScope.fromArguments(log, null, arguments);
 
-      double windowStart = startTime != null ? startTime : values.get(0).timestamp();
-      double windowEnd = endTime != null ? endTime : log.maxTimestamp();
+      double firstSample = values.get(0).timestamp();
       var transitions = new ArrayList<JsonObject>();
       var intervals = new ArrayList<JsonObject>();
-      boolean wasTrue = false;
-      double openedAt = 0;
       double totalTrue = 0;
-      // The value in force at the window start counts, so an interval can begin there
-      if (startTime != null) {
-        var held = toDouble(getValueAtTimeZoh(values, startTime));
-        if (held != null && Double.isFinite(held) && evaluateCondition(held, operator, threshold)) {
-          wasTrue = true;
-          openedAt = startTime;
-          var t = new JsonObject();
-          t.addProperty("timestamp_sec", startTime);
-          t.addProperty("value", held);
-          t.addProperty("at_window_start", true);
-          transitions.add(t);
+      double knownDuration = 0;
+      var perWindow = scope.split(values);
+      for (int w = 0; w < perWindow.size(); w++) {
+        var window = scope.windows().get(w);
+        // Before the entry's first sample its value is unknown: that time is not counted
+        double windowStart = Math.max(window.start(), firstSample);
+        double windowEnd = window.end();
+        if (windowEnd < windowStart) continue;
+        knownDuration += windowEnd - windowStart;
+        boolean wasTrue = false;
+        double openedAt = windowStart;
+        // The value in force at the window start counts, so an interval can begin there
+        if (windowStart > firstSample) {
+          var held = toDouble(getValueAtTimeZoh(values, windowStart));
+          if (held != null && Double.isFinite(held)
+              && evaluateCondition(held, operator, threshold)) {
+            wasTrue = true;
+            var t = new JsonObject();
+            t.addProperty("timestamp_sec", windowStart);
+            t.addProperty("value", held);
+            t.addProperty("at_window_start", true);
+            transitions.add(t);
+          }
         }
-      }
-      for (var tv : values) {
-        if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-        var v = toDouble(tv.value());
-        if (v == null || !Double.isFinite(v)) continue;
-        boolean isTrue = evaluateCondition(v, operator, threshold);
-        if (isTrue && !wasTrue) {
-          var t = new JsonObject();
-          t.addProperty("timestamp_sec", tv.timestamp());
-          t.addProperty("value", v);
-          transitions.add(t);
-          openedAt = tv.timestamp();
-        } else if (!isTrue && wasTrue) {
-          intervals.add(interval(openedAt, tv.timestamp(), "condition_false"));
-          totalTrue += tv.timestamp() - openedAt;
+        for (var tv : perWindow.get(w)) {
+          var v = toDouble(tv.value());
+          if (v == null || !Double.isFinite(v)) continue;
+          boolean isTrue = evaluateCondition(v, operator, threshold);
+          if (isTrue && !wasTrue) {
+            var t = new JsonObject();
+            t.addProperty("timestamp_sec", tv.timestamp());
+            t.addProperty("value", v);
+            transitions.add(t);
+            openedAt = tv.timestamp();
+          } else if (!isTrue && wasTrue) {
+            intervals.add(interval(openedAt, tv.timestamp(), "condition_false"));
+            totalTrue += tv.timestamp() - openedAt;
+          }
+          wasTrue = isTrue;
         }
-        wasTrue = isTrue;
-      }
-      if (wasTrue) {
-        intervals.add(interval(openedAt, windowEnd, "window_end"));
-        totalTrue += Math.max(0, windowEnd - openedAt);
+        if (wasTrue) {
+          intervals.add(interval(openedAt, windowEnd, "window_end"));
+          totalTrue += Math.max(0, windowEnd - openedAt);
+        }
       }
 
       var transitionsArray = new JsonArray();
       transitions.stream().limit(limit).forEach(transitionsArray::add);
       var intervalsArray = new JsonArray();
       intervals.stream().limit(limit).forEach(intervalsArray::add);
-      double windowLength = windowEnd - windowStart;
 
       var builder = success()
           .addProperty("name", name)
@@ -252,9 +264,12 @@ public final class QueryTools {
           .addProperty("interval_count", intervals.size())
           .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
           .addProperty("total_true_sec", totalTrue)
+          .addProperty("window_sec", knownDuration)
           .addInputSignal("entry", signal)
-          .addInputWindow(windowStart, windowEnd);
-      if (windowLength > 0) builder.addProperty("fraction_of_window", totalTrue / windowLength);
+          .addInputScope(scope);
+      if (knownDuration > 0) {
+        builder.addProperty("fraction_of_window", totalTrue / knownDuration);
+      }
       return builder.build();
     }
 

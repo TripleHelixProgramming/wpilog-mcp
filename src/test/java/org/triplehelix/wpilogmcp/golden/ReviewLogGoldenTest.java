@@ -204,6 +204,24 @@ class ReviewLogGoldenTest {
     assertEquals(11952, result.get("count").getAsInt());
     near(18.03, result.get("median").getAsDouble(), 0.005, "median");
     near(51.39, result.get("p95").getAsDouble(), 0.005, "p95");
+    // the same segment by scope: half-open, so the loop logged at the disable timestamp
+    // (359.162 s) belongs to the disabled state
+    var segment = call("get_statistics", "name", "/RealOutputs/LoggedRobot/FullCycleMS",
+        "scope", "segment:0");
+    assertEquals(11951, segment.get("count").getAsInt());
+    near(18.03, segment.get("median").getAsDouble(), 0.005, "segment:0 median");
+  }
+
+  @Test
+  @DisplayName("get_statistics with scope enabled matches numpy over all four segments")
+  void loopTimingEnabledScope() throws Exception {
+    var result = call("get_statistics", "name", "/RealOutputs/LoggedRobot/FullCycleMS",
+        "scope", "enabled");
+    assertEquals(48596, result.get("count").getAsInt());
+    near(17.60, result.get("median").getAsDouble(), 0.01, "enabled median");
+    near(53.11, result.get("p95").getAsDouble(), 0.01, "enabled p95");
+    assertEquals(4, result.getAsJsonObject("inputs").getAsJsonObject("scope")
+        .get("window_count").getAsInt());
   }
 
   @Test
