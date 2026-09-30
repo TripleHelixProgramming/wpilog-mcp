@@ -4,8 +4,8 @@
   "game_name": "REBUILT",
   "full_title": "REBUILT presented by Haas",
   "source": "https://firstfrc.blob.core.windows.net/frc2026/Manual/2026GameManual.pdf",
-  "manual_version": "TU17",
-  "generated_at": "2026-03-21T00:00:00Z",
+  "manual_version": "TU22 (final, 2026-04-21)",
+  "generated_at": "2026-09-30T00:00:00Z",
 
   "match_timing": {
     "auto_duration_sec": 20,
@@ -32,7 +32,7 @@
       "diameter_m": 0.150,
       "diameter_in": 5.91,
       "preload_max_per_robot": 8,
-      "preload_max_per_alliance": 48
+      "preload_max_per_alliance": 24
     }
   ],
 
@@ -56,25 +56,28 @@
       "win": 3,
       "tie": 1,
       "energized_rp": {
-        "description": "Amount of FUEL scored in HUB at or above threshold",
+        "description": "Amount of FUEL scored in an active HUB at or above threshold (Tables 6-4 and 6-5)",
         "value": 1,
+        "threshold_unit": "FUEL scored in an active HUB",
         "regional_threshold": 100,
-        "district_championship_threshold": null,
-        "championship_threshold": null
+        "district_championship_threshold": 240,
+        "championship_threshold": 360
       },
       "supercharged_rp": {
-        "description": "Amount of FUEL scored in HUB at or above threshold",
+        "description": "Amount of FUEL scored in an active HUB at or above threshold (Tables 6-4 and 6-5)",
         "value": 1,
+        "threshold_unit": "FUEL scored in an active HUB",
         "regional_threshold": 360,
-        "district_championship_threshold": null,
-        "championship_threshold": null
+        "district_championship_threshold": 360,
+        "championship_threshold": 500
       },
       "traversal_rp": {
-        "description": "Amount of TOWER points scored during MATCH at or above threshold",
+        "description": "Amount of TOWER points scored during the MATCH at or above threshold (Tables 6-4 and 6-5)",
         "value": 1,
+        "threshold_unit": "TOWER points",
         "regional_threshold": 50,
-        "district_championship_threshold": null,
-        "championship_threshold": null
+        "district_championship_threshold": 50,
+        "championship_threshold": 50
       }
     },
     "fouls": {
@@ -106,8 +109,8 @@
     "max_starting_perimeter_in": 110.0,
     "max_starting_height_in": 30.0,
     "max_weight_lbs": 115.0,
-    "max_weight_with_bumpers_lbs": null,
-    "note": "Weight excludes bumpers, battery, and location detection tags"
+    "max_weight_with_bumpers_lbs": 135.0,
+    "note": "Weight excludes BUMPERS, the battery, and event-provided location detection tags (R103); with BUMPERS 135 lb (R408). Perimeter and height per R104; height is also capped at 30 in during the MATCH (R107)."
   },
 
   "hub_mechanics": {
@@ -121,7 +124,7 @@
   "analysis_hints": {
     "endgame_activity": "Tower climbing attempts typically occur in the final 30 seconds (END GAME). Level 1 available in AUTO (max 2 robots).",
     "hub_strategy": "Track hub active/inactive status from FMS data. Scoring in inactive hub earns 0 points. Alliance shifts alternate every 25 seconds.",
-    "fuel_context": "Each FUEL scored in active HUB = 1 point (auto and teleop). High volume scoring is key: 100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP.",
+    "fuel_context": "Each FUEL scored in active HUB = 1 point (auto and teleop). High volume scoring is key: 100 FUEL for ENERGIZED RP and 360 for SUPERCHARGED RP at Regional/District events (240 and 360 at District Championships, 360 and 500 at the FIRST Championship).",
     "cycle_time": "Fuel cycle = intake from field/depot -> score in hub. Track time between successive hub scores.",
     "tower_context": "TRAVERSAL RP requires 50+ tower points. Level 3 climb (30 pts) + Level 2 (20 pts) = 50 pts minimum for RP.",
     "auto_importance": "AUTO winner determines hub shift order. Scoring more FUEL in AUTO gives strategic advantage for SHIFT 1."

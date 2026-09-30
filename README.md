@@ -164,7 +164,7 @@ wpilog-mcp provides 49 tools organized into categories. All log-requiring tools 
 
 **Start here:** Call `get_server_guide` first to understand what analysis capabilities are available. This prevents writing custom analysis code when a built-in tool already exists.
 
-**Bundled game data:** 2024 Crescendo, 2025 Reefscape, 2026 REBUILT. The `get_game_info` tool returns scoring zones, match timing, and field geometry for these seasons.
+**Bundled game data:** 2024 CRESCENDO, 2025 REEFSCAPE, 2026 REBUILT, transcribed from each season's final game manual. The `get_game_info` tool returns scoring values, ranking-point thresholds by event tier, match timing, field geometry, and robot limits for these seasons, labelled with the manual revision they came from (`manual_version`) and `source: bundled knowledge base, not the log`.
 
 ## Supported Data Types
 

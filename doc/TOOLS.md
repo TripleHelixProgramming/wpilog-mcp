@@ -2022,21 +2022,28 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 ```
 
 ### `get_game_info`
-Get year-specific FRC game information including match timing, scoring values, field geometry, game pieces, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
+Get year-specific FRC game information: match timing, scoring values and ranking-point thresholds by event tier, field geometry, game pieces, robot constraints, and analysis hints. Use this to understand the context of a log file. Defaults to the current season if no year is specified.
 
 **Parameters:**
 - `season` (optional): FRC season year (e.g., 2026). Defaults to current year.
 
-**Bundled game data:** 2024 Crescendo, 2025 Reefscape, 2026 REBUILT
+**Bundled game data:** 2024 CRESCENDO, 2025 REEFSCAPE, and 2026 REBUILT, each transcribed from the final revision of that season's game manual (Team Updates 21, 21, and 22). Ranking-point thresholds are given per event tier (`regional_threshold`, `district_championship_threshold`, `championship_threshold`, plus `*_with_coopertition` where the Coopertition Bonus lowers them), because FIRST raises them for championship events during the season.
 
-**Returns:** Match timing (auto/teleop/endgame durations with shift breakdown), scoring values, field geometry, game pieces, typical mechanisms, and analysis hints for LLM context.
+**Provenance:** the result is a knowledge base, not a measurement, and says so. `source` is `bundled knowledge base, not the log; verify against the current manual` (or `user-provided game file <path>, not the log; ...` for a file loaded through `GameKnowledgeBase.loadFromFile()`), `manual_version` is the manual revision the file was transcribed from (`unknown` when a user file does not record one), `manual_url` is that manual, and `basis` states that `match_timing`, `scoring`, `field_geometry`, `game_pieces`, and `robot_constraints` all come from it. Quote values as "per the bundled game data (manual_version ...)" and check the current manual before relying on a threshold. `get_match_phases` labels its `expected_timing.source` as `game_data` when it uses these numbers.
+
+**Returns:** `source`, `manual_version`, `manual_url`, `basis`, match timing (auto/teleop/endgame durations, with the shift breakdown in 2026), scoring values, field geometry, robot constraints, game pieces, typical mechanisms, and analysis hints for LLM context.
 
 **Example Response:**
 ```json
 {
   "success": true,
+  "status": "ok",
   "season": 2026,
   "game_name": "REBUILT",
+  "source": "bundled knowledge base, not the log; verify against the current manual",
+  "manual_version": "TU22 (final, 2026-04-21)",
+  "manual_url": "https://firstfrc.blob.core.windows.net/frc2026/Manual/2026GameManual.pdf",
+  "basis": "match_timing, scoring, field_geometry, game_pieces, and robot_constraints are transcribed from the 2026 game manual (manual_version) into the game file this result was read from; nothing here is measured from a log",
   "match_timing": {
     "auto_duration_sec": 20,
     "teleop_duration_sec": 140,
@@ -2046,16 +2053,18 @@ Get year-specific FRC game information including match timing, scoring values, f
   },
   "scoring": {
     "match_points": { "auto": {"fuel_active_hub": 1, "tower_level_1": 15}, "..." : "..." },
-    "ranking_points": { "energized_rp": {"regional_threshold": 100}, "..." : "..." }
+    "ranking_points": { "win": 3, "tie": 1, "energized_rp": {"regional_threshold": 100, "district_championship_threshold": 240, "championship_threshold": 360}, "..." : "..." }
   },
+  "field_geometry": { "field_length_m": 16.54, "field_width_m": 8.07, "..." : "..." },
+  "robot_constraints": { "max_starting_perimeter_in": 110.0, "max_starting_height_in": 30.0, "max_weight_lbs": 115.0, "max_weight_with_bumpers_lbs": 135.0, "..." : "..." },
   "analysis_hints": {
     "endgame_activity": "Tower climbing attempts in final 30 seconds",
-    "fuel_context": "100 FUEL for ENERGIZED RP, 360 for SUPERCHARGED RP"
+    "fuel_context": "100 FUEL for ENERGIZED RP and 360 for SUPERCHARGED RP at Regional/District events"
   }
 }
 ```
 
-**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API.
+**Custom game data:** Place a JSON file matching the bundled format in any directory and load it via the `GameKnowledgeBase.loadFromFile()` API; its `source` (the manual's URL) and `manual_version` fields are reported as `manual_url` and `manual_version`.
 
 ---
 

@@ -3014,10 +3014,15 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Get year-specific FRC game information (match timing, scoring values, field geometry, "
-          + "game pieces, and analysis hints). Use this to understand the context of a log file: "
-          + "what the match phases are, what scoring actions look like, and what mechanisms to expect. "
-          + "Defaults to the current season if no year is specified.";
+      return "Get year-specific FRC game information (match timing, scoring values and ranking-point "
+          + "thresholds by event tier, field geometry, game pieces, robot_constraints, and analysis "
+          + "hints). Use this to understand the context of a log file: what the match phases are, "
+          + "what scoring actions look like, and what mechanisms to expect. Defaults to the current "
+          + "season if no year is specified. The values are a bundled knowledge base transcribed "
+          + "from the season's game manual, not anything read from a log: the result's source, "
+          + "manual_version, and basis say so. Quote them as 'per the bundled game data', and check "
+          + "the current manual before relying on a threshold, since Team Updates change thresholds "
+          + "during a season.";
     }
 
     @Override
@@ -3053,9 +3058,23 @@ public final class FrcDomainTools {
       result.addProperty("success", true);
       result.addProperty("season", game.season());
       result.addProperty("game_name", game.gameName());
+      // Provenance (review 6 sections 3.2 and 9.4): a knowledge base, not a measurement.
+      result.addProperty("source", game.isBundled()
+          ? "bundled knowledge base, not the log; verify against the current manual"
+          : "user-provided game file " + game.origin()
+              + ", not the log; verify against the current manual");
+      result.addProperty("manual_version", game.manualVersion().orElse("unknown"));
+      game.manualUrl().ifPresent(url -> result.addProperty("manual_url", url));
+      result.addProperty("basis", "match_timing, scoring, field_geometry, game_pieces, and "
+          + "robot_constraints are transcribed from the " + game.season() + " game manual "
+          + "(manual_version) into the game file this result was read from; nothing here is "
+          + "measured from a log");
       result.add("match_timing", game.raw().getAsJsonObject("match_timing"));
       result.add("scoring", game.scoring());
       result.add("field_geometry", game.raw().getAsJsonObject("field_geometry"));
+      if (game.raw().has("robot_constraints")) {
+        result.add("robot_constraints", game.raw().getAsJsonObject("robot_constraints"));
+      }
       result.add("game_pieces", game.gamePieces());
       if (game.analysisHints() != null) {
         result.add("analysis_hints", game.analysisHints());
