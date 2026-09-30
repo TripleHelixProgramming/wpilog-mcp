@@ -15,12 +15,12 @@ import java.util.Set;
  * The result checks every tool must pass on every fixture (the rules in
  * {@code doc/ROBUSTNESS_REVIEW.md} section 6, plus basic shape and crash checks).
  */
-final class ConformanceChecks {
+public final class ConformanceChecks {
 
   private ConformanceChecks() {}
 
   /** A check that can fail for a tool call. */
-  enum Check {
+  public enum Check {
     /** The result is a JSON object with a boolean {@code success}; failures carry an error. */
     SHAPE,
     /** The tool threw an unexpected exception (reported as "Internal error: ..."). */
@@ -43,7 +43,7 @@ final class ConformanceChecks {
     /** The call did not finish in time. */
     TIMEOUT;
 
-    String label() {
+    public String label() {
       return name().toLowerCase();
     }
   }
@@ -56,7 +56,7 @@ final class ConformanceChecks {
   static final Set<String> STATUSES = Set.of("ok", "partial", "not_applicable", "no_match", "error");
 
   /** Runs the single-result checks. {@code limit} is the limit the call requested, or null. */
-  static List<Check> check(JsonElement result, Integer limit) {
+  public static List<Check> check(JsonElement result, Integer limit) {
     var failed = check(result);
     if (result == null || !result.isJsonObject()) return failed;
     var obj = result.getAsJsonObject();

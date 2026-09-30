@@ -341,7 +341,10 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   optional §5.6 pose helpers remain deferred.
 - [ ] **Phase 5 — Consistency and docs.** Done: `list_available_logs` paging and filters (G6); the description
   test (G4: every snake_case output term a description names appears in a fixture result, run inside the
-  conformance sweep). Remaining: guidance audit, the `TOOL_RESPONSES.md` harness, stress tests.
+  conformance sweep); the guidance audit (instructions name field paths and scope within 2000 characters; traps
+  describe scope/windows, change-only holds, and alerts as the tools now behave); both stress tests exercise the
+  new tools and features and apply the conformance checks to every real-log result (0 violations on the 88-log
+  corpus). Remaining: the `TOOL_RESPONSES.md` harness.
 
 Golden checks on the review log: all 17 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation

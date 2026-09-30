@@ -529,6 +529,8 @@ class HttpStressTest {
     // Core tools (not log-requiring)
     exerciseTool(sessionId, "health_check", new JsonObject(), "core");
     exerciseTool(sessionId, "list_struct_types", new JsonObject(), "core");
+    exerciseTool(sessionId, "list_struct_types", withPath(logPath), "core");
+    exerciseTool(sessionId, "resolve_signals", withPath(logPath), "core");
     exerciseTool(sessionId, "list_loaded_logs", new JsonObject(), "core");
 
     // Query tools (log-requiring)
@@ -556,6 +558,20 @@ class HttpStressTest {
       rateArgs.addProperty("name", numericEntry);
       rateArgs.addProperty("limit", 5);
       exerciseTool(sessionId, "rate_of_change", rateArgs, "statistics");
+
+      var scopedArgs = new JsonObject();
+      scopedArgs.addProperty("path", logPath);
+      scopedArgs.addProperty("name", numericEntry);
+      scopedArgs.addProperty("scope", "enabled");
+      exerciseTool(sessionId, "get_statistics", scopedArgs, "statistics");
+
+      var alignArgs = new JsonObject();
+      alignArgs.addProperty("path", logPath);
+      var names = new com.google.gson.JsonArray();
+      names.add(numericEntry);
+      alignArgs.add("names", names);
+      alignArgs.addProperty("limit", 5);
+      exerciseTool(sessionId, "align_entries", alignArgs, "statistics");
     }
 
     // FRC domain tools (log-requiring)
@@ -669,7 +685,11 @@ class HttpStressTest {
     try {
       var result = toolCall(sessionId, toolName, args);
       boolean success = result.has("success") && result.get("success").getAsBoolean();
-      System.out.printf("  [%s] %-25s %s%n", category, toolName, success ? "OK" : "no data");
+      Integer limit = args.has("limit") ? args.get("limit").getAsInt() : null;
+      var failed = org.triplehelix.wpilogmcp.conformance.ConformanceChecks.check(result, limit);
+      System.out.printf("  [%s] %-25s %s%s%n", category, toolName, success ? "OK" : "no data",
+          failed.isEmpty() ? "" : " CONFORMANCE: " + failed);
+      assertTrue(failed.isEmpty(), toolName + " violates " + failed + ": " + result);
     } catch (Exception e) {
       System.out.printf("  [%s] %-25s ERROR: %s%n", category, toolName, e.getMessage());
     }
