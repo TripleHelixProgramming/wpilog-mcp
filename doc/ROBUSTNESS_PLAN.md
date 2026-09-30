@@ -339,7 +339,9 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   CLAUDE.md calibration text; `align_entries` (sample times from records or embedded timestamps, three
   interpolations, angle-aware difference statistics) and lag search in `time_correlate`/`compare_entries`. The
   optional §5.6 pose helpers remain deferred.
-- [ ] **Phase 5 — Consistency and docs.**
+- [ ] **Phase 5 — Consistency and docs.** Done: `list_available_logs` paging and filters (G6); the description
+  test (G4: every snake_case output term a description names appears in a fixture result, run inside the
+  conformance sweep). Remaining: guidance audit, the `TOOL_RESPONSES.md` harness, stress tests.
 
 Golden checks on the review log: all 17 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation

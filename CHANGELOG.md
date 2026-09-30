@@ -70,6 +70,7 @@ Robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBUSTNESS_REVIEW.md), follo
 - **Packaged extension README links** — `buildExtension` and the release workflow now pass `--baseContentUrl`/`--baseImagesUrl` to `vsce package` so relative links and images in `vscode-extension/README.md` resolve to the `vscode-extension/` subdirectory. Previously vsce assumed the repository root, so the `../doc/…` links in the packaged README pointed at 404s.
 
 ### Documentation
+- **Tool descriptions are checked against real output** (G4) — A test runs every tool on the fixture corpus and fails when a description names an output (a snake_case term that is not a parameter) that no result contains; the few outputs that appear only in situations the sweep does not create are listed with the test that covers each.
 - **VS Code extension README** — Extension icon is now shown at the top of the README.
 - **`TOOLS.md` examples matched to actual output** — `compare_matches`, `can_health`, `get_ds_timeline`, and `power_analysis` examples and field lists now reflect what the tools return (the previous `can_health` doc described a `FAIR` level and `can_entries` list that never existed; `get_ds_timeline` no longer claims joystick-disconnect events).
 
