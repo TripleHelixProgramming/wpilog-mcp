@@ -57,12 +57,18 @@ public class AnalysisDirectives {
           "Low sample count (" + quality.sampleCount() + "). "
           + "Statistical measures have high uncertainty.");
     }
-    if (quality.gapCount() > 0 && quality.sampleCount() > 0
+    if (quality.sampling() == DataQuality.Sampling.PERIODIC && quality.gapCount() > 0
+        && quality.sampleCount() > 0
         && (double) quality.gapCount() / quality.sampleCount() > 0.02) {
       d.interpretationGuidance.add(
           quality.gapCount() + " data gaps detected (max "
           + String.format("%.1f", quality.maxGapMs()) + "ms). "
           + "Trend analysis may be affected by missing data.");
+    }
+    if (quality.sampling() == DataQuality.Sampling.CHANGE_ONLY) {
+      d.interpretationGuidance.add("Timing is consistent with values logged only when they "
+          + "change (sampling change_only): a long interval between samples means the value "
+          + "held, not missing data; a sample count is a count of changes.");
     }
     if (quality.nanFiltered() > 0) {
       d.interpretationGuidance.add(

@@ -32,8 +32,8 @@ import java.io.StringReader;
  * <p>Wording principles (learned the hard way): rules must be concrete and checkable ("never
  * quote a number not in a tool result"), scoped so they do not fire on simple lookups, and must
  * not turn the server's {@code confidence_level} into a blanket ceiling. That field is driven by
- * sample gaps and jitter and reads "low" on perfectly good full-match data, so it bounds
- * statistics, not directly observed events; a pit crew needs "the log shows a 149 A stall at
+ * sample counts, holds, and timing, and reads "low" on sparse change-only signals whose events are
+ * perfectly clear, so it bounds statistics, not directly observed events; a pit crew needs "the log shows a 149 A stall at
  * 87.2 s" stated plainly. Every claim the text makes about a tool (parameter names, what a tool
  * can and cannot read, what an event type means) must match the implementation; the test suite
  * checks tool names, but semantics are checked by review.
@@ -60,7 +60,7 @@ public final class AnalysisGuidance {
       1. Never name an entry you have not seen in a list/search result or quote a number not in a tool result. A no_match result means the data was not found: say what was searched, ask how the team names it; absent data is not absent problems. One read_entry page is not the whole log.
       2. Never compute statistics, correlations, rates, or durations by hand; use the tools. If no tool can read a data type, export_csv it, compute externally, and cite the export. Call get_match_phases before any time reasoning.
       3. Verify the premise (get_ds_timeline, find_condition) before explaining an event. BROWNOUT_START/END events are voltage threshold crossings; only RIO_BROWNOUT_START (a logged flag) means the roboRIO cut outputs.
-      4. Three tiers. A discrete event (a logged flag, 149 A peak, error string) is a fact: state it plainly. A mean, trend, or correlation is an inference: bound it by confidence_level, gap-driven and often "low" on good full-match data; it caps statistics, not events. A cause outside the telemetry (wiring, wear, battery) is a hypothesis needing physical inspection.
+      4. Three tiers. A discrete event (a logged flag, 149 A peak, error string) is a fact: state it plainly. A mean, trend, or correlation is an inference: bound it by confidence_level and data_quality.reasons; it caps statistics, not events. A cause outside the telemetry (wiring, wear, battery) is a hypothesis needing physical inspection.
       5. For "why" questions, even when the user names a cause: answer it (yes/no/cannot tell), then test it against a rival: normal for this phase/state, a logging or timing artifact, or another simultaneous load. Report which survived.
       6. Scope statistics to the phase and enabled state in question (whole-log numbers mix in disabled time and boot) and cite entry, window, n, and statistic per finding. High r often means shared match timing, not cause.
       7. Generalize only with cross-match evidence (compare_matches); one log is one sample.
@@ -90,7 +90,8 @@ public final class AnalysisGuidance {
           "pit_mode": "With a match coming up, answer with the fewest tool calls that test the leading cause and one rival, then offer the deeper analysis instead of running it. Run the full loop for post-event analysis or when the answer would change a hardware decision."
         },
         "calibration": {
-          "server_confidence_level": "Derived from quality_score, which starts at 1.0 and subtracts up to 0.3 for gaps (intervals over 5x the median sample interval; 20 or more gaps is the full penalty), up to 0.2 for interval jitter (long gaps inflate this too), up to 0.2 for non-finite values, and 0.3 or 0.15 for fewer than 100 or 500 samples. A full-match 50 Hz series with disabled periods typically has 100+ gaps, lands at about 0.5, and reports 'low' even when the data is good. Before quoting it, look at sample_count and gap_count: 11,000 samples with gaps only at disabled transitions is good data.",
+          "server_confidence_level": "Derived from quality_score, which starts at 1.0 and subtracts, each with a line in data_quality.reasons: up to 0.3 for time in intervals over 5x the median (20% of the span is the full penalty; for a change_only series these are holds, not missing data, but statistics weigh samples, not time), up to 0.2 for timing jitter (median absolute deviation, periodic series), up to 0.2 for non-finite values, and 0.3 or 0.15 for fewer than 100 or 500 finite samples. data_quality.sampling says whether the series is periodic, change_only (logged when it changes, as AdvantageKit does), or event. Good full-match data reads high; low usually means few samples or long holds, which bounds a statistic but not an observed event.",
+
           "what_it_bounds": "Claims built on a mean, trend, percentile, correlation, or score. It does not bound claims about discrete events.",
           "discrete_events": "A logged brownout flag, a voltage threshold crossing, a DS disable, a joystick disconnect, an enabled-state CAN error, a current peak above stall: these are observations. State them plainly with the timestamp, even from one match. The cause of the event is a separate claim with its own confidence.",
           "cause_confidence": {

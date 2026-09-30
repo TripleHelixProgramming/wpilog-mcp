@@ -2224,32 +2224,38 @@ Every tool result, however the tool built it, is normalized by the server so tha
 
 ### `data_quality`
 
-Computed from the primary data entry's timestamped values. Included in responses from all analytical tools (15+).
+Computed from the values a result was computed from, within its scope (the time between windows is not a gap). Included in responses from all analytical tools.
 
 | Field | Description |
 |-------|-------------|
 | `sample_count` | Number of data points |
-| `time_span_seconds` | Duration of the data |
-| `gap_count` | Number of data gaps (intervals > 5x the median sample interval) |
-| `max_gap_ms` | Largest gap in milliseconds (only present if gaps > 0) |
-| `nan_filtered` | Count of NaN/Infinity values filtered (only present if > 0) |
-| `effective_sample_rate_hz` | Actual sample rate based on median interval |
-| `quality_score` | Composite score 0.0-1.0 (see formula below) |
+| `time_span_seconds` | Duration of the data (summed over windows) |
+| `sampling` | `periodic` (logged every loop: most intervals within half a median interval of the median), `change_only` (irregular timing and no two consecutive values equal: logged when the value changes, as AdvantageKit and NetworkTables logging do, so a long interval is a hold), or `event` (irregular otherwise, or too few samples to tell) |
+| `gap_count` | Intervals longer than 5x the median interval |
+| `max_gap_ms` | Longest of them, in milliseconds (only present if gaps > 0) |
+| `nan_filtered` | Count of NaN/Infinity values (only present if > 0) |
+| `effective_sample_rate_hz` | One over the median interval |
+| `quality_score` | Composite score 0.0-1.0 (see below) |
+| `reasons` | One line per penalty, e.g. `"28.0% of the time span is in 530 gaps longer than 5x the median interval (longest 85468 ms)"` (only present when the score is below 1) |
 
-**Quality Score Formula:**
+**Quality score** (each penalty listed in `reasons`):
 ```
 score = 1.0
-  - 0.3 x min(gap_count / 20, 1)       // Gaps: 20+ gaps = full penalty
-  - 0.2 x min(nan_count / total, 1)     // NaN: ratio of non-finite values
-  - 0.3 x (n<100 ? 1 : n<500 ? 0.5 : 0) // Samples: statistical confidence
-  - 0.2 x min(jitter / median_dt, 1)    // Jitter: timing irregularity
+  - 0.3 x min(time_in_long_intervals / time_span / 0.2, 1)  // periodic and change_only series
+  - 0.2 x min(MAD(intervals) / median_interval / 0.5, 1)     // jitter, periodic series
+  - 0.2 x non_finite / total                                 // NaN and infinities
+  - 0.3 if fewer than 100 finite samples, 0.15 if fewer than 500
+(0 when no value is finite)
 ```
+Long intervals weigh by the time they cover, not their number: a full-match 50 Hz series with a few hundred loop stalls scores about 0.9. For a `change_only` series they are holds, not missing data, but statistics weigh samples, not time, so a series that sat unchanged for a quarter of the match still reads `medium`. Event series are not penalized for irregular timing.
 
 **Confidence levels** derived from quality score:
-- `"high"` (> 0.8): Reliable data, results can be stated with confidence
+- `"high"` (> 0.8, and at most 10% of the time span in long intervals): Reliable data, results can be stated with confidence
 - `"medium"` (0.5-0.8): Usable data, note caveats in analysis
 - `"low"` (0.2-0.5): Poor data, results should be treated as preliminary
 - `"insufficient"` (<= 0.2): Too little data for meaningful analysis
+
+The level bounds statistics (means, trends, correlations), not directly observed events: 68 samples of a CAN error counter read `low`, while its peak of 215 at 650.86 s is a fact.
 
 ### `server_analysis_directives`
 
@@ -2264,6 +2270,7 @@ Auto-generated LLM guidance based on data quality issues detected. Included alon
 
 Auto-generated guidance triggers:
 - Sample count < 100 -> "Low sample count" warning
-- Gap count > 5 -> "Data gaps detected" warning
+- A periodic series with gaps in more than 2% of its intervals -> "Data gaps detected" warning
+- A change-only series -> a note that long intervals are holds, not missing data, and that a sample count is a count of changes
 - NaN values present -> "Non-finite values filtered" warning
 - Time span < 10 seconds -> "Short time span" warning

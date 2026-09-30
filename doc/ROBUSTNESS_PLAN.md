@@ -331,12 +331,13 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
 - [ ] **Phase 4 — Strings, intervals, alignment, quality.** Done: one text source (`TextEvents`: string lines,
   `string[]` alerts as appear/clear episodes, json string values) behind `search_strings`, `get_ds_timeline` (with
   `ALERT_RAISED` events), `can_health`, and `generate_report` (F1); compound `all`/`any` conditions in
-  `find_condition` with held values and `abs_`/`ne` operators, whose intervals feed `windows`. Remaining:
-  `align_entries`; lag search; `DataQuality` recalibration (G1).
+  `find_condition` with held values and `abs_`/`ne` operators, whose intervals feed `windows`; `DataQuality`
+  recalibration (G1: sampling classification, time-weighted gaps, MAD jitter, `reasons`), with the guidance and
+  CLAUDE.md calibration text. Remaining: `align_entries`; lag search.
 - [ ] **Phase 5 — Consistency and docs.**
 
-Golden checks on the review log: all 15 pass (timeline, flag brownouts, logged threshold, loop timing
+Golden checks on the review log: all 16 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation
 decode by schema path, per-camera observation counts, pose wander with heading range and circular mean, 189
 heading wraps, loop time over scope `enabled` and `segment:0`, the camera 3 alert as two appear/clear episodes, and
-"disabled and stationary" as one compound condition).
+"disabled and stationary" as one compound condition, and the data-quality calibration).

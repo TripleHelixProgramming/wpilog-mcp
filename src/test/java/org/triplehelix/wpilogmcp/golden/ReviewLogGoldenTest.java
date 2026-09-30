@@ -213,6 +213,24 @@ class ReviewLogGoldenTest {
   }
 
   @Test
+  @DisplayName("data quality: good full-match data reads high; long holds read medium, with reasons")
+  void dataQualityCalibration() throws Exception {
+    // G1: FullCycleMS scored 0.50 ("low") before; the score now weighs gaps by time
+    var loop = call("get_statistics", "name", "/RealOutputs/LoggedRobot/FullCycleMS");
+    var quality = loop.getAsJsonObject("data_quality");
+    assertEquals("periodic", quality.get("sampling").getAsString());
+    assertTrue(quality.get("quality_score").getAsDouble() >= 0.85, quality.toString());
+    assertEquals("high", loop.getAsJsonObject("server_analysis_directives")
+        .get("confidence_level").getAsString());
+    // chassis speeds are not logged while unchanged (zero while disabled): 28% of the time in holds
+    var vx = call("get_statistics", "name", "/RealOutputs/SwerveChassisSpeeds/Measured.vx");
+    assertEquals("medium", vx.getAsJsonObject("server_analysis_directives")
+        .get("confidence_level").getAsString());
+    assertTrue(vx.getAsJsonObject("data_quality").getAsJsonArray("reasons").get(0).getAsString()
+        .startsWith("28.0% of the time span"), vx.toString());
+  }
+
+  @Test
   @DisplayName("get_statistics with scope enabled matches numpy over all four segments")
   void loopTimingEnabledScope() throws Exception {
     var result = call("get_statistics", "name", "/RealOutputs/LoggedRobot/FullCycleMS",
