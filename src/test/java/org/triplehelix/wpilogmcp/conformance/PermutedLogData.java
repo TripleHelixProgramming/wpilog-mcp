@@ -1,0 +1,89 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.conformance;
+
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
+
+/**
+ * A view of a log whose entries iterate in the reverse of their natural order, with every entry
+ * keeping its id, name, type, metadata, and values.
+ *
+ * <p>A tool whose result depends on map iteration order (a {@code findFirst} over
+ * {@code log.entries()}) gives a different answer on this view. Entry ids are unchanged, so a
+ * tool that breaks ties by declaration order (entry id) gives the same answer.
+ */
+final class PermutedLogData implements LogData {
+
+  private final LogData delegate;
+  private final Map<String, EntryInfo> entries;
+  private final Map<String, List<TimestampedValue>> values;
+
+  PermutedLogData(LogData delegate) {
+    this.delegate = delegate;
+    var names = new ArrayList<>(delegate.entries().keySet());
+    Collections.reverse(names);
+    var reordered = new LinkedHashMap<String, EntryInfo>();
+    for (var name : names) reordered.put(name, delegate.entries().get(name));
+    this.entries = Collections.unmodifiableMap(reordered);
+    this.values = new ValuesView(new LinkedHashSet<>(names));
+  }
+
+  private final class ValuesView extends AbstractMap<String, List<TimestampedValue>> {
+    private final Set<String> keys;
+
+    ValuesView(Set<String> keys) {
+      this.keys = Collections.unmodifiableSet(keys);
+    }
+
+    @Override
+    public List<TimestampedValue> get(Object key) {
+      return delegate.values().get(key);
+    }
+
+    @Override
+    public boolean containsKey(Object key) {
+      return delegate.values().containsKey(key);
+    }
+
+    @Override
+    public Set<String> keySet() {
+      return keys;
+    }
+
+    @Override
+    public int size() {
+      return keys.size();
+    }
+
+    @Override
+    public Set<Entry<String, List<TimestampedValue>>> entrySet() {
+      var result = new LinkedHashSet<Entry<String, List<TimestampedValue>>>();
+      for (var key : keys) {
+        var v = delegate.values().get(key);
+        if (v != null) result.add(new SimpleImmutableEntry<>(key, v));
+      }
+      return result;
+    }
+  }
+
+  @Override public String path() { return delegate.path(); }
+  @Override public Map<String, EntryInfo> entries() { return entries; }
+  @Override public Map<String, List<TimestampedValue>> values() { return values; }
+  @Override public double minTimestamp() { return delegate.minTimestamp(); }
+  @Override public double maxTimestamp() { return delegate.maxTimestamp(); }
+  @Override public boolean truncated() { return delegate.truncated(); }
+  @Override public String truncationMessage() { return delegate.truncationMessage(); }
+  @Override public int sampleCount(String entryName) { return delegate.sampleCount(entryName); }
+}

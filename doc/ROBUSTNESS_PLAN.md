@@ -177,15 +177,34 @@ so no persisted data goes stale.
   tests.
 - Done when the conformance known-failures list is empty and the golden test passes.
 
+## Findings during implementation
+
+- **Two golden values in the review are wrong** (recomputed with `wpiutil.log.DataLogReader` and numpy):
+  `/RealOutputs/CANBus/CANHD/TEC` peaks at **215 at 650.86 s** (five seconds before the first brownout), not 85 at
+  205.76 s — 85 was the first of about 15 excursions, nine of them above error-passive (128). The camera 3 alert is
+  in `/RealOutputs/Alerts/warnings` (not `errors`) from 737.678 to 783.804 s; `/Vision/Camera3/Connected` is false
+  until 783.858 s, which explains the review's two end times. `ReviewLogGoldenTest` uses the corrected values.
+- **WPILib 2026.2.2's native `DataLogWriter` blocks forever** inside `appendRaw` once a log grows past roughly a
+  megabyte (200 k plain doubles is enough). Fixtures are therefore written by a small pure-Java WPILOG writer
+  (`fixtures/WpilogWriter`), validated against WPILib's own Java reader and the Python (C++) reader.
+- **wpimath cannot be used at runtime or in tests without extra libraries**: its geometry classes load protobuf and
+  units classes during initialization, and main code never uses wpimath. Canonical WPILib schemas are therefore
+  written out as strings (they match the ones in real logs byte for byte).
+- **`LogCache` closes a log even when it is replaced** (not only evicted). Harmless in production, where the same path
+  is never loaded twice concurrently, but test code must not swap a cached log for a wrapper around it.
+- **`ToolUtils.estimateSeasonYear` reads the first `20xx` anywhere in the file path**, so a directory name can change
+  the season. The log itself records the date (`/SystemStats/EpochTimeMicros`, `systemTime`,
+  `/RealMetadata/BuildDate`); the season should come from there first.
+
 ## Exit checks (Appendix A)
 
 - **Phase 1:** four enabled segments, the last ending at `log_end`.
 - **Phase 2:** the byte-for-byte decode check; pose wander over 362–394 s (x 29.0 cm, y 59.9 cm, heading 7.33°) via
   `get_statistics` with field paths.
-- **Phase 3:** loop p95 53.1 ms and 18.5 % of loops over 25 ms while enabled; CANHD TEC maximum 85 at 205.76 s; mean
+- **Phase 3:** loop p95 53.1 ms and 18.5 % of loops over 25 ms while enabled; CANHD TEC maximum 215 at 650.86 s; mean
   |speed| 0.97 m/s while enabled (per module 0.950–0.987); per-camera observation counts.
-- **Phase 4:** the camera 3 disconnect; "disabled and stationary" as one compound condition. The review gives the
-  disconnect end as 783.80 s (F1) and 783.86 s (Appendix A); settle which is right before it becomes a golden value.
+- **Phase 4:** the camera 3 alert (`/RealOutputs/Alerts/warnings`, 737.678–783.804 s); "disabled and stationary" as one
+  compound condition.
 
 ## Appendix: verification detail
 
@@ -276,7 +295,9 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
 
 ## Progress
 
-- [ ] Phase 0 — Baseline and measurement
+- [x] Phase 0 — Baseline and measurement: fixture corpus (20 logs), `ToolConformanceTest` with a known-failures
+  ratchet (110 violations at baseline), opt-in `ReviewLogGoldenTest` (4 passing, 8 pending), deterministic
+  `MockLogBuilder`
 - [ ] Phase 1 — Honest results
 - [ ] Phase 2 — Schema-driven structs and field paths
 - [ ] Phase 3 — Roles, one resolver, scope

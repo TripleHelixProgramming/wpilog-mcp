@@ -1,0 +1,197 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.conformance;
+
+import com.google.gson.JsonObject;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Predicate;
+import org.triplehelix.wpilogmcp.fixtures.FixtureLogs.Fixture;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
+
+/**
+ * Builds argument sets for running any tool against any fixture, from the tool's own input schema.
+ *
+ * <p>Every required parameter must have a rule here; an unknown one fails the conformance test so
+ * a new tool cannot silently escape it. Entry-valued parameters are filled with entries picked by
+ * kind (numeric, struct, struct array, boolean, string, numeric array): the one with the most
+ * samples, ties broken by entry id, so choices are deterministic.
+ */
+final class ToolArguments {
+
+  /** One way of calling a tool. */
+  record Variant(String label, JsonObject args) {}
+
+  /** Entry kinds a tool with a {@code name} parameter is exercised with. */
+  enum Kind {
+    NUMERIC(t -> t.equals("double") || t.equals("float") || t.equals("int64")),
+    STRUCT(t -> t.startsWith("struct:") && !t.endsWith("[]")),
+    STRUCT_ARRAY(t -> t.startsWith("struct:") && t.endsWith("[]")),
+    BOOLEAN(t -> t.equals("boolean")),
+    STRING(t -> t.equals("string")),
+    NUMERIC_ARRAY(t -> t.equals("double[]") || t.equals("float[]") || t.equals("int64[]"));
+
+    final Predicate<String> type;
+
+    Kind(Predicate<String> type) {
+      this.type = type;
+    }
+
+    String label() {
+      return name().toLowerCase();
+    }
+  }
+
+  private ToolArguments() {}
+
+  static Optional<String> pick(LogData log, Kind kind, Predicate<String> nameFilter, int skip) {
+    return log.entries().values().stream()
+        .filter(e -> !e.name().startsWith("/.schema/"))
+        .filter(e -> kind.type.test(e.type()))
+        .filter(e -> nameFilter.test(e.name()))
+        .filter(e -> log.sampleCount(e.name()) > 0)
+        .sorted(Comparator.comparingInt((EntryInfo e) -> -log.sampleCount(e.name()))
+            .thenComparingInt(EntryInfo::id))
+        .skip(skip)
+        .map(EntryInfo::name)
+        .findFirst();
+  }
+
+  static Optional<String> pick(LogData log, Kind kind) {
+    return pick(log, kind, n -> true, 0);
+  }
+
+  static Set<String> required(Tool tool) {
+    var required = new HashSet<String>();
+    var schema = tool.inputSchema();
+    if (schema.has("required")) {
+      schema.getAsJsonArray("required").forEach(e -> required.add(e.getAsString()));
+    }
+    return required;
+  }
+
+  static boolean takesPath(Tool tool) {
+    var props = tool.inputSchema().getAsJsonObject("properties");
+    return props != null && props.has("path");
+  }
+
+  /**
+   * Returns the argument variants for {@code tool} on {@code fixture} (or {@code null} fixture for
+   * tools that take no log).
+   *
+   * @throws IllegalStateException if a required parameter has no rule
+   */
+  static List<Variant> variants(Tool tool, Fixture fixture, LogData log, List<Fixture> all,
+      Path exportDir) {
+    var required = required(tool);
+    var base = new JsonObject();
+    if (fixture != null) base.addProperty("path", fixture.path().toString());
+    var variants = new ArrayList<Variant>();
+    String toolName = tool.name();
+
+    switch (toolName) {
+      case "get_entry_info", "read_entry", "get_statistics", "detect_anomalies", "find_peaks",
+          "rate_of_change", "find_condition", "export_csv" -> {
+        for (var kind : Kind.values()) {
+          var entry = pick(log, kind);
+          if (entry.isEmpty()) continue;
+          var args = base.deepCopy();
+          args.addProperty("name", entry.get());
+          if (toolName.equals("find_condition")) {
+            args.addProperty("operator", "gt");
+            args.addProperty("threshold", 0.0);
+          }
+          if (toolName.equals("export_csv")) {
+            args.addProperty("output_path", exportDir
+                .resolve(fixture.id() + "-" + kind.label() + ".csv").toString());
+          }
+          variants.add(new Variant(kind.label(), args));
+        }
+        if (variants.isEmpty()) {
+          var args = base.deepCopy();
+          args.addProperty("name", "/Missing/Entry");
+          if (toolName.equals("find_condition")) {
+            args.addProperty("operator", "gt");
+            args.addProperty("threshold", 0.0);
+          }
+          if (toolName.equals("export_csv")) {
+            args.addProperty("output_path", exportDir.resolve(fixture.id() + "-missing.csv")
+                .toString());
+          }
+          variants.add(new Variant("missing", args));
+        }
+        return variants;
+      }
+      case "compare_entries", "time_correlate" -> {
+        for (var kind : List.of(Kind.NUMERIC, Kind.STRUCT)) {
+          var first = pick(log, kind, n -> true, 0);
+          var second = pick(log, kind, n -> true, 1);
+          if (first.isEmpty()) continue;
+          var args = base.deepCopy();
+          args.addProperty("name1", first.get());
+          args.addProperty("name2", second.orElse(first.get()));
+          variants.add(new Variant(kind.label(), args));
+        }
+        if (variants.isEmpty()) {
+          var args = base.deepCopy();
+          args.addProperty("name1", "/Missing/A");
+          args.addProperty("name2", "/Missing/B");
+          variants.add(new Variant("missing", args));
+        }
+        return variants;
+      }
+      default -> {
+        // one variant, below
+      }
+    }
+
+    var args = base.deepCopy();
+    for (var param : required) {
+      if (param.equals("path")) continue;
+      switch (param) {
+        case "compare_path" -> {
+          var other = all.stream()
+              .filter(f -> !f.id().equals(fixture.id()) && f.id().startsWith("akit_"))
+              .findFirst().orElse(fixture);
+          args.addProperty(param, other.path().toString());
+        }
+        case "name" -> args.addProperty(param, pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+        case "mechanism_name" -> args.addProperty(param,
+            log.entries().keySet().stream().anyMatch(n -> n.contains("Elevator"))
+                ? "Elevator" : "Drive");
+        case "state_entry" -> args.addProperty(param,
+            pick(log, Kind.STRING, n -> n.endsWith("/Command"), 0)
+                .or(() -> pick(log, Kind.STRING)).orElse("/Missing/Command"));
+        case "velocity_entry" -> args.addProperty(param,
+            pick(log, Kind.NUMERIC, n -> n.contains("Velocity"), 0)
+                .or(() -> pick(log, Kind.NUMERIC)).orElse("/Missing/Velocity"));
+        case "current_entry" -> args.addProperty(param,
+            pick(log, Kind.NUMERIC, n -> n.contains("Current"), 0)
+                .or(() -> pick(log, Kind.NUMERIC)).orElse("/Missing/Current"));
+        case "kt" -> args.addProperty(param, 0.0192);
+        case "gear_ratio" -> args.addProperty(param, 6.75);
+        case "task" -> args.addProperty(param, "why did the robot brown out during teleop");
+        case "signal_key" -> args.addProperty(param, "missing-signal");
+        case "offset_ms" -> args.addProperty(param, 0.0);
+        case "year" -> args.addProperty(param, 2026);
+        case "event_code" -> args.addProperty(param, "2026test");
+        case "match_type" -> args.addProperty(param, "qm");
+        case "match_number" -> args.addProperty(param, 1);
+        default -> throw new IllegalStateException(
+            "No conformance argument rule for required parameter '" + param + "' of tool '"
+                + toolName + "'. Add one to ToolArguments.");
+      }
+    }
+    variants.add(new Variant("default", args));
+    return variants;
+  }
+}

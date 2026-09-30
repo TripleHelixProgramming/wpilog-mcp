@@ -136,6 +136,14 @@ tasks.register('extractTestNatives', Copy) {
 tasks.named('test') {
     dependsOn extractTestNatives
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
+    // ToolConformanceTest: -PconformanceUpdate rewrites the known-failures list from current results
+    if (project.hasProperty('conformanceUpdate')) {
+        systemProperty 'conformance.update', 'true'
+    }
+    // Golden tests against a real log (opt-in): -PgoldenLog=/path/to/log.wpilog
+    if (project.hasProperty('goldenLog')) {
+        systemProperty 'golden.log', project.property('goldenLog')
+    }
 }
 
 application {
