@@ -130,7 +130,8 @@ public final class CoreTools {
     public String description() {
       return "List all entries in a log file. Returns log metadata (time range, duration, "
           + "truncation status) and entry list with types and sample counts. "
-          + "Optionally filter by name pattern.";
+          + "Optionally filter by name pattern. Struct and array entries hold numeric fields that "
+          + "numeric tools address by path (see get_entry_info).";
     }
 
     @Override
@@ -176,6 +177,13 @@ public final class CoreTools {
         result.addProperty("warning", log.truncationMessage());
       }
 
+      if (sortedEntries.stream().anyMatch(e -> e.type().startsWith("struct")
+          || e.type().endsWith("[]"))) {
+        result.addProperty("note", "Numeric tools read struct fields and array elements appended "
+            + "to the entry name (e.g. /RealOutputs/Drive/Pose.translation.x, "
+            + "/PowerDistribution/ChannelCurrent[3]); get_entry_info lists an entry's "
+            + "numeric_leaf_paths.");
+      }
       result.add("entries", entriesArray);
       return result;
     }

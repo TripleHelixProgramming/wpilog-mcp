@@ -183,6 +183,8 @@ Decoded values keep the schema's field names and nesting:
 | `SwerveModuleState` | `{"speed", "angle": {"value", "_derived": {"degrees"}}}` |
 | enum field, e.g. `PoseObservation.type` | `{"value": 2, "label": "PHOTONVISION"}` |
 
+Numeric tools (`get_statistics`, `find_condition`, `compare_entries`, and the rest) read struct fields and array elements by path — `/RealOutputs/Drive/Pose.translation.x`, `/PowerDistribution/ChannelCurrent[3]`, `/Vision/Camera0/PoseObservations[0].tagCount` — and unwrap known angles; `get_entry_info` lists an entry's numeric fields.
+
 `_derived` values are computed from WPILib's `Rotation2d` and `Rotation3d` (only when the log's schema for them is WPILib's). When a log records no schema for a struct type, WPILib's own schema is used for WPILib types, and a template layout for AdvantageKit vision's `PoseObservation` and `TargetObservation` and Choreo's `SwerveSample`; `list_struct_types` and `get_entry_info` say which source each type used. A record whose size does not fit its schema is not decoded, and tools that read the entry say how many records failed and why.
 
 ## Troubleshooting

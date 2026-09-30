@@ -21,6 +21,7 @@ Complete documentation for all tools available in wpilog-mcp.
   - [find_condition](#find_condition)
   - [search_strings](#search_strings)
 - [Statistics Tools](#statistics-tools)
+  - [Field paths](#field-paths)
   - [get_statistics](#get_statistics)
   - [compare_entries](#compare_entries)
   - [detect_anomalies](#detect_anomalies)
@@ -235,7 +236,7 @@ List all entries in the specified log file.
 - `path` (required): Path to the log file
 - `pattern` (optional): Filter entries by name pattern (substring match)
 
-**Returns:** List of entries with name, type, and sample count
+**Returns:** List of entries with name, type, and sample count. When the list includes struct or array entries, `note` says how numeric tools address their fields ([Field paths](#field-paths))
 
 ### `get_entry_info`
 Describe one entry: what it is, how it decodes, and what it looks like.
@@ -404,7 +405,8 @@ Find when a numeric or boolean entry satisfies a condition, and for how long. Us
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0)
+- `name` (required): Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0), or a number inside a struct or array by [field path](#field-paths) (thresholds apply to angles as logged)
+- `field` (optional): The field path, instead of appending it to `name`
 - `operator` (required): Comparison operator: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==, with a relative tolerance of 1e-6)
 - `threshold` (required): Threshold value to compare against
 - `start_time`, `end_time` (optional): Time window
@@ -491,16 +493,38 @@ List or search the text logged in string entries (console output, alerts, WPILib
 }
 ```
 
+## Statistics Tools
+
+### Field paths
+
+`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, and `find_condition` measure a **numeric signal**: a scalar entry (double, float, int64, or boolean read as 1/0), or a number inside a struct or array entry, addressed by a field path.
+
+| Signal | Name |
+|--------|------|
+| A struct field | `/RealOutputs/Drive/Pose.translation.x` |
+| A derived angle | `/RealOutputs/Drive/Pose.rotation._derived.degrees` |
+| An array element | `/PowerDistribution/ChannelCurrent[3]` |
+| A field of one element of a struct array | `/Vision/Camera0/PoseObservations[0].tagCount` |
+| Every element (pooled; `get_statistics` only) | `/Vision/Camera0/PoseObservations[*].averageTagDistance` |
+
+- The path can be appended to the entry name, or passed separately as `field` (`field1`/`field2` for the two-signal tools): `name: "/RealOutputs/Drive/Pose", field: "translation.x"`.
+- An exact entry name always wins (names can contain dots); otherwise the longest entry name followed by `.` or `[` is the entry.
+- Enum fields read as their number, booleans as 1/0. Records in which the path holds no number (an empty array for `[0]`) are skipped and counted (`records_without_value`).
+- A struct or array entry named without a path is an error that lists its numeric fields; so is a path that does not lead to a number. `get_entry_info` lists every entry's `numeric_leaf_paths`.
+- **Angles.** A `Rotation2d`'s `value` (radians) and `_derived.degrees`, a `Rotation3d`'s `_derived` roll/pitch/yaw, and a `SwerveSample`'s `heading` are known angles. `get_statistics`, `rate_of_change`, `find_peaks`, `detect_anomalies`, and `time_correlate` unwrap them, so crossing ±180° is not a jump; `compare_entries` compares two angles by their shortest difference; `find_condition` compares thresholds with the value as logged. A heading logged as a plain double is not known to be an angle.
+- Results name the signal (`name` is the entry and path) and record it under `inputs.entries` and `inputs.fields`.
+
 ### `get_statistics`
-Get statistics for a numeric entry. Supports optional time range filtering. Includes data quality metrics and analysis directives for confidence assessment.
+Get statistics for a numeric entry or field. Supports optional time range filtering. Includes data quality metrics and analysis directives for confidence assessment.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): The entry name
+- `name` (required): The entry name, optionally with a [field path](#field-paths)
+- `field` (optional): The field path, instead of appending it to `name`
 - `start_time` (number, optional): Start timestamp in seconds
 - `end_time` (number, optional): End timestamp in seconds
 
-**Returns:** Statistics including count, min, max, mean, median, std_dev, quartiles, and percentiles
+**Returns:** Statistics including count, min, max, mean, median, std_dev, quartiles, and percentiles. With a `[*]` path, `count` is values and `records_in_window` is records. For an angle, the linear statistics are of the angle unwrapped within the window (so `max - min` is how far it turned), and `angle` gives `unit`, `unwrapped`, `wraps` (steps of more than half a turn), `circular_mean`, `circular_std` (√(−2 ln R), same unit), and `resultant_length` R
 
 **Example Response:**
 ```json
@@ -528,17 +552,19 @@ Compare two entries (useful for RealOutputs vs ReplayOutputs).
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name1` (required): First entry name
-- `name2` (required): Second entry name
+- `name1` (required): First entry name, optionally with a [field path](#field-paths)
+- `name2` (required): Second entry name, optionally with a field path
+- `field1`, `field2` (optional): Field paths, instead of appending them to the names
 
-**Returns:** RMSE (root mean square error), max difference, `samples_compared`, and `reference_entry` (the denser entry, whose timestamps are used; the other is linearly interpolated, never extrapolated), with data quality and analysis directives. Entries that are not scalar numbers (e.g. `struct:ChassisSpeeds`) are an error naming the type, and entries with no overlapping time span are an error naming both spans — never a success with `rmse: NaN`
+**Returns:** RMSE (root mean square error), max difference, `samples_compared`, and `reference_entry` (the denser signal, whose timestamps are used; the other is linearly interpolated, never extrapolated), with data quality and analysis directives. Two angles are compared by their shortest angular difference in the first one's unit (`angle_unit`); an angle against a non-angle is compared as plain numbers, with a warning. A struct entry without a field (e.g. `struct:ChassisSpeeds`) is an error listing its numeric fields, and signals with no overlapping time span are an error naming both spans — never a success with `rmse: NaN`
 
 ### `detect_anomalies`
 Detect anomalies in a numeric entry within an optional time window: outliers outside Tukey fences (Q1 − k·IQR, Q3 + k·IQR, with linearly interpolated percentiles), and, when `spike_threshold` is given, spikes — sample-to-sample jumps larger than the threshold.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name to analyze (double, float, int64, or boolean; other types are an error naming the type)
+- `name` (required): Entry name to analyze, optionally with a [field path](#field-paths) (a struct entry without one is an error listing its numeric fields)
+- `field` (optional): The field path, instead of appending it to `name`
 - `iqr_multiplier` (optional): Multiplier k for the IQR fences (default 1.5). Use 3.0 for extreme outliers only
 - `spike_threshold` (optional): Flag consecutive samples that differ by more than this, in the entry's units (off by default)
 - `start_time`, `end_time` (optional): Time window. Boot transients and disabled time count unless the window excludes them — take windows from `get_match_phases`
@@ -573,12 +599,13 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name to analyze (must be numeric type)
+- `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
+- `field` (optional): The field path, instead of appending it to `name`
 - `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
 - `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
 
-**Returns:** Lists of maxima and/or minima (in time order) with height difference from neighbors; `maxima_count` and `minima_count` are the true totals, and `limits` gives total vs returned for each list. Entries that are not scalar numbers are an error naming the type
+**Returns:** Lists of maxima and/or minima (in time order) with height difference from neighbors; `maxima_count` and `minima_count` are the true totals, and `limits` gives total vs returned for each list. Angles are unwrapped first (`angle_unit`), so a wrap is not a peak. A struct or array entry without a field path is an error listing its numeric fields
 
 **Example Response:**
 ```json
@@ -608,13 +635,14 @@ Compute rate of change (derivative) of numeric data over time. Calculates dv/dt 
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name to analyze (must be numeric type)
+- `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
+- `field` (optional): The field path, instead of appending it to `name`
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `window_size` (optional): Number of samples to average for smoothing (default 1 = no smoothing). Higher values reduce noise but may miss short events
 - `limit` (optional): Maximum samples to return (default 100)
 
-**Returns:** Derivative values with timestamp (`samples`, cut at `limit`, with `limits.samples` giving the true count) and `statistics` (`avg_rate`, `rate_count`). Entries that are not scalar numbers are an error naming the type
+**Returns:** Derivative values in the signal's units per second, with timestamp (`samples`, cut at `limit`, with `limits.samples` giving the true count) and `statistics` (`avg_rate`, `rate_count`). Angles are unwrapped first (`angle_unit`), so a wrap is not a spike. A struct or array entry without a field path is an error listing its numeric fields
 
 **Example Response:**
 ```json
@@ -646,8 +674,9 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name1` (required): First entry name (must be numeric)
-- `name2` (required): Second entry name (must be numeric)
+- `name1` (required): First entry name, optionally with a [field path](#field-paths)
+- `name2` (required): Second entry name, optionally with a field path
+- `field1`, `field2` (optional): Field paths, instead of appending them to the names
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 

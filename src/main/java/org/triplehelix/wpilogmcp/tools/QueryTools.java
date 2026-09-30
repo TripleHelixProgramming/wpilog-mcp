@@ -155,13 +155,16 @@ public final class QueryTools {
           + "the end of the window ends with end_reason window_end), plus total_true_sec and "
           + "fraction_of_window. transition_count and interval_count are true totals; lists are "
           + "cut at limit, with limits giving total and returned. Useful for questions like "
-          + "'When did battery voltage drop below 11V, and for how long?'";
+          + "'When did battery voltage drop below 11V, and for how long?'" + NumericSignal.PATH_HELP
+          + " Thresholds on an angle apply to the value as logged (not unwrapped).";
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name", "string", "Entry name (e.g., /Robot/BatteryVoltage)", true)
+          .addProperty("name", "string", "Entry name (e.g., /Robot/BatteryVoltage), optionally with "
+              + "a field path (e.g. /RealOutputs/Drive/Pose.translation.x)", true)
+          .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addProperty(
               "operator",
               "string",
@@ -176,7 +179,6 @@ public final class QueryTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var name = getRequiredString(arguments, "name");
       var operator = getRequiredString(arguments, "operator");
       var thresholdArg = getOptDouble(arguments, "threshold");
       if (thresholdArg == null) throw new IllegalArgumentException("Missing required parameter: threshold");
@@ -187,17 +189,10 @@ public final class QueryTools {
       validatePositive(limit, "limit");
       evaluateCondition(0, operator, threshold); // validates the operator up front
 
-      var entry = log.entries().get(name);
-      if (entry == null) {
-        requireEntry(log, name); // throws with suggestions
-      }
-      if (!isNumericType(entry.type()) && !"boolean".equals(entry.type())) {
-        throw new IllegalArgumentException("Entry " + name + " is " + entry.type()
-            + ", not numeric; find_condition reads double, float, int64, and boolean entries");
-      }
-
-      var values = log.values().get(name);
-      if (values == null || values.isEmpty()) {
+      var signal = StatisticsTools.signal(log, arguments, "name", "field", name());
+      var name = signal.label();
+      var values = signal.values();
+      if (values.isEmpty()) {
         throw new IllegalArgumentException("No values for entry: " + name);
       }
 
@@ -257,7 +252,7 @@ public final class QueryTools {
           .addProperty("interval_count", intervals.size())
           .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
           .addProperty("total_true_sec", totalTrue)
-          .addInput("entry", name)
+          .addInputSignal("entry", signal)
           .addInputWindow(windowStart, windowEnd);
       if (windowLength > 0) builder.addProperty("fraction_of_window", totalTrue / windowLength);
       return builder.build();

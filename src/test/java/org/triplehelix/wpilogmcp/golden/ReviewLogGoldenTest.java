@@ -320,14 +320,35 @@ class ReviewLogGoldenTest {
   @Test
   @DisplayName("get_statistics with field paths measures pose wander over 362-394 s")
   void poseWander() throws Exception {
-    pending("Phase 2 (D1)", () -> {
-      var x = call("get_statistics", "name", "/RealOutputs/Drive/Pose.translation.x",
-          "start_time", 362, "end_time", 394);
-      var y = call("get_statistics", "name", "/RealOutputs/Drive/Pose.translation.y",
-          "start_time", 362, "end_time", 394);
-      near(0.290, x.get("max").getAsDouble() - x.get("min").getAsDouble(), 0.0005, "x range");
-      near(0.599, y.get("max").getAsDouble() - y.get("min").getAsDouble(), 0.0005, "y range");
-    });
+    var x = call("get_statistics", "name", "/RealOutputs/Drive/Pose.translation.x",
+        "start_time", 362, "end_time", 394);
+    var y = call("get_statistics", "name", "/RealOutputs/Drive/Pose.translation.y",
+        "start_time", 362, "end_time", 394);
+    near(0.28993, x.get("max").getAsDouble() - x.get("min").getAsDouble(), 0.00001, "x range");
+    near(0.59916, y.get("max").getAsDouble() - y.get("min").getAsDouble(), 0.00001, "y range");
+    assertEquals(1324, x.get("count").getAsInt());
+    // heading in degrees: how far it turned, and its circular mean (numpy)
+    var heading = call("get_statistics", "name",
+        "/RealOutputs/Drive/Pose.rotation._derived.degrees", "start_time", 362, "end_time", 394);
+    near(7.3339, heading.get("max").getAsDouble() - heading.get("min").getAsDouble(), 0.0001,
+        "heading range");
+    var angle = heading.getAsJsonObject("angle");
+    near(91.3069, angle.get("circular_mean").getAsDouble(), 0.0001, "circular mean");
+    near(1.4984, angle.get("circular_std").getAsDouble(), 0.0001, "circular std");
+    assertEquals(0, angle.get("wraps").getAsInt());
+  }
+
+  @Test
+  @DisplayName("the pose heading wraps 189 times over the log; statistics unwrap it")
+  void headingWraps() throws Exception {
+    var heading = call("get_statistics", "name", "/RealOutputs/Drive/Pose", "field",
+        "rotation.value");
+    var angle = heading.getAsJsonObject("angle");
+    assertEquals("radians", angle.get("unit").getAsString());
+    assertEquals(189, angle.get("wraps").getAsInt());
+    // unwrapped: the heading turned through 6646 degrees in all
+    near(6646.07, Math.toDegrees(heading.get("max").getAsDouble() - heading.get("min")
+        .getAsDouble()), 0.01, "unwrapped range");
   }
 
   // ==================== strings ====================

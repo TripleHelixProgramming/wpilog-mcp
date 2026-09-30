@@ -59,7 +59,8 @@ class AnalysisGuidanceTest {
           // Result contract fields and statuses (ResultContract)
           "no_match",
           "not_applicable",
-          "looked_for");
+          "looked_for",
+          "numeric_leaf_paths");
 
   private static final Pattern SNAKE_CASE = Pattern.compile("\\b[a-z]+(?:_[a-z0-9]+)+\\b");
 

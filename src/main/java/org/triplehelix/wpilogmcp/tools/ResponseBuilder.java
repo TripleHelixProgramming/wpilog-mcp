@@ -169,6 +169,23 @@ public class ResponseBuilder {
   }
 
   /**
+   * Records a numeric signal under {@code inputs}: its entry under {@code inputs.entries} and,
+   * when it reads a field, the field path under {@code inputs.fields}, both by role.
+   *
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  ResponseBuilder addInputSignal(String role, NumericSignal signal) {
+    addInput(role, signal.entry());
+    if (!signal.path().isRoot()) {
+      var inputs = inputs();
+      if (!inputs.has("fields")) inputs.add("fields", new JsonObject());
+      inputs.getAsJsonObject("fields").addProperty(role, signal.path().toString());
+    }
+    return this;
+  }
+
+  /**
    * Records the time window the result covers, under {@code inputs.window}. Either bound may be
    * null (unbounded).
    *

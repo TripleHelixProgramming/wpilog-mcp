@@ -316,20 +316,22 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   observation streams with latency and residuals (B4, except target streams and `Pose3d[]` sets); a shared
   `TimeScope` (`scope` on `analyze_swerve`, `analyze_loop_timing`, `predict_battery_health`); `find_condition`
   intervals, windows, and booleans (most of Phase 4 item 2); `export_csv` flattening (Phase 4 item 5).
-- [ ] **Phase 2 — Schema-driven structs and field paths.** Done: `log/struct/StructSchemas` decodes every struct
+- [x] **Phase 2 — Schema-driven structs and field paths.** Done: `log/struct/StructSchemas` decodes every struct
   by the log's own schemas (WPILib's `StructDescriptorDatabase` for parsing; compiled per-struct plans for nested
   structs, fixed arrays, enums, and bit-fields; exact size checks; WPILib and template fallbacks with `source`);
   `_derived` rotations; the 16 hand-written decoders and their registry removed; per-entry decode problems reported
   by every log-reading tool; `list_struct_types` per log; `get_entry_info` schema, source, leaf paths, and
   representative non-empty samples; enum columns in `export_csv`; the dropped final record (WPILib's iterator)
-  fixed in both parsers. Remaining: field paths in the numeric tools (D1, D2, G7) and the pose-wander golden check.
+  fixed in both parsers. Field paths (`NumericSignal`: entry + `FieldPath`, `field` parameters, exact names win)
+  in all seven numeric tools, with type errors that list numeric fields (D1, D2), angle unwrapping, circular
+  statistics, and shortest-difference angle comparison; `list_entries` notes; guidance traps updated.
 - [ ] **Phase 3 — Roles, one resolver, scope.** Remaining: `SignalResolver`/`resolve_signals`, `resolved` in
   results, `scope` on the statistical tools, `compare_matches` (E4), vision target streams.
 - [ ] **Phase 4 — Strings, intervals, alignment, quality.** Remaining: `string[]`/`json` text (F1) and line
   classification in `can_health`; compound conditions; `align_entries`; lag search; `DataQuality` recalibration (G1).
 - [ ] **Phase 5 — Consistency and docs.**
 
-Golden checks on the review log: 10 of 12 pass (timeline, flag brownouts, logged threshold, loop timing
+Golden checks on the review log: 12 of 13 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation
-decode, per-camera observation counts); pending: pose wander via field paths (Phase 2) and the camera alert in
-`string[]` (Phase 4).
+decode by schema path, per-camera observation counts, pose wander with heading range and circular mean, 189
+heading wraps); pending: the camera alert in `string[]` (Phase 4).

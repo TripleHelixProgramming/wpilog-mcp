@@ -64,17 +64,23 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry. "
-          + "NEVER compute these manually—always use this tool! "
+      return "BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry "
+          + "or field. NEVER compute these manually—always use this tool! "
           + "Supports optional time range filtering (start_time, end_time). "
           + "Includes data quality metrics and sample size for confidence assessment."
+          + NumericSignal.PATH_HELP + " A [*] path pools every element (count is values, "
+          + "records_in_window is records). For an angle, min/max/mean/percentiles are of the "
+          + "unwrapped angle within the window (so max - min is how far it turned) and angle "
+          + "gives the circular mean and standard deviation and the number of wraps."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name", "string", "The entry name", true)
+          .addProperty("name", "string", "The entry name, optionally with a field path "
+              + "(e.g. /RealOutputs/Drive/Pose.translation.x)", true)
+          .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .build();
@@ -82,17 +88,21 @@ public final class StatisticsTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var name = getRequiredString(arguments, "name");
+      var signal = signal(log, arguments, "name", "field", null);
+      var name = signal.label();
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
 
-      var values = requireScalarNumeric(log, name);
+      var values = signal.values();
       var filtered = filterTimeRange(values, start, end);
       var numericFiltered = filtered.stream()
           .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
           .toList();
-      var quality = DataQuality.fromValues(numericFiltered);
-      var data = numericFiltered.stream()
+      // Angles: statistics of the continuous angle within the window (a [*] pool has no order)
+      boolean unwrap = signal.isAngle() && !signal.multiValued();
+      var measured = unwrap ? signal.unwrap(numericFiltered) : numericFiltered;
+      var quality = DataQuality.fromValues(measured);
+      var data = measured.stream()
           .mapToDouble(tv -> toDouble(tv.value()))
           .toArray();
 
@@ -100,7 +110,10 @@ public final class StatisticsTools {
         throw new IllegalArgumentException("No numeric data in range: no finite samples of " + name
             + (start != null || end != null ? " between " + (start != null ? start : "start")
                 + " and " + (end != null ? end : "end") + " s" : "") + " (" + values.size()
-            + " sample(s) in the log, " + filtered.size() + " in the window)");
+            + " value(s) in the log, " + filtered.size() + " in the window"
+            + (signal.recordsWithoutValue() > 0 ? "; " + signal.recordsWithoutValue() + " of "
+                + signal.recordCount() + " records hold no value at " + signal.path() : "")
+            + ")");
       }
 
       var stats = java.util.Arrays.stream(data).summaryStatistics();
@@ -124,8 +137,26 @@ public final class StatisticsTools {
       double q1 = percentile(data, 0.25);
       double q3 = percentile(data, 0.75);
 
-      return success()
-          .addProperty("name", name)
+      var builder = success()
+          .addProperty("name", name);
+      if (!signal.path().isRoot()) builder.addProperty("field", signal.path().toString());
+      if (signal.multiValued()) {
+        builder.addProperty("records_in_window", measured.stream()
+            .mapToDouble(tv -> tv.timestamp()).distinct().count());
+      }
+      if (signal.recordsWithoutValue() > 0) {
+        builder.addProperty("records_without_value", signal.recordsWithoutValue());
+      }
+      if (signal.isAngle()) {
+        var angle = NumericSignal.circularStatistics(
+            numericFiltered.stream().mapToDouble(tv -> toDouble(tv.value())).toArray(),
+            signal.angle());
+        angle.addProperty("unit", signal.angle().wire());
+        angle.addProperty("unwrapped", unwrap);
+        if (unwrap) angle.addProperty("wraps", signal.wrapCount(numericFiltered));
+        builder.addData("angle", angle);
+      }
+      return builder
           .addProperty("count", stats.getCount())
           .addProperty("min", stats.getMin())
           .addProperty("max", stats.getMax())
@@ -137,6 +168,7 @@ public final class StatisticsTools {
           .addProperty("iqr", q3 - q1)
           .addProperty("p5", percentile(data, 0.05))
           .addProperty("p95", percentile(data, 0.95))
+          .addInputSignal("entry", signal)
           .addDataQuality(quality)
           .addDirectives(directives)
           .build();
@@ -149,28 +181,35 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Compare two numeric entries: RMSE and maximum absolute difference, evaluated at the "
-          + "denser entry's timestamps with the other linearly interpolated (no extrapolation), "
-          + "plus the number of compared samples. Both entries must be scalar numeric "
-          + "(double, float, int64, or boolean as 0/1); other types are an error naming the type."
+      return "Compare two numeric entries or fields: RMSE and maximum absolute difference, "
+          + "evaluated at the denser signal's timestamps with the other linearly interpolated (no "
+          + "extrapolation), plus the number of compared samples. Two angles (e.g. a pose "
+          + "heading and a gyro's Rotation2d) are compared by their shortest angular difference, "
+          + "in the first one's unit." + NumericSignal.PATH_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name1", "string", "First entry", true)
-          .addProperty("name2", "string", "Second entry", true)
+          .addProperty("name1", "string", "First entry (optionally with a field path)", true)
+          .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
+          .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
+          .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var n1 = getRequiredString(arguments, "name1");
-      var n2 = getRequiredString(arguments, "name2");
-
-      var v1 = requireScalarNumeric(log, n1);
-      var v2 = requireScalarNumeric(log, n2);
+      var s1 = signal(log, arguments, "name1", "field1", name());
+      var s2 = signal(log, arguments, "name2", "field2", name());
+      var n1 = s1.label();
+      var n2 = s2.label();
+      boolean angles = s1.isAngle() && s2.isAngle();
+      // Angles: continuous series (for interpolation) in the first signal's unit
+      var v1 = angles ? s1.unwrap(s1.values()) : s1.values();
+      var v2 = angles ? convertAngles(s2.unwrap(s2.values()), s2.angle(), s1.angle())
+          : s2.values();
 
       // Evaluate at the denser entry's timestamps, interpolating the other (no extrapolation)
       var reference = v1.size() >= v2.size() ? v1 : v2;
@@ -185,7 +224,8 @@ public final class StatisticsTools {
             || !Double.isFinite(refValue) || !Double.isFinite(otherValue)) {
           continue;
         }
-        double diff = refValue - otherValue;
+        double diff = angles ? NumericSignal.wrapToHalfTurn(refValue - otherValue,
+            s1.angle().period) : refValue - otherValue;
         sumSq += diff * diff;
         maxDiff = Math.max(maxDiff, Math.abs(diff));
         compared++;
@@ -204,16 +244,34 @@ public final class StatisticsTools {
           .addGuidance("RMSE is scale-dependent — compare to the entry's typical range for context")
           .addFollowup("Use get_statistics on each entry individually for baseline context");
 
-      return success()
+      var builder = success()
           .addProperty("rmse", rmse)
           .addProperty("max_difference", maxDiff)
           .addProperty("samples_compared", compared)
-          .addProperty("reference_entry", reference == v1 ? n1 : n2)
-          .addInput("entry1", n1)
-          .addInput("entry2", n2)
+          .addProperty("reference_entry", reference == v1 ? n1 : n2);
+      if (angles) {
+        builder.addProperty("angle_unit", s1.angle().wire())
+            .addProperty("difference", "shortest angular difference");
+      } else if (s1.isAngle() || s2.isAngle()) {
+        builder.addWarning((s1.isAngle() ? n1 : n2) + " is an angle and "
+            + (s1.isAngle() ? n2 : n1) + " is not; they were compared as plain numbers.");
+      }
+      return builder
+          .addInputSignal("entry1", s1)
+          .addInputSignal("entry2", s2)
           .addDataQuality(quality)
           .addDirectives(directives)
           .build();
+    }
+
+    /** Angle values converted from one unit to another. */
+    static List<org.triplehelix.wpilogmcp.log.TimestampedValue> convertAngles(
+        List<org.triplehelix.wpilogmcp.log.TimestampedValue> values, NumericSignal.AngleUnit from,
+        NumericSignal.AngleUnit to) {
+      if (from == to) return values;
+      double factor = to.period / from.period;
+      return values.stream().map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(
+          tv.timestamp(), ((Number) tv.value()).doubleValue() * factor)).toList();
     }
 
     static String span(List<org.triplehelix.wpilogmcp.log.TimestampedValue> values) {
@@ -223,25 +281,19 @@ public final class StatisticsTools {
     }
   }
 
-  /** Scalar numeric (or boolean) values of an entry; other types are an error naming the type. */
-  static List<org.triplehelix.wpilogmcp.log.TimestampedValue> requireScalarNumeric(
-      org.triplehelix.wpilogmcp.log.LogData log, String name) {
-    var info = log.entries().get(name);
-    if (info == null) {
-      var suggestions = log.entries().keySet().stream()
-          .filter(n -> n.toLowerCase().contains(name.toLowerCase())).limit(5).toList();
-      throw new IllegalArgumentException("Entry not found: " + name
-          + (suggestions.isEmpty() ? "" : ". Did you mean: " + String.join(", ", suggestions) + "?"));
-    }
-    var type = info.type();
-    if (!isNumericType(type) && !"boolean".equals(type)) {
-      throw new IllegalArgumentException("Entry " + name + " is " + type + ", not a scalar "
-          + "number. Numeric tools read double, float, int64, and boolean entries"
-          + (type.startsWith("struct:") ? "; read_entry shows the struct's fields, and export_csv "
-              + "writes them out for external analysis" : "") + ".");
-    }
-    var values = log.values().get(name);
-    return values == null ? List.of() : values;
+  /**
+   * The numeric signal named by a tool's arguments: {@code nameKey} (an entry, or an entry with
+   * a field path appended) and the optional {@code fieldKey}.
+   *
+   * @param singleValuedTool The tool's name when it needs one value per sample (no {@code [*]}),
+   *     or null
+   */
+  static NumericSignal signal(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments,
+      String nameKey, String fieldKey, String singleValuedTool) {
+    var name = getRequiredString(arguments, nameKey);
+    var field = getOptString(arguments, fieldKey, null);
+    var signal = NumericSignal.resolve(log, name, field);
+    return singleValuedTool == null ? signal : signal.requireSingleValued(singleValuedTool);
   }
 
   static class DetectAnomaliesTool extends LogRequiringTool {
@@ -256,14 +308,15 @@ public final class StatisticsTools {
           + "anomaly_count is the true total; the list is sorted by time (default) or severity "
           + "(distance beyond the fence, or jump size) and cut at limit, with limits.anomalies "
           + "giving total and returned. Boot transients and disabled periods count unless the "
-          + "window excludes them: take windows from get_match_phases."
+          + "window excludes them: take windows from get_match_phases." + NumericSignal.PATH_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name", "string", "Entry name", true)
+          .addProperty("name", "string", "Entry name (optionally with a field path)", true)
+          .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addNumberProperty("iqr_multiplier", "IQR multiplier (default 1.5)", false, 1.5)
           .addNumberProperty("spike_threshold",
               "Flag sample-to-sample jumps larger than this, in the entry's units (off by default)", false, null)
@@ -276,7 +329,8 @@ public final class StatisticsTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var name = getRequiredString(arguments, "name");
+      var signal = signal(log, arguments, "name", "field", name());
+      var name = signal.label();
       double iqrMult = getOptDouble(arguments, "iqr_multiplier", 1.5);
       var spikeThreshold = getOptDouble(arguments, "spike_threshold");
       var start = getOptDouble(arguments, "start_time");
@@ -291,8 +345,7 @@ public final class StatisticsTools {
         throw new IllegalArgumentException("spike_threshold must be positive");
       }
 
-      var values = requireScalarNumeric(log, name);
-      var inWindow = filterTimeRange(values, start, end);
+      var inWindow = signal.unwrap(filterTimeRange(signal.values(), start, end));
       long nonFiniteCount = inWindow.stream()
           .filter(tv -> toDouble(tv.value()) != null && !Double.isFinite(toDouble(tv.value())))
           .count();
@@ -365,9 +418,10 @@ public final class StatisticsTools {
           .addProperty("sort", sort)
           .addLimitedList("anomalies", list, anomalies.size(), limit);
       if (spikeThreshold != null) builder.addProperty("spike_count", spikes);
+      if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
       if (start != null || end != null) builder.addInputWindow(start, end);
-      return builder.addInput("entry", name).addDataQuality(quality).addDirectives(directives)
-          .build();
+      return builder.addProperty("name", name).addInputSignal("entry", signal)
+          .addDataQuality(quality).addDirectives(directives).build();
     }
   }
 
@@ -379,14 +433,15 @@ public final class StatisticsTools {
     public String description() {
       return "Find local maxima and minima (peaks and valleys) in numeric data, in time order. "
           + "maxima_count and minima_count are the true totals; each list is cut at limit "
-          + "(limits gives total and returned). A flat signal has none."
+          + "(limits gives total and returned). A flat signal has none." + NumericSignal.PATH_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name", "string", "Entry name", true)
+          .addProperty("name", "string", "Entry name (optionally with a field path)", true)
+          .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addProperty("type", "string", "Type: 'max', 'min', or 'both'", false)
           .addNumberProperty("min_height_diff", "Minimum height difference from neighbors to count as a peak. Filters out noise", false, null)
           .addIntegerProperty("limit", "Max peaks to return", false, 20)
@@ -395,12 +450,13 @@ public final class StatisticsTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var name = getRequiredString(arguments, "name");
+      var signal = signal(log, arguments, "name", "field", name());
+      var name = signal.label();
       var peakType = getOptString(arguments, "type", "both");
       var minHeightDiff = getOptDouble(arguments, "min_height_diff");
       int limit = getOptInt(arguments, "limit", 20);
 
-      var values = requireScalarNumeric(log, name);
+      var values = signal.unwrap(signal.values());
 
       var data = values.stream()
           .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
@@ -437,7 +493,8 @@ public final class StatisticsTools {
           .addSingleMatchCaveat()
           .addFollowup("Use get_statistics to understand baseline before interpreting peaks");
 
-      var builder = success().addInput("entry", name);
+      var builder = success().addProperty("name", name).addInputSignal("entry", signal);
+      if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
       if (!"min".equals(peakType)) {
         var list = new com.google.gson.JsonArray();
         maxima.stream().limit(limit).forEach(list::add);
@@ -460,14 +517,16 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Compute rate of change (derivative) of numeric data over time."
+      return "Compute rate of change (derivative) of numeric data over time, in the signal's "
+          + "units per second." + NumericSignal.PATH_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name", "string", "Entry name", true)
+          .addProperty("name", "string", "Entry name (optionally with a field path)", true)
+          .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addIntegerProperty("window_size", "Smoothing window (default 1)", false, 1)
@@ -477,15 +536,15 @@ public final class StatisticsTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var name = getRequiredString(arguments, "name");
+      var signal = signal(log, arguments, "name", "field", name());
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
       int window = getOptInt(arguments, "window_size", 1);
       int limit = getOptInt(arguments, "limit", 100);
 
-      var values = requireScalarNumeric(log, name);
+      var values = signal.values();
 
-      var data = filterTimeRange(values, start, end).stream()
+      var data = signal.unwrap(filterTimeRange(values, start, end)).stream()
           .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
           .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
           .toList();
@@ -564,9 +623,11 @@ public final class StatisticsTools {
       var sampleList = new com.google.gson.JsonArray();
       samples.forEach(sampleList::add);
       var builder = success()
+          .addProperty("name", signal.label())
           .addData("statistics", stats)
           .addLimitedList("samples", sampleList, rateCount, limit)
-          .addInput("entry", name);
+          .addInputSignal("entry", signal);
+      if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
       if (start != null || end != null) builder.addInputWindow(start, end);
       return builder.addDataQuality(quality).addDirectives(directives).build();
     }
@@ -581,7 +642,7 @@ public final class StatisticsTools {
       return "BUILT-IN correlation: NEVER compute correlation manually—always use this tool! "
           + "Computes Pearson correlation coefficient with statistical significance (p-value). "
           + "Handles timestamp alignment automatically via linear interpolation. "
-          + "Returns sample count for confidence assessment."
+          + "Returns sample count for confidence assessment." + NumericSignal.PATH_HELP
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL
           + " Correlation does not imply causation—consider confounding variables.";
     }
@@ -589,8 +650,10 @@ public final class StatisticsTools {
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("name1", "string", "First entry", true)
-          .addProperty("name2", "string", "Second entry", true)
+          .addProperty("name1", "string", "First entry (optionally with a field path)", true)
+          .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
+          .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
+          .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
           .addNumberProperty("start_time", "Start time", false, null)
           .addNumberProperty("end_time", "End time", false, null)
           .build();
@@ -598,20 +661,22 @@ public final class StatisticsTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var n1 = getRequiredString(arguments, "name1");
-      var n2 = getRequiredString(arguments, "name2");
+      var s1 = signal(log, arguments, "name1", "field1", name());
+      var s2 = signal(log, arguments, "name2", "field2", name());
+      var n1 = s1.label();
+      var n2 = s2.label();
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
 
-      var v1 = requireScalarNumeric(log, n1);
-      var v2 = requireScalarNumeric(log, n2);
+      var v1 = s1.values();
+      var v2 = s2.values();
 
-      var d1 = filterTimeRange(v1, start, end).stream()
+      var d1 = s1.unwrap(filterTimeRange(v1, start, end)).stream()
           .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
           .map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(tv.timestamp(),
               toDouble(tv.value())))
           .toList();
-      var d2 = filterTimeRange(v2, start, end).stream()
+      var d2 = s2.unwrap(filterTimeRange(v2, start, end)).stream()
           .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
           .map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(tv.timestamp(),
               toDouble(tv.value())))
@@ -674,7 +739,9 @@ public final class StatisticsTools {
       }
 
       int sampleCount = x.size();
-      builder.addProperty("sample_count", sampleCount);
+      builder.addProperty("sample_count", sampleCount)
+          .addInputSignal("entry1", s1)
+          .addInputSignal("entry2", s2);
 
       // Handle edge case: zero variance means correlation is undefined (NaN).
       // Use a relative threshold (variance = denX / n < 1e-15) to avoid
