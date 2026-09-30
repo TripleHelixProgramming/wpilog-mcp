@@ -504,14 +504,16 @@ class AdvancedToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("has required name and output_path parameters")
+    @DisplayName("requires name; output_path is optional (resolved inside the export directory)")
     void hasRequiredParameters() {
       var schema = exportCsvTool.inputSchema();
       var required = schema.getAsJsonArray("required");
 
       assertNotNull(required);
       assertTrue(required.toString().contains("name"));
-      assertTrue(required.toString().contains("output_path"));
+      assertFalse(required.toString().contains("output_path"));
+      assertTrue(schema.getAsJsonObject("properties").has("output_path"));
+      assertTrue(schema.getAsJsonObject("properties").has("inline"));
     }
 
     @Test

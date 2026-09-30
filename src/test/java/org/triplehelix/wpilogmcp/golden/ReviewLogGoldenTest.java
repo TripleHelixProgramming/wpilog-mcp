@@ -209,12 +209,22 @@ class ReviewLogGoldenTest {
   @Test
   @DisplayName("analyze_loop_timing finds FullCycleMS and reports enabled-time percentiles")
   void loopTimingEnabled() throws Exception {
-    pending("Phase 3 (B1)", () -> {
-      var result = call("analyze_loop_timing", "scope", "enabled");
-      near(53.11, findNumber(result, "p95_ms").orElseThrow(), 0.05, "enabled p95");
-      near(18.49, findNumber(result, "percent_over_threshold").orElseThrow(), 0.05,
-          "percent of loops over 25 ms");
-    });
+    var result = call("analyze_loop_timing", "scope", "enabled", "threshold_ms", 25);
+    assertEquals("/RealOutputs/LoggedRobot/FullCycleMS", result.get("loop_time_entry").getAsString());
+    var stats = result.getAsJsonObject("statistics");
+    near(17.60, stats.get("median_ms").getAsDouble(), 0.01, "enabled median");
+    near(38.62, stats.get("p90_ms").getAsDouble(), 0.01, "enabled p90");
+    near(53.11, stats.get("p95_ms").getAsDouble(), 0.01, "enabled p95");
+    near(91.92, stats.get("p99_ms").getAsDouble(), 0.01, "enabled p99");
+    near(18.49, result.get("percent_over_threshold").getAsDouble(), 0.01,
+        "percent of loops over 25 ms");
+    assertEquals(48596, result.get("total_samples").getAsInt());
+    assertEquals("/RealOutputs/LoggedRobot/UserCodeMS",
+        result.getAsJsonObject("user_code").get("entry").getAsString());
+    // Whole log: the 9.6 s boot cycle is excluded and reported, not counted as an overrun
+    var all = call("analyze_loop_timing");
+    near(9603.5, all.getAsJsonObject("excluded_boot_cycle").get("loop_time_ms").getAsDouble(),
+        0.1, "boot cycle");
   }
 
   // ==================== CAN ====================

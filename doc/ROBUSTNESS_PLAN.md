@@ -296,11 +296,30 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
 
 ## Progress
 
-- [x] Phase 0 — Baseline and measurement: fixture corpus (20 logs), `ToolConformanceTest` with a known-failures
-  ratchet (110 violations at baseline), opt-in `ReviewLogGoldenTest` (4 passing, 8 pending), deterministic
-  `MockLogBuilder`
-- [ ] Phase 1 — Honest results
-- [ ] Phase 2 — Schema-driven structs and field paths
-- [ ] Phase 3 — Roles, one resolver, scope
-- [ ] Phase 4 — Strings, intervals, alignment, quality
-- [ ] Phase 5 — Consistency and docs
+- [x] **Phase 0 — Baseline and measurement.** Fixture corpus (20 logs written by a pure-Java WPILOG writer),
+  `ToolConformanceTest` with a known-failures ratchet (110 violations at baseline; 164 once the status, limits, and
+  truncation checks were added), opt-in `ReviewLogGoldenTest`, deterministic `MockLogBuilder`.
+- [x] **Phase 1 — Honest results.** Result contract enforced in `ToolBase.execute`; NaN/Infinity replaced and named;
+  declaration-order entries; `MatchTimeline` (segments, sample-and-hold, FMS matches, season from the log's clock)
+  behind `get_match_phases`, `get_ds_timeline`, and `analyze_auto`; `no_match`/`not_applicable` wherever a tool found
+  nothing; true totals and `limits`; descriptions that match behavior; `analyze_loop_timing` `entry`; `export_csv`
+  paths, flattening, and inline mode; the G3 escape hatch in the instructions. **The conformance known-failures list
+  is empty.**
+- [x] **Pulled forward from Phase 3/4** while rewriting the same tools: CAN counters by field name (B3) and
+  `can_health` on them (F3); swerve arrays (B5); logged brownout threshold and flag brownouts in all four power tools
+  (E3), evidence-based battery health (G2), `generate_report` on the shared helpers (B8, F2 for the report);
+  `profile_mechanism` roles by stem (B6); chooser ranking (B7); the loop timing discovery chain (B1); vision pose
+  observation streams with latency and residuals (B4, except target streams and `Pose3d[]` sets); a shared
+  `TimeScope` (`scope` on `analyze_swerve`, `analyze_loop_timing`, `predict_battery_health`); `find_condition`
+  intervals, windows, and booleans (most of Phase 4 item 2); `export_csv` flattening (Phase 4 item 5).
+- [ ] **Phase 2 — Schema-driven structs and field paths.**
+- [ ] **Phase 3 — Roles, one resolver, scope.** Remaining: `SignalResolver`/`resolve_signals`, `resolved` in
+  results, `scope` on the statistical tools, `compare_matches` (E4), vision target streams.
+- [ ] **Phase 4 — Strings, intervals, alignment, quality.** Remaining: `string[]`/`json` text (F1) and line
+  classification in `can_health`; compound conditions; `align_entries`; lag search; `DataQuality` recalibration (G1).
+- [ ] **Phase 5 — Consistency and docs.**
+
+Golden checks on the review log: 10 of 12 pass (timeline, flag brownouts, logged threshold, loop timing
+percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation
+decode, per-camera observation counts); pending: pose wander via field paths (Phase 2) and the camera alert in
+`string[]` (Phase 4).

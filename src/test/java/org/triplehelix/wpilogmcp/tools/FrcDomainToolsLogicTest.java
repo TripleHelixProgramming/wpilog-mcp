@@ -1329,8 +1329,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("loop time"),
-          "Error message should mention loop time entry not found");
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().toLowerCase().contains("loop time"),
+          resultObj.toString());
     }
   }
 

@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -71,6 +72,9 @@ public final class ExportTools {
   }
 
   static class ExportCsvTool extends LogRequiringTool {
+    static final int DEFAULT_INLINE_ROWS = 500;
+    static final int MAX_INLINE_ROWS = 5000;
+
     @Override
     public String name() {
       return "export_csv";
@@ -78,130 +82,117 @@ public final class ExportTools {
 
     @Override
     public String description() {
-      return "Export entry data to a CSV file for external analysis in Excel, Python, or MATLAB.";
+      return "Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return the "
+          + "rows inline. Every value is flattened into columns: a struct becomes one column per "
+          + "numeric or text field (nested fields as dot paths, e.g. translation.x, arrays as "
+          + "field[i]), a struct array or primitive array becomes one row per element with an "
+          + "index column. Files are written inside the server's export directory "
+          + "(export_directory in every result): pass a bare or relative output_path, which is "
+          + "resolved inside it, or omit it for a generated name; an absolute path must lie inside "
+          + "it. The result gives the absolute path written. With inline=true no file is written "
+          + "and the rows come back in the response (max_rows, default 500), for agents that "
+          + "cannot read the export directory. Cite the export when you compute from it.";
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name to export", true)
-          .addProperty("output_path", "string", "Path for output CSV file", true)
+          .addProperty("output_path", "string",
+              "CSV file name or path inside the export directory (default: generated from the log and entry names)", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
+          .addProperty("inline", "boolean", "Return the rows in the response instead of writing a file (default false)", false)
+          .addIntegerProperty("max_rows", "Rows to return inline (default 500, max 5000)", false, DEFAULT_INLINE_ROWS)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
-      var outputPath = getRequiredString(arguments, "output_path");
-      var startTime = arguments.has("start_time") && !arguments.get("start_time").isJsonNull()
-          ? arguments.get("start_time").getAsDouble()
-          : null;
-      var endTime = arguments.has("end_time") && !arguments.get("end_time").isJsonNull()
-          ? arguments.get("end_time").getAsDouble()
-          : null;
-
-      var outputFilePath = Path.of(outputPath).toAbsolutePath().normalize();
-      if (!isPathAllowed(outputFilePath, log)) {
-        return errorResult(
-            "Output path not allowed. CSV files can only be written to the configured log "
-                + "directory or system temp directory. Path: " + outputFilePath);
-      }
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      boolean inline = getOptBoolean(arguments, "inline");
+      int maxRows = validateRange(getOptInt(arguments, "max_rows", DEFAULT_INLINE_ROWS), 1,
+          MAX_INLINE_ROWS, "max_rows");
 
       var values = log.values().get(name);
       if (values == null) {
         return errorResult("Entry not found: " + name);
       }
-
       var entry = log.entries().get(name);
       var type = entry != null ? entry.type() : "unknown";
-      boolean isArray = type.startsWith("structarray:") || type.contains("[]");
+
+      // Flatten: one row per sample, or per element of an array value
+      var rows = new ArrayList<Row>();
+      boolean indexed = false;
+      for (var tv : values) {
+        double t = tv.timestamp();
+        if ((startTime != null && t < startTime) || (endTime != null && t > endTime)) continue;
+        var elements = elementsOf(tv.value());
+        if (elements != null) {
+          indexed = true;
+          for (int i = 0; i < elements.size(); i++) {
+            rows.add(new Row(t, i, flatten(elements.get(i))));
+          }
+        } else {
+          rows.add(new Row(t, -1, flatten(tv.value())));
+        }
+      }
+      var columnSet = new java.util.TreeSet<String>();
+      rows.forEach(r -> columnSet.addAll(r.fields().keySet()));
+      var columns = new ArrayList<String>();
+      columns.add("timestamp_sec");
+      if (indexed) columns.add("index");
+      columns.addAll(columnSet);
+
+      if (inline) {
+        var array = new JsonArray();
+        for (var row : rows.subList(0, Math.min(maxRows, rows.size()))) {
+          var cells = new JsonArray();
+          cells.add(row.timestamp());
+          if (indexed) cells.add(row.index());
+          for (var c : columnSet) {
+            var v = row.fields().get(c);
+            if (v == null) cells.add(com.google.gson.JsonNull.INSTANCE);
+            else if (v instanceof Number n && Double.isFinite(n.doubleValue())) cells.add(n);
+            else cells.add(String.valueOf(v));
+          }
+          array.add(cells);
+        }
+        var result = new JsonObject();
+        result.addProperty("success", true);
+        result.addProperty("entry", name);
+        result.addProperty("type", type);
+        result.add("columns", GSON.toJsonTree(columns));
+        ResultContract.addLimitedList(result, "rows", array, rows.size(), maxRows);
+        result.addProperty("rows_exported", array.size());
+        return result;
+      }
+
+      var exportDir = exportDirectory;
+      Path outputFilePath;
+      try {
+        outputFilePath = resolveOutputPath(getOptString(arguments, "output_path", null), log, name,
+            exportDir);
+      } catch (IllegalArgumentException e) {
+        return errorResult(e.getMessage());
+      }
 
       int rowCount = 0;
       try (var writer = new PrintWriter(new FileWriter(outputFilePath.toFile()))) {
-        if (isArray && type.contains("SwerveModuleState")) {
-          writer.println("timestamp_sec,module_index,speed_mps,angle_rad,angle_deg");
-        } else if (type.contains("Pose2d")) {
-          writer.println("timestamp_sec,x,y,rotation_rad,rotation_deg");
-        } else if (type.contains("Pose3d")) {
-          writer.println("timestamp_sec,x,y,z,qw,qx,qy,qz");
-        } else if (type.contains("SwerveModuleState")) {
-          writer.println("timestamp_sec,speed_mps,angle_rad,angle_deg");
-        } else if (isArray) {
-          writer.println("timestamp_sec,index,value");
-        } else {
-          // For Map-typed values (generic structs), discover keys from first value
-          // to write a correct header with one column per field.
-          if (!values.isEmpty() && values.get(0).value() instanceof Map<?, ?> firstRawMap) {
-            @SuppressWarnings("unchecked")
-            var firstMap = (Map<String, Object>) firstRawMap;
-            var sortedKeys = new java.util.TreeSet<>(firstMap.keySet());
-            writer.println("timestamp_sec," + String.join(",", sortedKeys));
-          } else {
-            writer.println("timestamp_sec,value");
+        writer.println(String.join(",", columns));
+        for (var row : rows) {
+          var sb = new StringBuilder();
+          sb.append(row.timestamp());
+          if (indexed) sb.append(',').append(row.index());
+          for (var c : columnSet) {
+            var v = row.fields().get(c);
+            sb.append(',');
+            if (v != null) sb.append(csvEscape(String.valueOf(v)));
           }
-        }
-
-        for (var tv : values) {
-          double t = tv.timestamp();
-          if ((startTime != null && t < startTime) || (endTime != null && t > endTime)) {
-            continue;
-          }
-
-          if (tv.value() instanceof List<?> list) {
-            for (int i = 0; i < list.size(); i++) {
-              var element = list.get(i);
-              if (element instanceof Map<?, ?> rawMap) {
-                @SuppressWarnings("unchecked")
-                var map = (Map<String, Object>) rawMap;
-                var sb = new StringBuilder();
-                sb.append(t).append(",").append(i);
-                writeStructFields(sb, map, type);
-                writer.println(sb);
-              } else {
-                writer.println(t + "," + i + "," + csvEscape(String.valueOf(element)));
-              }
-              rowCount++;
-            }
-          } else if (RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value()) != null) {
-            var arr = RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value());
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof long[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof float[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof boolean[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof String[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + csvEscape(arr[i]));
-              rowCount++;
-            }
-          } else if (tv.value() instanceof Map<?, ?> rawMap) {
-            @SuppressWarnings("unchecked")
-            var map = (Map<String, Object>) rawMap;
-            var sb = new StringBuilder();
-            sb.append(t);
-            writeStructFields(sb, map, type);
-            writer.println(sb);
-            rowCount++;
-          } else {
-            writer.println(t + "," + csvEscape(String.valueOf(tv.value())));
-            rowCount++;
-          }
+          writer.println(sb);
+          rowCount++;
         }
       }
 
@@ -209,39 +200,98 @@ public final class ExportTools {
       result.addProperty("success", true);
       result.addProperty("entry", name);
       result.addProperty("output_path", outputFilePath.toString());
+      result.addProperty("export_directory", exportDir.toRealPath().toString());
       result.addProperty("rows_exported", rowCount);
       result.addProperty("type", type);
-
+      result.add("columns", GSON.toJsonTree(columns));
       return result;
     }
 
-    /**
-     * Writes struct fields to the StringBuilder in the correct order for the entry type.
-     * Known struct types use explicit field ordering matching their CSV headers.
-     * Unknown struct types use alphabetically sorted keys for deterministic output.
-     */
-    private static void writeStructFields(StringBuilder sb, Map<String, Object> map, String type) {
-      if (type.contains("SwerveModuleState")) {
-        sb.append(",").append(map.get("speed_mps"));
-        sb.append(",").append(map.get("angle_rad"));
-        sb.append(",").append(map.get("angle_deg"));
-      } else if (type.contains("Pose2d")) {
-        sb.append(",").append(map.get("x"));
-        sb.append(",").append(map.get("y"));
-        sb.append(",").append(map.get("rotation_rad"));
-        sb.append(",").append(map.get("rotation_deg"));
-      } else if (type.contains("Pose3d")) {
-        sb.append(",").append(map.get("x"));
-        sb.append(",").append(map.get("y"));
-        sb.append(",").append(map.get("z"));
-        sb.append(",").append(map.get("qw"));
-        sb.append(",").append(map.get("qx"));
-        sb.append(",").append(map.get("qy"));
-        sb.append(",").append(map.get("qz"));
+    record Row(double timestamp, int index, Map<String, Object> fields) {}
+
+    /** The elements of an array value (struct array or primitive array), or null for a scalar. */
+    static List<?> elementsOf(Object value) {
+      if (value instanceof List<?> list) return list;
+      if (value != null && value.getClass().isArray() && !(value instanceof byte[])) {
+        int n = java.lang.reflect.Array.getLength(value);
+        var out = new ArrayList<Object>(n);
+        for (int i = 0; i < n; i++) out.add(java.lang.reflect.Array.get(value, i));
+        return out;
+      }
+      return null;
+    }
+
+    /** A value as columns: "value" for a scalar; dot paths for a struct; field[i] for arrays. */
+    static Map<String, Object> flatten(Object value) {
+      var out = new LinkedHashMap<String, Object>();
+      if (value instanceof Map<?, ?> map) {
+        flattenInto("", map, out);
       } else {
-        // Generic struct: alphabetically sorted keys for deterministic column order
-        var sortedKeys = new java.util.TreeSet<>(map.keySet());
-        sortedKeys.forEach(key -> sb.append(",").append(csvEscape(String.valueOf(map.get(key)))));
+        out.put("value", value instanceof byte[] b ? BinaryHex.of(b) : value);
+      }
+      return out;
+    }
+
+    private static void flattenInto(String prefix, Object value, Map<String, Object> out) {
+      if (value instanceof Map<?, ?> map) {
+        for (var e : map.entrySet()) {
+          flattenInto(prefix.isEmpty() ? String.valueOf(e.getKey())
+              : prefix + "." + e.getKey(), e.getValue(), out);
+        }
+      } else if (value instanceof List<?> || (value != null && value.getClass().isArray()
+          && !(value instanceof byte[]))) {
+        var elements = elementsOf(value);
+        for (int i = 0; i < elements.size(); i++) {
+          flattenInto(prefix + "[" + i + "]", elements.get(i), out);
+        }
+      } else {
+        out.put(prefix, value);
+      }
+    }
+
+    /**
+     * Where to write: a bare or relative name inside the export directory, a generated name when
+     * none is given, or an absolute path that lies inside it. Symlinks cannot escape it.
+     */
+    static Path resolveOutputPath(String requested, LogData log, String entryName, Path exportDir)
+        throws IOException {
+      if (!Files.isDirectory(exportDir)) Files.createDirectories(exportDir);
+      var realExportDir = exportDir.toRealPath();
+      Path candidate;
+      if (requested == null || requested.isBlank()) {
+        var logStem = Path.of(log.path()).getFileName().toString().replaceAll("\\.wpilog$", "");
+        var entryStem = entryName.replaceAll("[^A-Za-z0-9_.-]+", "_").replaceAll("^_+|_+$", "");
+        candidate = realExportDir.resolve(logStem + "__" + entryStem + ".csv");
+      } else {
+        var p = Path.of(requested);
+        candidate = (p.isAbsolute() ? p : realExportDir.resolve(p)).toAbsolutePath().normalize();
+      }
+      var notAllowed = "Output path not allowed: " + candidate + ". CSV files are written only "
+          + "inside the export directory " + realExportDir + "; pass a bare file name (e.g. "
+          + "\"pose.csv\") or a path relative to it, or omit output_path.";
+      if (!candidate.startsWith(realExportDir) && !candidate.startsWith(exportDir.toAbsolutePath().normalize())) {
+        throw new IllegalArgumentException(notAllowed);
+      }
+      if (Files.isSymbolicLink(candidate)) throw new IllegalArgumentException(notAllowed);
+      var parent = candidate.getParent();
+      if (parent == null) throw new IllegalArgumentException(notAllowed);
+      // Only create subdirectories that stay inside the export directory
+      if (!Files.exists(parent)) {
+        if (!parent.normalize().startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
+        Files.createDirectories(parent);
+      }
+      var resolved = Files.exists(candidate) ? candidate.toRealPath()
+          : parent.toRealPath().resolve(candidate.getFileName());
+      if (!resolved.startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
+      return resolved;
+    }
+
+    /** Hex text for raw bytes. */
+    static final class BinaryHex {
+      static String of(byte[] bytes) {
+        var sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
       }
     }
 
@@ -257,37 +307,7 @@ public final class ExportTools {
       return value;
     }
 
-    private boolean isPathAllowed(Path path, LogData log) {
-      // Exports are restricted to the configured export directory only.
-      // Resolve symlinks to prevent symlink-based path escape:
-      // - If the file already exists, resolve the FULL path (catches symlinks in filename)
-      // - If it doesn't exist, resolve the parent and reject if the filename is a symlink
-      try {
-        var absPath = path.toAbsolutePath().normalize();
 
-        // Auto-create export directory if it doesn't exist
-        var exportDir = exportDirectory;
-        if (!Files.isDirectory(exportDir)) {
-          Files.createDirectories(exportDir);
-        }
-        var resolvedExportDir = exportDir.toRealPath();
-
-        if (Files.exists(absPath)) {
-          // File exists — resolve entire path to follow all symlinks
-          var resolvedPath = absPath.toRealPath();
-          return resolvedPath.startsWith(resolvedExportDir);
-        } else {
-          // File doesn't exist — resolve parent, reject symlink filenames
-          var parent = absPath.getParent();
-          if (parent == null) return false;
-          if (Files.isSymbolicLink(absPath)) return false;
-          var resolvedPath = parent.toRealPath().resolve(absPath.getFileName());
-          return resolvedPath.startsWith(resolvedExportDir);
-        }
-      } catch (IOException e) {
-        return false; // Cannot resolve — deny by default
-      }
-    }
   }
 
   static class GenerateReportTool extends LogRequiringTool {

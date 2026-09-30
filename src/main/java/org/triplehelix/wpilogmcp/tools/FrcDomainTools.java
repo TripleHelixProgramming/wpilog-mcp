@@ -1873,144 +1873,260 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Detect when robot code exceeded loop period threshold (default 20ms). "
-          + "Returns violations, statistics, and a health score. "
-          + "Auto-detects units (ms vs s) via median heuristic; assumes standard FRC loop rates."
+      return "Loop timing: how often robot code exceeded the loop period (threshold_ms, default "
+          + "20 ms) and the distribution of loop times (mean, median, p90, p95, p99, max with its "
+          + "time), over a scope (e.g. 'enabled') or window. The entry is found in this order: "
+          + "the entry argument; AdvantageKit's LoggedRobot/FullCycleMS (whole cycle, including "
+          + "logging), reported with LoggedRobot/UserCodeMS alongside; names containing looptime, "
+          + "loop_time, or cycletime; else loop periods derived from consecutive AdvantageKit "
+          + "/Timestamp values. The unit comes from the argument, the name (...MS, ...Ms, _ms), "
+          + "or the median (basis reported). A first sample more than 10x the median (the slow "
+          + "boot cycle) is excluded and reported. health_score (0-100) is 100 minus the percent "
+          + "of loops over the threshold. Returns no_match when the log has no loop timing, "
+          + "with the count of WPILib loop-overrun console messages if any."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
+          .addProperty("entry", "string", "Loop time entry (default: discovered, see description)", false)
           .addNumberProperty("threshold_ms", "Loop time threshold in milliseconds (default: 20)", false, 20.0)
+          .addProperty("unit", "string", "Unit of the entry's values: 'ms', 's', 'us', or 'auto' "
+              + "(default: from the name, else the median)", false)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addProperty("unit", "string", "Unit of loop time values: 'ms', 's', or 'auto' (default: 'auto'). "
-              + "Auto-detect uses median value: if median < 1.0, assumes seconds and converts to ms.", false)
           .build();
     }
 
+    static int rank(String name) {
+      var leaf = name.substring(name.lastIndexOf('/') + 1).toLowerCase(java.util.Locale.ROOT);
+      var lower = name.toLowerCase(java.util.Locale.ROOT);
+      if (leaf.equals("fullcyclems")) return 0;
+      if (leaf.equals("usercodems")) return 1;
+      if (lower.contains("looptime") || lower.contains("loop_time") || lower.contains("cycletime")
+          || lower.contains("cycle_time")) return 2;
+      return Integer.MAX_VALUE;
+    }
+
+    /** Unit scale to milliseconds, and the basis for it. */
+    record Unit(double toMs, String name, String basis) {}
+
+    static Unit unitFor(String entry, String unitArg, double[] rawSorted) {
+      if (unitArg != null && !unitArg.equalsIgnoreCase("auto")) {
+        return switch (unitArg.toLowerCase(java.util.Locale.ROOT)) {
+          case "ms" -> new Unit(1.0, "ms", "argument");
+          case "s" -> new Unit(1000.0, "s", "argument");
+          case "us" -> new Unit(0.001, "us", "argument");
+          default -> throw new IllegalArgumentException("unit must be 'ms', 's', 'us', or 'auto'");
+        };
+      }
+      if (entry != null) {
+        var leaf = entry.substring(entry.lastIndexOf('/') + 1);
+        if (leaf.endsWith("MS") || leaf.endsWith("Ms") || leaf.toLowerCase().endsWith("_ms")
+            || leaf.toLowerCase().endsWith("millis")) {
+          return new Unit(1.0, "ms", "name (" + leaf + ")");
+        }
+        if (leaf.endsWith("US") || leaf.endsWith("Us") || leaf.toLowerCase().endsWith("_us")
+            || leaf.toLowerCase().endsWith("micros")) {
+          return new Unit(0.001, "us", "name (" + leaf + ")");
+        }
+        if (leaf.toLowerCase().endsWith("sec") || leaf.toLowerCase().endsWith("seconds")
+            || leaf.toLowerCase().endsWith("_s")) {
+          return new Unit(1000.0, "s", "name (" + leaf + ")");
+        }
+      }
+      double median = percentile(rawSorted, 0.5);
+      if (median >= 0.001 && median < 1.0) {
+        return new Unit(1000.0, "s", String.format("median %.4g: looks like seconds", median));
+      }
+      if (median > 500) {
+        return new Unit(0.001, "us", String.format("median %.4g: looks like microseconds", median));
+      }
+      return new Unit(1.0, "ms", String.format("median %.4g: looks like milliseconds", median));
+    }
+
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
-      var startTime = getOptDouble(arguments, "start_time");
-      var endTime = getOptDouble(arguments, "end_time");
-      var unit = getOptString(arguments, "unit", "auto");
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
+      var entryArg = getOptString(arguments, "entry", null);
+      var unitArg = getOptString(arguments, "unit", null);
+      var scope = TimeScope.resolve(log, null, getOptString(arguments, "scope", null),
+          getOptDouble(arguments, "start_time"), getOptDouble(arguments, "end_time"));
 
-      // Find loop time entry
-      String loopTimeEntry = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = entryName.toLowerCase();
-        if (lower.contains("looptime") || (lower.contains("loop") && lower.contains("time"))) {
-          loopTimeEntry = entryName;
-          break;
+      String entry = entryArg;
+      String secondary = null;
+      if (entry != null) {
+        requireEntry(log, entry);
+        if (!isNumericType(log.entries().get(entry).type())) {
+          throw new IllegalArgumentException("Entry " + entry + " is "
+              + log.entries().get(entry).type() + ", not a scalar number");
+        }
+      } else {
+        var ranked = log.entries().values().stream()
+            .filter(e -> isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
+            .filter(e -> rank(e.name()) < Integer.MAX_VALUE)
+            .sorted(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
+                    rank(e.name()))
+                .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
+            .toList();
+        if (!ranked.isEmpty()) {
+          entry = ranked.get(0);
+          if (rank(entry) == 0) {
+            secondary = ranked.stream().filter(n -> rank(n) == 1).findFirst().orElse(null);
+          }
         }
       }
 
-      if (loopTimeEntry == null) {
-        return errorResult("No loop time entry found. Look for entries containing 'LoopTime' or 'loop time'");
+      // Samples in scope, as {time, raw value}
+      var raw = new ArrayList<double[]>();
+      String basisOverride = null;
+      if (entry != null) {
+        for (var tv : log.values().get(entry)) {
+          var v = toDouble(tv.value());
+          if (v != null && Double.isFinite(v) && scope.contains(tv.timestamp())) {
+            raw.add(new double[] {tv.timestamp(), v});
+          }
+        }
+      } else {
+        var timestamp = log.entries().get("/Timestamp");
+        if (timestamp != null && isNumericType(timestamp.type())) {
+          entry = "/Timestamp";
+          basisOverride = "derived: differences between consecutive /Timestamp values "
+              + "(AdvantageKit's per-cycle FPGA time, microseconds)";
+          TimestampedValue previous = null;
+          for (var tv : log.values().get("/Timestamp")) {
+            if (previous != null && scope.contains(tv.timestamp())
+                && tv.value() instanceof Number n && previous.value() instanceof Number p) {
+              raw.add(new double[] {tv.timestamp(), (n.doubleValue() - p.doubleValue()) / 1000.0});
+            }
+            previous = tv;
+          }
+        }
+      }
+      if (entry == null) {
+        long overrunMessages = 0;
+        for (var e : log.entries().values()) {
+          if (!"string".equals(e.type())) continue;
+          for (var tv : log.values().get(e.name())) {
+            if (tv.value() instanceof String text && text.toLowerCase().contains("overrun")) {
+              overrunMessages++;
+            }
+          }
+        }
+        var nm = ResponseBuilder.noMatch("No loop time entry found.")
+            .lookedFor(List.of("LoggedRobot/FullCycleMS and LoggedRobot/UserCodeMS (AdvantageKit)",
+                "numeric entries whose names contain looptime, loop_time, or cycletime",
+                "/Timestamp (AdvantageKit per-cycle time, to derive loop periods)"))
+            .hint("Pass entry to name the robot's loop time entry"
+                + (overrunMessages > 0 ? "; search_strings with pattern 'overrun' lists the "
+                    + overrunMessages + " loop overrun console messages in this log" : "") + ".");
+        if (overrunMessages > 0) nm.addProperty("overrun_messages", overrunMessages);
+        return nm.build();
+      }
+      if (raw.isEmpty()) {
+        return ResponseBuilder.noMatch("No samples of " + entry + " in scope '" + scope.name()
+                + "'.")
+            .addData("scope", scope.toJson())
+            .build();
       }
 
-      var values = log.values().get(loopTimeEntry);
-      if (values == null || values.isEmpty()) {
-        return errorResult("Loop time entry found but has no data");
+      var rawSorted = raw.stream().mapToDouble(r -> r[1]).sorted().toArray();
+      var unit = basisOverride != null ? new Unit(1.0, "ms", basisOverride)
+          : unitFor(entry, unitArg, rawSorted);
+      var ms = new ArrayList<double[]>(raw.size());
+      raw.forEach(r -> ms.add(new double[] {r[0], r[1] * unit.toMs()}));
+
+      // The first cycle after boot can take seconds; it is not a loop overrun
+      JsonObject excludedBoot = null;
+      var allOfEntry = basisOverride == null ? log.values().get(entry) : null;
+      double medianMs = percentile(ms.stream().mapToDouble(r -> r[1]).sorted().toArray(), 0.5);
+      if (allOfEntry != null && !allOfEntry.isEmpty()
+          && ms.get(0)[0] == allOfEntry.get(0).timestamp() && ms.size() > 1
+          && ms.get(0)[1] > 10 * medianMs) {
+        excludedBoot = new JsonObject();
+        excludedBoot.addProperty("timestamp", ms.get(0)[0]);
+        excludedBoot.addProperty("loop_time_ms", ms.get(0)[1]);
+        ms.remove(0);
       }
 
+      var loopMs = ms.stream().mapToDouble(r -> r[1]).toArray();
+      var sorted = loopMs.clone();
+      java.util.Arrays.sort(sorted);
       var violations = new ArrayList<JsonObject>();
-      var loopTimes = new ArrayList<Double>();
-
-      // Determine conversion factor based on unit parameter
-      // For "auto", collect raw values first, then detect unit from median
-      boolean needsAutoDetect = "auto".equalsIgnoreCase(unit);
-      double conversionFactor = 1.0; // default: assume ms
-      if ("s".equalsIgnoreCase(unit)) {
-        conversionFactor = 1000.0;
-      }
-
-      // First pass: collect raw values with timestamps for auto-detection
-      record RawSample(double timestamp, double value) {}
-      var rawSamples = new ArrayList<RawSample>();
-      for (TimestampedValue tv : values) {
-        if (startTime != null && tv.timestamp() < startTime) continue;
-        if (endTime != null && tv.timestamp() > endTime) break;
-        if (tv.value() instanceof Number num) {
-          rawSamples.add(new RawSample(tv.timestamp(), num.doubleValue()));
-        }
-      }
-
-      if (rawSamples.isEmpty()) {
-        return errorResult("No numeric loop time data found");
-      }
-
-      boolean detectedMicroseconds = false;
-      if (needsAutoDetect) {
-        // Use median to determine unit (robust to outliers)
-        var sortedRaw = rawSamples.stream().mapToDouble(RawSample::value).sorted().toArray();
-        double median = sortedRaw.length % 2 == 1
-            ? sortedRaw[sortedRaw.length / 2]
-            : (sortedRaw[sortedRaw.length / 2 - 1] + sortedRaw[sortedRaw.length / 2]) / 2.0;
-        // Values in 0.001–1.0 range look like seconds (typical: 0.02 for 20ms loop)
-        // Below 0.001 could be fractional ms or corrupt data — leave as-is
-        if (median >= 0.001 && median < 1.0) {
-          conversionFactor = 1000.0; // Values look like seconds, convert to ms
-        } else if (median > 500) {
-          // Values > 500 look like microseconds (typical: 20000 for 20ms loop)
-          conversionFactor = 1.0 / 1000.0; // Convert microseconds to ms
-          detectedMicroseconds = true;
-        }
-      }
-
-      for (var sample : rawSamples) {
-        double loopTimeMs = sample.value() * conversionFactor;
-        loopTimes.add(loopTimeMs);
-
-        if (loopTimeMs > thresholdMs) {
+      double[] max = ms.get(0);
+      for (var r : ms) {
+        if (r[1] > max[1]) max = r;
+        if (r[1] > thresholdMs) {
           var violation = new JsonObject();
-          violation.addProperty("timestamp", sample.timestamp());
-          violation.addProperty("loop_time_ms", loopTimeMs);
-          violation.addProperty("overage_ms", loopTimeMs - thresholdMs);
+          violation.addProperty("timestamp", r[0]);
+          violation.addProperty("loop_time_ms", r[1]);
+          violation.addProperty("overage_ms", r[1] - thresholdMs);
           violations.add(violation);
         }
       }
-
-      // Calculate statistics
-      var stats = loopTimes.stream().mapToDouble(d -> d).summaryStatistics();
-      var sorted = loopTimes.stream().mapToDouble(d -> d).sorted().toArray();
-
       var statistics = new JsonObject();
-      statistics.addProperty("avg_ms", stats.getAverage());
-      statistics.addProperty("max_ms", stats.getMax());
-      statistics.addProperty("min_ms", stats.getMin());
-      statistics.addProperty("p95_ms", interpolatedPercentile(sorted, 0.95));
-      statistics.addProperty("p99_ms", interpolatedPercentile(sorted, 0.99));
+      statistics.addProperty("avg_ms", java.util.Arrays.stream(loopMs).average().orElse(0));
+      statistics.addProperty("median_ms", percentile(sorted, 0.5));
+      statistics.addProperty("p90_ms", percentile(sorted, 0.90));
+      statistics.addProperty("p95_ms", percentile(sorted, 0.95));
+      statistics.addProperty("p99_ms", percentile(sorted, 0.99));
+      statistics.addProperty("max_ms", max[1]);
+      statistics.addProperty("max_time_sec", max[0]);
+      statistics.addProperty("min_ms", sorted[0]);
 
-      // Calculate health score (0-100)
-      double violationRate = (double) violations.size() / loopTimes.size();
-      // Linear mapping: 0% violations = 100, 100% violations = 0
+      double violationRate = (double) violations.size() / loopMs.length;
       int healthScore = (int) Math.max(0, Math.min(100, 100 - (violationRate * 100)));
+      var list = new JsonArray();
+      violations.stream().limit(50).forEach(list::add);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("loop_time_entry", loopTimeEntry);
-      result.addProperty("threshold_ms", thresholdMs);
-      result.addProperty("violation_count", violations.size());
-      result.addProperty("total_samples", loopTimes.size());
-      result.addProperty("violation_rate", violationRate);
-      result.addProperty("health_score", healthScore);
-      result.add("statistics", statistics);
-      result.add("violations", GSON.toJsonTree(violations.stream().limit(50).toList()));
-      if (detectedMicroseconds) {
-        result.addProperty("units_note", "Raw values were detected as microseconds and converted to milliseconds");
+      var unitJson = new JsonObject();
+      unitJson.addProperty("value", unit.name());
+      unitJson.addProperty("basis", unit.basis());
+      var builder = success()
+          .addProperty("loop_time_entry", entry)
+          .addData("unit", unitJson)
+          .addData("scope", scope.toJson())
+          .addProperty("threshold_ms", thresholdMs)
+          .addProperty("violation_count", violations.size())
+          .addProperty("total_samples", loopMs.length)
+          .addProperty("violation_rate", violationRate)
+          .addProperty("percent_over_threshold", violationRate * 100)
+          .addProperty("health_score", healthScore)
+          .addData("statistics", statistics)
+          .addLimitedList("violations", list, violations.size(), 50)
+          .addInput("loop_time", entry);
+      if ("us".equals(unit.name()) && !"argument".equals(unit.basis())) {
+        builder.addProperty("units_note", "Raw values were detected as microseconds and "
+            + "converted to milliseconds");
       }
-
-      // Add data quality and analysis directives
-      var quality = DataQuality.fromValues(values);
-      var directives = AnalysisDirectives.fromQuality(quality)
+      if (excludedBoot != null) builder.addData("excluded_boot_cycle", excludedBoot);
+      if (secondary != null) {
+        var sec = new ArrayList<Double>();
+        for (var tv : log.values().get(secondary)) {
+          var v = toDouble(tv.value());
+          if (v != null && Double.isFinite(v) && scope.contains(tv.timestamp())) sec.add(v);
+        }
+        if (!sec.isEmpty()) {
+          var s = sec.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+          var o = new JsonObject();
+          o.addProperty("entry", secondary);
+          o.addProperty("basis", "robot code only; the full cycle adds logging and other overhead");
+          o.addProperty("median_ms", percentile(s, 0.5));
+          o.addProperty("p95_ms", percentile(s, 0.95));
+          o.addProperty("percent_over_threshold",
+              100.0 * java.util.Arrays.stream(s).filter(v -> v > thresholdMs).count() / s.length);
+          builder.addData("user_code", o);
+        }
+      }
+      var quality = DataQuality.fromValues(basisOverride == null ? log.values().get(entry)
+          : log.values().get("/Timestamp"));
+      builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
-          .addGuidance("Health score is a heuristic based on violation rate — consider context of violations");
-      result.add("data_quality", quality.toJson());
-      result.add("server_analysis_directives", directives.toJson());
-
-      return result;
+          .addGuidance("Health score is a heuristic based on violation rate — consider context of violations"));
+      return builder.build();
     }
   }
 

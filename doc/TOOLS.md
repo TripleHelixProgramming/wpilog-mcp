@@ -1176,31 +1176,33 @@ The score breakdown includes game-specific fields that vary by year:
 ## Export Tools
 
 ### `export_csv`
-Export entry data to a CSV file for external analysis in Excel, Python, MATLAB, or other tools. Handles special types like Pose2d, Pose3d, and SwerveModuleState with appropriate column headers.
-
-**CSV Headers by Type:**
-- **Pose2d**: `timestamp_sec,x,y,rotation_rad,rotation_deg`
-- **Pose3d**: `timestamp_sec,x,y,z,qw,qx,qy,qz`
-- **SwerveModuleState**: `timestamp_sec,speed_mps,angle_rad,angle_deg`
-- **Other types**: `timestamp_sec,value`
+Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return its rows inline. This is the escape hatch when no tool can compute what you need: export, compute, and cite the export.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name to export
-- `output_path` (required): Path for output CSV file (must be within the configured export directory). Default export directory: `{tmpdir}/wpilog-export/`. Configure with `-exportdir`, `WPILOG_EXPORT_DIR`, or `"exportdir"` in `servers.yaml`.
-- `start_time` (optional): Start timestamp in seconds (filters data)
-- `end_time` (optional): End timestamp in seconds (filters data)
+- `name` (required): Entry to export
+- `output_path` (optional): File name or path **inside the export directory** — a bare name (`pose.csv`) or relative path (`run1/pose.csv`) is resolved inside it, and subdirectories are created; an absolute path must already lie inside it. Default: a name generated from the log and entry (`<log>__<entry>.csv`)
+- `start_time`, `end_time` (optional): Time window
+- `inline` (optional): Return the rows in the response instead of writing a file (default false) — for agents that cannot read the export directory
+- `max_rows` (optional): Rows returned inline (default 500, max 5000)
 
-**Returns:** Confirmation with row count and output path
+**Export directory:** `{java.io.tmpdir}/wpilog-export` by default, or `-exportdir`, the `WPILOG_EXPORT_DIR` environment variable, or `exportdir` in the server config. Every result names it (`export_directory`); a refused path's error names it too. Symlinks cannot escape it.
+
+**Columns:** every value is flattened. A scalar is one `value` column; a struct is one column per field, nested fields as dot paths (`translation.x`) and array fields as `field[i]`, sorted by name; a struct array or primitive array is one row per element with an `index` column. Header and rows always align.
+
+**Returns:** `entry`, `type`, `columns`, `rows_exported`, and either `output_path` (absolute) and `export_directory`, or (inline) `rows` with `limits.rows` (total vs returned).
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "entry": "/Drive/Odometry/Pose",
-  "output_path": "/tmp/pose_data.csv",
-  "rows_exported": 7716,
-  "type": "struct:Pose2d"
+  "status": "ok",
+  "entry": "/RealOutputs/Drive/Pose",
+  "output_path": "/private/var/folders/.../T/wpilog-export/pose.csv",
+  "export_directory": "/private/var/folders/.../T/wpilog-export",
+  "rows_exported": 59138,
+  "type": "struct:Pose2d",
+  "columns": ["timestamp_sec", "rotation_deg", "rotation_rad", "x", "y"]
 }
 ```
 
@@ -1635,62 +1637,41 @@ Validate AdvantageKit deterministic replay. Run it on a replay output log (the `
 **Use Case:** When replay outputs don't match real outputs, this tool helps identify which subsystems broke determinism. The first divergence timestamp often points to the root cause — entries that diverge first typically contain the non-deterministic code (common causes: `Timer.getFPGATimestamp()`, `Math.random()`, network data, sensor reads outside AdvantageKit inputs).
 
 ### `analyze_loop_timing`
-Analyze robot code loop timing performance. Detects loop overruns (> 20ms), measures jitter, and provides timing statistics. Critical for diagnosing real-time performance issues that can cause stuttering, dropped commands, or unstable control.
+How often robot code exceeded the loop period, and the distribution of loop times.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20ms for standard 50Hz loop)
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
-- `unit` (optional): Unit of loop time values: `"ms"`, `"s"`, or `"auto"` (default). Auto-detect uses the median value: if median < 1.0, assumes seconds and converts to milliseconds.
+- `entry` (optional): The loop time entry (default: discovered, below)
+- `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20 ms, the standard 50 Hz period)
+- `unit` (optional): `ms`, `s`, `us`, or `auto` (default: from the entry name — `...MS`, `...Ms`, `_ms`, `...Micros`, `...Sec` — else from the median: 0.001–1 looks like seconds, above 500 like microseconds)
+- `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
 
-**Searches for entries containing:**
-- Loop timing: `loopTime`, `cycleTime`, `scanTime`, `dt`, `period`
-- Common patterns: `/RobotCode/LoopTime`, `/Diagnostics/LoopTime`, `/Robot/LoopTime`
+**Entry discovery, in order:** the `entry` argument; AdvantageKit's `LoggedRobot/FullCycleMS` (the whole cycle, including logging), reported with `LoggedRobot/UserCodeMS` alongside as `user_code`; numeric entries whose names contain `looptime`, `loop_time`, or `cycletime`; else loop periods derived from consecutive AdvantageKit `/Timestamp` values. A first sample more than 10× the median — the slow boot cycle, often several seconds — is excluded and reported as `excluded_boot_cycle`.
 
-**Returns:** Loop timing statistics, violation count, jitter analysis, and specific violation timestamps
+**Returns:** `loop_time_entry`, `unit` (`value` and `basis`), `scope`, `threshold_ms`, `violation_count` (true total), `total_samples`, `violation_rate`, `percent_over_threshold`, `health_score` (100 minus the percent over threshold — a heuristic kept by design), `statistics` (`avg_ms`, `median_ms`, `p90_ms`, `p95_ms`, `p99_ms`, `max_ms` with `max_time_sec`, `min_ms`), `violations[]` (first 50, with `limits.violations`), `user_code` (median, p95, percent over threshold), and `excluded_boot_cycle`.
 
-**Example Response:**
+**Status:** `no_match` when the log has no loop timing; `overrun_messages` then counts WPILib's "loop overrun" console messages, which `search_strings` lists.
+
+**Example Response** (the review log, `scope: "enabled"`, `threshold_ms: 25`):
 ```json
 {
   "success": true,
-  "entry": "/RobotCode/LoopTime",
-  "statistics": {
-    "avg_ms": 18.2,
-    "min_ms": 15.1,
-    "max_ms": 42.7,
-    "std_dev_ms": 2.8,
-    "sample_count": 7500
-  },
-  "violations": [
-    {
-      "timestamp": 45.23,
-      "loop_time_ms": 42.7,
-      "threshold_ms": 20.0
-    },
-    {
-      "timestamp": 89.45,
-      "loop_time_ms": 25.3,
-      "threshold_ms": 20.0
-    }
-  ],
-  "violation_count": 12,
-  "violation_rate": 0.0016,
-  "jitter": {
-    "p95_ms": 19.8,
-    "p99_ms": 21.5,
-    "range_ms": 27.6
-  },
-  "health_assessment": "FAIR - Some loop overruns detected",
-  "_execution_time_ms": 35
+  "status": "ok",
+  "loop_time_entry": "/RealOutputs/LoggedRobot/FullCycleMS",
+  "unit": {"value": "ms", "basis": "name (FullCycleMS)"},
+  "scope": {"scope": "enabled", "windows": [[40.207, 359.162], "..."], "total_sec": 1311.36},
+  "threshold_ms": 25.0,
+  "violation_count": 8986,
+  "total_samples": 48596,
+  "violation_rate": 0.1849,
+  "percent_over_threshold": 18.49,
+  "health_score": 81,
+  "statistics": {"avg_ms": 23.4, "median_ms": 17.60, "p90_ms": 38.62, "p95_ms": 53.11, "p99_ms": 91.92, "max_ms": 412.0, "max_time_sec": 406.2, "min_ms": 9.8},
+  "violations": [{"timestamp": 40.3, "loop_time_ms": 31.2, "overage_ms": 6.2}, "..."],
+  "limits": {"violations": {"total": 8986, "returned": 50, "limit": 50}},
+  "user_code": {"entry": "/RealOutputs/LoggedRobot/UserCodeMS", "basis": "robot code only; ...", "median_ms": 14.1, "p95_ms": 45.0, "percent_over_threshold": 12.0}
 }
 ```
-
-**Health Assessment Levels:**
-- **EXCELLENT**: No violations, low jitter (< 2ms std dev)
-- **GOOD**: Few violations (< 1%), moderate jitter
-- **FAIR**: Some violations (1-5%), higher jitter
-- **POOR**: Many violations (> 5%), indicates serious performance issues
 
 **Common Causes of Loop Overruns:**
 - Vision processing on RoboRIO thread
@@ -2095,7 +2076,7 @@ Wait for background RevLog synchronization to complete. RevLog synchronization r
 
 In addition to per-tool guidance, the server sends general reasoning guidance to the AI agent through two channels:
 
-- **MCP `instructions`** — Returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a compact, ordered checklist (under 2 KB, the limit at which Claude Code truncates it): answer the question asked first; never name an entry or quote a number that no tool returned; never compute statistics by hand; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis needing physical inspection); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; truncated logs, revlog sync, and TBA-sourced scores.
+- **MCP `instructions`** — Returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a compact, ordered checklist (under 2 KB, the limit at which Claude Code truncates it): answer the question asked first; never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems; never compute statistics by hand — when no tool can read a data type, `export_csv` it and cite the export; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis needing physical inspection); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; truncated logs, revlog sync, and TBA-sourced scores.
 - **`get_server_guide` → `analysis_principles`** — The long-form version, returned as a tool result so it reaches the model in every client. The tool's `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}` so Claude Code keeps its description in context even when other MCP tools are deferred.
 
 Both come from `AnalysisGuidance.java`; a test verifies that every tool name they mention exists and that the instructions stay under the size limit.

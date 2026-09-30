@@ -55,18 +55,17 @@ public final class AnalysisGuidance {
    * {@link #INSTRUCTIONS_BYTE_LIMIT}; put the most important rules first; ASCII only.
    */
   public static final String SERVER_INSTRUCTIONS = """
-      wpilog-mcp analyzes FRC robot logs (.wpilog, .revlog). Answer the question asked first, then the evidence.
+      wpilog-mcp analyzes FRC robot logs. Answer the question asked first, then the evidence.
 
-      1. Never name an entry you have not seen in a list/search result or quote a number not in a tool result. If data is absent, say what you searched and ask how the team names it; absent data is not absent problems. One read_entry page is not the whole log.
-      2. Never compute statistics, correlations, rates, or durations by hand; use the tools. Call get_match_phases before any time reasoning.
+      1. Never name an entry you have not seen in a list/search result or quote a number not in a tool result. A no_match result means the data was not found: say what was searched, ask how the team names it; absent data is not absent problems. One read_entry page is not the whole log.
+      2. Never compute statistics, correlations, rates, or durations by hand; use the tools. If no tool can read a data type, export_csv it, compute externally, and cite the export. Call get_match_phases before any time reasoning.
       3. Verify the premise (get_ds_timeline, find_condition) before explaining an event. BROWNOUT_START/END events are voltage threshold crossings; only RIO_BROWNOUT_START (a logged flag) means the roboRIO cut outputs.
       4. Three tiers. A discrete event (a logged flag, 149 A peak, error string) is a fact: state it plainly. A mean, trend, or correlation is an inference: bound it by confidence_level, gap-driven and often "low" on good full-match data; it caps statistics, not events. A cause outside the telemetry (wiring, wear, battery) is a hypothesis needing physical inspection.
       5. For "why" questions, even when the user names a cause: answer it (yes/no/cannot tell), then test it against a rival: normal for this phase/state, a logging or timing artifact, or another simultaneous load. Report which survived.
-      6. Scope statistics to the phase and enabled state in question; whole-log numbers include disabled time and boot transients. Name the log, entry, and window used.
-      7. Cite entry, window, n, and statistic per finding. High r often means shared match timing, not cause.
-      8. Generalize only with cross-match evidence (compare_matches); one log is one sample.
-      9. A log that ends early is "log ends at Xs", not "match ended". Revlog timing is only as good as sync_status. Scores come only from TBA (get_tba_match_data or list_available_logs).
-      10. For diagnoses, close with ranked findings, confidence with reason, and the one next check. get_server_guide has the full method and traps.""";
+      6. Scope statistics to the phase and enabled state in question (whole-log numbers mix in disabled time and boot) and cite entry, window, n, and statistic per finding. High r often means shared match timing, not cause.
+      7. Generalize only with cross-match evidence (compare_matches); one log is one sample.
+      8. A log that ends early is "log ends at Xs", not "match ended". Revlog timing is only as good as sync_status. Scores come only from TBA (get_tba_match_data).
+      9. For diagnoses, close with ranked findings, confidence with reason, and the one next check. get_server_guide has the full method.""";
 
   /**
    * Long-form principles returned by {@code get_server_guide}. Authored as JSON for readability;
