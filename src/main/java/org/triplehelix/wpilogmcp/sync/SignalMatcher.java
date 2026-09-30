@@ -21,12 +21,11 @@ import org.triplehelix.wpilogmcp.revlog.RevLogSignal;
 /**
  * Identifies matching signal pairs between wpilog and revlog for synchronization.
  *
- * <p>Signal matching uses multiple strategies:
- * <ol>
- *   <li>Name-based matching: looks for common keywords in entry names</li>
- *   <li>Signal type matching: matches revlog signal types to wpilog patterns</li>
- *   <li>User-provided hints: CAN ID to entry name mappings</li>
- * </ol>
+ * <p>Names only nominate candidates; the synchronizer's correlation decides which pairs are
+ * used. A candidate is a numeric wpilog entry whose leaf name (the part after the last '/')
+ * contains a keyword of the revlog signal's kind: matching the whole path would nominate every
+ * AdvantageKit output ({@code /RealOutputs/...} contains "output"). User-provided hints (CAN ID
+ * to entry name) and motor-like path words rank candidates, but do not nominate them.
  *
  * @since 0.5.0
  */
@@ -34,21 +33,19 @@ public class SignalMatcher {
   private static final Logger logger = LoggerFactory.getLogger(SignalMatcher.class);
 
   /**
-   * Known signal type mappings from revlog signals to wpilog entry patterns.
-   * Keys are revlog signal names (lowercase), values are patterns to look for in wpilog entries.
+   * The REV signals used to synchronize, and the leaf-name words of the wpilog entries that may
+   * record the same quantity. Only signals that change quickly carry timing: a position is a
+   * running total (it correlates with any trend at almost any lag) and a temperature changes
+   * over minutes, so neither nominates pairs; nor does any other REV signal.
    */
   private static final Map<String, List<String>> SIGNAL_PATTERNS = Map.of(
       "appliedoutput", List.of(
-          "output", "dutycycle", "duty_cycle", "appliedvolts",
-          "motoroutput", "percentoutput", "appliedoutput", "voltage"
+          "output", "dutycycle", "duty_cycle", "appliedvolts", "appliedvoltage",
+          "motorvoltage", "motoroutput", "percentoutput", "appliedoutput"
       ),
       "velocity", List.of(
           "velocity", "speed", "rpm", "angularvelocity", "encodervelocity",
           "wheelspeed", "motorvelocity"
-      ),
-      "position", List.of(
-          "position", "angle", "rotation", "encoderposition", "distance",
-          "motorposition", "wheelposition"
       ),
       "busvoltage", List.of(
           "batteryvoltage", "busvoltage", "voltage", "batteryvolts",
@@ -57,9 +54,6 @@ public class SignalMatcher {
       "outputcurrent", List.of(
           "current", "amps", "motorcurrent", "stator", "supplycurrent",
           "outputcurrent", "statorcurrent"
-      ),
-      "temperature", List.of(
-          "temperature", "temp", "motortemp", "controllertemp"
       )
   );
 
@@ -144,11 +138,13 @@ public class SignalMatcher {
       String deviceHint) {
 
     List<MatchCandidate> matches = new ArrayList<>();
-    String signalType = revSignal.name().toLowerCase();
+    String signalType = revSignal.name().toLowerCase(java.util.Locale.ROOT);
 
     // Get patterns for this signal type
-    List<String> patterns = SIGNAL_PATTERNS.getOrDefault(
-        signalType, List.of(signalType));
+    List<String> patterns = SIGNAL_PATTERNS.get(signalType);
+    if (patterns == null) {
+      return matches;
+    }
 
     for (Map.Entry<String, EntryInfo> entry : wpilog.entries().entrySet()) {
       String entryName = entry.getKey();
@@ -159,38 +155,26 @@ public class SignalMatcher {
         continue;
       }
 
-      String lowerName = entryName.toLowerCase();
-
-      // Calculate match score
-      double score = calculateMatchScore(lowerName, patterns, deviceHint);
-
-      if (score > 0) {
-        matches.add(new MatchCandidate(entryName, score));
+      String lowerName = entryName.toLowerCase(java.util.Locale.ROOT);
+      String leaf = lowerName.substring(lowerName.lastIndexOf('/') + 1);
+      if (patterns.stream().noneMatch(leaf::contains)) {
+        continue;
       }
+      matches.add(new MatchCandidate(entryName,
+          calculateMatchScore(lowerName, patterns, deviceHint)));
     }
 
-    // Sort by score descending and limit to top 3 per signal
+    // Best-named first; the synchronizer ranks all of them by correlation
     matches.sort(Comparator.comparingDouble(MatchCandidate::score).reversed());
-    if (matches.size() > 3) {
-      matches = matches.subList(0, 3);
-    }
-
     return matches;
   }
 
   /**
-   * Calculates a match score for an entry name against signal patterns.
+   * Ranks a candidate (its leaf name already matched a pattern): the match, a device hint in the
+   * path, and a motor-like path word.
    */
   private double calculateMatchScore(String entryName, List<String> patterns, String deviceHint) {
-    double score = 0.0;
-
-    // Check pattern matches
-    for (String pattern : patterns) {
-      if (entryName.contains(pattern)) {
-        score += 0.5;
-        break; // Only count one pattern match
-      }
-    }
+    double score = 0.5;
 
     // Boost score if device hint matches
     if (deviceHint != null && !deviceHint.isBlank()) {
@@ -227,7 +211,7 @@ public class SignalMatcher {
    *
    * <p>Priority order:
    * <ol>
-   *   <li>appliedOutput - usually has most variance</li>
+   *   <li>AppliedOutput - usually has most variance</li>
    *   <li>velocity - good dynamic signal</li>
    *   <li>outputCurrent - good for load changes</li>
    *   <li>position - may have less variance</li>
@@ -243,7 +227,7 @@ public class SignalMatcher {
         "velocity", 2,
         "outputcurrent", 3,
         "position", 4,
-        "temperature", 5
+        "motortemperature", 5
     );
 
     return pairs.stream()

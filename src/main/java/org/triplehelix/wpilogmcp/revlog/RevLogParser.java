@@ -285,12 +285,9 @@ public class RevLogParser {
    * @return The arbitration ID
    */
   private int buildStatusFrameArbId(int statusFrame, int deviceId) {
-    // Device type = 2 (SPARK MAX)
-    // Manufacturer = 5 (REV)
-    // API Class = 6 (Status frames)
-    // API Index = statusFrame
-    // Device ID = deviceId
-    return CanDecoder.buildArbitrationId(2, 5, 6, statusFrame, deviceId);
+    // Device type = 2 (SPARK), manufacturer = 5 (REV), API class 46 (periodic status on
+    // firmware 25+, which REVLib 2026 and later require), API index = the status frame number
+    return CanDecoder.buildArbitrationId(2, 5, 46, statusFrame, deviceId);
   }
 
   // ==================== REV Native Binary Format ====================
@@ -466,7 +463,6 @@ public class RevLogParser {
       // Extract device info from CAN message ID
       int deviceType = (canMsgId >> 24) & 0x1F;
       int deviceId = canMsgId & 0x3F;
-      int apiIndex = (canMsgId >> 6) & 0xF;
 
       // Key by composite (deviceType << 6 | deviceId) to avoid collisions
       // when different device types share the same CAN ID
@@ -483,14 +479,11 @@ public class RevLogParser {
 
       String deviceKey = devices.get(compositeKey).deviceKey();
 
-      // The CAN message IDs in native revlog files use a different bit encoding
-      // than the DBC arbitration IDs. Reconstruct the DBC-compatible arb ID
-      // from the extracted fields. Manufacturer (5=REV) and API class (6=periodic status)
-      // are hardcoded because the native CAN frame ID bit layout does not directly
-      // encode these fields in DBC-compatible positions. Device ID is passed as 0
-      // because CanDecoder.decode() falls back to masked lookup (ignoring device ID bits).
-      int dbcArbId = CanDecoder.buildArbitrationId(deviceType, 5, 6, apiIndex, 0);
-      Map<String, Double> decodedSignals = decoder.decode(dbcArbId, canData);
+      // The chunk holds the frame's 29-bit CAN arbitration ID (device type, manufacturer, API
+      // class and index, device number). The decoder looks it up with the device bits masked:
+      // periodic status frames are API class 46 (firmware 25+); the legacy class 6 status 0
+      // that firmware still sends for old followers carries no data and decodes to nothing.
+      Map<String, Double> decodedSignals = decoder.decode(canMsgId & 0x1FFF_FFFF, canData);
 
       for (var signalEntry : decodedSignals.entrySet()) {
         String signalKey = deviceKey + "/" + signalEntry.getKey();
@@ -526,21 +519,13 @@ public class RevLogParser {
         | ((data[offset + 3] & 0xFF) << 24);
   }
 
-  /**
-   * Gets the unit for a signal based on its name.
-   */
+  /** The unit the DBC gives a signal ("" when it has none, or the signal is unknown). */
   private String getSignalUnit(String signalName) {
-    return switch (signalName.toLowerCase()) {
-      case "appliedoutput" -> "duty_cycle";
-      case "velocity", "altencoderavelocity", "analogvelocity", "dutycyclevelocity" -> "rpm";
-      case "position", "altencodeposition", "analogposition", "dutycycleposition",
-           "dutycycleabsoluteposition" -> "rotations";
-      case "temperature", "motortemperature" -> "degC";
-      case "busvoltage", "analogvoltage" -> "V";
-      case "outputcurrent" -> "A";
-      case "dutycyclefrequency" -> "Hz";
-      default -> "";
-    };
+    return decoder.getDatabase().messages().values().stream()
+        .map(m -> m.getSignal(signalName))
+        .filter(java.util.Objects::nonNull)
+        .map(org.triplehelix.wpilogmcp.revlog.dbc.DbcSignal::unit)
+        .findFirst().orElse("");
   }
 
   /** WPILOG magic header bytes: "WPILOG" in ASCII. */

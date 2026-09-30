@@ -607,7 +607,7 @@ Get statistics for a numeric entry or field. Supports optional time range filter
   "p5": 11.5,
   "p95": 12.8,
   "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
-  "server_analysis_directives": { "confidence": "high" }
+  "server_analysis_directives": { "confidence_level": "high" }
 }
 ```
 
@@ -663,7 +663,7 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 ```
 
 ### `find_peaks`
-Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are sorted by height difference (how much they stand out from neighboring values).
+Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are listed in time order, each with its height difference (how much it stands out from neighboring values).
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -696,7 +696,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
     }
   ],
   "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
-  "server_analysis_directives": { "confidence": "high" }
+  "server_analysis_directives": { "confidence_level": "high" }
 }
 ```
 
@@ -730,7 +730,7 @@ Compute rate of change (derivative) of numeric data over time. Calculates dv/dt 
     }
   ],
   "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
-  "server_analysis_directives": { "confidence": "high" }
+  "server_analysis_directives": { "confidence_level": "high" }
 }
 ```
 
@@ -768,7 +768,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
   "p_value": 1.2e-25,
   "p_value_basis": "two-sided t test on the correlation with the effective sample size ...",
   "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
-  "server_analysis_directives": { "confidence": "high" }
+  "server_analysis_directives": { "confidence_level": "high" }
 }
 ```
 
@@ -1075,36 +1075,26 @@ Compare one numeric signal across two log files, over the same phase of each.
 ```json
 {
   "success": true,
-  "entry": "/SystemStats/BatteryVoltage",
+  "status": "ok",
+  "entry": "/RealOutputs/LoggedRobot/FullCycleMS",
   "logs_compared": 2,
   "comparisons": [
     {
-      "log_path": "/logs/akit_26-03-21_16-29-56_vache_q10.wpilog",
-      "log_filename": "akit_26-03-21_16-29-56_vache_q10.wpilog",
+      "log_path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
       "entry_found": true,
-      "sample_count": 11735,
-      "statistics": {
-        "min": 6.68,
-        "max": 12.84,
-        "mean": 10.65
-      }
+      "scope": {"scope": "enabled", "window_count": 4, "total_sec": 1310.34, "...": "..."},
+      "sample_count": 48596,
+      "statistics": {"min": 7.679, "max": 267.882, "max_at_sec": 1130.51, "mean": 22.19,
+                     "std_dev": 15.87, "median": 17.603, "p5": 11.205, "p95": 53.108, "...": "..."},
+      "data_quality": {"...": "..."}
     },
-    {
-      "log_path": "/logs/akit_26-03-21_16-54-48_vache_q13.wpilog",
-      "log_filename": "akit_26-03-21_16-54-48_vache_q13.wpilog",
-      "entry_found": true,
-      "sample_count": 11702,
-      "statistics": {
-        "min": 6.62,
-        "max": 12.58,
-        "mean": 10.77
-      }
-    }
+    {"log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog", "...": "..."}
   ],
-  "data_quality": { "...": "..." },
-  "server_analysis_directives": { "...": "..." }
+  "differences": {"...": "..."},
+  "inputs": {"logs": ["...", "..."], "entry": "/RealOutputs/LoggedRobot/FullCycleMS"}
 }
 ```
+(Trimmed from the response captured in [TOOL_RESPONSES.md](TOOL_RESPONSES.md#compare_matches).)
 
 ### `get_code_metadata`
 Extract code metadata from string entries whose leaf name is `GitSHA`, `GitBranch`, `GitDirty`, `GitDate`, `BuildDate`, `ProjectName`, or `Version` (the last only under a path containing "metadata") — for example AdvantageKit's `/RealMetadata/GitSHA`, recorded from the generated `BuildConstants`. When several entries hold the same key (e.g. `/RealMetadata/` and `/ReplayMetadata/`), the lowest entry id wins and a warning says when their values differ.
@@ -1241,7 +1231,7 @@ Get The Blue Alliance API integration status, including configuration and cache 
 
 **Returns:**
 - `available`: Whether TBA API is available
-- `status`: "configured" or "not_configured"
+- `configuration`: "configured" or "not_configured"
 - `cache`: Cache statistics (events, matches, eventMatches counts)
 - `hint`: Helpful message about TBA features
 
@@ -1886,7 +1876,7 @@ How often robot code exceeded the loop period, and the distribution of loop time
 - Garbage collection pauses (check JVM memory)
 
 ### `predict_battery_health`
-Battery and power-delivery evidence, with a heuristic health score and risk level. The facts come first; the score is a summary of them (kept by design for quick pit decisions — see `CODE_REVIEW_REJECTION.md`).
+Battery and power-delivery evidence, with a heuristic health score and risk level. The facts come first; the score is a summary of them (kept by design: a deliberate trade-off for decisions in the pit at competition, with the facts it summarizes reported beside it).
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1992,26 +1982,26 @@ REV log (.revlog) files contain CAN bus data from SPARK MAX/Flex motor controlle
 
 ### How Timestamp Synchronization Works
 
-The fundamental challenge: `.wpilog` files timestamp data using the **roboRIO's FPGA hardware clock** (microseconds since FPGA boot), while `.revlog` files use **CLOCK_MONOTONIC** (microseconds since system boot) on whatever device recorded them — usually the roboRIO itself, or a laptop running REV Hardware Client. Even when both clocks run on the same roboRIO, the FPGA clock and the Linux monotonic clock are independent sources that start at different times and may run at slightly different rates.
+The fundamental challenge: `.wpilog` files timestamp data using the **roboRIO's FPGA hardware clock**, while `.revlog` files timestamp each CAN frame in milliseconds on the clock of whatever recorded them — robot code (REVLib's status logger, 2026 and later) on the roboRIO, or a laptop running the REV Hardware Client. In the robot-code REV logs we have tested, the two clocks agreed within about 20 ms, but the server does not assume it: it estimates the offset and then measures it.
 
 wpilog-mcp solves this with a **two-phase synchronization algorithm**:
 
 #### Phase 1: Coarse Alignment (seconds-level accuracy)
 
-The wpilog contains periodic `systemTime` entries that map FPGA timestamps to UTC wall-clock time. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog` → March 20, 2026 at 2:30:52 PM local time). By comparing these, we establish an initial offset estimate accurate to within a few seconds.
+The wpilog's wall-clock entry (WPILib's `systemTime` or AdvantageKit's `/SystemStats/EpochTimeMicros`) maps FPGA timestamps to UTC. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog`) in the zone of the clock that named it: the roboRIO names files in UTC unless a team changes its zone, a desktop running simulation in its local zone. The server reads REV log names in the zone the wpilog's own filename shows against its wall clock (the same clock is taken to have named both), or in UTC when the wpilog's name carries no time; `sync_status` reports this as `revlog_filename_zone`. The same zone decides which REV logs belong to a wpilog.
 
-This step can fail if: the recording device's wall clock was significantly wrong (e.g., no NTP sync on the roboRIO or laptop), or `systemTime` entries are missing from the wpilog.
+The estimate is only as good as the roboRIO's clock when the file was named: in a real 2026 log the REV log's name was 15 s earlier than its first frame. Without a wall-clock entry there is no estimate, and the search is centered on an offset of 0.
 
 #### Phase 2: Fine Alignment via Cross-Correlation (millisecond accuracy)
 
 Both logs record overlapping physical quantities — for example, the robot code logs motor output duty cycle to the wpilog, and the SPARK MAX independently records its applied output in the revlog. These are the same physical signal observed through different clocks.
 
 The algorithm:
-1. **Signal matching**: Identifies candidate pairs (e.g., `/drive/frontLeft/output` ↔ `SparkMax_1/appliedOutput`) using naming heuristics
+1. **Candidates, then data**: Names only nominate pairs: a numeric wpilog entry whose *leaf* name fits the REV signal's kind (`/Turret/AppliedVolts` for `AppliedOutput`, `.../VelocityRadPerSec` for `Velocity`, `.../CurrentAmps` for `OutputCurrent`, `BatteryVoltage` for `BusVoltage`); positions (running totals that correlate with any trend) and temperatures (too slow to carry timing) nominate none. Every candidate is then ranked by its best correlation at 10 Hz over the whole search window, and the best five are cross-correlated at full resolution — so the data, not the names, choose which pairs are used
 2. **Resampling**: Both signals are resampled to a uniform 100 Hz rate using linear interpolation. For long recordings, a **high-variance window search** selects the most active portion of the signal (important when logs start with minutes of the robot disabled)
 3. **Cross-correlation**: For each candidate pair, the [Pearson correlation coefficient](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient) is computed at every integer sample lag within a ±60-second search window centered on the coarse estimate. Pearson correlation is invariant to signal scaling and DC offset, making it robust when comparing duty cycle against voltage or velocity
 4. **Sub-sample refinement**: Parabolic interpolation on the correlation peak achieves sub-millisecond accuracy from 100 Hz data
-5. **Consensus**: The median offset across all strong pairs (correlation > 0.7) is used as the final estimate. Confidence is scored from three factors: average correlation strength (0–0.4), number of agreeing pairs (0–0.3), and inter-pair agreement measured by offset standard deviation (0–0.3)
+5. **Consensus**: Among the strong pairs (correlation > 0.7, else > 0.5), the group whose offsets agree within 50 ms with the most correlation behind it gives the estimate (its median); pairs that correlate at a contradictory offset are set aside and named in the explanation, not averaged in. Confidence is scored from average correlation (0–0.4), the number of agreeing pairs (0–0.3), and their offset standard deviation (0–0.3), and the level never claims more agreement than the pairs show (below)
 
 #### Clock Drift Compensation (for recordings > 15 minutes)
 
@@ -2027,10 +2017,12 @@ The `sync_status` tool reports drift rate when detected.
 
 | Confidence Level | Estimated Accuracy | How It's Determined |
 |-----------------|-------------------|---------------------|
-| **HIGH** | 1–5 ms | Multiple signal pairs agree within 5 ms, correlation > 0.9 |
-| **MEDIUM** | 5–50 ms | Some signals correlate well, minor disagreement between pairs |
-| **LOW** | 50–5000 ms | Weak correlation or significant disagreement between signals |
-| **FAILED** | Unknown | Could not establish reliable synchronization |
+| **HIGH** | 1–5 ms | Two or more pairs whose offsets have a standard deviation of 5 ms or less, with strong correlation |
+| **MEDIUM** | 5–50 ms | Pairs agree within 50 ms, or a single strong pair (nothing to check it against) |
+| **LOW** | 50 ms to seconds | Weak correlation, pairs spread more than 50 ms, or the filename-time estimate alone (which can be off by seconds) |
+| **FAILED** | Unknown | No pair correlated and no wall-clock estimate exists; set a known offset with `set_revlog_offset` |
+
+The explanation gives the used pairs' offset range and standard deviation.
 
 **Always check `sync_confidence` before using REV log data for precise timing analysis.** If automatic synchronization produces poor results, use `set_revlog_offset` to provide a known-good offset manually.
 
@@ -2063,27 +2055,27 @@ List all available signals from synchronized REV log files. Shows signal names, 
   "overall_sync_confidence": "high",
   "signals": [
     {
-      "key": "REV/SparkMax_1/appliedOutput",
+      "key": "REV/SparkMax_1/AppliedOutput",
       "device": "SparkMax_1",
-      "signal": "appliedOutput",
+      "signal": "AppliedOutput",
       "unit": "duty_cycle",
       "sample_count": 7500,
       "can_bus": "rio",
       "sync_confidence": "high"
     },
     {
-      "key": "REV/SparkMax_1/velocity",
+      "key": "REV/SparkMax_1/Velocity",
       "device": "SparkMax_1",
-      "signal": "velocity",
-      "unit": "rpm",
+      "signal": "Velocity",
+      "unit": "rpm unless converted",
       "sample_count": 7500,
       "can_bus": "rio",
       "sync_confidence": "high"
     },
     {
-      "key": "REV/SparkFlex_5/outputCurrent",
-      "device": "SparkFlex_5",
-      "signal": "outputCurrent",
+      "key": "REV/SparkMax_5/OutputCurrent",
+      "device": "SparkMax_5",
+      "signal": "OutputCurrent",
       "unit": "A",
       "sample_count": 5000,
       "can_bus": "rio",
@@ -2097,21 +2089,20 @@ List all available signals from synchronized REV log files. Shows signal names, 
 }
 ```
 
-**Available Signals (from DBC definitions):**
-- `appliedOutput` - Motor output duty cycle (-1 to 1)
-- `velocity` - Motor velocity in RPM
-- `position` - Motor position in rotations
-- `busVoltage` - Bus voltage in V
-- `outputCurrent` - Motor current in A
-- `temperature` - Motor controller temperature in °C
-- `faults` / `stickyFaults` - Fault flags
+**Available Signals** (SPARK firmware 25 and later, whose status frames REVLib 2026 records; layouts from REV's published SPARK frame specification, spark-frames 2.1.0). A signal appears when its frame was logged; REVLib enables the frames a program reads.
+- Status 0 (10 ms): `AppliedOutput` (duty cycle, −1 to 1), `BusVoltage` (V), `OutputCurrent` (A), `MotorTemperature` (°C), `HardForwardLimitReached`, `HardReverseLimitReached`, `SoftForwardLimitReached`, `SoftReverseLimitReached`, `IsInverted`, `PrimaryHeartbeatLock` (0/1)
+- Status 1 (250 ms), each 0/1: faults `OtherFault`, `MotorTypeFault`, `SensorFault`, `CanFault`, `TemperatureFault`, `DrvFault`, `EscEepromFault`, `FirmwareFault`; warnings `BrownoutWarning`, `OvercurrentWarning`, `EscEepromWarning`, `ExtEepromWarning`, `SensorWarning`, `StallWarning`, `HasResetWarning`, `OtherWarning`; the sticky version of each (`OtherStickyFault`, ..., `BrownoutStickyWarning`, ...); `IsFollower`
+- Status 2: `Velocity`, `Position` (primary encoder; RPM and rotations unless a conversion factor is configured, which the unit says)
+- Status 3: `AnalogVoltage` (V), `AnalogVelocity`, `AnalogPosition`; status 4: `ExternalEncoderVelocity`, `ExternalEncoderPosition` (the alternate encoder on a SPARK MAX); status 5: `DutyCycleEncoderVelocity`, `DutyCycleEncoderPosition`; status 6: `UnadjustedDutyCycle` (0–1), `DutyCyclePeriod` (µs), `DutyCycleNoSignal`; status 7: `IAccum`; status 8: `Setpoint`, `IsAtSetpoint`, `SelectedPidSlot`; status 9: `MaxMotionPositionSetpoint`, `MaxMotionVelocitySetpoint`
+
+Device keys are `SparkMax_<CAN id>` for every SPARK (device type 2 covers both SPARK MAX and SPARK Flex). Firmware 25+ also sends the legacy status 0 frame once a second for old followers, with zero output and every fault set; it carries no data and is not decoded. A custom DBC in the configuration directory (`rev_spark.dbc`) replaces the built-in one; keep the built-in signal names so synchronization still finds its candidate pairs.
 
 ### `get_revlog_data`
 Get data from a REV log signal with timestamps converted to FPGA time. Similar to `read_entry` but for REV motor controller data.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `signal_key` (required): Signal key from `list_revlog_signals` (e.g., "REV/SparkMax_1/appliedOutput")
+- `signal_key` (required): Signal key from `list_revlog_signals` (e.g., "REV/SparkMax_1/AppliedOutput")
 - `start_time` (optional): Start timestamp in seconds (FPGA time)
 - `end_time` (optional): End timestamp in seconds (FPGA time)
 - `limit` (optional): Maximum samples to return (default: 1000)

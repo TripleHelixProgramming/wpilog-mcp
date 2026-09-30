@@ -111,7 +111,7 @@ public final class FrcDomainTools {
         return z != null ? new double[]{x, y, z} : new double[]{x, y};
       }
     }
-    // Fall back to flat layout (from struct decoder: Pose2dDecoder/Pose3dDecoder)
+    // Fall back to a flat {x, y[, z]} map (hand-built values, as test mocks make)
     var x = toDouble(pose.get("x"));
     var y = toDouble(pose.get("y"));
     var z = toDouble(pose.get("z"));
@@ -2902,7 +2902,7 @@ public final class FrcDomainTools {
     }
 
     /**
-     * Heuristic battery health score (0-100), kept by design (see CODE_REVIEW_REJECTION.md):
+     * Heuristic battery health score (0-100), kept by design (a deliberate trade-off for decisions in the pit at competition, with the facts it summarizes reported beside it):
      * start at 100; average below 88% of nominal: −(deficit × 150); each brownout: −20; each dip
      * below the warning threshold that is not a brownout: −5; slow recovery (> 0.5 s average):
      * −(excess × 20); minimum below 10 V: −(deficit × 10).

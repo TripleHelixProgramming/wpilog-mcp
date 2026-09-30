@@ -13,7 +13,7 @@ package org.triplehelix.wpilogmcp.revlog.dbc;
  *
  * <p>Example DBC signal definition:
  * <pre>
- * SG_ AppliedOutput : 0|16@1- (0.0001,0) [-1|1] "duty_cycle"
+ * SG_ AppliedOutput : 0|16@1- (0.00003082369457075716,0) [-1|1] "duty_cycle"
  * </pre>
  *
  * @param name The signal name (e.g., "AppliedOutput")
@@ -38,7 +38,33 @@ public record DbcSignal(
     double offset,
     double min,
     double max,
-    String unit) {
+    String unit,
+    ValueType valueType) {
+
+  /**
+   * How a signal's raw bits are read: an integer (the default), or an IEEE 754 float
+   * ({@code SIG_VALTYPE_ <message> <signal> : 1;} for 32 bits, {@code : 2;} for 64).
+   */
+  public enum ValueType {
+    INTEGER,
+    FLOAT32,
+    FLOAT64;
+
+    /** The type a {@code SIG_VALTYPE_} code names: 1 float32, 2 float64, else integer. */
+    public static ValueType fromDbcCode(int code) {
+      return switch (code) {
+        case 1 -> FLOAT32;
+        case 2 -> FLOAT64;
+        default -> INTEGER;
+      };
+    }
+  }
+
+  /** The same signal, read as {@code type}. */
+  public DbcSignal withValueType(ValueType type) {
+    return new DbcSignal(name, startBit, bitLength, littleEndian, signed, scale, offset, min, max,
+        unit, type);
+  }
 
   /**
    * Decodes this signal's value from raw CAN frame data.
@@ -64,6 +90,13 @@ public record DbcSignal(
       rawValue = decodeIntel(data);
     } else {
       rawValue = decodeMotorola(data);
+    }
+
+    if (valueType == ValueType.FLOAT32 && bitLength == 32) {
+      return Float.intBitsToFloat((int) rawValue) * scale + offset;
+    }
+    if (valueType == ValueType.FLOAT64 && bitLength == 64) {
+      return Double.longBitsToDouble(rawValue) * scale + offset;
     }
 
     // Apply sign extension if needed
@@ -175,6 +208,7 @@ public record DbcSignal(
     private double min = 0.0;
     private double max = 0.0;
     private String unit = "";
+    private ValueType valueType = ValueType.INTEGER;
 
     private Builder(String name) {
       this.name = name;
@@ -225,9 +259,14 @@ public record DbcSignal(
       return this;
     }
 
+    public Builder valueType(ValueType valueType) {
+      this.valueType = valueType;
+      return this;
+    }
+
     public DbcSignal build() {
       return new DbcSignal(name, startBit, bitLength, littleEndian, signed,
-          scale, offset, min, max, unit);
+          scale, offset, min, max, unit, valueType);
     }
   }
 }

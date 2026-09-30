@@ -5,7 +5,7 @@
 | **Date** | 2026-09-29 |
 | **Addresses** | [ROBUSTNESS_REVIEW.md](ROBUSTNESS_REVIEW.md) (issue IDs A1–H and rules R1–R8 refer to it) |
 | **Baseline** | HEAD `4b39641` plus the working-tree changes the review calls **WT** |
-| **Status** | In progress — see [Progress](#progress) |
+| **Status** | Complete: phases 0–5, then the follow-up below — see [Progress](#progress) and [Follow-up](#follow-up-loose-ends) |
 
 ## Decisions
 
@@ -15,7 +15,7 @@ Recorded 2026-09-29; the maintainer concurred with each recommendation.
    aliases: agents read fresh output on every call, and duplicate keys would bloat every response.
 2. **`success` is `false` for `not_applicable` and `no_match`**, as the review proposes (`true` only for `ok` and
    `partial`).
-3. **`predict_battery_health` keeps its health score** (a settled decision in `CODE_REVIEW_REJECTION.md`). G2 is met by
+3. **`predict_battery_health` keeps its health score** (a settled decision: a deliberate trade-off for decisions in the pit at competition, with the facts it summarizes reported beside it). G2 is met by
    fixing the evidence the score and recommendations rest on, and their wording.
 4. **`can_health` keeps its name** but shares one implementation with `analyze_can_bus` (reads the same counters).
 
@@ -29,7 +29,7 @@ described. These findings change how the fixes are built:
   `DynamicStruct` are in wpiutil-java 2026.2.2 (already a dependency). They are pure Java and handle nested structs
   (even when defined out of order), fixed-size arrays, enums, and bit-fields. §5.1 is wiring, not a new parser. For
   logs without schemas, canonical layouts come from wpimath (`Pose2d.struct.getSchema()` and so on).
-- **25 of the 45 tools build their JSON by hand** instead of using `ResponseBuilder` (all of CoreTools, six FRC-domain
+- **25 of the 45 tools (then) build their JSON by hand** instead of using `ResponseBuilder` (all of CoreTools, six FRC-domain
   tools, six robot-analysis tools, export, discovery, and TBA). The result contract is therefore enforced once, in
   `ToolBase.execute`, where it covers every tool; hand-built tools move to `ResponseBuilder` when next touched.
 - **`NaN` leaves the server as invalid JSON.** Gson writes `JsonElement` trees leniently, so results contain a bare
@@ -355,3 +355,17 @@ decode by schema path, per-camera observation counts, pose wander with heading r
 heading wraps, loop time over scope `enabled` and `segment:0`, the camera 3 alert as two appear/clear episodes, and
 "disabled and stationary" as one compound condition, the data-quality calibration, and compare_matches' boot-loop
 flag against a second log).
+
+## Follow-up: loose ends
+
+After phase 5, a sweep for loose ends (code markers, deferred plan items, test exemptions, doc drift) and three new test sources found more to fix before 0.9.0:
+
+- **Harness.** The conformance sweep reaches `profile_mechanism`'s and `analyze_cycles`' real analysis (their needed parameters are optional in their schemas), requires `inputs` on successful log-reading results (rule R3, now recorded centrally for tools that do not record their own), treats an all-zero/false/empty success as silent, and repeats every call under reversed and shuffled entry orders. `RealLogConformanceTest` applies the same checks to every `.wpilog` in a directory; on the 88-log corpus it found the three below. A revlog fixture pair and a replayed TBA server put the revlog and TBA success paths under test.
+- **Logs from other codebases.** Open-source robot code (CTRE's Phoenix 6 swerve example, Team 254 2025, SciBorgs 2025 with Epilogue, YAGSL-Example, PhotonVision's pose-estimation example) was run in WPILib simulation, driven through the WebSocket extension as a Driver Station and gamepad, to produce match logs in other logging conventions. They surfaced the `analyze_vision` pose-set misclassification (a PathPlanner path read as vision data) and confirmed the conventions below.
+- **Damaged logs.** 3 of 88 real logs ended in garbage records (undeclared entries, timestamps of 1e7 to 6e12 s) that stretched their time ranges; `LogScan`, shared by both parsers, stops there.
+- **Evicted logs.** A log evicted while a call still held it returned empty values; it now decodes again, uncached.
+- **No guessing** (doc/IDEAS.md §6.8): roles resolve only by explicit entry, convention, or type; name-only matches are candidates to confirm. Every automatic choice can be overridden (rule R2).
+- **REV logs.** Every REV log comes from REVLib 2026, whose SPARKs (firmware 25+) send status frames the decoder did not know: it applied a made-up pre-2025 layout, so a real log read 0.65 V bus voltages and 6.7e8 rpm. The built-in DBC now follows REV's published specification (spark-frames 2.1.0), checked against the AdvantageKit inputs REVLib read from the same controllers. Sync nominates pairs by leaf name and lets correlation choose (it had paired every `/RealOutputs` entry, `DriverStationMS` included, with motor outputs), sets aside pairs that disagree, and claims no more confidence than the pairs' agreement; REV log names are read in the zone the wpilog shows, and cached sync results are versioned. The real log now syncs at -12 ms by cross-correlation, where the filename estimate was 15 s off.
+- **Accuracy.** Power results are scoped to enabled time, with one flag-based risk rule; `time_correlate` p-values use the effective sample size of autocorrelated series, computed exactly; plain-number angles can be declared (`angle`); `generate_report` peaks match `power_analysis`; `analyze_cycles` edge-detects states; negative-current stalls are found; revlog sync reads AdvantageKit's wall clock; TBA errors are no longer reported as missing matches.
+
+Left as they are, deliberately: the tools that build their JSON by hand (19 of 47) keep doing so — the result contract is enforced for every tool in `ToolBase.execute`, so moving them to `ResponseBuilder` would be churn without a behavior change; the optional §5.6 pose helpers (ROBUSTNESS_REVIEW.md) stay deferred; and loop time is not derived from arbitrary periodic signals when no loop-time entry exists, since that would be a guess.

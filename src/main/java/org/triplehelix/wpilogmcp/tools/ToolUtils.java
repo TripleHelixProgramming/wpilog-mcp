@@ -30,8 +30,6 @@ import java.util.Optional;
  */
 public final class ToolUtils {
 
-  /** Pre-compiled pattern for extracting 4-digit year from log file paths. */
-
   /** JSON serializer with null serialization (important for optional fields). */
   public static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
@@ -95,59 +93,6 @@ public final class ToolUtils {
     result.addProperty("success", false);
     result.addProperty("error", message);
     return result;
-  }
-
-  /**
-   * Creates a success result JSON object.
-   *
-   * @return A JSON object with success=true
-   */
-  public static JsonObject successResult() {
-    var result = new JsonObject();
-    result.addProperty("success", true);
-    return result;
-  }
-
-  /**
-   * Creates a ResponseBuilder for building standardized success responses.
-   *
-   * <p>This is the preferred way to create responses in new tools. Use the fluent API
-   * to add properties, warnings, and metadata.
-   *
-   * <p>Example:
-   * <pre>{@code
-   * return successResponse()
-   *     .addProperty("count", 42)
-   *     .addWarning("Data quality may be affected")
-   *     .addMetadata("samples_used", 1000)
-   *     .build();
-   * }</pre>
-   *
-   * @return A new ResponseBuilder for success responses
-   * @since 0.4.0
-   */
-  public static ResponseBuilder successResponse() {
-    return ResponseBuilder.success();
-  }
-
-  /**
-   * Creates a ResponseBuilder for building standardized error responses.
-   *
-   * <p>This is the preferred way to create error responses in new tools.
-   *
-   * <p>Example:
-   * <pre>{@code
-   * return errorResponse("Entry not found")
-   *     .addProperty("attempted_name", name)
-   *     .build();
-   * }</pre>
-   *
-   * @param message The error message
-   * @return A new ResponseBuilder for error responses
-   * @since 0.4.0
-   */
-  public static ResponseBuilder errorResponse(String message) {
-    return ResponseBuilder.error(message);
   }
 
   /**
@@ -404,44 +349,6 @@ public final class ToolUtils {
       return b ? 1.0 : 0.0;
     }
     return null;
-  }
-
-  /**
-   * Calculates RMSE between two aligned time series using linear interpolation.
-   *
-   * @param series1 The first time series (timestamped values)
-   * @param series2 The second time series (timestamped values)
-   * @return The RMSE, or NaN if calculation not possible
-   */
-  public static double calculateRmseLinear(
-      List<TimestampedValue> series1, List<TimestampedValue> series2) {
-    if (series1 == null || series2 == null || series1.isEmpty() || series2.isEmpty()) {
-      return Double.NaN;
-    }
-
-    // Use the timestamps from the denser series
-    var reference = series1.size() >= series2.size() ? series1 : series2;
-    var other = series1.size() >= series2.size() ? series2 : series1;
-
-    double sumSquaredError = 0.0;
-    int count = 0;
-
-    for (var tv : reference) {
-      var refValue = toDouble(tv.value());
-      var otherValue = getValueAtTimeLinear(other, tv.timestamp());
-
-      if (refValue != null && otherValue != null) {
-        double error = refValue - otherValue;
-        sumSquaredError += error * error;
-        count++;
-      }
-    }
-
-    if (count == 0) {
-      return Double.NaN;
-    }
-
-    return Math.sqrt(sumSquaredError / count);
   }
 
   // ==================== ARGUMENT EXTRACTION UTILITIES ====================

@@ -86,7 +86,6 @@ configurations {
 dependencies {
     // WPILib utilities for DataLog reading
     implementation 'edu.wpi.first.wpiutil:wpiutil-java:2026.2.2'
-    implementation 'edu.wpi.first.wpimath:wpimath-java:2026.2.2'
 
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
@@ -136,6 +135,11 @@ tasks.register('extractTestNatives', Copy) {
 tasks.named('test') {
     dependsOn extractTestNatives
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
+    // A private disk cache, emptied before each run: tests never reuse sync results computed by
+    // other code, and never write to the user's cache
+    def testDiskCache = file("$buildDir/test-disk-cache")
+    environment 'WPILOG_DISK_CACHE_DIR', testDiskCache.absolutePath
+    doFirst { delete testDiskCache }
     // ToolConformanceTest: -PconformanceUpdate rewrites the known-failures list from current results
     if (project.hasProperty('conformanceUpdate')) {
         systemProperty 'conformance.update', 'true'
@@ -477,7 +481,8 @@ tasks.register('installExtension', Exec) {
 }
 
 // ==================== Stress Test Task ====================
-// Stress tests load configuration from the "stresstest" named config in servers.json.
+// Stress tests load configuration from the "stresstest" server in a config file
+// (.wpilog-mcp.yaml in the project root, or -Pconfigpath=<file>).
 // The default config includes a stresstest entry. Set your logdir and TBA_API_KEY env var:
 //
 //   {
@@ -491,10 +496,6 @@ tasks.register('installExtension', Exec) {
 
 import groovy.json.JsonSlurper
 
-/**
- * Checks if a "stresstest" configuration exists in any config file (YAML or JSON).
- * Returns the config file path if found, or null if not configured.
- */
 /**
  * Finds a config file with a "stresstest" server entry, or returns null.
  * When null, the Java stress test code synthesizes defaults (~/riologs, team 2363, TBA from env).

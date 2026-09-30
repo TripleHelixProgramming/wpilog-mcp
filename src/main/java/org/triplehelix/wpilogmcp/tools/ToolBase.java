@@ -300,38 +300,6 @@ public abstract class ToolBase implements McpServer.Tool {
 
   // ===== ENTRY SEARCH HELPERS =====
 
-  /**
-   * Finds the first entry whose name contains the pattern (case-insensitive).
-   *
-   * <p>This is useful for finding entries with common prefixes or patterns
-   * without requiring exact matches.
-   *
-   * @param log The parsed log
-   * @param pattern The pattern to search for (case-insensitive)
-   * @return The first matching entry name, or null if no match found
-   */
-  protected String findEntryByPattern(LogData log, String pattern) {
-    var lowerPattern = pattern.toLowerCase();
-    return log.entries().keySet().stream()
-        .filter(name -> name.toLowerCase().contains(lowerPattern))
-        .findFirst()
-        .orElse(null);
-  }
-
-  /**
-   * Finds all entries whose names contain the pattern (case-insensitive).
-   *
-   * @param log The parsed log
-   * @param pattern The pattern to search for (case-insensitive)
-   * @return List of matching entry names (may be empty)
-   */
-  protected List<String> findEntriesByPattern(LogData log, String pattern) {
-    var lowerPattern = pattern.toLowerCase();
-    return log.entries().keySet().stream()
-        .filter(name -> name.toLowerCase().contains(lowerPattern))
-        .toList();
-  }
-
   // ===== RESPONSE BUILDING HELPERS =====
 
   /**

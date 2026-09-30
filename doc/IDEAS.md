@@ -136,7 +136,7 @@ Generate AdvantageScope layout files (`.json`) that pre-configure visualizations
 
 **Implementation:**
 - `open_in_advantagescope` tool generates layout JSON based on analysis context
-- Example: after `analyze_power` finds brownouts, generate layout with voltage + current graphs
+- Example: after `power_analysis` finds brownouts, generate layout with voltage + current graphs
 - Write layout to temp file, instruct user to import via `File > Import Layout`
 
 #### 4.2.2 Application Launch
@@ -346,7 +346,7 @@ correlate_entries → {correlation: 0.73, p_value: 0.002}
 - Provide building blocks, not conclusions
 - Let the LLM synthesize across multiple tool calls
 
-**Note:** The codebase largely follows this pattern already (`get_statistics`, `rate_of_change`, `time_correlate` are primitives). However, `predict_battery_health` returns a pre-computed health score with a risk level, which is the monolithic anti-pattern. Consider whether the health score belongs in the tool output or whether the tool should return voltage stats, recovery times, and brownout events as raw data. The tension is real: teams want quick answers during competition, but monolithic scores mask uncertainty.
+**Note:** The codebase largely follows this pattern already (`get_statistics`, `rate_of_change`, `time_correlate` are primitives). `predict_battery_health` and `analyze_loop_timing` keep a pre-computed health score by decision (ROBUSTNESS_PLAN.md, Decision 3): a trade-off for quick decisions in the pit, with the facts the score summarizes (voltage statistics, flag-confirmed brownouts, the load line) reported beside it and its basis stated.
 
 ### 6.6 Comparative Framing
 **Priority:** Medium
@@ -401,35 +401,9 @@ For derived calculations, propagate uncertainty through the computation chain.
 - Enables proper "I don't know" responses
 
 ### 6.8 Don't Guess What Entries Mean
-**Priority:** High
-**Complexity:** Medium
+*Completed in 0.9.0.* Apart from well-known logging conventions, the server does not infer what an entry represents from its name. Roles resolve only to an explicit entry, a convention (AdvantageKit, WPILib, CTRE, PathPlanner names), or the only entry of the role's type; entries that match by name alone are candidates (`resolve_signals`: `match: heuristic`, `needs_confirmation`), and the tools list them in `skipped` or `no_match` with the parameter to pass (`voltage_entry`, `entry`, `pose_entry`, `chooser_entry`, `path_setpoint_entry`, `path_actual_entry`, `total_current_entry`). The conventions are tabulated in `doc/TOOLS.md` ("The server does not guess").
 
-Apart from well-known logging conventions, the server should not infer what a log entry represents from its name. When a log doesn't follow a known convention, the server should say so and tell the LLM it has to work out which entries correspond to what: by listing and searching entries, by asking the user, or by passing the entry name explicitly. The server should not guess.
-
-**Why:** A silent wrong guess is worse than no answer. The tool's result looks authoritative, the LLM (and then the team) reason from it, and nobody sees the choice that was made. Team naming varies too much for keyword matching to be reliable, and the LLM, with the user in the loop, is better placed to resolve ambiguity than a substring heuristic.
-
-**Well-known conventions (fine to recognize):**
-- WPILib DataLogManager DS logging (`DS:enabled`, `DS:autonomous`, ...) and `systemTime`
-- AdvantageKit paths (`/DriverStation/Enabled`, `/SystemStats/BatteryVoltage`, `/SystemStats/BrownedOut`, `/RealOutputs/` ↔ `/ReplayOutputs/`, metadata such as `GitSHA`)
-- Struct types (`SwerveModuleState`, `Pose2d`, `ChassisSpeeds`): these are type-based, so they are reliable
-
-**Already in place (robustness work):** `SignalResolver` / `resolve_signals` resolve each role in one shared place, so tools agree on which entry is, for example, the battery voltage. Every resolution reports its basis, the ranked candidates, and an `ambiguous` flag. Tool results record the entries they used under `inputs.entries`, and many tools take an explicit entry (`loop_time_entry`, `pose_entry`, `module_prefix`, `vision_prefix`, `auto_prefix`, ...). DS state resolves by exact leaf names or the FMS control word. The server guidance already says every entry name must come from `list_entries` / `search_entries`.
-
-**What's left: the ranked fallbacks still choose.** Each role ranks exact-convention matches first, but its lower tiers are name heuristics. When nothing conventional exists, the resolver picks the best heuristic match instead of stopping. Examples:
-- Battery voltage: any name containing "battery", then any numeric entry named "...voltage"
-- Loop time: any name containing looptime or cycletime, after `FullCycleMS` / `UserCodeMS`
-- Auto routine: any name containing "chooser"
-- Robot pose: the `Pose2d` with the most samples that isn't under a vision path
-- Gyro yaw: entries under a gyro-like path (gyro, pigeon, navx, imu, ...)
-- Revlog `SignalMatcher`: a substring table in which "output" matches every AdvantageKit `/RealOutputs/...` entry and "arm" matches "alarm". The ≥0.5 correlation gate limits the damage.
-
-**Direction:**
-1. **Split each role's ranking into convention tiers and heuristic tiers.** Convention tiers (exact paths, exact leaf names under a known prefix, struct types) may be selected automatically. Heuristic tiers only produce candidates.
-2. **When only heuristic candidates exist, hand the question back.** Return a structured "no conventional entry found" result instead of a guess or a bare error. It should list the conventions checked and the candidates (name, type, sample count), and tell the LLM to confirm one with `resolve_signals` / `search_entries`, or ask the user, and then call again with the entry named explicitly.
-3. **Every consumer of a role accepts an explicit entry.** Audit the tools listed in each `SignalResolver.Role`'s `usedBy`.
-4. **Say it in the guidance.** Tool descriptions and the server-level guidance should state plainly that for non-conventional logs the LLM must establish the entry mapping itself (or ask), and that the server will not guess.
-
-**Relationship to §5.5:** Fuzzy matching and aliasing are fine for *suggesting* candidates, but never for *silently selecting* one. A team-supplied alias file isn't guessing: it is the team declaring its own conventions, so its mappings would count as "known."
+Revlog sync follows the same rule: names only nominate candidate pairs (by leaf name, for applied output, velocity, current, and bus voltage), correlation chooses among them, and `sync_status`'s `signal_pairs` shows the choice. A team-supplied alias map (§5.5) would count as the team's own conventions.
 
 ---
 

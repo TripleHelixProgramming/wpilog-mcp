@@ -87,9 +87,16 @@ public final class RevLogTools {
     @Override
     public String description() {
       return "List all available signals from synchronized REV log files. "
-          + "REV logs contain CAN bus data from SPARK MAX/Flex motor controllers. "
-          + "Signals are automatically synchronized with wpilog timestamps when loaded. "
-          + "IMPORTANT: Check sync_confidence to understand timestamp accuracy.";
+          + "REV logs contain CAN bus data from SPARK MAX/Flex motor controllers "
+          + "(firmware 25+ status frames, decoded per REV's published specification): "
+          + "AppliedOutput (duty cycle), BusVoltage, OutputCurrent, MotorTemperature, limit "
+          + "and IsInverted flags; faults, warnings, and their sticky versions as 0/1 signals "
+          + "(e.g. BrownoutWarning, StallStickyWarning); Velocity and Position (RPM and "
+          + "rotations unless a conversion factor is configured on the SPARK: compare with "
+          + "the robot code's own entries before assuming a unit); and other sensors when "
+          + "their frames were logged. Signals are automatically synchronized with wpilog "
+          + "timestamps when loaded. IMPORTANT: Check sync_confidence to understand timestamp "
+          + "accuracy.";
     }
 
     @Override
@@ -209,7 +216,7 @@ public final class RevLogTools {
           .addProperty(
               "signal_key",
               "string",
-              "Signal key (e.g., 'REV/SparkMax_1/appliedOutput' or 'REV/rio/SparkMax_1/velocity')",
+              "Signal key (e.g., 'REV/SparkMax_1/AppliedOutput' or 'REV/rio/SparkMax_1/Velocity')",
               true)
           .addNumberProperty(
               "start_time",
@@ -345,7 +352,12 @@ public final class RevLogTools {
     public String description() {
       return "Get detailed synchronization status for all synchronized REV log files. "
           + "Shows confidence levels, timing offsets, and the signal pairs used for "
-          + "synchronization. Use this to understand the accuracy of REV log timestamps.";
+          + "synchronization. Use this to understand the accuracy of REV log timestamps. "
+          + "revlog_filename_zone says how REV log filename times were read to find the REV "
+          + "logs and estimate the coarse offset: in the zone the wpilog's own filename shows "
+          + "against its wall clock, else UTC (the roboRIO's default). A REV log named by "
+          + "another clock (the REV Hardware Client uses the laptop's local time) may be "
+          + "missed or mis-aligned; set_revlog_offset corrects an offset.";
     }
 
     @Override
@@ -428,6 +440,8 @@ public final class RevLogTools {
           .addProperty("sync_in_progress", syncInProgress)
           .addProperty("overall_confidence", overall.getLabel())
           .addProperty("overall_confidence_value", overall.getNumericValue())
+          .addProperty("revlog_filename_zone",
+              org.triplehelix.wpilogmcp.log.WallClock.revlogFilenameZone(log).basis())
           .addData("revlogs", revlogsArray)
           .addMetadata("timing_accuracy_ms", accuracyEstimate)
           .addMetadata("confidence_description", overall.getDescription());
@@ -446,8 +460,10 @@ public final class RevLogTools {
                 + "time period; if you know the offset, set it with set_revlog_offset.");
       } else if (overall == ConfidenceLevel.LOW) {
         response.addWarning(
-            "Low synchronization confidence. Timestamps may be inaccurate by several "
-                + "hundred milliseconds. Use with caution for timing-sensitive analysis.");
+            "Low synchronization confidence: the offset rests on weak correlation, or on the "
+                + "REV log's filename time alone, which can be off by seconds or more. Check "
+                + "signal_pairs (include_signal_pairs); set_revlog_offset sets a known offset. "
+                + "Use with caution for timing-sensitive analysis.");
       } else if (overall == ConfidenceLevel.MEDIUM) {
         response.addWarning(
             "Medium synchronization confidence. Timestamps are approximate "

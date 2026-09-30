@@ -1288,7 +1288,7 @@ public final class RobotAnalysisTools {
    *   <li>applied_volts_entry — optional, used to recover torque sign when current is unsigned
    * </ul>
    *
-   * <p>The tool performs nearest-neighbour interpolation to align current to velocity timestamps,
+   * <p>The tool linearly interpolates current (and applied volts) to the velocity timestamps,
    * applies optional moving-average smoothing, computes the numerical velocity derivative, then
    * solves the 2×2 normal equations analytically.
    */

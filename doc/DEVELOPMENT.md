@@ -40,7 +40,7 @@ WPILib JDK locations:
 ./gradlew httpStressTest   # HTTP stress test only
 ```
 
-Stress tests use `~/riologs` and team 2363 by default. Override by adding a `stresstest` server entry to `.wpilog-mcp.yaml` in the project root, or pass `-Pconfigpath=/path/to/servers.json`. Set `TBA_API_KEY` in your environment to include TBA integration tests. Both stress tests apply the conformance checks below to the results they produce; the real-log conformance sweep below applies them to every tool on every log.
+Stress tests use `~/riologs` and team 2363 by default. Override by adding a `stresstest` server entry to `.wpilog-mcp.yaml` in the project root, or pass `-Pconfigpath=/path/to/config.yaml`. Set `TBA_API_KEY` in your environment to include TBA integration tests. Both stress tests apply the conformance checks below to the results they produce; the real-log conformance sweep below applies them to every tool on every log.
 
 ### Robustness tests
 

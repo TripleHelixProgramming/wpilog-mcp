@@ -41,8 +41,13 @@ import org.triplehelix.wpilogmcp.sync.SyncResult;
 public class SyncCacheSerializer {
   private static final Logger logger = LoggerFactory.getLogger(SyncCacheSerializer.class);
 
-  /** Current sync cache format version. Increment on any serialization change. */
-  public static final int CURRENT_FORMAT_VERSION = 1;
+  /**
+   * Current sync cache format version. Increment on any serialization change, and on any change
+   * to how a revlog is parsed and decoded or a sync result is computed: the cache is keyed by the
+   * files' contents alone, so an entry computed by older code would otherwise outlive the fix.
+   * 2: REV log filename times read in the zone the wpilog shows (0.9.0).
+   */
+  public static final int CURRENT_FORMAT_VERSION = 2;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(

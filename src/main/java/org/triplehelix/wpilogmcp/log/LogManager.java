@@ -812,8 +812,9 @@ public class LogManager {
    * and the wpilog's parent directory.
    */
   private List<RevLogFileInfo> findMatchingRevLogs(LogData wpilog) {
-    // Step 1: Determine the wpilog's wall-clock time window
-    long[] wallClockRange = estimateWallClockRange(wpilog);
+    // Step 1: Determine the wpilog's wall-clock time window, and the zone REV log names are in
+    var zone = WallClock.revlogFilenameZone(wpilog);
+    long[] wallClockRange = estimateWallClockRange(wpilog, zone.offset());
     long wpilogStartMillis = wallClockRange[0];
     long wpilogEndMillis = wallClockRange[1];
     boolean usingMtimeFallback = wallClockRange[2] != 0;
@@ -831,10 +832,11 @@ public class LogManager {
     long rangeStart = wpilogStartMillis - toleranceMillis;
     long rangeEnd = wpilogEndMillis + toleranceMillis;
 
-    logger.debug("Revlog search window: {} to {} (tolerance: {} min, mtime fallback: {})",
+    logger.debug("Revlog search window: {} to {} (tolerance: {} min, mtime fallback: {}); "
+            + "REV log names read as {}",
         java.time.Instant.ofEpochMilli(rangeStart),
         java.time.Instant.ofEpochMilli(rangeEnd),
-        toleranceMinutes, usingMtimeFallback);
+        toleranceMinutes, usingMtimeFallback, zone.basis());
 
     // Step 2: Discover all revlogs (walk the configured scan depth)
     var logDir = LogDirectory.getInstance();
@@ -871,7 +873,8 @@ public class LogManager {
     // Step 3: Filter by time overlap
     List<RevLogFileInfo> matching = new ArrayList<>();
     for (var revlog : allRevLogs) {
-      Long revlogTimestamp = revlog.timestampMillis();
+      Long revlogTimestamp = revlog.parsedTimestamp() == null ? null
+          : revlog.parsedTimestamp().toInstant(zone.offset()).toEpochMilli();
       if (revlogTimestamp != null) {
         // Revlog has a filename timestamp — use it for precise matching
         if (revlogTimestamp >= rangeStart && revlogTimestamp <= rangeEnd) {
@@ -914,15 +917,17 @@ public class LogManager {
    *
    * <p>Tries three strategies in order:
    * <ol>
-   *   <li>SystemTime entries (FPGA → wall clock mapping from the parsed log)</li>
-   *   <li>Filename timestamp (parsed from standard WPILib naming convention)</li>
+   *   <li>The wall-clock entry (FPGA → wall clock mapping from the parsed log)</li>
+   *   <li>Filename timestamp, read in {@code filenameZone} (the zone REV log names are read in,
+   *       so the two names compare directly)</li>
    *   <li>File modification time (last resort, less accurate)</li>
    * </ol>
    *
    * @param wpilog The parsed wpilog
+   * @param filenameZone The offset REV log filename times are read in
    * @return Array of [startMillis, endMillis, usingMtimeFallback (0 or 1)]
    */
-  private long[] estimateWallClockRange(LogData wpilog) {
+  private long[] estimateWallClockRange(LogData wpilog, java.time.ZoneOffset filenameZone) {
     long durationMillis = (long) (wpilog.duration() * 1000);
 
     // Strategy 1: the wall-clock entry (WPILib systemTime, AdvantageKit EpochTimeMicros)
@@ -947,8 +952,8 @@ public class LogManager {
 
     // Strategy 2: Parse filename timestamp
     Path wpilogPath = Path.of(wpilog.path());
-    Long creationTime = LogDirectory.getInstance().extractCreationTime(
-        wpilogPath.getFileName().toString());
+    Long creationTime = WallClock.filenameTime(wpilogPath.getFileName().toString())
+        .map(t -> t.toInstant(filenameZone).toEpochMilli()).orElse(null);
     if (creationTime != null) {
       long endMillis = creationTime + durationMillis;
       logger.debug("Wpilog wall-clock range from filename: {} to {}",

@@ -28,8 +28,8 @@ import org.slf4j.LoggerFactory;
  * <pre>
  * VERSION ""
  *
- * BO_ 33824768 Periodic_Status_0: 8 SparkMax
- *  SG_ AppliedOutput : 0|16@1- (0.0001,0) [-1|1] "duty_cycle"
+ * BO_ 0x0205B800 Status_0: 8 SparkMax
+ *  SG_ AppliedOutput : 0|16@1- (0.00003082369457075716,0) [-1|1] "duty_cycle"
  *  SG_ Faults : 16|16@1+ (1,0) [0|65535] ""
  * </pre>
  *
@@ -46,6 +46,10 @@ public class DbcParser {
   // ID can be decimal or hex (0x prefix)
   private static final Pattern MESSAGE_PATTERN = Pattern.compile(
       "BO_\\s+(0x[0-9A-Fa-f]+|\\d+)\\s+(\\w+)\\s*:\\s*(\\d+)\\s+(\\w+)?");
+
+  // Pattern for SIG_VALTYPE_ line: SIG_VALTYPE_ <message id> <signal> : <1 float32 | 2 float64>;
+  private static final Pattern VALTYPE_PATTERN = Pattern.compile(
+      "SIG_VALTYPE_\\s+(0x[0-9A-Fa-f]+|\\d+)\\s+(\\w+)\\s*:\\s*(\\d)");
 
   // Pattern for SG_ (signal) line:
   // SG_ <name> : <start>|<length>@<byteOrder><sign> (<scale>,<offset>) [<min>|<max>] "<unit>"
@@ -69,6 +73,8 @@ public class DbcParser {
     String version = "";
     Map<Integer, DbcMessage> messages = new LinkedHashMap<>();
     DbcMessage.Builder currentMessage = null;
+    // SIG_VALTYPE_ lines follow every message; applied once all are read
+    Map<Integer, Map<String, DbcSignal.ValueType>> valueTypes = new LinkedHashMap<>();
 
     String[] lines = content.split("\n");
 
@@ -76,6 +82,14 @@ public class DbcParser {
       line = line.trim();
 
       if (line.isEmpty() || line.startsWith("//") || line.startsWith("CM_")) {
+        continue;
+      }
+
+      Matcher valueTypeMatcher = VALTYPE_PATTERN.matcher(line);
+      if (line.startsWith("SIG_VALTYPE_") && valueTypeMatcher.find()) {
+        valueTypes.computeIfAbsent(parseId(valueTypeMatcher.group(1)), k -> new LinkedHashMap<>())
+            .put(valueTypeMatcher.group(2),
+                DbcSignal.ValueType.fromDbcCode(Integer.parseInt(valueTypeMatcher.group(3))));
         continue;
       }
 
@@ -148,6 +162,22 @@ public class DbcParser {
       messages.put(msg.id(), msg);
     }
 
+    // Apply value types (float signals)
+    for (var typed : valueTypes.entrySet()) {
+      DbcMessage msg = messages.get(typed.getKey());
+      if (msg == null) {
+        logger.debug("SIG_VALTYPE_ for unknown message 0x{}", Integer.toHexString(typed.getKey()));
+        continue;
+      }
+      var builder = DbcMessage.builder(msg.id(), msg.name()).dlc(msg.dlc())
+          .transmitter(msg.transmitter());
+      for (DbcSignal signal : msg.signals().values()) {
+        var type = typed.getValue().get(signal.name());
+        builder.addSignal(type != null ? signal.withValueType(type) : signal);
+      }
+      messages.put(msg.id(), builder.build());
+    }
+
     DbcDatabase db = new DbcDatabase(version, messages);
     logger.info("Parsed DBC database: {} messages, {} total signals",
         db.messageCount(), db.totalSignalCount());
@@ -156,13 +186,13 @@ public class DbcParser {
   }
 
   /**
-   * Parses an ID string that may be decimal or hex (0x prefix).
+   * Parses an ID string that may be decimal or hex (0x prefix). A DBC marks an extended (29-bit)
+   * frame by setting bit 31 of its ID; the arbitration ID is the low 29 bits.
    */
   private int parseId(String idStr) {
-    if (idStr.toLowerCase().startsWith("0x")) {
-      return Integer.parseInt(idStr.substring(2), 16);
-    }
-    return Integer.parseInt(idStr);
+    long id = idStr.toLowerCase().startsWith("0x") ? Long.parseLong(idStr.substring(2), 16)
+        : Long.parseLong(idStr);
+    return (int) (id & 0x1FFF_FFFFL);
   }
 
   /**

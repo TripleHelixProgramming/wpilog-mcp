@@ -16,13 +16,13 @@ import java.util.Map;
  *
  * <p>Example DBC message definition:
  * <pre>
- * BO_ 0x2051800 Periodic_Status_0: 8 SparkMax
- *  SG_ AppliedOutput : 0|16@1- (0.0001,0) [-1|1] "duty_cycle"
+ * BO_ 0x0205B800 Status_0: 8 SparkMax
+ *  SG_ AppliedOutput : 0|16@1- (0.00003082369457075716,0) [-1|1] "duty_cycle"
  *  SG_ Faults : 16|16@1+ (1,0) [0|65535] ""
  * </pre>
  *
  * @param id The CAN arbitration ID (29-bit for extended, 11-bit for standard)
- * @param name The message name (e.g., "Periodic_Status_0")
+ * @param name The message name (e.g., "Status_0")
  * @param dlc The Data Length Code (number of data bytes, typically 8)
  * @param transmitter The transmitter node name (e.g., "SparkMax")
  * @param signals Map of signal names to their definitions

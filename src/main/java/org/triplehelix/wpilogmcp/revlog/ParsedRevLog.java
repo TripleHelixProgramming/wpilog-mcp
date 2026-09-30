@@ -13,7 +13,7 @@ import java.util.Map;
  * captured from REV SPARK MAX/Flex motor controllers. This record contains:
  * <ul>
  *   <li>Device information (CAN IDs, types, firmware versions)</li>
- *   <li>Decoded signals (appliedOutput, velocity, temperature, etc.)</li>
+ *   <li>Decoded signals (AppliedOutput, Velocity, MotorTemperature, etc.)</li>
  *   <li>Timing metadata for synchronization</li>
  * </ul>
  *
@@ -24,7 +24,7 @@ import java.util.Map;
  * @param path The file path of the revlog
  * @param filenameTimestamp The timestamp extracted from the filename (e.g., "20260320_143052")
  * @param devices Map of CAN ID to device information
- * @param signals Map of signal keys to decoded signals (key format: "SparkMax_1/appliedOutput")
+ * @param signals Map of signal keys to decoded signals (key format: "SparkMax_1/AppliedOutput")
  * @param minTimestamp The earliest timestamp in seconds (revlog time base)
  * @param maxTimestamp The latest timestamp in seconds (revlog time base)
  * @param recordCount The total number of records parsed
@@ -79,7 +79,7 @@ public record ParsedRevLog(
   /**
    * Gets a signal by its full key.
    *
-   * @param key The signal key (e.g., "SparkMax_1/appliedOutput")
+   * @param key The signal key (e.g., "SparkMax_1/AppliedOutput")
    * @return The signal, or null if not found
    */
   public RevLogSignal getSignal(String key) {
@@ -90,7 +90,7 @@ public record ParsedRevLog(
    * Gets a signal for a specific device and signal name.
    *
    * @param deviceKey The device key (e.g., "SparkMax_1")
-   * @param signalName The signal name (e.g., "appliedOutput")
+   * @param signalName The signal name (e.g., "AppliedOutput")
    * @return The signal, or null if not found
    */
   public RevLogSignal getSignal(String deviceKey, String signalName) {

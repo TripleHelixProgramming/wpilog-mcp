@@ -63,8 +63,7 @@ public final class DiscoveryTools {
   record CategoryInfo(
       String name,
       String description,
-      String antiPattern,
-      List<String> toolNames
+      String antiPattern
   ) {}
 
   private static final List<ToolInfo> TOOL_CATALOG = buildToolCatalog();
@@ -81,7 +80,7 @@ public final class DiscoveryTools {
         false, List.of("list_entries", "get_tba_status")));
 
     tools.add(new ToolInfo("list_entries", "core",
-        "List all data entries in the loaded log",
+        "List the entries in a log, with types and sample counts",
         List.of("entries", "signals", "channels", "data", "available"),
         List.of("See what data is logged", "Find entry names", "Discover available telemetry"),
         true, List.of("get_entry_info", "search_entries")));
@@ -100,7 +99,7 @@ public final class DiscoveryTools {
         true, List.of("get_entry_info", "get_statistics")));
 
     tools.add(new ToolInfo("list_loaded_logs", "core",
-        "List all loaded logs and cache status",
+        "List the logs loaded in the server's cache, and the cache status",
         List.of("loaded", "cache", "memory"),
         List.of("See which logs are in memory", "Check cache usage"),
         false, List.of("list_entries")));
@@ -222,7 +221,7 @@ public final class DiscoveryTools {
         true, List.of("power_analysis")));
 
     tools.add(new ToolInfo("compare_matches", "robot_analysis",
-        "Compare statistics across multiple loaded logs",
+        "Compare one signal across two logs, phase for phase",
         List.of("compare", "match", "cross", "multiple"),
         List.of("Compare auto performance across matches", "Find patterns across matches"),
         true, List.of("get_statistics")));
@@ -285,7 +284,7 @@ public final class DiscoveryTools {
     tools.add(new ToolInfo("predict_battery_health", "frc_domain",
         "Estimate battery health from voltage/current curves",
         List.of("battery", "health", "sag", "internal", "resistance"),
-        List.of("Estimate battery age", "Check battery health", "Predict brownout risk"),
+        List.of("Check battery health", "Summarize brownout evidence", "Fit the battery load line"),
         true, List.of("power_analysis")));
 
     tools.add(new ToolInfo("analyze_loop_timing", "frc_domain",
@@ -377,56 +376,44 @@ public final class DiscoveryTools {
     return List.of(
         new CategoryInfo("core",
             "Log loading and data access. Start here to discover available data.",
-            "Don't manually parse log files—use list_entries and read_entry.",
-            List.of("list_available_logs", "list_entries", "get_entry_info", "read_entry",
-                "list_loaded_logs", "list_struct_types", "health_check")),
+            "Don't manually parse log files—use list_entries and read_entry."),
 
         new CategoryInfo("query",
             "Search and filter log data. Find specific entries, types, and events.",
-            "Don't iterate through all entries manually—use search_entries or find_condition.",
-            List.of("search_entries", "get_types", "find_condition", "search_strings")),
+            "Don't iterate through all entries manually—use search_entries or find_condition."),
 
         new CategoryInfo("statistics",
             "Statistical analysis on numeric data. Compute stats, find correlations, detect anomalies.",
-            "NEVER compute statistics manually with code—use get_statistics. "
-                + "NEVER compute correlation manually—use time_correlate.",
-            List.of("get_statistics", "compare_entries", "detect_anomalies", "find_peaks",
-                "rate_of_change", "time_correlate")),
+            "Use get_statistics and time_correlate rather than computing statistics or "
+                + "correlations by hand; for data they cannot read, export_csv and compute "
+                + "externally, citing the export."),
 
         new CategoryInfo("robot_analysis",
             "Robot-specific analysis: power, swerve, CAN health, match phases.",
             "Don't write custom brownout detection—use power_analysis. "
-                + "Don't manually detect match phases—use get_match_phases.",
-            List.of("get_match_phases", "analyze_swerve", "power_analysis", "can_health",
-                "compare_matches", "get_code_metadata", "moi_regression", "analyze_can_bus")),
+                + "Don't manually detect match phases—use get_match_phases."),
 
         new CategoryInfo("frc_domain",
             "FRC-specific analysis: vision, mechanisms, cycles, autonomous, battery health.",
             "Don't estimate cycle times manually—use analyze_cycles. "
-                + "Don't manually analyze auto—use analyze_auto.",
-            List.of("get_ds_timeline", "analyze_vision", "profile_mechanism", "analyze_auto",
-                "analyze_cycles", "analyze_replay_drift", "predict_battery_health",
-                "analyze_loop_timing", "get_game_info")),
+                + "Don't manually analyze auto—use analyze_auto."),
 
         new CategoryInfo("export",
             "Export data for external tools (Excel, Python, MATLAB).",
-            "Only export if you truly need external analysis—most analysis is built-in.",
-            List.of("export_csv", "generate_report")),
+            "Only export if you truly need external analysis—most analysis is built-in."),
 
         new CategoryInfo("tba",
             "The Blue Alliance integration: match scores, results, and autonomous points.",
-            "Don't guess match outcomes—use get_tba_match_data or check list_available_logs for TBA enrichment.",
-            List.of("get_tba_status", "get_tba_match_data")),
+            "Don't guess match outcomes—use get_tba_match_data or check list_available_logs for TBA enrichment."),
 
         new CategoryInfo("revlog",
-            "REV Hardware Client log analysis with synchronized timestamps.",
-            "Don't manually align REV timestamps—synchronization is automatic.",
-            List.of("list_revlog_signals", "get_revlog_data", "sync_status", "set_revlog_offset", "wait_for_sync")),
+            "REV motor controller logs (.revlog, written by REVLib in robot code or by the REV "
+                + "Hardware Client), synchronized to the wpilog's clock.",
+            "Don't manually align REV timestamps—synchronization is automatic."),
 
         new CategoryInfo("discovery",
             "Tools to help you discover and use server capabilities.",
-            "When unsure what to do, use suggest_tools with your goal.",
-            List.of("get_server_guide", "suggest_tools"))
+            "When unsure what to do, use suggest_tools with your goal.")
     );
   }
 
@@ -505,8 +492,9 @@ public final class DiscoveryTools {
           "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. "
           + "TBA data includes autonomous points, final scores, and win/loss results.");
       guidance.addProperty("statistics_tip",
-          "NEVER compute mean/std/percentiles manually—use get_statistics. "
-          + "NEVER compute correlation manually—use time_correlate.");
+          "Use get_statistics (mean, std, percentiles) and time_correlate rather than computing "
+          + "them by hand; for data they cannot read, export_csv and compute externally, citing "
+          + "the export.");
       guidance.addProperty("match_phases_tip",
           "NEVER manually parse timestamps to find auto/teleop—use get_match_phases.");
       result.add("critical_guidance", guidance);

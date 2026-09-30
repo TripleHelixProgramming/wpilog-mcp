@@ -179,7 +179,7 @@ own check (B8).
 
 **B3. `analyze_can_bus` misses CANivore error counters and ignores `bus_name`.**
 - *Observed:* `errors: []` at confidence "high", although `/RealOutputs/CANBus/CANHD/TEC` changed 68 times and
-  peaked at 85 at 205.76 s (error-passive is 128, bus-off 255). The output is identical for `bus_name: "rio"` and
+  peaked at 85 at 205.76 s (error-passive is 128, bus-off 255). *[Corrected in ROBUSTNESS_PLAN.md: the first excursion reached 85; the counter peaks at 215 at 650.86 s.]* The output is identical for `bus_name: "rio"` and
   `"CANHD"`. `BusOffCount` entries appear under `utilization` with `avg_percent: 0.0`. Utilization values are 0–1
   fractions (max 1.0 means 100 %) but are labeled `avg_percent` / `max_percent`.
 - *Cause:* `AnalyzeCanBusTool` (≈ lines 1778–1830). `busName` is read and never used. Entries are classified by
@@ -586,7 +586,7 @@ suitable as golden values.
   tool matches.
 
 **CAN**
-- `/RealOutputs/CANBus/CANHD/TEC`: 68 samples, maximum 85 at 205.76 s.
+- `/RealOutputs/CANBus/CANHD/TEC`: 68 samples, maximum 85 at 205.76 s. *[Corrected: maximum 215 at 650.86 s; 85 was the first of 13 excursions (ROBUSTNESS_PLAN.md, Findings).]*
 - `/SystemStats/CANBus/{ReceiveErrorCount,TransmitErrorCount,OffCount,TxFullCount}`: a single sample each, all 0.
 
 **Swerve** (`/RealOutputs/SwerveStates/Measured`, 46,839 samples × 4 modules)

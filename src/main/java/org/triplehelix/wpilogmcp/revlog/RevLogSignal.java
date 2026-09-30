@@ -14,7 +14,7 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
  * contains a time series of values with timestamps in microseconds from the revlog's
  * CLOCK_MONOTONIC time base (not FPGA time - synchronization is required).
  *
- * @param name The signal name (e.g., "appliedOutput", "velocity", "temperature")
+ * @param name The signal name (e.g., "AppliedOutput", "Velocity", "MotorTemperature")
  * @param deviceKey The device identifier (e.g., "SparkMax_1")
  * @param values The timestamped values (timestamp in seconds, relative to revlog start)
  * @param unit The signal unit (e.g., "duty_cycle", "rpm", "degC", "A", "V")
@@ -39,7 +39,7 @@ public record RevLogSignal(
    * Gets the full signal key for use in entry maps.
    *
    * <p>Format: "{deviceKey}/{signalName}"
-   * Example: "SparkMax_1/appliedOutput"
+   * Example: "SparkMax_1/AppliedOutput"
    *
    * @return The full signal key
    */

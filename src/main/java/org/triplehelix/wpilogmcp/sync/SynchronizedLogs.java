@@ -247,7 +247,7 @@ public class SynchronizedLogs {
   /**
    * Parses a signal key into its components.
    *
-   * @param signalKey The signal key (e.g., "REV/rio/SparkMax_1/appliedOutput")
+   * @param signalKey The signal key (e.g., "REV/rio/SparkMax_1/AppliedOutput")
    * @return The parsed parts, or null if invalid format
    */
   private SignalKeyParts parseSignalKey(String signalKey) {

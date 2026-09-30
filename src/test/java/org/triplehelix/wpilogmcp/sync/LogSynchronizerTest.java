@@ -497,6 +497,61 @@ class LogSynchronizerTest {
     assertEquals(r1.confidence(), r2.confidence(), 0.001);
   }
 
+  @Test
+  void fpgaTimeInterpolatesWithinAndExtrapolatesOutsideTheWallClock() {
+    // Clock read at FPGA 11.9 s and 21.9 s (wall 1000 s and 1010 s)
+    var readings = List.of(
+        new LogSynchronizer.SystemTimeEntry(11_900_000L, 1_000_000_000L),
+        new LogSynchronizer.SystemTimeEntry(21_900_000L, 1_010_000_000L));
+    assertEquals(16_900_000L, LogSynchronizer.interpolateFpgaTime(readings, 1_005_000_000L));
+    // A REV log named 17 s before the first reading started 17 s before it, not at it
+    assertEquals(-5_100_000L, LogSynchronizer.interpolateFpgaTime(readings, 983_000_000L));
+    assertEquals(31_900_000L, LogSynchronizer.interpolateFpgaTime(readings, 1_020_000_000L));
+    var single = List.of(new LogSynchronizer.SystemTimeEntry(11_900_000L, 1_000_000_000L));
+    assertEquals(11_900_000L, LogSynchronizer.interpolateFpgaTime(single, 1_000_000_000L));
+    assertEquals(9_900_000L, LogSynchronizer.interpolateFpgaTime(single, 998_000_000L));
+    assertEquals(0L, LogSynchronizer.interpolateFpgaTime(List.of(), 998_000_000L));
+  }
+
+  @Test
+  void consensusUsesTheLargestAgreeingGroupNotTheMedianOfContradictions() {
+    // Two applied-output pairs agree near 15 ms; three pairs correlate well at wild offsets
+    var pairs = List.of(
+        new SignalPairResult("/Turret/AppliedVolts", "SparkMax_12/AppliedOutput", 15_000L, 0.93,
+            1000, null),
+        new SignalPairResult("/Kicker/AppliedVolts", "SparkMax_17/AppliedOutput", 13_000L, 0.87,
+            1000, null),
+        new SignalPairResult("/Flywheel/Velocity", "SparkMax_17/Velocity", -10_932_000L, 0.79,
+            1000, null),
+        new SignalPairResult("/Flywheel/Velocity", "SparkMax_13/Velocity", -29_809_000L, 0.79,
+            1000, null),
+        new SignalPairResult("/Flywheel/Velocity", "SparkMax_12/Velocity", -29_811_000L, 0.79,
+            1000, null));
+    var group = LogSynchronizer.largestAgreeingGroup(pairs);
+    // 0.93 + 0.87 = 1.80 outweighs 0.79 + 0.79 = 1.58
+    assertEquals(2, group.size());
+    assertTrue(group.stream().allMatch(p -> p.revlogSignal().endsWith("AppliedOutput")));
+    assertEquals(List.of(), LogSynchronizer.largestAgreeingGroup(List.of()));
+    var single = List.of(pairs.get(2));
+    assertEquals(single, LogSynchronizer.largestAgreeingGroup(single));
+  }
+
+  @Test
+  void confidenceLevelClaimsNoMoreAgreementThanThePairsShow() {
+    var high = ConfidenceLevel.HIGH;
+    assertEquals(ConfidenceLevel.HIGH, LogSynchronizer.capByAgreement(high, 3, 4_000));
+    // q10: five pairs spread 17 ms is "minor disagreement", not "within 5ms"
+    assertEquals(ConfidenceLevel.MEDIUM, LogSynchronizer.capByAgreement(high, 5, 17_000));
+    assertEquals(ConfidenceLevel.LOW, LogSynchronizer.capByAgreement(high, 5, 80_000));
+    // One pair has nothing to agree with
+    assertEquals(ConfidenceLevel.MEDIUM, LogSynchronizer.capByAgreement(high, 1, 0));
+    // A cap never raises a level
+    assertEquals(ConfidenceLevel.LOW,
+        LogSynchronizer.capByAgreement(ConfidenceLevel.LOW, 3, 0));
+    assertEquals(ConfidenceLevel.FAILED,
+        LogSynchronizer.capByAgreement(ConfidenceLevel.FAILED, 3, 0));
+  }
+
   // ========== Drift estimation tests ==========
 
   @Test

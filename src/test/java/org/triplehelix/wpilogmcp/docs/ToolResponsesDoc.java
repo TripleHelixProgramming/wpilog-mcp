@@ -112,6 +112,8 @@ class ToolResponsesDoc {
       // Run every call in order; ${first_revlog_signal} comes from list_revlog_signals
       var captures = new LinkedHashMap<String, List<String[]>>();
       String firstRevlogSignal = "unknown";
+      var revlogTools = toolsByCategory.get("RevLog Tools").stream().map(Tool::name)
+          .collect(java.util.stream.Collectors.toSet());
       for (var element : scenarios.getAsJsonArray("calls")) {
         var call = element.getAsJsonObject();
         var toolName = call.get("tool").getAsString();
@@ -119,6 +121,14 @@ class ToolResponsesDoc {
         assertTrue(tool != null, "scenario for unknown tool " + toolName);
         var args = substitute(call.getAsJsonObject("args"), aliases, firstRevlogSignal)
             .getAsJsonObject();
+        if (revlogTools.contains(toolName) && args.has("path")) {
+          // Capture the synchronized state: a reload (after eviction) restarts the sync, and
+          // the doc runs with an empty disk cache, so it takes real time
+          var wait = new JsonObject();
+          wait.add("path", args.get("path"));
+          wait.addProperty("timeout_ms", 120_000);
+          toolsByName.get("wait_for_sync").execute(wait);
+        }
         var result = tool.execute(args);
         if (toolName.equals("list_revlog_signals")) {
           firstRevlogSignal = firstSignalKey(result).orElse(firstRevlogSignal);
@@ -218,8 +228,9 @@ class ToolResponsesDoc {
         .append("`src/test/resources/tool-responses/scenarios.json`. To regenerate:\n\n")
         .append("```\n./gradlew test --tests '*ToolResponsesDoc*' ")
         .append("-PtoolResponsesLogDir=/path/to/riologs\n```\n\n")
-        .append("The logs: Team 2363 at VACHE 2026 (qualification 10, with its REV log), two ")
-        .append("practice-session logs, and an AdvantageKit replay (`_sim`) log. Responses are ")
+        .append("The logs: Team 2363 at VACHE 2026 (qualification 10, with its REV log), a ")
+        .append("practice session (the robustness review's log), and an AdvantageKit replay ")
+        .append("(`_sim`) log. Responses are ")
         .append("verbatim except that arrays longer than ").append(MAX_ITEMS)
         .append(" items keep their first ").append(KEEP_ITEMS)
         .append(" and end with `\"... (N more items)\"`, strings longer than ").append(MAX_STRING)

@@ -945,8 +945,8 @@ public final class FixtureLogs {
         "DriverStation state logged under both DS: and /DriverStation/ names", List.of("E1"));
   }
 
-  /** Wall-clock time (local, as REV names its files) of the revlog pair's FPGA 10 s. */
-  static final java.time.LocalDateTime REVLOG_PAIR_WALL =
+  /** Wall-clock time (UTC) of the revlog pair's FPGA 10 s. */
+  public static final java.time.LocalDateTime REVLOG_PAIR_WALL =
       java.time.LocalDateTime.of(2026, 1, 10, 15, 0, 0);
 
   /** Seconds added to the pair's revlog timestamps to give the wpilog's FPGA time. */
@@ -959,45 +959,91 @@ public final class FixtureLogs {
         + steps));
   }
 
-  /** A SPARK MAX Periodic Status 0 frame: AppliedOutput in bits 0-15, 0.0001 per count. */
+  /** The pair's bus voltage (V), current (A), and motor temperature (degC). */
+  public static final double REVLOG_PAIR_BUS_VOLTS = 12.3;
+  public static final double REVLOG_PAIR_AMPS = 20.0;
+  public static final int REVLOG_PAIR_TEMP_C = 31;
+
+  /**
+   * A SPARK status 0 frame (firmware 25+, REV's spark-frames 2.1.0): applied output int16 in
+   * bits 0-15 (1.01/32767 per count), bus voltage uint12 in 16-27 (30/4095 V), current uint12 in
+   * 28-39 (150/4095 A), motor temperature in 40-47 (degC), inverted in bit 52.
+   */
+  public static byte[] sparkStatus0(double appliedOutput, double busVolts, double amps,
+      int tempC, boolean inverted) {
+    long applied = Math.round(appliedOutput / 0.00003082369457075716) & 0xFFFF;
+    long volts = Math.round(busVolts / 0.0073260073260073) & 0xFFF;
+    long current = Math.round(amps / 0.0366300366300366) & 0xFFF;
+    long bits = applied | volts << 16 | current << 28 | (long) (tempC & 0xFF) << 40
+        | (inverted ? 1L : 0L) << 52;
+    var frame = new byte[8];
+    for (int i = 0; i < 8; i++) frame[i] = (byte) (bits >>> (8 * i));
+    return frame;
+  }
+
   static byte[] sparkStatus0(double appliedOutput) {
-    int raw = (int) Math.round(appliedOutput / 0.0001);
-    return new byte[] {(byte) raw, (byte) (raw >> 8), 0, 0, 0, 0, 0, 0};
+    return sparkStatus0(appliedOutput, REVLOG_PAIR_BUS_VOLTS, REVLOG_PAIR_AMPS,
+        REVLOG_PAIR_TEMP_C, false);
   }
 
   /**
-   * A wpilog and the REV log recorded alongside it, in the WPILOG format REVLib writes: the
-   * wpilog logs a motor's applied output and systemTime (FPGA to wall clock), the revlog the
-   * same SPARK MAX's Periodic Status 0 frames on its own clock, named for its wall-clock start
-   * (5 s after the wpilog's FPGA 10 s). Its true offset to FPGA time is
-   * {@link #REVLOG_PAIR_OFFSET_SEC}, 0.3 s from the coarse estimate the names and systemTime give.
+   * A wpilog and the REV log recorded alongside it on a roboRIO, in the WPILOG format REVLib
+   * writes: the wpilog logs a motor's applied output and systemTime (FPGA to wall clock), the
+   * revlog the same SPARK MAX's Periodic Status 0 frames on its own clock, named for its
+   * wall-clock start in UTC (the roboRIO's zone), 5 s after the wpilog's FPGA 10 s. Its true
+   * offset to FPGA time is {@link #REVLOG_PAIR_OFFSET_SEC}, 0.3 s from the coarse estimate the
+   * names and systemTime give.
    */
   static Fixture revlogPair(Path dir) throws IOException {
-    var path = dir.resolve("2026-revlog_pair.wpilog");
+    var path = writeRevlogPair(dir, "2026-revlog_pair.wpilog", java.time.ZoneOffset.UTC,
+        "systemTime");
+    return new Fixture("revlog_pair", path,
+        "A wpilog with the REV log recorded alongside it (SPARK MAX 3 applied output)",
+        List.of("revlog sync"));
+  }
+
+  /**
+   * Writes a revlog pair (see {@link #revlogPair}) whose REV log is named by a clock in
+   * {@code zone}: UTC for a roboRIO, the local zone for a desktop running simulation. The wall
+   * clock ({@code clockEntry}: systemTime or /SystemStats/EpochTimeMicros) is true epoch time.
+   *
+   * @return the wpilog's path
+   */
+  public static Path writeRevlogPair(Path dir, String wpilogName, java.time.ZoneOffset zone,
+      String clockEntry) throws IOException {
+    var path = dir.resolve(wpilogName);
     double start = 10.0;
     double end = 70.0;
-    long wall0 = REVLOG_PAIR_WALL.atZone(java.time.ZoneId.systemDefault()).toInstant()
-        .toEpochMilli() * 1000L;
+    long wall0 = REVLOG_PAIR_WALL.toInstant(java.time.ZoneOffset.UTC).toEpochMilli() * 1000L;
     try (var w = new FixtureWriter(path, AKIT_METADATA)) {
       int n = loops(start, end);
       for (int i = 0; i < n; i++) {
         double t = loopTime(start, i);
         w.dbl("/Drive/FrontLeft/AppliedOutput", t, revlogPairOutput(t));
-        if (i % 50 == 0) w.i64("systemTime", t, wall0 + Math.round((t - start) * 1e6));
+        if (i % 50 == 0) w.i64(clockEntry, t, wall0 + Math.round((t - start) * 1e6));
       }
     }
-    var revName = "REV_" + REVLOG_PAIR_WALL.plusSeconds(5).format(
+    var revName = "REV_" + namedAt(REVLOG_PAIR_WALL.plusSeconds(5), zone).format(
         java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".revlog";
-    try (var w = new FixtureWriter(dir.resolve(revName), "")) {
+    writeRevlog(dir.resolve(revName));
+    return path;
+  }
+
+  /** A UTC wall-clock time as a clock in {@code zone} shows it (and names files with it). */
+  public static java.time.LocalDateTime namedAt(java.time.LocalDateTime utc,
+      java.time.ZoneOffset zone) {
+    return utc.atOffset(java.time.ZoneOffset.UTC).withOffsetSameInstant(zone).toLocalDateTime();
+  }
+
+  /** The pair's REV log: SPARK MAX 3's Periodic Status 0 at 100 Hz on its own clock. */
+  public static void writeRevlog(Path path) throws IOException {
+    try (var w = new FixtureWriter(path, "")) {
       for (int i = 0; i <= 5000; i++) {
         double tr = i * 0.01; // 100 Hz on the revlog's own clock, from 0 s
         w.raw("CAN/3/Periodic Status 0", "raw", tr,
             sparkStatus0(revlogPairOutput(tr + REVLOG_PAIR_OFFSET_SEC)));
       }
     }
-    return new Fixture("revlog_pair", path,
-        "A wpilog with the REV log recorded alongside it (SPARK MAX 3 applied output)",
-        List.of("revlog sync"));
   }
 
   /** A valid log with a header and no entries. */
