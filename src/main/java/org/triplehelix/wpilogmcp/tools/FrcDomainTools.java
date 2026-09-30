@@ -1266,7 +1266,7 @@ public final class FrcDomainTools {
             .orElse(0));
         o.addProperty("max_overshoot_percent", overshoots.stream().mapToDouble(d -> d).max()
             .orElse(0));
-        o.add("step_details", details);
+        ResultContract.addLimitedList(o, "step_details", details, stepTimes.size(), 20);
       }
       return o;
     }
@@ -2066,9 +2066,13 @@ public final class FrcDomainTools {
           .addProperty("relative_tolerance", relTol)
           .addLimitedList("divergences", list, divergent.size(), limit);
       if (unmatchedSamples > 0) builder.addProperty("samples_without_counterpart", unmatchedSamples);
-      builder.addData("real_only_entries", GSON.toJsonTree(realOnly.stream().limit(50).toList()))
+      builder.addLimitedList("real_only_entries",
+              GSON.toJsonTree(realOnly.stream().limit(50).toList()).getAsJsonArray(),
+              realOnly.size(), 50)
           .addProperty("real_only_count", realOnly.size())
-          .addData("replay_only_entries", GSON.toJsonTree(replayOnly.stream().limit(50).toList()))
+          .addLimitedList("replay_only_entries",
+              GSON.toJsonTree(replayOnly.stream().limit(50).toList()).getAsJsonArray(),
+              replayOnly.size(), 50)
           .addProperty("replay_only_count", replayOnly.size());
       if (!realOnly.isEmpty()) {
         builder.addWarning(realOnly.size() + " /RealOutputs/ entries have no replay counterpart "

@@ -84,6 +84,40 @@ class CoreToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a huge limit is capped at 10000 samples per page, and limits says so")
+    void capsLimit() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/core_cap.wpilog")
+          .addNumericEntry("/Test/Data", new double[]{0, 1}, new double[]{10, 20})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", "/test/core_cap.wpilog");
+      args.addProperty("name", "/Test/Data");
+      args.addProperty("limit", 5_000_000);
+      var r = findTool("read_entry").execute(args).getAsJsonObject();
+      assertEquals(10_000, r.getAsJsonObject("limits").getAsJsonObject("samples").get("limit")
+          .getAsInt());
+      assertEquals(2, r.getAsJsonArray("samples").size());
+    }
+
+    @Test
+    @DisplayName("get_entry_info suggests entries whatever the case of the name asked for")
+    void caseInsensitiveSuggestions() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/core_suggest.wpilog")
+          .addNumericEntry("/Drive/Velocity", new double[]{0}, new double[]{1})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", "/test/core_suggest.wpilog");
+      args.addProperty("name", "/drive/velocity");
+      var r = findTool("get_entry_info").execute(args).getAsJsonObject();
+      assertFalse(r.get("success").getAsBoolean());
+      assertTrue(r.toString().contains("/Drive/Velocity"), r.toString());
+    }
+
+    @Test
     @DisplayName("returns error for negative offset")
     void returnsErrorForNegativeOffset() throws Exception {
       var log = new MockLogBuilder()

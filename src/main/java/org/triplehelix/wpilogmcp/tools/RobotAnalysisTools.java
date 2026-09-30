@@ -710,7 +710,8 @@ public final class RobotAnalysisTools {
       result.addProperty("current_entries_analyzed", channels.size());
       if (!channels.isEmpty()) {
         var shown = channels.size() > channelLimit ? channels.subList(0, channelLimit) : channels;
-        result.add("channel_analysis", GSON.toJsonTree(shown));
+        ResultContract.addLimitedList(result, "channel_analysis",
+            GSON.toJsonTree(shown).getAsJsonArray(), channels.size(), channelLimit);
         if (channels.size() > channelLimit) {
           warnings.add("Showing the top " + channelLimit + " of " + channels.size()
               + " current entries/channels by peak current; raise channel_limit to see more.");

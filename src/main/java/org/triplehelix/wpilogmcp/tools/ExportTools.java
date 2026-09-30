@@ -465,8 +465,8 @@ public final class ExportTools {
             o.addProperty("first_timestamp", firstSeen.get(g.getKey()));
             top.add(o);
           });
-      errors.add("top_messages", top);
-      errors.add("samples", firstErrors);
+      ResultContract.addLimitedList(errors, "top_messages", top, groups.size(), 5);
+      ResultContract.addLimitedList(errors, "samples", firstErrors, errorSamples, 5);
       errors.addProperty("note", "Counts are text samples classified ERROR or WARNING (a "
           + "multi-line sample counts once, by its most severe line; an alert once per "
           + "appearance, by its entry's level); search_strings lists every message.");
@@ -513,6 +513,7 @@ public final class ExportTools {
           .limit(10)
           .forEach(e -> types.addProperty(e.getKey(), e.getValue()));
       report.add("top_data_types", types);
+      report.addProperty("type_count", typeCounts.size());
 
       if (!skipped.isEmpty()) {
         report.add("skipped", skipped);

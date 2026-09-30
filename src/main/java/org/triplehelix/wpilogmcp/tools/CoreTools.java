@@ -302,8 +302,9 @@ public final class CoreTools {
       var entry = log.entries().get(name);
 
       if (entry == null) {
+        var lower = name.toLowerCase(java.util.Locale.ROOT);
         var suggestions = log.entries().keySet().stream()
-            .filter(n -> n.contains(name))
+            .filter(n -> n.toLowerCase(java.util.Locale.ROOT).contains(lower))
             .limit(5)
             .toList();
 
@@ -412,6 +413,9 @@ public final class CoreTools {
   }
 
   static class ReadEntryTool extends LogRequiringTool {
+    /** Most samples one page returns (struct samples can be large). */
+    static final int MAX_SAMPLES = 10_000;
+
     @Override
     public String name() {
       return "read_entry";
@@ -435,7 +439,8 @@ public final class CoreTools {
           .addProperty("name", "string", "The entry name", true)
           .addNumberProperty("start_time", "Start timestamp in seconds (optional)", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds (optional)", false, null)
-          .addIntegerProperty("limit", "Maximum number of samples to return", false, 100)
+          .addIntegerProperty("limit", "Maximum number of samples to return (default: 100, "
+              + "max: " + ReadEntryTool.MAX_SAMPLES + ")", false, 100)
           .addIntegerProperty("offset", "Number of samples to skip", false, 0)
           .build();
     }
@@ -452,7 +457,7 @@ public final class CoreTools {
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
-      int limit = getOptInt(arguments, "limit", 100);
+      int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", 100));
       int offset = getOptInt(arguments, "offset", 0);
 
       if (limit <= 0) {

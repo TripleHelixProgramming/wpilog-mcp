@@ -305,7 +305,7 @@ Read values from an entry with time range filtering and pagination.
 - `name` (required): The entry name
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
-- `limit` (optional): Max samples to return (default 100)
+- `limit` (optional): Max samples to return (default 100, at most 10000 per page)
 - `offset` (optional): Samples to skip (default 0)
 
 **Returns:** Array of timestamped values, `total_in_range` (the true count), `returned_count`, `has_more`, and `limits.samples` (total after `offset` vs returned). An unknown entry name is an error with suggestions
