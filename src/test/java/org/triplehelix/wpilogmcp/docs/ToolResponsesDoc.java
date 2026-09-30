@@ -34,6 +34,7 @@ import org.triplehelix.wpilogmcp.tools.CoreTools;
 import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.FrcDomainTools;
+import org.triplehelix.wpilogmcp.tools.PoseTools;
 import org.triplehelix.wpilogmcp.tools.QueryTools;
 import org.triplehelix.wpilogmcp.tools.RevLogTools;
 import org.triplehelix.wpilogmcp.tools.RobotAnalysisTools;
@@ -66,6 +67,7 @@ class ToolResponsesDoc {
       new Category("Statistics Tools", StatisticsTools::registerAll),
       new Category("Robot Analysis Tools", RobotAnalysisTools::registerAll),
       new Category("FRC Domain Tools", FrcDomainTools::registerAll),
+      new Category("Pose Tools", PoseTools::registerAll),
       new Category("Export Tools", ExportTools::registerAll),
       new Category("TBA Tools", TbaTools::registerAll),
       new Category("RevLog Tools", RevLogTools::registerAll));

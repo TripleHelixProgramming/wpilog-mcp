@@ -148,7 +148,7 @@ See [TOOLS.md](doc/TOOLS.md#revlog-tools) for detailed tool documentation and a 
 
 ## Available Tools
 
-wpilog-mcp provides 47 tools organized into categories. All log-requiring tools take a `path` parameter — the server auto-loads logs on first reference and auto-evicts idle logs.
+wpilog-mcp provides 49 tools organized into categories. All log-requiring tools take a `path` parameter — the server auto-loads logs on first reference and auto-evicts idle logs.
 
 | Category | Tools |
 |----------|-------|
@@ -157,7 +157,7 @@ wpilog-mcp provides 47 tools organized into categories. All log-requiring tools 
 | **Query** | `search_entries`, `get_types`, `find_condition`, `search_strings` |
 | **Statistics** | `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries` |
 | **Robot Analysis** | `get_match_phases`, `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata`, `moi_regression` |
-| **FRC Domain** | `get_ds_timeline`, `analyze_vision`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `predict_battery_health`, `get_game_info`, `analyze_can_bus` |
+| **FRC Domain** | `get_ds_timeline`, `analyze_vision`, `compare_poses`, `pose_corrections`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `predict_battery_health`, `get_game_info`, `analyze_can_bus` |
 | **TBA** | `get_tba_status`, `get_tba_match_data` |
 | **RevLog** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset`, `wait_for_sync` |
 | **Export** | `export_csv`, `generate_report` |

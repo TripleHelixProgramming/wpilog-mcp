@@ -45,6 +45,9 @@
 
     {"tool": "get_ds_timeline", "title": "Timeline", "args": {"path": "${q10}"}},
     {"tool": "analyze_vision", "title": "Streams, targets, pose sets", "args": {"path": "${review}"}},
+    {"tool": "compare_poses", "title": "The turret's pose in the robot's frame", "args": {"path": "${q10}", "pose_entry": "/RealOutputs/Launcher/TurretPose", "reference_entry": "/RealOutputs/Drive/Pose", "frame": "reference", "scope": "enabled"}},
+    {"tool": "pose_corrections", "title": "Pose steps while the robot sat disabled", "args": {"path": "${review}", "scope": "disabled", "limit": 3}},
+    {"tool": "pose_corrections", "title": "Corrections while driving", "args": {"path": "${q10}", "scope": "enabled", "limit": 3}},
     {"tool": "profile_mechanism", "title": "A drive module", "args": {"path": "${q10}", "mechanism_name": "/Drive/Module0"}},
     {"tool": "analyze_auto", "title": "Autonomous", "args": {"path": "${q10}"}},
     {"tool": "analyze_cycles", "title": "Feeder command cycles", "args": {"path": "${q10}", "state_entry": "/RealOutputs/Subsystems/Feeder/Command", "cycle_start_state": "ParallelCommandGroup", "limit": 3}},

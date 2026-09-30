@@ -585,6 +585,10 @@ class HttpStressTest {
     exerciseTool(sessionId, "analyze_auto", withPath(logPath), "frc");
     exerciseTool(sessionId, "get_ds_timeline", withPath(logPath), "frc");
     exerciseTool(sessionId, "analyze_vision", withPath(logPath), "frc");
+    exerciseTool(sessionId, "pose_corrections", withPath(logPath), "frc");
+    var poseArgs = withPath(logPath);
+    poseArgs.addProperty("reference_entry", "/RealOutputs/Drive/Pose");
+    exerciseTool(sessionId, "compare_poses", poseArgs, "frc");
     exerciseTool(sessionId, "analyze_replay_drift", withPath(logPath), "frc");
     exerciseTool(sessionId, "analyze_loop_timing", withPath(logPath), "frc");
     exerciseTool(sessionId, "analyze_can_bus", withPath(logPath), "frc");

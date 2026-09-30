@@ -257,6 +257,22 @@ public final class DiscoveryTools {
         List.of("Check vision update rate", "Measure vision latency", "Analyze target detection"),
         true, List.of("analyze_swerve")));
 
+    tools.add(new ToolInfo("compare_poses", "frc_domain",
+        "Difference between two pose streams, in field or reference frame",
+        List.of("pose", "path error", "following error", "cross-track", "setpoint", "estimator",
+            "difference"),
+        List.of("Measure path-following error along and across the path",
+            "Compare two pose estimators", "Compare the robot pose with a camera's estimate"),
+        true, List.of("pose_corrections", "analyze_auto", "align_entries")));
+
+    tools.add(new ToolInfo("pose_corrections", "frc_domain",
+        "How much the pose changed beyond what odometry predicts",
+        List.of("vision correction", "pose jump", "odometry", "drift", "wheel slip", "reset",
+            "chassis speeds"),
+        List.of("Measure the size and cadence of vision corrections while driving",
+            "Find pose jumps and resets", "Check whether the pose wanders while disabled"),
+        true, List.of("analyze_vision", "compare_poses", "find_condition")));
+
     tools.add(new ToolInfo("profile_mechanism", "frc_domain",
         "Analyze mechanism health and control tuning",
         List.of("mechanism", "arm", "elevator", "shooter", "tuning", "pid"),

@@ -133,6 +133,7 @@ public final class WpilogTools {
     StatisticsTools.registerAll(registry);
     RobotAnalysisTools.registerAll(registry);
     FrcDomainTools.registerAll(registry);
+    PoseTools.registerAll(registry);
     ExportTools.registerAll(registry);
     TbaTools.registerAll(registry);
     RevLogTools.registerAll(registry);

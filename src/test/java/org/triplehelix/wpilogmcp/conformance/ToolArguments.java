@@ -161,6 +161,29 @@ final class ToolArguments {
         }
         return variants;
       }
+      case "compare_poses" -> {
+        // reference_entry is required: the second pose entry, else the first against itself
+        var poses = log.entries().values().stream()
+            .filter(e -> e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d"))
+            .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).toList();
+        var args = base.deepCopy();
+        args.addProperty("reference_entry", poses.isEmpty() ? "/Missing/Pose"
+            : poses.get(Math.min(1, poses.size() - 1)));
+        variants.add(new Variant(poses.isEmpty() ? "missing" : "poses", args));
+        var reference = args.deepCopy();
+        reference.addProperty("frame", "reference");
+        variants.add(new Variant("reference-frame", reference));
+        return variants;
+      }
+      case "pose_corrections" -> {
+        // The default threshold, and one low enough that fixtures produce corrections
+        variants.add(new Variant("default", base.deepCopy()));
+        var low = base.deepCopy();
+        low.addProperty("threshold_m", 0.001);
+        variants.add(new Variant("low-threshold", low));
+        return withLimitVariant(tool, variants);
+      }
       case "profile_mechanism" -> {
         // mechanism_name is optional in the schema but the tool needs it (or role entries), so
         // pass one: the elevator where there is one, else the drive

@@ -58,6 +58,9 @@ Each result travels as the text of an MCP `tools/call` result (`result.content[0
   - [`analyze_can_bus`](#analyze_can_bus)
   - [`predict_battery_health`](#predict_battery_health)
   - [`get_game_info`](#get_game_info)
+- [Pose Tools](#pose-tools)
+  - [`compare_poses`](#compare_poses)
+  - [`pose_corrections`](#pose_corrections)
 - [Export Tools](#export-tools)
   - [`export_csv`](#export_csv)
   - [`generate_report`](#generate_report)
@@ -75,7 +78,7 @@ Each result travels as the text of an MCP `tools/call` result (`result.content[0
 
 ### `get_server_guide`
 
-IMPORTANT: Call this tool first to understand what analysis capabilities are available. Returns a structured overview of all 47 tools organized by category, with usage guidance and anti-patterns to avoid, plus analysis_principles: how to reason about results without confabulating (method, confidence calibration, traps, report format). This server has extensive built-in analysis—don't write custom code when a tool already exists.
+IMPORTANT: Call this tool first to understand what analysis capabilities are available. Returns a structured overview of all 49 tools organized by category, with usage guidance and anti-patterns to avoid, plus analysis_principles: how to reason about results without confabulating (method, confidence calibration, traps, report format). This server has extensive built-in analysis—don't write custom code when a tool already exists.
 
 **Parameters** ([TOOLS.md](TOOLS.md#get_server_guide))
 
@@ -102,11 +105,11 @@ Response:
   "overview": {
     "server_name": "wpilog-mcp",
     "version": "0.8.2",
-    "total_tools": 47,
+    "total_tools": 49,
     "purpose": "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)"
   },
   "critical_guidance": {
-    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 47 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
+    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 49 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
     "tba_tip": "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. TBA data includes autonomous points, final scores, and win/loss results.",
     "statistics_tip": "Use get_statistics (mean, std, percentiles) and time_correlate rather than computing them by hand; for data they cannot read, export_csv and compute externally, citing the export.",
     "match_phases_tip": "NEVER manually parse timestamps to find auto/teleop—use get_match_phases."
@@ -501,9 +504,9 @@ Response:
   "returned": 3,
   "has_more": true,
   "metadata_cache": {
-    "misses": 88,
+    "size": 88,
     "hits": 0,
-    "size": 88
+    "misses": 88
   },
   "logs": [
     {
@@ -924,7 +927,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 27,
+    "heap_used_mb": 35,
     "heap_max_mb": 512
   }
 }
@@ -1444,12 +1447,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 383,
-    "total_mb": 462,
+    "used_mb": 289,
+    "total_mb": 469,
     "max_mb": 512,
-    "free_mb": 78
+    "free_mb": 179
   },
-  "jvm_heap_used_mb": 383,
+  "jvm_heap_used_mb": 289,
   "disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/.claude/worktrees/loose-ends/build/test-disk-cache",
@@ -5481,6 +5484,506 @@ Response:
     "description": "Both HUBs active during AUTO, TRANSITION SHIFT, and END GAME. During ALLIANCE SHIFTS, HUBs alternate active/inactive based on AUTO results.",
     "auto_winner_shift_1_hub": "inactive",
     "auto_loser_shift_1_hub": "active"
+  }
+}
+```
+
+## Pose Tools
+
+### `compare_poses`
+
+The difference between two pose streams (struct:Pose2d or Pose3d, the latter projected on the floor), sampled at the records of pose_entry with reference_entry interpolated there (linear, heading along the shortest arc; 'previous' for a reference logged when it changes; no value across a gap longer than max_gap_sec). pose minus reference: distance_m (count, mean, median, p95, max, rmse), heading_difference_rad (signed mean; median, p95, max of its size), and components: frame 'field' gives dx_m and dy_m in field coordinates; frame 'reference' gives along_m (positive: pose ahead of the reference along its heading) and cross_m (positive: pose to its left), as a path-following error is usually read. largest lists the times of the largest distances. Uses: path following (setpoint as reference), two pose estimators, a pose against a camera's estimate. For each camera observation at its own timestamp, use analyze_vision. pose_entry defaults to the robot pose (a conventional name, else the only Pose2d); several others are listed to confirm, not guessed. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
+
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation.
+
+**Parameters** ([TOOLS.md](TOOLS.md#compare_poses))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `reference_entry` | string | yes | The pose to measure against (struct:Pose2d or Pose3d), e.g. a path setpoint |
+| `pose_entry` | string | no | The pose measured (struct:Pose2d or Pose3d); default: the robot pose |
+| `frame` | string | no | 'field' (default: dx_m, dy_m) or 'reference' (along_m, cross_m in the reference's heading) |
+| `interpolation` | string | no | 'linear' (default) or 'previous' for the reference |
+| `max_gap_sec` | number | no | Longest reference gap to interpolate across (default 0.25) |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: The turret's pose in the robot's frame**
+
+Request:
+```json
+{
+  "name": "compare_poses",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "pose_entry": "/RealOutputs/Launcher/TurretPose",
+    "reference_entry": "/RealOutputs/Drive/Pose",
+    "frame": "reference",
+    "scope": "enabled"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "pose_entry": "/RealOutputs/Launcher/TurretPose",
+  "reference_entry": "/RealOutputs/Drive/Pose",
+  "frame": "reference",
+  "interpolation": "linear",
+  "count": 6681,
+  "unaligned": 0,
+  "inputs": {
+    "entries": {
+      "pose": "/RealOutputs/Launcher/TurretPose",
+      "reference": "/RealOutputs/Drive/Pose"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
+  "distance_m": {
+    "count": 6681,
+    "mean": 0.16253430926625193,
+    "median": 0.13853859949313763,
+    "p95": 0.1385385994931381,
+    "max": 4.691519928707817,
+    "rmse": 0.3399935950352601
+  },
+  "heading_difference_rad": {
+    "count": 6681,
+    "median": 1.7456877867328089,
+    "p95": 2.99165940284729,
+    "max": 3.141256809234619,
+    "mean_signed": -0.09281073165704824
+  },
+  "along_m": {
+    "count": 6681,
+    "mean": -0.06245924541832377,
+    "std_dev": 0.060486478942520835,
+    "p5": -0.05768340000000048,
+    "p95": -0.05768339999999955
+  },
+  "cross_m": {
+    "count": 6681,
+    "mean": -0.10866961627339125,
+    "std_dev": 0.31022852962835135,
+    "p5": -0.12595860000000042,
+    "p95": -0.12595859999999953
+  },
+  "largest": [
+    {
+      "timestamp_sec": 112.008064,
+      "distance_m": 4.691519928707817
+    },
+    {
+      "timestamp_sec": 111.983244,
+      "distance_m": 4.67069539021696
+    },
+    {
+      "timestamp_sec": 111.962524,
+      "distance_m": 4.652757101212706
+    },
+    {
+      "timestamp_sec": 111.94121,
+      "distance_m": 4.6385506302046915
+    },
+    {
+      "timestamp_sec": 111.919729,
+      "distance_m": 4.62596507430743
+    }
+  ],
+  "limits": {
+    "largest": {
+      "total": 6681,
+      "returned": 5,
+      "limit": 5
+    }
+  },
+  "data_quality": {
+    "sample_count": 6681,
+    "time_span_seconds": 167.37,
+    "sampling": "periodic",
+    "gap_count": 32,
+    "max_gap_ms": 4173.0,
+    "effective_sample_rate_hz": 48.7,
+    "quality_score": 0.91,
+    "reasons": [
+      "5.0% of the time span is in 32 gaps longer than 5x the median interval (longest 4173 ms)",
+      "irregular timing: intervals deviate from the 20.5 ms median by 3% (median absolute deviation)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "high",
+    "sample_context": "Based on 6681 samples over 167.4 seconds",
+    "interpretation_guidance": [
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+    ]
+  }
+}
+```
+
+### `pose_corrections`
+
+How much a pose changed beyond what odometry predicts: for each pair of consecutive pose_entry records (in scope, at most max_interval_sec apart), its change minus the predicted change, where the prediction is the change of odometry_pose_entry (a pose from wheel odometry alone, rotated into the pose's frame), or else chassis_speeds_entry integrated over the interval (robot-relative by default, rotated by the pose's heading; speeds_frame 'field' for field-relative speeds; odometry.frame_check gives the median residual read either way, and a warning says when the other frame fits better). Returns residual_translation_m (count, mean, median, p95, p99, max) and residual_heading_rad (sizes), and the corrections: intervals whose residual is at least threshold_m (or heading_threshold_rad), in time order with dx_m, dy_m, translation_m, heading_rad, and speed_mps, and correction_count, total_translation_m, and correction_interval_sec (n, min, median, p95, max: the cadence of corrections, e.g. vision updates). A correction within 0.5 s of an enable has near_enable_sec (odometry is often reset there). A residual is not by itself a vision correction: wheel slip, collisions, a pose reset, and timing differences between the entries also make one; compare with the vision entries (analyze_vision) before attributing it. pose_entry defaults to the robot pose and chassis_speeds_entry to the measured chassis speeds (conventional names or the only candidate; others are listed to confirm, not guessed). Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
+
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#pose_corrections))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `pose_entry` | string | no | The pose (struct:Pose2d or Pose3d), e.g. a pose estimator's output; default: the robot pose |
+| `odometry_pose_entry` | string | no | A pose from wheel odometry alone; when given, its change is the prediction |
+| `chassis_speeds_entry` | string | no | struct:ChassisSpeeds to integrate when no odometry pose is given; default: the measured chassis speeds |
+| `speeds_frame` | string | no | 'robot' (default, as kinematics produce them) or 'field' |
+| `threshold_m` | number | no | Residual translation that counts as a correction (default 0.05) |
+| `heading_threshold_rad` | number | no | Residual heading that counts as a correction (default: none) |
+| `max_interval_sec` | number | no | Longest interval between pose records to compare (default 0.1) |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
+| `limit` | integer | no | Maximum corrections listed (max 500) |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: Pose steps while the robot sat disabled**
+
+Request:
+```json
+{
+  "name": "pose_corrections",
+  "arguments": {
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "scope": "disabled",
+    "limit": 3
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "pose_entry": "/RealOutputs/Drive/Pose",
+  "inputs": {
+    "entries": {
+      "pose": "/RealOutputs/Drive/Pose",
+      "chassis_speeds": "/RealOutputs/SwerveChassisSpeeds/Measured"
+    },
+    "scope": {
+      "scope": "disabled",
+      "windows": [
+        [
+          8.359178,
+          40.207135
+        ],
+        [
+          359.161586,
+          395.209541
+        ],
+        [
+          744.929426,
+          791.534465
+        ],
+        [
+          840.133016,
+          995.211072
+        ]
+      ],
+      "window_count": 4,
+      "total_sec": 269.5790069999999
+    }
+  },
+  "odometry": {
+    "source": "chassis_speeds",
+    "entry": "/RealOutputs/SwerveChassisSpeeds/Measured",
+    "speeds_frame": "robot",
+    "basis": "struct:ChassisSpeeds, named 'measured'",
+    "frame_check": {
+      "robot_median_m": 7.972007441756449E-6,
+      "field_median_m": 8.307890446994128E-6
+    }
+  },
+  "robot_pose": {
+    "description": "Robot pose (odometry or estimator)",
+    "entry": "/RealOutputs/Drive/Pose",
+    "match": "convention",
+    "basis": "a robot pose by convention (DriveState/Pose, Odometry/Robot, Drive/Pose, EstimatedPose, RobotPose, PathPlanner/currentPose)",
+    "candidates": [
+      "/RealOutputs/Drive/Pose"
+    ],
+    "used_by": "analyze_vision (pose_entry)"
+  },
+  "intervals": {
+    "analyzed": 10465,
+    "longer_than_max": 103,
+    "without_odometry": 0,
+    "unreadable_pose_records": 0
+  },
+  "residual_translation_m": {
+    "count": 10465,
+    "mean": 0.01360233527139004,
+    "median": 7.972007441756449E-6,
+    "p95": 0.10899482857198398,
+    "p99": 0.2964007756469174,
+    "max": 0.5593575667827476
+  },
+  "residual_heading_rad": {
+    "count": 10465,
+    "mean": 0.001483114253589569,
+    "median": 1.6792550308688228E-5,
+    "p95": 0.0056424867550949566,
+    "p99": 0.0346221682038128,
+    "max": 0.09734498788822235
+  },
+  "threshold_m": 0.05,
+  "correction_count": 712,
+  "total_translation_m": 117.82032679590415,
+  "corrections": [
+    {
+      "timestamp_sec": 359.326347,
+      "interval_sec": 0.020238000000006195,
+      "dx_m": 0.1400796354903109,
+      "dy_m": -0.27390921631123727,
+      "translation_m": 0.3076500659179753,
+      "heading_rad": -0.03417794870652695,
+      "speed_mps": 3.853468007642586E-4
+    },
+    {
+      "timestamp_sec": 359.428632,
+      "interval_sec": 0.02127699999999777,
+      "dx_m": -0.1408228860703895,
+      "dy_m": 0.29025130519186715,
+      "translation_m": 0.32260952466840825,
+      "heading_rad": 0.038886193106626464,
+      "speed_mps": 4.022230893386826E-4
+    },
+    {
+      "timestamp_sec": 359.574583,
+      "interval_sec": 0.019719000000009146,
+      "dx_m": 0.13794977834096475,
+      "dy_m": -0.34543778337753794,
+      "translation_m": 0.37196425033745933,
+      "heading_rad": -0.04198362707778409,
+      "speed_mps": 4.2655606881134847E-4
+    }
+  ],
+  "limits": {
+    "corrections": {
+      "total": 712,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "correction_interval_sec": {
+    "n": 711,
+    "min": 0.0956620000000612,
+    "median": 0.13463600000000042,
+    "p95": 0.904164000000037,
+    "max": 368.678189
+  },
+  "data_quality": {
+    "sample_count": 10572,
+    "time_span_seconds": 986.83,
+    "sampling": "periodic",
+    "gap_count": 106,
+    "max_gap_ms": 349739.4,
+    "effective_sample_rate_hz": 49.1,
+    "quality_score": 0.69,
+    "reasons": [
+      "75.1% of the time span is in 106 gaps longer than 5x the median interval (longest 349739 ms)",
+      "irregular timing: intervals deviate from the 20.4 ms median by 3% (median absolute deviation)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "medium",
+    "sample_context": "Based on 10572 samples over 986.8 seconds",
+    "interpretation_guidance": [
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+    ],
+    "suggested_followup": [
+      "Use analyze_vision to see whether corrections coincide with vision observations, and find_condition to limit the scope to driving"
+    ]
+  }
+}
+```
+
+**Example: Corrections while driving**
+
+Request:
+```json
+{
+  "name": "pose_corrections",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "scope": "enabled",
+    "limit": 3
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "pose_entry": "/RealOutputs/Drive/Pose",
+  "inputs": {
+    "entries": {
+      "pose": "/RealOutputs/Drive/Pose",
+      "chassis_speeds": "/RealOutputs/SwerveChassisSpeeds/Measured"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
+  "odometry": {
+    "source": "chassis_speeds",
+    "entry": "/RealOutputs/SwerveChassisSpeeds/Measured",
+    "speeds_frame": "robot",
+    "basis": "struct:ChassisSpeeds, named 'measured'",
+    "frame_check": {
+      "robot_median_m": 0.0014067967782685198,
+      "field_median_m": 0.03313597690587128
+    }
+  },
+  "robot_pose": {
+    "description": "Robot pose (odometry or estimator)",
+    "entry": "/RealOutputs/Drive/Pose",
+    "match": "convention",
+    "basis": "a robot pose by convention (DriveState/Pose, Odometry/Robot, Drive/Pose, EstimatedPose, RobotPose, PathPlanner/currentPose)",
+    "candidates": [
+      "/RealOutputs/Launcher/TurretPose",
+      "/RealOutputs/Drive/Pose",
+      "/RealOutputs/AutoSelector/AutonomousInitialPose"
+    ],
+    "used_by": "analyze_vision (pose_entry)"
+  },
+  "intervals": {
+    "analyzed": 6645,
+    "longer_than_max": 34,
+    "without_odometry": 0,
+    "unreadable_pose_records": 0
+  },
+  "residual_translation_m": {
+    "count": 6645,
+    "mean": 0.0032454790882450856,
+    "median": 0.0014067967782685198,
+    "p95": 0.010986328519861628,
+    "p99": 0.024499506253424362,
+    "max": 0.1372925913357526
+  },
+  "residual_heading_rad": {
+    "count": 6645,
+    "mean": 0.018053424299945973,
+    "median": 0.011792607830083934,
+    "p95": 0.05522784787994532,
+    "p99": 0.0984758924079326,
+    "max": 0.2750710763641916
+  },
+  "threshold_m": 0.05,
+  "correction_count": 15,
+  "total_translation_m": 1.0493074205500266,
+  "corrections": [
+    {
+      "timestamp_sec": 112.213969,
+      "interval_sec": 0.07423700000001077,
+      "dx_m": 0.051935516703449786,
+      "dy_m": 0.0022583081304100926,
+      "translation_m": 0.05198459243724229,
+      "heading_rad": 0.048272682914462656,
+      "speed_mps": 1.708657028088
+    },
+    {
+      "timestamp_sec": 116.489911,
+      "interval_sec": 0.06414600000000803,
+      "dx_m": -0.07643497493675717,
+      "dy_m": -0.0012481621357073626,
+      "translation_m": 0.07644516532979513,
+      "heading_rad": 0.14358792276432866,
+      "speed_mps": 1.5187824308101852
+    },
+    {
+      "timestamp_sec": 128.431863,
+      "interval_sec": 0.03240700000000629,
+      "dx_m": 0.016542744991657494,
+      "dy_m": 0.0857124306514509,
+      "translation_m": 0.0872942333721924,
+      "heading_rad": 0.10217955439281988,
+      "speed_mps": 1.590649377502534
+    }
+  ],
+  "limits": {
+    "corrections": {
+      "total": 15,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "correction_interval_sec": {
+    "n": 14,
+    "min": 0.06952499999999873,
+    "median": 5.647325000000009,
+    "p95": 21.753517399999993,
+    "max": 27.094037000000014
+  },
+  "data_quality": {
+    "sample_count": 6681,
+    "time_span_seconds": 167.37,
+    "sampling": "periodic",
+    "gap_count": 32,
+    "max_gap_ms": 4173.0,
+    "effective_sample_rate_hz": 48.7,
+    "quality_score": 0.91,
+    "reasons": [
+      "5.0% of the time span is in 32 gaps longer than 5x the median interval (longest 4173 ms)",
+      "irregular timing: intervals deviate from the 20.5 ms median by 3% (median absolute deviation)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "high",
+    "sample_context": "Based on 6681 samples over 167.4 seconds",
+    "interpretation_guidance": [
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+    ],
+    "suggested_followup": [
+      "Use analyze_vision to see whether corrections coincide with vision observations, and find_condition to limit the scope to driving"
+    ]
   }
 }
 ```

@@ -33,6 +33,7 @@ import org.triplehelix.wpilogmcp.tools.CoreTools;
 import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.FrcDomainTools;
+import org.triplehelix.wpilogmcp.tools.PoseTools;
 import org.triplehelix.wpilogmcp.tools.QueryTools;
 import org.triplehelix.wpilogmcp.tools.RevLogTools;
 import org.triplehelix.wpilogmcp.tools.RobotAnalysisTools;
@@ -123,6 +124,7 @@ class StressTest {
     QueryTools.registerAll(capturingRegistry);
     StatisticsTools.registerAll(capturingRegistry);
     FrcDomainTools.registerAll(capturingRegistry);
+    PoseTools.registerAll(capturingRegistry);
     RobotAnalysisTools.registerAll(capturingRegistry);
     ExportTools.registerAll(capturingRegistry);
     TbaTools.registerAll(capturingRegistry);
@@ -539,6 +541,26 @@ class StressTest {
         System.out.println("    Pose jumps: " + result.get("jump_count").getAsInt());
       }
     });
+
+    // pose_corrections and compare_poses (the robot pose against itself when no other pose
+    // is named: the exercise is the reading and interpolation)
+    var correctionsArgs = new JsonObject();
+    correctionsArgs.addProperty("path", logPath);
+    correctionsArgs.addProperty("scope", "enabled");
+    testTool("pose_corrections", correctionsArgs, result -> {
+      if (result.has("residual_translation_m")) {
+        System.out.printf("  pose_corrections: %d corrections, median residual %.4f m%n",
+            result.get("correction_count").getAsInt(),
+            result.getAsJsonObject("residual_translation_m").get("median").getAsDouble());
+      }
+    });
+    if (loadedEntryNames != null && loadedEntryNames.contains("/RealOutputs/Drive/Pose")) {
+      var compareArgs = new JsonObject();
+      compareArgs.addProperty("path", logPath);
+      compareArgs.addProperty("reference_entry", "/RealOutputs/Drive/Pose");
+      testTool("compare_poses", compareArgs, result -> System.out.printf(
+          "  compare_poses: %d samples%n", result.get("count").getAsInt()));
+    }
 
     // analyze_replay_drift (AdvantageKit)
     var replayArgs = new JsonObject();

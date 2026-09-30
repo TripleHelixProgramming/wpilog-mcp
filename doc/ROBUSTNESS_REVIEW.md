@@ -418,7 +418,7 @@ to vision. Each step of that analysis, and the primitive it needed:
 | Pose heading against the gyro | Field access + angle-aware comparison of two entries | No |
 | Each camera against the fused pose at capture time | Sample entry B at timestamps embedded in entry A (`PoseObservation.timestamp`) | No |
 | Timing of pose steps (≈ 100 ms cadence) | Step detection on a field, with intervals between events | Partly (`analyze_vision` pose jumps above a threshold; no intervals between them) |
-| Size of vision corrections while driving | Change in one entry minus the change predicted by another (odometry) | No |
+| Size of vision corrections while driving | Change in one entry minus the change predicted by another (odometry) | No *[0.9.0: `pose_corrections`]* |
 | Hand-off to Python | Export flattened, aligned data | Path restrictions (D3); no struct flattening |
 
 Reproducing a team's own filter scoring is rightly out of scope. Everything in the middle column is general

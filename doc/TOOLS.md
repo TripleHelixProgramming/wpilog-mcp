@@ -43,6 +43,8 @@ Complete documentation for all tools available in wpilog-mcp.
 - [FRC Domain Tools](#frc-domain-tools)
   - [get_ds_timeline](#get_ds_timeline)
   - [analyze_vision](#analyze_vision)
+  - [compare_poses](#compare_poses)
+  - [pose_corrections](#pose_corrections)
   - [profile_mechanism](#profile_mechanism)
   - [analyze_auto](#analyze_auto)
   - [analyze_cycles](#analyze_cycles)
@@ -1576,6 +1578,82 @@ Analyze vision data, found by type and content: pose observation streams, target
   "jump_count": 1,
   "limits": {"pose_jumps": {"total": 1, "returned": 1, "limit": 100}},
   "pose_entries_checked": ["/RealOutputs/Drive/Pose"]
+}
+```
+
+### `compare_poses`
+The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter projected on the floor): pose minus reference, sampled at the records of `pose_entry` with `reference_entry` interpolated there.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `reference_entry` (required): The pose measured against, e.g. a path setpoint (`/PathPlanner/targetPose`), another estimator, or a camera's pose estimate
+- `pose_entry` (optional): The pose measured; default: the `robot_pose` role (a conventional name, else the only `Pose2d`; several others are listed to confirm, not guessed)
+- `frame` (optional): `field` (default: `dx_m`, `dy_m` in field coordinates) or `reference` (`along_m`, positive when the pose is ahead of the reference along its heading, and `cross_m`, positive to its left: a path-following error as it is usually read)
+- `interpolation` (optional): `linear` (default; heading along the shortest arc) or `previous` (for a reference logged when it changes)
+- `max_gap_sec` (optional): Longest reference gap to interpolate across (default 0.25 s); records without a reference value are counted in `unaligned`
+- `start_time`, `end_time`, `scope`, `windows` (optional): Time scope, as for the statistics tools
+
+**Returns:** `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (the size's median, p95, max, and `mean_signed`); the two components (mean, std_dev, p5, p95); `largest` (the times of the five largest distances, with `limits.largest`); `data_quality`. `no_match` when no record in scope has a reference value. For each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
+
+**Example** (the turret's pose in the robot's frame, VACHE q10, enabled; abridged): the turret sits 0.058 m behind and 0.126 m to the right of the robot's center — p5 and p95 are equal — except around an odometry reset at the start of autonomous, where the largest distances fall:
+```json
+{
+  "status": "ok",
+  "pose_entry": "/RealOutputs/Launcher/TurretPose",
+  "reference_entry": "/RealOutputs/Drive/Pose",
+  "frame": "reference",
+  "count": 6681,
+  "unaligned": 0,
+  "distance_m": {"count": 6681, "mean": 0.1625, "median": 0.1385, "p95": 0.1385, "max": 4.69, "rmse": 0.34},
+  "heading_difference_rad": {"count": 6681, "median": 1.746, "p95": 2.99, "max": 3.14, "mean_signed": -0.093},
+  "along_m": {"count": 6681, "mean": -0.0625, "std_dev": 0.0605, "p5": -0.0577, "p95": -0.0577},
+  "cross_m": {"count": 6681, "mean": -0.1087, "std_dev": 0.3102, "p5": -0.1260, "p95": -0.1260},
+  "largest": [{"timestamp_sec": 112.008, "distance_m": 4.69}, "..."],
+  "limits": {"largest": {"total": 6681, "returned": 5, "limit": 5}}
+}
+```
+
+### `pose_corrections`
+How much a pose changed beyond what odometry predicts. For each pair of consecutive `pose_entry` records (in scope, at most `max_interval_sec` apart): the pose's change minus the predicted change. The prediction is the change of `odometry_pose_entry` (a pose from wheel odometry alone, rotated into the pose's frame), or else `chassis_speeds_entry` integrated over the interval (trapezoidal, linear between speed samples; robot-relative speeds rotated by the pose's heading).
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `pose_entry` (optional): The pose, e.g. a pose estimator's output; default: the `robot_pose` role
+- `odometry_pose_entry` (optional): A pose from wheel odometry alone; when given, its change is the prediction
+- `chassis_speeds_entry` (optional): `struct:ChassisSpeeds` to integrate when no odometry pose is given; default: the measured chassis speeds role (a name containing "measured", or the only `ChassisSpeeds` not named like a setpoint; several are listed to confirm)
+- `speeds_frame` (optional): `robot` (default, as kinematics produce them) or `field`
+- `threshold_m` (optional): Residual translation that counts as a correction (default 0.05 m)
+- `heading_threshold_rad` (optional): Residual heading that also counts (default: none)
+- `max_interval_sec` (optional): Longest interval between pose records to compare (default 0.1 s)
+- `start_time`, `end_time`, `scope`, `windows` (optional): Time scope; both records of an interval must fall in the same window
+- `limit` (optional): Corrections listed (default 50, max 500)
+
+**Returns:**
+- `odometry`: the source (`chassis_speeds` or `odometry_pose`), its entry, and for speeds the frame used and `frame_check`: the median residual read as robot-relative and as field-relative. A warning says when the other frame fits better (a field-relative speeds entry read as robot-relative predicts the wrong direction in every interval).
+- `intervals`: `analyzed`, `longer_than_max`, `without_odometry` (speed samples do not bracket the interval, or the odometry pose has a gap), `unreadable_pose_records`
+- `residual_translation_m` (count, mean, median, p95, p99, max) and `residual_heading_rad` (sizes)
+- `correction_count`, `total_translation_m`, and `corrections` in time order (`timestamp_sec`, `interval_sec`, `dx_m`, `dy_m`, `translation_m`, `heading_rad`, `speed_mps`, and `near_enable_sec` within 0.5 s of an enable, where odometry is often reset), with `limits.corrections`
+- `correction_interval_sec`: the time between consecutive corrections (n, min, median, p95, max) — the cadence of vision updates, for example
+
+A residual is the pose estimator's change beyond odometry: vision corrections, but also wheel slip, collisions, pose resets, and timing differences between the entries. Compare with the vision entries (`analyze_vision`) before attributing one, and use `find_condition` to limit the scope to driving. In a simulated CTRE swerve log with no vision, where the pose is odometry, the residual median was 0.3 mm and the p99 1 cm.
+
+**Example** (the review log while the robot sat disabled; abridged): the robot is still (`speed_mps` ~0.0004) while its pose steps about 0.3 m back and forth every 0.1–0.2 s:
+```json
+{
+  "status": "ok",
+  "pose_entry": "/RealOutputs/Drive/Pose",
+  "odometry": {"source": "chassis_speeds", "entry": "/RealOutputs/SwerveChassisSpeeds/Measured", "speeds_frame": "robot",
+               "frame_check": {"robot_median_m": 0.000008, "field_median_m": 0.000008}},
+  "intervals": {"analyzed": 10465, "longer_than_max": 103, "without_odometry": 0, "unreadable_pose_records": 0},
+  "residual_translation_m": {"count": 10465, "mean": 0.0136, "median": 0.000008, "p95": 0.109, "p99": 0.296, "max": 0.559},
+  "correction_count": 712,
+  "total_translation_m": 117.8,
+  "corrections": [
+    {"timestamp_sec": 359.326, "interval_sec": 0.020, "dx_m": 0.140, "dy_m": -0.274, "translation_m": 0.308, "heading_rad": -0.034, "speed_mps": 0.0004},
+    {"timestamp_sec": 359.429, "interval_sec": 0.021, "dx_m": -0.141, "dy_m": 0.290, "translation_m": 0.323, "heading_rad": 0.039, "speed_mps": 0.0004}
+  ],
+  "limits": {"corrections": {"total": 712, "returned": 3, "limit": 3}},
+  "correction_interval_sec": {"n": 711, "min": 0.096, "median": 0.135, "p95": 0.904, "max": 368.7}
 }
 ```
 
