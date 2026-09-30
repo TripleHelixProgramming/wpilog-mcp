@@ -500,9 +500,9 @@ Response:
   "returned": 3,
   "has_more": true,
   "metadata_cache": {
-    "size": 88,
     "misses": 88,
-    "hits": 0
+    "hits": 0,
+    "size": 88
   },
   "logs": [
     {
@@ -1334,12 +1334,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": false,
   "jvm_memory": {
-    "used_mb": 210,
-    "total_mb": 308,
+    "used_mb": 229,
+    "total_mb": 344,
     "max_mb": 512,
-    "free_mb": 98
+    "free_mb": 114
   },
-  "jvm_heap_used_mb": 210,
+  "jvm_heap_used_mb": 229,
   "disk_cache": {
     "enabled": true,
     "directory": "~/Library/Application Support/wpilog-mcp/cache",
@@ -2144,7 +2144,7 @@ Response:
 
 ### `detect_anomalies`
 
-Detect anomalies in a numeric entry within an optional time window: outliers outside iqr_multiplier x IQR beyond Q1/Q3 (Tukey fences), and, when spike_threshold is given, spikes: sample-to-sample jumps larger than spike_threshold (in the entry's units). anomaly_count is the true total; the list is sorted by time (default) or severity (distance beyond the fence, or jump size) and cut at limit, with limits.anomalies giving total and returned. Boot transients and disabled periods count unless the window excludes them: pass scope 'enabled' or windows from get_match_phases. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
+Detect anomalies in a numeric entry within an optional time window: outliers outside iqr_multiplier x IQR beyond Q1/Q3 (Tukey fences), and, when spike_threshold is given, spikes: sample-to-sample jumps larger than spike_threshold (in the entry's units), with spike_interval_sec, the time between consecutive spikes (median, p95; the cadence of steps such as vision corrections). anomaly_count is the true total; the list is sorted by time (default) or severity (distance beyond the fence, or jump size) and cut at limit, with limits.anomalies giving total and returned. Boot transients and disabled periods count unless the window excludes them: pass scope 'enabled' or windows from get_match_phases. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
 
 
 

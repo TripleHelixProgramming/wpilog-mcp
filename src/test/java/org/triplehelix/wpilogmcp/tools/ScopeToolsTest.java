@@ -141,6 +141,25 @@ class ScopeToolsTest extends FixtureToolTestBase {
     }
 
     @Test
+    @DisplayName("detect_anomalies: the cadence of steps (intervals between spikes)")
+    void spikeCadence() {
+      // mode steps every 250 loops (5 s): at 6, 11, 16, 21, and 26 s
+      var r = call("detect_anomalies", "struct_custom", "name", "/RealOutputs/Arm/State.mode",
+          "spike_threshold", 0.5);
+      assertEquals(5, r.get("spike_count").getAsInt(), r.toString());
+      var intervals = r.getAsJsonObject("spike_interval_sec");
+      assertEquals(4, intervals.get("n").getAsInt());
+      assertEquals(5.0, intervals.get("median").getAsDouble(), 1e-6);
+      assertEquals(5.0, intervals.get("max").getAsDouble(), 1e-6);
+      // split windows: no interval spans the gap between two windows
+      var split = call("detect_anomalies", "struct_custom", "name", "/RealOutputs/Arm/State.mode",
+          "spike_threshold", 0.5, "windows", windows(1, 13, 14, 30));
+      // 6 and 11 s in the first window, 16, 21, and 26 s in the second: 1 + 2 intervals
+      assertEquals(3, split.getAsJsonObject("spike_interval_sec").get("n").getAsInt(),
+          split.toString());
+    }
+
+    @Test
     @DisplayName("find_peaks: a peak's neighbors are in its own window")
     void peaksWithinWindows() {
       // angle.value = 0.5 sin(0.2 t) peaks once, near t = 7.85

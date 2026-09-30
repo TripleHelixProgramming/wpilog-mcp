@@ -34,15 +34,16 @@ final class DescriptionOutputs {
    * Outputs present only in situations the fixture sweep's arguments do not create, each checked
    * by the named test instead.
    */
-  static final Map<String, String> VERIFIED_ELSEWHERE = Map.of(
-      "get_entry_info | decode_problem", "StructToolsFixtureTest.entryInfoMystery",
-      "get_statistics | records_in_window", "FieldPathToolsTest.wildcardPools",
-      "list_available_logs | has_more", "CoreToolsLogicTest.paging (needs a log directory)",
-      "list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)",
-      "list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)",
-      "profile_mechanism | other_stems", "MechanismFixtureTest",
-      "search_strings | repeat_count", "QueryToolsLogicTest (collapse_repeats)",
-      "get_match_phases | mode_change", "MatchTimelineTest (a mode change while enabled)");
+  static final Map<String, String> VERIFIED_ELSEWHERE = Map.ofEntries(
+      Map.entry("detect_anomalies | spike_interval_sec", "ScopeToolsTest.spikeCadence"),
+      Map.entry("get_entry_info | decode_problem", "StructToolsFixtureTest.entryInfoMystery"),
+      Map.entry("get_statistics | records_in_window", "FieldPathToolsTest.wildcardPools"),
+      Map.entry("list_available_logs | has_more", "CoreToolsLogicTest.paging (needs a log directory)"),
+      Map.entry("list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)"),
+      Map.entry("list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)"),
+      Map.entry("profile_mechanism | other_stems", "MechanismFixtureTest"),
+      Map.entry("search_strings | repeat_count", "QueryToolsLogicTest (collapse_repeats)"),
+      Map.entry("get_match_phases | mode_change", "MatchTimelineTest (a mode change while enabled)"));
 
   /**
    * "tool | term" for every promised term that no result of the tool contains as a key or a

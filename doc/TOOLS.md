@@ -619,7 +619,7 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 - `sort` (optional): `time` (default) or `severity` (distance beyond the fence, or jump size)
 - `limit` (optional): Maximum anomalies to return (default 50)
 
-**Returns:** `anomaly_count` (the true total), `outlier_count`, `spike_count` (when enabled), `non_finite_count`, `samples_analyzed`, `bounds` (`q1`, `q3`, `iqr`, `lower`, `upper`), `anomalies[]` (`timestamp_sec`, `value`, `type` — `below_lower_bound`, `above_upper_bound`, `spike_up`, `spike_down` — `severity`, and `jump` for spikes), and `limits.anomalies` (total vs returned).
+**Returns:** `anomaly_count` (the true total), `outlier_count`, `spike_count` and `spike_interval_sec` (when enabled: the time between consecutive spikes in one window — `n`, `min`, `median`, `p95`, `max` — the cadence of steps such as vision corrections), `non_finite_count`, `samples_analyzed`, `bounds` (`q1`, `q3`, `iqr`, `lower`, `upper`), `anomalies[]` (`timestamp_sec`, `value`, `type` — `below_lower_bound`, `above_upper_bound`, `spike_up`, `spike_down` — `severity`, and `jump` for spikes), and `limits.anomalies` (total vs returned).
 
 **Example Response:**
 ```json

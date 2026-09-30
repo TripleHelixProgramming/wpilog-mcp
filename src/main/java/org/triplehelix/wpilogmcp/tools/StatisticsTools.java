@@ -445,7 +445,9 @@ public final class StatisticsTools {
     public String description() {
       return "Detect anomalies in a numeric entry within an optional time window: outliers outside "
           + "iqr_multiplier x IQR beyond Q1/Q3 (Tukey fences), and, when spike_threshold is given, "
-          + "spikes: sample-to-sample jumps larger than spike_threshold (in the entry's units). "
+          + "spikes: sample-to-sample jumps larger than spike_threshold (in the entry's units), "
+          + "with spike_interval_sec, the time between consecutive spikes (median, p95; the "
+          + "cadence of steps such as vision corrections). "
           + "anomaly_count is the true total; the list is sorted by time (default) or severity "
           + "(distance beyond the fence, or jump size) and cut at limit, with limits.anomalies "
           + "giving total and returned. Boot transients and disabled periods count unless the "
@@ -506,8 +508,10 @@ public final class StatisticsTools {
       var anomalies = new ArrayList<JsonObject>();
       long outliers = 0;
       long spikes = 0;
+      var spikeIntervals = new ArrayList<Double>(); // between consecutive spikes in one window
       for (var window : finiteWindows) {
         Double previous = null; // spikes are jumps within one window
+        Double lastSpike = null;
         for (var tv : window) {
           double v = toDouble(tv.value());
           if (v < low || v > high) {
@@ -528,6 +532,8 @@ public final class StatisticsTools {
             obj.addProperty("severity", Math.abs(v - previous));
             anomalies.add(obj);
             spikes++;
+            if (lastSpike != null) spikeIntervals.add(tv.timestamp() - lastSpike);
+            lastSpike = tv.timestamp();
           }
           previous = v;
         }
@@ -559,7 +565,20 @@ public final class StatisticsTools {
           .addProperty("samples_analyzed", finite.size())
           .addProperty("sort", sort)
           .addLimitedList("anomalies", list, anomalies.size(), limit);
-      if (spikeThreshold != null) builder.addProperty("spike_count", spikes);
+      if (spikeThreshold != null) {
+        builder.addProperty("spike_count", spikes);
+        if (!spikeIntervals.isEmpty()) {
+          // The cadence of steps (e.g. vision corrections arriving every ~100 ms)
+          var sorted = spikeIntervals.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+          var intervals = new JsonObject();
+          intervals.addProperty("n", sorted.length);
+          intervals.addProperty("min", sorted[0]);
+          intervals.addProperty("median", percentile(sorted, 0.5));
+          intervals.addProperty("p95", percentile(sorted, 0.95));
+          intervals.addProperty("max", sorted[sorted.length - 1]);
+          builder.addData("spike_interval_sec", intervals);
+        }
+      }
       if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
       return builder.addProperty("name", name).addInputSignal("entry", signal)
           .addInputScope(scope).addDataQuality(quality).addDirectives(directives).build();
