@@ -580,7 +580,8 @@ public final class StatisticsTools {
       // scale-dependent false positives with unnormalized sum-of-squares.
       double varianceThreshold = 1e-15 * x.size();
       if (denX < varianceThreshold || denY < varianceThreshold) {
-        builder.addProperty("correlation", Double.NaN);
+        // Undefined, not zero: null (NaN is not valid JSON), with the reason in a warning
+        builder.addData("correlation", com.google.gson.JsonNull.INSTANCE);
         builder.addProperty("p_value", 1.0);
         builder.addWarning("Correlation undefined: " +
             (denX < varianceThreshold && denY < varianceThreshold ? "both entries" : (denX < varianceThreshold ? "first entry" : "second entry")) +

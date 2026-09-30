@@ -20,7 +20,7 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 class PowerEntrySelectionTest {
 
   @Nested
-  @DisplayName("ToolUtils.isDsEntry / findDsEntry")
+  @DisplayName("ToolUtils.isDsEntry")
   class DsEntries {
     @Test
     @DisplayName("recognizes AdvantageKit and WPILib DataLogManager naming")
@@ -33,21 +33,6 @@ class PowerEntrySelectionTest {
       assertFalse(ToolUtils.isDsEntry("nt:/smartdashboard/ds:enabled"));
       assertFalse(ToolUtils.isDsEntry("/robot/enabled"));
       assertFalse(ToolUtils.isDsEntry("/systemstats/batteryvoltage"));
-    }
-
-    @Test
-    @DisplayName("findDsEntry matches DS: names and excludes auto command entries")
-    void findDsEntry() {
-      var log = new MockLogBuilder()
-          .setPath("/test/ds_find.wpilog")
-          .addBooleanEntry("DS:enabled", new double[]{0}, new boolean[]{false})
-          .addBooleanEntry("DS:autonomous", new double[]{0}, new boolean[]{false})
-          .addEntry("/DriverStation/AutoCommand", "string",
-              List.of(new TimestampedValue(0.0, "Left Two Piece")))
-          .build();
-      assertEquals("DS:enabled", ToolUtils.findDsEntry(log, "enabled"));
-      assertEquals("DS:autonomous", ToolUtils.findDsEntry(log, "auto"));
-      assertNull(ToolUtils.findDsEntry(log, "test"));
     }
   }
 

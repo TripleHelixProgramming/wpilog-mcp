@@ -69,7 +69,7 @@ public final class TbaTools {
       result.addProperty("available", client.isAvailable());
 
       if (client.isAvailable()) {
-        result.addProperty("status", "configured");
+        result.addProperty("configuration", "configured");
 
         var cache = new JsonObject();
         for (var entry : client.getCacheStats().entrySet()) {
@@ -80,7 +80,7 @@ public final class TbaTools {
         result.addProperty("hint",
             "TBA data will be included in list_available_logs for logs with team number in metadata");
       } else {
-        result.addProperty("status", "not_configured");
+        result.addProperty("configuration", "not_configured");
         result.addProperty("hint",
             "Set TBA_API_KEY environment variable or use -tba-key argument. "
                 + "Get a free API key at https://www.thebluealliance.com/account");

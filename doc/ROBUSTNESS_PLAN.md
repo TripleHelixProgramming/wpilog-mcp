@@ -181,9 +181,10 @@ so no persisted data goes stale.
 
 - **Two golden values in the review are wrong** (recomputed with `wpiutil.log.DataLogReader` and numpy):
   `/RealOutputs/CANBus/CANHD/TEC` peaks at **215 at 650.86 s** (five seconds before the first brownout), not 85 at
-  205.76 s — 85 was the first of about 15 excursions, nine of them above error-passive (128). The camera 3 alert is
-  in `/RealOutputs/Alerts/warnings` (not `errors`) from 737.678 to 783.804 s; `/Vision/Camera3/Connected` is false
-  until 783.858 s, which explains the review's two end times. `ReviewLogGoldenTest` uses the corrected values.
+  205.76 s. 85 was the first of 13 excursions from zero, and the counter rose past error-passive (128) nine times.
+  The camera 3 alert is in `/RealOutputs/Alerts/warnings` (not `errors`) from 737.678 to 783.804 s;
+  `/Vision/Camera3/Connected` is false until 783.858 s, which explains the review's two end times.
+  `ReviewLogGoldenTest` uses the corrected values.
 - **WPILib 2026.2.2's native `DataLogWriter` blocks forever** inside `appendRaw` once a log grows past roughly a
   megabyte (200 k plain doubles is enough). Fixtures are therefore written by a small pure-Java WPILOG writer
   (`fixtures/WpilogWriter`), validated against WPILib's own Java reader and the Python (C++) reader.

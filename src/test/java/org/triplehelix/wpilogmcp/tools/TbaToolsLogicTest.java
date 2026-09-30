@@ -31,7 +31,10 @@ class TbaToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("status"));
+      assertEquals("ok", resultObj.get("status").getAsString());
+      var configuration = resultObj.get("configuration").getAsString();
+      assertTrue(configuration.equals("configured") || configuration.equals("not_configured"));
+      assertEquals(configuration.equals("configured"), resultObj.get("available").getAsBoolean());
     }
   }
 

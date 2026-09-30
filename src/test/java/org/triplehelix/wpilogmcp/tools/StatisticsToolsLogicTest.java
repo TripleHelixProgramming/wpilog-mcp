@@ -909,7 +909,7 @@ class StatisticsToolsLogicTest extends ToolTestBase {
   class StatisticalEdgeCases {
 
     @Test
-    @DisplayName("correlation with constant signal returns NaN with warning")
+    @DisplayName("correlation with constant signal is null (undefined) with a warning")
     void correlationWithConstantSignal() throws Exception {
       // One signal is flat (zero variance) → correlation undefined
       var log = new MockLogBuilder()
@@ -929,10 +929,11 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      // Zero variance → correlation should be NaN
-      assertTrue(Double.isNaN(resultObj.get("correlation").getAsDouble()),
-          "Correlation with constant signal should be NaN");
-      assertTrue(resultObj.has("warnings"), "Should have warning about zero variance");
+      // Zero variance → correlation is undefined: null (NaN is not valid JSON), explained
+      assertTrue(resultObj.get("correlation").isJsonNull(),
+          "Correlation with constant signal should be null");
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("near-zero variance"),
+          "Should warn about zero variance: " + resultObj);
     }
 
     @Test
@@ -1226,7 +1227,7 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("correlation with tiny constant signal returns NaN")
+    @DisplayName("correlation with tiny constant signal is null (undefined)")
     void testCorrelationWithTinyConstantSignal() throws Exception {
       // One signal is constant at 1e-20 (zero variance), the other varies
       var log = new MockLogBuilder()
@@ -1250,9 +1251,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      double correlation = resultObj.get("correlation").getAsDouble();
-      assertTrue(Double.isNaN(correlation),
-          "Correlation with a constant signal (zero variance) should be NaN");
+      assertTrue(resultObj.get("correlation").isJsonNull(),
+          "Correlation with a constant signal (zero variance) should be null");
     }
   }
 }

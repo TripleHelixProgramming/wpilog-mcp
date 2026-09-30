@@ -582,7 +582,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 
-**Returns:** Correlation coefficient, sample count, and p-value
+**Returns:** Correlation coefficient, sample count, and p-value. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` is `null`, `p_value` is 1, and a warning names the constant entry.
 
 **Example Response:**
 ```json
@@ -608,47 +608,61 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 Robot-specific analysis: power, swerve, CAN health, match phases.
 
 ### `get_match_phases`
-Detect match phases from DriverStation/FMS data in the log. Phases are derived from actual DS mode transitions (Enabled, Autonomous, Teleop), not hardcoded durations, so they reflect the real match regardless of game year.
+Find when the robot was enabled, in which mode, and — when the log holds a match — its autonomous, teleop, and endgame phases. Everything is derived from the log's DriverStation state entries; nothing is assumed about the log being a match.
 
 **How it works:**
-- Looks for DriverStation mode flags under either naming convention: AdvantageKit `/DriverStation/Enabled` and `/DriverStation/Autonomous`, or WPILib DataLogManager `DS:enabled` and `DS:autonomous`
-- Detects auto→teleop transition from the actual boolean state change
-- Match start/end come from enable/disable transitions
-- If DriverStation data is not present in the log, returns a warning instead of guessing; if it is present but the robot was never enabled (a pit or bench log), reports no phases with a warning saying so
+- Reads one DriverStation entry per role, by leaf name: `Enabled`, `Autonomous`, `Test`, `FMSAttached` under AdvantageKit `/DriverStation/` or WPILib DataLogManager `DS:` (AdvantageKit wins when both exist, then the lowest entry id; the others are named in `notes`). Logs with only NetworkTables data use the `FMSInfo/FMSControlData` control word.
+- Values are logged only on change, so each holds until the next sample (sample-and-hold). A single `Autonomous=false` sample means the robot was never in autonomous.
+- `segments` tiles the whole log: every interval of constant state (`enabled`, `disabled`, or `unknown` before the first DriverStation sample), with `mode` (`auto`/`teleop`/`test`/`unknown`) while enabled and `end_reason` (`disabled`, `enabled`, `mode_change`, `ds_data`, `log_end`). A disable logged at the log's last timestamp ends the final segment with `disabled`; `log_end` means the robot was still in that state when the log stopped.
+- `matches` lists each FMS match found: an enabled autonomous segment followed within the season's auto-to-teleop delay (plus 5 s) by an enabled teleop segment, with `basis` `fms_attached` (FMS attached at the start) or `mode_sequence` (no FMS, but the autonomous segment lasted 50–150 % of the season's autonomous time). A teleop segment of about the season's teleop length with FMS attached is a match even if the robot was disabled through autonomous. `complete` says whether teleop ended in a disable at about the season's teleop length; `endgame` is derived from the season's timing (`basis: game_timing`) only for complete matches. `expected_timing` gives the season values used.
+- `phases` repeats the first match (compatibility). With no match and exactly one enabled segment, it holds that segment as `enabled`; with several enabled segments it is empty — use `segments`.
+- `season` is the year the log was recorded, from the log's own clock (`/SystemStats/EpochTimeMicros` or `systemTime`), then `/RealMetadata/BuildDate`, then a year in the file name, then the current year; `basis` says which.
 
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** Time ranges for detected phases, match duration, and source indicator
+**Returns:** `segments`, `enabled_segment_count`, `enabled_time_sec`, `matches`, `phases`, `match_duration`/`auto_duration`/`teleop_duration` (first match), `season`, `log_start`/`log_end`/`log_duration`, `inputs.entries` (the DriverStation entries used), `source` (`"DriverStation"`), `notes`, and `warnings` (never enabled; log ends while enabled; incomplete match).
 
-**Data Quality Notes:**
-- Phases are only reported when supported by actual log data — no assumptions about game timing
-- The `source` field indicates where phase data came from ("DriverStation" or "none")
-- If only enable/disable is found but not autonomous/teleop mode, reports "enabled" phase with a warning
+**Status:** `no_match` (with `looked_for` and `hint`) when the log has no DriverStation state entries.
 
-**Example Response:**
+**Example Response (practice session, abridged):**
 ```json
 {
   "success": true,
-  "log_duration": 160.5,
-  "phases": {
-    "autonomous": {
-      "start": 3.2,
-      "end": 18.2,
-      "duration": 15.0,
-      "description": "Autonomous"
-    },
-    "teleop": {
-      "start": 18.2,
-      "end": 153.2,
-      "duration": 135.0,
-      "description": "Teleop"
-    }
-  },
+  "status": "ok",
   "source": "DriverStation",
-  "match_duration": 150.0,
-  "auto_duration": 15.0,
-  "teleop_duration": 135.0
+  "log_start": 8.359,
+  "log_end": 1588.273,
+  "season": {"year": 2026, "basis": "log_clock:/SystemStats/EpochTimeMicros"},
+  "inputs": {"entries": {"enabled": "/DriverStation/Enabled", "autonomous": "/DriverStation/Autonomous",
+    "test": "/DriverStation/Test", "fms_attached": "/DriverStation/FMSAttached"}},
+  "segments": [
+    {"start": 8.359, "end": 40.207, "duration": 31.848, "state": "disabled", "end_reason": "enabled"},
+    {"start": 40.207, "end": 359.162, "duration": 318.955, "state": "enabled", "mode": "teleop", "end_reason": "disabled"},
+    "...",
+    {"start": 995.211, "end": 1588.273, "duration": 593.062, "state": "enabled", "mode": "teleop", "end_reason": "log_end"}
+  ],
+  "enabled_segment_count": 4,
+  "enabled_time_sec": 1311.36,
+  "matches": [],
+  "phases": {},
+  "notes": [
+    "Autonomous was never true: /DriverStation/Autonomous has 1 sample(s), all false. ...",
+    "No FMS match pattern: ... Use segments for time windows (phases is empty because there are 4 enabled segments)."
+  ],
+  "warnings": ["The log ends while the robot is enabled (last segment end_reason log_end at 1588.27 s): ..."]
+}
+```
+
+**Example `matches` entry (FMS match):**
+```json
+{
+  "autonomous": {"start": 20.0, "end": 40.0, "duration": 20.0},
+  "teleop": {"start": 43.0, "end": 183.0, "duration": 140.0},
+  "endgame": {"start": 153.0, "end": 183.0, "duration": 30.0, "basis": "game_timing"},
+  "basis": "fms_attached",
+  "complete": true,
+  "expected_timing": {"season": 2026, "auto_sec": 20.0, "teleop_sec": 140.0, "source": "game_data"}
 }
 ```
 
@@ -777,35 +791,46 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 ```
 
 ### `can_health`
-Analyze CAN bus health by scanning string entries (console output, alerts) for CAN error messages (timeout, error, fault) and classifying each by the robot's enabled state at that moment. DriverStation entries are recognized under both the `/DriverStation/...` and `DS:...` naming conventions; without one, all errors are counted as enabled-state.
+CAN bus health overview from two sources: console and message text with CAN failures, and the structured bus counters `analyze_can_bus` reads.
 
-**Health Levels** (based on enabled-state errors only, since disabled-state timeouts are normal):
-- **GOOD**: No CAN errors while enabled
-- **CONCERNING**: Fewer than 50 CAN errors while enabled
-- **POOR**: 50 or more CAN errors while enabled
+**How it works:**
+- Text: every line of every string entry is checked. A line is a CAN failure when "CAN" appears as a word (or as CANbus, CANivore, CANcoder — not "cannot", "scan", "Canandgyro", or "cancel") together with timeout, timed out, error, or fault ("default" is not a fault).
+- Each line is classified by the robot's state at that moment from the DriverStation timeline `get_match_phases` uses: `while_enabled`, `while_disabled`, or `state_unknown` (before the first DriverStation sample, or no DriverStation data at all).
+- Counters: TEC/REC maxima (overall and while enabled) and bus-off increases per bus, from the same analysis as `analyze_can_bus`.
+
+**Health Levels** (disabled-state errors are normal — devices boot and time out — and never count):
+- **POOR**: a bus-off count rose while enabled, or 50 or more CAN error lines while enabled
+- **CONCERNING**: at least one CAN error line while enabled, or TEC/REC reached 128 (error-passive) while enabled
+- **UNKNOWN**: CAN error lines exist but the log has no DriverStation state
+- **GOOD**: none of the above
+
+`assessment_basis` states the fact that decided the level.
 
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** Error counts by entry (with enabled/disabled breakdown when DriverStation data exists), totals, health assessment, and warnings
+**Returns:** `error_counts_by_entry`, `total_can_errors`, `errors_while_enabled`, `errors_while_disabled` (when DriverStation data exists), `errors_state_unknown` (when any), `first_errors_while_enabled` (up to 5 lines with time and entry), `bus_counters[]` (`bus`, `tec_max`, `tec_max_time_sec`, `tec_max_while_enabled`, the same for `rec`, `bus_off_increase`, `bus_off_increase_while_enabled`), `health_assessment`, `assessment_basis`, `inputs.entries`, and warnings.
 
 **Example Response:**
 ```json
 {
   "success": true,
+  "status": "ok",
   "error_counts_by_entry": {
-    "/RealOutputs/Console": {
-      "total": 2,
-      "while_enabled": 2,
-      "while_disabled": 0
-    }
+    "/RealOutputs/Console": {"total": 3, "while_enabled": 2, "while_disabled": 1}
   },
-  "total_can_errors": 2,
+  "total_can_errors": 3,
   "errors_while_enabled": 2,
-  "errors_while_disabled": 0,
+  "errors_while_disabled": 1,
+  "first_errors_while_enabled": [
+    {"timestamp_sec": 88.4, "entry": "/RealOutputs/Console", "line": "CAN frame timeout: device 12"}
+  ],
+  "bus_counters": [
+    {"bus": "CANHD", "tec_max": 215, "tec_max_time_sec": 650.86, "tec_max_while_enabled": 215}
+  ],
   "health_assessment": "CONCERNING",
-  "data_quality": { "...": "..." },
-  "server_analysis_directives": { "...": "..." }
+  "assessment_basis": "2 CAN error line(s) while enabled",
+  "warnings": ["CAN errors while disabled (1) are normal and excluded from health assessment."]
 }
 ```
 
@@ -919,58 +944,49 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 - Provide `applied_volts_entry` when using motor controllers that report unsigned current (TalonFX, SparkMax) so torque direction can be recovered from voltage sign.
 
 ### `analyze_can_bus`
-Analyze CAN bus health, utilization, and error rates. Monitors bus loading and detects communication errors that can cause device timeouts or unreliable sensor readings.
+Analyze CAN bus health from the counters the log records, per bus: utilization, the transmit and receive error counters, and bus-off and TX-full counts.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `bus_name` (optional): CAN bus name (default: `"rio"`)
+- `bus_name` (optional): Bus to analyze — `"rio"`, a CANivore name such as `"CANHD"`, or a path prefix (default: every bus found)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 
-**Searches for entries containing:**
-- Bus utilization: `CANBus/Utilization`, `CAN/Usage`, `CAN/BusPercent`
-- Transmit errors: `CAN/Error/Tx`, `CANBus/TxError`, `CAN/TEC`
-- Receive errors: `CAN/Error/Rx`, `CANBus/RxError`, `CAN/REC`
-- Bus off events: `CAN/BusOff`, `CANBus/Status`
+**How buses are found:** by exact field name, never by a substring such as "can" (which would also match Canandgyro or scan). A bus is a path prefix holding numeric entries named `Utilization`/`BusUtilization`/`PercentBusUtilization`, `BusOffCount`/`OffCount`, `TxFullCount`, `REC`/`ReceiveErrorCount`, or `TEC`/`TransmitErrorCount` — WPILib's `CANStatus` as AdvantageKit logs it under `/SystemStats/CANBus` (named `rio`) and CTRE CANivore status such as `/RealOutputs/CANBus/CANHD/...` (named by the last path segment). The prefix must contain "can", or the group must hold at least two of the counters.
 
-**Returns:** Bus utilization analysis, error counts with enabled/disabled breakdown, and assessment
+**Per bus (`buses[]`):**
+- `utilization`: `mean_percent`, `p95_percent`, `max_percent`, `samples`, `unit_detected` (0–1 fractions are detected from the range and converted), and `while_enabled`
+- `tec`, `rec`: levels, not counts — they rise and fall. `max`, `max_time_sec` (first time reached), `error_passive_excursions` (rises to 128 or above; the controller is error-passive at 128 and goes bus-off when TEC passes 255), `time_error_passive_sec` (values held until the next sample), and `while_enabled`
+- `bus_off`, `tx_full`: counts that only grow — `first`, `last`, `increase`, `increase_while_enabled` (a decrease is a counter reset, reported as `resets`)
 
-**Example Response:**
+**Other CAN error entries (`errors[]`):** numeric or boolean entries named with CAN (as a word, or CANbus/CANivore/CANcoder) and error, fault, or timeout that are not bus fields. `error_count` is how much the entry increased (each false→true for a boolean), split into `errors_while_enabled`, `errors_while_disabled`, and `errors_state_unknown`.
+
+**Also returns:** `utilization[]` (one row per bus in percent, for compatibility), `enabled_error_total` (increases of bus-off, TX-full, and other error entries while enabled), `inputs`.
+
+**Status:** `no_match` with `looked_for` when the log has no CAN counters or CAN error entries; `no_match` with `available_buses` when `bus_name` matches no bus.
+
+**Example Response (abridged):**
 ```json
 {
   "success": true,
-  "utilization": [
+  "status": "ok",
+  "buses": [
     {
-      "entry": "/CANBus/Utilization",
-      "avg_percent": 45.2,
-      "max_percent": 78.5,
-      "sample_count": 7500
+      "bus": "CANHD",
+      "prefix": "/RealOutputs/CANBus/CANHD",
+      "entries": {"utilization": "/RealOutputs/CANBus/CANHD/Utilization", "tec": "/RealOutputs/CANBus/CANHD/TEC", "...": "..."},
+      "utilization": {"samples": 10041, "unit_detected": "fraction (0-1), converted to percent",
+        "mean_percent": 41.2, "p95_percent": 55.0, "max_percent": 100.0},
+      "tec": {"samples": 68, "max": 215, "max_time_sec": 650.86, "error_passive_excursions": 9,
+        "time_error_passive_sec": 0.41, "while_enabled": {"max": 215, "max_time_sec": 650.86, "error_passive_excursions": 9}},
+      "bus_off": {"samples": 1, "first": 0, "last": 0, "increase": 0, "increase_while_enabled": 0}
     }
   ],
-  "errors": [
-    {
-      "entry": "/CANBus/Error/Tx",
-      "error_count": 15,
-      "errors_while_enabled": 3,
-      "errors_while_disabled": 12
-    },
-    {
-      "entry": "/CANBus/Error/Rx",
-      "error_count": 8,
-      "errors_while_enabled": 0,
-      "errors_while_disabled": 8
-    }
-  ],
-  "enabled_error_total": 3,
-  "assessment": "CAN errors detected while robot was enabled — investigate device connections",
-  "data_quality": { "sample_count": 7500, "quality_score": 0.92 },
-  "server_analysis_directives": { "confidence": "high" }
+  "utilization": [{"entry": "/RealOutputs/CANBus/CANHD/Utilization", "bus": "CANHD", "avg_percent": 41.2, "max_percent": 100.0, "sample_count": 10041}],
+  "errors": [],
+  "enabled_error_total": 0
 }
 ```
-
-**Assessment Values:**
-- `"CAN errors only during disabled state — likely normal timeout behavior"` -- when all errors occurred while disabled
-- `"CAN errors detected while robot was enabled — investigate device connections"` -- when errors occurred while enabled
 
 **Utilization Guidelines:**
 - **< 50%**: Healthy, plenty of bandwidth
@@ -1009,8 +1025,9 @@ Get The Blue Alliance API integration status, including configuration and cache 
 ```json
 {
   "success": true,
+  "status": "ok",
   "available": true,
-  "status": "configured",
+  "configuration": "configured",
   "cache": {
     "events": 2,
     "matches": 15,
@@ -1024,8 +1041,9 @@ Get The Blue Alliance API integration status, including configuration and cache 
 ```json
 {
   "success": true,
+  "status": "ok",
   "available": false,
-  "status": "not_configured",
+  "configuration": "not_configured",
   "hint": "Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account"
 }
 ```
@@ -1222,11 +1240,11 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 - `end_time` (optional): End timestamp in seconds
 - `brownout_threshold` (optional): Voltage threshold for brownout detection (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
 
-**Returns:** Chronologically sorted `events` with category, type, timestamp, and source entry; `summary` (count per category); `brownout_voltage_entry` (the voltage entry scanned for threshold crossings — selected exactly as `power_analysis` does — with a warning instead when the log has none); `rio_brownout_flag_logged` (whether the log contains a boolean roboRIO brownout flag entry) and, when it does, `rio_brownout_flag_entry`; `text_event_counts` and `text_event_summary` / `text_event_groups_total` (see below); `warnings`
+**Returns:** Chronologically sorted `events` with category, type, timestamp, and source entry; `summary` (count per category); `inputs.entries` (the DriverStation, voltage, and brownout flag entries used); `brownout_voltage_entry` (the voltage entry scanned for threshold crossings — selected exactly as `power_analysis` does — with a warning instead when the log has none); `rio_brownout_flag_logged` (whether the log contains a boolean roboRIO brownout flag entry) and, when it does, `rio_brownout_flag_entry`; `text_event_counts` and `text_event_summary` / `text_event_groups_total` (see below); `warnings`
 
 **Event Categories:**
-- `robot_state`: ENABLED, DISABLED
-- `match_phase`: AUTO_START, TELEOP_START
+- `robot_state`: ENABLED, DISABLED — transitions of the same DriverStation timeline `get_match_phases` uses (one entry per role, AdvantageKit first; a log with both `DS:` and `/DriverStation/` entries gets one set of events and a warning naming the ignored entries). The state at the start of the log is reported once with `initial: true`. A warning says when the log has no DriverStation enabled entry.
+- `match_phase`: AUTO_START, TELEOP_START, TEST_START — at the start of each enabled segment in that mode, and at a mode change while enabled. A practice session with `Autonomous` held false has a TELEOP_START at every enable.
 - `power`: BROWNOUT_START, BROWNOUT_END (`basis: "voltage_threshold"` — the battery voltage crossed `brownout_threshold`, with 0.2 V exit hysteresis; includes `voltage`) and RIO_BROWNOUT_START, RIO_BROWNOUT_END (`basis: "rio_flag"` — a logged boolean brownout flag such as AdvantageKit `/SystemStats/BrownedOut` changed state; this is the roboRIO's own brownout state). A voltage crossing does not by itself mean the roboRIO cut outputs; when `rio_brownout_flag_logged` is false, that cannot be determined from the log.
 **Error/warning text** (string entries such as `/RealOutputs/Console`, alerts, or WPILib `messages`): a sample is an ERROR when any of its lines contains "error", "exception", or "fault" ("default" does not count); otherwise a WARNING when any line contains "warning", "overrun", or "watchdog" — errors dominate regardless of line order, and the first matching line of the winning kind is the message. This is the same rule `search_strings` uses for its `level` filter, so the two agree (a test enforces it).
 - `text_event_counts`: `{error, warning, total, by_source: {<entry>: {error, warning}}}` — exact sample counts within the time window; never capped
@@ -1435,20 +1453,22 @@ Analyze closed-loop mechanism performance including following error RMSE, stall 
 - **High overshoot with fast settling**: Well-tuned but aggressive - acceptable for many mechanisms
 
 ### `analyze_auto`
-Analyze autonomous routine performance including path following error RMSE, maximum deviation, and completion timing. Enhanced with detailed path following metrics for tuning trajectory following controllers.
+Analyze every autonomous period in the log: when it started and ended, which routine was selected, and how closely the robot followed its path.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `auto_prefix` (optional): Entry path prefix for auto data (auto-detect if not specified)
+- `auto_prefix` (optional): Entry name prefix to search for the path setpoint and actual pose entries
 
-**Searches for entries containing:**
-- Auto selector: `chooser`, `auto` + `select`
-- Trajectory: `trajectory`, `targetPose`, `desiredPose`, `setpointPose`
-- Actual pose: `odometry` + `pose`
+**How it works:**
+- Autonomous periods are the enabled `auto` segments of the same DriverStation timeline `get_match_phases` reports (a log can hold several; all are listed in `auto_periods`, and the top-level `auto_*` fields describe the first).
+- Selected routine: the value, at each period's start, of a string entry chosen by rank — a chooser's `.../active` entry, then a name containing `auto` with `selected`, `mode`, `routine`, or `choice` (e.g. `/RealOutputs/AutoSelector/SelectedAutoMode`), then any name containing `chooser`; ties by entry id. Chooser metadata (`.type`, `default`, `options`) is ignored.
+- Path following: a `struct:Pose2d`/`struct:Pose3d` setpoint (named with `setpoint`, `target`, or `desired`) and actual pose (named with `actual`, `estimated`, `odometry`, or ending in `/Pose`), lowest entry id first. RMSE and maximum distance between them, sampled at each setpoint time with the actual pose held (zero-order hold). Samples whose pose layout cannot be read are counted in `unreadable_samples`, never treated as zero error.
 
-**Returns:** Selected routine name, path following error RMSE, max error, and timing analysis
+**Returns:** `auto_periods[]` (`start`, `end`, `duration`, `end_reason`, `selected_routine`, `path_following_error`), `auto_start_time`/`auto_end_time`/`auto_duration`/`selected_routine`/`path_following_error` for the first period, `expected_auto_sec` (season timing), `inputs.entries` (DriverStation, chooser, and pose entries used), and `skipped` entries for sections that could not be produced (status `partial`).
 
-**Path Following Error Calculation:** Computes RMSE (Root Mean Square Error) between desired and actual robot position throughout autonomous. Lower RMSE indicates better path following. Typical values:
+**Status:** `not_applicable` when the log has no autonomous period — `reason` says why, e.g. "No autonomous period: /DriverStation/Autonomous has 1 sample(s), all false"; `no_match` when the log has no DriverStation state entries.
+
+**Path Following Error:** Lower RMSE indicates better path following. Typical values:
 - **< 0.05m**: Excellent path following
 - **0.05-0.15m**: Good path following (acceptable for most games)
 - **> 0.15m**: Poor path following - check controller tuning or wheel slippage
@@ -1457,18 +1477,21 @@ Analyze autonomous routine performance including path following error RMSE, maxi
 ```json
 {
   "success": true,
-  "auto_start_time": 0.02,
-  "auto_end_time": 15.02,
+  "status": "ok",
+  "inputs": {"entries": {"enabled": "/DriverStation/Enabled", "autonomous": "/DriverStation/Autonomous",
+    "selected_routine": "/RealOutputs/AutoSelector/SelectedAutoMode",
+    "path_setpoint": "/Auto/TargetPose", "path_actual": "/Drive/EstimatedPose"}},
+  "auto_periods": [
+    {"start": 20.0, "end": 40.0, "duration": 20.0, "end_reason": "disabled",
+     "selected_routine": "ThreePieceAmp",
+     "path_following_error": {"rmse_meters": 0.08, "max_error_meters": 0.23, "samples": 750}}
+  ],
+  "auto_start_time": 20.0,
+  "auto_end_time": 40.0,
+  "auto_duration": 20.0,
   "selected_routine": "ThreePieceAmp",
-  "entries": {
-    "trajectory": "/Auto/TargetPose",
-    "actual_pose": "/Drive/Odometry/Pose"
-  },
-  "path_following_error": {
-    "rmse_meters": 0.08,
-    "max_error_meters": 0.23,
-    "sample_count": 750
-  }
+  "path_following_error": {"rmse_meters": 0.08, "max_error_meters": 0.23, "samples": 750},
+  "expected_auto_sec": 20
 }
 ```
 
@@ -2082,6 +2105,25 @@ Both come from `AnalysisGuidance.java`; a test verifies that every tool name the
 ## Response Fields
 
 The following are **not callable MCP tools**. They are metadata fields embedded in the JSON responses of analytical tools to help LLMs calibrate their confidence when interpreting results. For full captured example responses from every tool, see [TOOL_RESPONSES.md](TOOL_RESPONSES.md).
+
+### Result contract (`success`, `status`, and related fields)
+
+Every tool result, however the tool built it, is normalized by the server so that:
+
+| Field | Meaning |
+|-------|---------|
+| `success` | `true` exactly when `status` is `ok` or `partial` |
+| `status` | `ok` (full result), `partial` (some sections could not be produced — see `skipped`), `not_applicable` (the tool does not apply to this log, e.g. no autonomous period), `no_match` (the tool found none of the entries it analyzes), or `error` (invalid arguments, missing entry, unreadable file) |
+| `reason` | For `not_applicable` and `no_match`: what was missing, in terms of the log's own data |
+| `looked_for` | For `no_match`: the naming rules, types, or schemas that were searched |
+| `hint` | How to point the tool at the right data (usually a parameter to pass) |
+| `error` | For `error`: the message |
+| `inputs` | The entries (`inputs.entries`, by role) and time window (`inputs.window`) a result was computed from |
+| `skipped` | Sections not produced, each `{section, reason}` |
+| `limits` | For each list cut short by a limit: `{total, returned, limit}` |
+| `_metadata.non_finite_fields` | Fields whose value could not be computed (NaN or infinite). They are emitted as `null` — never as a bare `NaN`, which is not valid JSON — and named in a warning |
+
+`not_applicable` and `no_match` are answers, not failures of the server: they tell the agent that the absence of findings is not evidence of the absence of problems, and how to find the right data.
 
 ### `data_quality`
 

@@ -2,6 +2,12 @@
 
 Reference for the JSON returned by every tool of **wpilog-mcp 0.8.2**, including the LLM guidance the server attaches to results.
 
+> **Note:** these captures predate the robustness work in [ROBUSTNESS_PLAN.md](ROBUSTNESS_PLAN.md). Since then every
+> result carries the result contract (`status`, and `reason`/`looked_for`/`hint`/`inputs`/`skipped`/`limits` where they
+> apply — see [TOOLS.md](TOOLS.md#result-contract-success-status-and-related-fields)), and several tools changed shape
+> (`get_match_phases`, `get_ds_timeline`, `analyze_auto`, `analyze_can_bus`, `can_health`, and others listed in the
+> CHANGELOG). TOOLS.md is current; this file will be regenerated from a checked-in capture harness.
+
 How this file was produced: each of the 45 tools was invoked over the stdio transport against real logs
 (Team 2363, VACHE 2026 qualification 10 — `akit_26-03-21_16-29-56_vache_q10.wpilog` — with the REV log
 `REV_20260321_162932.revlog` recorded alongside it, plus a second qual, an AdvantageKit `_sim` replay log, and a

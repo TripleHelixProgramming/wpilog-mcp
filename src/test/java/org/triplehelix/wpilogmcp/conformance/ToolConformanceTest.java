@@ -220,7 +220,9 @@ class ToolConformanceTest {
 
   Call evaluate(Tool tool, String fixtureId, ToolArguments.Variant variant) throws Exception {
     var result = run(tool, variant.args());
-    List<Check> failed = result == null ? List.of(Check.TIMEOUT) : ConformanceChecks.check(result);
+    Integer limit = variant.args().has("limit") ? variant.args().get("limit").getAsInt() : null;
+    List<Check> failed = result == null ? List.of(Check.TIMEOUT)
+        : ConformanceChecks.check(result, limit);
     return new Call(tool.name(), fixtureId, variant.label(), result, failed);
   }
 

@@ -129,7 +129,7 @@ final class ToolArguments {
           }
           variants.add(new Variant("missing", args));
         }
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "compare_entries", "time_correlate" -> {
         for (var kind : List.of(Kind.NUMERIC, Kind.STRUCT)) {
@@ -155,6 +155,25 @@ final class ToolArguments {
     }
 
     var args = base.deepCopy();
+    fillRequired(tool, required, fixture, log, all, args);
+    variants.add(new Variant("default", args));
+    return withLimitVariant(tool, variants);
+  }
+
+  /** Adds a {@code limit: 2} copy of the first variant when the tool takes a limit. */
+  static List<Variant> withLimitVariant(Tool tool, List<Variant> variants) {
+    var props = tool.inputSchema().getAsJsonObject("properties");
+    if (props != null && props.has("limit") && !variants.isEmpty()) {
+      var limited = variants.get(0).args().deepCopy();
+      limited.addProperty("limit", 2);
+      variants.add(new Variant(variants.get(0).label() + "-limit2", limited));
+    }
+    return variants;
+  }
+
+  static void fillRequired(Tool tool, Set<String> required, Fixture fixture, LogData log,
+      List<Fixture> all, JsonObject args) {
+    String toolName = tool.name();
     for (var param : required) {
       if (param.equals("path")) continue;
       switch (param) {
@@ -191,7 +210,5 @@ final class ToolArguments {
                 + toolName + "'. Add one to ToolArguments.");
       }
     }
-    variants.add(new Variant("default", args));
-    return variants;
   }
 }

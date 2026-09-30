@@ -136,7 +136,7 @@ class ReviewLogGoldenTest {
   @DisplayName("get_match_phases reports the four enabled segments, the last ending at log end")
   void enabledSegments() throws Exception {
     var result = call("get_match_phases");
-    pending("Phase 1 (E1)", () -> {
+    {
       assertTrue(result.has("segments"), "no segments in " + result);
       var segments = new ArrayList<JsonObject>();
       for (var s : result.getAsJsonArray("segments")) {
@@ -155,7 +155,10 @@ class ReviewLogGoldenTest {
           assertEquals("log_end", segments.get(i).get("end_reason").getAsString());
         }
       }
-    });
+    }
+    // Autonomous is logged once (false) and held: every segment is teleop, and no match
+    assertEquals(0, result.getAsJsonArray("matches").size());
+    assertTrue(result.getAsJsonArray("notes").toString().contains("Autonomous was never true"));
   }
 
   @Test
@@ -214,11 +217,14 @@ class ReviewLogGoldenTest {
   @Test
   @DisplayName("analyze_can_bus reports the CANHD transmit error counter peak (215 at 650.86 s)")
   void canTecPeak() throws Exception {
-    pending("Phase 3 (B3)", () -> {
-      var result = call("analyze_can_bus", "bus_name", "CANHD");
-      near(215, findNumber(result, "tec_max").orElseThrow(), 0.5, "TEC max");
-      near(650.86, findNumber(result, "tec_max_time_sec").orElseThrow(), 0.01, "TEC max time");
-    });
+    var result = call("analyze_can_bus", "bus_name", "CANHD");
+    var tec = result.getAsJsonArray("buses").get(0).getAsJsonObject().getAsJsonObject("tec");
+    near(215, tec.get("max").getAsDouble(), 0.5, "TEC max");
+    near(650.86, tec.get("max_time_sec").getAsDouble(), 0.01, "TEC max time");
+    near(68, tec.get("samples").getAsInt(), 0, "TEC samples");
+    // Nine rises past 128 (error-passive): 284.81, 628.90, 647.16, 650.86, 678.58, 678.68,
+    // 737.98, 797.26, and 820.05 s
+    near(9, tec.get("error_passive_excursions").getAsInt(), 0, "error-passive excursions");
   }
 
   // ==================== swerve ====================

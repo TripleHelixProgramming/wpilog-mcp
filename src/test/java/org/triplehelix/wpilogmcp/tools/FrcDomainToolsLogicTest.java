@@ -415,7 +415,10 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertEquals("NT:/SmartDashboard/PowerDistribution[1]/Voltage",
           resultObj.get("brownout_voltage_entry").getAsString());
       assertEquals(2, resultObj.getAsJsonObject("summary").get("power").getAsInt());
-      assertFalse(resultObj.has("warnings"));
+      // The only warning is that this log has no DriverStation state (so no enable events)
+      var warnings = resultObj.getAsJsonArray("warnings");
+      assertEquals(1, warnings.size(), warnings.toString());
+      assertTrue(warnings.get(0).getAsString().contains("No DriverStation enabled entry"));
     }
 
     @Test

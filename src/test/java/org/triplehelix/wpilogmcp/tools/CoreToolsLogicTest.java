@@ -230,7 +230,7 @@ class CoreToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals("OK", resultObj.get("status").getAsString());
+      assertEquals("ok", resultObj.get("status").getAsString());
       assertTrue(resultObj.has("server_version"), "Should report server version");
       assertEquals(org.triplehelix.wpilogmcp.Version.VERSION,
           resultObj.get("server_version").getAsString());

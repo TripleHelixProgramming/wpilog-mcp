@@ -138,6 +138,7 @@ public abstract class ToolBase implements McpServer.Tool {
    *
    * <p>This method wraps {@link #executeInternal(JsonObject)} with exception handling.
    * {@link IllegalArgumentException} exceptions are automatically converted to error responses.
+   * The result is then normalized by {@link ResultContract#enforce}.
    *
    * <p>Subclasses should override {@link #executeInternal(JsonObject)} instead of this method.
    *
@@ -147,17 +148,21 @@ public abstract class ToolBase implements McpServer.Tool {
    */
   @Override
   public final JsonElement execute(JsonObject arguments) throws Exception {
+    JsonElement result;
     try {
-      return executeInternal(arguments);
+      result = executeInternal(arguments);
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
-      return errorResult(e.getMessage());
+      result = errorResult(e.getMessage());
     } catch (Exception e) {
       // Unexpected errors - return error response instead of propagating
       // raw exceptions to the MCP layer
       var msg = e.getMessage();
-      return errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
+      result = errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
     }
+    // Every result, however the tool built it, satisfies the result contract: a status,
+    // success consistent with it, and no NaN or infinite numbers.
+    return ResultContract.enforce(result);
   }
 
   /**

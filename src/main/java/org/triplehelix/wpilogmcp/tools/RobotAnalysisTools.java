@@ -47,11 +47,16 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "ALWAYS use this tool to find match phases—NEVER manually parse timestamps! "
-          + "Detects autonomous/teleop/endgame phases from DriverStation/FMS mode transitions. "
-          + "Handles FMS disabled gaps, practice modes, and edge cases automatically. "
-          + "Returns start/end times for each phase based on actual DS data, not hardcoded durations. "
-          + "Use these timestamps to filter other analyses to specific match phases."
+      return "ALWAYS use this tool to find when the robot was enabled and in which mode—NEVER "
+          + "manually parse timestamps! Returns segments: every interval of constant robot state "
+          + "(enabled/disabled/unknown) with its mode (auto/teleop/test) while enabled and why it "
+          + "ended (disabled, mode_change, log_end, ...). A log can hold any number of enabled "
+          + "segments (practice sessions); DriverStation values logged only on change hold until "
+          + "the next sample. When a segment pattern is an FMS match (FMS attached, or an "
+          + "autonomous segment followed within seconds by teleop), matches lists its "
+          + "autonomous/teleop/endgame phases and phases repeats the first one; endgame comes "
+          + "from the season's timing (basis game_timing). Use segment or phase bounds as "
+          + "start_time/end_time for other tools."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -60,244 +65,130 @@ public final class RobotAnalysisTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      var timeline = MatchTimeline.of(log);
+      var sources = timeline.sources();
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("log_duration", log.duration());
-
-      // Find DriverStation entries for mode detection
-      String enabledEntry = null;
-      String autoEntry = null;
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = entryName.toLowerCase();
-        if (isDsEntry(lower) && lower.contains("enabled") && enabledEntry == null) {
-          enabledEntry = entryName;
-        }
-        if (isDsEntry(lower) && (lower.contains("autonomous") || lower.contains("auto"))
-            && !lower.contains("command") && autoEntry == null) {
-          autoEntry = entryName;
-        }
+      if (!timeline.hasEnabledData() && sources.autonomous() == null) {
+        return ResponseBuilder.noMatch("No DriverStation state entries found in this log, so "
+                + "enabled periods and match phases cannot be determined.")
+            .lookedFor(List.of(
+                "boolean entries named Enabled / Autonomous / Test / FMSAttached under "
+                    + "/DriverStation/ (AdvantageKit) or DS: (WPILib DataLogManager)",
+                "int64 entry FMSInfo/FMSControlData (NetworkTables control word)"))
+            .hint("Search for the team's own enable flag with search_entries (pattern "
+                + "'enabled') and pass its segments as start_time/end_time to other tools.")
+            .addProperty("source", "none")
+            .addProperty("log_duration", log.duration())
+            .build();
       }
+
+      var builder = success()
+          .addProperty("source", "DriverStation")
+          .addProperty("log_start", log.minTimestamp())
+          .addProperty("log_end", log.maxTimestamp())
+          .addProperty("log_duration", log.duration())
+          .addInput("enabled", sources.enabled())
+          .addInput("autonomous", sources.autonomous())
+          .addInput("test", sources.test())
+          .addInput("fms_attached", sources.fmsAttached())
+          .addInput("control_word", sources.controlWord());
+      var season = new JsonObject();
+      season.addProperty("year", timeline.season().year());
+      season.addProperty("basis", timeline.season().basis());
+      builder.addData("season", season);
+      builder.addData("segments", timeline.segmentsJson());
+
+      var enabled = timeline.enabledSegments();
+      double enabledTime = enabled.stream().mapToDouble(MatchTimeline.Segment::duration).sum();
+      builder.addProperty("enabled_segment_count", enabled.size())
+          .addProperty("enabled_time_sec", enabledTime);
+
+      var notes = new ArrayList<String>();
+      if (!sources.ignored().isEmpty()) {
+        notes.add("Also found " + String.join(", ", sources.ignored())
+            + "; used the AdvantageKit /DriverStation/ entries (then lowest entry id).");
+      }
+      if (sources.autonomous() == null && sources.controlWord() == null) {
+        notes.add("No Autonomous entry: the mode of enabled segments is unknown.");
+      } else if (timeline.hasAutonomousData() && !timeline.autonomousEverTrue()) {
+        notes.add("Autonomous was never true: " + sources.autonomous() + " has "
+            + timeline.autonomousSampleCount() + " sample(s), all false. DriverStation values "
+            + "are logged on change and hold until the next sample, so every enabled segment "
+            + "is teleop.");
+      }
+
+      var matches = timeline.matches();
+      var matchesJson = new JsonArray();
+      matches.forEach(m -> matchesJson.add(timeline.matchJson(m)));
+      builder.addData("matches", matchesJson);
 
       var phases = new JsonObject();
-      var warnings = new ArrayList<String>();
-
-      if (enabledEntry == null && autoEntry == null) {
-        warnings.add("No DriverStation mode entries found in log. "
-            + "Cannot determine match phases. Look for entries containing 'DriverStation' "
-            + "(AdvantageKit) or prefixed 'DS:' (WPILib DataLogManager) with 'Enabled' or 'Autonomous'.");
-        result.add("warnings", GSON.toJsonTree(warnings));
-        result.addProperty("source", "none");
-        return result;
-      }
-
-      // Detect enable/disable transitions
-      Double firstEnableTime = null;
-      Double lastDisableTime = null;
-
-      if (enabledEntry != null) {
-        var enabledValues = log.values().get(enabledEntry);
-        if (enabledValues != null) {
-          for (var tv : enabledValues) {
-            if (tv.value() instanceof Boolean enabled) {
-              if (enabled && firstEnableTime == null) {
-                firstEnableTime = tv.timestamp();
-              }
-              if (!enabled && firstEnableTime != null) {
-                lastDisableTime = tv.timestamp();
-              }
-            }
-          }
+      if (!matches.isEmpty()) {
+        var m = matches.get(0);
+        var mj = timeline.matchJson(m);
+        if (mj.has("autonomous")) {
+          var auto = mj.getAsJsonObject("autonomous").deepCopy();
+          auto.addProperty("description", "Autonomous");
+          phases.add("autonomous", auto);
         }
-        if (firstEnableTime == null) {
-          warnings.add("DriverStation entries found but the robot was never enabled in this log "
-              + "(pit or bench session); no match phases can be reported.");
+        var teleop = mj.getAsJsonObject("teleop").deepCopy();
+        teleop.addProperty("description", "Teleop");
+        phases.add("teleop", teleop);
+        if (mj.has("endgame")) {
+          var endgame = mj.getAsJsonObject("endgame").deepCopy();
+          endgame.addProperty("description", "Endgame");
+          phases.add("endgame", endgame);
         }
-      }
-
-      // Detect autonomous/teleop transitions from DS mode entry.
-      // IMPORTANT: The FMS sets the Autonomous flag BEFORE the robot is enabled
-      // (e.g., during the pre-match countdown). The actual auto period only starts
-      // when Autonomous=true AND Enabled=true simultaneously.
-      // Between auto and teleop, FMS imposes a 1-3 second disabled delay.
-      // We detect teleop start as the first Enabled=true AFTER Autonomous goes false,
-      // rather than using the Autonomous→false timestamp directly.
-      Double autoStart = null;
-      Double autoEnd = null;
-      Double teleopStart = null;
-      Double teleopEnd = null;
-
-      // Get enabled values for cross-referencing with autonomous state
-      var enabledValuesForAutoCheck = enabledEntry != null ? log.values().get(enabledEntry) : null;
-
-      if (autoEntry != null) {
-        var autoValues = log.values().get(autoEntry);
-        if (autoValues != null) {
-          Boolean lastAutoState = null;
-          for (var tv : autoValues) {
-            if (tv.value() instanceof Boolean isAuto) {
-              if (isAuto && (lastAutoState == null || !lastAutoState)) {
-                // Autonomous flag went true — but only count as auto start
-                // if the robot is also enabled (not just pre-match FMS setup)
-                if (ToolUtils.isEnabledAt(enabledValuesForAutoCheck, tv.timestamp())) {
-                  autoStart = tv.timestamp();
-                } else if (autoStart == null) {
-                  // Robot is in auto mode but not yet enabled — find the actual
-                  // enable time while still in auto mode
-                  if (enabledValuesForAutoCheck != null) {
-                    for (var ev : enabledValuesForAutoCheck) {
-                      if (ev.timestamp() > tv.timestamp() && ev.value() instanceof Boolean en && en) {
-                        autoStart = ev.timestamp();
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-              if (!isAuto && lastAutoState != null && lastAutoState) {
-                autoEnd = tv.timestamp();
-              }
-              lastAutoState = isAuto;
-            }
-          }
+        double matchStart = m.auto() != null ? m.auto().start() : m.teleop().start();
+        builder.addProperty("match_duration", m.teleop().end() - matchStart);
+        if (m.auto() != null) builder.addProperty("auto_duration", m.auto().duration());
+        builder.addProperty("teleop_duration", m.teleop().duration());
+        if (!m.complete()) {
+          builder.addWarning("The match's teleop segment does not end in a disable at about "
+              + "the season's teleop length (" + timeline.game().map(g -> g.teleopDurationSec()
+                  + " s").orElse("unknown") + "); the log may end mid-match. Report 'log ends at "
+              + String.format("%.1f", log.maxTimestamp()) + " s', not 'match ended'.");
         }
-      }
-
-      // Find teleop start: first Enabled=true after auto ends.
-      // FMS imposes a 1-3s disabled gap between auto and teleop.
-      // If the robot was continuously enabled (no FMS, practice mode),
-      // teleop starts immediately at autoEnd.
-      if (autoEnd != null && enabledEntry != null) {
-        var enabledValues = log.values().get(enabledEntry);
-        if (enabledValues != null) {
-          // Check the robot's enabled state at autoEnd
-          Boolean stateAtAutoEnd = null;
-          Boolean lastState = null;
-          for (var tv : enabledValues) {
-            if (tv.value() instanceof Boolean enabled) {
-              if (tv.timestamp() <= autoEnd) {
-                stateAtAutoEnd = enabled;
-              }
-              // Look for a disable→enable transition after autoEnd
-              // (the FMS disabled gap followed by teleop enable)
-              if (tv.timestamp() >= autoEnd && enabled
-                  && lastState != null && !lastState) {
-                teleopStart = tv.timestamp();
-                break;
-              }
-              lastState = enabled;
-            }
-          }
-
-          // If robot stayed enabled through auto→teleop (no FMS gap),
-          // teleop starts at autoEnd
-          if (teleopStart == null && Boolean.TRUE.equals(stateAtAutoEnd)) {
-            teleopStart = autoEnd;
-          }
+        if (matches.size() > 1) {
+          notes.add(matches.size() + " matches found; phases describes the first.");
         }
+      } else if (enabled.size() == 1) {
+        var only = enabled.get(0);
+        var phase = MatchTimeline.phase(only.start(), only.end());
+        phase.addProperty("description", only.mode() == MatchTimeline.Mode.UNKNOWN
+            ? "Enabled (mode unknown)" : "Enabled (" + only.mode().name().toLowerCase() + ")");
+        phases.add("enabled", phase);
       }
+      builder.addData("phases", phases);
 
-      // Fallback: if no Enabled entry, use autoEnd as teleop start
-      if (teleopStart == null && autoEnd != null) {
-        teleopStart = autoEnd;
-      }
-
-      // Build phases from observed transitions
-      if (autoStart != null) {
-        Double aEnd = autoEnd;
-        if (aEnd == null) {
-          // Use game knowledge base for auto duration fallback before falling back to
-          // lastDisableTime/maxTimestamp, which would incorrectly label the entire match as auto
-          try {
-            var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
-            int seasonYear = ToolUtils.estimateSeasonYear(log);
-            var gameData = kb.getGame(seasonYear);
-            if (gameData != null) {
-              aEnd = autoStart + gameData.autoDurationSec();
-            }
-          } catch (Exception ignored) {
-            // Fall back below
-          }
-          if (aEnd == null) {
-            aEnd = firstEnableTime != null && lastDisableTime != null ? lastDisableTime : log.maxTimestamp();
-          }
+      if (enabled.isEmpty()) {
+        builder.addWarning("The robot was never enabled in this log (pit or bench session); "
+            + "there are no enabled segments or match phases.");
+      } else if (matches.isEmpty()) {
+        if (sources.autonomous() == null && sources.controlWord() == null) {
+          builder.addWarning("Robot enable/disable detected but autonomous/teleop mode "
+              + "transitions not found. Cannot distinguish match phases; use segments.");
         }
-        phases.add("autonomous", createPhase(autoStart, aEnd, "Autonomous"));
+        notes.add("No FMS match pattern: FMS was never attached at an enable, and no enabled "
+            + "autonomous segment was followed within a few seconds by teleop. Use segments "
+            + "for time windows" + (enabled.size() > 1 ? " (phases is empty because there are "
+                + enabled.size() + " enabled segments)." : "."));
       }
-
-      if (teleopStart != null) {
-        double tEnd = lastDisableTime != null ? lastDisableTime : log.maxTimestamp();
-        if (tEnd > teleopStart) {
-          phases.add("teleop", createPhase(teleopStart, tEnd, "Teleop"));
-          teleopEnd = tEnd;
-
-          // Add endgame phase: use game knowledge if available, otherwise default 20s before teleop end
-          double endgameBeforeEnd = 20.0; // default
-          try {
-            var kb = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance();
-            int seasonYear = ToolUtils.estimateSeasonYear(log);
-            var gameData = kb.getGame(seasonYear);
-            if (gameData != null) {
-              endgameBeforeEnd = gameData.endgameStartBeforeEndSec();
-            }
-          } catch (Exception ignored) {
-            // Fall back to default
-          }
-          double endgameStart = tEnd - endgameBeforeEnd;
-          if (endgameStart > teleopStart && endgameStart < tEnd) {
-            phases.add("endgame", createPhase(endgameStart, tEnd, "Endgame"));
-          }
-        }
+      var last = timeline.segments().isEmpty() ? null
+          : timeline.segments().get(timeline.segments().size() - 1);
+      if (last != null && last.state() == MatchTimeline.State.ENABLED
+          && last.endReason() == MatchTimeline.EndReason.LOG_END) {
+        builder.addWarning("The log ends while the robot is enabled (last segment end_reason "
+            + "log_end at " + String.format("%.2f", last.end()) + " s): the session continued "
+            + "past the end of the log, or the log was truncated.");
       }
-
-      // If we have autonomous data but no separate teleop marker,
-      // and the robot was enabled before auto, note it
-      if (autoStart == null && firstEnableTime != null) {
-        double end = lastDisableTime != null ? lastDisableTime : log.maxTimestamp();
-        phases.add("enabled", createPhase(firstEnableTime, end, "Enabled (mode unknown)"));
-        warnings.add("Robot enable/disable detected but autonomous/teleop mode transitions "
-            + "not found. Cannot distinguish match phases.");
+      var first = timeline.segments().isEmpty() ? null : timeline.segments().get(0);
+      if (first != null && first.state() == MatchTimeline.State.UNKNOWN) {
+        notes.add("Robot state is unknown from " + String.format("%.2f", first.start()) + " to "
+            + String.format("%.2f", first.end()) + " s, before the first DriverStation sample.");
       }
-
-      result.add("phases", phases);
-      result.addProperty("source", "DriverStation");
-
-      // Add match duration if we can determine it
-      if (firstEnableTime != null && lastDisableTime != null) {
-        result.addProperty("match_duration", lastDisableTime - firstEnableTime);
-      }
-      if (autoStart != null && autoEnd != null) {
-        result.addProperty("auto_duration", autoEnd - autoStart);
-      }
-      if (teleopStart != null && teleopEnd != null) {
-        result.addProperty("teleop_duration", teleopEnd - teleopStart);
-      }
-
-      if (!warnings.isEmpty()) {
-        result.add("warnings", GSON.toJsonTree(warnings));
-      }
-
-      // Attach data quality from the DriverStation enabled entry
-      var qualityValues = enabledEntry != null ? log.values().get(enabledEntry) : null;
-      if (qualityValues != null && !qualityValues.isEmpty()) {
-        var quality = DataQuality.fromValues(qualityValues);
-        result.add("data_quality", quality.toJson());
-        var directives = AnalysisDirectives.fromQuality(quality)
-            .addSingleMatchCaveat();
-        result.add("server_analysis_directives", directives.toJson());
-      }
-
-      return result;
-    }
-
-    private JsonObject createPhase(double s, double e, String desc) {
-      var obj = new JsonObject();
-      obj.addProperty("start", s);
-      obj.addProperty("end", e);
-      obj.addProperty("duration", Math.max(0, e - s));
-      obj.addProperty("description", desc);
-      return obj;
+      if (!notes.isEmpty()) builder.addData("notes", GSON.toJsonTree(notes));
+      return builder.build();
     }
   }
 
@@ -1006,13 +897,16 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Analyze CAN bus health by scanning string entries (console output, alerts) for CAN "
-          + "timeout/error/fault messages and classifying each by the robot's enabled state at that "
-          + "moment (DriverStation entries under either /DriverStation/... or DS:... naming). "
-          + "Health is GOOD with no enabled-state errors, CONCERNING below 50, POOR at 50 or more; "
-          + "without a DriverStation entry all errors are counted. A log with no CAN messages "
-          + "returns total_can_errors 0 and GOOD. "
-          + "See also: analyze_can_bus for numeric utilization analysis."
+      return "CAN bus health overview from two sources: console and message text (string "
+          + "entries) with CAN timeout/error/fault lines, each classified by the robot's enabled "
+          + "state at that moment from the DriverStation timeline, and the structured bus "
+          + "counters that analyze_can_bus reads (TEC/REC error counters, bus-off and TX-full "
+          + "counts). health_assessment: POOR if a bus-off count rose while enabled or 50+ CAN "
+          + "text errors occurred while enabled; CONCERNING if any CAN text error occurred while "
+          + "enabled or TEC/REC reached 128 (error-passive) while enabled; otherwise GOOD. "
+          + "assessment_basis says which fact decided it. Errors while disabled are normal (for "
+          + "example devices booting) and do not count; errors before the first DriverStation "
+          + "sample are reported separately. See analyze_can_bus for per-bus detail."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -1021,102 +915,142 @@ public final class RobotAnalysisTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
-      // Find the DriverStation Enabled entry for cross-referencing
-      String enabledEntryName = findDsEntry(log, "enabled");
-      List<TimestampedValue> enabledValues = enabledEntryName != null
-          ? log.values().get(enabledEntryName) : null;
-      boolean hasEnabledData = enabledValues != null && !enabledValues.isEmpty();
+      var timeline = MatchTimeline.of(log);
+      boolean hasEnabledData = timeline.hasEnabledData();
 
       long totalEnabled = 0;
       long totalDisabled = 0;
-      long totalAll = 0;
-
+      long totalUnknown = 0;
       var errorCounts = new JsonObject();
-      var allCanErrorValues = new ArrayList<TimestampedValue>();
+      var firstEnabled = new ArrayList<JsonObject>();
 
-      for (var entry : log.entries().entrySet()) {
-        if (!"string".equals(entry.getValue().type())) continue;
-        var values = log.values().get(entry.getKey());
+      for (var entry : log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id)).toList()) {
+        if (!"string".equals(entry.type())) continue;
+        var values = log.values().get(entry.name());
         if (values == null) continue;
-
-        long enabledErrors = 0;
-        long disabledErrors = 0;
-
+        long enabled = 0;
+        long disabled = 0;
+        long unknown = 0;
         for (var tv : values) {
-          if (!(tv.value() instanceof String s) || !isCanError(s)) continue;
-          allCanErrorValues.add(tv);
-
-          if (hasEnabledData) {
-            if (isEnabledAt(enabledValues, tv.timestamp())) {
-              enabledErrors++;
-            } else {
-              disabledErrors++;
+          if (!(tv.value() instanceof String text)) continue;
+          for (var line : text.split("\\R")) {
+            if (!CanBusAnalysis.isCanErrorLine(line)) continue;
+            switch (timeline.stateAt(tv.timestamp())) {
+              case ENABLED -> {
+                enabled++;
+                if (firstEnabled.size() < 5) {
+                  var example = new JsonObject();
+                  example.addProperty("timestamp_sec", tv.timestamp());
+                  example.addProperty("entry", entry.name());
+                  example.addProperty("line", ToolUtils.truncate(line.strip(),
+                      ToolUtils.MESSAGE_LINE_LIMIT));
+                  firstEnabled.add(example);
+                }
+              }
+              case DISABLED -> disabled++;
+              case UNKNOWN -> unknown++;
             }
-          } else {
-            enabledErrors++; // count all as "enabled" when no DS data
           }
         }
-
-        long entryTotal = enabledErrors + disabledErrors;
+        long entryTotal = enabled + disabled + unknown;
         if (entryTotal > 0) {
           var entryObj = new JsonObject();
           entryObj.addProperty("total", entryTotal);
-          if (hasEnabledData) {
-            entryObj.addProperty("while_enabled", enabledErrors);
-            entryObj.addProperty("while_disabled", disabledErrors);
-          }
-          errorCounts.add(entry.getKey(), entryObj);
-          totalEnabled += enabledErrors;
-          totalDisabled += disabledErrors;
-          totalAll += entryTotal;
+          entryObj.addProperty("while_enabled", enabled);
+          if (hasEnabledData) entryObj.addProperty("while_disabled", disabled);
+          if (unknown > 0) entryObj.addProperty("state_unknown", unknown);
+          errorCounts.add(entry.name(), entryObj);
+          totalEnabled += enabled;
+          totalDisabled += disabled;
+          totalUnknown += unknown;
         }
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.add("error_counts_by_entry", errorCounts);
-
-      result.addProperty("total_can_errors", totalAll);
-      if (hasEnabledData) {
-        result.addProperty("errors_while_enabled", totalEnabled);
-        result.addProperty("errors_while_disabled", totalDisabled);
-        // Base health assessment only on enabled-state errors
-        result.addProperty("health_assessment",
-            totalEnabled == 0 ? "GOOD" : (totalEnabled < 50 ? "CONCERNING" : "POOR"));
-      } else {
-        result.addProperty("health_assessment",
-            totalAll == 0 ? "GOOD" : (totalAll < 50 ? "CONCERNING" : "POOR"));
+      // Structured counters, shared with analyze_can_bus
+      var buses = CanBusAnalysis.discoverBuses(log);
+      var busSummary = new JsonArray();
+      double busOffEnabled = 0;
+      double maxEnabledErrorCounter = 0;
+      String maxEnabledErrorWhere = null;
+      for (var bus : buses) {
+        var full = CanBusAnalysis.analyze(log, bus, timeline, null, null);
+        var row = new JsonObject();
+        row.addProperty("bus", bus.name());
+        for (var key : List.of("tec", "rec")) {
+          if (!full.has(key)) continue;
+          var level = full.getAsJsonObject(key);
+          if (!level.has("max")) continue;
+          row.addProperty(key + "_max", level.get("max").getAsDouble());
+          row.addProperty(key + "_max_time_sec", level.get("max_time_sec").getAsDouble());
+          if (level.has("while_enabled")) {
+            var e = level.getAsJsonObject("while_enabled");
+            double max = e.get("max").getAsDouble();
+            row.addProperty(key + "_max_while_enabled", max);
+            if (max > maxEnabledErrorCounter) {
+              maxEnabledErrorCounter = max;
+              maxEnabledErrorWhere = bus.name() + " " + key.toUpperCase() + " reached "
+                  + (long) max + " at " + String.format("%.2f", e.get("max_time_sec")
+                      .getAsDouble()) + " s";
+            }
+          }
+        }
+        if (full.has("bus_off") && full.getAsJsonObject("bus_off").has("increase")) {
+          var busOff = full.getAsJsonObject("bus_off");
+          row.addProperty("bus_off_increase", busOff.get("increase").getAsDouble());
+          double enabled = busOff.get("increase_while_enabled").getAsDouble();
+          row.addProperty("bus_off_increase_while_enabled", enabled);
+          busOffEnabled += enabled;
+        }
+        busSummary.add(row);
       }
 
-      var warnings = new ArrayList<String>();
+      String health;
+      String basis;
+      if (busOffEnabled > 0) {
+        health = "POOR";
+        basis = "a bus-off count rose by " + (long) busOffEnabled + " while enabled";
+      } else if (totalEnabled >= 50) {
+        health = "POOR";
+        basis = totalEnabled + " CAN error lines while enabled";
+      } else if (totalEnabled > 0) {
+        health = "CONCERNING";
+        basis = totalEnabled + " CAN error line(s) while enabled";
+      } else if (maxEnabledErrorCounter >= CanBusAnalysis.ERROR_PASSIVE) {
+        health = "CONCERNING";
+        basis = maxEnabledErrorWhere + " while enabled (error-passive at 128)";
+      } else if (!hasEnabledData && totalUnknown > 0) {
+        health = "UNKNOWN";
+        basis = totalUnknown + " CAN error line(s), but the log has no DriverStation state to "
+            + "tell whether the robot was enabled";
+      } else {
+        health = "GOOD";
+        basis = "no CAN error lines or error-counter excursions while enabled"
+            + (buses.isEmpty() ? " (no bus counters logged)" : "");
+      }
+
+      var builder = success()
+          .addData("error_counts_by_entry", errorCounts)
+          .addProperty("total_can_errors", totalEnabled + totalDisabled + totalUnknown)
+          .addProperty("errors_while_enabled", totalEnabled)
+          .addProperty("health_assessment", health)
+          .addProperty("assessment_basis", basis)
+          .addData("bus_counters", busSummary)
+          .addInput("enabled", timeline.sources().enabled());
+      if (hasEnabledData) builder.addProperty("errors_while_disabled", totalDisabled);
+      if (totalUnknown > 0) builder.addProperty("errors_state_unknown", totalUnknown);
+      if (!firstEnabled.isEmpty()) {
+        builder.addData("first_errors_while_enabled", GSON.toJsonTree(firstEnabled));
+      }
       if (!hasEnabledData) {
-        warnings.add("No DriverStation Enabled entry found. Cannot distinguish enabled vs disabled CAN errors. "
-            + "All errors are counted toward the health assessment.");
+        builder.addWarning("No DriverStation enabled entry: CAN errors cannot be split by "
+            + "robot state (reported as errors_state_unknown).");
       }
       if (totalDisabled > 0) {
-        warnings.add("CAN errors while disabled (" + totalDisabled + ") are normal "
+        builder.addWarning("CAN errors while disabled (" + totalDisabled + ") are normal "
             + "and excluded from health assessment.");
       }
-      if (!warnings.isEmpty()) {
-        result.add("warnings", GSON.toJsonTree(warnings));
-      }
-
-      // Data quality
-      if (!allCanErrorValues.isEmpty()) {
-        var quality = DataQuality.fromValues(allCanErrorValues);
-        var directives = AnalysisDirectives.fromQuality(quality)
-            .addSingleMatchCaveat()
-            .addGuidance("CAN errors while disabled are normal; focus on enabled-state errors");
-        appendQualityToResult(result, quality, directives);
-      }
-
-      return result;
-    }
-
-    private boolean isCanError(String s) {
-      var lower = s.toLowerCase();
-      return lower.contains("can") && (lower.contains("timeout") || lower.contains("error") || lower.contains("fault"));
+      return builder.build();
     }
   }
 

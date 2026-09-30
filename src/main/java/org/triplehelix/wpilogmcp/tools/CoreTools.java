@@ -433,7 +433,7 @@ public final class CoreTools {
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("status", "OK");
+      // "status" is the result contract's field; it reads "ok" for a healthy server
       result.addProperty("server_version", org.triplehelix.wpilogmcp.Version.VERSION);
 
       result.addProperty("loaded_logs", logManager.getLoadedLogPaths().size());

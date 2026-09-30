@@ -240,7 +240,7 @@ class MigratedToolsEdgeCaseTest {
       var obj = result.getAsJsonObject();
 
       assertTrue(obj.get("success").getAsBoolean());
-      assertTrue(Double.isNaN(obj.get("correlation").getAsDouble()));
+      assertTrue(obj.get("correlation").isJsonNull());
       assertTrue(obj.has("warnings"));
       assertTrue(obj.get("warnings").getAsJsonArray().size() > 0);
     }

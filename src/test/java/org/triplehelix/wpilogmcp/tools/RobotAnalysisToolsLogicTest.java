@@ -87,9 +87,12 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      // Should have a warning about missing data, not assumed phases
-      assertTrue(resultObj.has("warnings"), "Should warn about missing DS data");
+      // Nothing to analyze: no_match (not a success), saying what was searched for
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("DriverStation"));
+      assertTrue(resultObj.getAsJsonArray("looked_for").size() > 0);
+      assertFalse(resultObj.has("phases"), "no phases may be assumed");
       assertEquals("none", resultObj.get("source").getAsString(),
           "Should report source as 'none' when no DS data found");
     }

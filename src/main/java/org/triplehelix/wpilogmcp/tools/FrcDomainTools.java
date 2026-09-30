@@ -76,12 +76,15 @@ public final class FrcDomainTools {
 
   /**
    * Calculate the Euclidean distance between two poses (works for Pose2d and Pose3d).
+   *
+   * @return The distance, or NaN when either pose's translation cannot be read (callers count
+   *     such samples as unreadable; they must never be treated as "no movement")
    */
-  private static double calculatePoseDistance(java.util.Map<String, Object> pose1, java.util.Map<String, Object> pose2) {
+  static double calculatePoseDistance(java.util.Map<String, Object> pose1, java.util.Map<String, Object> pose2) {
     var trans1 = extractTranslation(pose1);
     var trans2 = extractTranslation(pose2);
 
-    if (trans1 == null || trans2 == null) return 0.0;
+    if (trans1 == null || trans2 == null) return Double.NaN;
 
     double dx = trans1[0] - trans2[0];
     double dy = trans1[1] - trans2[1];
@@ -165,159 +168,13 @@ public final class FrcDomainTools {
         lowerEntryNames.put(entryName, entryName.toLowerCase());
       }
 
-      // First pass: find the Enabled values for cross-referencing with auto mode
-      List<TimestampedValue> enabledValuesForTimeline = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
-          enabledValuesForTimeline = log.values().get(entryName);
-          break;
-        }
+      // Enable/disable and mode transitions, from the same timeline get_match_phases uses: one
+      // DriverStation entry per role (AdvantageKit first), values held until the next sample.
+      var timeline = MatchTimeline.of(log);
+      for (var event : timeline.events(startTime, endTime)) {
+        events.add(event.toJson());
       }
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-
-        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            var lastState = (Boolean) null;
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              if (tv.value() instanceof Boolean state) {
-                if (lastState == null || !lastState.equals(state)) {
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", state ? "ENABLED" : "DISABLED");
-                  event.addProperty("category", "robot_state");
-                  event.addProperty("source", entryName);
-                  events.add(event);
-                  lastState = state;
-                }
-              }
-            }
-          }
-        }
-
-        if (ToolUtils.isDsEntry(lower) && (lower.contains("autonomous") || lower.contains("auto"))) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            // Seed from the state in force just before the window so a start_time inside
-            // autonomous still sees the auto->teleop transition as a transition.
-            Boolean lastState = startTime != null
-                && ToolUtils.getValueAtTimeZoh(values, startTime) instanceof Boolean held
-                ? held : null;
-            boolean pendingAutoStart = false;
-            double autoFlagTime = 0;
-            String autoSource = entryName;
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              if (tv.value() instanceof Boolean isAuto) {
-                if (lastState == null && !isAuto) {
-                  // The initial Autonomous=false sample is the resting state, not a transition;
-                  // treating it as one produced a spurious TELEOP_START at the first enable.
-                  lastState = isAuto;
-                  continue;
-                }
-                if (lastState == null || !lastState.equals(isAuto)) {
-                  if (isAuto && !ToolUtils.isEnabledAt(enabledValuesForTimeline, tv.timestamp())) {
-                    // Auto flag set but robot not yet enabled — defer the AUTO_START
-                    pendingAutoStart = true;
-                    autoFlagTime = tv.timestamp();
-                    lastState = isAuto;
-                    continue;
-                  }
-                  // If transitioning out of auto and we have a pending deferred AUTO_START,
-                  // resolve it now: find when the robot was first enabled during auto
-                  if (!isAuto && pendingAutoStart && enabledValuesForTimeline != null) {
-                    for (var ev : enabledValuesForTimeline) {
-                      if (ev.timestamp() > autoFlagTime && ev.timestamp() < tv.timestamp()
-                          && ev.value() instanceof Boolean en && en) {
-                        var autoEvent = new JsonObject();
-                        autoEvent.addProperty("timestamp", ev.timestamp());
-                        autoEvent.addProperty("type", "AUTO_START");
-                        autoEvent.addProperty("category", "match_phase");
-                        autoEvent.addProperty("source", autoSource);
-                        events.add(autoEvent);
-                        break;
-                      }
-                    }
-                    pendingAutoStart = false;
-                  }
-                  if (isAuto) {
-                    var event = new JsonObject();
-                    event.addProperty("timestamp", tv.timestamp());
-                    event.addProperty("type", "AUTO_START");
-                    event.addProperty("category", "match_phase");
-                    event.addProperty("source", autoSource);
-                    events.add(event);
-                  } else {
-                    // Auto flag cleared — defer TELEOP_START until next Enabled=true,
-                    // matching get_match_phases behavior (FMS disabled gap between auto/teleop)
-                    if (enabledValuesForTimeline != null) {
-                      boolean emitted = false;
-                      // Start scan from the auto-end timestamp rather than the beginning
-                      // to avoid matching enable events from earlier auto/teleop cycles.
-                      int startIdx = findFirstIndexAtOrAfter(enabledValuesForTimeline, tv.timestamp());
-                      for (int idx = startIdx; idx < enabledValuesForTimeline.size(); idx++) {
-                        var ev = enabledValuesForTimeline.get(idx);
-                        if (ev.value() instanceof Boolean en && en) {
-                          var teleopEvent = new JsonObject();
-                          teleopEvent.addProperty("timestamp", ev.timestamp());
-                          teleopEvent.addProperty("type", "TELEOP_START");
-                          teleopEvent.addProperty("category", "match_phase");
-                          teleopEvent.addProperty("source", autoSource);
-                          events.add(teleopEvent);
-                          emitted = true;
-                          break;
-                        }
-                      }
-                      // Fallback: if no enabled transition found (practice mode / no FMS),
-                      // emit at the auto-end timestamp
-                      if (!emitted) {
-                        var teleopEvent = new JsonObject();
-                        teleopEvent.addProperty("timestamp", tv.timestamp());
-                        teleopEvent.addProperty("type", "TELEOP_START");
-                        teleopEvent.addProperty("category", "match_phase");
-                        teleopEvent.addProperty("source", autoSource);
-                        events.add(teleopEvent);
-                      }
-                    } else {
-                      // No enabled data available — emit immediately as fallback
-                      var teleopEvent = new JsonObject();
-                      teleopEvent.addProperty("timestamp", tv.timestamp());
-                      teleopEvent.addProperty("type", "TELEOP_START");
-                      teleopEvent.addProperty("category", "match_phase");
-                      teleopEvent.addProperty("source", autoSource);
-                      events.add(teleopEvent);
-                    }
-                  }
-                  lastState = isAuto;
-                }
-              }
-            }
-            // If auto flag was set and robot never transitioned out of auto,
-            // check if robot got enabled while still in auto
-            if (pendingAutoStart && enabledValuesForTimeline != null) {
-              for (var ev : enabledValuesForTimeline) {
-                if (ev.timestamp() > autoFlagTime && inTimeRange(ev.timestamp(), startTime, endTime)
-                    && ev.value() instanceof Boolean en && en) {
-                  var autoState = ToolUtils.getValueAtTimeZoh(values, ev.timestamp());
-                  if (Boolean.TRUE.equals(autoState)) {
-                    var event = new JsonObject();
-                    event.addProperty("timestamp", ev.timestamp());
-                    event.addProperty("type", "AUTO_START");
-                    event.addProperty("category", "match_phase");
-                    event.addProperty("source", autoSource);
-                    events.add(event);
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
+      var dsSources = timeline.sources();
 
       // Add voltage-threshold brownouts on the battery voltage entry. Uses the same selection as
       // power_analysis so the two tools agree on which signal was analyzed; the entry is reported
@@ -470,7 +327,23 @@ public final class FrcDomainTools {
           () -> builder.addWarning("No battery voltage entry found; BROWNOUT_START/END events "
               + "cannot be detected in this log."));
 
+      builder.addInput("enabled", dsSources.enabled())
+          .addInput("autonomous", dsSources.autonomous())
+          .addInput("control_word", dsSources.controlWord())
+          .addInput("voltage", voltageEntry.orElse(null))
+          .addInput("rio_brownout_flag", rioFlagEntry);
+      if (!dsSources.ignored().isEmpty()) {
+        builder.addWarning("Also found " + String.join(", ", dsSources.ignored())
+            + "; enable and mode events come from " + dsSources.enabled() + " only.");
+      }
+      if (!timeline.hasEnabledData()) {
+        builder.addWarning("No DriverStation enabled entry found; there are no ENABLED/DISABLED "
+            + "or match phase events in this timeline.");
+      }
+
       // Add data quality from enabled values if available
+      var enabledValuesForTimeline = dsSources.enabled() == null ? null
+          : log.values().get(dsSources.enabled());
       if (enabledValuesForTimeline != null && !enabledValuesForTimeline.isEmpty()) {
         var quality = DataQuality.fromValues(enabledValuesForTimeline);
         builder.addDataQuality(quality)
@@ -528,21 +401,6 @@ public final class FrcDomainTools {
       }
     }
 
-    /**
-     * Binary search for the first index in a sorted timestamped list at or after the given time.
-     */
-    private static int findFirstIndexAtOrAfter(List<TimestampedValue> values, double time) {
-      int lo = 0, hi = values.size();
-      while (lo < hi) {
-        int mid = (lo + hi) >>> 1;
-        if (values.get(mid).timestamp() < time) {
-          lo = mid + 1;
-        } else {
-          hi = mid;
-        }
-      }
-      return lo;
-    }
   }
 
   static class AnalyzeVisionTool extends LogRequiringTool {
@@ -961,217 +819,227 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze autonomous routine: identify selected routine, path following error, "
-          + "completion time, and phase breakdown. "
-          + "Returns 'no auto period detected' if log does not contain autonomous phase data."
+      return "Analyze autonomous periods: every enabled autonomous segment (from the same "
+          + "DriverStation timeline as get_match_phases) with its start, end, duration, and "
+          + "end_reason; the selected routine at each start (from a string chooser entry such as "
+          + ".../Auto Chooser/active or an entry naming the selected auto mode); and path "
+          + "following error (RMSE and max, meters) when a setpoint pose and an actual pose "
+          + "entry can be identified. Returns status not_applicable with the reason when the log "
+          + "has no autonomous period (for example a practice session where Autonomous was "
+          + "never true)."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("auto_prefix", "string", "Entry path prefix for auto data", false)
+          .addProperty("auto_prefix", "string",
+              "Entry name prefix to search for the path setpoint and actual pose entries", false)
           .build();
     }
 
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var autoPrefix = getOptString(arguments, "auto_prefix", null);
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      var autoPrefix = getOptString(arguments, "auto_prefix", null);
+      var timeline = MatchTimeline.of(log);
+      var sources = timeline.sources();
+      var chooser = findChooserEntry(log);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-
-      // Find selected routine
-      log.entries().keySet().stream()
-          .filter(n -> n.toLowerCase().contains("chooser"))
-          .findFirst()
-          .ifPresent(n -> {
-            var vals = log.values().get(n);
-            if (vals != null && !vals.isEmpty()) {
-              result.addProperty("selected_routine", vals.get(0).value().toString());
-            }
-          });
-
-      // Find auto period (first 15 seconds or until teleop)
-      // IMPORTANT: Auto doesn't truly start until the robot is both in autonomous
-      // mode AND enabled. The FMS sets the Autonomous flag before the countdown ends.
-      Double autoStartTime = null;
-      Double autoEndTime = null;
-
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      if (!timeline.hasEnabledData() && sources.autonomous() == null) {
+        return ResponseBuilder.noMatch("No DriverStation state entries found, so autonomous "
+                + "periods cannot be identified.")
+            .lookedFor(List.of("boolean Enabled and Autonomous entries under /DriverStation/ "
+                + "or DS:", "int64 FMSInfo/FMSControlData"))
+            .hint("Use get_match_phases to see what the server can determine about this log.")
+            .build();
       }
 
-      // Find enabled values for cross-referencing
-      List<TimestampedValue> enabledValuesForAuto = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
-          enabledValuesForAuto = log.values().get(entryName);
-          break;
+      var periods = timeline.enabledSegments().stream()
+          .filter(seg -> seg.mode() == MatchTimeline.Mode.AUTO).toList();
+      if (periods.isEmpty()) {
+        String reason;
+        if (sources.autonomous() == null && sources.controlWord() == null) {
+          reason = "The log has no Autonomous entry, so autonomous periods cannot be identified.";
+        } else if (!timeline.autonomousEverTrue()) {
+          reason = "No autonomous period: " + sources.autonomous() + " has "
+              + timeline.autonomousSampleCount() + " sample(s), all false (DriverStation values "
+              + "are logged on change and hold until the next sample).";
+        } else {
+          reason = "Autonomous mode was set, but the robot was never enabled while in it.";
+        }
+        var na = ResponseBuilder.notApplicable(reason)
+            .addInput("enabled", sources.enabled())
+            .addInput("autonomous", sources.autonomous());
+        chooser.ifPresent(c -> na.addInput("selected_routine", c));
+        return na.build();
+      }
+
+      var game = timeline.game();
+      var builder = success()
+          .addInput("enabled", sources.enabled())
+          .addInput("autonomous", sources.autonomous());
+      chooser.ifPresent(c -> builder.addInput("selected_routine", c));
+
+      var pathEntries = findPathEntries(log, autoPrefix);
+      var periodsJson = new JsonArray();
+      for (var period : periods) {
+        var p = new JsonObject();
+        p.addProperty("start", period.start());
+        p.addProperty("end", period.end());
+        p.addProperty("duration", period.duration());
+        p.addProperty("end_reason", period.endReason().name().toLowerCase());
+        chooser.ifPresent(c -> {
+          var value = ToolUtils.getValueAtTimeZoh(log.values().get(c), period.start());
+          if (value instanceof String routine) p.addProperty("selected_routine", routine);
+        });
+        if (pathEntries != null) {
+          var error = calculatePathFollowingError(log, pathEntries[0], pathEntries[1],
+              period.start(), period.end());
+          if (error != null) p.add("path_following_error", error);
+        }
+        periodsJson.add(p);
+      }
+      builder.addData("auto_periods", periodsJson);
+
+      // Compatibility fields describe the first autonomous period
+      var first = periodsJson.get(0).getAsJsonObject();
+      builder.addProperty("auto_start_time", first.get("start").getAsDouble())
+          .addProperty("auto_end_time", first.get("end").getAsDouble())
+          .addProperty("auto_duration", first.get("duration").getAsDouble());
+      if (first.has("selected_routine")) {
+        builder.addProperty("selected_routine", first.get("selected_routine").getAsString());
+      }
+      if (first.has("path_following_error")) {
+        builder.addData("path_following_error", first.get("path_following_error"));
+      }
+      game.ifPresent(g -> builder.addProperty("expected_auto_sec", g.autoDurationSec()));
+
+      if (chooser.isEmpty()) {
+        builder.addSkipped("selected_routine", "No string entry naming the selected autonomous "
+            + "routine (looked for names ending in /active under a chooser, or containing "
+            + "'auto' with 'selected', 'mode', 'routine', or 'choice', or containing 'chooser').");
+      }
+      if (pathEntries == null) {
+        builder.addSkipped("path_following_error", "Could not identify both a setpoint pose "
+            + "(Pose2d/Pose3d named with setpoint, target, or desired) and an actual pose "
+            + "(named with actual, estimated, odometry, or pose)"
+            + (autoPrefix != null ? " under " + autoPrefix : "") + ".");
+      } else {
+        builder.addInput("path_setpoint", pathEntries[0]).addInput("path_actual", pathEntries[1]);
+        if (objectsWithout(periodsJson, "path_following_error") == periodsJson.size()) {
+          builder.addSkipped("path_following_error", "No setpoint samples with a readable "
+              + "actual pose fell inside an autonomous period.");
         }
       }
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (ToolUtils.isDsEntry(lower) && (lower.contains("autonomous") || lower.contains("auto"))) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            boolean autoFlagSet = false;
-            for (TimestampedValue tv : values) {
-              if (tv.value() instanceof Boolean isAuto) {
-                if (isAuto && autoStartTime == null) {
-                  if (ToolUtils.isEnabledAt(enabledValuesForAuto, tv.timestamp())) {
-                    autoStartTime = tv.timestamp();
-                  } else {
-                    autoFlagSet = true; // Auto mode set but not yet enabled
-                  }
-                } else if (!isAuto && autoStartTime != null && autoEndTime == null) {
-                  autoEndTime = tv.timestamp();
-                  break;
-                } else if (!isAuto && autoFlagSet) {
-                  // Auto mode ended without ever being enabled — no auto period
-                  autoFlagSet = false;
-                }
-              }
-            }
-            // If auto flag was set but we haven't found the enable yet, scan enabled values
-            if (autoFlagSet && autoStartTime == null && enabledValuesForAuto != null) {
-              // Find the first enable that happens while in auto mode
-              double autoFlagTime = -1;
-              double autoFlagEndTime = Double.MAX_VALUE;
-              for (var tv2 : values) {
-                if (tv2.value() instanceof Boolean isAuto) {
-                  if (isAuto && autoFlagTime < 0) autoFlagTime = tv2.timestamp();
-                  else if (!isAuto && autoFlagTime >= 0) { autoFlagEndTime = tv2.timestamp(); break; }
-                }
-              }
-              for (var ev : enabledValuesForAuto) {
-                if (ev.timestamp() >= autoFlagTime && ev.timestamp() < autoFlagEndTime
-                    && ev.value() instanceof Boolean en && en) {
-                  autoStartTime = ev.timestamp();
-                  autoEndTime = autoFlagEndTime < Double.MAX_VALUE ? autoFlagEndTime : null;
-                  break;
-                }
-              }
-            }
-          }
-          break;
-        }
+      if (periods.size() > 1) {
+        builder.addWarning(periods.size() + " autonomous periods found; the top-level auto_* "
+            + "fields describe the first, auto_periods lists all.");
       }
-
-      if (autoStartTime != null) {
-        if (autoEndTime == null) {
-          // If we didn't find auto end, use game knowledge base or 15s default
-          double autoDuration = 15.0;
-          try {
-            int seasonYear = ToolUtils.estimateSeasonYear(log);
-            var gameData = GameKnowledgeBase.getInstance().getGame(seasonYear);
-            if (gameData != null) {
-              autoDuration = gameData.autoDurationSec();
-            }
-          } catch (Exception e) {
-            // use default
-          }
-          autoEndTime = autoStartTime + autoDuration;
-        }
-        var autoDuration = autoEndTime - autoStartTime;
-        result.addProperty("auto_start_time", autoStartTime);
-        result.addProperty("auto_end_time", autoEndTime);
-        result.addProperty("auto_duration", autoDuration);
-
-        // Calculate path following error
-        var pathFollowingError = calculatePathFollowingError(log, autoPrefix, autoStartTime, autoEndTime);
-        if (pathFollowingError != null) {
-          result.add("path_following_error", pathFollowingError);
-        }
-      }
-
-      // Add data quality from enabled values if available
-      if (enabledValuesForAuto != null && !enabledValuesForAuto.isEmpty()) {
-        var quality = DataQuality.fromValues(enabledValuesForAuto);
-        var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
-        result.add("data_quality", quality.toJson());
-        result.add("server_analysis_directives", directives.toJson());
-      }
-
-      return result;
+      return builder.build();
     }
 
-    private JsonObject calculatePathFollowingError(
-        LogData log,
-        String prefix,
-        double startTime,
-        double endTime
-    ) {
-      // Look for pose setpoint and actual pose entries
-      String setpointEntry = null;
-      String actualEntry = null;
+    private static int objectsWithout(JsonArray array, String key) {
+      int n = 0;
+      for (var e : array) if (!e.getAsJsonObject().has(key)) n++;
+      return n;
+    }
 
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+    /**
+     * The string entry holding the selected autonomous routine: a chooser's {@code /active}
+     * entry first, then names with "auto" and "selected"/"mode"/"routine"/"choice", then any name
+     * containing "chooser"; ties by entry id.
+     */
+    static java.util.Optional<String> findChooserEntry(LogData log) {
+      return log.entries().values().stream()
+          .filter(e -> "string".equals(e.type()))
+          .filter(e -> chooserRank(e.name().toLowerCase()) < Integer.MAX_VALUE)
+          .filter(e -> log.sampleCount(e.name()) > 0)
+          .sorted(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
+                  chooserRank(e.name().toLowerCase()))
+              .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
+          .findFirst();
+    }
+
+    static int chooserRank(String lower) {
+      var leaf = lower.substring(lower.lastIndexOf('/') + 1);
+      if (leaf.startsWith(".") || leaf.equals("default") || leaf.equals("options")) {
+        return Integer.MAX_VALUE;
       }
+      boolean chooser = lower.contains("chooser");
+      boolean auto = lower.contains("auto");
+      if (leaf.equals("active") && (chooser || auto)) return 0;
+      if (auto && (lower.contains("selected") || lower.contains("routine")
+          || lower.contains("choice") || lower.contains("mode"))) return 1;
+      if (chooser) return 2;
+      return Integer.MAX_VALUE;
+    }
 
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        boolean matchesPrefix = prefix == null || entryName.startsWith(prefix);
-
-        if (matchesPrefix) {
-          var entry = log.entries().get(entryName);
-          boolean isPose = entry != null && (entry.type().contains("Pose2d") || entry.type().contains("Pose3d"));
-
-          if (isPose && (lower.contains("setpoint") || lower.contains("target") || lower.contains("desired"))) {
-            setpointEntry = entryName;
-          } else if (isPose && (lower.contains("actual") || lower.contains("estimated") || lower.contains("odometry"))) {
-            actualEntry = entryName;
+    /** {setpoint, actual} pose entries for path following, or null; ranked, ties by entry id. */
+    static String[] findPathEntries(LogData log, String prefix) {
+      String setpoint = null;
+      String actual = null;
+      int setpointId = Integer.MAX_VALUE;
+      int actualId = Integer.MAX_VALUE;
+      for (var entry : log.entries().values()) {
+        var name = entry.name();
+        if (prefix != null && !name.startsWith(prefix)) continue;
+        var type = entry.type();
+        boolean scalarPose = (type.equals("struct:Pose2d") || type.equals("struct:Pose3d"));
+        if (!scalarPose || log.sampleCount(name) < 2) continue;
+        var lower = name.toLowerCase();
+        if (lower.contains("setpoint") || lower.contains("target") || lower.contains("desired")) {
+          if (entry.id() < setpointId) {
+            setpoint = name;
+            setpointId = entry.id();
+          }
+        } else if (lower.contains("actual") || lower.contains("estimated")
+            || lower.contains("odometry") || lower.endsWith("/pose")) {
+          if (entry.id() < actualId) {
+            actual = name;
+            actualId = entry.id();
           }
         }
       }
+      return setpoint != null && actual != null ? new String[] {setpoint, actual} : null;
+    }
 
-      if (setpointEntry == null || actualEntry == null) {
-        return null;
-      }
-
+    private JsonObject calculatePathFollowingError(LogData log, String setpointEntry,
+        String actualEntry, double startTime, double endTime) {
       var setpointValues = log.values().get(setpointEntry);
       var actualValues = log.values().get(actualEntry);
+      if (setpointValues == null || actualValues == null) return null;
 
-      if (setpointValues == null || actualValues == null) {
-        return null;
-      }
-
-      // Calculate RMSE for the auto period
       double sumSquaredError = 0.0;
       int count = 0;
+      int unreadable = 0;
       double maxError = 0.0;
-
       for (TimestampedValue spTv : setpointValues) {
         if (spTv.timestamp() < startTime || spTv.timestamp() > endTime) continue;
-
-        if (spTv.value() instanceof java.util.Map) {
-          @SuppressWarnings("unchecked")
-          var setpointPose = (java.util.Map<String, Object>) spTv.value();
-
-          var actualPose = getActualPoseAtTime(actualValues, spTv.timestamp());
-          if (actualPose != null) {
-            double error = calculatePoseDistance(setpointPose, actualPose);
-            sumSquaredError += error * error;
-            maxError = Math.max(maxError, error);
-            count++;
-          }
+        if (!(spTv.value() instanceof java.util.Map)) {
+          unreadable++;
+          continue;
         }
+        @SuppressWarnings("unchecked")
+        var setpointPose = (java.util.Map<String, Object>) spTv.value();
+        var actualPose = getActualPoseAtTime(actualValues, spTv.timestamp());
+        if (actualPose == null) continue;
+        double error = calculatePoseDistance(setpointPose, actualPose);
+        if (!Double.isFinite(error)) {
+          unreadable++;
+          continue;
+        }
+        sumSquaredError += error * error;
+        maxError = Math.max(maxError, error);
+        count++;
       }
-
-      if (count == 0) {
-        return null;
-      }
+      if (count == 0) return null;
 
       var errorAnalysis = new JsonObject();
       errorAnalysis.addProperty("rmse_meters", Math.sqrt(sumSquaredError / count));
       errorAnalysis.addProperty("max_error_meters", maxError);
       errorAnalysis.addProperty("samples", count);
+      if (unreadable > 0) errorAnalysis.addProperty("unreadable_samples", unreadable);
       return errorAnalysis;
     }
 
@@ -1759,175 +1627,168 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices. "
-          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries. "
-          + "See also: can_health for string-based error detection."
+      return "Analyze CAN bus health from the counters the log records, per bus: utilization "
+          + "(percent; 0-1 fractions are detected and converted), transmit/receive error "
+          + "counters TEC and REC (maximum, when, excursions above the error-passive threshold "
+          + "of 128, time spent at or above it; bus-off is TEC above 255), and bus-off and "
+          + "TX-full count increases, each overall and while enabled. Buses are found by the "
+          + "standard field names (WPILib CANStatus as AdvantageKit logs it under "
+          + "/SystemStats/CANBus, named 'rio'; CTRE CANivore status such as "
+          + "<prefix>/CANHD/{Utilization,TEC,REC,BusOffCount,TxFullCount}, named by the last "
+          + "path segment); bus_name selects one. Other numeric/boolean entries named with CAN "
+          + "and error/fault/timeout are reported under errors by how much they increased. "
+          + "Returns no_match when the log has no CAN counters. See also can_health (console "
+          + "messages plus these counters)."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("bus_name", "string", "CAN bus name (default: 'rio')", false)
+          .addProperty("bus_name", "string",
+              "Bus to analyze: 'rio', a CANivore name such as 'CANHD', or a path prefix "
+                  + "(default: every bus found)", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .build();
     }
 
+    /**
+     * Other entries named with CAN (as a word, or CANbus/CANivore/CANcoder, never Canandgyro or
+     * scan) and error/fault/timeout, e.g. {@code /CAN/TimeoutCount} or {@code /CANBus/Error/Tx}.
+     */
+    static boolean isOtherCanErrorEntry(String name) {
+      var lower = name.toLowerCase(java.util.Locale.ROOT).replace("default", "");
+      boolean canToken = lower.matches(".*(^|[^a-z])can([^a-z]|bus|ivore|coder|$).*");
+      boolean failure = lower.matches(".*(error|fault|timeout).*");
+      return canToken && failure;
+    }
+
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var busName = getOptString(arguments, "bus_name", "rio");
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      var busName = getOptString(arguments, "bus_name", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
+      var timeline = MatchTimeline.of(log);
 
-      // Find CAN-related entries
-      var canUtilEntries = new ArrayList<String>();
-      var canErrorEntries = new ArrayList<String>();
+      var allBuses = CanBusAnalysis.discoverBuses(log);
+      var buses = busName == null ? allBuses
+          : allBuses.stream().filter(b -> b.matches(busName)).toList();
+      var busEntries = new java.util.HashSet<String>();
+      allBuses.forEach(b -> busEntries.addAll(b.entries().values()));
+      var otherErrorEntries = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .filter(e -> CanBusAnalysis.numeric(e.type()) || "boolean".equals(e.type()))
+          .filter(e -> !busEntries.contains(e.name()))
+          .filter(e -> isOtherCanErrorEntry(e.name()))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
+          .toList();
 
-      // Cache toLowerCase
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      var lookedFor = List.of(
+          "numeric entries named Utilization, BusUtilization, BusOffCount, OffCount, "
+              + "TxFullCount, REC, ReceiveErrorCount, TEC, or TransmitErrorCount under a path "
+              + "containing 'can' (e.g. /SystemStats/CANBus/..., .../CANBus/CANHD/...)",
+          "numeric or boolean entries named with CAN and error, fault, or timeout");
+      if (busName != null && buses.isEmpty()) {
+        var available = new JsonArray();
+        allBuses.forEach(b -> available.add(b.name()));
+        return ResponseBuilder.noMatch("No CAN bus named '" + busName + "' in this log.")
+            .lookedFor(lookedFor)
+            .addData("available_buses", available)
+            .hint(allBuses.isEmpty() ? "This log records no CAN bus counters."
+                : "Pass one of available_buses as bus_name, or omit bus_name for all.")
+            .build();
+      }
+      if (buses.isEmpty() && otherErrorEntries.isEmpty()) {
+        return ResponseBuilder.noMatch("This log records no CAN bus counters or CAN error "
+                + "entries.")
+            .lookedFor(lookedFor)
+            .hint("CAN problems may still appear as console messages: use can_health or "
+                + "search_strings with pattern 'CAN'.")
+            .build();
       }
 
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("can")) {
-          if (lower.contains("util") || lower.contains("bandwidth") || lower.contains("busoff")) {
-            canUtilEntries.add(entryName);
-          }
-          if (lower.contains("error") || lower.contains("fault") || lower.contains("timeout")) {
-            canErrorEntries.add(entryName);
-          }
-        }
+      var builder = success();
+      builder.addData("buses", CanBusAnalysis.busesJson(log, buses, timeline, startTime,
+          endTime));
+      if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
+      builder.addInput("enabled", timeline.sources().enabled());
+
+      // Compatibility: one utilization row per bus, in percent
+      var utilization = new JsonArray();
+      for (var bus : buses) {
+        var name = bus.entries().get(CanBusAnalysis.Field.UTILIZATION);
+        if (name == null) continue;
+        var u = CanBusAnalysis.utilization(
+            CanBusAnalysis.window(log.values().get(name), startTime, endTime), timeline);
+        if (!u.has("mean_percent")) continue;
+        var row = new JsonObject();
+        row.addProperty("entry", name);
+        row.addProperty("bus", bus.name());
+        row.addProperty("avg_percent", u.get("mean_percent").getAsDouble());
+        row.addProperty("max_percent", u.get("max_percent").getAsDouble());
+        row.addProperty("sample_count", u.get("samples").getAsInt());
+        row.addProperty("unit_detected", u.get("unit_detected").getAsString());
+        utilization.add(row);
       }
+      builder.addData("utilization", utilization);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-
-      // Analyze utilization
-      if (!canUtilEntries.isEmpty()) {
-        var utilAnalysis = new ArrayList<JsonObject>();
-        for (var entryName : canUtilEntries) {
-          var values = log.values().get(entryName);
-          if (values == null) continue;
-
-          var utilData = new ArrayList<Double>();
-          for (TimestampedValue tv : values) {
-            if (startTime != null && tv.timestamp() < startTime) continue;
-            if (endTime != null && tv.timestamp() > endTime) continue;
-
-            if (tv.value() instanceof Number num) {
-              utilData.add(num.doubleValue());
-            }
-          }
-
-          if (!utilData.isEmpty()) {
-            var stats = utilData.stream().mapToDouble(d -> d).summaryStatistics();
-            var analysis = new JsonObject();
-            analysis.addProperty("entry", entryName);
-            analysis.addProperty("avg_percent", stats.getAverage());
-            analysis.addProperty("max_percent", stats.getMax());
-            analysis.addProperty("sample_count", stats.getCount());
-            utilAnalysis.add(analysis);
-          }
-        }
-        result.add("utilization", GSON.toJsonTree(utilAnalysis));
-      }
-
-      // Find DriverStation Enabled entry for cross-referencing
-      List<TimestampedValue> enabledValues = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
-          enabledValues = log.values().get(entryName);
-          break;
-        }
-      }
-
-      // Analyze errors, distinguishing enabled vs disabled state
-      if (!canErrorEntries.isEmpty()) {
-        var errorAnalysis = new ArrayList<JsonObject>();
-        boolean hasDsData = enabledValues != null && !enabledValues.isEmpty();
-
-        if (!hasDsData) {
-          result.addProperty("ds_enabled_warning",
-              "No DriverStation Enabled entry found — cannot distinguish enabled vs disabled CAN errors. All errors counted.");
-        }
-
-        for (var entryName : canErrorEntries) {
-          var values = log.values().get(entryName);
-          if (values == null) continue;
-
-          int errorsWhileEnabled = 0;
-          int errorsWhileDisabled = 0;
-          for (TimestampedValue tv : values) {
-            if (startTime != null && tv.timestamp() < startTime) continue;
-            if (endTime != null && tv.timestamp() > endTime) continue;
-
-            // Count non-zero errors or true boolean errors
-            boolean isError = false;
-            if (tv.value() instanceof Boolean b && b) {
-              isError = true;
-            } else if (tv.value() instanceof Number num && num.doubleValue() > 0) {
-              isError = true;
-            }
-
-            if (isError) {
-              if (hasDsData) {
-                if (ToolUtils.isEnabledAt(enabledValues, tv.timestamp())) {
-                  errorsWhileEnabled++;
-                } else {
-                  errorsWhileDisabled++;
-                }
-              } else {
-                errorsWhileEnabled++; // Count all as enabled when no DS data
-              }
-            }
-          }
-
-          int totalErrors = errorsWhileEnabled + errorsWhileDisabled;
-          if (totalErrors > 0) {
-            var analysis = new JsonObject();
-            analysis.addProperty("entry", entryName);
-            analysis.addProperty("error_count", totalErrors);
-            analysis.addProperty("errors_while_enabled", errorsWhileEnabled);
-            analysis.addProperty("errors_while_disabled", errorsWhileDisabled);
-            errorAnalysis.add(analysis);
+      // Other CAN error entries: how much each increased, and how much of that while enabled
+      var errors = new JsonArray();
+      double enabledErrorTotal = 0;
+      for (var name : otherErrorEntries) {
+        var values = log.values().get(name);
+        double increase = 0;
+        double increaseEnabled = 0;
+        double increaseUnknown = 0;
+        Double previous = null;
+        for (var tv : values) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+          Double v = tv.value() instanceof Boolean b ? (b ? 1.0 : 0.0)
+              : tv.value() instanceof Number n && Double.isFinite(n.doubleValue())
+                  ? n.doubleValue() : null;
+          if (v == null) continue;
+          // A boolean counts each false->true; a number counts each increase
+          double delta = previous == null ? (v > 0 ? v : 0) : v - previous;
+          previous = v;
+          if (delta <= 0) continue;
+          increase += delta;
+          switch (timeline.stateAt(tv.timestamp())) {
+            case ENABLED -> increaseEnabled += delta;
+            case UNKNOWN -> increaseUnknown += delta;
+            default -> { }
           }
         }
-        result.add("errors", GSON.toJsonTree(errorAnalysis));
-
-        // Base health assessment on enabled-state errors only
-        int totalEnabledErrors = errorAnalysis.stream()
-            .mapToInt(a -> a.get("errors_while_enabled").getAsInt()).sum();
-        result.addProperty("enabled_error_total", totalEnabledErrors);
-        if (totalEnabledErrors == 0 && !errorAnalysis.isEmpty()) {
-          result.addProperty("assessment", "CAN errors only during disabled state — likely normal timeout behavior");
-        } else if (totalEnabledErrors > 0) {
-          result.addProperty("assessment", "CAN errors detected while robot was enabled — investigate device connections");
+        var row = new JsonObject();
+        row.addProperty("entry", name);
+        row.addProperty("type", log.entries().get(name).type());
+        row.addProperty("error_count", increase);
+        row.addProperty("errors_while_enabled", increaseEnabled);
+        if (timeline.hasEnabledData()) {
+          row.addProperty("errors_while_disabled", increase - increaseEnabled - increaseUnknown);
+        }
+        if (increaseUnknown > 0) row.addProperty("errors_state_unknown", increaseUnknown);
+        errors.add(row);
+        enabledErrorTotal += increaseEnabled;
+      }
+      for (var bus : buses) {
+        for (var f : List.of(CanBusAnalysis.Field.BUS_OFF, CanBusAnalysis.Field.TX_FULL)) {
+          var name = bus.entries().get(f);
+          if (name == null) continue;
+          var c = CanBusAnalysis.counter(
+              CanBusAnalysis.window(log.values().get(name), startTime, endTime), timeline);
+          if (c.has("increase_while_enabled")) {
+            enabledErrorTotal += c.get("increase_while_enabled").getAsDouble();
+          }
         }
       }
-
-      if (canUtilEntries.isEmpty() && canErrorEntries.isEmpty()) {
-        result.addProperty("warning", "No CAN-related entries found in log");
+      builder.addData("errors", errors);
+      builder.addProperty("enabled_error_total", enabledErrorTotal);
+      if (!timeline.hasEnabledData()) {
+        builder.addWarning("No DriverStation enabled entry: while_enabled figures are absent and "
+            + "errors cannot be split by robot state.");
       }
-
-      // Add data quality from first CAN utilization or error entry
-      var canQualityEntry = !canUtilEntries.isEmpty() ? canUtilEntries.get(0)
-          : (!canErrorEntries.isEmpty() ? canErrorEntries.get(0) : null);
-      if (canQualityEntry != null) {
-        var qVals = log.values().get(canQualityEntry);
-        if (qVals != null && !qVals.isEmpty()) {
-          var quality = DataQuality.fromValues(qVals);
-          var directives = AnalysisDirectives.fromQuality(quality)
-              .addSingleMatchCaveat()
-              .addGuidance("Disabled-state CAN timeouts are normal — focus on enabled-state errors");
-          result.add("data_quality", quality.toJson());
-          result.add("server_analysis_directives", directives.toJson());
-        }
-      }
-
-      return result;
+      return builder.build();
     }
   }
 

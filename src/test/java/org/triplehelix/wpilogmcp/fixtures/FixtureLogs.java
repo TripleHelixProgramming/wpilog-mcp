@@ -34,8 +34,8 @@ import java.util.List;
  * section 6).
  *
  * <p>Every fixture is deterministic: no randomness, no wall-clock time. Values are closed-form
- * functions of time so tests can assert exact expectations. File names start with the season year
- * because {@code ToolUtils.estimateSeasonYear} reads the year from the path.
+ * functions of time so tests can assert exact expectations. File names start with the season year,
+ * the last fallback of {@code MatchTimeline.seasonOf} for logs that record no date.
  */
 public final class FixtureLogs {
 

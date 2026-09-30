@@ -31,7 +31,6 @@ import java.util.Optional;
 public final class ToolUtils {
 
   /** Pre-compiled pattern for extracting 4-digit year from log file paths. */
-  private static final java.util.regex.Pattern YEAR_PATTERN = java.util.regex.Pattern.compile("(20\\d{2})");
 
   /** JSON serializer with null serialization (important for optional fields). */
   public static final Gson GSON = new GsonBuilder().serializeNulls().create();
@@ -83,27 +82,6 @@ public final class ToolUtils {
    */
   public static LogManager getLogManager() {
     return LOG_MANAGER;
-  }
-
-  /**
-   * Estimates the FRC season year from a log's file path.
-   * WPILib log filenames typically contain a date (e.g., "FRC_20260321_123456.wpilog").
-   * Falls back to the current system clock year if no date can be extracted.
-   *
-   * @param log The parsed log
-   * @return The estimated season year
-   */
-  public static int estimateSeasonYear(org.triplehelix.wpilogmcp.log.LogData log) {
-    if (log.path() != null) {
-      var matcher = YEAR_PATTERN.matcher(log.path());
-      if (matcher.find()) {
-        int year = Integer.parseInt(matcher.group(1));
-        if (year >= 2020 && year <= 2099) {
-          return year;
-        }
-      }
-    }
-    return java.time.Year.now().getValue();
   }
 
   /**
@@ -186,24 +164,6 @@ public final class ToolUtils {
   // ==================== MATCH PHASE DETECTION UTILITIES ====================
 
   /**
-   * Checks if the robot is enabled at a given timestamp using Zero-Order Hold.
-   *
-   * <p>The FMS sets mode flags (e.g., Autonomous) before the robot is actually enabled.
-   * Match phases should only start when the robot is both in the correct mode AND enabled.
-   *
-   * @param enabledValues The timestamped Enabled boolean values (may be null)
-   * @param timestamp The timestamp to check
-   * @return true if the robot is enabled at that timestamp, or true if no enabled data exists (permissive fallback)
-   */
-  public static boolean isEnabledAt(List<TimestampedValue> enabledValues, double timestamp) {
-    if (enabledValues == null || enabledValues.isEmpty()) {
-      return true; // No enabled data — fall back to permissive behavior
-    }
-    var value = getValueAtTimeZoh(enabledValues, timestamp);
-    return Boolean.TRUE.equals(value);
-  }
-
-  /**
    * Returns true if a lower-cased entry name is a DriverStation state entry.
    *
    * <p>Two naming conventions are recognized: AdvantageKit-style names containing
@@ -215,28 +175,6 @@ public final class ToolUtils {
    */
   public static boolean isDsEntry(String lowerName) {
     return lowerName.contains("driverstation") || lowerName.startsWith("ds:");
-  }
-
-  /**
-   * Finds a DriverStation entry name in the log matching the given keyword.
-   *
-   * <p>Accepts both {@code /DriverStation/...} (AdvantageKit) and {@code DS:...} (WPILib
-   * DataLogManager) names; see {@link #isDsEntry(String)}.
-   *
-   * @param log The parsed log
-   * @param keyword The keyword to match (e.g., "enabled", "autonomous")
-   * @return The entry name, or null if not found
-   */
-  public static String findDsEntry(LogData log, String keyword) {
-    for (var entryName : log.entries().keySet()) {
-      var lower = entryName.toLowerCase();
-      if (isDsEntry(lower) && lower.contains(keyword)) {
-        // Exclude "command" entries for auto detection
-        if (keyword.contains("auto") && lower.contains("command")) continue;
-        return entryName;
-      }
-    }
-    return null;
   }
 
   // ==================== POWER ENTRY SELECTION ====================
