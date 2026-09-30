@@ -13,6 +13,8 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.tba.TbaClient;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
@@ -55,6 +57,8 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  * @since 0.4.0
  */
 public abstract class ToolBase implements McpServer.Tool {
+  private static final Logger logger = LoggerFactory.getLogger(ToolBase.class);
+
 
   // ===== DEPENDENCY INJECTION =====
 
@@ -159,6 +163,14 @@ public abstract class ToolBase implements McpServer.Tool {
       // raw exceptions to the MCP layer
       var msg = e.getMessage();
       result = errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
+    } catch (OutOfMemoryError e) {
+      // One call's allocations (usually decoding a dense entry of a very large log) exceeded the
+      // heap; they are garbage once the call unwinds, so the server can go on serving
+      logger.warn("{} ran out of heap: {}", name(), e.getMessage());
+      result = errorResult("Out of memory: this call needed more heap than the server has ("
+          + Runtime.getRuntime().maxMemory() / (1024L * 1024L) + " MB). The log or the entry "
+          + "is very large; analyze a time window (start_time/end_time or scope), or restart "
+          + "the server with a larger heap (WPILOG_MAX_HEAP, default 4g).");
     }
     // Every result, however the tool built it, satisfies the result contract: a status,
     // success consistent with it, and no NaN or infinite numbers.

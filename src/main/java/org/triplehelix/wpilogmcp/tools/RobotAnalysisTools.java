@@ -640,7 +640,11 @@ public final class RobotAnalysisTools {
           + "named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib "
           + "PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. "
           + "Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. "
-          + "Warns when no voltage or current entries are found."
+          + "Warns when no voltage or current entries are found. The battery voltage entry is "
+          + "BatteryVoltage (e.g. /SystemStats/BatteryVoltage) or Voltage under "
+          + "PowerDistribution, PDH, PDP, or Battery; the server does not guess among other "
+          + "voltage entries: it lists them in the skipped reason, and voltage_entry names the "
+          + "one to use."
           + GUIDANCE_UNIVERSAL + GUIDANCE_POWER;
     }
 
@@ -648,6 +652,7 @@ public final class RobotAnalysisTools {
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("power_prefix", "string", "Entry path prefix (e.g., '/PDP')", false)
+          .addProperty("voltage_entry", "string", "Battery voltage entry to use (default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery; other voltage entries are never guessed: when the log has only those, they are listed to confirm and pass here)", false)
           .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
           .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
           .build();
@@ -664,8 +669,11 @@ public final class RobotAnalysisTools {
       result.addProperty("success", true);
       var warnings = new ArrayList<String>();
 
-      // Voltage: shared selection with get_ds_timeline; guarantees at least one finite sample.
-      var voltageEntry = selectVoltageEntry(log, prefix);
+      // Voltage: the battery_voltage role, shared with get_ds_timeline, predict_battery_health,
+      // and generate_report; a conventional entry has at least one finite sample.
+      var battery = SignalResolver.batteryVoltage(log, prefix,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = battery.chosen();
       voltageEntry.ifPresent(name -> {
         var values = log.values().get(name);
         var stats = values.stream()
@@ -746,22 +754,20 @@ public final class RobotAnalysisTools {
       if (voltageEntry.isEmpty() && channels.isEmpty() && flag.isEmpty()) {
         return ResponseBuilder.noMatch("No battery voltage, current, or brownout flag entries "
                 + "found" + (prefix != null ? " under " + prefix : "") + ".")
-            .lookedFor(List.of("scalar numeric entries named with 'voltage' (battery first)",
+            .lookedFor(List.of("a battery voltage entry: BatteryVoltage, or Voltage under "
+                    + "PowerDistribution, PDH, PDP, or Battery",
                 "amperage entries named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or "
                     + "PowerDistribution[<id>]/Chan<N>, and per-channel current arrays",
                 "a boolean brownout flag such as /SystemStats/BrownedOut"))
-            .hint("Use search_entries with pattern 'voltage' or 'current'.")
+            .hint(battery.needsConfirmation()
+                ? SignalResolver.unresolvedReason(battery, "voltage_entry")
+                : "Use search_entries with pattern 'voltage' or 'current'.")
             .build();
       }
       if (voltageEntry.isEmpty()) {
-        result.add("skipped", skippedEntry("voltage_analysis", "no usable battery voltage entry"));
-        boolean voltageNamed = log.entries().keySet().stream()
-            .anyMatch(n -> (prefix == null || n.startsWith(prefix)) && n.toLowerCase().contains("voltage"));
-        warnings.add(voltageNamed
-            ? "Voltage entries exist but none is a scalar numeric entry with finite samples; "
-              + "no voltage analysis. Check the entry types with get_entry_info."
-            : "No battery voltage entry found. Look for an entry containing 'BatteryVoltage' "
-              + "(e.g. /SystemStats/BatteryVoltage) or pass power_prefix.");
+        var reason = SignalResolver.unresolvedReason(battery, "voltage_entry");
+        result.add("skipped", skippedEntry("voltage_analysis", reason));
+        warnings.add(reason);
       }
       if (channels.isEmpty()) {
         var skipped = result.has("skipped") ? result.getAsJsonArray("skipped") : new JsonArray();

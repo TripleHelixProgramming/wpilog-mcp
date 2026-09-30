@@ -113,6 +113,24 @@ class ToolBaseTest {
       assertFalse(obj.get("success").getAsBoolean());
       assertEquals("Test error message", obj.get("error").getAsString());
     }
+
+    @Test
+    @DisplayName("OutOfMemoryError in one call becomes an error naming the heap and the remedies")
+    void outOfMemoryConvertedToError() throws Exception {
+      var tool = new NoLogTool() {
+        @Override
+        protected JsonElement executeInternal(JsonObject arguments) {
+          throw new OutOfMemoryError("Java heap space");
+        }
+      };
+      var obj = tool.execute(new JsonObject()).getAsJsonObject();
+
+      assertFalse(obj.get("success").getAsBoolean());
+      assertEquals("error", obj.get("status").getAsString());
+      var error = obj.get("error").getAsString();
+      assertTrue(error.startsWith("Out of memory"), error);
+      assertTrue(error.contains("WPILOG_MAX_HEAP") && error.contains("start_time"), error);
+    }
   }
 
   // ===== ENTRY RETRIEVAL TESTS =====

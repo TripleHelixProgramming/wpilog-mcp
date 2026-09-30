@@ -148,6 +148,8 @@ tasks.named('test') {
     // (-PconformanceMaxLogs=N limits it to the first N)
     if (project.hasProperty('conformanceLogDir')) {
         systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
+        maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
     }
     if (project.hasProperty('conformanceMaxLogs')) {
         systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
