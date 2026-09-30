@@ -209,8 +209,9 @@ public final class CoreTools {
     public String description() {
       return "List all entries in a log file. Returns log metadata (time range, duration, "
           + "truncation status) and entry list with types and sample counts. "
-          + "Optionally filter by name pattern. Struct and array entries hold numeric fields that "
-          + "numeric tools address by path (see get_entry_info).";
+          + "Optionally filter by name pattern; no_match, naming the pattern, when it matches "
+          + "no entry. Struct and array entries hold numeric fields that numeric tools address "
+          + "by path (see get_entry_info).";
     }
 
     @Override
@@ -239,16 +240,29 @@ public final class CoreTools {
         entriesArray.add(entryObj);
       }
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("log_path", log.path());
-      result.addProperty("entry_count", entriesArray.size());
-
       // Log metadata (replaces the discovery role of the removed load_log tool)
       var timeRange = new JsonObject();
       timeRange.addProperty("start", log.minTimestamp());
       timeRange.addProperty("end", log.maxTimestamp());
       timeRange.addProperty("duration", log.duration());
+
+      if (sortedEntries.isEmpty()) {
+        // An empty list is not a listing: say what was searched
+        return ResponseBuilder.noMatch(log.entries().isEmpty() ? "The log has no entries."
+                : "No entry name contains '" + pattern + "' (" + log.entries().size()
+                    + " entries in the log).")
+            .hint("list_entries without pattern lists every entry; search_entries filters by "
+                + "type and sample count too.")
+            .addProperty("log_path", log.path())
+            .addProperty("entry_count", 0)
+            .addData("time_range_sec", timeRange)
+            .build();
+      }
+
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("log_path", log.path());
+      result.addProperty("entry_count", entriesArray.size());
       result.add("time_range_sec", timeRange);
 
       if (log.truncated()) {

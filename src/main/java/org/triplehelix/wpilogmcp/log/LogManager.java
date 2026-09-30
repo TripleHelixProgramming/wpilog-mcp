@@ -637,7 +637,22 @@ public class LogManager {
    * @since 0.5.0
    */
   public void updateSynchronizedLogs(String wpilogPath, SynchronizedLogs syncLogs) {
-    syncCache.put(wpilogPath, syncLogs);
+    syncCache.put(Path.of(wpilogPath).toAbsolutePath().normalize().toString(), syncLogs);
+  }
+
+  /**
+   * Replaces a wpilog's synchronized logs atomically (two set_revlog_offset calls on different
+   * buses must not lose one), when the wpilog has any.
+   *
+   * @param wpilogPath The wpilog path key
+   * @param update The replacement, computed from the current value
+   * @return The new value, or null when the wpilog has no synchronized logs
+   * @since 0.9.0
+   */
+  public SynchronizedLogs updateSynchronizedLogs(String wpilogPath,
+      java.util.function.UnaryOperator<SynchronizedLogs> update) {
+    return syncCache.computeIfPresent(
+        Path.of(wpilogPath).toAbsolutePath().normalize().toString(), (k, v) -> update.apply(v));
   }
 
   /**

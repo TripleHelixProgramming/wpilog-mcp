@@ -73,7 +73,8 @@ public final class StatisticsTools {
           + NumericSignal.PATH_HELP + " A [*] path pools every element (count is values, "
           + "records_in_window is records). For an angle, min/max/mean/percentiles are of the "
           + "unwrapped angle within the window (so max - min is how far it turned) and angle "
-          + "gives the circular mean and standard deviation and the number of wraps."
+          + "gives the circular mean and standard deviation, and the number of wraps when the "
+          + "signal is single-valued (a [*] pool has no order to unwrap)."
           + SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -1088,7 +1089,8 @@ public final class StatisticsTools {
           + "none, and unaligned counts those per signal. With difference=true and two "
           + "signals, difference_statistics summarizes signal 1 minus signal 2 (two angles: "
           + "their shortest difference): count, mean, std_dev, min, max, median, p5, p95, "
-          + "mean_abs, rmse." + NumericSignal.PATH_HELP + GUIDANCE_UNIVERSAL;
+          + "mean_abs, rmse. Returns no_match when no sample time falls in scope."
+          + NumericSignal.PATH_HELP + GUIDANCE_UNIVERSAL;
     }
 
     @Override
@@ -1172,6 +1174,14 @@ public final class StatisticsTools {
       }
       var sampleTimes = times.stream().filter(t -> Double.isFinite(t) && scope.contains(t))
           .toList();
+      if (sampleTimes.isEmpty()) {
+        return ResponseBuilder.noMatch("No sample time from the " + timeSource + " falls in "
+                + scope.describe() + (times.isEmpty() ? " (there are no sample times at all)"
+                    : " (" + times.size() + " sample times in the log)") + ".")
+            .hint("Widen start_time/end_time or the scope, or choose another at entry or "
+                + "time_field.")
+            .build();
+      }
 
       var samplers = signals.stream().map(Sampler::new).toList();
       var unaligned = new int[signals.size()];

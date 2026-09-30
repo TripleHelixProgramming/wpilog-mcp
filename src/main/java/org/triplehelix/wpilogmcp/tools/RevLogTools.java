@@ -16,6 +16,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 import org.triplehelix.wpilogmcp.revlog.RevLogSignal;
 import org.triplehelix.wpilogmcp.sync.ConfidenceLevel;
+import org.triplehelix.wpilogmcp.sync.SyncMethod;
 import org.triplehelix.wpilogmcp.sync.SyncResult;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
@@ -79,6 +80,56 @@ public final class RevLogTools {
   }
 
   /**
+   * The timing accuracy a sync result can claim: the confidence level's range for a
+   * correlation or a wall-clock estimate; unknown for a user offset (its accuracy is the user's)
+   * and for a failed sync.
+   */
+  static String accuracyOf(SyncResult result) {
+    return switch (result.method()) {
+      case USER_PROVIDED, FAILED -> "unknown";
+      default -> result.confidenceLevel().getAccuracyMs();
+    };
+  }
+
+  /**
+   * How a revlog's timestamps were aligned, as a warning when that bounds their accuracy: null
+   * for a high-confidence cross-correlation, otherwise a sentence that names the method.
+   */
+  static String alignmentWarning(SyncedRevLog synced) {
+    var result = synced.syncResult();
+    var bus = synced.canBusName();
+    return switch (result.method()) {
+      case CROSS_CORRELATION -> result.confidenceLevel() == ConfidenceLevel.HIGH ? null
+          : String.format("REV log '%s': timestamps aligned by cross-correlation at %s "
+              + "confidence (accuracy about %s ms); sync_status has the signal pairs.", bus,
+              result.confidenceLevel().getLabel(), result.confidenceLevel().getAccuracyMs());
+      case SYSTEM_TIME_ONLY -> String.format("REV log '%s': timestamps aligned by the wall-clock "
+          + "estimate only (the REV log's filename time against the wpilog's wall clock; no "
+          + "signal pair correlated), which can be off by seconds or more. set_revlog_offset "
+          + "sets a known offset.", bus);
+      case USER_PROVIDED -> String.format("REV log '%s': timestamps aligned by a user-provided "
+          + "offset of %.1f ms; the server cannot judge its accuracy.", bus,
+          result.offsetMillis());
+      case FAILED -> String.format("REV log '%s' was not synchronized (%s): its timestamps are "
+          + "on the REV log's own clock, and get_revlog_data returns not_applicable for its "
+          + "signals until set_revlog_offset provides an offset.", bus, result.explanation());
+    };
+  }
+
+  /** The buses and paths of the revlogs, for results that cannot use them. */
+  static JsonArray revlogsJson(SynchronizedLogs syncLogs) {
+    var array = new JsonArray();
+    for (SyncedRevLog synced : syncLogs.revlogs()) {
+      var o = new JsonObject();
+      o.addProperty("can_bus", synced.canBusName());
+      o.addProperty("path", synced.revlog().path());
+      o.addProperty("sync_method", synced.syncResult().method().name());
+      array.add(o);
+    }
+    return array;
+  }
+
+  /**
    * Lists all available signals from synchronized REV logs.
    */
   static class ListRevLogSignalsTool extends LogRequiringTool {
@@ -99,8 +150,11 @@ public final class RevLogTools {
           + "rotations unless a conversion factor is configured on the SPARK: compare with "
           + "the robot code's own entries before assuming a unit); and other sensors when "
           + "their frames were logged. Signals are automatically synchronized with wpilog "
-          + "timestamps when loaded. IMPORTANT: Check sync_confidence to understand timestamp "
-          + "accuracy.";
+          + "timestamps when loaded; each carries sync_method (CROSS_CORRELATION, "
+          + "SYSTEM_TIME_ONLY, USER_PROVIDED, or FAILED), timestamps_aligned, offset_seconds, "
+          + "and sync_confidence, and a warning says how a bus was aligned when that bounds its "
+          + "accuracy. Returns not_applicable when no REV log could be synchronized (with the "
+          + "buses, for set_revlog_offset) and no_match when the filters match no signal.";
     }
 
     @Override
@@ -133,14 +187,21 @@ public final class RevLogTools {
 
       JsonArray signals = new JsonArray();
       int totalSignals = 0;
+      int unfiltered = 0;
+      int failedRevlogs = 0;
+      var warnings = new java.util.ArrayList<String>();
 
       for (SyncedRevLog synced : syncLogs.revlogs()) {
         String busName = synced.canBusName();
         SyncResult result = synced.syncResult();
         String confidence = result.confidenceLevel().getLabel();
         boolean multipleRevLogs = syncLogs.revlogCount() > 1;
+        if (result.method() == SyncMethod.FAILED) failedRevlogs++;
+        var warning = alignmentWarning(synced);
+        if (warning != null) warnings.add(warning);
 
         for (RevLogSignal signal : synced.revlog().signals().values()) {
+          unfiltered++;
           // Apply device filter
           if (deviceFilter != null
               && !signal.deviceKey().toLowerCase().contains(deviceFilter.toLowerCase())) {
@@ -166,6 +227,11 @@ public final class RevLogTools {
           signalObj.addProperty("unit", signal.unit());
           signalObj.addProperty("sample_count", signal.values().size());
           signalObj.addProperty("can_bus", busName);
+          signalObj.addProperty("sync_method", result.method().name());
+          signalObj.addProperty("timestamps_aligned", result.method() != SyncMethod.FAILED);
+          if (result.method() != SyncMethod.FAILED) {
+            signalObj.addProperty("offset_seconds", result.offsetSeconds());
+          }
           signalObj.addProperty("sync_confidence", confidence);
 
           signals.add(signalObj);
@@ -173,24 +239,37 @@ public final class RevLogTools {
         }
       }
 
+      if (failedRevlogs == syncLogs.revlogCount()) {
+        return ResponseBuilder.notApplicable("None of the " + syncLogs.revlogCount() + " REV "
+                + "log(s) found for this wpilog could be synchronized, so their timestamps cannot "
+                + "be converted to FPGA time.")
+            .hint("sync_status explains each; set_revlog_offset provides a known offset per bus, "
+                + "after which the signals can be read.")
+            .addData("revlogs", revlogsJson(syncLogs))
+            .build();
+      }
+      if (totalSignals == 0 && unfiltered > 0) {
+        var criteria = new java.util.ArrayList<String>();
+        if (deviceFilter != null) criteria.add("device containing '" + deviceFilter + "'");
+        if (signalFilter != null) criteria.add("signal name containing '" + signalFilter + "'");
+        return ResponseBuilder.noMatch("No signal matches " + String.join(" and ", criteria)
+                + " (" + unfiltered + " signals in " + syncLogs.revlogCount() + " REV log(s)).")
+            .hint("Call list_revlog_signals without filters to see every signal key.")
+            .build();
+      }
+
       ConfidenceLevel overall = syncLogs.overallConfidence();
-      String accuracyEstimate = overall.getAccuracyMs();
+      boolean accuracyKnown = syncLogs.revlogs().stream().allMatch(s ->
+          s.syncResult().method() == SyncMethod.CROSS_CORRELATION
+              || s.syncResult().method() == SyncMethod.SYSTEM_TIME_ONLY);
 
       ResponseBuilder response = success()
           .addProperty("signal_count", totalSignals)
           .addData("signals", signals)
           .addProperty("revlog_count", syncLogs.revlogCount())
           .addProperty("overall_sync_confidence", overall.getLabel())
-          .addMetadata("timing_accuracy_ms", accuracyEstimate);
-
-      // Add warning for anything below HIGH confidence
-      if (overall.ordinal() >= ConfidenceLevel.MEDIUM.ordinal()) {
-        response.addWarning(
-            "REV log timestamps are synchronized via statistical correlation "
-                + "(confidence: " + overall.getLabel() + "). "
-                + "Timing accuracy: ~" + accuracyEstimate + "ms. "
-                + "Use with caution for precise timing analysis.");
-      }
+          .addMetadata("timing_accuracy_ms", accuracyKnown ? overall.getAccuracyMs() : "unknown");
+      warnings.forEach(response::addWarning);
 
       return response.build();
     }
@@ -209,9 +288,13 @@ public final class RevLogTools {
     @Override
     public String description() {
       return "Get data from a REV log signal with timestamps converted to FPGA time. "
-          + "Use list_revlog_signals first to discover available signal keys. "
-          + "IMPORTANT: Timestamps are synchronized via statistical correlation and "
-          + "may have limited accuracy depending on sync confidence level.";
+          + "Use list_revlog_signals first to discover available signal keys. sync_method, "
+          + "offset_seconds, and sync_confidence say how the timestamps were aligned (a "
+          + "cross-correlation of signals both logs record, the wall-clock estimate alone, or a "
+          + "user-provided offset, whose accuracy the server cannot judge: timing_accuracy_ms "
+          + "is then unknown), and a warning says so when the method bounds the accuracy. A "
+          + "signal whose REV log could not be synchronized returns not_applicable until "
+          + "set_revlog_offset provides an offset: its timestamps are on the REV log's own clock.";
     }
 
     @Override
@@ -260,10 +343,25 @@ public final class RevLogTools {
       boolean includeStats = arguments.has("include_stats")
           && arguments.get("include_stats").getAsBoolean();
 
-      List<TimestampedValue> values = syncLogs.getValues(signalKey);
+      SyncedRevLog synced = syncLogs.revlogFor(signalKey);
+      List<TimestampedValue> values = synced == null ? null : syncLogs.getValues(signalKey);
       if (values == null) {
         throw new IllegalArgumentException(
             "Signal not found: " + signalKey + ". Use list_revlog_signals to see available signals.");
+      }
+      SyncResult sync = synced.syncResult();
+      if (sync.method() == SyncMethod.FAILED) {
+        return ResponseBuilder.notApplicable("The REV log holding " + signalKey + " (bus '"
+                + synced.canBusName() + "', " + synced.revlog().path() + ") was not synchronized: "
+                + sync.explanation() + " Its timestamps are on the REV log's own clock and cannot "
+                + "be converted to FPGA time.")
+            .hint("sync_status has the details; if you know the offset, set it with "
+                + "set_revlog_offset (can_bus '" + synced.canBusName() + "') and call "
+                + "get_revlog_data again.")
+            .addProperty("can_bus", synced.canBusName())
+            .addProperty("sync_method", "FAILED")
+            .addProperty("timestamps_aligned", false)
+            .build();
       }
 
       // Filter by time range
@@ -289,15 +387,19 @@ public final class RevLogTools {
         dataArray.add(point);
       }
 
-      // Get sync confidence for this signal
-      ConfidenceLevel confidence = syncLogs.overallConfidence();
-      String accuracyEstimate = confidence.getAccuracyMs();
+      // How this signal's timestamps were aligned: its own revlog's sync, not the overall level
+      ConfidenceLevel confidence = sync.confidenceLevel();
+      String accuracyEstimate = accuracyOf(sync);
 
       ResponseBuilder response = success()
           .addProperty("signal_key", signalKey)
+          .addProperty("can_bus", synced.canBusName())
           .addProperty("sample_count", dataArray.size())
           .addProperty("total_samples", totalCount)
           .addLimitedList("data", dataArray, totalCount, limit)
+          .addProperty("sync_method", sync.method().name())
+          .addProperty("timestamps_aligned", true)
+          .addProperty("offset_seconds", sync.offsetSeconds())
           .addProperty("sync_confidence", confidence.getLabel())
           .addMetadata("timing_accuracy_ms", accuracyEstimate);
 
@@ -324,19 +426,15 @@ public final class RevLogTools {
           var quality = DataQuality.fromValues(inRange);
           var directives = AnalysisDirectives.fromQuality(quality)
               .addSingleMatchCaveat()
-              .addGuidance("Revlog timestamps are synchronized via cross-correlation "
-                  + "(confidence: " + confidence.getLabel() + "). "
-                  + "Accuracy depends on sync quality.");
+              .addGuidance("Revlog timestamps were aligned by " + sync.method().getDescription()
+                  .toLowerCase(java.util.Locale.ROOT) + " (confidence: " + confidence.getLabel()
+                  + ", accuracy: " + accuracyEstimate + " ms); sync_status has the details.");
           response.addDataQuality(quality).addDirectives(directives);
         }
       }
 
-      // Add warning for anything below HIGH confidence
-      if (confidence.ordinal() >= ConfidenceLevel.MEDIUM.ordinal()) {
-        response.addWarning(
-            "Timestamps synchronized via correlation (confidence: " + confidence.getLabel() + "). "
-                + "Timing accuracy: ~" + accuracyEstimate + "ms.");
-      }
+      var warning = alignmentWarning(synced);
+      if (warning != null) response.addWarning(warning);
 
       return response.build();
     }
@@ -496,7 +594,8 @@ public final class RevLogTools {
           + "offset between revlog and wpilog timestamps. The offset is added to revlog "
           + "timestamps to convert them to FPGA time. "
           + "Example: if a revlog event appears 0.5s after the same event in wpilog, "
-          + "set offset_ms to -500.";
+          + "set offset_ms to -500. offset_ms is required: omitting it is an error, not an "
+          + "offset of zero.";
     }
 
     @Override
@@ -524,7 +623,13 @@ public final class RevLogTools {
         return noRevlogs(log, logManager.isRevLogSyncInProgress(log.path())).build();
       }
 
-      double offsetMs = getOptDouble(arguments, "offset_ms", 0.0);
+      var offsetArg = getOptDouble(arguments, "offset_ms");
+      if (offsetArg == null || !Double.isFinite(offsetArg)) {
+        throw new IllegalArgumentException("Missing required parameter: offset_ms, the "
+            + "milliseconds to add to revlog timestamps to get FPGA time (a finite number). The "
+            + "synchronization was not changed.");
+      }
+      double offsetMs = offsetArg;
       long offsetMicros = Math.round(offsetMs * 1000.0);
       String canBus = getOptString(arguments, "can_bus", null);
 
@@ -548,19 +653,20 @@ public final class RevLogTools {
       // Create new SyncResult with user-provided offset
       SyncResult userResult = SyncResult.fromUserOffset(offsetMicros);
 
-      // Rebuild SynchronizedLogs with the updated offset
-      SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(syncLogs.wpilog());
-      for (SyncedRevLog synced : syncLogs.revlogs()) {
-        if (synced == target) {
-          builder.addRevLog(synced.revlog(), userResult, synced.canBusName());
-        } else {
-          builder.addRevLog(synced.revlog(), synced.syncResult(), synced.canBusName());
+      // Rebuild SynchronizedLogs with the updated offset, atomically against the cached value
+      // (a concurrent call on another bus must not be lost)
+      String targetBus = target.canBusName();
+      var updated = logManager.updateSynchronizedLogs(log.path(), current -> {
+        SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(current.wpilog());
+        for (SyncedRevLog synced : current.revlogs()) {
+          builder.addRevLog(synced.revlog(), synced.canBusName().equals(targetBus)
+              ? userResult : synced.syncResult(), synced.canBusName());
         }
+        return builder.build();
+      });
+      if (updated == null) {
+        return noRevlogs(log, logManager.isRevLogSyncInProgress(log.path())).build();
       }
-
-      // Update the sync cache via LogManager
-      // The syncCache in LogManager is a ConcurrentHashMap keyed by wpilog path
-      logManager.updateSynchronizedLogs(log.path(), builder.build());
 
       return success()
           .addProperty("can_bus", target.canBusName())

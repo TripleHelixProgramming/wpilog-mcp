@@ -145,7 +145,8 @@ public final class FrcDomainTools {
           + "in this log; brownout_voltage_entry names the voltage entry scanned for threshold "
           + "crossings (BatteryVoltage, or Voltage under PowerDistribution, PDH, PDP, or Battery; "
           + "voltage_entry names another), and a warning says when there is none, listing any "
-          + "voltage entries to confirm: the server does not guess which one is the battery."
+          + "voltage entries to confirm: the server does not guess which one is the battery. "
+          + "Returns not_applicable when the log has none of these inputs at all."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -298,6 +299,23 @@ public final class FrcDomainTools {
       }
 
       events.sort(Comparator.comparingDouble(a -> a.get("timestamp").getAsDouble()));
+
+      if (events.isEmpty() && !timeline.hasEnabledData() && dsSources.autonomous() == null
+          && voltageEntry.isEmpty() && rioFlagEntry == null
+          && TextEvents.textEntries(log).isEmpty()) {
+        // Nothing a timeline is built from: not an empty timeline, but no timeline at all
+        return ResponseBuilder.notApplicable("This log has none of the entries a timeline is "
+                + "built from: no DriverStation state, no battery voltage entry, no roboRIO "
+                + "brownout flag, and no text entries.")
+            .lookedFor(List.of("boolean Enabled/Autonomous/Test/FMSAttached under "
+                + "/DriverStation/ or DS:, or int64 FMSInfo/FMSControlData",
+                "a battery voltage entry (BatteryVoltage, or Voltage under "
+                    + "PowerDistribution/PDH/PDP/Battery; voltage_entry names another)",
+                "a boolean BrownedOut flag", "string, string[], or json entries"))
+            .hint("list_entries shows what the log holds; get_match_phases and power_analysis "
+                + "report their own inputs.")
+            .build();
+      }
 
       var categoryCounts = new HashMap<String, Integer>();
       for (var event : events) {
@@ -1336,7 +1354,8 @@ public final class FrcDomainTools {
       return "Analyze autonomous periods: every enabled autonomous segment (from the same "
           + "DriverStation timeline as get_match_phases) with its start, end, duration, and "
           + "end_reason; the selected routine at each start (from a WPILib SendableChooser's "
-          + "active entry: the only one, or the only one with 'auto' in its path; chooser_entry "
+          + "active entry, or AdvantageKit's /NetworkInputs/SmartDashboard/<key>, when exactly one "
+          + "chooser's key contains 'auto'; other choosers are listed to confirm; chooser_entry "
           + "names another); and path following error (RMSE and max, meters) between a setpoint "
           + "pose (PathPlanner/targetPose or Odometry/TrajectorySetpoint; path_setpoint_entry) "
           + "and the actual pose (PathPlanner/currentPose, else the robot pose; "
@@ -2410,8 +2429,8 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze CAN bus health from the counters the log records, per bus: utilization "
           + "(percent; 0-1 fractions are detected and converted), transmit/receive error "
-          + "counters TEC and REC (maximum, when, excursions above the error-passive threshold "
-          + "of 128, time spent at or above it; bus-off is TEC above 255), and bus-off and "
+          + "counters TEC and REC (maximum, when, excursions to the error-passive threshold "
+          + "of 128 or above, time spent at or above it; bus-off is TEC above 255), and bus-off and "
           + "TX-full count increases, each overall and while enabled. Buses are found by the "
           + "standard field names (WPILib CANStatus as AdvantageKit logs it under "
           + "/SystemStats/CANBus, named 'rio'; CTRE CANivore status such as "

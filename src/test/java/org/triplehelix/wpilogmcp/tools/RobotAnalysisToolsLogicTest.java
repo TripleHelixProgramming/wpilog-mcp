@@ -1024,8 +1024,11 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("total_can_errors"));
+      // A log with neither text nor CAN counters gives no health level (absence of evidence
+      // is not GOOD): not_applicable, with what was looked for
+      assertEquals("not_applicable", resultObj.get("status").getAsString(), resultObj.toString());
+      assertFalse(resultObj.has("health_assessment"));
+      assertTrue(resultObj.has("looked_for"));
     }
 
     @Test

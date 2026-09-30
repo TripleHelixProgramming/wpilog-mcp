@@ -242,7 +242,7 @@ List the log files currently loaded in the server's cache, and the cache status.
   - `2024dcmp_f1_sim.wpilog` → "DCMP Final 1 Simulation"
 
 ### `list_entries`
-List all entries in the specified log file.
+List all entries in the specified log file. Returns `no_match`, naming the pattern, when it matches no entry (or the log has none).
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -784,7 +784,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 ---
 
 ### `align_entries`
-Sample several numeric signals at common times: to read them side by side, or to measure one against another.
+Sample several numeric signals at common times: to read them side by side, or to measure one against another. Returns `no_match` when no sample time falls in scope.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1013,7 +1013,7 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 ```
 
 ### `can_health`
-CAN bus health overview from two sources: console and message text with CAN failures, and the structured bus counters `analyze_can_bus` reads.
+CAN bus health overview from two sources: console and message text with CAN failures, and the structured bus counters `analyze_can_bus` reads. Returns `not_applicable` when the log has neither text entries nor CAN counters: absence of evidence is not GOOD. `health_assessment` is UNKNOWN when CAN error lines exist but the log has no DriverStation state.
 
 **How it works:**
 - Text: every line of every string entry is checked. A line is a CAN failure when "CAN" appears as a word (or as CANbus, CANivore, CANcoder — not "cannot", "scan", "Canandgyro", or "cancel") together with timeout, timed out, error, or fault ("default" is not a fault).
@@ -1362,7 +1362,7 @@ Each season's breakdown names its own point subtotals (2024: `autoAmpNotePoints`
 ## Export Tools
 
 ### `export_csv`
-Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return its rows inline. This is the escape hatch when no tool can compute what you need: export, compute, and cite the export.
+Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return its rows inline. This is the escape hatch when no tool can compute what you need: export, compute, and cite the export. Returns `no_match`, and writes nothing, when the window holds no samples; `export_directory` is in file results.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1444,7 +1444,7 @@ Sections that cannot be produced are listed in `skipped` (status `partial`); an 
 ## FRC Domain Tools
 
 ### `get_ds_timeline`
-Generate a chronological timeline of critical robot events. Detects enable/disable transitions, match phase changes, battery-voltage threshold brownouts, and roboRIO brownout flag transitions (when the robot logs one). Errors and warnings found in string entries are **counted and summarized, not listed**: the timeline reports exact counts and a distinct-message summary, and `search_strings` provides the complete, paged listing — so no heuristic decides which messages you see. DriverStation entries are recognized under both the `/DriverStation/...` (AdvantageKit) and `DS:...` (WPILib DataLogManager) naming conventions.
+Generate a chronological timeline of critical robot events. Detects enable/disable transitions, match phase changes, battery-voltage threshold brownouts, and roboRIO brownout flag transitions (when the robot logs one). Errors and warnings found in string entries are **counted and summarized, not listed**: the timeline reports exact counts and a distinct-message summary, and `search_strings` provides the complete, paged listing — so no heuristic decides which messages you see. DriverStation entries are recognized under both the `/DriverStation/...` (AdvantageKit) and `DS:...` (WPILib DataLogManager) naming conventions. Returns `not_applicable` when the log has none of the entries a timeline is built from (DriverStation state, a battery voltage entry, a roboRIO brownout flag, text entries). The result carries no `data_quality` block: its fields are observed events and exact counts, not statistics.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2118,7 +2118,7 @@ The revlog parser includes guards against corrupted or truncated files:
 - **Truncated CAN frame handling**: Frames shorter than 8 bytes are silently skipped
 
 ### `list_revlog_signals`
-List all available signals from synchronized REV log files. Shows signal names, device info, sample counts, and synchronization confidence.
+List all available signals from synchronized REV log files. Shows signal names, device info, sample counts, and synchronization confidence. Each signal carries `sync_method` (`CROSS_CORRELATION`, `SYSTEM_TIME_ONLY`, `USER_PROVIDED`, or `FAILED`), `timestamps_aligned`, `offset_seconds`, and `sync_confidence`; a warning says how a bus was aligned when that bounds its accuracy (`_metadata.timing_accuracy_ms` is `unknown` when any bus has a user offset or failed). Returns `not_applicable`, listing the buses for `set_revlog_offset`, when no REV log could be synchronized, and `no_match` when the filters match no signal.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2181,7 +2181,7 @@ List all available signals from synchronized REV log files. Shows signal names, 
 Device keys are `SparkMax_<CAN id>` for every SPARK (device type 2 covers both SPARK MAX and SPARK Flex). Firmware 25+ also sends the legacy status 0 frame once a second for old followers, with zero output and every fault set; it carries no data and is not decoded. A custom DBC in the configuration directory (`rev_spark.dbc`) replaces the built-in one; keep the built-in signal names so synchronization still finds its candidate pairs.
 
 ### `get_revlog_data`
-Get data from a REV log signal with timestamps converted to FPGA time. Similar to `read_entry` but for REV motor controller data.
+Get data from a REV log signal with timestamps converted to FPGA time. Similar to `read_entry` but for REV motor controller data. The result reports `can_bus`, `sync_method`, `timestamps_aligned`, `offset_seconds`, and `sync_confidence` for the signal's own REV log, and a warning names the method when it bounds the accuracy (`timing_accuracy_ms` is `unknown` for a user-provided offset). A signal whose REV log could not be synchronized returns `not_applicable` until `set_revlog_offset` provides an offset: its timestamps are on the REV log's own clock.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2303,7 +2303,7 @@ Get detailed synchronization status for all synchronized REV log files. Shows co
 ```
 
 ### `set_revlog_offset`
-Manually set the synchronization offset for a REV log file, overriding automatic synchronization. Use this when automatic sync fails, produces incorrect results, or when you have determined the correct offset through other means (e.g., by visually aligning a known event in both logs).
+Manually set the synchronization offset for a REV log file, overriding automatic synchronization. Use this when automatic sync fails, produces incorrect results, or when you have determined the correct offset through other means (e.g., by visually aligning a known event in both logs). `offset_ms` is required: omitting it is an error and leaves the synchronization unchanged (it used to apply an offset of zero).
 
 **Parameters:**
 - `path` (required): Path to the log file

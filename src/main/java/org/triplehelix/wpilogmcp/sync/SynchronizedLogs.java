@@ -234,6 +234,20 @@ public class SynchronizedLogs {
   }
 
   /**
+   * The synchronized revlog that holds a signal key ({@code REV/[bus/]Device_N/Signal}), or null
+   * when no revlog has it.
+   */
+  public SyncedRevLog revlogFor(String signalKey) {
+    SignalKeyParts parts = parseSignalKey(signalKey);
+    if (parts == null) return null;
+    for (SyncedRevLog synced : revlogs) {
+      if (parts.canBus() != null && !parts.canBus().equals(synced.canBusName())) continue;
+      if (synced.revlog().signals().containsKey(parts.deviceSignal())) return synced;
+    }
+    return null;
+  }
+
+  /**
    * Gets sync details for a specific CAN bus.
    *
    * @param canBusName The CAN bus name

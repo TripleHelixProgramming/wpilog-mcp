@@ -87,11 +87,12 @@ public final class ExportTools {
           + "numeric or text field (nested fields as dot paths, e.g. translation.x, arrays as "
           + "field[i]), a struct array or primitive array becomes one row per element with an "
           + "index column. Files are written inside the server's export directory "
-          + "(export_directory in every result): pass a bare or relative output_path, which is "
+          + "(export_directory in every file result): pass a bare or relative output_path, which is "
           + "resolved inside it, or omit it for a generated name; an absolute path must lie inside "
           + "it. The result gives the absolute path written. With inline=true no file is written "
           + "and the rows come back in the response (max_rows, default 500), for agents that "
-          + "cannot read the export directory. Cite the export when you compute from it.";
+          + "cannot read the export directory. Returns no_match, and writes nothing, when the "
+          + "window holds no samples. Cite the export when you compute from it.";
     }
 
     @Override
@@ -138,6 +139,16 @@ public final class ExportTools {
         } else {
           rows.add(new Row(t, -1, flatten(tv.value())));
         }
+      }
+      if (rows.isEmpty()) {
+        // Nothing to export: no header-only file, no empty success
+        return ResponseBuilder.noMatch("No samples of " + name
+                + (startTime != null || endTime != null ? " between "
+                    + (startTime != null ? startTime : "start") + " and "
+                    + (endTime != null ? endTime : "end") + " s" : "")
+                + " (" + values.size() + " in the log); nothing was written.")
+            .hint("Widen start_time/end_time, or omit them to export every sample.")
+            .build();
       }
       var columnSet = new java.util.TreeSet<String>();
       rows.forEach(r -> columnSet.addAll(r.fields().keySet()));
@@ -329,8 +340,9 @@ public final class ExportTools {
           + "voltage_entry) with brownout_risk and its basis as power_analysis gives them, "
           + "brownouts from the roboRIO flag when logged, and the brownout threshold with its "
           + "basis; the three largest current peaks in the same scope (power_analysis channel_analysis, each channel of an array separately); error and "
-          + "warning counts from console and message text (one classification per line, as in "
-          + "get_ds_timeline and search_strings) with the most frequent messages; code metadata "
+          + "warning counts from console and message text (each text sample classified once by "
+          + "its most severe line, an alert once per appearance, as in get_ds_timeline and "
+          + "search_strings) with the most frequent messages; code metadata "
           + "(get_code_metadata); and the most common data types. Each section names its source "
           + "entries; use the individual tools for detail."
           + GUIDANCE_UNIVERSAL;

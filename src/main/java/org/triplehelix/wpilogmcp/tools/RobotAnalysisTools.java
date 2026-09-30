@@ -627,7 +627,8 @@ public final class RobotAnalysisTools {
           + "below; the threshold comes from the log's BrownoutVoltage entry when logged, else "
           + "6.8V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only "
           + "from the roboRIO's logged brownout flag, or from crossings when no flag is logged; "
-          + "MODERATE within 1 V; LOW otherwise), the roboRIO's own brownouts in scope when its "
+          + "MODERATE for crossings the logged flag did not confirm, or a minimum within 1 V; "
+          + "LOW otherwise), the roboRIO's own brownouts in scope when its "
           + "flag is logged (rio_brownouts: start and duration of each), and, for every amperage "
           + "entry, the peak current by magnitude with its timestamp, signed min/max, average, "
           + "and sample count in scope, sorted by peak. Amperage entries are "
@@ -924,15 +925,18 @@ public final class RobotAnalysisTools {
     @Override
     public String description() {
       return "CAN bus health overview from two sources: console and message text (string "
-          + "entries) with CAN timeout/error/fault lines, each classified by the robot's enabled "
-          + "state at that moment from the DriverStation timeline, and the structured bus "
-          + "counters that analyze_can_bus reads (TEC/REC error counters, bus-off and TX-full "
-          + "counts). health_assessment: POOR if a bus-off count rose while enabled or 50+ CAN "
-          + "text errors occurred while enabled; CONCERNING if any CAN text error occurred while "
-          + "enabled or TEC/REC reached 128 (error-passive) while enabled; otherwise GOOD. "
-          + "assessment_basis says which fact decided it. Errors while disabled are normal (for "
-          + "example devices booting) and do not count; errors before the first DriverStation "
-          + "sample are reported separately. See analyze_can_bus for per-bus detail."
+          + "lines, string[] alerts, json strings) with CAN timeout/error/fault lines, each "
+          + "classified by the robot's enabled state at that moment from the DriverStation "
+          + "timeline, and the structured bus counters that analyze_can_bus reads (TEC/REC error "
+          + "counters, bus-off and TX-full counts). health_assessment: POOR if a bus-off count "
+          + "rose while enabled or 50+ CAN text errors occurred while enabled; CONCERNING if any "
+          + "CAN text error occurred while enabled or TEC/REC reached 128 (error-passive) while "
+          + "enabled; UNKNOWN when CAN error lines exist but the log has no DriverStation state "
+          + "to tell whether the robot was enabled; otherwise GOOD. assessment_basis says which "
+          + "fact decided it. Errors while disabled are normal (for example devices booting) and "
+          + "do not count; errors before the first DriverStation sample are reported separately. "
+          + "Returns not_applicable when the log has neither text entries nor CAN counters: "
+          + "absence of evidence is not GOOD. See analyze_can_bus for per-bus detail."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -944,6 +948,21 @@ public final class RobotAnalysisTools {
       var timeline = MatchTimeline.of(log);
       boolean hasEnabledData = timeline.hasEnabledData();
 
+      var textEntries = TextEvents.textEntries(log);
+      var buses = CanBusAnalysis.discoverBuses(log);
+      if (textEntries.isEmpty() && buses.isEmpty()) {
+        // Nothing to assess: an absence of evidence is not a health level
+        return ResponseBuilder.notApplicable("This log has no console or message text and no CAN "
+                + "bus counters, so CAN health cannot be assessed from it.")
+            .lookedFor(List.of("string, string[] (alert), or json entries whose lines report a "
+                + "CAN timeout, error, or fault", "CAN counter entries (Utilization, "
+                + "BusOffCount, TxFullCount, REC, TEC) under a path containing 'can', or with two "
+                + "or more counters under one path"))
+            .hint("analyze_can_bus reads the counters when a log has them; search_strings lists "
+                + "any text a log holds.")
+            .build();
+      }
+
       long totalEnabled = 0;
       long totalDisabled = 0;
       long totalUnknown = 0;
@@ -951,7 +970,7 @@ public final class RobotAnalysisTools {
       var firstEnabled = new ArrayList<JsonObject>();
 
       // Text from string lines, alerts (once per appearance), and json strings
-      for (var entry : TextEvents.textEntries(log)) {
+      for (var entry : textEntries) {
         long enabled = 0;
         long disabled = 0;
         long unknown = 0;
@@ -990,7 +1009,6 @@ public final class RobotAnalysisTools {
       }
 
       // Structured counters, shared with analyze_can_bus
-      var buses = CanBusAnalysis.discoverBuses(log);
       var busSummary = new JsonArray();
       double busOffEnabled = 0;
       double maxEnabledErrorCounter = 0;

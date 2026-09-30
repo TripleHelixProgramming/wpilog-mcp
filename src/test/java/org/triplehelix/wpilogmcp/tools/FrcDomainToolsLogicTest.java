@@ -452,7 +452,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       putLogInCache(numericOnly);
       args.addProperty("path", numericOnly.path());
       var r2 = findTool("get_ds_timeline").execute(args).getAsJsonObject();
-      assertFalse(r2.get("rio_brownout_flag_logged").getAsBoolean());
+      // A numeric "BrownedOutCount" is not a flag, and with no DriverStation, voltage, or text
+      // entries either there is nothing to build a timeline from
+      assertEquals("not_applicable", r2.get("status").getAsString(), r2.toString());
       assertFalse(r2.has("rio_brownout_flag_entry"));
     }
   }
