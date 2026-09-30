@@ -368,10 +368,20 @@ public class ResponseBuilder {
   public ResponseBuilder addDataQuality(DataQuality quality) {
     response.add("data_quality", quality.toJson());
     if (quality.qualityScore() < 0.5) {
-      addWarning("Low data quality (score: " + String.format("%.2f", quality.qualityScore())
-          + "). Results should be treated as preliminary.");
+      addWarning(lowQualityWarning(quality));
     }
     return this;
+  }
+
+  /**
+   * The warning attached below a quality score of 0.5. It bounds statistics only: a logged
+   * flag, a threshold crossing, or an error line in the same result is an observation and is
+   * not made preliminary by sparse or irregular sampling.
+   */
+  static String lowQualityWarning(DataQuality quality) {
+    return "Low data quality (score: " + String.format("%.2f", quality.qualityScore())
+        + "): statistics in this result should be treated as preliminary; directly observed "
+        + "events (a logged flag, a threshold crossing, an error line) are not affected.";
   }
 
   /**

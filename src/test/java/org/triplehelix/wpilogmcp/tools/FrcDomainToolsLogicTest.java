@@ -118,7 +118,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertTrue(types.contains("DISABLED"), types.toString());
       assertTrue(types.contains("AUTO_START"), types.toString());
       assertTrue(types.contains("TELEOP_START"), types.toString());
-      assertTrue(resultObj.has("data_quality"), "quality should come from DS:enabled");
+      // A timeline of directly observed events carries no statistic-style quality block
+      assertFalse(resultObj.has("data_quality"), "events are not a statistic");
+      assertFalse(resultObj.has("server_analysis_directives"));
     }
 
     @Test

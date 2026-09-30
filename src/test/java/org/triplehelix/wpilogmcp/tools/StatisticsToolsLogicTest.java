@@ -1075,9 +1075,10 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("rate_of_change with all identical timestamps returns zero avg_rate")
+    @DisplayName("rate_of_change with all identical timestamps is no_match with a null avg_rate")
     void rateOfChangeAllIdenticalTimestamps() throws Exception {
-      // All timestamps are 0.0 — every dt is 0, no valid rates
+      // All timestamps are 0.0 — every dt is 0, no valid rates: an undefined average is null,
+      // and nothing was found to differentiate, so the result is not a success
       var log = new MockLogBuilder()
           .setPath("/test/same_ts.wpilog")
           .addNumericEntry("/Sensor",
@@ -1094,10 +1095,11 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("shares a timestamp"));
       var stats = resultObj.getAsJsonObject("statistics");
-      assertEquals(0.0, stats.get("avg_rate").getAsDouble(), 0.001,
-          "All zero-dt should produce avg_rate=0");
+      assertTrue(stats.get("avg_rate").isJsonNull(), "an undefined average is null, not 0");
     }
 
     @Test

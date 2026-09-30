@@ -366,15 +366,10 @@ public final class FrcDomainTools {
             + "or match phase events in this timeline.");
       }
 
-      // Add data quality from enabled values if available
-      var enabledValuesForTimeline = dsSources.enabled() == null ? null
-          : log.values().get(dsSources.enabled());
-      if (enabledValuesForTimeline != null && !enabledValuesForTimeline.isEmpty()) {
-        var quality = DataQuality.fromValues(enabledValuesForTimeline);
-        builder.addDataQuality(quality)
-            .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
-      }
-
+      // No data_quality block: every field here is a directly observed event or an exact
+      // count, not a statistic, and the DriverStation entries it comes from are change-only
+      // booleans with a handful of samples, whose sampling says nothing about the events.
+      // get_match_phases carries none for the same reason.
       return builder.build();
     }
 
@@ -1156,8 +1151,8 @@ public final class FrcDomainTools {
 
       var qualityEntry = measurement != null ? measurement : velocity;
       if (qualityEntry != null) {
-        var quality = DataQuality.fromValues(window(log.values().get(qualityEntry), startTime,
-            endTime));
+        var quality = DataQuality.fromValues(log.values().get(qualityEntry).stream()
+            .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).toList());
         builder.addDataQuality(quality)
             .addDirectives(AnalysisDirectives.fromQuality(quality)
                 .addSingleMatchCaveat()
@@ -2348,6 +2343,9 @@ public final class FrcDomainTools {
           .addProperty("violation_rate", violationRate)
           .addProperty("percent_over_threshold", violationRate * 100)
           .addProperty("health_score", healthScore)
+          .addProperty("health_score_basis", String.format(java.util.Locale.ROOT, "heuristic: "
+              + "100 minus the percent of loops in scope over threshold_ms (%.1f ms); the "
+              + "statistics and violations beside it are the measurements", thresholdMs))
           .addData("statistics", statistics)
           .addLimitedList("violations", list, violations.size(), 50)
           .addInput("loop_time", entry);
@@ -2374,8 +2372,8 @@ public final class FrcDomainTools {
           builder.addData("user_code", o);
         }
       }
-      var quality = DataQuality.fromValues(basisOverride == null ? log.values().get(entry)
-          : log.values().get("/Timestamp"));
+      var quality = DataQuality.fromSegments(scope.split(basisOverride == null
+          ? log.values().get(entry) : log.values().get("/Timestamp")));
       builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Health score is a heuristic based on violation rate — consider context of violations"));
@@ -2550,6 +2548,28 @@ public final class FrcDomainTools {
         builder.addWarning("No DriverStation enabled entry: while_enabled figures are absent and "
             + "errors cannot be split by robot state.");
       }
+      // Data quality of the first bus's first counter entry (utilization first) in the window
+      String qualityEntry = null;
+      for (var bus : buses) {
+        for (var field : CanBusAnalysis.Field.values()) {
+          if (bus.entries().containsKey(field)) {
+            qualityEntry = bus.entries().get(field);
+            break;
+          }
+        }
+        if (qualityEntry != null) break;
+      }
+      if (qualityEntry == null && !otherErrorEntries.isEmpty()) qualityEntry = otherErrorEntries.get(0);
+      if (qualityEntry != null) {
+        var inWindow = log.values().get(qualityEntry).stream()
+            .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).toList();
+        var quality = DataQuality.fromValues(inWindow);
+        builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat()
+            .addGuidance("data_quality describes " + qualityEntry + "; CAN status entries are "
+                + "often logged at a low rate, which bounds the utilization statistics, not the "
+                + "counter maxima and increases."));
+      }
       return builder.build();
     }
   }
@@ -2623,8 +2643,8 @@ public final class FrcDomainTools {
             .hint(SignalResolver.unresolvedReason(battery, "voltage_entry"))
             .build();
       }
-      var voltageValues = log.values().get(voltageEntry.get()).stream()
-          .filter(tv -> scope.contains(tv.timestamp()))
+      var voltageWindows = scope.split(log.values().get(voltageEntry.get()));
+      var voltageValues = voltageWindows.stream().flatMap(List::stream)
           .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .toList();
       if (voltageValues.isEmpty()) {
@@ -2657,12 +2677,23 @@ public final class FrcDomainTools {
       var flag = PowerFacts.flagEntry(log);
       List<PowerFacts.Brownout> rioBrownouts = flag.map(f -> PowerFacts.brownouts(log, f, null,
           null).stream().filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
-      var crossings = detectVoltageEvents(voltageValues, threshold.volts());
-      var dips = detectVoltageEvents(voltageValues, warningThreshold);
+      // Crossings and recoveries are found within each window of the scope, never across the
+      // time between two (a dip at the end of one enabled segment does not last until the next)
+      var crossings = new ArrayList<JsonObject>();
+      var dips = new ArrayList<JsonObject>();
+      var recoveryTimes = new ArrayList<Double>();
+      for (var window : voltageWindows) {
+        var finite = window.stream()
+            .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
+            .toList();
+        crossings.addAll(detectVoltageEvents(finite, threshold.volts()));
+        dips.addAll(detectVoltageEvents(finite, warningThreshold));
+        recoveryTimes.addAll(voltageRecoveryTimes(finite));
+      }
       int brownoutCount = flag.isPresent() ? rioBrownouts.size() : crossings.size();
 
       var loadLine = currentEntry.map(c -> loadLine(log, voltageValues, c)).orElse(null);
-      var recoveryAnalysis = analyzeVoltageRecovery(voltageValues);
+      var recoveryAnalysis = summarizeRecovery(recoveryTimes);
 
       int healthScore = calculateHealthScore(avgVoltage, nominalVoltage, minVoltage,
           brownoutCount, dips.size(), recoveryAnalysis);
@@ -2683,6 +2714,10 @@ public final class FrcDomainTools {
           + "nominal), a minimum below 10 V, and slow recovery; compare batteries across logs "
           + "rather than reading the number alone");
       response.addProperty("risk_level", riskLevel);
+      response.addProperty("risk_level_basis", "CRITICAL when the roboRIO's logged brownout flag "
+          + "was set in scope; HIGH for a threshold crossing without a flag, a minimum below "
+          + "warning_threshold, or a health score below 30; MODERATE below 60; LOW below 80; "
+          + "MINIMAL otherwise");
 
       var voltageStats = new JsonObject();
       voltageStats.addProperty("min_volts", minVoltage);
@@ -2727,7 +2762,7 @@ public final class FrcDomainTools {
       // Compatibility: "recommendations" carries the same evidence-based statements
       response.addData("recommendations", GSON.toJsonTree(observations));
 
-      var quality = DataQuality.fromValues(voltageValues);
+      var quality = DataQuality.fromSegments(voltageWindows);
       response.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("The health score is a heuristic; battery age, charge, connector "
@@ -2870,7 +2905,7 @@ public final class FrcDomainTools {
     }
 
     /** How long the voltage takes to recover 90% of a drop of more than 0.5 V (up to 2 s). */
-    private JsonObject analyzeVoltageRecovery(java.util.List<TimestampedValue> voltageValues) {
+    private List<Double> voltageRecoveryTimes(java.util.List<TimestampedValue> voltageValues) {
       var recoveryTimes = new ArrayList<Double>();
       for (int i = 1; i < voltageValues.size() - 1; i++) {
         var voltageBefore = toDouble(voltageValues.get(i - 1).value());
@@ -2891,6 +2926,11 @@ public final class FrcDomainTools {
           }
         }
       }
+      return recoveryTimes;
+    }
+
+    /** Average and maximum recovery time, or null when no drop recovered. */
+    private JsonObject summarizeRecovery(List<Double> recoveryTimes) {
       if (recoveryTimes.isEmpty()) return null;
       var analysis = new JsonObject();
       analysis.addProperty("avg_recovery_sec",

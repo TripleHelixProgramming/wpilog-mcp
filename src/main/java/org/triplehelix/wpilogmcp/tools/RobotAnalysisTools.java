@@ -428,7 +428,7 @@ public final class RobotAnalysisTools {
       if (drift != null) builder.addData("odometry_drift", drift);
 
       if (qualityValues != null && !qualityValues.isEmpty()) {
-        var quality = DataQuality.fromValues(qualityValues);
+        var quality = DataQuality.fromSegments(scope.split(log.values().get(first.measuredEntry())));
         builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
             .addSingleMatchCaveat()
             .addFollowup("Use power_analysis to check if module issues correlate with brownouts"));
@@ -765,7 +765,7 @@ public final class RobotAnalysisTools {
       if (qualitySource != null) {
         var vals = log.values().get(qualitySource);
         if (vals != null && !vals.isEmpty()) {
-          var quality = DataQuality.fromValues(vals);
+          var quality = DataQuality.fromSegments(scope.split(vals));
           var directives = AnalysisDirectives.fromQuality(quality)
               .addSingleMatchCaveat()
               .addFollowup("Use predict_battery_health for comprehensive battery assessment");
@@ -1220,7 +1220,7 @@ public final class RobotAnalysisTools {
                 + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
           }
         }
-        var quality = DataQuality.fromSegments(windows);
+        var quality = DataQuality.fromSegments(scope.split(signal.values()));
         stats.add("data_quality", quality.toJson());
         if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
         found.add(sObj);

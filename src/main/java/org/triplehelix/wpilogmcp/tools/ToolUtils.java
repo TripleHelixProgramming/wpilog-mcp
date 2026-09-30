@@ -494,9 +494,7 @@ public final class ToolUtils {
     result.add("server_analysis_directives", directives.toJson());
 
     if (quality.qualityScore() < 0.5) {
-      String warning = "Low data quality (score: "
-          + String.format("%.2f", quality.qualityScore())
-          + "). Results should be treated as preliminary.";
+      String warning = ResponseBuilder.lowQualityWarning(quality);
 
       // Merge with existing warnings
       com.google.gson.JsonArray warnings;

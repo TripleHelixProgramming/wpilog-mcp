@@ -105,7 +105,9 @@ public final class StatisticsTools {
       var measuredWindows = unwrap ? finiteWindows(signal, scope, true) : rawWindows;
       var numericFiltered = flatten(rawWindows);
       var measured = flatten(measuredWindows);
-      var quality = DataQuality.fromSegments(measuredWindows);
+      // Quality is scored on every sample in scope, before non-finite values are dropped, so
+      // NaN is counted and the timing classification is of the series as logged
+      var quality = DataQuality.fromSegments(scope.split(signal.values()));
       var data = measured.stream()
           .mapToDouble(tv -> toDouble(tv.value()))
           .toArray();
@@ -659,7 +661,7 @@ public final class StatisticsTools {
         }
       }
 
-      var quality = DataQuality.fromSegments(windows);
+      var quality = DataQuality.fromSegments(scope.split(signal.values()));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addFollowup("Use get_statistics to understand baseline before interpreting peaks");
@@ -790,10 +792,14 @@ public final class StatisticsTools {
       }
 
       var stats = new JsonObject();
-      stats.addProperty("avg_rate", rateCount == 0 ? 0 : sumRate / rateCount);
+      if (rateCount == 0) {
+        stats.add("avg_rate", com.google.gson.JsonNull.INSTANCE); // undefined, not zero
+      } else {
+        stats.addProperty("avg_rate", sumRate / rateCount);
+      }
       stats.addProperty("rate_count", rateCount);
 
-      var quality = DataQuality.fromSegments(windows);
+      var quality = DataQuality.fromSegments(scope.split(signal.values()));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Derivatives amplify noise — increase window_size for smoother results");
@@ -807,6 +813,11 @@ public final class StatisticsTools {
           .addInputSignal("entry", signal)
           .addInputScope(scope);
       if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
+      if (rateCount == 0) {
+        builder.status(ResultContract.Status.NO_MATCH).addProperty("reason", "No derivative "
+            + "could be formed: every pair of consecutive finite samples" + scopeText(scope)
+            + " shares a timestamp.");
+      }
       return builder.addDataQuality(quality).addDirectives(directives).build();
     }
   }
@@ -935,7 +946,7 @@ public final class StatisticsTools {
       if (denX < varianceThreshold || denY < varianceThreshold) {
         // Undefined, not zero: null (NaN is not valid JSON), with the reason in a warning
         builder.addData("correlation", com.google.gson.JsonNull.INSTANCE);
-        builder.addProperty("p_value", 1.0);
+        builder.addData("p_value", com.google.gson.JsonNull.INSTANCE);
         builder.addWarning("Correlation undefined: " +
             (denX < varianceThreshold && denY < varianceThreshold ? "both entries" : (denX < varianceThreshold ? "first entry" : "second entry")) +
             " has near-zero variance (all values are effectively identical)");

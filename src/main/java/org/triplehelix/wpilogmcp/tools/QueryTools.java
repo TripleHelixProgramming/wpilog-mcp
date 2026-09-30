@@ -392,6 +392,17 @@ public final class QueryTools {
       if (knownDuration > 0) {
         builder.addProperty("fraction_of_window", totalTrue / knownDuration);
       }
+      // Quality of the entries the intervals rest on (the worst of them), over the scope
+      DataQuality quality = null;
+      for (var c : conditions) {
+        var q = DataQuality.fromSegments(scope.split(c.signal().values()));
+        if (quality == null || q.qualityScore() < quality.qualityScore()) quality = q;
+      }
+      builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
+          .addSingleMatchCaveat()
+          .addGuidance("Each entry's value is held until its next sample: for a change-only "
+              + "entry that is what the log means; for a periodic entry, a gap reported in "
+              + "data_quality is time over which the condition was assumed unchanged."));
       return builder.build();
     }
 

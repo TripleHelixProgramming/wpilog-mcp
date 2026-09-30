@@ -320,7 +320,7 @@ public final class PoseTools {
             + "be read as a pose (no translation or heading, or out of time order) and were "
             + "skipped.");
       }
-      var quality = DataQuality.fromValues(scope.filter(log.values().get(pose.entry())));
+      var quality = DataQuality.fromSegments(scope.split(log.values().get(pose.entry())));
       return builder.addDataQuality(quality)
           .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat())
           .build();
@@ -576,7 +576,7 @@ public final class PoseTools {
         cadence.addProperty("max", gaps[gaps.length - 1]);
         builder.addData("correction_interval_sec", cadence);
       }
-      var quality = DataQuality.fromValues(scope.filter(log.values().get(pose.entry())));
+      var quality = DataQuality.fromSegments(scope.split(log.values().get(pose.entry())));
       return builder.addDataQuality(quality)
           .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat()
               .addFollowup("Use analyze_vision to see whether corrections coincide with vision "

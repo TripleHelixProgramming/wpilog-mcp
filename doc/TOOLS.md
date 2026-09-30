@@ -465,6 +465,7 @@ Find when a numeric or boolean entry satisfies a condition — or several entrie
 - `condition` (readable form, e.g. `(/DriverStation/Enabled == 0.0) AND (|/RealOutputs/SwerveChassisSpeeds/Measured.vx| < 0.05)`); for compound conditions also `combine` and `conditions`
 - `intervals[]`: `start`, `end`, `duration`, and `end_reason` (`condition_false`, or `window_end` when still true at the end of the window). Each sample's value holds until the next sample
 - `interval_count`, `total_true_sec`, `window_sec` (the time searched, after the entry's first sample), `fraction_of_window` (`total_true_sec / window_sec`), `inputs` (entry, field, and scope or window), and `limits` for both lists. The `intervals` can be passed as `windows` to the statistics tools
+- `data_quality` and `server_analysis_directives`: of the condition's entry over the scope (the worst entry for compound conditions), scored on every sample in scope; a gap in a periodic entry is time over which the condition was assumed unchanged
 
 **Example Response:**
 ```json
@@ -716,7 +717,7 @@ Compute rate of change (derivative) of numeric data over time. Calculates dv/dt 
 - `window_size` (optional): Number of samples to average for smoothing (default 1 = no smoothing). Higher values reduce noise but may miss short events
 - `limit` (optional): Maximum samples to return (default 100)
 
-**Returns:** Derivative values in the signal's units per second, with timestamp (`samples`, cut at `limit`, with `limits.samples` giving the true count) and `statistics` (`avg_rate`, `rate_count`). Angles are unwrapped first (`angle_unit`), so a wrap is not a spike. A struct or array entry without a field path is an error listing its numeric fields
+**Returns:** Derivative values in the signal's units per second, with timestamp (`samples`, cut at `limit`, with `limits.samples` giving the true count) and `statistics` (`avg_rate`, `rate_count`); `no_match` with `avg_rate: null` when no pair of consecutive finite samples has distinct timestamps. Angles are unwrapped first (`angle_unit`), so a wrap is not a spike. A struct or array entry without a field path is an error listing its numeric fields
 
 **Example Response:**
 ```json
@@ -757,7 +758,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - `scope`, `windows` (optional): The first signal's samples in this time are paired with the second, interpolated ([Scopes and windows](#scopes-and-windows))
 - `max_lag_sec` (optional): Also search for the time shift that best aligns the signals, from −max to +max; `lag_step_sec` (optional) sets the step (default: the first signal's median sample interval; at most 401 lags are evaluated, widening the step if needed). Returns `lag_search`: `best_lag_sec` (positive: the second signal follows the first), `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, `lags_evaluated`, `lag_step_sec`. Shared timing (both signals following the match phase) also aligns signals
 
-**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, and `p_value_basis`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta); a warning says when fewer than 30 effective samples remain. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` is `null`, `p_value` is 1, and a warning names the constant entry.
+**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, and `p_value_basis`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta); a warning says when fewer than 30 effective samples remain. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
 
 **Example Response:**
 ```json
@@ -1174,6 +1175,7 @@ Analyze CAN bus health from the counters the log records, per bus: utilization, 
 - `utilization`: `mean_percent`, `p95_percent`, `max_percent`, `samples`, `unit_detected` (0–1 fractions are detected from the range and converted), and `while_enabled`
 - `tec`, `rec`: levels, not counts — they rise and fall. `max`, `max_time_sec` (first time reached), `error_passive_excursions` (rises to 128 or above; the controller is error-passive at 128 and goes bus-off when TEC passes 255), `time_error_passive_sec` (values held until the next sample), and `while_enabled`
 - `bus_off`, `tx_full`: counts that only grow — `first`, `last`, `increase`, `increase_while_enabled` (a decrease is a counter reset, reported as `resets`)
+- `data_quality` and `server_analysis_directives`: of the first bus's first counter entry (utilization first) in the window; CAN status entries are often logged at a low rate, which bounds the utilization statistics, not the counter maxima and increases
 
 **Other CAN error entries (`errors[]`):** numeric or boolean entries named with CAN (as a word, or CANbus/CANivore/CANcoder) and error, fault, or timeout that are not bus fields. `error_count` is how much the entry increased (each false→true for a boolean), split into `errors_while_enabled`, `errors_while_disabled`, and `errors_state_unknown`.
 
@@ -1921,7 +1923,7 @@ How often robot code exceeded the loop period, and the distribution of loop time
 
 **Entry discovery, in order:** the `entry` argument; AdvantageKit's `LoggedRobot/FullCycleMS` (the whole cycle, including logging), reported with `LoggedRobot/UserCodeMS` alongside as `user_code`; loop periods derived from consecutive AdvantageKit `/Timestamp` values; `UserCodeMS` alone. Other entries named like a loop time (`looptime`, `cycletime`) are not guessed at: `no_match` lists them in `candidates` to confirm and pass as `entry`. A first sample more than 10× the median — the slow boot cycle, often several seconds — is excluded and reported as `excluded_boot_cycle`.
 
-**Returns:** `loop_time_entry`, `unit` (`value` and `basis`), `scope`, `threshold_ms`, `violation_count` (true total), `total_samples`, `violation_rate`, `percent_over_threshold`, `health_score` (100 minus the percent over threshold — a heuristic kept by design), `statistics` (`avg_ms`, `median_ms`, `p90_ms`, `p95_ms`, `p99_ms`, `max_ms` with `max_time_sec`, `min_ms`), `violations[]` (first 50, with `limits.violations`), `user_code` (median, p95, percent over threshold), and `excluded_boot_cycle`.
+**Returns:** `loop_time_entry`, `unit` (`value` and `basis`), `scope`, `threshold_ms`, `violation_count` (true total), `total_samples`, `violation_rate`, `percent_over_threshold`, `health_score` (100 minus the percent over threshold — a heuristic kept by design) with `health_score_basis`, `statistics` (`avg_ms`, `median_ms`, `p90_ms`, `p95_ms`, `p99_ms`, `max_ms` with `max_time_sec`, `min_ms`), `violations[]` (first 50, with `limits.violations`), `user_code` (median, p95, percent over threshold), and `excluded_boot_cycle`. `data_quality` is of the loop-time entry over the scope.
 
 **Status:** `no_match` when the log has no loop timing; `overrun_messages` then counts WPILib's "loop overrun" console messages, which `search_strings` lists.
 
@@ -1968,6 +1970,7 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 **Evidence returned:**
 - `voltage_stats`: `min_volts` (with `min_time_sec`), `max_volts`, `avg_volts`, `voltage_sag` (nominal − min), `samples`, all over the scope; the voltage entry is chosen as `power_analysis` chooses it (`inputs.entries.voltage`)
 - `brownout_events` and `brownout_basis`: when the roboRIO's brownout flag is logged, brownouts are its true intervals (`rio_brownouts`, with start and duration) — the times outputs were actually disabled; otherwise they are crossings below the threshold, and the basis says the roboRIO state cannot be determined
+- `risk_level_basis`: the rule the risk level rests on (CRITICAL only when the roboRIO's logged flag was set in scope; HIGH for a crossing without a flag, a minimum below `warning_threshold`, or a health score below 30; MODERATE below 60; LOW below 80; else MINIMAL). Threshold crossings, dips, and recovery times are found within each window of the scope, never across the time between two. `data_quality` is of the voltage entry over the scope, scored before non-finite samples are dropped.
 - `threshold_crossings` and `brownout_details`: voltage crossings below the threshold (0.2 V exit hysteresis), whether or not the roboRIO browned out
 - `warning_events`: dips below `warning_threshold`
 - `load_line` (when a `TotalCurrent` entry exists (or `total_current_entry` names one) and the scope has at least 30 samples spanning 10 A): battery voltage regressed on total current — `resistance_ohm` (effective source resistance: battery internal resistance plus wiring and connectors), `open_circuit_voltage`, `r_squared`, `samples`, `current_range_a`; otherwise listed in `skipped`
@@ -1999,6 +2002,7 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
   "health_score": 38,
   "health_score_basis": "heuristic: 100, minus 20 per brownout, ...",
   "risk_level": "CRITICAL",
+  "risk_level_basis": "CRITICAL when the roboRIO's logged brownout flag was set in scope; HIGH for a threshold crossing without a flag, ...",
   "voltage_stats": {"min_volts": 6.618, "min_time_sec": 655.45, "max_volts": 12.61, "avg_volts": 11.72, "voltage_sag": 5.98, "samples": 42110},
   "brownout_threshold": 6.75,
   "brownout_threshold_basis": "logged",

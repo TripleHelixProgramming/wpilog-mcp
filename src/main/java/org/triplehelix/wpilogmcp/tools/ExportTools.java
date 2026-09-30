@@ -522,7 +522,7 @@ public final class ExportTools {
       }
 
       voltageEntry.ifPresent(name -> {
-        var quality = DataQuality.fromValues(log.values().get(name));
+        var quality = DataQuality.fromSegments(scope.split(log.values().get(name)));
         report.add("data_quality", quality.toJson());
         var directives = AnalysisDirectives.fromQuality(quality)
             .addSingleMatchCaveat()
