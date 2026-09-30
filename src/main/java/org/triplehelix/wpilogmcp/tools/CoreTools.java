@@ -512,7 +512,7 @@ public final class CoreTools {
     public String description() {
       return "Show which entry plays each role in this log: robot_enabled, autonomous, "
           + "test_mode, fms_attached, battery_voltage, total_current, brownout_flag, "
-          + "brownout_threshold, loop_time_full, loop_time_user, robot_pose, auto_chooser, "
+          + "brownout_threshold, loop_time_full, loop_time_user, robot_pose, vision_pose, auto_chooser, "
           + "path_setpoint, path_actual, module_states_measured, module_states_setpoint, "
           + "chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, "
           + "vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: "

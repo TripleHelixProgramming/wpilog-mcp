@@ -543,10 +543,14 @@ public final class MatchTimeline {
     }
     if (log.path() != null) {
       var fileName = java.nio.file.Path.of(log.path()).getFileName();
+      // A four-digit number in a file name is a season only when it is a plausible one: a team
+      // number such as 2056 is not (the current year plus one is the latest possible season)
       var m = YEAR.matcher(fileName == null ? log.path() : fileName.toString());
-      if (m.find()) {
+      while (m.find()) {
         int year = Integer.parseInt(m.group(1));
-        if (year >= 2020 && year <= 2099) return new Season(year, "file_name");
+        if (year >= 2020 && year <= java.time.Year.now().getValue() + 1) {
+          return new Season(year, "file_name");
+        }
       }
     }
     return new Season(java.time.Year.now().getValue(), "current_year");

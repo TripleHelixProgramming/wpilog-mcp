@@ -391,7 +391,8 @@ A tool uses an entry for a role only when it was passed explicitly, follows a we
 | `total_current` | a leaf named `TotalCurrent` (not AdvantageKit's `SystemStats/BatteryCurrent`, the roboRIO's own input current) | `total_current_entry` |
 | `brownout_flag` | a boolean leaf named `BrownedOut` or `IsBrownedOut` | — |
 | `loop_time_full` / `_user` | AdvantageKit `LoggedRobot/FullCycleMS` / `UserCodeMS`; periods from AdvantageKit `/Timestamp` | `entry` |
-| `robot_pose` | `DriveState/Pose` (CTRE), `Odometry/Robot` (AdvantageKit template), `Drive/Pose`, `EstimatedPose`, `RobotPose`, `PathPlanner/currentPose`; or the only `Pose2d` outside vision paths | `pose_entry` |
+| `robot_pose` | `DriveState/Pose` (CTRE), `Odometry/Robot` (AdvantageKit template), `Drive/Pose`, `EstimatedPose`, `RobotPose`, `PathPlanner/currentPose`; or the only `Pose2d` outside vision paths | `pose_entry` (`odometry_entry` in `analyze_swerve`) |
+| `vision_pose` | the only scalar `Pose2d`/`Pose3d` with at least two samples under a vision, camera, PhotonVision, or Limelight path | `vision_entry` |
 | `auto_chooser` | the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry, or AdvantageKit's `/NetworkInputs/SmartDashboard/<key>` | `chooser_entry` |
 | `path_setpoint` / `path_actual` | `PathPlanner/targetPose`, AdvantageKit `Odometry/TrajectorySetpoint` / `PathPlanner/currentPose`, else the robot pose | `path_setpoint_entry` / `path_actual_entry` |
 | `gyro_yaw` | a yaw entry under a gyro, Pigeon, NavX, Canandgyro, or IMU path | — |
@@ -400,7 +401,7 @@ A tool uses an entry for a role only when it was passed explicitly, follows a we
 - `path` (required): Path to the log file
 - `roles` (optional): Only these roles (default: all)
 
-**Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
+**Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `vision_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
 
 **Returns:** `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `match` (`explicit`, `convention`, `type`, `heuristic`, or `none`), `basis` (why), `needs_confirmation` (heuristic: candidates only, not used), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked as well; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry, `needs_confirmation` the ones with name-only candidates; `warnings` name ambiguous choices.
 
@@ -880,7 +881,7 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - `measured_entry`, `setpoint_entry` (optional): Choose the module state entries explicitly (an array, or one module's entry)
 - `slip_threshold` (optional): Speed tracking error, in m/s, counted as an event (default: 0.5)
 - `sync_threshold_rad` (optional): Steer error, in radians, counted as an event (default: 0.1)
-- `odometry_entry`, `vision_entry` (optional): Scalar pose entries for the drift comparison
+- `odometry_entry`, `vision_entry` (optional): Scalar pose entries for the drift comparison (default: the `robot_pose` and `vision_pose` roles — a conventional name, or the only candidate; several name-only candidates are listed in `skipped` to confirm, never guessed)
 - `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
 
 **Returns (per module in `modules[]`):**
@@ -888,7 +889,7 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - `speed_tracking_error` (`mean_mps`, `p95_mps`, `max_mps`, `events_over_threshold`): `| |measured| − |setpoint| |` at each measured sample, against the setpoint logged at most 0.1 s earlier
 - `steer_error` (`mean_rad`, `p95_rad`, `max_rad`, `max_deg`, `events_over_threshold`): angle difference modulo 180° (an optimized setpoint may flip the wheel), only while the setpoint speed exceeds 0.05 m/s
 
-**Also returns:** `layout` (`array` or `per_module`), `module_count`, `module_sync` (the largest steer error across modules, with `worst_module`), `odometry_drift` (distance between a scalar odometry pose and a scalar vision pose at the vision timestamps), `scope`, and `inputs.entries`. Sections that cannot be produced — no setpoints, no scalar vision pose — are listed in `skipped` with the reason (status `partial`).
+**Also returns:** `layout` (`array` or `per_module`), `module_count`, `module_sync` (the largest steer error across modules, with `worst_module`), `odometry_drift` (distance between the robot pose and a vision pose at the vision timestamps, with `odometry_basis` and `vision_basis` saying how each was chosen), `scope`, and `inputs.entries`. Sections that cannot be produced — no setpoints, no scalar vision pose — are listed in `skipped` with the reason (status `partial`).
 
 **Status:** `no_match` when the log has no `SwerveModuleState` entries (or only setpoints).
 
@@ -1670,7 +1671,7 @@ Profile one closed-loop mechanism: following error, step response, stalls, and m
 - `stall_current_threshold` (optional): Current above which a stopped mechanism counts as stalled (default: 30 A)
 - `stall_velocity_threshold` (optional): `|velocity|` below this counts as stopped, in the velocity entry's units (default: 0.01)
 
-**How entries are found:** scalar numeric entries containing `mechanism_name` are assigned a role by leaf name — setpoint (`setpoint`, `goal`, `target`, `reference`, `desired`, `commanded`), temperature (`temp`, `celsius`), current (the amperage rule `power_analysis` uses), velocity (`velocity`, `speed`, `rpm`, `rps`), measurement (`position`, `actual`, `measured`, `angle`, `height`, `distance`, `rotations`, but not velocity, current, or voltage names) — and grouped by the **stem** before the role word, so `DriveVelocityRadPerSec` and `TurnVelocityRadPerSec` under one module are different mechanisms. The stem with the most roles is used (ties by entry id); `other_stems` and a warning list the rest. `roles` names every entry used (null when unresolved).
+**How entries are found:** scalar numeric entries containing `mechanism_name` are assigned a role by leaf name — setpoint (`setpoint`, `goal`, `target`, `reference`, `desired`, `commanded`), temperature (`temp`, `celsius`), current (the amperage rule `power_analysis` uses), velocity (`velocity`, `speed`, `rpm`, `rps`), measurement (`position`, `actual`, `measured`, `angle`, `height`, `distance`, `rotations`, but not velocity, current, or voltage names) — and grouped by the **stem** before the role word, so `DriveVelocityRadPerSec` and `TurnVelocityRadPerSec` under one module are different mechanisms. When the name matches exactly one stem, its entries are used. When it matches several, the server does not choose among them: the result is `no_match` with `needs_confirmation` and `stems` (each stem's entries by role), and the hint suggests a more specific `mechanism_name` (the stem is matched case-insensitively, e.g. `ModuleFrontLeft/Drive`) or the role parameters; with explicit role entries and several stems, only the explicit entries are used and `other_stems` lists the stems with a warning. `roles` names every entry used (null when unresolved).
 
 **Returns:**
 - `following_error` (setpoint and measurement): `rmse`, `mean_error` (bias), `max_abs_error`, `samples` — the measurement minus the setpoint **in force** (held until the next setpoint sample); `steps` (setpoint changes larger than 5%, at least 0.01), `settled_steps`, `settling_time_sec` (`avg`, `max`, `min`: time until the measurement enters and stays within 5% of the step size, before the next step), `overshoot_percent` (average over steps of the overshoot beyond the new setpoint as a percent of the step size) and `max_overshoot_percent`, and `step_details` (first 20 steps)

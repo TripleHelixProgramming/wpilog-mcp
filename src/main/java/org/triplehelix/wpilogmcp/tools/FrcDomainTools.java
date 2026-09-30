@@ -971,8 +971,11 @@ public final class FrcDomainTools {
           + "anywhere in the name) by role — setpoint (setpoint/goal/target/reference), "
           + "measurement (position/angle/height/...), velocity, current, temperature — and "
           + "grouped by the stem before the role word, so /Drive/ModuleFrontLeft/DriveVelocity and "
-          + "TurnVelocity are different stems; the first stem is used and other_stems lists the "
-          + "rest. roles names every entry used; any role can be passed explicitly "
+          + "TurnVelocity are different stems. When the name matches exactly one stem its entries "
+          + "are used; when it matches several, the server does not choose among them: the "
+          + "result is no_match with needs_confirmation and the stems' entries, unless the roles "
+          + "are passed explicitly (then only those entries are used and other_stems lists the "
+          + "stems). roles names every entry used; any role can be passed explicitly "
           + "(setpoint_entry, measurement_entry, velocity_entry, current_entry, "
           + "temperature_entry). Sections without their entries are listed in skipped. Returns "
           + "no_match when nothing matches."
@@ -1061,10 +1064,28 @@ public final class FrcDomainTools {
                   .putIfAbsent(role, e.name());
             });
       }
-      String chosenStem = byStem.entrySet().stream()
-          .max(Comparator.comparingInt((java.util.Map.Entry<String,
-              java.util.EnumMap<Role, String>> en) -> en.getValue().size()))
-          .map(java.util.Map.Entry::getKey).orElse(null);
+      java.util.function.Function<String, String> stemLabel = k -> k.isEmpty() ? "(none)" : k;
+      if (byStem.size() > 1 && explicit.isEmpty()) {
+        // Several mechanisms match the name: the server does not choose among them
+        var stems = new JsonObject();
+        byStem.forEach((stem, found) -> {
+          var o = new JsonObject();
+          found.forEach((role, entry) -> o.addProperty(role.key(), entry));
+          stems.add(stemLabel.apply(stem), o);
+        });
+        var named = byStem.keySet().stream().filter(k -> !k.isEmpty()).findFirst();
+        return ResponseBuilder.noMatch("'" + mechanismName + "' matches " + byStem.size()
+                + " mechanisms by stem (" + String.join(", ", byStem.keySet().stream()
+                    .map(stemLabel).toList()) + "); the server does not guess which is meant.")
+            .hint("Pass a more specific mechanism_name" + named.map(s -> " (e.g. '"
+                + mechanismName + "/" + s + "', matched case-insensitively)").orElse("")
+                + ", or the entries themselves (setpoint_entry, measurement_entry, "
+                + "velocity_entry, current_entry, temperature_entry).")
+            .addData("stems", stems)
+            .addProperty("needs_confirmation", true)
+            .build();
+      }
+      String chosenStem = byStem.size() == 1 ? byStem.keySet().iterator().next() : null;
       var roles = new java.util.EnumMap<Role, String>(Role.class);
       if (chosenStem != null) roles.putAll(byStem.get(chosenStem));
       roles.putAll(explicit);
@@ -1090,11 +1111,11 @@ public final class FrcDomainTools {
       if (chosenStem != null) builder.addProperty("stem", chosenStem);
       var otherStems = byStem.keySet().stream().filter(k -> !k.equals(chosenStem)).toList();
       if (!otherStems.isEmpty()) {
-        builder.addData("other_stems", GSON.toJsonTree(otherStems));
+        // Several stems and explicit entries: only the explicit entries were used
+        builder.addData("other_stems", GSON.toJsonTree(otherStems.stream().map(stemLabel).toList()));
         builder.addWarning("'" + mechanismName + "' matches several mechanisms by stem ("
-            + (chosenStem.isEmpty() ? "(none)" : chosenStem) + " used; also "
-            + String.join(", ", otherStems.stream().map(x -> x.isEmpty() ? "(none)" : x)
-                .toList()) + "). Use a more specific mechanism_name or pass the entries.");
+            + String.join(", ", otherStems.stream().map(stemLabel).toList())
+            + "); only the explicitly passed entries were used.");
       }
       roles.forEach((role, entry) -> builder.addInput(role.key(), entry));
       if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
@@ -2229,7 +2250,7 @@ public final class FrcDomainTools {
       // Samples in scope, as {time, raw value}
       var raw = new ArrayList<double[]>();
       String basisOverride = null;
-      if ("/Timestamp".equals(entry) && entryArg == null) {
+      if ("/Timestamp".equals(entry)) {
         basisOverride = "derived: differences between consecutive /Timestamp values "
             + "(AdvantageKit's per-cycle FPGA time, microseconds)";
         TimestampedValue previous = null;

@@ -41,7 +41,8 @@ final class DescriptionOutputs {
       Map.entry("list_available_logs | has_more", "CoreToolsLogicTest.paging (needs a log directory)"),
       Map.entry("list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)"),
       Map.entry("list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)"),
-      Map.entry("profile_mechanism | other_stems", "MechanismFixtureTest"),
+      Map.entry("profile_mechanism | other_stems", "NoGuessRolesTest.explicitEntriesWithSeveralStems"),
+      Map.entry("profile_mechanism | needs_confirmation", "MechanismFixtureTest.stems"),
       Map.entry("search_strings | repeat_count", "QueryToolsLogicTest (collapse_repeats)"),
       Map.entry("get_match_phases | mode_change", "MatchTimelineTest (a mode change while enabled)"));
 

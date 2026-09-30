@@ -57,22 +57,28 @@ final class SignalResolver {
         + "threshold), get_ds_timeline, predict_battery_health, generate_report"),
     LOOP_TIME_FULL("Robot loop time (whole cycle)", "analyze_loop_timing (entry)"),
     LOOP_TIME_USER("Robot loop time (user code)", "analyze_loop_timing"),
-    ROBOT_POSE("Robot pose (odometry or estimator)", "analyze_vision (pose_entry)"),
+    ROBOT_POSE("Robot pose (odometry or estimator)", "analyze_vision (pose_entry), "
+        + "compare_poses (pose_entry), pose_corrections (pose_entry), analyze_swerve "
+        + "(odometry_entry)"),
+    VISION_POSE("Vision pose estimate (a scalar pose under a vision path)",
+        "analyze_swerve (vision_entry)"),
     AUTO_CHOOSER("The selected autonomous routine", "analyze_auto (chooser_entry)"),
     PATH_SETPOINT("Path-following setpoint pose", "analyze_auto (path_setpoint_entry)"),
     PATH_ACTUAL("Path-following actual pose", "analyze_auto (path_actual_entry)"),
     MODULE_STATES_MEASURED("Measured swerve module states", "analyze_swerve (measured_entry)"),
     MODULE_STATES_SETPOINT("Swerve module setpoints", "analyze_swerve (setpoint_entry)"),
-    CHASSIS_SPEEDS_MEASURED("Measured chassis speeds", "find_condition, get_statistics (by "
-        + "name)"),
+    CHASSIS_SPEEDS_MEASURED("Measured chassis speeds", "pose_corrections "
+        + "(chassis_speeds_entry); find_condition, get_statistics (by name)"),
     CHASSIS_SPEEDS_SETPOINT("Chassis speed setpoints", "compare_entries (by name)"),
-    GYRO_YAW("Gyro yaw", "compare_entries, align_entries (by name)"),
+    GYRO_YAW("Gyro yaw", "no tool resolves it; compare_entries and align_entries take it by "
+        + "name"),
     VISION_POSE_OBSERVATIONS("Vision pose observation streams", "analyze_vision"),
     VISION_TARGETS("Vision target streams and has-target entries", "analyze_vision"),
     CAN_BUS("CAN bus counters", "analyze_can_bus, can_health"),
     CONSOLE_TEXT("Console and message text (string entries)", "search_strings, "
         + "get_ds_timeline, can_health, generate_report"),
-    ALERTS("Alerts (string[] entries)", "search_strings, get_ds_timeline");
+    ALERTS("Alerts (string[] entries)", "search_strings, get_ds_timeline, can_health, "
+        + "generate_report");
 
     final String description;
     final String usedBy;
@@ -186,7 +192,7 @@ final class SignalResolver {
       case BROWNOUT_FLAG -> {
         var flag = PowerFacts.flagEntry(log);
         yield new Resolution(role, flag.map(List::of).orElse(List.of()), flag.isPresent()
-            ? "a boolean named BrownedOut (AdvantageKit /SystemStats/BrownedOut)"
+            ? "a boolean named BrownedOut or IsBrownedOut (AdvantageKit /SystemStats/BrownedOut)"
             : "no boolean BrownedOut entry in this log", flag.map(List::of).orElse(List.of()),
             false, null, flag.isPresent() ? Tier.CONVENTION : Tier.NONE);
       }
@@ -198,6 +204,7 @@ final class SignalResolver {
       }
       case LOOP_TIME_FULL, LOOP_TIME_USER -> loopTime(log, role, null);
       case ROBOT_POSE -> robotPose(log, null);
+      case VISION_POSE -> visionPose(log, null);
       case AUTO_CHOOSER -> autoChooser(log, null);
       case PATH_SETPOINT, PATH_ACTUAL -> pathPose(log, role, null, null);
       case MODULE_STATES_MEASURED, MODULE_STATES_SETPOINT -> moduleStates(log, role);
@@ -576,6 +583,37 @@ final class SignalResolver {
   /** The legacy form: the robot pose with no explicit entry. */
   static Resolution robotPose(LogData log) {
     return robotPose(log, null);
+  }
+
+  /**
+   * A vision pose estimate (for drift against the robot pose): an explicit entry; else the only
+   * scalar Pose2d/Pose3d with at least two samples under a vision, camera, PhotonVision, or
+   * Limelight path; else those entries as candidates to confirm.
+   */
+  static Resolution visionPose(LogData log, String explicit) {
+    if (explicit != null) {
+      return explicit(log, Role.VISION_POSE, explicit, "vision_entry",
+          SignalResolver::isScalarPose, "struct:Pose2d or struct:Pose3d");
+    }
+    var candidates = byId(log).stream()
+        .filter(e -> isScalarPose(e.type()))
+        .filter(e -> FrcDomainTools.AnalyzeVisionTool.VISION_PATH.matcher(e.name()).find())
+        .filter(e -> log.sampleCount(e.name()) >= 2)
+        .sorted(Comparator.comparingInt((EntryInfo e) -> -log.sampleCount(e.name()))
+            .thenComparingInt(EntryInfo::id))
+        .map(EntryInfo::name).toList();
+    if (candidates.size() == 1) {
+      return new Resolution(Role.VISION_POSE, candidates, "the only scalar struct:Pose2d or "
+          + "struct:Pose3d with at least two samples under a vision, camera, PhotonVision, or "
+          + "Limelight path", candidates, false, null, Tier.TYPE);
+    }
+    if (!candidates.isEmpty()) {
+      return heuristic(Role.VISION_POSE, candidates, "several scalar poses under vision paths, "
+          + "most samples first");
+    }
+    return new Resolution(Role.VISION_POSE, List.of(), "no scalar struct:Pose2d or struct:Pose3d "
+        + "with at least two samples under a vision, camera, PhotonVision, or Limelight path",
+        List.of(), false, null, Tier.NONE);
   }
 
   /**

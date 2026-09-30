@@ -212,8 +212,12 @@ public final class RobotAnalysisTools {
           + "AdvantageKit's struct:SwerveModuleState[] arrays count as one module per index "
           + "(module[0..N-1]; the FL, FR, BL, BR labels are the AdvantageKit template's order, an "
           + "assumption); one entry per module also works. Setpoints are paired by index, "
-          + "preferring an optimized setpoint entry. Odometry drift compares a scalar odometry "
-          + "pose to a scalar vision pose. Sections that cannot be produced are listed in skipped "
+          + "preferring an optimized setpoint entry. Odometry drift compares the robot pose "
+          + "(a conventional name, or the only Pose2d outside vision paths, as resolve_signals "
+          + "reports it) with a vision pose (the only scalar pose under a vision, camera, "
+          + "PhotonVision, or Limelight path); other candidates are listed in skipped to "
+          + "confirm, never guessed. "
+          + "Sections that cannot be produced are listed in skipped "
           + "with the reason; use measured_entry/setpoint_entry/odometry_entry/vision_entry to "
           + "point the tool at the right data, and scope (e.g. 'enabled') to exclude disabled time. "
           + "Returns no_match when the log has no SwerveModuleState entries."
@@ -534,50 +538,33 @@ public final class RobotAnalysisTools {
     }
 
     /**
-     * Odometry drift: distance between a scalar odometry pose and a scalar vision pose at the
-     * vision timestamps. Candidates are scalar Pose2d/Pose3d entries with at least 2 samples,
-     * lowest entry id first; a missing or unusable entry is reported in skipped.
+     * Odometry drift: distance between the robot pose and a vision pose at the vision
+     * timestamps. Both come from the signal resolver (the robot_pose and vision_pose roles): an
+     * explicit entry, a conventional name, or the only candidate; entries that match by name
+     * alone are listed in skipped to confirm, never used (the server does not guess).
      */
-    private JsonObject analyzeOdometryDrift(LogData log, String odomName, String visionName,
+    private JsonObject analyzeOdometryDrift(LogData log, String odomArg, String visionArg,
         TimeScope scope, ResponseBuilder builder) {
-      var poses = log.entries().values().stream()
-          .filter(e -> e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d"))
-          .filter(e -> log.sampleCount(e.name()) >= 2)
-          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
-          .toList();
-      if (odomName == null) {
-        odomName = poses.stream().filter(n -> {
-          var lower = n.toLowerCase();
-          return !lower.contains("vision") && (lower.contains("odometry")
-              || lower.contains("estimatedpose") || lower.endsWith("/pose")
-              || lower.endsWith("/robot"));
-        }).findFirst().orElse(null);
-      }
-      if (visionName == null) {
-        visionName = poses.stream().filter(n -> n.toLowerCase().contains("vision"))
-            .findFirst().orElse(null);
-      }
-      if (odomName == null || visionName == null) {
-        builder.addSkipped("odometry_drift", "Needs a scalar odometry pose and a scalar vision "
-            + "pose (struct:Pose2d or struct:Pose3d, at least 2 samples); found odometry "
-            + (odomName == null ? "none" : odomName) + ", vision "
-            + (visionName == null ? "none" : visionName)
-            + ". Pass odometry_entry and vision_entry.");
+      SignalResolver.Resolution odomRole;
+      SignalResolver.Resolution visionRole;
+      try {
+        odomRole = SignalResolver.robotPose(log, odomArg);
+        visionRole = SignalResolver.visionPose(log, visionArg);
+      } catch (IllegalArgumentException e) {
+        builder.addSkipped("odometry_drift", e.getMessage());
         return null;
       }
-      for (var name : List.of(odomName, visionName)) {
-        var info = log.entries().get(name);
-        if (info == null) {
-          builder.addSkipped("odometry_drift", "Entry not found: " + name);
-          return null;
-        }
-        if (!info.type().equals("struct:Pose2d") && !info.type().equals("struct:Pose3d")) {
-          builder.addSkipped("odometry_drift", name + " is " + info.type()
-              + ", not a scalar struct:Pose2d or struct:Pose3d");
-          return null;
-        }
+      if (odomRole.chosen().isEmpty() || visionRole.chosen().isEmpty()) {
+        builder.addSkipped("odometry_drift", "Needs a scalar odometry pose and a scalar vision "
+            + "pose (struct:Pose2d or struct:Pose3d, at least 2 samples). Odometry: "
+            + odomRole.chosen().orElseGet(() ->
+                SignalResolver.unresolvedReason(odomRole, "odometry_entry"))
+            + " Vision: " + visionRole.chosen().orElseGet(() ->
+                SignalResolver.unresolvedReason(visionRole, "vision_entry")));
+        return null;
       }
+      String odomName = odomRole.chosen().get();
+      String visionName = visionRole.chosen().get();
       var odomVals = log.values().get(odomName);
       var visionVals = log.values().get(visionName);
       double total = 0;
@@ -609,7 +596,9 @@ public final class RobotAnalysisTools {
       }
       var drift = new JsonObject();
       drift.addProperty("odometry_entry", odomName);
+      drift.addProperty("odometry_basis", odomRole.basis());
       drift.addProperty("vision_entry", visionName);
+      drift.addProperty("vision_basis", visionRole.basis());
       drift.addProperty("avg_error_m", total / comparisons);
       drift.addProperty("max_error_m", max);
       double span = lastT - firstT;

@@ -47,19 +47,29 @@ class MechanismFixtureTest extends FixtureToolTestBase {
     var args = new JsonObject();
     args.addProperty("path", log.path());
     args.addProperty("mechanism_name", "ModuleFrontLeft");
+    JsonObject ambiguous;
     JsonObject r;
     try {
+      ambiguous = tools.get("profile_mechanism").execute(args).getAsJsonObject();
+      // A name that matches both stems is not decided by the server (review 6 section 3.3)
+      assertEquals("no_match", ambiguous.get("status").getAsString(), ambiguous.toString());
+      assertTrue(ambiguous.get("needs_confirmation").getAsBoolean());
+      var stems = ambiguous.getAsJsonObject("stems");
+      assertTrue(stems.has("drive") && stems.has("turn"), stems.toString());
+      assertEquals("/Drive/ModuleFrontLeft/TurnVelocityRadPerSec",
+          stems.getAsJsonObject("turn").get("velocity").getAsString());
+      assertTrue(ambiguous.get("hint").getAsString().contains("mechanism_name"));
+      // A name that matches one stem is analyzed
+      args.addProperty("mechanism_name", "ModuleFrontLeft/Drive");
       r = tools.get("profile_mechanism").execute(args).getAsJsonObject();
     } catch (Exception e) {
       throw new AssertionError(e);
     }
-    // "drive" has three roles (velocity, current, position); "turn" has two
     assertEquals("drive", r.get("stem").getAsString());
     var roles = r.getAsJsonObject("roles");
     assertEquals("/Drive/ModuleFrontLeft/DriveVelocityRadPerSec", roles.get("velocity").getAsString());
     assertEquals("/Drive/ModuleFrontLeft/DriveCurrentAmps", roles.get("current").getAsString());
-    assertEquals(1, r.getAsJsonArray("other_stems").size());
-    assertTrue(r.getAsJsonArray("warnings").toString().contains("turn"));
+    assertFalse(r.has("other_stems"));
     // drive current 50 A while stopped: one stall, open at the end of the data
     assertEquals(1, r.get("stall_count").getAsInt());
     var stall = r.getAsJsonArray("stall_events").get(0).getAsJsonObject();
