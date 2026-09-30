@@ -38,6 +38,18 @@
         "label": "WPILog Analyzer"
       }
     ],
+    "commands": [
+      {
+        "command": "wpilog-mcp.setTbaApiKey",
+        "title": "Set The Blue Alliance API Key",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.clearTbaApiKey",
+        "title": "Clear The Blue Alliance API Key",
+        "category": "WPILog Analyzer"
+      }
+    ],
     "configuration": [
       {
         "title": "WPILog Analyzer",
@@ -65,7 +77,13 @@
           "wpilog-mcp.tbaApiKey": {
             "type": "string",
             "default": "",
-            "markdownDescription": "The Blue Alliance API key for match data enrichment. Get one at [thebluealliance.com/account](https://www.thebluealliance.com/account)."
+            "markdownDescription": "Deprecated: settings are stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command, which keeps the key in VS Code's secret storage. A key entered here is moved there and cleared from settings.",
+            "markdownDeprecationMessage": "Stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command instead; a key entered here is moved into VS Code's secret storage and cleared."
+          },
+          "wpilog-mcp.writeMcpJson": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Add a `wpilog-analyzer` entry to `.mcp.json` in the workspace root, so that Claude Code (which reads that file) can find the server. Other servers in the file are kept. The TBA API key is never written: the entry passes `${TBA_API_KEY}` from Claude Code's environment. The entry holds this computer's Java and JAR paths, so keep `.mcp.json` out of version control."
           },
           "wpilog-mcp.maxHeap": {
             "type": "string",
@@ -79,6 +97,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./ && node --test out/test/",
     "package": "vsce package"
   },
   "devDependencies": {

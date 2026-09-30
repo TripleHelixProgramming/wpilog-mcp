@@ -101,7 +101,7 @@ The goal: when you ask "why did we lose Q68?", you get analysis grounded in what
 
 ## The Blue Alliance Integration
 
-Get a free API key at [thebluealliance.com/account](https://www.thebluealliance.com/account).
+Get a free API key at [thebluealliance.com/account](https://www.thebluealliance.com/account). In VS Code, run **WPILog Analyzer: Set The Blue Alliance API Key** (the key is kept in VS Code's secret storage); standalone, set `TBA_API_KEY` (see [doc/STANDALONE.md](doc/STANDALONE.md)).
 
 When configured, the server enriches match logs with TBA data:
 - **Match times** - Corrects midnight timestamps from FMS

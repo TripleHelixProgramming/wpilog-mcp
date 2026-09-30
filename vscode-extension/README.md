@@ -44,6 +44,8 @@ code --install-extension wpilog-analyzer-{version}.vsix
 
 On activation, the extension finds the WPILib JDK and server JAR, then registers a stdio-based MCP server via the VS Code `McpServerDefinitionProvider` API. Settings changes trigger automatic re-registration.
 
+**Claude Code** does not use that API; it finds servers in a `.mcp.json` file in the workspace root. Turn on `wpilog-mcp.writeMcpJson` and the extension adds (and keeps up to date) a `wpilog-analyzer` entry there. Other servers already in the file are left alone, and a file that isn't valid JSON is not touched. The entry contains this computer's Java and JAR paths, so keep `.mcp.json` out of version control (add it to your robot project's `.gitignore`).
+
 **Tip:** Open your robot project in VS Code while analyzing logs. The AI agent can cross-reference telemetry data with your source code — mapping logged entry names back to the subsystems that produce them, correlating PID tuning constants with observed behavior, and providing analysis tailored to your team's specific robot architecture.
 
 ## Requirements
@@ -59,8 +61,16 @@ On activation, the extension finds the WPILib JDK and server JAR, then registers
 | `wpilog-mcp.wpiLibYear` | WPILib installation year (e.g., `2026`) | auto-detect latest |
 | `wpilog-mcp.logDirectory` | Path to `.wpilog` files | auto-detect |
 | `wpilog-mcp.teamNumber` | FRC team number for TBA lookups | `2363` |
-| `wpilog-mcp.tbaApiKey` | The Blue Alliance API key | — |
 | `wpilog-mcp.maxHeap` | JVM heap size | `4g` |
+| `wpilog-mcp.writeMcpJson` | Add a `wpilog-analyzer` entry to the workspace's `.mcp.json` for Claude Code | off |
+
+## The Blue Alliance API Key
+
+Match data from The Blue Alliance needs a free read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account). Run **WPILog Analyzer: Set The Blue Alliance API Key** from the Command Palette (`Ctrl+Shift+P`) and paste it. The key is kept in VS Code's secret storage (your operating system's keychain), not in a settings file, and reaches the server only through its environment. **WPILog Analyzer: Clear The Blue Alliance API Key** removes it.
+
+- **Upgrading from 0.8.x:** earlier versions kept the key in the `wpilog-mcp.tbaApiKey` setting, which is stored in plaintext. The extension moves a key found there into secret storage and clears the setting.
+- **Earlier versions also wrote the key into `.mcp.json`** in the workspace root. The extension removes it from that file. If the file (or a workspace `.vscode/settings.json` holding the key) was ever committed or shared, revoke the key on your TBA account page and set a new one.
+- **Claude Code:** the `.mcp.json` entry never contains the key. It passes `${TBA_API_KEY}` from Claude Code's own environment, so to use TBA from Claude Code, set `TBA_API_KEY` in the shell that starts it.
 
 ## Auto-Detection
 
@@ -81,7 +91,7 @@ Open the Extensions sidebar (`Ctrl+Shift+X`), find **WPILog Analyzer**, click th
 code --uninstall-extension TripleHelixProgramming.wpilog-analyzer
 ```
 
-The extension does not write files outside its own install directory, so no cleanup is needed.
+The extension writes no files outside its own install directory, except the `wpilog-analyzer` entry in the workspace's `.mcp.json` when `wpilog-mcp.writeMcpJson` is on: delete that entry (or the file) if you no longer want it. To remove the stored TBA API key, run **WPILog Analyzer: Clear The Blue Alliance API Key** before uninstalling.
 
 ## Troubleshooting
 
