@@ -21,9 +21,6 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.function.Executable;
-import org.opentest4j.AssertionFailedError;
-import org.opentest4j.TestAbortedException;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
@@ -37,11 +34,8 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  * log is not in the repository (116 MB). Every value was recomputed independently with
  * {@code wpiutil.log.DataLogReader} and numpy on 2026-09-29; two differ from the review's text
  * (CANHD TEC peaks at 215 at 650.86 s, not 85 at 205.76 s; the camera 3 alert is a warning
- * that clears at 783.804 s, while {@code Connected} stays false until 783.858 s).
- *
- * <p>Checks that the remediation plan ({@code doc/ROBUSTNESS_PLAN.md}) has not delivered yet are
- * wrapped in {@link #pending}: while they fail they are reported as skipped, and once they pass
- * they fail with a request to remove the marker, so the list only moves forward.
+ * that clears at 783.804 s, while {@code Connected} stays false until 783.858 s), and pose steps
+ * over 362-394 s arrive a median 110.5 ms apart (the review says "about every 80-110 ms").
  */
 @DisplayName("Golden values on the review log")
 class ReviewLogGoldenTest {
@@ -81,25 +75,14 @@ class ReviewLogGoldenTest {
     for (int i = 0; i < keyValues.length; i += 2) {
       var key = (String) keyValues[i];
       var value = keyValues[i + 1];
-      if (value instanceof Number n) args.addProperty(key, n);
+      if (value instanceof JsonElement json) args.add(key, json);
+      else if (value instanceof Number n) args.addProperty(key, n);
       else if (value instanceof Boolean b) args.addProperty(key, b);
       else args.addProperty(key, value.toString());
     }
     var result = tools.get(tool).execute(args).getAsJsonObject();
     assertTrue(result.get("success").getAsBoolean(), tool + " failed: " + result);
     return result;
-  }
-
-  /** Runs a check that a later phase delivers: skipped while it fails, a failure once it passes. */
-  static void pending(String phase, Executable check) {
-    try {
-      check.execute();
-    } catch (AssertionFailedError | RuntimeException e) {
-      throw new TestAbortedException("pending " + phase + ": " + e.getMessage());
-    } catch (Throwable t) {
-      throw new TestAbortedException("pending " + phase + ": " + t);
-    }
-    fail("This check now passes: remove its pending(\"" + phase + "\") marker.");
   }
 
   /** Finds the first number under {@code key} anywhere in the tree (depth-first). */
@@ -474,9 +457,67 @@ class ReviewLogGoldenTest {
     assertTrue(onTimeline, "no ALERT_RAISED for camera 3");
   }
 
-  static List<String> names(JsonElement array) {
-    var out = new ArrayList<String>();
-    array.getAsJsonArray().forEach(e -> out.add(e.getAsString()));
-    return out;
+  // ==================== Appendix A values added after the plan ====================
+
+  @Test
+  @DisplayName("camera 3 LatencyMs: median 61.2 ms, and one reconnect glitch of 5,870,507 ms")
+  void camera3Latency() throws Exception {
+    var result = call("get_statistics", "name", "/Vision/Camera3/LatencyMs");
+    assertEquals(22325, result.get("count").getAsInt());
+    near(61.174, result.get("median").getAsDouble(), 0.0005, "median");
+    near(5870507.267, result.get("max").getAsDouble(), 0.001, "max");
+  }
+
+  @Test
+  @DisplayName("the gyro yaw moves 0.034 degrees while the pose wanders (362-394 s)")
+  void gyroYawRange() throws Exception {
+    var result = call("get_statistics", "name", "/Drive/Gyro/YawPosition", "field", "value",
+        "start_time", 362, "end_time", 394);
+    near(0.03431, Math.toDegrees(result.get("max").getAsDouble()
+        - result.get("min").getAsDouble()), 0.00001, "yaw range (degrees)");
+  }
+
+  @Test
+  @DisplayName("analyze_swerve over the whole log: mean |speed| 0.93 m/s, maximum 4.75 m/s")
+  void swerveWholeLog() throws Exception {
+    var modules = call("analyze_swerve").getAsJsonArray("modules");
+    assertEquals(4, modules.size());
+    double meanOfMeans = 0.0;
+    double max = 0.0;
+    for (var m : modules) {
+      // every module has the same sample count, so the mean of the means is the overall mean
+      meanOfMeans += m.getAsJsonObject().get("mean_abs_speed_mps").getAsDouble() / 4.0;
+      max = Math.max(max, m.getAsJsonObject().get("max_abs_speed_mps").getAsDouble());
+    }
+    near(0.92957, meanOfMeans, 0.00001, "mean |speed|");
+    near(4.74976, max, 0.00001, "max |speed|");
+  }
+
+  @Test
+  @DisplayName("loop time while disabled after boot (t > 30 s): p50 16.0 ms, p95 39.4 ms")
+  void loopTimingDisabled() throws Exception {
+    var windows = new com.google.gson.JsonArray();
+    for (double[] w : new double[][] {{30.0, 40.207135}, {359.161586, 395.209541},
+        {744.929426, 791.534465}, {840.133016, 995.211072}}) {
+      var pair = new com.google.gson.JsonArray();
+      pair.add(w[0]);
+      pair.add(w[1]);
+      windows.add(pair);
+    }
+    var result = call("get_statistics", "name", "/RealOutputs/LoggedRobot/FullCycleMS",
+        "windows", windows);
+    near(10526, result.get("count").getAsInt(), 2, "count");
+    near(15.99, result.get("median").getAsDouble(), 0.01, "median");
+    near(39.41, result.get("p95").getAsDouble(), 0.05, "p95");
+  }
+
+  @Test
+  @DisplayName("pose x steps over 1 cm (362-394 s): 218 of them, a median 114.6 ms apart")
+  void poseStepCadence() throws Exception {
+    var result = call("detect_anomalies", "name", "/RealOutputs/Drive/Pose.translation.x",
+        "start_time", 362, "end_time", 394, "spike_threshold", 0.01);
+    assertEquals(218, result.get("spike_count").getAsInt());
+    var intervals = result.getAsJsonObject("spike_interval_sec");
+    near(0.1146, intervals.get("median").getAsDouble(), 0.0005, "median interval");
   }
 }

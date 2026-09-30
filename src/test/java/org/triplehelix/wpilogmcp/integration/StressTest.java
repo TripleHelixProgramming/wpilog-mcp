@@ -42,16 +42,17 @@ import org.triplehelix.wpilogmcp.tools.TbaTools;
 /**
  * Integration stress test that exercises all MCP server functionality with real log files.
  *
- * <p>Configuration is loaded from {@code .mcp.json} in the project root directory, which
- * is the same file used to configure the MCP server for Claude/Cursor. This ensures
- * the stress test runs against the same log files and with the same settings as production.
- *
- * <p>Alternatively, provide the log directory via system property or environment variable:
+ * <p>Runs only through {@code ./gradlew stressTest}. The configuration is the {@code stresstest}
+ * server in the config file given by {@code -Pconfigpath=<file>} (the same format the server
+ * reads); without one, it uses {@code ~/riologs} and team 2363, with the TBA key from
+ * {@code TBA_API_KEY}:
  * <pre>
- * ./gradlew stressTest
- * ./gradlew test -Dstress.logdir=/path/to/logs --tests "*StressTest*"
- * STRESS_LOGDIR=/path/to/logs ./gradlew test --tests "*StressTest*"
+ * ./gradlew stressTest -Pconfigpath=stress-config.json
  * </pre>
+ *
+ * <p>This test exercises loading, caching, concurrency, and each tool family on real logs. The
+ * per-result robustness rules for every tool on every log are checked by
+ * {@code RealLogConformanceTest}.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DisplayName("MCP Server Stress Test")
@@ -150,7 +151,9 @@ class StressTest {
   @DisplayName("1. List available logs")
   void listAvailableLogs() throws Exception {
     var tool = findTool("list_available_logs");
-    var result = executeTool(tool, new JsonObject());
+    var listArgs = new JsonObject();
+    listArgs.addProperty("limit", 500); // every log, not the default first page
+    var result = executeTool(tool, listArgs);
 
     assertTrue(result.has("success") && result.get("success").getAsBoolean(),
         "list_available_logs failed: " + result);
@@ -262,12 +265,11 @@ class StressTest {
       System.out.println("  list_loaded_logs: " + loaded + " loaded");
     });
 
-    testTool("list_struct_types", new JsonObject(), result -> {
-      int total = 0;
-      for (String cat : List.of("geometry", "kinematics", "vision", "autonomous")) {
-        if (result.has(cat)) total += result.getAsJsonArray(cat).size();
-      }
-      System.out.println("  list_struct_types: " + total + " struct types");
+    var structArgs = new JsonObject();
+    structArgs.addProperty("path", logPath);
+    testTool("list_struct_types", structArgs, result -> {
+      int total = result.has("struct_types") ? result.getAsJsonArray("struct_types").size() : 0;
+      System.out.println("  list_struct_types: " + total + " struct types in this log");
     });
 
     testTool("health_check", new JsonObject(), result -> {
@@ -649,18 +651,33 @@ class StressTest {
       }
     });
 
-    // moi_regression (requires angular velocity and current entries — try common names)
-    for (String prefix : List.of("/Drive", "/Arm", "/Shooter")) {
-      var moiArgs = new JsonObject();
-      moiArgs.addProperty("path", logPath);
-      moiArgs.addProperty("angular_velocity_entry", prefix + "/Velocity");
-      moiArgs.addProperty("current_entry", prefix + "/Current");
-      testTool("moi_regression", moiArgs, result -> {
-        if (result.has("J")) {
-          System.out.printf("  moi_regression (%s): J=%.6f, B=%.6f%n",
-              prefix, result.get("J").getAsDouble(), result.get("B").getAsDouble());
-        }
-      });
+    // moi_regression: a velocity and a current entry of the same mechanism (same parent path)
+    if (loadedEntryNames != null) {
+      var moiLog = LogManager.getInstance().getOrLoad(logPath);
+      java.util.function.Predicate<String> numeric = n -> {
+        var info = moiLog.entries().get(n);
+        return info != null && List.of("double", "float", "int64").contains(info.type());
+      };
+      java.util.function.Function<String, String> parent =
+          n -> n.substring(0, Math.max(0, n.lastIndexOf('/')));
+      loadedEntryNames.stream()
+          .filter(v -> v.contains("Velocity") && numeric.test(v))
+          .flatMap(v -> loadedEntryNames.stream()
+              .filter(c -> c.contains("Current") && numeric.test(c)
+                  && parent.apply(c).equals(parent.apply(v)))
+              .limit(1).map(c -> List.of(v, c)))
+          .findFirst()
+          .ifPresent(pair -> {
+            var moiArgs = new JsonObject();
+            moiArgs.addProperty("path", logPath);
+            moiArgs.addProperty("velocity_entry", pair.get(0));
+            moiArgs.addProperty("current_entry", pair.get(1));
+            moiArgs.addProperty("kt", 0.0194);
+            moiArgs.addProperty("gear_ratio", 6.75);
+            testTool("moi_regression", moiArgs, result ->
+                System.out.println("  moi_regression (" + pair.get(0) + "): "
+                    + (result.has("status") ? result.get("status").getAsString() : "?")));
+          });
     }
 
     // analyze_cycles
@@ -670,10 +687,15 @@ class StressTest {
                           name.toLowerCase().contains("intake") ||
                           name.toLowerCase().contains("shooter"))
           .findFirst();
-      if (stateEntry.isPresent()) {
+      var cycleLog = LogManager.getInstance().getOrLoad(logPath);
+      var startState = stateEntry.flatMap(e -> java.util.Optional
+          .ofNullable(cycleLog.values().get(e)).flatMap(values -> values.stream()
+              .map(v -> String.valueOf(v.value())).distinct().skip(1).findFirst()));
+      if (stateEntry.isPresent() && startState.isPresent()) {
         var cycleArgs = new JsonObject();
         cycleArgs.addProperty("path", logPath);
         cycleArgs.addProperty("state_entry", stateEntry.get());
+        cycleArgs.addProperty("cycle_start_state", startState.get());
         testTool("analyze_cycles", cycleArgs, result -> {
           int samples = result.has("sample_count") ? result.get("sample_count").getAsInt() : 0;
           System.out.println("  analyze_cycles: " + samples + " samples");
@@ -730,9 +752,10 @@ class StressTest {
     // get_tba_match_data (needs event key + match; try a reasonable default)
     if (TbaConfig.getInstance().isConfigured()) {
       var tbaArgs = new JsonObject();
-      tbaArgs.addProperty("event_key", "2026miket");
+      tbaArgs.addProperty("year", 2026);
+      tbaArgs.addProperty("event_code", "vache");
       tbaArgs.addProperty("match_type", "qm");
-      tbaArgs.addProperty("match_number", 1);
+      tbaArgs.addProperty("match_number", 10);
       testTool("get_tba_match_data", tbaArgs, result -> {
         boolean hasData = result.has("match_key");
         System.out.println("  get_tba_match_data: " + (hasData ? "data found" : "no data"));

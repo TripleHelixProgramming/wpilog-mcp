@@ -144,6 +144,14 @@ tasks.named('test') {
     if (project.hasProperty('goldenLog')) {
         systemProperty 'golden.log', project.property('goldenLog')
     }
+    // Conformance rules on every real log in a directory (opt-in): -PconformanceLogDir=/path/to/logs
+    // (-PconformanceMaxLogs=N limits it to the first N)
+    if (project.hasProperty('conformanceLogDir')) {
+        systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+    }
+    if (project.hasProperty('conformanceMaxLogs')) {
+        systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
+    }
     // Regenerate doc/TOOL_RESPONSES.md from real logs (opt-in): -PtoolResponsesLogDir=/path/to/riologs
     if (project.hasProperty('toolResponsesLogDir')) {
         systemProperty 'tool.responses.logdir', project.property('toolResponsesLogDir')

@@ -179,7 +179,9 @@ class HttpStressTest {
     System.out.println("\nDiscover and load via HTTP:");
 
     // list_available_logs
-    var result = toolCall(sessionId, "list_available_logs", new JsonObject());
+    var listLogsArgs = new JsonObject();
+    listLogsArgs.addProperty("limit", 500); // every log, not the default first page
+    var result = toolCall(sessionId, "list_available_logs", listLogsArgs);
     int logCount = result.get("log_count").getAsInt();
     System.out.println("  Found " + logCount + " logs");
 
@@ -492,15 +494,19 @@ class HttpStressTest {
     delete(sessionId);
   }
 
-  // ==================== 8. Full Tool Coverage ====================
+  // ==================== 8. Tool Coverage ====================
 
+  /**
+   * A representative set of tools through the HTTP transport (the transport is tool-agnostic).
+   * Every tool on every log is checked against the robustness rules by RealLogConformanceTest.
+   */
   @Test
   @Order(8)
-  @DisplayName("8. Full tool coverage via HTTP")
+  @DisplayName("8. Tool coverage via HTTP")
   void fullToolCoverage() throws Exception {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
 
-    System.out.println("\nFull tool coverage via HTTP:");
+    System.out.println("\nTool coverage via HTTP:");
 
     var sessionId = initialize();
     String logPath = availableLogPaths.get(0);

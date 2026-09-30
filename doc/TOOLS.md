@@ -1520,11 +1520,11 @@ Analyze vision data, found by type and content: pose observation streams, target
 
 **target_streams:** struct entries (single or arrays) whose records have `yaw` and `pitch` fields — for example the vision template's `TargetObservation` — found by content. Per stream: `camera`, `records`, `observation_count`, `yaw` and `pitch` distributions (median, p95, max; `_deg` when they are WPILib `Rotation2d`s), `area`, `confidence`, and `object_ids` (counts per id).
 
-**pose_sets:** `struct:Pose3d[]` and `struct:Pose2d[]` entries (for example `/RealOutputs/Vision/Summary/RobotPosesAccepted`): `records`, `records_non_empty`, `fraction_non_empty`, `pose_count`, `mean_poses_per_non_empty_record`, `max_poses_per_record`.
+**pose_sets:** `struct:Pose3d[]` entries, and `struct:Pose2d[]` entries under a vision, camera, PhotonVision, or Limelight path (for example `/RealOutputs/Vision/Summary/RobotPosesAccepted`); other `Pose2d[]` entries, such as PathPlanner's `activePath`, are planned paths, not vision data: `records`, `records_non_empty`, `fraction_non_empty`, `pose_count`, `mean_poses_per_non_empty_record`, `max_poses_per_record`.
 
 **target_acquisition:** entries named `hasTarget`, `targetValid`, or ending in `/tv` (Limelight): `total_samples`, `valid_samples`, `acquisition_rate`, `flicker_events`. Values logged only on change make the per-sample rate approximate.
 
-**pose_jumps:** steps larger than `jump_threshold` between consecutive samples of the robot pose and of scalar vision pose entries (`pose_entries_checked`); always present (empty when none), with `jump_count` the true total and `limits.pose_jumps`. Samples whose pose cannot be read are counted in `unreadable_pose_samples`, never treated as zero movement.
+**pose_jumps:** steps larger than `jump_threshold` between consecutive samples of the robot pose and of scalar vision pose entries (`pose_entries_checked`); always present (empty when none), with `jump_count` the true total and `limits.pose_jumps`. Samples whose pose cannot be read are counted in `unreadable_pose_samples`, never treated as zero movement. A jump within 0.5 s of the robot being enabled has `near_enable_sec` (seconds after the enable): odometry is often reset there, for example when an autonomous routine sets its starting pose, so such a jump is not by itself evidence of a vision correction.
 
 **Status:** `no_match` (with `looked_for`) when the log has no observation streams, target streams, pose sets, has-target entries, or scalar poses; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing).
 

@@ -437,11 +437,15 @@ public final class FrcDomainTools {
           + "and the robot pose at the observation's timestamp (robot_pose_entry, chosen or "
           + "passed as pose_entry). target_streams: structs with yaw and pitch fields (such as "
           + "TargetObservation), with yaw, pitch, area, and confidence distributions and the "
-          + "object ids seen. pose_sets: Pose3d[]/Pose2d[] entries (e.g. accepted or rejected "
-          + "robot poses per loop), with how often they are non-empty and poses per record. "
+          + "object ids seen. pose_sets: Pose3d[] entries, and Pose2d[] entries under a vision, "
+          + "camera, PhotonVision, or Limelight path (e.g. accepted or rejected robot poses per "
+          + "loop), with how often they are non-empty and poses per record; other Pose2d[] "
+          + "entries, such as a planned path, are not vision data. "
           + "target_acquisition: Limelight-style has-target entries (tv, hasTarget, targetValid) "
           + "with acquisition rate and flicker. pose_jumps: steps larger than jump_threshold in "
-          + "scalar pose entries. vision_prefix limits the vision entries only "
+          + "scalar pose entries; a jump within 0.5 s of the robot being enabled has "
+          + "near_enable_sec (odometry is often reset there, e.g. at the start of autonomous), so "
+          + "it is not by itself evidence of a vision correction. vision_prefix limits the vision entries only "
           + "(case-insensitive); the robot pose may live elsewhere. Returns no_match with what "
           + "was searched when none of these exist."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
@@ -461,6 +465,13 @@ public final class FrcDomainTools {
           .addNumberProperty("flicker_window", "Time window for flicker detection (seconds)", false, 0.5)
           .build();
     }
+
+    /** Path words of vision libraries and cameras, for Pose2d[] entries only. */
+    static final java.util.regex.Pattern VISION_PATH =
+        java.util.regex.Pattern.compile("(?i)(vision|camera|photon|limelight)");
+
+    /** Seconds after an enable within which a pose jump is flagged as near_enable_sec. */
+    static final double NEAR_ENABLE_SEC = 0.5;
 
     static boolean underPrefix(String name, String prefix) {
       return prefix == null || name.toLowerCase().startsWith(prefix.toLowerCase());
@@ -506,7 +517,9 @@ public final class FrcDomainTools {
         if (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
             || lower.contains("targetvalid")) {
           targetEntries.add(e.name());
-        } else if (e.type().equals("struct:Pose3d[]") || e.type().equals("struct:Pose2d[]")) {
+        } else if (e.type().equals("struct:Pose3d[]")
+            || (e.type().equals("struct:Pose2d[]") && VISION_PATH.matcher(e.name()).find())) {
+          // A Pose2d[] elsewhere is usually a path or trajectory, not vision data
           poseSets.add(e.name());
         } else if (isObservationStream(log, e)) {
           streams.add(e.name());
@@ -590,6 +603,8 @@ public final class FrcDomainTools {
             + "; only pose jumps were checked.");
       }
 
+      var enables = MatchTimeline.of(log).enabledSegments().stream()
+          .map(MatchTimeline.Segment::start).toList();
       var jumps = new ArrayList<JsonObject>();
       int unreadable = 0;
       for (var name : jumpEntries) {
@@ -605,6 +620,9 @@ public final class FrcDomainTools {
               jump.addProperty("timestamp", tv.timestamp());
               jump.addProperty("entry", name);
               jump.addProperty("distance", distance);
+              double t = tv.timestamp();
+              enables.stream().filter(e -> Math.abs(t - e) <= NEAR_ENABLE_SEC)
+                  .findFirst().ifPresent(e -> jump.addProperty("near_enable_sec", t - e));
               jumps.add(jump);
             }
           }
