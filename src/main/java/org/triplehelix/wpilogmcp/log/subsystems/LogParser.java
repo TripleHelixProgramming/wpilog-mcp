@@ -61,8 +61,9 @@ public class LogParser {
     }
 
     var entriesById = new HashMap<Integer, EntryInfo>();
-    var entriesByName = new HashMap<String, EntryInfo>();
-    var valuesByEntry = new HashMap<String, java.util.List<TimestampedValue>>();
+    // Declaration order, as in LazyParsedLog
+    var entriesByName = new java.util.LinkedHashMap<String, EntryInfo>();
+    var valuesByEntry = new java.util.LinkedHashMap<String, java.util.List<TimestampedValue>>();
 
     double minTimestamp = Double.MAX_VALUE;
     double maxTimestamp = Double.NEGATIVE_INFINITY;
@@ -79,9 +80,17 @@ public class LogParser {
           var info =
               new EntryInfo(
                   startData.entry, startData.name, startData.type, startData.metadata);
-          entriesById.put(startData.entry, info);
-          entriesByName.put(startData.name, info);
-          valuesByEntry.put(startData.name, new ArrayList<>());
+          var existing = entriesByName.get(startData.name);
+          if (existing == null) {
+            entriesById.put(startData.entry, info);
+            entriesByName.put(startData.name, info);
+            valuesByEntry.put(startData.name, new ArrayList<>());
+          } else if (existing.type().equals(startData.type)) {
+            entriesById.put(startData.entry, existing); // same name restarted: one entry
+          } else {
+            logger.warn("Entry '{}' restarted with type '{}' (was '{}'); ignoring its records",
+                startData.name, startData.type, existing.type());
+          }
           logger.trace(
               "Found entry [{}]: name={}, type={}",
               startData.entry,

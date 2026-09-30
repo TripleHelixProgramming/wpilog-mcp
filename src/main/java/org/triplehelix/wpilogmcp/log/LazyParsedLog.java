@@ -12,6 +12,7 @@ import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -88,7 +89,9 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     // while tracking byte offsets for data records via our WpilogRecordReader.
     // This gives us reliable entry metadata AND random-access offsets in one pass.
     var entriesById = new HashMap<Integer, EntryInfo>();
-    var entriesByName = new HashMap<String, EntryInfo>();
+    // Declaration order: entries iterate in the order the robot program declared them, so any
+    // "first match" over entries() is deterministic (and ties broken by entry id agree with it)
+    var entriesByName = new LinkedHashMap<String, EntryInfo>();
     var offsetLists = new HashMap<String, List<Integer>>();
 
     double minTs = Double.MAX_VALUE;
@@ -114,9 +117,19 @@ public class LazyParsedLog implements LogData, AutoCloseable {
           var startData = record.getStartData();
           if (startData.name != null && !startData.name.isEmpty()) {
             var info = new EntryInfo(startData.entry, startData.name, startData.type, startData.metadata);
-            entriesById.put(startData.entry, info);
-            entriesByName.put(startData.name, info);
-            offsetLists.put(startData.name, new ArrayList<>());
+            var existing = entriesByName.get(startData.name);
+            if (existing == null) {
+              entriesByName.put(startData.name, info);
+              entriesById.put(startData.entry, info);
+              offsetLists.put(startData.name, new ArrayList<>());
+            } else if (existing.type().equals(startData.type)) {
+              // The same name started again (after a Finish, or by another writer): one entry,
+              // keeping the first declaration and all records
+              entriesById.put(startData.entry, existing);
+            } else {
+              logger.warn("Entry '{}' restarted with type '{}' (was '{}'); ignoring its records",
+                  startData.name, startData.type, existing.type());
+            }
           }
         } else if (!record.isFinish() && !record.isSetMetadata()) {
           // Data record — record its byte offset for random-access decode

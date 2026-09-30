@@ -611,11 +611,8 @@ class StressTest {
     var swerveArgs = new JsonObject();
     swerveArgs.addProperty("path", logPath);
     testTool("analyze_swerve", swerveArgs, result -> {
-      if (result.has("swerve_entries")) {
-        System.out.println("  analyze_swerve: swerve entries found");
-      } else {
-        System.out.println("  analyze_swerve: no swerve data");
-      }
+      System.out.println("  analyze_swerve: " + result.get("module_count").getAsInt()
+          + " modules (" + result.get("layout").getAsString() + ")");
     });
 
     // power_analysis

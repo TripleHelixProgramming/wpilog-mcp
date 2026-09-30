@@ -667,45 +667,49 @@ Find when the robot was enabled, in which mode, and — when the log holds a mat
 ```
 
 ### `analyze_swerve`
-Analyze swerve drive module performance. Searches for entries containing SwerveModuleState, SwerveModulePosition, ChassisSpeeds, or entries with "swerve"/"module" in the name. Reports statistics for each module found.
+Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per module and, when setpoints are logged, how well each module tracks them.
+
+**How modules are found:**
+- AdvantageKit logs `struct:SwerveModuleState[]` arrays (e.g. `/RealOutputs/SwerveStates/Measured`): each index is one module, labeled `module[0]`…`module[N-1]`. For four modules, `assumed_position` gives the AdvantageKit template's order (front-left, front-right, back-left, back-right) — an assumption the log does not record, stated in `module_order_note`.
+- One `struct:SwerveModuleState` entry per module also works: entries are grouped by parent path (`/Drive/Module2/Measured` is module `Module2`).
+- Measured vs setpoint is judged by leaf name: `setpoint`, `desired`, `target`, `commanded`, `goal`, or `reference` mark a setpoint; anything else is measured. Measured arrays named `Measured` rank first; setpoint arrays named `...Optimized` rank first (the optimized setpoint is what the module tracks); ties by entry id. Setpoints pair with measured states by index.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `module_prefix` (optional): Entry path prefix for swerve modules (e.g., `/Drive/Module` or `/Swerve`). If omitted, searches all entries
-- `slip_threshold` (number, optional): Speed difference threshold for slip detection in m/s (default: 0.5)
-- `sync_threshold_rad` (number, optional): Angle threshold for sync deviation in radians (default: 0.1)
-- `odometry_entry` (string, optional): Explicit odometry pose entry name for drift analysis
-- `vision_entry` (string, optional): Explicit vision pose entry name for drift analysis
+- `module_prefix` (optional): Only consider module state entries under this prefix
+- `measured_entry`, `setpoint_entry` (optional): Choose the module state entries explicitly (an array, or one module's entry)
+- `slip_threshold` (optional): Speed tracking error, in m/s, counted as an event (default: 0.5)
+- `sync_threshold_rad` (optional): Steer error, in radians, counted as an event (default: 0.1)
+- `odometry_entry`, `vision_entry` (optional): Scalar pose entries for the drift comparison
+- `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
 
-**Returns:** Lists of found swerve-related entries, per-module statistics (max/avg speed), wheel slip analysis, module sync analysis, and odometry drift analysis
+**Returns (per module in `modules[]`):**
+- `mean_abs_speed_mps`, `max_abs_speed_mps`, `samples` — magnitudes: measured speeds are signed (negative about half the time as modules flip direction), so a signed average cancels toward zero
+- `speed_tracking_error` (`mean_mps`, `p95_mps`, `max_mps`, `events_over_threshold`): `| |measured| − |setpoint| |` at each measured sample, against the setpoint logged at most 0.1 s earlier
+- `steer_error` (`mean_rad`, `p95_rad`, `max_rad`, `max_deg`, `events_over_threshold`): angle difference modulo 180° (an optimized setpoint may flip the wheel), only while the setpoint speed exceeds 0.05 m/s
 
-**Example Response:**
+**Also returns:** `layout` (`array` or `per_module`), `module_count`, `module_sync` (the largest steer error across modules, with `worst_module`), `odometry_drift` (distance between a scalar odometry pose and a scalar vision pose at the vision timestamps), `scope`, and `inputs.entries`. Sections that cannot be produced — no setpoints, no scalar vision pose — are listed in `skipped` with the reason (status `partial`).
+
+**Status:** `no_match` when the log has no `SwerveModuleState` entries (or only setpoints).
+
+**Example Response (abridged):**
 ```json
 {
   "success": true,
-  "swerve_entries": {
-    "module_states": [
-      "/Drive/Module0/State",
-      "/Drive/Module1/State",
-      "/Drive/Module2/State",
-      "/Drive/Module3/State"
-    ],
-    "module_positions": [
-      "/Drive/Module0/Position",
-      "/Drive/Module1/Position"
-    ],
-    "chassis_speeds": ["/Drive/ChassisSpeeds"],
-    "other_swerve": ["/Drive/SwerveSetpoint"]
-  },
-  "module_analysis": [
-    {
-      "entry": "/Drive/Module0/State",
-      "max_speed_mps": 4.2,
-      "avg_speed_mps": 1.8,
-      "sample_count": 7500
-    }
+  "status": "partial",
+  "layout": "array",
+  "module_count": 4,
+  "inputs": {"entries": {"measured": "/RealOutputs/SwerveStates/Measured", "setpoint": "/RealOutputs/SwerveStates/SetpointsOptimized"}},
+  "scope": {"scope": "enabled", "windows": [[40.207, 359.162], "..."], "total_sec": 1311.36},
+  "modules": [
+    {"module": "module[0]", "index": 0, "assumed_position": "front_left",
+     "measured_entry": "/RealOutputs/SwerveStates/Measured", "samples": 40010,
+     "mean_abs_speed_mps": 0.971, "max_abs_speed_mps": 4.75,
+     "speed_tracking_error": {"samples": 24180, "mean_mps": 0.08, "p95_mps": 0.31, "max_mps": 2.9, "events_over_threshold": 412},
+     "steer_error": {"samples": 20114, "mean_rad": 0.03, "p95_rad": 0.09, "max_rad": 1.2, "max_deg": 68.8, "events_over_threshold": 900}}
   ],
-  "hint": "Use get_statistics or find_peaks on specific entries for detailed analysis"
+  "module_sync": {"basis": "steer angle vs setpoint, modulo 180 deg, ...", "max_deviation_rad": 1.2, "worst_module": "module[2]"},
+  "skipped": [{"section": "odometry_drift", "reason": "Needs a scalar odometry pose and a scalar vision pose ..."}]
 }
 ```
 
@@ -716,7 +720,11 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 
 **Current entry selection:** an entry counts as amperage when its name ends in `Amps`/`Amperes` at a token boundary (`CurrentAmps`, `StatorAmps`, `stator_amps` — but not `OdometryTimestamps` or `SlewRamps`), when the text after the last `Current` is empty or a unit/plural/draw suffix (`OutputCurrent`, `Current_A`, `CurrentDraw`, `Currents`, `Current(A)`), when it is `Current/<sub-path>` that is not a non-amperage quantity (`Current/Stator` yes, `Current/Setpoint` no), or when it is a WPILib PowerDistribution sendable channel (`PowerDistribution[<id>]/Chan<N>`). Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are excluded; anything containing "voltage" is excluded. `power_prefix` narrows the candidates but does not bypass the rule.
 
-**Brownout Risk Levels:**
+**Brownout threshold** (shared with `predict_battery_health`, `get_ds_timeline`, and `generate_report`): the `brownout_threshold` argument when given; otherwise the roboRIO's own setting when the log records it (a numeric entry named `BrownoutVoltage`, e.g. AdvantageKit `/SystemStats/BrownoutVoltage`); otherwise 6.8 V, the roboRIO 1 default, with `brownout_threshold_basis` saying that a roboRIO 2 (6.3 V) cannot be ruled out.
+
+**roboRIO brownouts:** when the log has the roboRIO's brownout flag (a boolean named `BrownedOut`, e.g. `/SystemStats/BrownedOut`), `rio_brownouts` lists each interval it was true — the times the roboRIO actually disabled outputs — with start, end, and duration. Voltage statistics against the threshold are a separate, weaker signal.
+
+**Brownout Risk Levels** (a heuristic on the minimum voltage):
 - **HIGH**: Voltage dropped below brownout threshold
 - **MODERATE**: Voltage within 1V of threshold
 - **LOW**: Voltage stayed above threshold + 1V
@@ -724,11 +732,14 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 **Parameters:**
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
-- `brownout_threshold` (optional): Voltage threshold for brownout warning (default 6.8V for roboRIO 1; set to 6.3V for roboRIO 2)
+- `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
 
+**Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries; `partial` with `skipped` when either the voltage or the current section cannot be produced.
+
 **Returns:**
-- `voltage_analysis`: `{entry, min_voltage, max_voltage, avg_voltage, samples_below_threshold, brownout_threshold, brownout_risk}` — statistics and the below-threshold count use finite samples only; absent when no usable voltage entry exists (a warning says why)
+- `voltage_analysis`: `{entry, min_voltage, max_voltage, avg_voltage, samples_below_threshold, brownout_threshold, brownout_threshold_basis, brownout_threshold_entry (when logged), brownout_risk}` — statistics and the below-threshold count use finite samples only; absent when no usable voltage entry exists (a warning says why)
+- `rio_brownouts`: `{flag_entry, count, total_sec, events: [{start, end, duration_sec, open_at_log_end?}]}` when the brownout flag is logged
 - `current_entries_analyzed`: number of current entries/channels found (always present; 0 when none)
 - `channel_analysis`: present when at least one current entry exists; sorted by `|peak_current_A|` descending: `{entry, peak_current_A, peak_current_time_sec, max_current_A, min_current_A, avg_current_A, sample_count}`. `peak_current_A` is the sample with the largest magnitude, signed (a −150 A stall on a direction-signed torque current is reported as −150); `max_current_A`/`min_current_A` are the signed extremes. Entries expanded from an array (`double[]`, `float[]`, `int64[]`) add `source_entry` and `channel` (the index) and are named `<entry>[<index>]`; ragged arrays yield per-channel sample counts. Non-finite samples are ignored.
 - `warnings`: when no usable voltage entry exists (distinguishing "no voltage-named entry" from "voltage entries exist but none has finite scalar samples"), when no current entries are found, or when the list was truncated by `channel_limit`
@@ -744,8 +755,16 @@ Analyze battery and current distribution data. Reports battery voltage statistic
     "max_voltage": 12.844,
     "avg_voltage": 10.647,
     "samples_below_threshold": 1,
-    "brownout_threshold": 6.8,
+    "brownout_threshold": 6.75,
+    "brownout_threshold_basis": "logged",
+    "brownout_threshold_entry": "/SystemStats/BrownoutVoltage",
     "brownout_risk": "HIGH"
+  },
+  "rio_brownouts": {
+    "flag_entry": "/SystemStats/BrownedOut",
+    "count": 1,
+    "total_sec": 0.04,
+    "events": [{"start": 137.38, "end": 137.42, "duration_sec": 0.04}]
   },
   "current_entries_analyzed": 71,
   "channel_analysis": [
@@ -884,31 +903,32 @@ Compare statistics for one scalar numeric entry across two log files. Useful as 
 ```
 
 ### `get_code_metadata`
-Extract code metadata from the log. WPILib and AdvantageKit typically log Git information at startup. This tool searches for entries containing GitSHA, GitBranch, GitDirty, BuildDate, RuntimeType, ProjectName, MavenGroup, MavenName, and Version.
+Extract code metadata from string entries whose leaf name is `GitSHA`, `GitBranch`, `GitDirty`, `GitDate`, `BuildDate`, `ProjectName`, or `Version` (the last only under a path containing "metadata") — for example AdvantageKit's `/RealMetadata/GitSHA`, recorded from the generated `BuildConstants`. When several entries hold the same key (e.g. `/RealMetadata/` and `/ReplayMetadata/`), the lowest entry id wins and a warning says when their values differ.
 
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** Found metadata values and list of all metadata-related entries
+**Returns:** `metadata` (key → first value; `"unknown"` when the entry has no samples) and `sources` (key → entry name).
+
+**Status:** `no_match` (with `looked_for` and a `hint`) when the log has no metadata entries.
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "log_path": "/logs/2024vadc_qm42.wpilog",
+  "status": "ok",
   "metadata": {
     "GitSHA": "a1b2c3d4e5f6",
     "GitBranch": "main",
-    "GitDirty": false,
-    "BuildDate": "2024-03-15T10:30:00Z"
+    "GitDirty": "All changes committed",
+    "BuildDate": "2024-03-15 10:30:00 EDT"
   },
-  "metadata_entries_found": 4,
-  "all_metadata_entries": [
-    "/RealMetadata/GitSHA",
-    "/RealMetadata/GitBranch",
-    "/RealMetadata/GitDirty",
-    "/RealMetadata/BuildDate"
-  ]
+  "sources": {
+    "GitSHA": "/RealMetadata/GitSHA",
+    "GitBranch": "/RealMetadata/GitBranch",
+    "GitDirty": "/RealMetadata/GitDirty",
+    "BuildDate": "/RealMetadata/BuildDate"
+  }
 }
 ```
 
@@ -1173,57 +1193,45 @@ Export entry data to a CSV file for external analysis in Excel, Python, MATLAB, 
 ```
 
 ### `generate_report`
-Generate a comprehensive match summary report. Collects key metrics from the log including duration, battery health, error count, code metadata, and data type distribution.
+Generate a one-call summary of a log. Each section uses the same entry choice and rules as the tool that covers it in depth, and names its source entries.
 
 **Report Sections:**
 - **basic_info**: Duration, timestamps, entry count, truncation status
-- **battery**: Min/max voltage, brownout risk assessment
-- **errors**: Total error count and sample error messages
-- **code_info**: Git SHA and branch (if available)
-- **top_data_types**: Most common data types in the log
+- **timeline**: Enabled segments, enabled time, FMS matches, and season (as `get_match_phases` derives them)
+- **battery**: The voltage entry `power_analysis` would choose; min voltage with its time, max, whole-log average; the brownout threshold with its basis; `rio_brownouts` when the roboRIO flag is logged; a `brownout_risk` heuristic
+- **peak_currents**: The three largest current peaks (entry, signed peak, time), from the amperage entries `power_analysis` analyzes
+- **errors**: `total_errors` and `total_warnings` (samples classified by the same line rule as `get_ds_timeline` and `search_strings` — a multi-line console batch counts once, by its most severe line, and "default" is not a fault), `distinct_error_messages`, `top_messages` (the five most frequent, numbers normalized), and `samples` (the first five error lines with time and entry)
+- **code_info**: Git SHA, branch, dirty flag, Git date, build date, project name (the entries `get_code_metadata` reads)
+- **top_data_types**: Most common data types (ties by name)
+
+Sections that cannot be produced are listed in `skipped` (status `partial`); an empty log is `no_match`.
 
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** Comprehensive JSON report with all sections
-
-**Example Response:**
+**Example Response (abridged):**
 ```json
 {
   "success": true,
-  "log_path": "/logs/2024vadc_qm42.wpilog",
-  "log_filename": "2024vadc_qm42.wpilog",
-  "basic_info": {
-    "duration_sec": 154.32,
-    "start_timestamp": 0.0,
-    "end_timestamp": 154.32,
-    "entry_count": 156,
-    "truncated": false
-  },
+  "status": "ok",
+  "log_filename": "akit_26-09-30_00-10-26.wpilog",
+  "basic_info": {"duration_sec": 1579.91, "entry_count": 371, "truncated": true, "...": "..."},
+  "timeline": {"enabled_segments": 4, "enabled_time_sec": 1311.36, "matches": 0, "season": 2026, "source": "/DriverStation/Enabled"},
   "battery": {
-    "entry": "/Robot/BatteryVoltage",
-    "min_voltage": 10.23,
-    "max_voltage": 12.89,
-    "brownout_risk": "LOW"
+    "entry": "/SystemStats/BatteryVoltage",
+    "min_voltage": 6.618, "min_voltage_time_sec": 655.45, "max_voltage": 12.9, "avg_voltage_whole_log": 12.02,
+    "brownout_threshold": 6.75, "brownout_threshold_basis": "logged", "brownout_threshold_entry": "/SystemStats/BrownoutVoltage",
+    "rio_brownouts": {"flag_entry": "/SystemStats/BrownedOut", "count": 2, "total_sec": 0.181, "events": ["..."]},
+    "brownout_risk": "HIGH"
   },
+  "peak_currents": [{"entry": "/SystemStats/BatteryCurrent", "peak_current_A": 262.0, "peak_current_time_sec": 655.44}, "..."],
   "errors": {
-    "total_errors": 3,
-    "samples": [
-      "Error: Vision target not found",
-      "CAN timeout on device 5"
-    ]
+    "total_errors": 41, "total_warnings": 2598, "distinct_error_messages": 7,
+    "top_messages": [{"message": "Error at frc.robot... line #", "example": "...", "count": 20, "first_timestamp": 101.2}],
+    "samples": [{"timestamp_sec": 8.36, "entry": "/RealOutputs/Console", "line": "..."}]
   },
-  "code_info": {
-    "git_sha": "a1b2c3d4e5f6",
-    "git_branch": "main"
-  },
-  "top_data_types": {
-    "double": 45,
-    "struct:Pose2d": 12,
-    "struct:SwerveModuleState[]": 8,
-    "boolean": 15,
-    "string": 10
-  }
+  "code_info": {"git_sha": "a1b2c3d4e5f6", "git_branch": "main", "git_dirty": "All changes committed"},
+  "top_data_types": {"double": 87, "boolean": 68, "int64": 65, "string": 40}
 }
 ```
 
@@ -1238,7 +1246,7 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 - `path` (required): Path to the log file
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
-- `brownout_threshold` (optional): Voltage threshold for brownout detection (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
+- `brownout_threshold` (optional): Voltage threshold for BROWNOUT_START/END crossings (default: the log's `BrownoutVoltage` entry when logged, else 6.8V for roboRIO 1; reported as `brownout_threshold` with `brownout_threshold_basis`)
 
 **Returns:** Chronologically sorted `events` with category, type, timestamp, and source entry; `summary` (count per category); `inputs.entries` (the DriverStation, voltage, and brownout flag entries used); `brownout_voltage_entry` (the voltage entry scanned for threshold crossings — selected exactly as `power_analysis` does — with a warning instead when the log has none); `rio_brownout_flag_logged` (whether the log contains a boolean roboRIO brownout flag entry) and, when it does, `rio_brownout_flag_entry`; `text_event_counts` and `text_event_summary` / `text_event_groups_total` (see below); `warnings`
 
@@ -1610,43 +1618,46 @@ Cycles marked with `incomplete: true` indicate the log ended before the cycle co
 Incomplete cycles are still included in the output for visibility, but excluded from cycle time statistics to avoid skewing averages.
 
 ### `analyze_replay_drift`
-Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. Identifies entries that diverged and their first divergence timestamp.
+Validate AdvantageKit deterministic replay. Run it on a replay output log (the `_sim` log AdvantageScope writes), which holds both `/RealOutputs/<name>` (what the robot computed) and `/ReplayOutputs/<name>` (what replay computed from the same inputs).
+
+**How it compares:** every `/RealOutputs/X` entry with a `/ReplayOutputs/X` counterpart, sample by sample, with timestamps matched within 1 ms. Numbers are equal within `relative_tolerance` (default 1e-9 of their magnitude, and 1e-12 absolute); arrays and structs are compared element by element; strings and booleans exactly.
 
 **Parameters:**
-- `path` (required): Path to the log file
+- `path` (required): Path to the replay output log
+- `relative_tolerance` (optional): Relative tolerance for numbers (default 1e-9)
+- `limit` (optional): Maximum divergent entries to list (default 20)
 
-**Pairs entries matching:**
-- `/RealOutputs/*` with `/ReplayOutputs/*`
-- `RealOutputs/*` with `ReplayOutputs/*`
+**Returns:** `pairs_compared`, `samples_compared`, `divergent_count` (entries with at least one divergent sample), `divergences[]` sorted by first divergence (`entry`, `type`, `first_divergence_time`, `divergent_samples`, `compared_samples`, `max_abs_difference` for numbers, and `first_divergence` with both values), `limits.divergences` (total vs returned), `real_only_count`/`real_only_entries` and `replay_only_count`/`replay_only_entries` (up to 50 names each; a warning says when real outputs went uncompared), `samples_without_counterpart`, and `relative_tolerance`.
 
-**Returns:** Count of paired entries, matching vs divergent pairs, and divergence details
+**Status:** `not_applicable` on a log with no `/ReplayOutputs/` entries (a real-robot log — the result used to read "0 divergences"); `no_match` when no names pair up.
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "paired_entries": 45,
-  "matching_pairs": 42,
-  "divergent_pairs": 3,
+  "status": "ok",
+  "pairs_compared": 45,
+  "samples_compared": 331200,
+  "divergent_count": 2,
+  "relative_tolerance": 1e-9,
   "divergences": [
     {
-      "entry": "/Drive/Odometry/Pose",
-      "first_divergence_timestamp": 12.34,
-      "divergence_count": 150,
-      "total_samples": 7500
-    },
-    {
-      "entry": "/Vision/EstimatedPose",
-      "first_divergence_timestamp": 12.35,
-      "divergence_count": 148,
-      "total_samples": 7500
+      "entry": "/RealOutputs/Drive/Odometry/Pose",
+      "type": "struct:Pose2d",
+      "first_divergence_time": 12.34,
+      "divergent_samples": 150,
+      "compared_samples": 7500,
+      "max_abs_difference": 0.0031,
+      "first_divergence": {"timestamp": 12.34, "real": "{...}", "replay": "{...}"}
     }
   ],
-  "hint": "Common causes of replay divergence: Timer.getFPGATimestamp(), Math.random(), network data, non-logged sensor reads, or hardware-dependent code paths."
+  "limits": {"divergences": {"total": 2, "returned": 2, "limit": 20}},
+  "real_only_count": 0,
+  "replay_only_count": 0
 }
 ```
 
-**Use Case:** When replay outputs don't match real outputs, this tool helps identify which subsystems broke determinism. The first divergence timestamp often points to the root cause - entries that diverge first typically contain the non-deterministic code.
+**Use Case:** When replay outputs don't match real outputs, this tool helps identify which subsystems broke determinism. The first divergence timestamp often points to the root cause — entries that diverge first typically contain the non-deterministic code (common causes: `Timer.getFPGATimestamp()`, `Math.random()`, network data, sensor reads outside AdvantageKit inputs).
 
 ### `analyze_loop_timing`
 Analyze robot code loop timing performance. Detects loop overruns (> 20ms), measures jitter, and provides timing statistics. Critical for diagnosing real-time performance issues that can cause stuttering, dropped commands, or unstable control.
@@ -1714,51 +1725,63 @@ Analyze robot code loop timing performance. Detects loop overruns (> 20ms), meas
 - Garbage collection pauses (check JVM memory)
 
 ### `predict_battery_health`
-Analyze battery voltage and current draw to predict brownout risk and estimate battery health. Returns a health score (0–100), risk level, voltage statistics, recovery analysis, and actionable recommendations.
+Battery and power-delivery evidence, with a heuristic health score and risk level. The facts come first; the score is a summary of them (kept by design for quick pit decisions — see `CODE_REVIEW_REJECTION.md`).
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
+- `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (default: `enabled` when the log records enabled state, else `all`, so averages do not mix in idle time); combined with `start_time`/`end_time`
 - `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
-- `brownout_threshold` (optional): Brownout voltage threshold (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
-- `warning_threshold` (optional): Warning voltage threshold (default: 9.0V)
+- `brownout_threshold` (optional): Brownout threshold (default: the logged `BrownoutVoltage`, else 6.8V — see `power_analysis`)
+- `warning_threshold` (optional): Voltage below which a dip is reported (default: 9.0V)
 
-**Health Score Formula (0–100):**
-The health score starts at 100 and deducts points for detected issues:
+**Evidence returned:**
+- `voltage_stats`: `min_volts` (with `min_time_sec`), `max_volts`, `avg_volts`, `voltage_sag` (nominal − min), `samples`, all over the scope; the voltage entry is chosen as `power_analysis` chooses it (`inputs.entries.voltage`)
+- `brownout_events` and `brownout_basis`: when the roboRIO's brownout flag is logged, brownouts are its true intervals (`rio_brownouts`, with start and duration) — the times outputs were actually disabled; otherwise they are crossings below the threshold, and the basis says the roboRIO state cannot be determined
+- `threshold_crossings` and `brownout_details`: voltage crossings below the threshold (0.2 V exit hysteresis), whether or not the roboRIO browned out
+- `warning_events`: dips below `warning_threshold`
+- `load_line` (when a total-current entry such as `TotalCurrent` or `BatteryCurrent` exists and the scope has at least 30 samples spanning 10 A): battery voltage regressed on total current — `resistance_ohm` (effective source resistance: battery internal resistance plus wiring and connectors), `open_circuit_voltage`, `r_squared`, `samples`, `current_range_a`; otherwise listed in `skipped`
+- `recovery_analysis`: time to recover 90% of drops larger than 0.5 V
+- `observations` (also returned as `recommendations`): what the evidence is consistent with and what would distinguish the candidate causes. One log cannot tell a weak battery from high current draw or a high-resistance connection, so no replacement advice is given.
 
-| Factor | Penalty | Rationale |
-|--------|---------|-----------|
-| Avg voltage < 88% of nominal (≈11.1V) | Up to 18 pts (deficit × 150) | Normal under-load sag is 87–91%; below 88% approaches brownout territory |
-| Each brownout event | 20 pts each | Indicates serious power delivery issues |
-| Each warning-level sag event | 5 pts each | Cumulative wear indicator |
-| Slow voltage recovery (>0.5s avg) | Up to 20 pts | Suggests high internal resistance (aging battery) |
-| Min voltage < 10V | Up to 30 pts | Approaching critical failure territory |
+**Health Score (0–100, heuristic):** starts at 100 and deducts:
 
-Brownout detection uses 0.2V hysteresis — voltage must rise 0.2V above the threshold before a brownout is considered ended. This prevents noisy connections from inflating event counts.
+| Factor | Penalty |
+|--------|---------|
+| Avg voltage < 88% of nominal (≈11.1V) | deficit × 150 |
+| Each brownout (as counted above) | 20 |
+| Each dip below `warning_threshold` that is not a brownout | 5 |
+| Slow recovery (> 0.5 s average) | excess × 20 |
+| Min voltage < 10V | deficit × 10 |
 
-**Note:** This score provides useful relative ranking between batteries. Absolute values should not be the sole basis for replacement decisions — also consider battery age, connector condition, and wire gauge.
+**Risk Levels:** CRITICAL (a brownout occurred), HIGH (min voltage below `warning_threshold` or score < 30), MODERATE (score < 60), LOW (score < 80), MINIMAL.
 
-**Risk Levels:** MINIMAL (score ≥ 80), LOW (60–79), MODERATE (30–59), HIGH (score < 30 or min voltage < warning threshold), CRITICAL (min voltage < brownout threshold)
+**Status:** `no_match` when no battery voltage entry exists, or no voltage sample falls in the scope.
 
-**Returns:** Health score, risk level, voltage statistics, brownout event details, recovery analysis, and recommendations
-
-**Example Response:**
+**Example Response (abridged):**
 ```json
 {
   "success": true,
-  "health_score": 72,
-  "risk_level": "LOW",
-  "voltage_stats": {
-    "min_volts": 10.2,
-    "max_volts": 12.8,
-    "avg_volts": 11.9,
-    "voltage_sag": 2.4
-  },
-  "brownout_events": 0,
-  "warning_events": 3,
-  "recommendations": ["Consider battery replacement - health declining"],
-  "data_quality": { "sample_count": 7500, "quality_score": 0.92 }
+  "status": "ok",
+  "scope": {"scope": "enabled", "windows": [[40.207, 359.162], "..."], "total_sec": 1311.36},
+  "inputs": {"entries": {"voltage": "/SystemStats/BatteryVoltage", "total_current": "/SystemStats/BatteryCurrent",
+    "rio_brownout_flag": "/SystemStats/BrownedOut"}},
+  "health_score": 38,
+  "health_score_basis": "heuristic: 100, minus 20 per brownout, ...",
+  "risk_level": "CRITICAL",
+  "voltage_stats": {"min_volts": 6.618, "min_time_sec": 655.45, "max_volts": 12.61, "avg_volts": 11.72, "voltage_sag": 5.98, "samples": 42110},
+  "brownout_threshold": 6.75,
+  "brownout_threshold_basis": "logged",
+  "brownout_events": 2,
+  "brownout_basis": "rio_flag: intervals where /SystemStats/BrownedOut was true (the roboRIO disabled outputs)",
+  "rio_brownouts": {"flag_entry": "/SystemStats/BrownedOut", "count": 2, "total_sec": 0.181, "events": ["..."]},
+  "threshold_crossings": 2,
+  "warning_events": 5,
+  "load_line": {"current_entry": "/SystemStats/BatteryCurrent", "resistance_ohm": 0.021, "open_circuit_voltage": 12.4, "r_squared": 0.71, "samples": 40211, "current_range_a": 260},
+  "observations": [
+    "2 roboRIO brownout(s) (655.43 s for 0.143 s; 708.44 s for 0.038 s). Candidate causes: high current draw at those moments (check power_analysis channel peaks in the same windows), a weak or undercharged battery, or high-resistance connections. One log cannot distinguish them: compare this battery across logs and inspect connectors.",
+    "Minimum voltage 6.62 V at 655.45 s, below the 9.0 V warning threshold.",
+    "Load line: voltage falls 21.0 mV per amp of total current ..."
+  ]
 }
 ```
 

@@ -361,13 +361,17 @@ class AdvancedToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("has brownout_threshold parameter with default 6.8")
+    @DisplayName("has an optional brownout_threshold whose default comes from the log")
     void hasBrownoutThresholdParameter() {
       var schema = powerAnalysisTool.inputSchema();
       var properties = schema.getAsJsonObject("properties");
 
       assertTrue(properties.has("brownout_threshold"));
-      assertEquals(6.8, properties.getAsJsonObject("brownout_threshold").get("default").getAsDouble());
+      // No fixed schema default: the log's BrownoutVoltage when logged, else 6.8 V (stated)
+      assertFalse(properties.getAsJsonObject("brownout_threshold").has("default"));
+      var description = properties.getAsJsonObject("brownout_threshold").get("description")
+          .getAsString();
+      assertTrue(description.contains("BrownoutVoltage") && description.contains("6.8"));
     }
 
     @Test

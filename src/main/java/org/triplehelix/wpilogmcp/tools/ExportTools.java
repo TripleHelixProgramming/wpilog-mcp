@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.FileWriter;
@@ -163,7 +164,8 @@ public final class ExportTools {
               }
               rowCount++;
             }
-          } else if (tv.value() instanceof double[] arr) {
+          } else if (RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value()) != null) {
+            var arr = RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value());
             for (int i = 0; i < arr.length; i++) {
               writer.println(t + "," + i + "," + arr[i]);
               rowCount++;
@@ -296,8 +298,16 @@ public final class ExportTools {
 
     @Override
     public String description() {
-      return "Generate a comprehensive match summary report including duration, errors found, "
-          + "peak currents, minimum voltage, and other key metrics.";
+      return "Generate a one-call summary of a log: duration and truncation; the DriverStation "
+          + "timeline (enabled segments, enabled time, FMS matches, as in get_match_phases); "
+          + "battery voltage (min with time, max, average; entry chosen as power_analysis does), "
+          + "brownouts from the roboRIO flag when logged, and the brownout threshold with its "
+          + "basis; the three largest current peaks (power_analysis channel_analysis); error and "
+          + "warning counts from console and message text (one classification per line, as in "
+          + "get_ds_timeline and search_strings) with the most frequent messages; code metadata "
+          + "(get_code_metadata); and the most common data types. Each section names its source "
+          + "entries; use the individual tools for detail."
+          + GUIDANCE_UNIVERSAL;
     }
 
     @Override
@@ -307,7 +317,6 @@ public final class ExportTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
       var report = new JsonObject();
       report.addProperty("success", true);
       report.addProperty("log_path", log.path());
@@ -323,110 +332,239 @@ public final class ExportTools {
         basics.addProperty("truncation_message", log.truncationMessage());
       }
       report.add("basic_info", basics);
+      var skipped = new JsonArray();
 
-      // Battery voltage
-      for (var entryName : log.entries().keySet()) {
-        if (entryName.toLowerCase().contains("batteryvoltage") || entryName.toLowerCase().contains("battery_voltage")) {
-          var values = log.values().get(entryName);
-          if (values != null && !values.isEmpty()) {
-            double minV = Double.MAX_VALUE, maxV = Double.NEGATIVE_INFINITY;
-            for (var tv : values) {
-              if (tv.value() instanceof Number num) {
-                double v = num.doubleValue();
-                minV = Math.min(minV, v);
-                maxV = Math.max(maxV, v);
-              }
-            }
-            if (minV < Double.MAX_VALUE) {
-              var battery = new JsonObject();
-              battery.addProperty("entry", entryName);
-              battery.addProperty("min_voltage", minV);
-              battery.addProperty("max_voltage", maxV);
-              // Brownout threshold: 6.8V for roboRIO 1 (roboRIO 2 uses 6.3V)
-              battery.addProperty("brownout_risk", minV < 6.8 ? "HIGH" : (minV < 9.0 ? "MODERATE" : "LOW"));
-              report.add("battery", battery);
-            }
-            break;
+      // DriverStation timeline
+      var timeline = MatchTimeline.of(log);
+      if (timeline.hasEnabledData()) {
+        var t = new JsonObject();
+        var enabled = timeline.enabledSegments();
+        t.addProperty("enabled_segments", enabled.size());
+        t.addProperty("enabled_time_sec",
+            enabled.stream().mapToDouble(MatchTimeline.Segment::duration).sum());
+        t.addProperty("matches", timeline.matches().size());
+        t.addProperty("season", timeline.season().year());
+        t.addProperty("source", timeline.sources().enabled() != null
+            ? timeline.sources().enabled() : timeline.sources().controlWord());
+        report.add("timeline", t);
+      } else {
+        skipped.add(skippedSection("timeline", "no DriverStation state entries"));
+      }
+
+      // Battery: the same entry choice and threshold as power_analysis
+      var voltageEntry = ToolUtils.selectVoltageEntry(log, null);
+      var threshold = PowerFacts.threshold(log, null);
+      if (voltageEntry.isPresent()) {
+        var values = log.values().get(voltageEntry.get());
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+        double sum = 0;
+        double minTime = 0;
+        int n = 0;
+        for (var tv : values) {
+          if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
+          double v = num.doubleValue();
+          if (v < min) {
+            min = v;
+            minTime = tv.timestamp();
+          }
+          max = Math.max(max, v);
+          sum += v;
+          n++;
+        }
+        var battery = new JsonObject();
+        battery.addProperty("entry", voltageEntry.get());
+        battery.addProperty("min_voltage", min);
+        battery.addProperty("min_voltage_time_sec", minTime);
+        battery.addProperty("max_voltage", max);
+        battery.addProperty("avg_voltage_whole_log", sum / n);
+        threshold.addTo(battery);
+        var flag = PowerFacts.flagEntry(log);
+        if (flag.isPresent()) {
+          battery.add("rio_brownouts", PowerFacts.brownoutsJson(flag.get(),
+              PowerFacts.brownouts(log, flag.get(), null, null)));
+        }
+        battery.addProperty("brownout_risk", min < threshold.volts() ? "HIGH"
+            : (min < 9.0 ? "MODERATE" : "LOW"));
+        report.add("battery", battery);
+      } else {
+        skipped.add(skippedSection("battery", "no battery voltage entry with finite samples"));
+      }
+
+      // Peak currents: the same amperage entries and ranking as power_analysis
+      var peaks = peakCurrents(log, 3);
+      if (!peaks.isEmpty()) {
+        report.add("peak_currents", peaks);
+      } else {
+        skipped.add(skippedSection("peak_currents", "no amperage entries"));
+      }
+
+      // Errors and warnings: one classification per sample, as get_ds_timeline counts them
+      int errorSamples = 0;
+      int warningSamples = 0;
+      var groups = new java.util.LinkedHashMap<String, int[]>(); // pattern -> [count]
+      var firstSeen = new HashMap<String, Double>();
+      var examples = new HashMap<String, String>();
+      var firstErrors = new JsonArray();
+      for (var e : log.entries().values().stream()
+          .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .toList()) {
+        if (!"string".equals(e.type()) || log.sampleCount(e.name()) == 0) continue;
+        for (var tv : log.values().get(e.name())) {
+          if (!(tv.value() instanceof String str) || str.isBlank()) continue;
+          var classified = ToolUtils.classifyText(str);
+          if (classified == null) continue;
+          boolean error = "ERROR".equals(classified.type());
+          if (error) errorSamples++; else warningSamples++;
+          if (!error) continue;
+          var pattern = ToolUtils.normalizeMessage(classified.message());
+          groups.computeIfAbsent(pattern, k -> new int[1])[0]++;
+          firstSeen.putIfAbsent(pattern, tv.timestamp());
+          examples.putIfAbsent(pattern, classified.message());
+          if (firstErrors.size() < 5) {
+            var o = new JsonObject();
+            o.addProperty("timestamp_sec", tv.timestamp());
+            o.addProperty("entry", e.name());
+            o.addProperty("line", ToolUtils.truncate(classified.message(),
+                ToolUtils.MESSAGE_LINE_LIMIT));
+            firstErrors.add(o);
           }
         }
       }
-
-      // Error count — only scan string entries likely to contain errors to avoid
-      // decoding all string entries (which defeats lazy loading on large logs).
-      int errorCount = 0;
-      var errorSamples = new ArrayList<String>();
-      for (var e : log.entries().entrySet()) {
-        if ("string".equals(e.getValue().type()) && log.sampleCount(e.getKey()) > 0) {
-          var values = log.values().get(e.getKey());
-          if (values != null) {
-            for (var tv : values) {
-              if (tv.value() instanceof String str) {
-                var lower = str.toLowerCase();
-                if (lower.contains("error") || lower.contains("exception") || lower.contains("fault")) {
-                  errorCount++;
-                  if (errorSamples.size() < 5) {
-                    errorSamples.add(str.length() > 100 ? str.substring(0, 100) + "..." : str);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
       var errors = new JsonObject();
-      errors.addProperty("total_errors", errorCount);
-      errors.add("samples", GSON.toJsonTree(errorSamples));
+      errors.addProperty("total_errors", errorSamples);
+      errors.addProperty("total_warnings", warningSamples);
+      errors.addProperty("distinct_error_messages", groups.size());
+      var top = new JsonArray();
+      groups.entrySet().stream()
+          .sorted(java.util.Comparator.comparingInt((java.util.Map.Entry<String, int[]> g) ->
+                  -g.getValue()[0])
+              .thenComparingDouble(g -> firstSeen.get(g.getKey())))
+          .limit(5)
+          .forEach(g -> {
+            var o = new JsonObject();
+            o.addProperty("message", ToolUtils.truncate(g.getKey(), ToolUtils.MESSAGE_LINE_LIMIT));
+            o.addProperty("example", ToolUtils.truncate(examples.get(g.getKey()),
+                ToolUtils.MESSAGE_LINE_LIMIT));
+            o.addProperty("count", g.getValue()[0]);
+            o.addProperty("first_timestamp", firstSeen.get(g.getKey()));
+            top.add(o);
+          });
+      errors.add("top_messages", top);
+      errors.add("samples", firstErrors);
+      errors.addProperty("note", "Counts are samples classified ERROR or WARNING (a multi-line "
+          + "sample counts once, by its most severe line); search_strings lists every message.");
       report.add("errors", errors);
 
-      // Code metadata
+      // Code metadata: the same entries and choice as get_code_metadata
       var codeInfo = new JsonObject();
-      for (var entryName : log.entries().keySet()) {
-        if (entryName.contains("GitSHA")) {
-          var values = log.values().get(entryName);
-          if (values != null && !values.isEmpty()) {
-            codeInfo.addProperty("git_sha", String.valueOf(values.get(0).value()));
-          }
-        } else if (entryName.contains("GitBranch")) {
-          var values = log.values().get(entryName);
-          if (values != null && !values.isEmpty()) {
-            codeInfo.addProperty("git_branch", String.valueOf(values.get(0).value()));
-          }
+      for (var e : log.entries().values().stream()
+          .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .toList()) {
+        if (!"string".equals(e.type())) continue;
+        var key = RobotAnalysisTools.GetCodeMetadataTool.key(e.name());
+        if (key == null) continue;
+        var outKey = switch (key) {
+          case "GitSHA" -> "git_sha";
+          case "GitBranch" -> "git_branch";
+          case "GitDirty" -> "git_dirty";
+          case "GitDate" -> "git_date";
+          case "BuildDate" -> "build_date";
+          case "ProjectName" -> "project_name";
+          default -> "version";
+        };
+        if (codeInfo.has(outKey)) continue;
+        var values = log.values().get(e.name());
+        if (values != null && !values.isEmpty()) {
+          codeInfo.addProperty(outKey, String.valueOf(values.get(0).value()));
         }
       }
       if (codeInfo.size() > 0) {
         report.add("code_info", codeInfo);
+      } else {
+        skipped.add(skippedSection("code_info", "no code metadata entries"));
       }
 
-      // Data type summary
+      // Data type summary (ties by type name, so the order is stable)
       var typeCounts = new HashMap<String, Integer>();
       for (var entry : log.entries().values()) {
         typeCounts.merge(entry.type(), 1, Integer::sum);
       }
       var types = new JsonObject();
       typeCounts.entrySet().stream()
-          .sorted((a, b) -> b.getValue() - a.getValue())
+          .sorted(java.util.Map.Entry.<String, Integer>comparingByValue().reversed()
+              .thenComparing(java.util.Map.Entry.comparingByKey()))
           .limit(10)
           .forEach(e -> types.addProperty(e.getKey(), e.getValue()));
       report.add("top_data_types", types);
 
-      // Add data quality from battery voltage values if available
-      for (var entryName : log.entries().keySet()) {
-        if (entryName.toLowerCase().contains("batteryvoltage") || entryName.toLowerCase().contains("battery_voltage")) {
-          var qualityValues = log.values().get(entryName);
-          if (qualityValues != null && !qualityValues.isEmpty()) {
-            var quality = DataQuality.fromValues(qualityValues);
-            report.add("data_quality", quality.toJson());
-            var directives = AnalysisDirectives.fromQuality(quality)
-                .addSingleMatchCaveat()
-                .addGuidance("Report is a summary — use individual tools for detailed analysis");
-            report.add("server_analysis_directives", directives.toJson());
-            break;
-          }
-        }
+      if (!skipped.isEmpty()) {
+        report.add("skipped", skipped);
+        report.addProperty("status", log.entryCount() == 0 ? "no_match" : "partial");
+        if (log.entryCount() == 0) report.addProperty("reason", "The log has no entries.");
       }
 
+      voltageEntry.ifPresent(name -> {
+        var quality = DataQuality.fromValues(log.values().get(name));
+        report.add("data_quality", quality.toJson());
+        var directives = AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat()
+            .addGuidance("Report is a summary — use individual tools for detailed analysis");
+        report.add("server_analysis_directives", directives.toJson());
+      });
       return report;
+    }
+
+    static JsonObject skippedSection(String section, String reason) {
+      var o = new JsonObject();
+      o.addProperty("section", section);
+      o.addProperty("reason", reason);
+      return o;
+    }
+
+    /** The largest current peaks, from the same amperage entries power_analysis analyzes. */
+    static JsonArray peakCurrents(LogData log, int limit) {
+      var peaks = new java.util.ArrayList<JsonObject>();
+      for (var e : log.entries().values().stream()
+          .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .toList()) {
+        if (!RobotAnalysisTools.PowerAnalysisTool.isCurrentEntryName(e.name())) continue;
+        var values = log.values().get(e.name());
+        if (values == null) continue;
+        double best = 0;
+        double bestTime = 0;
+        String bestName = null;
+        for (var tv : values) {
+          if (tv.value() instanceof Number n && Double.isFinite(n.doubleValue())) {
+            if (bestName == null || Math.abs(n.doubleValue()) > Math.abs(best)) {
+              best = n.doubleValue();
+              bestTime = tv.timestamp();
+              bestName = e.name();
+            }
+          } else if (RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value()) != null) {
+            var arr = RobotAnalysisTools.PowerAnalysisTool.toDoubleArray(tv.value());
+            for (int i = 0; i < arr.length; i++) {
+              if (Double.isFinite(arr[i]) && (bestName == null || Math.abs(arr[i]) > Math.abs(best))) {
+                best = arr[i];
+                bestTime = tv.timestamp();
+                bestName = e.name() + "[" + i + "]";
+              }
+            }
+          }
+        }
+        if (bestName != null) {
+          var o = new JsonObject();
+          o.addProperty("entry", bestName);
+          o.addProperty("peak_current_A", best);
+          o.addProperty("peak_current_time_sec", bestTime);
+          peaks.add(o);
+        }
+      }
+      peaks.sort(java.util.Comparator.comparingDouble(
+          (JsonObject o) -> -Math.abs(o.get("peak_current_A").getAsDouble())));
+      var out = new JsonArray();
+      peaks.stream().limit(limit).forEach(out::add);
+      return out;
     }
   }
 }

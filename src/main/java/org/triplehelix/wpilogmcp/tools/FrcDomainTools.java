@@ -149,7 +149,7 @@ public final class FrcDomainTools {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addNumberProperty("brownout_threshold", "Voltage threshold for brownout detection (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
+          .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
           .build();
     }
 
@@ -158,15 +158,10 @@ public final class FrcDomainTools {
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
-      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 6.8);
+      var threshold = PowerFacts.threshold(log, getOptDouble(arguments, "brownout_threshold"));
+      double brownoutThreshold = threshold.volts();
 
       var events = new ArrayList<JsonObject>();
-
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
-      }
 
       // Enable/disable and mode transitions, from the same timeline get_match_phases uses: one
       // DriverStation entry per role (AdvantageKit first), values held until the next sample.
@@ -219,16 +214,7 @@ public final class FrcDomainTools {
       // Add roboRIO brownout flag transitions (e.g. AdvantageKit /SystemStats/BrownedOut).
       // Unlike the voltage-threshold events above, these reflect the roboRIO's own brownout
       // state: the flag is set only when the RIO actually cut outputs.
-      String rioFlagEntry = log.entries().entrySet().stream()
-          .filter(e -> "boolean".equals(e.getValue().type()))
-          .filter(e -> {
-            var lower = lowerEntryNames.get(e.getKey());
-            return lower.contains("brownedout") || lower.contains("browned_out");
-          })
-          .sorted(Comparator.comparingInt(e -> e.getValue().id()))
-          .map(Map.Entry::getKey)
-          .findFirst()
-          .orElse(null);
+      String rioFlagEntry = PowerFacts.flagEntry(log).orElse(null);
       if (rioFlagEntry != null) {
         var values = log.values().get(rioFlagEntry);
         Boolean lastState = null;
@@ -288,6 +274,8 @@ public final class FrcDomainTools {
 
       var builder = success()
           .addProperty("event_count", events.size())
+          .addProperty("brownout_threshold", threshold.volts())
+          .addProperty("brownout_threshold_basis", threshold.basis())
           .addProperty("rio_brownout_flag_logged", rioFlagEntry != null)
           .addData("summary", GSON.toJsonTree(categoryCounts))
           .addData("events", GSON.toJsonTree(events));
@@ -1396,81 +1384,199 @@ public final class FrcDomainTools {
   }
 
   static class AnalyzeReplayDriftTool extends LogRequiringTool {
+    static final double TIME_TOLERANCE_SEC = 0.001;
+    static final double DEFAULT_RELATIVE_TOLERANCE = 1e-9;
+    static final double ABSOLUTE_TOLERANCE = 1e-12;
+
     @Override
     public String name() { return "analyze_replay_drift"; }
 
     @Override
     public String description() {
-      return "Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. "
-          + "Small drift may be acceptable due to non-deterministic inputs (vision, joystick timing). "
-          + "Focus on large or systematic divergences rather than isolated small differences."
+      return "Validate AdvantageKit deterministic replay: in a replay output log (the _sim log "
+          + "AdvantageScope writes), compare every /RealOutputs/X entry with /ReplayOutputs/X "
+          + "sample by sample (timestamps matched within 1 ms). Numbers are equal within "
+          + "relative_tolerance (default 1e-9); arrays and structs are compared element by "
+          + "element. Returns pairs_compared, the entries present on only one side, and for each "
+          + "divergent entry the first divergence time, divergent/compared sample counts, the "
+          + "largest numeric difference, and the values at the first divergence. Returns "
+          + "not_applicable on a log without /ReplayOutputs/ entries (a real-robot log). Small "
+          + "drift may come from non-deterministic inputs; look for large or systematic "
+          + "divergence."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder().build();
+      return new SchemaBuilder()
+          .addNumberProperty("relative_tolerance",
+              "Numbers within this fraction of their magnitude are equal (default 1e-9)", false,
+              DEFAULT_RELATIVE_TOLERANCE)
+          .addIntegerProperty("limit", "Maximum divergent entries to list (default 20)", false, 20)
+          .build();
     }
 
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var realEntries = log.entries().keySet().stream()
-          .filter(n -> n.contains("/RealOutputs/"))
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      double relTol = getOptDouble(arguments, "relative_tolerance", DEFAULT_RELATIVE_TOLERANCE);
+      if (!(relTol >= 0) || !Double.isFinite(relTol)) {
+        throw new IllegalArgumentException("relative_tolerance must be a finite number >= 0");
+      }
+      int limit = getOptInt(arguments, "limit", 20);
+      validatePositive(limit, "limit");
+
+      var names = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).toList();
+      var real = names.stream().filter(n -> n.startsWith("/RealOutputs/")).toList();
+      var replay = names.stream().filter(n -> n.startsWith("/ReplayOutputs/")).toList();
+      if (replay.isEmpty()) {
+        return ResponseBuilder.notApplicable("This log has no /ReplayOutputs/ entries, so it is "
+                + "not an AdvantageKit replay output log (" + real.size() + " /RealOutputs/ "
+                + "entries, nothing to compare them with).")
+            .hint("Run AdvantageKit replay on this log (AdvantageScope writes a _sim log) and "
+                + "call this tool on the _sim log.")
+            .build();
+      }
+      var replaySet = new java.util.HashSet<>(replay);
+      var realSet = new java.util.HashSet<>(real);
+      var pairs = real.stream()
+          .filter(n -> replaySet.contains(n.replaceFirst("^/RealOutputs/", "/ReplayOutputs/")))
           .toList();
-
-      var divergent = realEntries.stream()
-          .map(real -> {
-            var replay = real.replace("/RealOutputs/", "/ReplayOutputs/");
-            if (!log.entries().containsKey(replay)) return null;
-
-            var realVals = log.values().get(real);
-            var replayVals = log.values().get(replay);
-            if (realVals == null || replayVals == null) return null;
-
-            // Compare by matching timestamps (within 1ms tolerance) rather than
-            // by array index, since Real and Replay entries may have different
-            // sample counts or logging rates.
-            int replayIdx = 0;
-            double tolerance = 0.001; // 1ms
-            for (var realTv : realVals) {
-              // Advance replay index to find matching timestamp
-              while (replayIdx < replayVals.size()
-                  && replayVals.get(replayIdx).timestamp() < realTv.timestamp() - tolerance) {
-                replayIdx++;
-              }
-              if (replayIdx >= replayVals.size()) break;
-
-              var replayTv = replayVals.get(replayIdx);
-              if (Math.abs(replayTv.timestamp() - realTv.timestamp()) <= tolerance) {
-                if (!Objects.equals(realTv.value(), replayTv.value())) {
-                  var div = new JsonObject();
-                  div.addProperty("entry", real);
-                  div.addProperty("timestamp", realTv.timestamp());
-                  return div;
-                }
-              }
-            }
-            return null;
-          })
-          .filter(Objects::nonNull)
+      var realOnly = real.stream()
+          .filter(n -> !replaySet.contains(n.replaceFirst("^/RealOutputs/", "/ReplayOutputs/")))
           .toList();
-
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("divergent_count", divergent.size());
-      result.add("divergences", GSON.toJsonTree(divergent.stream().limit(10).toList()));
-
-      // Add data quality from first real entry if available
-      if (!realEntries.isEmpty()) {
-        var firstVals = log.values().get(realEntries.get(0));
-        if (firstVals != null && !firstVals.isEmpty()) {
-          var quality = DataQuality.fromValues(firstVals);
-          var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
-          result.add("data_quality", quality.toJson());
-          result.add("server_analysis_directives", directives.toJson());
-        }
+      var replayOnly = replay.stream()
+          .filter(n -> !realSet.contains(n.replaceFirst("^/ReplayOutputs/", "/RealOutputs/")))
+          .toList();
+      if (pairs.isEmpty()) {
+        return ResponseBuilder.noMatch("No /RealOutputs/X entry has a /ReplayOutputs/X "
+                + "counterpart (" + real.size() + " real, " + replay.size() + " replay entries).")
+            .lookedFor(List.of("entry pairs /RealOutputs/<name> and /ReplayOutputs/<name>"))
+            .build();
       }
 
-      return result;
+      var divergent = new ArrayList<JsonObject>();
+      long comparedSamples = 0;
+      long unmatchedSamples = 0;
+      for (var realName : pairs) {
+        var replayName = realName.replaceFirst("^/RealOutputs/", "/ReplayOutputs/");
+        var realVals = log.values().get(realName);
+        var replayVals = log.values().get(replayName);
+        int j = 0;
+        int compared = 0;
+        int diverged = 0;
+        double maxDiff = 0;
+        JsonObject firstDivergence = null;
+        for (var realTv : realVals) {
+          while (j < replayVals.size()
+              && replayVals.get(j).timestamp() < realTv.timestamp() - TIME_TOLERANCE_SEC) {
+            j++;
+          }
+          if (j >= replayVals.size()
+              || Math.abs(replayVals.get(j).timestamp() - realTv.timestamp()) > TIME_TOLERANCE_SEC) {
+            unmatchedSamples++;
+            continue;
+          }
+          var replayTv = replayVals.get(j);
+          compared++;
+          double[] diff = {0};
+          if (!valuesEqual(realTv.value(), replayTv.value(), relTol, diff)) {
+            diverged++;
+            maxDiff = Math.max(maxDiff, diff[0]);
+            if (firstDivergence == null) {
+              firstDivergence = new JsonObject();
+              firstDivergence.addProperty("timestamp", realTv.timestamp());
+              firstDivergence.addProperty("real", preview(realTv.value()));
+              firstDivergence.addProperty("replay", preview(replayTv.value()));
+            }
+          }
+        }
+        comparedSamples += compared;
+        if (diverged > 0) {
+          var d = new JsonObject();
+          d.addProperty("entry", realName);
+          d.addProperty("type", log.entries().get(realName).type());
+          d.addProperty("first_divergence_time", firstDivergence.get("timestamp").getAsDouble());
+          d.addProperty("divergent_samples", diverged);
+          d.addProperty("compared_samples", compared);
+          if (maxDiff > 0) d.addProperty("max_abs_difference", maxDiff);
+          d.add("first_divergence", firstDivergence);
+          divergent.add(d);
+        }
+      }
+      divergent.sort(Comparator.comparingDouble(d -> d.get("first_divergence_time").getAsDouble()));
+
+      var list = new JsonArray();
+      divergent.stream().limit(limit).forEach(list::add);
+      var builder = success()
+          .addProperty("pairs_compared", pairs.size())
+          .addProperty("samples_compared", comparedSamples)
+          .addProperty("divergent_count", divergent.size())
+          .addProperty("relative_tolerance", relTol)
+          .addLimitedList("divergences", list, divergent.size(), limit);
+      if (unmatchedSamples > 0) builder.addProperty("samples_without_counterpart", unmatchedSamples);
+      builder.addData("real_only_entries", GSON.toJsonTree(realOnly.stream().limit(50).toList()))
+          .addProperty("real_only_count", realOnly.size())
+          .addData("replay_only_entries", GSON.toJsonTree(replayOnly.stream().limit(50).toList()))
+          .addProperty("replay_only_count", replayOnly.size());
+      if (!realOnly.isEmpty()) {
+        builder.addWarning(realOnly.size() + " /RealOutputs/ entries have no replay counterpart "
+            + "and were not compared.");
+      }
+      return builder.build();
+    }
+
+    /** Deep equality with a relative numeric tolerance; records the largest numeric difference. */
+    static boolean valuesEqual(Object a, Object b, double relTol, double[] maxDiff) {
+      if (a instanceof Number x && b instanceof Number y) {
+        double dx = x.doubleValue();
+        double dy = y.doubleValue();
+        if (Double.isNaN(dx) || Double.isNaN(dy)) return Double.isNaN(dx) && Double.isNaN(dy);
+        if (dx == dy) return true; // includes equal infinities
+        double diff = Math.abs(dx - dy);
+        if (Double.isFinite(diff)) maxDiff[0] = Math.max(maxDiff[0], diff);
+        return diff <= Math.max(ABSOLUTE_TOLERANCE, relTol * Math.max(Math.abs(dx), Math.abs(dy)));
+      }
+      if (a instanceof java.util.Map<?, ?> ma && b instanceof java.util.Map<?, ?> mb) {
+        if (!ma.keySet().equals(mb.keySet())) return false;
+        boolean equal = true;
+        for (var key : ma.keySet()) equal &= valuesEqual(ma.get(key), mb.get(key), relTol, maxDiff);
+        return equal;
+      }
+      if (a instanceof List<?> la && b instanceof List<?> lb) {
+        if (la.size() != lb.size()) return false;
+        boolean equal = true;
+        for (int i = 0; i < la.size(); i++) equal &= valuesEqual(la.get(i), lb.get(i), relTol, maxDiff);
+        return equal;
+      }
+      if (a != null && b != null && a.getClass().isArray() && b.getClass().isArray()) {
+        int n = java.lang.reflect.Array.getLength(a);
+        if (n != java.lang.reflect.Array.getLength(b)) return false;
+        boolean equal = true;
+        for (int i = 0; i < n; i++) {
+          equal &= valuesEqual(java.lang.reflect.Array.get(a, i), java.lang.reflect.Array.get(b, i),
+              relTol, maxDiff);
+        }
+        return equal;
+      }
+      return Objects.equals(a, b);
+    }
+
+    static String preview(Object value) {
+      String text;
+      if (value != null && value.getClass().isArray()) {
+        int n = java.lang.reflect.Array.getLength(value);
+        var sb = new StringBuilder("[");
+        for (int i = 0; i < n; i++) {
+          if (i > 0) sb.append(", ");
+          sb.append(java.lang.reflect.Array.get(value, i));
+        }
+        text = sb.append(']').toString();
+      } else {
+        text = String.valueOf(value);
+      }
+      return text.length() > 200 ? text.substring(0, 200) + "..." : text;
     }
   }
 
@@ -1800,180 +1906,263 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze battery voltage and current draw to predict brownout risk and estimate "
-          + "battery health. Returns health score (0-100), brownout risk level (MINIMAL/LOW/"
-          + "MODERATE/HIGH/CRITICAL), voltage statistics, and actionable recommendations."
+      return "Battery and power-delivery evidence with a heuristic health score (0-100) and risk "
+          + "level (MINIMAL/LOW/MODERATE/HIGH/CRITICAL). Facts first: voltage statistics over the "
+          + "scope (default: enabled time when the log records it); brownouts from the roboRIO's "
+          + "logged flag (e.g. /SystemStats/BrownedOut, with start and duration) or, when no flag "
+          + "is logged, threshold crossings (basis stated); the brownout threshold from the log's "
+          + "BrownoutVoltage entry when logged, else 6.8 V (roboRIO 1, stated); dips below "
+          + "warning_threshold; and, when a total-current entry exists, the load line: battery "
+          + "voltage regressed on total current, giving the effective source resistance (battery "
+          + "internal resistance plus wiring and connectors) and open-circuit voltage. "
+          + "observations state what the evidence is consistent with and what would distinguish "
+          + "the causes; one log cannot tell a weak battery from high current draw or a bad "
+          + "connection, so no replacement advice is given."
           + GUIDANCE_UNIVERSAL + GUIDANCE_POWER;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION
+              + " Default: 'enabled' when the log records enabled state, else 'all'.", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("nominal_voltage", "Expected full battery voltage (default: 12.6V)", false, 12.6)
-          .addNumberProperty("brownout_threshold", "Brownout voltage threshold (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
-          .addNumberProperty("warning_threshold", "Warning voltage threshold (default: 9.0V)", false, 9.0)
+          .addNumberProperty("brownout_threshold", "Brownout threshold in volts (default: the log's "
+              + "BrownoutVoltage entry when logged, else 6.8 V for roboRIO 1; roboRIO 2 is 6.3 V)", false, null)
+          .addNumberProperty("warning_threshold", "Voltage below which a dip is reported (default: 9.0V)", false, 9.0)
           .build();
+    }
+
+    /** A scalar total-current entry (total, battery, or input current), lowest entry id. */
+    static java.util.Optional<String> findTotalCurrentEntry(LogData log) {
+      return log.entries().values().stream()
+          .filter(e -> isNumericType(e.type()))
+          .filter(e -> {
+            var lower = e.name().toLowerCase(java.util.Locale.ROOT);
+            return lower.contains("totalcurrent") || lower.contains("total_current")
+                || lower.contains("batterycurrent") || lower.contains("battery_current");
+          })
+          .filter(e -> log.sampleCount(e.name()) > 0)
+          .min(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name);
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double nominalVoltage = getOptDouble(arguments, "nominal_voltage", 12.6);
-      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 6.8);
       double warningThreshold = getOptDouble(arguments, "warning_threshold", 9.0);
+      var threshold = PowerFacts.threshold(log, getOptDouble(arguments, "brownout_threshold"));
+      var timeline = MatchTimeline.of(log);
+      var scopeArg = getOptString(arguments, "scope", null);
+      if (scopeArg == null) scopeArg = timeline.hasEnabledData() ? "enabled" : "all";
+      var scope = TimeScope.resolve(log, timeline, scopeArg, startTime, endTime);
 
-      // Find voltage and current entries
-      var voltageEntry = findVoltageEntry(log);
-      var currentEntry = findCurrentEntry(log);
-
-      if (voltageEntry == null) {
-        throw new IllegalArgumentException(
-            "No battery voltage entry found. Look for entries containing 'BatteryVoltage', "
-            + "'battery_voltage', or 'voltage'");
+      var voltageEntry = ToolUtils.selectVoltageEntry(log, null);
+      if (voltageEntry.isEmpty()) {
+        return ResponseBuilder.noMatch("No battery voltage entry with finite samples found.")
+            .lookedFor(List.of("scalar numeric entries named with 'voltage', ranked battery > "
+                + "input/bus > other > rails and regulators (the same choice power_analysis "
+                + "and get_ds_timeline make)"))
+            .hint("Use search_entries with pattern 'voltage' to find how this robot logs it.")
+            .build();
       }
-
-      var voltageValues = requireEntry(log, voltageEntry);
-      var currentValues = currentEntry != null ? log.values().get(currentEntry) : null;
-
-      // Filter by time range
-      voltageValues = filterTimeRange(voltageValues, startTime, endTime);
-      if (currentValues != null) {
-        currentValues = filterTimeRange(currentValues, startTime, endTime);
-      }
-
-      // Analyze battery characteristics
-      return analyzeBatteryCharacteristics(
-          voltageValues,
-          currentValues,
-          nominalVoltage,
-          brownoutThreshold,
-          warningThreshold);
-    }
-
-    private String findVoltageEntry(LogData log) {
-      // Try common voltage entry patterns
-      var patterns = java.util.List.of(
-          "batteryvoltage",
-          "battery_voltage",
-          "inputvoltage",
-          "pdp/voltage",
-          "pdh/voltage"
-      );
-
-      for (var pattern : patterns) {
-        var entry = findEntryByPattern(log, pattern);
-        if (entry != null) return entry;
-      }
-      return null;
-    }
-
-    private String findCurrentEntry(LogData log) {
-      var patterns = java.util.List.of(
-          "totalcurrent",
-          "total_current",
-          "pdp/totalcurrent",
-          "pdh/totalcurrent"
-      );
-
-      for (var pattern : patterns) {
-        var entry = findEntryByPattern(log, pattern);
-        if (entry != null) return entry;
-      }
-      return null;
-    }
-
-    private JsonElement analyzeBatteryCharacteristics(
-        java.util.List<TimestampedValue> voltageValues,
-        java.util.List<TimestampedValue> currentValues,
-        double nominalVoltage,
-        double brownoutThreshold,
-        double warningThreshold) {
-
-      // Extract voltage data
-      var voltageData = voltageValues.stream()
-          .map(tv -> toDouble(tv.value()))
-          .filter(v -> v != null)
-          .filter(Double::isFinite)
+      var voltageValues = log.values().get(voltageEntry.get()).stream()
+          .filter(tv -> scope.contains(tv.timestamp()))
+          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .toList();
-
-      if (voltageData.isEmpty()) {
-        throw new IllegalArgumentException("No numeric voltage data found");
+      if (voltageValues.isEmpty()) {
+        return ResponseBuilder.noMatch("No samples of " + voltageEntry.get() + " fall inside "
+                + "the scope '" + scope.name() + "'.")
+            .addData("scope", scope.toJson())
+            .build();
       }
+      var currentEntry = findTotalCurrentEntry(log);
 
-      // 1. Calculate voltage statistics
-      double minVoltage = voltageData.stream().mapToDouble(d -> d).min().orElse(0);
-      double maxVoltage = voltageData.stream().mapToDouble(d -> d).max().orElse(0);
-      double avgVoltage = voltageData.stream().mapToDouble(d -> d).average().orElse(0);
+      double minVoltage = Double.MAX_VALUE;
+      double maxVoltage = -Double.MAX_VALUE;
+      double sum = 0;
+      double minTime = 0;
+      for (var tv : voltageValues) {
+        double v = ((Number) tv.value()).doubleValue();
+        sum += v;
+        if (v < minVoltage) {
+          minVoltage = v;
+          minTime = tv.timestamp();
+        }
+        maxVoltage = Math.max(maxVoltage, v);
+      }
+      double avgVoltage = sum / voltageValues.size();
       double voltageSag = nominalVoltage - minVoltage;
 
-      // 2. Detect brownout events
-      var brownoutEvents = detectVoltageEvents(voltageValues, brownoutThreshold);
+      // Brownouts: the roboRIO's own flag when logged, else threshold crossings
+      var flag = PowerFacts.flagEntry(log);
+      List<PowerFacts.Brownout> rioBrownouts = flag.map(f -> PowerFacts.brownouts(log, f, null,
+          null).stream().filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
+      var crossings = detectVoltageEvents(voltageValues, threshold.volts());
+      var dips = detectVoltageEvents(voltageValues, warningThreshold);
+      int brownoutCount = flag.isPresent() ? rioBrownouts.size() : crossings.size();
 
-      // 3. Detect voltage sag events (warning level)
-      var sagEvents = detectVoltageEvents(voltageValues, warningThreshold);
+      var loadLine = currentEntry.map(c -> loadLine(log, voltageValues, c)).orElse(null);
+      var recoveryAnalysis = analyzeVoltageRecovery(voltageValues);
 
-      // 4. Analyze voltage recovery (internal resistance indicator)
-      var recoveryAnalysis = analyzeVoltageRecovery(voltageValues, currentValues);
+      int healthScore = calculateHealthScore(avgVoltage, nominalVoltage, minVoltage,
+          brownoutCount, dips.size(), recoveryAnalysis);
+      String riskLevel = brownoutCount > 0 ? "CRITICAL"
+          : minVoltage < warningThreshold || healthScore < 30 ? "HIGH"
+          : healthScore < 60 ? "MODERATE" : healthScore < 80 ? "LOW" : "MINIMAL";
 
-      // 5. Calculate health score (0-100)
-      int healthScore = calculateHealthScore(
-          avgVoltage, nominalVoltage, minVoltage,
-          brownoutEvents.size(), sagEvents.size(),
-          recoveryAnalysis);
-
-      // 6. Determine brownout risk level
-      String riskLevel = determineRiskLevel(healthScore, minVoltage, brownoutThreshold, warningThreshold);
-
-      // 7. Generate recommendations
-      var recommendations = generateRecommendations(
-          healthScore, riskLevel, minVoltage, avgVoltage,
-          brownoutEvents.size(), voltageSag);
-
-      // Build response using ResponseBuilder
       var response = success();
+      response.addData("scope", scope.toJson());
+      response.addInput("voltage", voltageEntry.get());
+      currentEntry.ifPresent(c -> response.addInput("total_current", c));
+      flag.ifPresent(f -> response.addInput("rio_brownout_flag", f));
       response.addProperty("health_score", healthScore);
+      response.addProperty("health_score_basis", "heuristic: 100, minus 20 per brownout, 5 per "
+          + "dip below warning_threshold, and penalties for a low average (below 88% of "
+          + "nominal), a minimum below 10 V, and slow recovery; compare batteries across logs "
+          + "rather than reading the number alone");
       response.addProperty("risk_level", riskLevel);
 
       var voltageStats = new JsonObject();
       voltageStats.addProperty("min_volts", minVoltage);
+      voltageStats.addProperty("min_time_sec", minTime);
       voltageStats.addProperty("max_volts", maxVoltage);
       voltageStats.addProperty("avg_volts", avgVoltage);
       voltageStats.addProperty("voltage_sag", voltageSag);
+      voltageStats.addProperty("samples", voltageValues.size());
       response.addData("voltage_stats", voltageStats);
 
-      response.addProperty("brownout_events", brownoutEvents.size());
-      response.addProperty("warning_events", sagEvents.size());
-
-      if (!brownoutEvents.isEmpty()) {
-        response.addData("brownout_details", GSON.toJsonTree(brownoutEvents.stream().limit(10).toList()));
+      var thresholdJson = new JsonObject();
+      threshold.addTo(thresholdJson);
+      thresholdJson.entrySet().forEach(e -> response.addData(e.getKey(), e.getValue()));
+      response.addProperty("brownout_events", brownoutCount);
+      response.addProperty("brownout_basis", flag.isPresent()
+          ? "rio_flag: intervals where " + flag.get() + " was true (the roboRIO disabled outputs)"
+          : "voltage_threshold: crossings below " + threshold.volts() + " V (no roboRIO brownout "
+              + "flag is logged, so whether outputs were disabled cannot be determined)");
+      if (flag.isPresent()) {
+        response.addData("rio_brownouts", PowerFacts.brownoutsJson(flag.get(), rioBrownouts));
+      }
+      response.addProperty("threshold_crossings", crossings.size());
+      if (!crossings.isEmpty()) {
+        response.addData("brownout_details", GSON.toJsonTree(crossings.stream().limit(10).toList()));
+      }
+      response.addProperty("warning_events", dips.size());
+      if (recoveryAnalysis != null) response.addData("recovery_analysis", recoveryAnalysis);
+      if (loadLine != null) {
+        response.addData("load_line", loadLine);
+      } else {
+        response.addSkipped("load_line", currentEntry.isEmpty()
+            ? "No total-current entry (TotalCurrent, BatteryCurrent) to regress voltage on."
+            : "Too few samples or too little current variation in scope to fit voltage against "
+                + currentEntry.get() + ".");
       }
 
-      if (recoveryAnalysis != null) {
-        response.addData("recovery_analysis", recoveryAnalysis);
-      }
-
-      response.addData("recommendations", GSON.toJsonTree(recommendations));
-
-      // Add warnings for severe conditions
-      if (brownoutEvents.size() > 0) {
-        response.addWarning(brownoutEvents.size() + " brownout event(s) detected - "
-            + "immediate battery replacement recommended");
-      }
-      if (healthScore < 50) {
-        response.addWarning("Battery health is poor - replace before next match");
-      }
+      var observations = observations(brownoutCount, flag.isPresent(), rioBrownouts, crossings,
+          minVoltage, minTime, avgVoltage, warningThreshold, voltageSag, loadLine, scope);
+      response.addData("observations", GSON.toJsonTree(observations));
+      // Compatibility: "recommendations" carries the same evidence-based statements
+      response.addData("recommendations", GSON.toJsonTree(observations));
 
       var quality = DataQuality.fromValues(voltageValues);
-      var directives = AnalysisDirectives.fromQuality(quality)
+      response.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
-          .addGuidance("Battery health score is a heuristic — consider battery age and connector condition");
-      response.addDataQuality(quality).addDirectives(directives);
-
+          .addGuidance("The health score is a heuristic; battery age, charge, connector "
+              + "condition, and current draw all move it. Compare the same battery across logs."));
       return response.build();
+    }
+
+    static List<String> observations(int brownoutCount, boolean flagLogged,
+        List<PowerFacts.Brownout> rioBrownouts, List<JsonObject> crossings, double minVoltage,
+        double minTime, double avgVoltage, double warningThreshold, double voltageSag,
+        JsonObject loadLine, TimeScope scope) {
+      var out = new ArrayList<String>();
+      if (flagLogged && brownoutCount > 0) {
+        var parts = new ArrayList<String>();
+        for (var b : rioBrownouts.stream().limit(5).toList()) {
+          parts.add(String.format("%.2f s for %.3f s", b.start(), b.duration()));
+        }
+        out.add(brownoutCount + " roboRIO brownout(s) (" + String.join("; ", parts)
+            + (brownoutCount > 5 ? "; ..." : "") + "). Candidate causes: high current draw at "
+            + "those moments (check power_analysis channel peaks in the same windows), a "
+            + "weak or undercharged battery, or high-resistance connections. One log cannot "
+            + "distinguish them: compare this battery across logs and inspect connectors.");
+      } else if (!flagLogged && brownoutCount > 0) {
+        out.add(brownoutCount + " crossing(s) below the brownout threshold (first at "
+            + String.format("%.2f", crossings.get(0).get("start_time").getAsDouble()) + " s). "
+            + "The log has no roboRIO brownout flag, so whether outputs were disabled cannot be "
+            + "determined. Same candidate causes: high current draw, a weak battery, or "
+            + "connections.");
+      }
+      if (minVoltage < warningThreshold) {
+        out.add(String.format("Minimum voltage %.2f V at %.2f s, below the %.1f V warning "
+            + "threshold.", minVoltage, minTime, warningThreshold));
+      }
+      if (avgVoltage < 11.5) {
+        out.add(String.format("Average voltage over the scope (%s) was %.2f V. This is "
+            + "consistent with a partly discharged battery or sustained high load; the charge "
+            + "at the start of the log and other logs with this battery would tell them apart.",
+            scope.name(), avgVoltage));
+      }
+      if (loadLine != null) {
+        double r = loadLine.get("resistance_ohm").getAsDouble();
+        out.add(String.format("Load line: voltage falls %.1f mV per amp of total current (effective "
+            + "source resistance %.4f ohm, r^2 %.2f, n %d). This combines battery internal "
+            + "resistance, wiring, and connectors; compare it across batteries and logs.",
+            r * 1000, r, loadLine.get("r_squared").getAsDouble(),
+            loadLine.get("samples").getAsInt()));
+      }
+      if (out.isEmpty()) {
+        out.add(String.format("No brownouts and no dips below %.1f V in the scope; voltage sag "
+            + "%.2f V below nominal.", warningThreshold, voltageSag));
+      }
+      return out;
+    }
+
+    /**
+     * Least-squares fit of battery voltage against total current (the current held at each
+     * voltage sample): V = V0 - R * I. Needs 30 aligned samples and a 10 A current range.
+     */
+    static JsonObject loadLine(LogData log, List<TimestampedValue> voltage, String currentEntry) {
+      var current = log.values().get(currentEntry);
+      if (current == null || current.isEmpty()) return null;
+      var xs = new ArrayList<Double>();
+      var ys = new ArrayList<Double>();
+      for (var tv : voltage) {
+        var i = ToolUtils.getValueAtTimeZoh(current, tv.timestamp());
+        if (!(i instanceof Number n) || !Double.isFinite(n.doubleValue())) continue;
+        xs.add(n.doubleValue());
+        ys.add(((Number) tv.value()).doubleValue());
+      }
+      int n = xs.size();
+      if (n < 30) return null;
+      double minI = xs.stream().mapToDouble(Double::doubleValue).min().orElse(0);
+      double maxI = xs.stream().mapToDouble(Double::doubleValue).max().orElse(0);
+      if (maxI - minI < 10) return null;
+      double mx = xs.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+      double my = ys.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+      double sxx = 0, sxy = 0, syy = 0;
+      for (int k = 0; k < n; k++) {
+        double dx = xs.get(k) - mx;
+        double dy = ys.get(k) - my;
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+      }
+      if (sxx <= 0 || syy <= 0) return null;
+      double slope = sxy / sxx;
+      var o = new JsonObject();
+      o.addProperty("current_entry", currentEntry);
+      o.addProperty("resistance_ohm", -slope);
+      o.addProperty("open_circuit_voltage", my - slope * mx);
+      o.addProperty("r_squared", (sxy * sxy) / (sxx * syy));
+      o.addProperty("samples", n);
+      o.addProperty("current_range_a", maxI - minI);
+      return o;
     }
 
     private java.util.List<JsonObject> detectVoltageEvents(
@@ -1991,15 +2180,12 @@ public final class FrcDomainTools {
         // Hysteresis: enter below threshold, exit only above threshold + 0.2V
         double hysteresis = 0.2;
         if (voltage < threshold && !inEvent) {
-          // Event started
           inEvent = true;
           eventStartTime = tv.timestamp();
           eventMinVoltage = voltage;
         } else if (voltage < threshold && inEvent) {
-          // Event continuing
           eventMinVoltage = Math.min(eventMinVoltage, voltage);
         } else if (voltage >= threshold + hysteresis && inEvent) {
-          // Event ended
           var event = new JsonObject();
           event.addProperty("start_time", eventStartTime);
           event.addProperty("end_time", tv.timestamp());
@@ -2010,7 +2196,7 @@ public final class FrcDomainTools {
         }
       }
 
-      // Emit open-ended event if voltage was still below threshold at end of log
+      // Emit open-ended event if voltage was still below threshold at end of the data
       if (inEvent && !voltageValues.isEmpty()) {
         double lastTime = voltageValues.get(voltageValues.size() - 1).timestamp();
         var event = new JsonObject();
@@ -2018,40 +2204,26 @@ public final class FrcDomainTools {
         event.addProperty("end_time", lastTime);
         event.addProperty("duration", lastTime - eventStartTime);
         event.addProperty("min_voltage", eventMinVoltage);
+        event.addProperty("open_at_end", true);
         events.add(event);
       }
-
       return events;
     }
 
-    private JsonObject analyzeVoltageRecovery(
-        java.util.List<TimestampedValue> voltageValues,
-        java.util.List<TimestampedValue> currentValues) {
-
-      if (currentValues == null || currentValues.isEmpty()) {
-        return null; // Cannot analyze without current data
-      }
-
-      // Find load changes (significant voltage drops)
+    /** How long the voltage takes to recover 90% of a drop of more than 0.5 V (up to 2 s). */
+    private JsonObject analyzeVoltageRecovery(java.util.List<TimestampedValue> voltageValues) {
       var recoveryTimes = new ArrayList<Double>();
-
-      // Scan all voltage samples (no arbitrary limit — supports any logging rate)
       for (int i = 1; i < voltageValues.size() - 1; i++) {
         var voltageBefore = toDouble(voltageValues.get(i - 1).value());
         var voltageAtLoad = toDouble(voltageValues.get(i).value());
-
         if (voltageBefore == null || voltageAtLoad == null) continue;
-
-        // Detect voltage drop (potential load application)
         double voltageDrop = voltageBefore - voltageAtLoad;
-        if (voltageDrop > 0.5) {  // Significant drop
-          // Measure recovery time
+        if (voltageDrop > 0.5) {
           double dropTime = voltageValues.get(i).timestamp();
-          double recoveryTarget = voltageAtLoad + (voltageDrop * 0.9);  // 90% recovery
-
+          double recoveryTarget = voltageAtLoad + (voltageDrop * 0.9);
           for (int j = i + 1; j < voltageValues.size(); j++) {
             double elapsed = voltageValues.get(j).timestamp() - dropTime;
-            if (elapsed > 2.0) break; // 2-second recovery window
+            if (elapsed > 2.0) break;
             var recoveredVoltage = toDouble(voltageValues.get(j).value());
             if (recoveredVoltage != null && recoveredVoltage >= recoveryTarget) {
               recoveryTimes.add(elapsed);
@@ -2060,125 +2232,35 @@ public final class FrcDomainTools {
           }
         }
       }
-
-      if (recoveryTimes.isEmpty()) {
-        return null;
-      }
-
+      if (recoveryTimes.isEmpty()) return null;
       var analysis = new JsonObject();
       analysis.addProperty("avg_recovery_sec",
           recoveryTimes.stream().mapToDouble(d -> d).average().orElse(0));
       analysis.addProperty("max_recovery_sec",
           recoveryTimes.stream().mapToDouble(d -> d).max().orElse(0));
       analysis.addProperty("sample_count", recoveryTimes.size());
-
       return analysis;
     }
 
     /**
-     * Calculates a battery health score (0-100) from voltage characteristics.
-     *
-     * <p>Scoring formula (empirical, not derived from battery specs):
-     * <ul>
-     *   <li>Start at 100</li>
-     *   <li>Avg voltage below 88% of nominal (≈11.1V on 12.6V): −(deficit × 150)</li>
-     *   <li>Each brownout event: −20</li>
-     *   <li>Each warning-level sag event: −5</li>
-     *   <li>Slow recovery (>0.5s avg): −(excess × 20)</li>
-     *   <li>Min voltage below 10V: −(deficit × 10)</li>
-     * </ul>
-     *
-     * <p>Note: This score provides useful relative ranking between batteries but
-     * absolute values should not be the sole basis for replacement decisions.
-     * Factors like battery age, connector condition, and wire gauge also matter.
+     * Heuristic battery health score (0-100), kept by design (see CODE_REVIEW_REJECTION.md):
+     * start at 100; average below 88% of nominal: −(deficit × 150); each brownout: −20; each dip
+     * below the warning threshold that is not a brownout: −5; slow recovery (> 0.5 s average):
+     * −(excess × 20); minimum below 10 V: −(deficit × 10).
      */
-    private int calculateHealthScore(
-        double avgVoltage,
-        double nominalVoltage,
-        double minVoltage,
-        int brownoutEvents,
-        int sagEvents,
-        JsonObject recoveryAnalysis) {
-
+    private int calculateHealthScore(double avgVoltage, double nominalVoltage, double minVoltage,
+        int brownoutEvents, int sagEvents, JsonObject recoveryAnalysis) {
       int score = 100;
-
-      // Avg voltage penalty: 88% threshold (≈11.1V on 12.6V nominal).
-      // Healthy FRC batteries routinely sag to 11.0–11.5V under match load.
       double voltageRatio = nominalVoltage > 0 ? avgVoltage / nominalVoltage : 1.0;
-      if (voltageRatio < 0.88) {
-        score -= (int) ((0.88 - voltageRatio) * 150);
-      }
-
-      // Brownout penalty: 20 pts each — indicates serious power delivery issues
+      if (voltageRatio < 0.88) score -= (int) ((0.88 - voltageRatio) * 150);
       score -= brownoutEvents * 20;
-
-      // Warning-level sag penalty: 5 pts each — exclude brownouts to avoid double-counting
       score -= Math.max(0, sagEvents - brownoutEvents) * 5;
-
-      // Deduct for poor recovery time (high internal resistance)
       if (recoveryAnalysis != null) {
         double avgRecovery = recoveryAnalysis.get("avg_recovery_sec").getAsDouble();
-        if (avgRecovery > 0.5) {  // Slow recovery indicates aging
-          score -= (int) ((avgRecovery - 0.5) * 20);
-        }
+        if (avgRecovery > 0.5) score -= (int) ((avgRecovery - 0.5) * 20);
       }
-
-      // Deduct for low minimum voltage
-      if (minVoltage < 10.0) {
-        score -= (int) ((10.0 - minVoltage) * 10);
-      }
-
+      if (minVoltage < 10.0) score -= (int) ((10.0 - minVoltage) * 10);
       return Math.max(0, Math.min(100, score));
-    }
-
-    private String determineRiskLevel(
-        int healthScore,
-        double minVoltage,
-        double brownoutThreshold,
-        double warningThreshold) {
-
-      if (minVoltage < brownoutThreshold) return "CRITICAL";
-      if (minVoltage < warningThreshold || healthScore < 30) return "HIGH";
-      if (healthScore < 60) return "MODERATE";
-      if (healthScore < 80) return "LOW";
-      return "MINIMAL";
-    }
-
-    private java.util.List<String> generateRecommendations(
-        int healthScore,
-        String riskLevel,
-        double minVoltage,
-        double avgVoltage,
-        int brownoutEvents,
-        double voltageSag) {
-
-      var recommendations = new ArrayList<String>();
-
-      if (brownoutEvents > 0) {
-        recommendations.add("URGENT: Replace battery immediately - brownouts detected");
-      } else if (healthScore < 50) {
-        recommendations.add("Replace battery before next match");
-      } else if (healthScore < 70) {
-        recommendations.add("Consider battery replacement - health declining");
-      }
-
-      if (voltageSag > 3.0) {
-        recommendations.add("High voltage sag detected - check connections and wire gauge");
-      }
-
-      if (avgVoltage < 11.5) {
-        recommendations.add("Average voltage low - battery may be undercharged");
-      }
-
-      if (minVoltage < 9.0 && brownoutEvents == 0) {
-        recommendations.add("Close to brownout threshold - reduce current draw or replace battery");
-      }
-
-      if (recommendations.isEmpty()) {
-        recommendations.add("Battery health good - continue monitoring");
-      }
-
-      return recommendations;
     }
   }
 

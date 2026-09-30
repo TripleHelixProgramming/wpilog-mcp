@@ -1654,8 +1654,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("voltage"),
-          "Error message should mention voltage");
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("voltage"),
+          "Reason should mention voltage");
     }
 
     @Test
@@ -1869,9 +1870,14 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      int divergentCount = resultObj.get("divergent_count").getAsInt();
-      assertTrue(divergentCount > 0, "Should detect divergences");
-      assertTrue(resultObj.has("divergences"));
+      assertEquals(1, resultObj.get("divergent_count").getAsInt());
+      assertEquals(1, resultObj.get("pairs_compared").getAsInt());
+      var d = resultObj.getAsJsonArray("divergences").get(0).getAsJsonObject();
+      assertEquals("/RealOutputs/Drive/Speed", d.get("entry").getAsString());
+      assertEquals(0.1, d.get("first_divergence_time").getAsDouble(), 1e-9); // i = 5
+      assertEquals(5, d.get("divergent_samples").getAsInt());
+      assertEquals(10, d.get("compared_samples").getAsInt());
+      assertEquals(10.0, d.get("max_abs_difference").getAsDouble(), 1e-9);
     }
 
     @Test
@@ -1898,6 +1904,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals(0, resultObj.get("divergent_count").getAsInt());
+      assertEquals(1, resultObj.get("pairs_compared").getAsInt());
+      assertEquals(10, resultObj.get("samples_compared").getAsInt());
     }
 
     @Test
@@ -1916,8 +1924,10 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0, resultObj.get("divergent_count").getAsInt());
+      // Not a replay log: not_applicable, never "0 divergences"
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("not_applicable", resultObj.get("status").getAsString());
+      assertFalse(resultObj.has("divergent_count"));
     }
 
     @Test
@@ -1942,14 +1952,59 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0, resultObj.get("divergent_count").getAsInt(),
-          "Unmatched entries should not count as divergences");
+      // A real-robot log (no /ReplayOutputs/ at all) is not a replay log
+      assertEquals("not_applicable", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("1 /RealOutputs/"));
     }
 
     @Test
-    @DisplayName("includes data quality metadata")
-    void includesDataQuality() throws Exception {
+    @DisplayName("counts entries present on only one side")
+    void countsOneSidedEntries() throws Exception {
+      var values = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 5; i++) values.add(new TimestampedValue(i * 0.02, (double) i));
+      var log = new MockLogBuilder()
+          .setPath("/test/replay_one_sided.wpilog")
+          .addEntry("/RealOutputs/Drive/Speed", "double", values)
+          .addEntry("/ReplayOutputs/Drive/Speed", "double", values)
+          .addEntry("/RealOutputs/Only/Real", "double", values)
+          .addEntry("/ReplayOutputs/Only/Replay", "double", values)
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var r = findTool("analyze_replay_drift").execute(args).getAsJsonObject();
+      assertEquals(1, r.get("pairs_compared").getAsInt());
+      assertEquals(1, r.get("real_only_count").getAsInt());
+      assertEquals(1, r.get("replay_only_count").getAsInt());
+      assertEquals("/RealOutputs/Only/Real", r.getAsJsonArray("real_only_entries").get(0).getAsString());
+      assertTrue(r.getAsJsonArray("warnings").toString().contains("no replay counterpart"));
+    }
+
+    @Test
+    @DisplayName("arrays and structs are compared element by element, numbers with tolerance")
+    void deepComparison() {
+      double[] maxDiff = {0};
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new double[] {1, 2, 3}, new double[] {1, 2, 3}, 1e-9, maxDiff), "equal arrays");
+      assertFalse(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new double[] {1, 2, 3}, new double[] {1, 2, 3.5}, 1e-9, maxDiff));
+      assertEquals(0.5, maxDiff[0], 1e-12);
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          5.0, 5.0 + 1e-12, 1e-9, new double[1]), "within relative tolerance");
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          Double.NaN, Double.NaN, 1e-9, new double[1]), "NaN equals NaN in replay");
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          java.util.List.of(java.util.Map.of("x", 1.0)), java.util.List.of(java.util.Map.of("x", 1.0)),
+          1e-9, new double[1]), "struct arrays");
+      assertFalse(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new String[] {"a"}, new String[] {"b"}, 1e-9, new double[1]));
+      assertFalse(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new long[] {1}, new long[] {1, 2}, 1e-9, new double[1]), "length differs");
+    }
+
+    @Test
+    @DisplayName("reports how many samples were compared")
+    void reportsSamplesCompared() throws Exception {
       var realValues = new ArrayList<TimestampedValue>();
       var replayValues = new ArrayList<TimestampedValue>();
       for (int i = 0; i < 20; i++) {
@@ -1972,8 +2027,10 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.has("data_quality"), "Should include data quality");
-      assertTrue(resultObj.has("server_analysis_directives"), "Should include analysis directives");
+      // Replay comparison is exact, sample by sample: no statistical quality block
+      assertEquals("ok", resultObj.get("status").getAsString());
+      assertEquals(20, resultObj.get("samples_compared").getAsInt());
+      assertFalse(resultObj.has("data_quality"));
     }
   }
 

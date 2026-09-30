@@ -14,7 +14,6 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -220,8 +219,8 @@ public class DiskCacheSerializer {
 
     // Entries
     int entryCount = unpacker.unpackInt();
-    var entries = new HashMap<String, EntryInfo>(entryCount);
-    var values = new HashMap<String, List<TimestampedValue>>(entryCount);
+    var entries = new LinkedHashMap<String, EntryInfo>(entryCount);
+    var values = new LinkedHashMap<String, List<TimestampedValue>>(entryCount);
 
     for (int e = 0; e < entryCount; e++) {
       int id = unpacker.unpackInt();

@@ -950,14 +950,31 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       args.addProperty("path", log.path());
       var resultObj = tool.execute(args).getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
+      // Nothing to analyze: no_match with what was searched for, not an empty success
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
       assertFalse(resultObj.has("voltage_analysis"));
       assertFalse(resultObj.has("channel_analysis"));
-      var warnings = resultObj.getAsJsonArray("warnings").toString();
-      assertTrue(warnings.contains("No battery voltage entry found"), warnings);
-      assertTrue(warnings.contains("No current entries found"), warnings);
-      assertEquals(0, resultObj.get("current_entries_analyzed").getAsInt());
+      assertEquals(3, resultObj.getAsJsonArray("looked_for").size());
       assertFalse(resultObj.has("data_quality"));
+    }
+
+    @Test
+    @DisplayName("power_analysis without current entries is partial, naming the skipped section")
+    void powerAnalysisVoltageOnly() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_voltage_only.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.4, 12.1})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("partial", resultObj.get("status").getAsString());
+      assertTrue(resultObj.getAsJsonArray("skipped").toString().contains("channel_analysis"));
+      var v = resultObj.getAsJsonObject("voltage_analysis");
+      assertEquals(6.8, v.get("brownout_threshold").getAsDouble());
+      assertTrue(v.get("brownout_threshold_basis").getAsString().startsWith("default"));
     }
 
     @Test
@@ -1015,8 +1032,10 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("swerve_entries"));
+      // No SwerveModuleState entries: no_match (not an empty success)
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.getAsJsonArray("looked_for").size() > 0);
     }
 
     @Test
@@ -1071,10 +1090,22 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("wheel_slip"),
-          "Should detect wheel slip from setpoint/measured pairs");
-      var slip = resultObj.getAsJsonObject("wheel_slip");
-      assertTrue(slip.get("pair_count").getAsInt() > 0);
+      assertEquals("per_module", resultObj.get("layout").getAsString());
+      var modules = resultObj.getAsJsonArray("modules");
+      assertEquals(4, modules.size());
+      // Module 2's measured speed is 70% of its setpoint: the largest tracking error
+      double worst = -1;
+      String worstModule = null;
+      for (var m : modules) {
+        var o = m.getAsJsonObject();
+        assertTrue(o.has("speed_tracking_error"), o.toString());
+        double err = o.getAsJsonObject("speed_tracking_error").get("mean_mps").getAsDouble();
+        if (err > worst) {
+          worst = err;
+          worstModule = o.get("module").getAsString();
+        }
+      }
+      assertEquals("Module2", worstModule);
     }
 
     @Test
@@ -1091,12 +1122,13 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertTrue(resultObj.has("module_sync"),
-          "Should analyze module synchronization");
+          "Should analyze steering against setpoints");
       var sync = resultObj.getAsJsonObject("module_sync");
-      assertTrue(sync.get("module_count").getAsInt() >= 2);
+      assertTrue(sync.get("samples_analyzed").getAsInt() > 0);
       // Module 3 has 0.2 rad offset in the test data
       assertTrue(sync.get("max_deviation_rad").getAsDouble() > 0.1,
           "Should detect the intentional angle deviation in module 3");
+      assertEquals("Module3", sync.get("worst_module").getAsString());
     }
 
     @Test
@@ -1134,9 +1166,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      // Should succeed without swerve-specific analysis
-      assertFalse(resultObj.has("wheel_slip"));
+      // Nothing to analyze: no_match, never an empty success
+      assertEquals("no_match", resultObj.get("status").getAsString());
       assertFalse(resultObj.has("module_sync"));
       assertFalse(resultObj.has("odometry_drift"));
     }
@@ -1240,13 +1271,12 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       args.addProperty("slip_threshold", 100.0); // impossibly high
       var result = tool.execute(args).getAsJsonObject();
 
-      if (result.has("wheel_slip")) {
-        var slip = result.getAsJsonObject("wheel_slip");
-        var modules = slip.getAsJsonArray("modules");
-        for (int i = 0; i < modules.size(); i++) {
-          assertEquals(0, modules.get(i).getAsJsonObject().get("slip_events").getAsInt(),
-              "No slip events should exceed 100 m/s threshold");
-        }
+      var modules = result.getAsJsonArray("modules");
+      assertEquals(4, modules.size());
+      for (int i = 0; i < modules.size(); i++) {
+        var tracking = modules.get(i).getAsJsonObject().getAsJsonObject("speed_tracking_error");
+        assertEquals(0, tracking.get("events_over_threshold").getAsInt(),
+            "No tracking error should exceed a 100 m/s threshold");
       }
     }
 
@@ -1263,9 +1293,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       args.addProperty("sync_threshold_rad", 100.0);
       var result = tool.execute(args).getAsJsonObject();
 
-      if (result.has("module_sync")) {
-        assertEquals(0, result.getAsJsonObject("module_sync").get("desync_events").getAsInt());
-      }
+      assertEquals(0, result.getAsJsonObject("module_sync").get("desync_events").getAsInt());
     }
 
     @Test

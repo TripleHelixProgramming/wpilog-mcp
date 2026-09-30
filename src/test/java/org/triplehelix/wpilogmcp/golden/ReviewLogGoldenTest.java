@@ -181,12 +181,17 @@ class ReviewLogGoldenTest {
   @DisplayName("power tools take the brownout threshold from /SystemStats/BrownoutVoltage (6.75 V)")
   void loggedBrownoutThreshold() throws Exception {
     var result = call("power_analysis");
-    pending("Phase 3 (E3)", () -> {
-      var threshold = findNumber(result, "brownout_threshold");
-      assertTrue(threshold.isPresent(), "no brownout_threshold in " + result);
-      near(6.75, threshold.get(), 1e-9, "threshold");
-    });
-    near(6.618, findNumber(result, "min_voltage").orElseThrow(), 0.001, "battery minimum");
+    var voltage = result.getAsJsonObject("voltage_analysis");
+    near(6.75, voltage.get("brownout_threshold").getAsDouble(), 1e-9, "threshold");
+    assertEquals("logged", voltage.get("brownout_threshold_basis").getAsString());
+    assertEquals("/SystemStats/BrownoutVoltage",
+        voltage.get("brownout_threshold_entry").getAsString());
+    near(6.618, voltage.get("min_voltage").getAsDouble(), 0.001, "battery minimum");
+    var rio = result.getAsJsonObject("rio_brownouts");
+    assertEquals(2, rio.get("count").getAsInt());
+    var first = rio.getAsJsonArray("events").get(0).getAsJsonObject();
+    near(655.434, first.get("start").getAsDouble(), 0.001, "first brownout start");
+    near(0.143, first.get("duration_sec").getAsDouble(), 0.002, "first brownout duration");
   }
 
   // ==================== loop timing ====================
@@ -232,15 +237,13 @@ class ReviewLogGoldenTest {
   @Test
   @DisplayName("analyze_swerve reports mean |speed| per module while enabled")
   void swerveModuleSpeeds() throws Exception {
-    pending("Phase 3 (B5)", () -> {
-      var result = call("analyze_swerve", "scope", "enabled");
-      var modules = result.getAsJsonArray("modules");
-      double[] expected = {0.971, 0.950, 0.987, 0.975};
-      for (int m = 0; m < 4; m++) {
-        near(expected[m], modules.get(m).getAsJsonObject().get("mean_abs_speed_mps").getAsDouble(),
-            0.001, "module " + m);
-      }
-    });
+    var result = call("analyze_swerve", "scope", "enabled");
+    var modules = result.getAsJsonArray("modules");
+    double[] expected = {0.971, 0.950, 0.987, 0.975};
+    for (int m = 0; m < 4; m++) {
+      near(expected[m], modules.get(m).getAsJsonObject().get("mean_abs_speed_mps").getAsDouble(),
+          0.0005, "module " + m);
+    }
   }
 
   // ==================== vision ====================

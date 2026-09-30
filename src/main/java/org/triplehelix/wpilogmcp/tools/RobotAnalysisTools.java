@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.Optional;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
@@ -193,463 +194,429 @@ public final class RobotAnalysisTools {
   }
 
   static class AnalyzeSwerveTool extends LogRequiringTool {
+    /** A setpoint older than this at a measured sample is not compared (setpoints stopped). */
+    static final double MAX_SETPOINT_AGE_SEC = 0.1;
+    /** Steer error is only meaningful while the module is commanded to move. */
+    static final double MIN_STEER_SPEED_MPS = 0.05;
+
     @Override
     public String name() { return "analyze_swerve"; }
 
     @Override
     public String description() {
-      return "Analyze swerve drive module performance: per-module speed statistics from SwerveModuleState entries. "
-          + "Returns 'no swerve modules detected' if log does not contain swerve module state entries."
+      return "Analyze swerve modules from SwerveModuleState entries: per module, mean and maximum "
+          + "|speed| (magnitude; measured speeds are signed and negative about half the time), "
+          + "and, when a setpoint entry exists, speed tracking error (| |measured| - |setpoint| |, "
+          + "m/s, events above slip_threshold) and steer error (angle difference modulo 180 deg, "
+          + "while the setpoint speed is above 0.05 m/s, events above sync_threshold_rad). "
+          + "AdvantageKit's struct:SwerveModuleState[] arrays count as one module per index "
+          + "(module[0..N-1]; the FL, FR, BL, BR labels are the AdvantageKit template's order, an "
+          + "assumption); one entry per module also works. Setpoints are paired by index, "
+          + "preferring an optimized setpoint entry. Odometry drift compares a scalar odometry "
+          + "pose to a scalar vision pose. Sections that cannot be produced are listed in skipped "
+          + "with the reason; use measured_entry/setpoint_entry/odometry_entry/vision_entry to "
+          + "point the tool at the right data, and scope (e.g. 'enabled') to exclude disabled time. "
+          + "Returns no_match when the log has no SwerveModuleState entries."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("module_prefix", "string", "Entry path prefix (e.g., '/Drive/Module')", false)
-          .addNumberProperty("slip_threshold", "Speed difference threshold for slip detection in m/s (default: 0.5)", false, 0.5)
-          .addNumberProperty("sync_threshold_rad", "Angle threshold for sync deviation in radians (default: 0.1)", false, 0.1)
-          .addProperty("odometry_entry", "string", "Explicit odometry pose entry name", false)
-          .addProperty("vision_entry", "string", "Explicit vision pose entry name", false)
+          .addProperty("module_prefix", "string",
+              "Only consider module state entries under this prefix (e.g. '/RealOutputs/SwerveStates')", false)
+          .addProperty("measured_entry", "string",
+              "Measured module states: a SwerveModuleState[] entry, or one module's SwerveModuleState entry", false)
+          .addProperty("setpoint_entry", "string",
+              "Setpoint module states, paired with measured_entry by index", false)
+          .addNumberProperty("slip_threshold", "Speed tracking error, in m/s, counted as an event (default: 0.5)", false, 0.5)
+          .addNumberProperty("sync_threshold_rad", "Steer error, in radians, counted as an event (default: 0.1)", false, 0.1)
+          .addProperty("odometry_entry", "string", "Explicit odometry pose entry (struct:Pose2d or Pose3d)", false)
+          .addProperty("vision_entry", "string", "Explicit vision pose entry (struct:Pose2d or Pose3d)", false)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .build();
+    }
+
+    /** One module: where its measured and setpoint states come from. */
+    record Module(String label, String measuredEntry, int measuredIndex, String setpointEntry,
+        int setpointIndex) {}
+
+    static final java.util.regex.Pattern SETPOINT_WORDS =
+        java.util.regex.Pattern.compile("(?i)setpoint|desired|target|commanded|goal|reference");
+    static final java.util.regex.Pattern MEASURED_WORDS =
+        java.util.regex.Pattern.compile("(?i)measured|actual|real|current|state");
+
+    static String leaf(String name) {
+      return name.substring(name.lastIndexOf('/') + 1);
+    }
+
+    static boolean isSetpointName(String name) {
+      return SETPOINT_WORDS.matcher(leaf(name)).find();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var prefix = getOptString(arguments, "module_prefix", null);
+      var measuredArg = getOptString(arguments, "measured_entry", null);
+      var setpointArg = getOptString(arguments, "setpoint_entry", null);
       double slipThreshold = getOptDouble(arguments, "slip_threshold", 0.5);
       double syncThresholdRad = getOptDouble(arguments, "sync_threshold_rad", 0.1);
-      var odomEntryName = getOptString(arguments, "odometry_entry", null);
-      var visionEntryName = getOptString(arguments, "vision_entry", null);
+      var odomArg = getOptString(arguments, "odometry_entry", null);
+      var visionArg = getOptString(arguments, "vision_entry", null);
+      var scope = TimeScope.resolve(log, null, getOptString(arguments, "scope", null),
+          getOptDouble(arguments, "start_time"), getOptDouble(arguments, "end_time"));
 
-      var categorizedEntries = log.entries().entrySet().stream()
-          .filter(e -> prefix == null || e.getKey().startsWith(prefix))
-          .collect(Collectors.groupingBy(e -> {
-            var type = e.getValue().type();
-            if (type.contains("SwerveModuleState")) return "module_states";
-            if (type.contains("SwerveModulePosition")) return "module_positions";
-            if (type.contains("ChassisSpeeds")) return "chassis_speeds";
-            return "other";
-          }, Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
-
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.add("swerve_entries", GSON.toJsonTree(categorizedEntries));
-
-      var states = categorizedEntries.get("module_states");
-      var warnings = new ArrayList<String>();
-
-      // 1. Per-module speed statistics
-      if (states != null) {
-        var analysis = new JsonArray();
-        for (var name : states) {
-          var moduleResult = analyzeModule(name, log.values().get(name));
-          if (moduleResult != null) {
-            analysis.add(moduleResult);
-          } else {
-            warnings.add("Could not analyze module '" + name + "': no valid speed data found");
-          }
-        }
-        result.add("module_analysis", analysis);
-      }
-
-      // 2. Wheel slip detection — find setpoint/measured pairs
-      if (states != null) {
-        var slipAnalysis = analyzeWheelSlip(log, states, slipThreshold);
-        if (slipAnalysis != null) {
-          result.add("wheel_slip", slipAnalysis);
+      for (var explicit : java.util.Arrays.asList(measuredArg, setpointArg)) {
+        if (explicit == null) continue;
+        requireEntry(log, explicit); // throws with suggestions when missing
+        var info = log.entries().get(explicit);
+        if (!info.type().startsWith("struct:SwerveModuleState")) {
+          throw new IllegalArgumentException("Entry " + explicit + " is " + info.type()
+              + ", not struct:SwerveModuleState or struct:SwerveModuleState[]");
         }
       }
 
-      // 3. Module sync analysis — compare angles across modules
-      if (states != null && states.size() >= 2) {
-        var syncAnalysis = analyzeModuleSync(log, states, syncThresholdRad);
-        if (syncAnalysis != null) {
-          result.add("module_sync", syncAnalysis);
-        }
-      }
-
-      // 4. Odometry drift analysis
-      var driftAnalysis = analyzeOdometryDrift(log, odomEntryName, visionEntryName);
-      if (driftAnalysis != null) {
-        result.add("odometry_drift", driftAnalysis);
-      }
-
-      // Data quality from first module state entry
-      if (states != null && !states.isEmpty()) {
-        var qVals = log.values().get(states.get(0));
-        if (qVals != null) {
-          var quality = DataQuality.fromValues(qVals);
-          var directives = AnalysisDirectives.fromQuality(quality)
-              .addSingleMatchCaveat()
-              .addFollowup("Use power_analysis to check if module issues correlate with brownouts");
-          appendQualityToResult(result, quality, directives);
-        }
-      }
-
-      if (!warnings.isEmpty()) {
-        result.add("warnings", GSON.toJsonTree(warnings));
-      }
-
-      return result;
-    }
-
-    private JsonObject analyzeModule(String name, List<TimestampedValue> values) {
-      if (values == null || values.isEmpty()) return null;
-
-      var speeds = extractSpeeds(values);
-      if (speeds.length == 0) return null;
-
-      var stats = java.util.Arrays.stream(speeds).summaryStatistics();
-      var obj = new JsonObject();
-      obj.addProperty("entry", name);
-      obj.addProperty("max_speed_mps", stats.getMax());
-      obj.addProperty("avg_speed_mps", stats.getAverage());
-      obj.addProperty("sample_count", stats.getCount());
-      return obj;
-    }
-
-    /** Detects wheel slip by comparing setpoint and measured module state entries. */
-    private JsonObject analyzeWheelSlip(LogData log, List<String> stateEntries, double threshold) {
-      // Find setpoint/measured pairs by naming convention (deduplicated)
-      var pairs = new ArrayList<String[]>(); // [setpoint, measured]
-      Set<String> seenPairs = new HashSet<>();
-      for (var entry : stateEntries) {
-        var lower = entry.toLowerCase();
-        if (lower.contains("setpoint") || lower.contains("desired") || lower.contains("target")) {
-          // Look for matching measured entry
-          String base = entry.replaceAll("(?i)(setpoint|desired|target)", "");
-          for (var other : stateEntries) {
-            var otherLower = other.toLowerCase();
-            if ((otherLower.contains("measured") || otherLower.contains("actual") || otherLower.contains("state"))
-                && other.replaceAll("(?i)(measured|actual|state)", "").equalsIgnoreCase(base)) {
-              String pairKey = entry + "|" + other;
-              if (seenPairs.add(pairKey)) {
-                pairs.add(new String[]{entry, other});
-              }
-            }
-          }
-          // Also try: same prefix, Setpoint vs Measured suffix
-          for (var other : stateEntries) {
-            if (!other.equals(entry) && sharePrefix(entry, other)) {
-              String pairKey = entry + "|" + other;
-              if (seenPairs.add(pairKey)) {
-                pairs.add(new String[]{entry, other});
-              }
-            }
-          }
-        }
-      }
-
-      if (pairs.isEmpty()) return null;
-
-      var slipResult = new JsonObject();
-      var moduleSlips = new JsonArray();
-
-      for (var pair : pairs) {
-        var setpointVals = log.values().get(pair[0]);
-        var measuredVals = log.values().get(pair[1]);
-        if (setpointVals == null || measuredVals == null) continue;
-
-        // Use measured timestamps as reference, interpolate setpoint speeds
-        // This handles different sample rates correctly
-        if (setpointVals.isEmpty() || measuredVals.isEmpty()) continue;
-
-        double maxSlip = 0;
-        double sumSlip = 0;
-        int slipEvents = 0;
-        int comparedCount = 0;
-
-        for (var mv : measuredVals) {
-          double mSpeed = extractSingleSpeed(mv);
-          if (Double.isNaN(mSpeed)) continue;
-          mSpeed = Math.abs(mSpeed);
-
-          // Interpolate setpoint speed at this measured timestamp
-          Double sSpeedInterp = interpolateSpeedAtTime(setpointVals, mv.timestamp());
-          if (sSpeedInterp == null) continue;
-          double sSpeed = Math.abs(sSpeedInterp);
-
-          if (sSpeed > 0.01) { // minimum speed to avoid division by near-zero
-            double slip = Math.abs(mSpeed - sSpeed) / sSpeed;
-            maxSlip = Math.max(maxSlip, slip);
-            sumSlip += slip;
-            if (Math.abs(mSpeed - sSpeed) > threshold) slipEvents++;
-            comparedCount++;
-          }
-        }
-
-        if (comparedCount == 0) continue;
-
-        var moduleSlip = new JsonObject();
-        moduleSlip.addProperty("setpoint_entry", pair[0]);
-        moduleSlip.addProperty("measured_entry", pair[1]);
-        moduleSlip.addProperty("max_slip_ratio", maxSlip);
-        moduleSlip.addProperty("avg_slip_ratio", sumSlip / comparedCount);
-        moduleSlip.addProperty("slip_events", slipEvents);
-        moduleSlip.addProperty("slip_event_rate", (double) slipEvents / comparedCount);
-        moduleSlip.addProperty("samples_compared", comparedCount);
-        moduleSlips.add(moduleSlip);
-      }
-
-      if (moduleSlips.size() == 0) return null;
-      slipResult.add("modules", moduleSlips);
-      slipResult.addProperty("pair_count", moduleSlips.size());
-      return slipResult;
-    }
-
-    /** Analyzes steering angle synchronization across modules. */
-    private JsonObject analyzeModuleSync(LogData log, List<String> stateEntries, double thresholdRad) {
-      // Collect measured entries (exclude setpoints)
-      var measuredEntries = stateEntries.stream()
-          .filter(e -> {
-            var lower = e.toLowerCase();
-            return !lower.contains("setpoint") && !lower.contains("desired") && !lower.contains("target");
-          })
+      var stateEntries = log.entries().values().stream()
+          .filter(e -> e.type().equals("struct:SwerveModuleState")
+              || e.type().equals("struct:SwerveModuleState[]"))
+          .filter(e -> prefix == null || e.name().startsWith(prefix))
+          .filter(e -> log.sampleCount(e.name()) > 0)
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
           .toList();
-
-      if (measuredEntries.size() < 2) return null;
-
-      // Extract angle arrays for each module
-      var moduleAngles = new ArrayList<double[]>();
-      var moduleNames = new ArrayList<String>();
-      int minLen = Integer.MAX_VALUE;
-
-      for (var entry : measuredEntries) {
-        var values = log.values().get(entry);
-        if (values == null) continue;
-        double[] angles = extractAngles(values);
-        if (angles.length == 0) continue;
-        moduleAngles.add(angles);
-        moduleNames.add(entry);
-        minLen = Math.min(minLen, angles.length);
+      var modules = discoverModules(log, stateEntries, measuredArg, setpointArg);
+      if (modules.isEmpty()) {
+        var setpointOnly = stateEntries.stream().map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
+            .toList();
+        var nm = ResponseBuilder.noMatch(setpointOnly.isEmpty()
+                ? "No SwerveModuleState entries" + (prefix != null ? " under " + prefix : "")
+                    + " in this log."
+                : "Only setpoint module states found (" + String.join(", ", setpointOnly)
+                    + "); no measured module states to analyze.")
+            .lookedFor(List.of("struct:SwerveModuleState[] entries (one module per index)",
+                "struct:SwerveModuleState entries (one per module, grouped by parent path)",
+                "measured vs setpoint by leaf name: setpoint/desired/target/commanded/goal are "
+                    + "setpoints; anything else is measured"))
+            .hint("Pass measured_entry (and setpoint_entry) to choose the entries, or use "
+                + "search_entries with type 'SwerveModuleState'.");
+        return nm.build();
       }
 
-      if (moduleAngles.size() < 2 || minLen == 0) return null;
+      var builder = success();
+      builder.addData("scope", scope.toJson());
+      var first = modules.get(0);
+      builder.addInput("measured", first.measuredEntry());
+      if (first.setpointEntry() != null) builder.addInput("setpoint", first.setpointEntry());
+      boolean arrayLayout = first.measuredIndex() >= 0;
+      builder.addProperty("layout", arrayLayout ? "array" : "per_module");
+      builder.addProperty("module_count", modules.size());
+      if (arrayLayout && modules.size() == 4) {
+        builder.addProperty("module_order_note", "Indices are the order the robot code logs its "
+            + "modules. The AdvantageKit template logs front-left, front-right, back-left, "
+            + "back-right; that labeling is an assumption, not recorded in the log.");
+      }
 
-      // At each timestamp, compute max deviation from mean angle.
-      // Note: index-based alignment assumes all modules are logged at the same rate.
-      // If modules have different sample rates, this analysis may be inaccurate.
-      int desyncEvents = 0;
-      double maxDeviation = 0;
-      String worstModule = "";
-
-      for (int i = 0; i < minLen; i++) {
-        // Circular mean: average of angles on the unit circle
-        double sinSum = 0, cosSum = 0;
-        for (var angles : moduleAngles) {
-          sinSum += Math.sin(angles[i]);
-          cosSum += Math.cos(angles[i]);
-        }
-        double circularMean = Math.atan2(sinSum, cosSum);
-
-        for (int m = 0; m < moduleAngles.size(); m++) {
-          // Angular distance (handles wrapping at +/- pi)
-          double dev = Math.abs(Math.atan2(
-              Math.sin(moduleAngles.get(m)[i] - circularMean),
-              Math.cos(moduleAngles.get(m)[i] - circularMean)));
-          if (dev > maxDeviation) {
-            maxDeviation = dev;
-            worstModule = moduleNames.get(m);
+      var modulesJson = new JsonArray();
+      double worstSteer = 0;
+      String worstSteerModule = null;
+      long steerEvents = 0;
+      long steerSamples = 0;
+      boolean anySetpoint = false;
+      List<TimestampedValue> qualityValues = null;
+      for (var module : modules) {
+        var measured = log.values().get(module.measuredEntry());
+        var setpoints = module.setpointEntry() != null
+            ? log.values().get(module.setpointEntry()) : null;
+        var inScope = new ArrayList<TimestampedValue>();
+        var speeds = new ArrayList<Double>();
+        var speedErrors = new ArrayList<Double>();
+        var steerErrors = new ArrayList<Double>();
+        long speedEvents = 0;
+        long moduleSteerEvents = 0;
+        for (var tv : measured) {
+          if (!scope.contains(tv.timestamp())) continue;
+          var state = element(tv.value(), module.measuredIndex());
+          var speed = StructFields.moduleSpeed(state);
+          if (speed == null) continue;
+          inScope.add(tv);
+          speeds.add(Math.abs(speed));
+          if (setpoints == null) continue;
+          var sp = setpointAt(setpoints, tv.timestamp());
+          if (sp == null) continue;
+          var spState = element(sp.value(), module.setpointIndex());
+          var spSpeed = StructFields.moduleSpeed(spState);
+          if (spSpeed == null) continue;
+          double speedError = Math.abs(Math.abs(speed) - Math.abs(spSpeed));
+          speedErrors.add(speedError);
+          if (speedError > slipThreshold) speedEvents++;
+          var angle = StructFields.moduleAngle(state);
+          var spAngle = StructFields.moduleAngle(spState);
+          if (angle != null && spAngle != null && Math.abs(spSpeed) > MIN_STEER_SPEED_MPS) {
+            double diff = Math.abs(Math.IEEEremainder(angle - spAngle, 2 * Math.PI));
+            double steerError = Math.min(diff, Math.PI - diff); // optimization flips by 180 deg
+            steerErrors.add(steerError);
+            if (steerError > syncThresholdRad) moduleSteerEvents++;
+            if (steerError > worstSteer) {
+              worstSteer = steerError;
+              worstSteerModule = module.label();
+            }
           }
-          if (dev > thresholdRad) desyncEvents++;
         }
+        if (qualityValues == null) qualityValues = inScope;
+        var m = new JsonObject();
+        m.addProperty("module", module.label());
+        if (module.measuredIndex() >= 0) {
+          m.addProperty("index", module.measuredIndex());
+          if (modules.size() == 4) {
+            m.addProperty("assumed_position",
+                List.of("front_left", "front_right", "back_left", "back_right")
+                    .get(module.measuredIndex()));
+          }
+        }
+        m.addProperty("measured_entry", module.measuredEntry());
+        m.addProperty("samples", speeds.size());
+        if (!speeds.isEmpty()) {
+          m.addProperty("mean_abs_speed_mps",
+              speeds.stream().mapToDouble(Double::doubleValue).average().orElse(0));
+          m.addProperty("max_abs_speed_mps",
+              speeds.stream().mapToDouble(Double::doubleValue).max().orElse(0));
+        }
+        if (module.setpointEntry() != null) {
+          m.addProperty("setpoint_entry", module.setpointEntry());
+          if (!speedErrors.isEmpty()) {
+            anySetpoint = true;
+            var tracking = errorStats(speedErrors, "mps");
+            tracking.addProperty("events_over_threshold", speedEvents);
+            m.add("speed_tracking_error", tracking);
+          }
+          if (!steerErrors.isEmpty()) {
+            var steer = errorStats(steerErrors, "rad");
+            steer.addProperty("events_over_threshold", moduleSteerEvents);
+            steer.addProperty("max_deg", Math.toDegrees(steer.get("max_rad").getAsDouble()));
+            m.add("steer_error", steer);
+            steerEvents += moduleSteerEvents;
+            steerSamples += steerErrors.size();
+          }
+        }
+        modulesJson.add(m);
+      }
+      builder.addData("modules", modulesJson);
+
+      if (first.setpointEntry() == null) {
+        builder.addSkipped("speed_tracking_error", "No setpoint module states found to pair "
+            + "with " + first.measuredEntry() + " (pass setpoint_entry).");
+        builder.addSkipped("steer_error", "No setpoint module states.");
+      } else if (!anySetpoint) {
+        builder.addSkipped("speed_tracking_error", "No setpoint sample within "
+            + MAX_SETPOINT_AGE_SEC + " s of a measured sample in scope (setpoints are often "
+            + "logged only while enabled).");
+      }
+      if (steerSamples > 0) {
+        var sync = new JsonObject();
+        sync.addProperty("basis", "steer angle vs setpoint, modulo 180 deg, while the setpoint "
+            + "speed exceeds " + MIN_STEER_SPEED_MPS + " m/s");
+        sync.addProperty("samples_analyzed", steerSamples);
+        sync.addProperty("desync_events", steerEvents);
+        sync.addProperty("max_deviation_rad", worstSteer);
+        sync.addProperty("max_deviation_deg", Math.toDegrees(worstSteer));
+        if (worstSteerModule != null) sync.addProperty("worst_module", worstSteerModule);
+        builder.addData("module_sync", sync);
       }
 
-      var syncResult = new JsonObject();
-      syncResult.addProperty("module_count", moduleAngles.size());
-      syncResult.addProperty("samples_analyzed", minLen);
-      syncResult.addProperty("desync_events", desyncEvents);
-      syncResult.addProperty("max_deviation_rad", maxDeviation);
-      syncResult.addProperty("max_deviation_deg", Math.toDegrees(maxDeviation));
-      if (!worstModule.isEmpty()) {
-        syncResult.addProperty("worst_module", worstModule);
+      var drift = analyzeOdometryDrift(log, odomArg, visionArg, scope, builder);
+      if (drift != null) builder.addData("odometry_drift", drift);
+
+      if (qualityValues != null && !qualityValues.isEmpty()) {
+        var quality = DataQuality.fromValues(qualityValues);
+        builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat()
+            .addFollowup("Use power_analysis to check if module issues correlate with brownouts"));
+      } else {
+        builder.addWarning("No measured module samples fall inside the scope "
+            + scope.name() + ".");
       }
-      return syncResult;
+      return builder.build();
     }
 
-    /** Analyzes odometry drift by comparing odometry pose to vision pose. */
-    @SuppressWarnings("unchecked")
-    private JsonObject analyzeOdometryDrift(LogData log, String odomName, String visionName) {
-      // Discover entries if not specified
+    static JsonObject errorStats(List<Double> errors, String unit) {
+      var sorted = errors.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+      var o = new JsonObject();
+      o.addProperty("samples", sorted.length);
+      o.addProperty("mean_" + unit, java.util.Arrays.stream(sorted).average().orElse(0));
+      o.addProperty("p95_" + unit, percentile(sorted, 0.95));
+      o.addProperty("max_" + unit, sorted[sorted.length - 1]);
+      return o;
+    }
+
+    /** The {@code index}-th record of an array value, or the value itself for a single struct. */
+    static Object element(Object value, int index) {
+      if (index < 0) return value;
+      var elements = StructFields.elements(value);
+      return index < elements.size() ? elements.get(index) : null;
+    }
+
+    /** The setpoint in force at {@code t}, if it was logged at most MAX_SETPOINT_AGE_SEC ago. */
+    static TimestampedValue setpointAt(List<TimestampedValue> setpoints, double t) {
+      int lo = 0;
+      int hi = setpoints.size() - 1;
+      if (hi < 0 || setpoints.get(0).timestamp() > t) return null;
+      while (lo < hi) {
+        int mid = (lo + hi + 1) >>> 1;
+        if (setpoints.get(mid).timestamp() <= t) lo = mid; else hi = mid - 1;
+      }
+      var sp = setpoints.get(lo);
+      return t - sp.timestamp() <= MAX_SETPOINT_AGE_SEC ? sp : null;
+    }
+
+    /**
+     * Modules from array entries (one module per index) when a measured array exists, else from
+     * per-module entries grouped by parent path. Measured entries rank "measured" names first;
+     * setpoints rank "optimized" names first; ties by entry id.
+     */
+    static List<Module> discoverModules(LogData log,
+        List<org.triplehelix.wpilogmcp.log.EntryInfo> entries, String measuredArg,
+        String setpointArg) {
+      var arrays = entries.stream().filter(e -> e.type().endsWith("[]")).toList();
+      var singles = entries.stream().filter(e -> !e.type().endsWith("[]")).toList();
+      String measured = measuredArg;
+      if (measured == null) {
+        measured = arrays.stream().filter(e -> !isSetpointName(e.name()))
+            .min(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
+                leaf(e.name()).toLowerCase().contains("measured") ? 0 : 1)
+                .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).orElse(null);
+      }
+      var modules = new ArrayList<Module>();
+      if (measured != null && log.entries().get(measured).type().endsWith("[]")) {
+        String setpoint = setpointArg;
+        if (setpoint == null) {
+          setpoint = arrays.stream().filter(e -> isSetpointName(e.name()))
+              .min(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
+                  leaf(e.name()).toLowerCase().contains("optimized") ? 0 : 1)
+                  .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+              .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).orElse(null);
+        }
+        int count = 0;
+        for (var tv : log.values().get(measured)) {
+          count = Math.max(count, StructFields.elements(tv.value()).size());
+        }
+        for (int i = 0; i < count; i++) {
+          modules.add(new Module("module[" + i + "]", measured, i, setpoint, i));
+        }
+        return modules;
+      }
+      if (measured != null) {
+        // Explicit single-module entry
+        modules.add(new Module(parentName(measured), measured, -1, setpointArg, -1));
+        return modules;
+      }
+      // Per-module entries: group by parent path
+      var groups = new LinkedHashMap<String, List<org.triplehelix.wpilogmcp.log.EntryInfo>>();
+      for (var e : singles) {
+        var parent = e.name().substring(0, Math.max(0, e.name().lastIndexOf('/')));
+        groups.computeIfAbsent(parent, k -> new ArrayList<>()).add(e);
+      }
+      for (var group : groups.values()) {
+        var m = group.stream().filter(e -> !isSetpointName(e.name()))
+            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
+        if (m == null) continue;
+        var sp = group.stream().filter(e -> isSetpointName(e.name()))
+            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
+        modules.add(new Module(parentName(m), m, -1, sp, -1));
+      }
+      return modules;
+    }
+
+    static String parentName(String entry) {
+      var parent = entry.substring(0, Math.max(0, entry.lastIndexOf('/')));
+      return parent.isEmpty() ? entry : parent.substring(parent.lastIndexOf('/') + 1);
+    }
+
+    /**
+     * Odometry drift: distance between a scalar odometry pose and a scalar vision pose at the
+     * vision timestamps. Candidates are scalar Pose2d/Pose3d entries with at least 2 samples,
+     * lowest entry id first; a missing or unusable entry is reported in skipped.
+     */
+    private JsonObject analyzeOdometryDrift(LogData log, String odomName, String visionName,
+        TimeScope scope, ResponseBuilder builder) {
+      var poses = log.entries().values().stream()
+          .filter(e -> e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d"))
+          .filter(e -> log.sampleCount(e.name()) >= 2)
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
+          .toList();
       if (odomName == null) {
-        odomName = log.entries().keySet().stream()
-            .filter(n -> {
-              var lower = n.toLowerCase();
-              var type = log.entries().get(n).type();
-              return (lower.contains("odometry") || lower.contains("estimatedpose"))
-                  && (type.contains("Pose2d") || type.contains("Pose3d"));
-            })
-            .findFirst().orElse(null);
+        odomName = poses.stream().filter(n -> {
+          var lower = n.toLowerCase();
+          return !lower.contains("vision") && (lower.contains("odometry")
+              || lower.contains("estimatedpose") || lower.endsWith("/pose")
+              || lower.endsWith("/robot"));
+        }).findFirst().orElse(null);
       }
       if (visionName == null) {
-        visionName = log.entries().keySet().stream()
-            .filter(n -> {
-              var lower = n.toLowerCase();
-              var type = log.entries().get(n).type();
-              return lower.contains("vision") && lower.contains("pose")
-                  && (type.contains("Pose2d") || type.contains("Pose3d"));
-            })
+        visionName = poses.stream().filter(n -> n.toLowerCase().contains("vision"))
             .findFirst().orElse(null);
       }
-
-      if (odomName == null || visionName == null) return null;
-
+      if (odomName == null || visionName == null) {
+        builder.addSkipped("odometry_drift", "Needs a scalar odometry pose and a scalar vision "
+            + "pose (struct:Pose2d or struct:Pose3d, at least 2 samples); found odometry "
+            + (odomName == null ? "none" : odomName) + ", vision "
+            + (visionName == null ? "none" : visionName)
+            + ". Pass odometry_entry and vision_entry.");
+        return null;
+      }
+      for (var name : List.of(odomName, visionName)) {
+        var info = log.entries().get(name);
+        if (info == null) {
+          builder.addSkipped("odometry_drift", "Entry not found: " + name);
+          return null;
+        }
+        if (!info.type().equals("struct:Pose2d") && !info.type().equals("struct:Pose3d")) {
+          builder.addSkipped("odometry_drift", name + " is " + info.type()
+              + ", not a scalar struct:Pose2d or struct:Pose3d");
+          return null;
+        }
+      }
       var odomVals = log.values().get(odomName);
       var visionVals = log.values().get(visionName);
-      if (odomVals == null || visionVals == null || odomVals.size() < 2 || visionVals.size() < 2) {
-        return null;
-      }
-
-      // Compare poses at vision timestamps (lower rate)
-      double totalDrift = 0;
+      double total = 0;
+      double max = 0;
       int comparisons = 0;
-      double maxDrift = 0;
-
+      int unreadable = 0;
+      double firstT = Double.NaN;
+      double lastT = Double.NaN;
       for (var vTv : visionVals) {
-        if (!(vTv.value() instanceof Map<?, ?> rawVisionPose)) continue;
-        @SuppressWarnings("unchecked")
-        var visionPose = (Map<String, Object>) rawVisionPose;
-
-        // Find nearest odometry pose (ZOH) using binary search
-        var odomRaw = ToolUtils.getValueAtTimeZoh(odomVals, vTv.timestamp());
-        if (!(odomRaw instanceof Map<?, ?> rawOdomPose)) continue;
-        @SuppressWarnings("unchecked")
-        var odomPose = (Map<String, Object>) rawOdomPose;
-
-        double dist = poseDistance(odomPose, visionPose);
-        totalDrift += dist;
-        maxDrift = Math.max(maxDrift, dist);
+        if (!scope.contains(vTv.timestamp())) continue;
+        var odom = ToolUtils.getValueAtTimeZoh(odomVals, vTv.timestamp());
+        if (odom == null) continue;
+        var dist = StructFields.planarDistance(odom, vTv.value());
+        if (dist == null) {
+          unreadable++;
+          continue;
+        }
+        total += dist;
+        max = Math.max(max, dist);
         comparisons++;
+        if (Double.isNaN(firstT)) firstT = vTv.timestamp();
+        lastT = vTv.timestamp();
       }
-
-      if (comparisons < 2) return null;
-
-      double timeSpan = visionVals.get(visionVals.size() - 1).timestamp() - visionVals.get(0).timestamp();
-      var driftResult = new JsonObject();
-      driftResult.addProperty("odometry_entry", odomName);
-      driftResult.addProperty("vision_entry", visionName);
-      driftResult.addProperty("avg_error_m", totalDrift / comparisons);
-      driftResult.addProperty("max_error_m", maxDrift);
-      driftResult.addProperty("max_error_per_total_time", timeSpan > 0 ? maxDrift / timeSpan : 0);
-      driftResult.addProperty("comparisons", comparisons);
-      return driftResult;
-    }
-
-    // ==================== Helpers ====================
-
-    private double[] extractSpeeds(List<TimestampedValue> values) {
-      return values.stream()
-          .flatMap(tv -> {
-            if (tv.value() instanceof Map<?, ?> m) {
-              return java.util.stream.Stream.of(m);
-            } else if (tv.value() instanceof List<?> l) {
-              return l.stream()
-                  .filter(v -> v instanceof Map).map(v -> (Map<?, ?>) v);
-            }
-            return java.util.stream.Stream.empty();
-          })
-          .map(m -> m.get("speed_mps"))
-          .filter(v -> v instanceof Number)
-          .mapToDouble(v -> ((Number) v).doubleValue())
-          .toArray();
-    }
-
-    /** Extracts speed from a single TimestampedValue (Map with speed_mps). Returns NaN if not available. */
-    private double extractSingleSpeed(TimestampedValue tv) {
-      if (tv.value() instanceof Map<?, ?> m) {
-        var speed = m.get("speed_mps");
-        if (speed instanceof Number n) return n.doubleValue();
-      }
-      return Double.NaN;
-    }
-
-    /** Interpolates speed at a given timestamp using linear interpolation on the speed_mps field. */
-    private Double interpolateSpeedAtTime(List<TimestampedValue> values, double targetTimestamp) {
-      if (values == null || values.size() < 2) return null;
-
-      // Binary search for the insertion point
-      int lo = 0, hi = values.size() - 1;
-      while (lo < hi - 1) {
-        int mid = (lo + hi) >>> 1;
-        if (values.get(mid).timestamp() <= targetTimestamp) lo = mid;
-        else hi = mid;
-      }
-
-      double t0 = values.get(lo).timestamp();
-      double t1 = values.get(hi).timestamp();
-      double s0 = extractSingleSpeed(values.get(lo));
-      double s1 = extractSingleSpeed(values.get(hi));
-
-      if (Double.isNaN(s0) || Double.isNaN(s1)) return null;
-      if (targetTimestamp < values.get(0).timestamp() || targetTimestamp > values.get(values.size() - 1).timestamp()) {
+      if (comparisons < 2) {
+        builder.addSkipped("odometry_drift", "Fewer than 2 comparable samples of " + visionName
+            + " and " + odomName + " in scope" + (unreadable > 0 ? " (" + unreadable
+                + " unreadable)" : "") + ".");
         return null;
       }
-
-      double dt = t1 - t0;
-      if (dt < 1e-9) return s0;
-      double frac = (targetTimestamp - t0) / dt;
-      return s0 + frac * (s1 - s0);
-    }
-
-    private double[] extractAngles(List<TimestampedValue> values) {
-      return values.stream()
-          .flatMap(tv -> {
-            if (tv.value() instanceof Map<?, ?> m) {
-              return java.util.stream.Stream.of(m);
-            } else if (tv.value() instanceof List<?> l) {
-              return l.stream()
-                  .filter(v -> v instanceof Map).map(v -> (Map<?, ?>) v);
-            }
-            return java.util.stream.Stream.empty();
-          })
-          .map(m -> {
-            var angle = m.get("angle_rad");
-            if (angle instanceof Number n) return n.doubleValue();
-            // Try nested Rotation2d (may use "value" or "radians" field)
-            if (m.get("angle") instanceof Map<?, ?> angleMap) {
-              var rot = angleMap.get("value");
-              if (rot == null) rot = angleMap.get("radians");
-              if (rot instanceof Number n) return n.doubleValue();
-            }
-            return null;
-          })
-          .filter(Objects::nonNull)
-          .mapToDouble(v -> (double) v)
-          .toArray();
-    }
-
-    /** Distance between two Pose2d/3d maps. Handles both nested {translation:{x,y}} and flat {x,y} layouts. */
-    @SuppressWarnings("unchecked")
-    private double poseDistance(Map<String, Object> p1, Map<String, Object> p2) {
-      double x1, y1, x2, y2;
-      // Nested layout: {translation: {x, y}}
-      var t1 = (Map<String, Object>) p1.get("translation");
-      var t2 = (Map<String, Object>) p2.get("translation");
-      if (t1 != null && t2 != null) {
-        x1 = ((Number) t1.getOrDefault("x", 0.0)).doubleValue();
-        y1 = ((Number) t1.getOrDefault("y", 0.0)).doubleValue();
-        x2 = ((Number) t2.getOrDefault("x", 0.0)).doubleValue();
-        y2 = ((Number) t2.getOrDefault("y", 0.0)).doubleValue();
-      } else if (p1.containsKey("x") && p2.containsKey("x")) {
-        // Flat layout from struct decoders: {x, y, rotation_rad, ...}
-        x1 = ((Number) p1.getOrDefault("x", 0.0)).doubleValue();
-        y1 = ((Number) p1.getOrDefault("y", 0.0)).doubleValue();
-        x2 = ((Number) p2.getOrDefault("x", 0.0)).doubleValue();
-        y2 = ((Number) p2.getOrDefault("y", 0.0)).doubleValue();
-      } else {
-        return 0;
-      }
-      double dx = x1 - x2, dy = y1 - y2;
-      return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    /** Checks if two entry names share a common prefix (before Setpoint/Measured suffix). */
-    private boolean sharePrefix(String a, String b) {
-      int lastSlashA = a.lastIndexOf('/');
-      int lastSlashB = b.lastIndexOf('/');
-      if (lastSlashA < 0 || lastSlashB < 0) return false;
-      return a.substring(0, lastSlashA).equals(b.substring(0, lastSlashB));
+      var drift = new JsonObject();
+      drift.addProperty("odometry_entry", odomName);
+      drift.addProperty("vision_entry", visionName);
+      drift.addProperty("avg_error_m", total / comparisons);
+      drift.addProperty("max_error_m", max);
+      double span = lastT - firstT;
+      drift.addProperty("max_error_per_total_time", span > 0 ? max / span : 0);
+      drift.addProperty("comparisons", comparisons);
+      if (unreadable > 0) drift.addProperty("unreadable_samples", unreadable);
+      return drift;
     }
   }
 
@@ -665,8 +632,10 @@ public final class RobotAnalysisTools {
     @Override
     public String description() {
       return "Analyze battery and current distribution data. Reports battery voltage statistics "
-          + "(min/max/avg and samples below the brownout threshold; default 6.8V for roboRIO 1, set "
-          + "6.3V for roboRIO 2) and, for every amperage entry, the peak current by magnitude with its "
+          + "(min/max/avg and samples below the brownout threshold, which comes from the log's "
+          + "BrownoutVoltage entry when logged, else 6.8V for roboRIO 1, with the basis stated), "
+          + "the roboRIO's own brownouts when its flag is logged (rio_brownouts: start and "
+          + "duration of each), and, for every amperage entry, the peak current by magnitude with its "
           + "timestamp, signed min/max, average, and sample count, sorted by peak. Amperage entries are "
           + "named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib "
           + "PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. "
@@ -679,7 +648,7 @@ public final class RobotAnalysisTools {
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("power_prefix", "string", "Entry path prefix (e.g., '/PDP')", false)
-          .addNumberProperty("brownout_threshold", "Voltage threshold (default 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
+          .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
           .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
           .build();
     }
@@ -687,7 +656,8 @@ public final class RobotAnalysisTools {
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var prefix = getOptString(arguments, "power_prefix", null);
-      double threshold = getOptDouble(arguments, "brownout_threshold", 6.8);
+      var brownoutThreshold = PowerFacts.threshold(log, getOptDouble(arguments, "brownout_threshold"));
+      double threshold = brownoutThreshold.volts();
       int channelLimit = Math.max(1, getOptInt(arguments, "channel_limit", 30));
 
       var result = new JsonObject();
@@ -712,11 +682,16 @@ public final class RobotAnalysisTools {
         vObj.addProperty("max_voltage", stats.getMax());
         vObj.addProperty("avg_voltage", stats.getAverage());
         vObj.addProperty("samples_below_threshold", belowThreshold);
-        vObj.addProperty("brownout_threshold", threshold);
+        brownoutThreshold.addTo(vObj);
         vObj.addProperty("brownout_risk",
             belowThreshold > 0 ? "HIGH" : (stats.getMin() < threshold + 1 ? "MODERATE" : "LOW"));
         result.add("voltage_analysis", vObj);
       });
+
+      // The roboRIO's own brownouts, when its flag is logged
+      var flag = PowerFacts.flagEntry(log);
+      flag.ifPresent(f -> result.add("rio_brownouts",
+          PowerFacts.brownoutsJson(f, PowerFacts.brownouts(log, f, null, null))));
 
       // Currents: every amperage entry in declaration order; arrays expanded per channel index.
       var currentEntries = log.entries().entrySet().stream()
@@ -768,7 +743,18 @@ public final class RobotAnalysisTools {
         }
       }
 
+      if (voltageEntry.isEmpty() && channels.isEmpty() && flag.isEmpty()) {
+        return ResponseBuilder.noMatch("No battery voltage, current, or brownout flag entries "
+                + "found" + (prefix != null ? " under " + prefix : "") + ".")
+            .lookedFor(List.of("scalar numeric entries named with 'voltage' (battery first)",
+                "amperage entries named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or "
+                    + "PowerDistribution[<id>]/Chan<N>, and per-channel current arrays",
+                "a boolean brownout flag such as /SystemStats/BrownedOut"))
+            .hint("Use search_entries with pattern 'voltage' or 'current'.")
+            .build();
+      }
       if (voltageEntry.isEmpty()) {
+        result.add("skipped", skippedEntry("voltage_analysis", "no usable battery voltage entry"));
         boolean voltageNamed = log.entries().keySet().stream()
             .anyMatch(n -> (prefix == null || n.startsWith(prefix)) && n.toLowerCase().contains("voltage"));
         warnings.add(voltageNamed
@@ -778,6 +764,9 @@ public final class RobotAnalysisTools {
               + "(e.g. /SystemStats/BatteryVoltage) or pass power_prefix.");
       }
       if (channels.isEmpty()) {
+        var skipped = result.has("skipped") ? result.getAsJsonArray("skipped") : new JsonArray();
+        skipped.addAll(skippedEntry("channel_analysis", "no amperage entries"));
+        result.add("skipped", skipped);
         warnings.add("No current entries found. Amperage entries are named ...Current, ...Amps, "
             + "...Current/<sub>, or PowerDistribution[<id>]/Chan<N>; pass power_prefix to narrow, or "
             + "use read_entry on a specific entry.");
@@ -785,6 +774,8 @@ public final class RobotAnalysisTools {
       if (!warnings.isEmpty()) {
         result.add("warnings", GSON.toJsonTree(warnings));
       }
+
+      if (result.has("skipped")) result.addProperty("status", "partial");
 
       // Data quality from the voltage entry, or the first scalar current entry when there is none.
       var qualitySource = voltageEntry.orElse(firstScalarCurrentEntry);
@@ -800,6 +791,15 @@ public final class RobotAnalysisTools {
       }
 
       return result;
+    }
+
+    static JsonArray skippedEntry(String section, String reason) {
+      var array = new JsonArray();
+      var o = new JsonObject();
+      o.addProperty("section", section);
+      o.addProperty("reason", reason);
+      array.add(o);
+      return array;
     }
 
     /**
@@ -835,7 +835,7 @@ public final class RobotAnalysisTools {
     }
 
     /** Widens any numeric array sample to double[]; returns null for non-array values. */
-    private static double[] toDoubleArray(Object value) {
+    static double[] toDoubleArray(Object value) {
       if (value instanceof double[] d) return d;
       if (value instanceof float[] f) {
         var out = new double[f.length];
@@ -1441,34 +1441,67 @@ public final class RobotAnalysisTools {
   }
 
   static class GetCodeMetadataTool extends LogRequiringTool {
+    /** Metadata keys by leaf name, as AdvantageKit's BuildConstants records them. */
+    static final List<String> KEYS =
+        List.of("GitSHA", "GitBranch", "GitDirty", "GitDate", "BuildDate", "ProjectName", "Version");
+
     @Override
     public String name() { return "get_code_metadata"; }
 
     @Override
     public String description() {
-      return "Extract code metadata including Git SHA, branch, and build date. "
-          + "Returns 'no code metadata found' if log does not contain metadata entries.";
+      return "Extract code metadata (Git SHA, branch, dirty flag, Git date, build date, project "
+          + "name, version) from string entries with those leaf names, e.g. AdvantageKit's "
+          + "/RealMetadata/GitSHA ('Version' only under a path containing 'metadata'). sources "
+          + "names the entry each value came from (lowest entry id when several exist; a warning "
+          + "says when they disagree). Returns no_match when the log has no metadata entries.";
     }
 
     @Override
     protected JsonObject toolSchema() { return new SchemaBuilder().build(); }
 
+    static String key(String entryName) {
+      var leaf = entryName.substring(entryName.lastIndexOf('/') + 1);
+      for (var key : KEYS) {
+        if (!leaf.equalsIgnoreCase(key)) continue;
+        if (key.equals("Version") && !entryName.toLowerCase().contains("metadata")) return null;
+        return key;
+      }
+      return null;
+    }
+
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-      var keys = List.of("GitSHA", "GitBranch", "GitDirty", "BuildDate", "ProjectName", "Version");
-      var found = log.entries().keySet().stream()
-          .filter(name -> keys.stream().anyMatch(name::contains))
-          .collect(Collectors.toMap(
-              name -> keys.stream().filter(name::contains).findFirst().get(),
-              name -> {
-                var vals = log.values().get(name);
-                return (vals != null && !vals.isEmpty()) ? vals.get(0).value() : "unknown";
-              },
-              (v1, v2) -> v1));
-
-      return success()
-          .addData("metadata", GSON.toJsonTree(found))
-          .build();
+      var metadata = new JsonObject();
+      var sources = new JsonObject();
+      var warnings = new ArrayList<String>();
+      var entries = log.entries().values().stream()
+          .filter(e -> "string".equals(e.type()) && key(e.name()) != null)
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .toList();
+      for (var e : entries) {
+        var key = key(e.name());
+        var vals = log.values().get(e.name());
+        var value = vals != null && !vals.isEmpty() ? String.valueOf(vals.get(0).value()) : "unknown";
+        if (!metadata.has(key)) {
+          metadata.addProperty(key, value);
+          sources.addProperty(key, e.name());
+        } else if (!metadata.get(key).getAsString().equals(value)) {
+          warnings.add(key + " differs: " + sources.get(key).getAsString() + " = "
+              + metadata.get(key).getAsString() + ", " + e.name() + " = " + value);
+        }
+      }
+      if (metadata.size() == 0) {
+        return ResponseBuilder.noMatch("No code metadata entries found.")
+            .lookedFor(List.of("string entries with leaf names " + String.join(", ", KEYS)
+                + " (e.g. /RealMetadata/GitSHA)"))
+            .hint("Teams that do not log build metadata can add AdvantageKit's "
+                + "Logger.recordMetadata calls from the generated BuildConstants.")
+            .build();
+      }
+      var builder = success().addData("metadata", metadata).addData("sources", sources);
+      warnings.forEach(builder::addWarning);
+      return builder.build();
     }
   }
 }
