@@ -206,37 +206,6 @@ public final class ToolUtils {
   }
 
   /**
-   * Picks the entry most likely to carry the battery voltage, shared by {@code power_analysis}
-   * and {@code get_ds_timeline} so both tools agree on which signal they analyzed.
-   *
-   * <p>Candidates are scalar numeric entries whose name contains "voltage" (and starts with
-   * {@code prefix} when given), ranked by {@link #voltageEntryRank(String)} with ties broken by
-   * WPILOG entry id (declaration order), so the choice is deterministic. The first candidate that
-   * has at least one finite sample wins; entries with no usable samples are skipped.
-   *
-   * @param log The parsed log
-   * @param prefix Optional entry-name prefix filter, or null
-   * @return The entry name, or empty if no usable voltage entry exists
-   */
-  public static Optional<String> selectVoltageEntry(LogData log, String prefix) {
-    var candidates = log.entries().entrySet().stream()
-        .filter(e -> prefix == null || e.getKey().startsWith(prefix))
-        .filter(e -> e.getKey().toLowerCase().contains("voltage")
-            && isNumericType(e.getValue().type()))
-        .sorted(Comparator
-            .comparingInt((Map.Entry<String, EntryInfo> e) -> voltageEntryRank(e.getKey().toLowerCase()))
-            .thenComparingInt(e -> e.getValue().id()))
-        .map(Map.Entry::getKey)
-        .toList();
-    for (var name : candidates) {
-      if (hasFiniteNumericSample(log.values().get(name))) {
-        return Optional.of(name);
-      }
-    }
-    return Optional.empty();
-  }
-
-  /**
    * Returns true if the list contains at least one finite numeric sample.
    *
    * @param values The timestamped values (may be null)

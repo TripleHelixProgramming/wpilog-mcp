@@ -58,6 +58,8 @@ class RealLogConformanceTest {
   static final Path REPORT = Path.of("build", "reports", "conformance", "real-logs.txt");
   static final long CALL_TIMEOUT_SECONDS = 180;
   static final int SCAN_DEPTH = 5;
+  static final java.util.Set<String> REVLOG_TOOLS = java.util.Set.of("list_revlog_signals",
+      "get_revlog_data", "sync_status", "set_revlog_offset", "wait_for_sync");
 
   static Path logDir;
   static List<Fixture> logs;
@@ -144,8 +146,11 @@ class RealLogConformanceTest {
       var path = logFixture.path().toString();
       System.out.println("[conformance] " + logFixture.id());
       var log = logManager.getOrLoad(path);
+      var firstVariants = new java.util.LinkedHashMap<Tool, ToolArguments.Variant>();
       for (var tool : tools) {
-        for (var variant : ToolArguments.variants(tool, logFixture, log, logs, exportDir)) {
+        var variants = ToolArguments.variants(tool, logFixture, log, logs, exportDir);
+        if (!variants.isEmpty()) firstVariants.put(tool, variants.get(0));
+        for (var variant : variants) {
           long start = System.nanoTime();
           var result = run(tool, variant.args());
           long millis = (System.nanoTime() - start) / 1_000_000;
@@ -157,12 +162,17 @@ class RealLogConformanceTest {
               millis));
         }
       }
-      // Determinism: the same default calls with the entries iterating in reverse order
+      // Determinism: the same first calls, with the same arguments, with the entries iterating
+      // in reverse order.
+      // Revlog tools are left out: their results depend on whether the wpilog was synchronized
+      // with its revlogs when loaded, which the replacement view is not.
       var inner = new LazyParsedLog(path, new DataLogReader(path), 256L * 1024 * 1024);
       logManager.testPutLog(path, new PermutedLogData(inner, 0));
       try {
-        for (var tool : tools) {
-          var variant = ToolArguments.variants(tool, logFixture, log, logs, exportDir).get(0);
+        for (var first : firstVariants.entrySet()) {
+          var tool = first.getKey();
+          if (REVLOG_TOOLS.contains(tool.name())) continue;
+          var variant = first.getValue();
           var original = calls.stream().filter(c -> c.tool().equals(tool.name())
               && c.log().equals(logFixture.id()) && c.variant().equals(variant.label()))
               .findFirst().orElseThrow();

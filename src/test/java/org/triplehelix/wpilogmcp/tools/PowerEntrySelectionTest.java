@@ -37,24 +37,26 @@ class PowerEntrySelectionTest {
   }
 
   @Nested
-  @DisplayName("ToolUtils.selectVoltageEntry")
-  class VoltageSelection {
+  @DisplayName("SignalResolver.batteryVoltage: conventions only, no guessing")
+  class BatteryVoltage {
     @Test
-    @DisplayName("ranks battery > input/bus > generic > rails and requires finite samples")
-    void ranking() {
-      assertEquals(0, ToolUtils.voltageEntryRank("/systemstats/batteryvoltage"));
-      assertEquals(1, ToolUtils.voltageEntryRank("/power/battery/voltage"));
-      assertEquals(2, ToolUtils.voltageEntryRank("/pdh/inputvoltage"));
-      assertEquals(3, ToolUtils.voltageEntryRank("nt:/smartdashboard/powerdistribution[1]/voltage"));
-      assertEquals(4, ToolUtils.voltageEntryRank("/systemstats/5vrail/voltage"));
-      assertEquals(4, ToolUtils.voltageEntryRank("/elevator/appliedvoltage"));
-      assertEquals(2, ToolUtils.voltageEntryRank("/pdh/busvoltage"));
-      assertEquals(4, ToolUtils.voltageEntryRank("/systemstats/brownoutvoltage"));
-      // Hints apply to the last two path segments only: "RealOutputs" is not a motor output
-      assertEquals(3, ToolUtils.voltageEntryRank("/realoutputs/pdh/voltage"));
-      assertEquals(3, ToolUtils.voltageEntryRank("/replayoutputs/pdh/voltage"));
-      assertEquals(4, ToolUtils.voltageEntryRank("/realoutputs/elevator/appliedvoltage"));
+    @DisplayName("conventional names: BatteryVoltage, Voltage under PowerDistribution/PDH/PDP/Battery")
+    void conventions() {
+      assertEquals(0, SignalResolver.batteryConventionRank("/SystemStats/BatteryVoltage"));
+      assertEquals(0, SignalResolver.batteryConventionRank("/Robot/Battery Voltage"));
+      assertEquals(1, SignalResolver.batteryConventionRank("/PowerDistribution/Voltage"));
+      assertEquals(1, SignalResolver.batteryConventionRank(
+          "NT:/SmartDashboard/PowerDistribution[1]/Voltage"));
+      assertEquals(1, SignalResolver.batteryConventionRank("NT:Robot/pdh/Voltage"));
+      assertEquals(1, SignalResolver.batteryConventionRank("/Power/Battery/Voltage"));
+      assertEquals(-1, SignalResolver.batteryConventionRank("/PDH/InputVoltage"));
+      assertEquals(-1, SignalResolver.batteryConventionRank("/Drive/Module0/SupplyVoltage"));
+      assertEquals(-1, SignalResolver.batteryConventionRank("/SystemStats/5vRail/Voltage"));
+    }
 
+    @Test
+    @DisplayName("only name matches: listed to confirm, never chosen; rails never listed")
+    void heuristicOnly() {
       var nan = new ArrayList<TimestampedValue>();
       nan.add(new TimestampedValue(0.0, Double.NaN));
       nan.add(new TimestampedValue(1.0, Double.POSITIVE_INFINITY));
@@ -65,25 +67,48 @@ class PowerEntrySelectionTest {
           .addNumericEntry("/SystemStats/5vRail/Voltage", new double[]{0, 1}, new double[]{5, 5})
           .addEntry("/Vision/VoltageString", "string", List.of(new TimestampedValue(0.0, "12V")))
           .build();
-      // Battery entry has no finite samples, so the next rank wins
-      assertEquals("/PDH/InputVoltage", ToolUtils.selectVoltageEntry(log, null).orElseThrow());
-      // Prefix restricts candidates
-      assertEquals("/SystemStats/5vRail/Voltage",
-          ToolUtils.selectVoltageEntry(log, "/SystemStats/5v").orElseThrow());
-      assertTrue(ToolUtils.selectVoltageEntry(log, "/Vision").isEmpty());
-      assertTrue(ToolUtils.selectVoltageEntry(log, "/Nope").isEmpty());
+      // The battery entry has no finite samples; the others match by name only
+      var r = SignalResolver.batteryVoltage(log, null, null);
+      assertTrue(r.chosen().isEmpty());
+      assertEquals(SignalResolver.Tier.HEURISTIC, r.tier());
+      assertEquals(List.of("/PDH/InputVoltage"), r.candidates());
+      var reason = SignalResolver.unresolvedReason(r, "voltage_entry");
+      assertTrue(reason.contains("/PDH/InputVoltage") && reason.contains("voltage_entry")
+          && reason.contains("does not guess"), reason);
+      // A 5 V rail is never the battery, even when it is all there is
+      var rail = SignalResolver.batteryVoltage(log, "/SystemStats/5v", null);
+      assertEquals(SignalResolver.Tier.NONE, rail.tier());
+      assertTrue(SignalResolver.batteryVoltage(log, "/Nope", null).chosen().isEmpty());
     }
 
     @Test
-    @DisplayName("ties within a rank are broken by WPILOG declaration order")
+    @DisplayName("an explicit voltage_entry is used; a non-numeric one is an error")
+    void explicit() {
+      var log = new MockLogBuilder()
+          .setPath("/test/voltage_explicit.wpilog")
+          .addNumericEntry("/PDH/InputVoltage", new double[]{0, 1}, new double[]{12.4, 12.3})
+          .addEntry("/Vision/VoltageString", "string", List.of(new TimestampedValue(0.0, "12V")))
+          .build();
+      var r = SignalResolver.batteryVoltage(log, null, "/PDH/InputVoltage");
+      assertEquals("/PDH/InputVoltage", r.chosen().orElseThrow());
+      assertEquals(SignalResolver.Tier.EXPLICIT, r.tier());
+      assertThrows(IllegalArgumentException.class,
+          () -> SignalResolver.batteryVoltage(log, null, "/Vision/VoltageString"));
+      assertThrows(IllegalArgumentException.class,
+          () -> SignalResolver.batteryVoltage(log, null, "/Missing"));
+    }
+
+    @Test
+    @DisplayName("ties among conventional entries go to declaration order, flagged ambiguous")
     void tieBreakByDeclarationOrder() {
       var log = new MockLogBuilder()
           .setPath("/test/voltage_tie.wpilog")
           .addNumericEntry("/Z/PDH/Voltage", new double[]{0}, new double[]{12.0})
           .addNumericEntry("/A/PDH/Voltage", new double[]{0}, new double[]{12.0})
           .build();
-      // Both rank 3; the first declared entry (lower id) wins regardless of name order
-      assertEquals("/Z/PDH/Voltage", ToolUtils.selectVoltageEntry(log, null).orElseThrow());
+      var r = SignalResolver.batteryVoltage(log, null, null);
+      assertEquals("/Z/PDH/Voltage", r.chosen().orElseThrow());
+      assertTrue(r.ambiguous());
       assertTrue(log.entries().get("/Z/PDH/Voltage").id() < log.entries().get("/A/PDH/Voltage").id());
     }
   }

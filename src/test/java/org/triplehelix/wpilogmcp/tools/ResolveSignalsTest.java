@@ -42,8 +42,11 @@ class ResolveSignalsTest extends FixtureToolTestBase {
     assertEquals("/DriverStation/Autonomous", role(r, "autonomous").get("entry").getAsString());
     var battery = role(r, "battery_voltage");
     assertEquals("/SystemStats/BatteryVoltage", battery.get("entry").getAsString());
+    assertEquals("convention", battery.get("match").getAsString());
     assertTrue(strings(battery.getAsJsonArray("candidates")).contains(
-        "/SystemStats/5vRail/Voltage"), battery.toString());
+        "/PowerDistribution/Voltage"), battery.toString());
+    assertFalse(strings(battery.getAsJsonArray("candidates")).contains(
+        "/SystemStats/5vRail/Voltage"), "a rail is never a battery-voltage candidate");
     assertEquals("/RealOutputs/LoggedRobot/FullCycleMS",
         role(r, "loop_time_full").get("entry").getAsString());
     assertEquals("/RealOutputs/LoggedRobot/UserCodeMS",

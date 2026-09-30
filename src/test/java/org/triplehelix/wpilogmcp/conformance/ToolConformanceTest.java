@@ -135,8 +135,8 @@ class ToolConformanceTest {
       for (var fixture : fixtures) {
         var path = fixture.path().toString();
         var log = logManager.getOrLoad(path);
-        // Harness self-check: the log the tools will see must decode (a closed log decodes to
-        // nothing, which would make every check below pass vacuously)
+        // Harness self-check: the log the tools will see must decode (an empty decode would
+        // make every check below pass vacuously)
         for (var name : log.entries().keySet()) {
           if (log.sampleCount(name) > 0) {
             assertFalse(log.values().get(name).isEmpty(),

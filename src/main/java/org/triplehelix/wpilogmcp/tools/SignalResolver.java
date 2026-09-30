@@ -299,7 +299,7 @@ final class SignalResolver {
    * reason: the candidates to confirm, or what was searched, and the parameter to pass.
    */
   static String unresolvedReason(Resolution r, String param) {
-    var what = r.role().description.toLowerCase(Locale.ROOT);
+    var what = r.role().description.toLowerCase(Locale.ROOT).replaceFirst("^the ", "");
     if (r.needsConfirmation()) {
       return "No entry follows a known convention for the " + what + ". Entries that match by "
           + "name only: " + String.join(", ", r.candidates().stream().limit(5).toList())
@@ -307,8 +307,8 @@ final class SignalResolver {
           + what + " (get_entry_info, read_entry, or ask the user) and pass it as " + param
           + "; the server does not guess.";
     }
-    return "No " + what + " found (" + r.basis() + "); if the log has one under another name, "
-        + "pass it as " + param + ".";
+    return "No " + what + " entry found (" + r.basis() + "); if the log has one under another "
+        + "name, pass it as " + param + ".";
   }
 
   /** A ranked choice: ambiguous when another candidate ranks the same as the choice. */
@@ -400,13 +400,12 @@ final class SignalResolver {
         .filter(e -> prefix == null || e.name().startsWith(prefix))
         .filter(e -> ToolUtils.isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
         .toList();
-    var conventional = numeric.stream()
+    var conventionalNames = numeric.stream()
         .filter(e -> batteryConventionRank(e.name()) >= 0)
         .sorted(Comparator.comparingInt((EntryInfo e) -> batteryConventionRank(e.name()))
             .thenComparingInt(EntryInfo::id))
-        .map(EntryInfo::name)
-        .filter(n -> hasFiniteSample(log, n))
-        .toList();
+        .map(EntryInfo::name).toList();
+    var conventional = conventionalNames.stream().filter(n -> hasFiniteSample(log, n)).toList();
     if (!conventional.isEmpty()) {
       return ranked(Role.BATTERY_VOLTAGE, conventional.get(0), conventional,
           SignalResolver::batteryConventionRank, "a battery voltage by convention "
@@ -415,6 +414,7 @@ final class SignalResolver {
     }
     var byName = numeric.stream()
         .filter(e -> e.name().toLowerCase(Locale.ROOT).contains("voltage"))
+        .filter(e -> batteryConventionRank(e.name()) < 0) // conventional, but no finite sample
         .filter(e -> ToolUtils.voltageEntryRank(e.name().toLowerCase(Locale.ROOT)) < 4)
         .sorted(Comparator.comparingInt((EntryInfo e) ->
             ToolUtils.voltageEntryRank(e.name().toLowerCase(Locale.ROOT)))
@@ -424,9 +424,11 @@ final class SignalResolver {
       return heuristic(Role.BATTERY_VOLTAGE, byName, "numeric entries named voltage (not "
           + "rails, regulators, or motor outputs)");
     }
-    return new Resolution(Role.BATTERY_VOLTAGE, List.of(), "no battery voltage entry "
-        + "(BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)"
-        + (prefix != null ? " under " + prefix : ""), List.of(), false, null, Tier.NONE);
+    return new Resolution(Role.BATTERY_VOLTAGE, List.of(), conventionalNames.isEmpty()
+        ? "no BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery"
+            + (prefix != null ? " under " + prefix : "")
+        : "battery voltage entries with no finite samples: "
+            + String.join(", ", conventionalNames), conventionalNames, false, null, Tier.NONE);
   }
 
   /**
@@ -448,14 +450,13 @@ final class SignalResolver {
           "TotalCurrent (AdvantageKit /PowerDistribution/TotalCurrent, WPILib power "
               + "distribution)", null, Tier.CONVENTION);
     }
+    // Not AdvantageKit's /SystemStats/BatteryCurrent: the roboRIO's own input current
     var byName = numeric.stream().filter(e -> {
       var lower = e.name().toLowerCase(Locale.ROOT);
-      return lower.contains("totalcurrent") || lower.contains("total_current")
-          || lower.contains("batterycurrent") || lower.contains("battery_current");
+      return lower.contains("totalcurrent") || lower.contains("total_current");
     }).map(EntryInfo::name).toList();
     if (!byName.isEmpty()) {
-      return heuristic(Role.TOTAL_CURRENT, byName, "numeric entries named total or battery "
-          + "current");
+      return heuristic(Role.TOTAL_CURRENT, byName, "numeric entries named total current");
     }
     return new Resolution(Role.TOTAL_CURRENT, List.of(), "no TotalCurrent entry", List.of(),
         false, null, Tier.NONE);
@@ -628,43 +629,55 @@ final class SignalResolver {
 
   // ==================== autonomous chooser ====================
 
+  /** AdvantageKit's logged dashboard inputs: /NetworkInputs (2025+) or /DashboardInputs. */
+  private static final Pattern AKIT_DASHBOARD_INPUT = Pattern.compile(
+      "(^|/)(NetworkInputs|DashboardInputs)/SmartDashboard/[^/]+$");
+
   /**
-   * The selected autonomous routine: a WPILib SendableChooser's {@code active} entry (a sibling
-   * {@code .type} of "String Chooser", or {@code options}), the only one or the only one whose
-   * path contains "auto". Other strings named like a selected auto mode are candidates.
+   * The selected autonomous routine: a chooser whose key contains "auto" — a WPILib
+   * SendableChooser's {@code active} entry (a sibling {@code .type} of "String Chooser", or
+   * {@code options}) or an AdvantageKit dashboard input ({@code /NetworkInputs/SmartDashboard/
+   * <key>}, as LoggedDashboardChooser logs it) — when there is exactly one. Other choosers, and
+   * strings named like a selected auto mode, are candidates.
    */
   static Resolution autoChooser(LogData log, String explicit) {
     if (explicit != null) {
       return explicit(log, Role.AUTO_CHOOSER, explicit, "chooser_entry", "string"::equals,
           "a string");
     }
-    var strings = byId(log).stream().filter(e -> "string".equals(e.type())).toList();
-    var choosers = strings.stream()
-        .filter(e -> leaf(e.name()).equals("active") && log.sampleCount(e.name()) > 0)
-        .filter(e -> isSendableChooser(log, e.name().substring(0, e.name().lastIndexOf('/'))))
-        .map(EntryInfo::name).toList();
-    var autoChoosers = choosers.stream()
-        .filter(n -> n.toLowerCase(Locale.ROOT).contains("auto")).toList();
-    if (choosers.size() == 1 || autoChoosers.size() == 1) {
-      var chosen = choosers.size() == 1 ? choosers.get(0) : autoChoosers.get(0);
-      return new Resolution(Role.AUTO_CHOOSER, List.of(chosen), choosers.size() == 1
-          ? "the log's only SendableChooser (its active entry)"
-          : "the only SendableChooser whose path contains 'auto' (its active entry)", choosers,
-          false, null, Tier.CONVENTION);
+    var strings = byId(log).stream()
+        .filter(e -> "string".equals(e.type()) && log.sampleCount(e.name()) > 0).toList();
+    var choosers = new ArrayList<String>();
+    for (var e : strings) {
+      var name = e.name();
+      boolean sendable = leaf(name).equals("active")
+          && isSendableChooser(log, name.substring(0, name.lastIndexOf('/')));
+      if (sendable || AKIT_DASHBOARD_INPUT.matcher(name).find()) choosers.add(name);
+    }
+    // The chooser's key: the path segment before /active, or the dashboard input's leaf
+    java.util.function.Function<String, String> key = n -> leaf(n).equals("active")
+        ? parent(n) : leaf(n);
+    var autoChoosers = choosers.stream().filter(n -> key.apply(n).contains("auto")).toList();
+    if (autoChoosers.size() == 1) {
+      return new Resolution(Role.AUTO_CHOOSER, autoChoosers, "the only chooser whose key "
+          + "contains 'auto' (a SendableChooser's active entry, or AdvantageKit's "
+          + "/NetworkInputs/SmartDashboard/<key>)", choosers, false, null, Tier.CONVENTION);
     }
     var byName = new ArrayList<String>(autoChoosers.isEmpty() ? choosers : autoChoosers);
-    strings.stream().filter(e -> log.sampleCount(e.name()) > 0)
+    strings.stream()
         .filter(e -> FrcDomainTools.AnalyzeAutoTool.chooserRank(
             e.name().toLowerCase(Locale.ROOT)) < Integer.MAX_VALUE)
         .map(EntryInfo::name)
         .filter(n -> !byName.contains(n))
         .forEach(byName::add);
     if (!byName.isEmpty()) {
-      return heuristic(Role.AUTO_CHOOSER, byName, choosers.size() > 1
-          ? "several SendableChoosers" : "strings named like a selected auto routine");
+      return heuristic(Role.AUTO_CHOOSER, byName, autoChoosers.size() > 1
+          ? "several choosers whose key contains 'auto'"
+          : "choosers and strings named like a selected auto routine");
     }
-    return new Resolution(Role.AUTO_CHOOSER, List.of(), "no SendableChooser (an active entry "
-        + "beside .type 'String Chooser' or options)", List.of(), false, null, Tier.NONE);
+    return new Resolution(Role.AUTO_CHOOSER, List.of(), "no chooser (a SendableChooser's "
+        + "active entry, or AdvantageKit /NetworkInputs/SmartDashboard/<key>) and no string "
+        + "named like a selected auto routine", List.of(), false, null, Tier.NONE);
   }
 
   /** A WPILib SendableChooser's topics under {@code prefix}: .type "String Chooser" or options. */

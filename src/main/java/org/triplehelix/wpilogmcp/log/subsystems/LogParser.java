@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.DecodeProblem;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.LogScan;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
@@ -58,96 +59,29 @@ public class LogParser {
       throw new IOException("Invalid WPILOG file: " + path);
     }
 
-    var entriesById = new HashMap<Integer, EntryInfo>();
-    // Declaration order, as in LazyParsedLog
-    var entriesByName = new java.util.LinkedHashMap<String, EntryInfo>();
+    // The same record scan LazyParsedLog uses (a damaged tail is not read), then each entry's
+    // records decoded from their byte offsets
+    var scan = LogScan.of(reader, path);
+    var entriesByName = new java.util.LinkedHashMap<>(scan.entries());
     var valuesByEntry = new java.util.LinkedHashMap<String, java.util.List<TimestampedValue>>();
-
-    double minTimestamp = Double.MAX_VALUE;
-    double maxTimestamp = Double.NEGATIVE_INFINITY;
-    boolean truncated = false;
-    var truncationMessage = (String) null;
-
-    logger.debug("Starting pass through log file records...");
-    int recordCount = 0;
-    // Walk records by their own bounds: WPILib's iterator skips a final record under 16 bytes
-    int pos = DataLogAccess.firstRecordOffset(path);
-    int size = DataLogAccess.size(reader);
-    try {
-      while (pos < size) {
-        int next = DataLogAccess.recordEnd(reader, pos);
-        if (next < 0) {
-          throw new IllegalArgumentException("truncated: the file ends inside a record");
-        }
+    for (var info : entriesByName.values()) {
+      var values = new ArrayList<TimestampedValue>();
+      for (int pos : scan.offsets().get(info.name())) {
         var record = DataLogAccess.getRecord(reader, pos);
-        pos = next;
-        recordCount++;
-        if (record.isStart()) {
-          var startData = record.getStartData();
-          var info =
-              new EntryInfo(
-                  startData.entry, startData.name, startData.type, startData.metadata);
-          var existing = entriesByName.get(startData.name);
-          if (existing == null) {
-            entriesById.put(startData.entry, info);
-            entriesByName.put(startData.name, info);
-            valuesByEntry.put(startData.name, new ArrayList<>());
-          } else if (existing.type().equals(startData.type)) {
-            entriesById.put(startData.entry, existing); // same name restarted: one entry
-          } else {
-            logger.warn("Entry '{}' restarted with type '{}' (was '{}'); ignoring its records",
-                startData.name, startData.type, existing.type());
-          }
-          logger.trace(
-              "Found entry [{}]: name={}, type={}",
-              startData.entry,
-              startData.name,
-              startData.type);
-
-        } else if (!record.isFinish() && !record.isSetMetadata()) {
-          // Data record
-          var info = entriesById.get(record.getEntry());
-          if (info == null) continue;
-
-          double timestamp = record.getTimestamp() / 1_000_000.0;
-          minTimestamp = Math.min(minTimestamp, timestamp);
-          maxTimestamp = Math.max(maxTimestamp, timestamp);
-
-          try {
-            // Structs wait for the schemas: keep their bytes until the pass is done
-            var value = EntryDecoder.isStruct(info.type()) ? record.getRaw()
-                : EntryDecoder.decodeValue(record, info.type(), StructSchemas.fallbackOnly());
-            var values = valuesByEntry.get(info.name());
-            if (values != null) {
-              values.add(new TimestampedValue(timestamp, value));
-            }
-          } catch (Exception e) {
-            logger.trace(
-                "Malformed record at timestamp {} for entry {}: {}",
-                timestamp,
-                info.name(),
-                e.getMessage());
-          }
+        double timestamp = record.getTimestamp() / 1_000_000.0;
+        try {
+          // Structs wait for the schemas: keep their bytes until the pass is done
+          var value = EntryDecoder.isStruct(info.type()) ? record.getRaw()
+              : EntryDecoder.decodeValue(record, info.type(), StructSchemas.fallbackOnly());
+          values.add(new TimestampedValue(timestamp, value));
+        } catch (Exception e) {
+          logger.trace("Malformed record at timestamp {} for entry {}: {}", timestamp,
+              info.name(), e.getMessage());
         }
       }
-    } catch (IllegalArgumentException e) {
-      // WPILib throws IllegalArgumentException with "capacity" for truncated logs.
-      // Include fallback match strings in case the message wording changes.
-      String msg = e.getMessage();
-      if (msg != null && (msg.contains("capacity") || msg.contains("truncat")
-              || msg.contains("incomplete") || msg.contains("buffer"))) {
-        truncated = true;
-        truncationMessage =
-            "Log file is truncated (incomplete write). Data up to "
-                + String.format("%.2f", maxTimestamp)
-                + " seconds was recovered.";
-        logger.warn("Log file '{}' is truncated: {}", path, truncationMessage);
-      } else {
-        logger.error("Error reading record from log file: {}", e.getMessage(), e);
-        throw e;
-      }
+      valuesByEntry.put(info.name(), values);
     }
-    logger.debug("Pass through complete. Processed {} records.", recordCount);
+    logger.debug("Pass through complete. {} data records.", scan.dataRecords());
 
     var schemas = StructSchemas.fromLog(entriesByName, name -> {
       var vals = valuesByEntry.get(name);
@@ -177,10 +111,10 @@ public class LogParser {
         path.toString(),
         entriesByName,
         valuesByEntry,
-        minTimestamp == Double.MAX_VALUE ? 0 : minTimestamp,
-        maxTimestamp == Double.NEGATIVE_INFINITY ? 0 : maxTimestamp,
-        truncated,
-        truncationMessage,
+        scan.minTimestamp(),
+        scan.maxTimestamp(),
+        scan.truncated(),
+        scan.truncationMessage(),
         schemas,
         java.util.Collections.unmodifiableMap(problems));
   }

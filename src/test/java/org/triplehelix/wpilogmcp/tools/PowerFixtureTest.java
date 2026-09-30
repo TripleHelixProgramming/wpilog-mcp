@@ -81,9 +81,11 @@ class PowerFixtureTest extends FixtureToolTestBase {
   void loadLine() {
     var r = call("predict_battery_health", "akit_match");
     var line = r.getAsJsonObject("load_line");
-    assertEquals("/SystemStats/BatteryCurrent", line.get("current_entry").getAsString());
-    // Fixture: V = 12.2 - load, I = 20 + 60 load  =>  dV/dI = -1/60 ohm
-    assertEquals(1.0 / 60.0, line.get("resistance_ohm").getAsDouble(), 1e-3);
+    assertEquals("/PowerDistribution/TotalCurrent", line.get("current_entry").getAsString());
+    // Fixture: V = 12.2 - load, total current 300 load  =>  dV/dI = -1/300 ohm. Not
+    // /SystemStats/BatteryCurrent: that is AdvantageKit's RobotController.getInputCurrent(), the
+    // roboRIO's own input current, which is not the robot's load
+    assertEquals(1.0 / 300.0, line.get("resistance_ohm").getAsDouble(), 1e-4);
     assertTrue(line.get("r_squared").getAsDouble() > 0.9);
   }
 

@@ -32,16 +32,25 @@ class AnalyzeAutoFixtureTest extends FixtureToolTestBase {
     assertEquals(20.0, r.get("auto_start_time").getAsDouble(), 1e-9);
     assertEquals(40.0, r.get("auto_end_time").getAsDouble(), 1e-9);
     assertEquals(20.0, r.get("auto_duration").getAsDouble(), 1e-9);
-    // "Do Nothing" at 6 s, changed to "Two Piece Center" at 12 s: the value at auto start counts
-    assertEquals("Two Piece Center", r.get("selected_routine").getAsString());
-    var inputs = r.getAsJsonObject("inputs").getAsJsonObject("entries");
-    assertEquals("/RealOutputs/AutoSelector/SelectedAutoMode",
-        inputs.get("selected_routine").getAsString());
     assertEquals(1, r.getAsJsonArray("auto_periods").size());
+    // The routine is logged under a team's own name, not a chooser: a candidate, not a guess
+    assertFalse(r.has("selected_routine"));
+    var skipped = r.getAsJsonArray("skipped").toString();
+    assertTrue(skipped.contains("/RealOutputs/AutoSelector/SelectedAutoMode")
+        && skipped.contains("chooser_entry"), skipped);
     // no setpoint pose in this log: the section is reported as skipped, and the result partial
     assertEquals("partial", r.get("status").getAsString());
-    assertTrue(r.getAsJsonArray("skipped").toString().contains("path_following_error"));
+    assertTrue(skipped.contains("path_following_error"));
     assertFalse(r.has("path_following_error"));
+
+    // Confirmed and passed: "Do Nothing" at 6 s, changed to "Two Piece Center" at 12 s; the value
+    // at auto start counts
+    var named = call("analyze_auto", "akit_match", "chooser_entry",
+        "/RealOutputs/AutoSelector/SelectedAutoMode");
+    assertEquals("Two Piece Center", named.get("selected_routine").getAsString());
+    var inputs = named.getAsJsonObject("inputs").getAsJsonObject("entries");
+    assertEquals("/RealOutputs/AutoSelector/SelectedAutoMode",
+        inputs.get("selected_routine").getAsString());
   }
 
   @Test

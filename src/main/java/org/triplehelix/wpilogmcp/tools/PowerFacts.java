@@ -84,13 +84,16 @@ final class PowerFacts {
         + "to 6.3 V, and this log does not record which is installed", null);
   }
 
-  /** The roboRIO brownout flag entry: a boolean named BrownedOut (lowest entry id). */
+  /**
+   * The roboRIO brownout flag entry: a boolean whose leaf is BrownedOut or IsBrownedOut
+   * (AdvantageKit /SystemStats/BrownedOut, a logged RobotController.isBrownedOut()), lowest id.
+   */
   static Optional<String> flagEntry(LogData log) {
     return log.entries().values().stream()
         .filter(e -> "boolean".equals(e.type()))
         .filter(e -> {
-          var lower = e.name().toLowerCase(Locale.ROOT);
-          return lower.contains("brownedout") || lower.contains("browned_out");
+          var leaf = SignalResolver.leaf(e.name());
+          return leaf.equals("brownedout") || leaf.equals("isbrownedout");
         })
         .min(Comparator.comparingInt(EntryInfo::id))
         .map(EntryInfo::name);

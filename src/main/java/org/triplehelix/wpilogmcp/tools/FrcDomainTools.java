@@ -143,7 +143,9 @@ public final class FrcDomainTools {
           + "the complete list. "
           + "rio_brownout_flag_logged says whether the roboRIO's own brownout state is available "
           + "in this log; brownout_voltage_entry names the voltage entry scanned for threshold "
-          + "crossings, and a warning says when there is none."
+          + "crossings (BatteryVoltage, or Voltage under PowerDistribution, PDH, PDP, or Battery; "
+          + "voltage_entry names another), and a warning says when there is none, listing any "
+          + "voltage entries to confirm: the server does not guess which one is the battery."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -153,6 +155,9 @@ public final class FrcDomainTools {
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
+          .addProperty("voltage_entry", "string", "Battery voltage entry for BROWNOUT_START/END "
+              + "(default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)",
+              false)
           .build();
     }
 
@@ -174,10 +179,12 @@ public final class FrcDomainTools {
       }
       var dsSources = timeline.sources();
 
-      // Add voltage-threshold brownouts on the battery voltage entry. Uses the same selection as
-      // power_analysis so the two tools agree on which signal was analyzed; the entry is reported
-      // as brownout_voltage_entry, and a warning says when there is none.
-      var voltageEntry = ToolUtils.selectVoltageEntry(log, null);
+      // Add voltage-threshold brownouts on the battery voltage entry: the battery_voltage role,
+      // shared with power_analysis, so the tools agree on which signal was analyzed; the entry
+      // is reported as brownout_voltage_entry, and a warning says when there is none.
+      var battery = SignalResolver.batteryVoltage(log, null,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = battery.chosen();
       if (voltageEntry.isPresent()) {
         var entryName = voltageEntry.get();
         var values = log.values().get(entryName);
@@ -342,8 +349,8 @@ public final class FrcDomainTools {
       }
       voltageEntry.ifPresentOrElse(
           name -> builder.addProperty("brownout_voltage_entry", name),
-          () -> builder.addWarning("No battery voltage entry found; BROWNOUT_START/END events "
-              + "cannot be detected in this log."));
+          () -> builder.addWarning("BROWNOUT_START/END (voltage threshold) events were not "
+              + "detected: " + SignalResolver.unresolvedReason(battery, "voltage_entry")));
 
       builder.addInput("enabled", dsSources.enabled())
           .addInput("autonomous", dsSources.autonomous())
@@ -458,7 +465,9 @@ public final class FrcDomainTools {
               "Only vision entries under this prefix (case-insensitive), e.g. '/Vision'", false)
           .addProperty("pose_entry", "string",
               "Robot pose entry (struct:Pose2d or Pose3d) for residuals and jump detection; "
-                  + "default: the scalar Pose2d with the most samples that is not a vision entry", false)
+                  + "default: a conventional name (DriveState/Pose, Odometry/Robot, Drive/Pose, "
+                  + "EstimatedPose, RobotPose) or the only Pose2d outside vision entries; several "
+                  + "others are listed to confirm, not guessed", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("jump_threshold", "Distance threshold for jump detection (meters)", false, 0.5)
@@ -492,19 +501,10 @@ public final class FrcDomainTools {
       var entries = log.entries().values().stream()
           .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id)).toList();
 
-      // Robot pose: explicit, else the scalar Pose2d with the most samples outside vision entries
-      String robotPose = poseArg;
-      if (robotPose != null) {
-        requireEntry(log, robotPose);
-        if (!isScalarPose(log.entries().get(robotPose))) {
-          throw new IllegalArgumentException("pose_entry " + robotPose + " is "
-              + log.entries().get(robotPose).type() + ", not struct:Pose2d or struct:Pose3d");
-        }
-      } else {
-        // The same choice resolve_signals reports for robot_pose
-        var resolved = SignalResolver.robotPose(log).entries();
-        robotPose = resolved.isEmpty() ? null : resolved.get(0);
-      }
+      // Robot pose: the robot_pose role (explicit, a conventional name, or the only Pose2d);
+      // several unconventional Pose2d entries are candidates to confirm, not a guess
+      var poseRole = SignalResolver.robotPose(log, poseArg);
+      String robotPose = poseRole.chosen().orElse(null);
 
       // Vision entries (prefix applies only here)
       var targetEntries = new ArrayList<String>();
@@ -553,6 +553,10 @@ public final class FrcDomainTools {
 
       var builder = success();
       if (robotPose != null) builder.addInput("robot_pose", robotPose);
+      if (robotPose == null && poseRole.needsConfirmation()) {
+        builder.addSkipped("robot_pose", "Residuals against the robot pose and jumps in it were "
+            + "not computed: " + SignalResolver.unresolvedReason(poseRole, "pose_entry"));
+      }
       if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
 
       var targetAnalysis = new JsonArray();
@@ -1313,10 +1317,13 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze autonomous periods: every enabled autonomous segment (from the same "
           + "DriverStation timeline as get_match_phases) with its start, end, duration, and "
-          + "end_reason; the selected routine at each start (from a string chooser entry such as "
-          + ".../Auto Chooser/active or an entry naming the selected auto mode); and path "
-          + "following error (RMSE and max, meters) when a setpoint pose and an actual pose "
-          + "entry can be identified. Returns status not_applicable with the reason when the log "
+          + "end_reason; the selected routine at each start (from a WPILib SendableChooser's "
+          + "active entry: the only one, or the only one with 'auto' in its path; chooser_entry "
+          + "names another); and path following error (RMSE and max, meters) between a setpoint "
+          + "pose (PathPlanner/targetPose or Odometry/TrajectorySetpoint; path_setpoint_entry) "
+          + "and the actual pose (PathPlanner/currentPose, else the robot pose; "
+          + "path_actual_entry). Other entries named like these are not guessed at: skipped "
+          + "lists them as candidates to confirm. Returns status not_applicable with the reason when the log "
           + "has no autonomous period (for example a practice session where Autonomous was "
           + "never true)."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
@@ -1327,6 +1334,12 @@ public final class FrcDomainTools {
       return new SchemaBuilder()
           .addProperty("auto_prefix", "string",
               "Entry name prefix to search for the path setpoint and actual pose entries", false)
+          .addProperty("chooser_entry", "string", "String entry holding the selected auto "
+              + "routine (default: a SendableChooser's active entry, see description)", false)
+          .addProperty("path_setpoint_entry", "string", "Pose2d/Pose3d path-following setpoint "
+              + "(default: PathPlanner/targetPose or Odometry/TrajectorySetpoint)", false)
+          .addProperty("path_actual_entry", "string", "Pose2d/Pose3d actual pose for path "
+              + "following (default: PathPlanner/currentPose, else the robot pose)", false)
           .build();
     }
 
@@ -1335,7 +1348,13 @@ public final class FrcDomainTools {
       var autoPrefix = getOptString(arguments, "auto_prefix", null);
       var timeline = MatchTimeline.of(log);
       var sources = timeline.sources();
-      var chooser = findChooserEntry(log);
+      var chooserRole = SignalResolver.autoChooser(log,
+          getOptString(arguments, "chooser_entry", null));
+      var chooser = chooserRole.chosen();
+      var setpointRole = SignalResolver.pathPose(log, SignalResolver.Role.PATH_SETPOINT,
+          autoPrefix, getOptString(arguments, "path_setpoint_entry", null));
+      var actualRole = SignalResolver.pathPose(log, SignalResolver.Role.PATH_ACTUAL, autoPrefix,
+          getOptString(arguments, "path_actual_entry", null));
 
       if (!timeline.hasEnabledData() && sources.autonomous() == null) {
         return ResponseBuilder.noMatch("No DriverStation state entries found, so autonomous "
@@ -1372,7 +1391,8 @@ public final class FrcDomainTools {
           .addInput("autonomous", sources.autonomous());
       chooser.ifPresent(c -> builder.addInput("selected_routine", c));
 
-      var pathEntries = findPathEntries(log, autoPrefix);
+      var pathEntries = setpointRole.chosen().isPresent() && actualRole.chosen().isPresent()
+          ? new String[] {setpointRole.chosen().get(), actualRole.chosen().get()} : null;
       var periodsJson = new JsonArray();
       for (var period : periods) {
         var p = new JsonObject();
@@ -1407,15 +1427,18 @@ public final class FrcDomainTools {
       game.ifPresent(g -> builder.addProperty("expected_auto_sec", g.autoDurationSec()));
 
       if (chooser.isEmpty()) {
-        builder.addSkipped("selected_routine", "No string entry naming the selected autonomous "
-            + "routine (looked for names ending in /active under a chooser, or containing "
-            + "'auto' with 'selected', 'mode', 'routine', or 'choice', or containing 'chooser').");
+        builder.addSkipped("selected_routine",
+            SignalResolver.unresolvedReason(chooserRole, "chooser_entry"));
       }
       if (pathEntries == null) {
-        builder.addSkipped("path_following_error", "Could not identify both a setpoint pose "
-            + "(Pose2d/Pose3d named with setpoint, target, or desired) and an actual pose "
-            + "(named with actual, estimated, odometry, or pose)"
-            + (autoPrefix != null ? " under " + autoPrefix : "") + ".");
+        var reasons = new ArrayList<String>();
+        if (setpointRole.chosen().isEmpty()) {
+          reasons.add(SignalResolver.unresolvedReason(setpointRole, "path_setpoint_entry"));
+        }
+        if (actualRole.chosen().isEmpty()) {
+          reasons.add(SignalResolver.unresolvedReason(actualRole, "path_actual_entry"));
+        }
+        builder.addSkipped("path_following_error", String.join(" ", reasons));
       } else {
         builder.addInput("path_setpoint", pathEntries[0]).addInput("path_actual", pathEntries[1]);
         if (objectsWithout(periodsJson, "path_following_error") == periodsJson.size()) {
@@ -2115,9 +2138,11 @@ public final class FrcDomainTools {
           + "20 ms) and the distribution of loop times (mean, median, p90, p95, p99, max with its "
           + "time), over a scope (e.g. 'enabled') or window. The entry is found in this order: "
           + "the entry argument; AdvantageKit's LoggedRobot/FullCycleMS (whole cycle, including "
-          + "logging), reported with LoggedRobot/UserCodeMS alongside; names containing looptime, "
-          + "loop_time, or cycletime; else loop periods derived from consecutive AdvantageKit "
-          + "/Timestamp values. The unit comes from the argument, the name (...MS, ...Ms, _ms), "
+          + "logging), reported with LoggedRobot/UserCodeMS alongside; loop periods derived from "
+          + "consecutive AdvantageKit /Timestamp values; UserCodeMS alone. Other entries named "
+          + "like a loop time (looptime, cycletime) are not guessed at: no_match lists them as "
+          + "candidates to confirm and pass as entry. The unit comes from the argument, the "
+          + "name (...MS, ...Ms, _ms), "
           + "or the median (basis reported). A first sample more than 10x the median (the slow "
           + "boot cycle) is excluded and reported. health_score (0-100) is 100 minus the percent "
           + "of loops over the threshold. Returns no_match when the log has no loop timing, "
@@ -2193,54 +2218,32 @@ public final class FrcDomainTools {
       var scope = TimeScope.resolve(log, null, getOptString(arguments, "scope", null),
           getOptDouble(arguments, "start_time"), getOptDouble(arguments, "end_time"));
 
-      String entry = entryArg;
-      String secondary = null;
-      if (entry != null) {
-        requireEntry(log, entry);
-        if (!isNumericType(log.entries().get(entry).type())) {
-          throw new IllegalArgumentException("Entry " + entry + " is "
-              + log.entries().get(entry).type() + ", not a scalar number");
-        }
-      } else {
-        var ranked = log.entries().values().stream()
-            .filter(e -> isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
-            .filter(e -> rank(e.name()) < Integer.MAX_VALUE)
-            .sorted(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
-                    rank(e.name()))
-                .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
-            .toList();
-        if (!ranked.isEmpty()) {
-          entry = ranked.get(0);
-          if (rank(entry) == 0) {
-            secondary = ranked.stream().filter(n -> rank(n) == 1).findFirst().orElse(null);
-          }
-        }
-      }
+      // The loop_time roles (resolve_signals): AdvantageKit's FullCycleMS, else periods derived
+      // from its /Timestamp, else UserCodeMS; names like looptime are candidates only
+      var full = SignalResolver.loopTime(log, SignalResolver.Role.LOOP_TIME_FULL, entryArg);
+      var user = SignalResolver.loopTime(log, SignalResolver.Role.LOOP_TIME_USER, null);
+      String entry = full.chosen().or(user::chosen).orElse(null);
+      String secondary = user.chosen().filter(u -> !u.equals(entry)).orElse(null);
 
       // Samples in scope, as {time, raw value}
       var raw = new ArrayList<double[]>();
       String basisOverride = null;
-      if (entry != null) {
+      if ("/Timestamp".equals(entry) && entryArg == null) {
+        basisOverride = "derived: differences between consecutive /Timestamp values "
+            + "(AdvantageKit's per-cycle FPGA time, microseconds)";
+        TimestampedValue previous = null;
+        for (var tv : log.values().get("/Timestamp")) {
+          if (previous != null && scope.contains(tv.timestamp())
+              && tv.value() instanceof Number n && previous.value() instanceof Number p) {
+            raw.add(new double[] {tv.timestamp(), (n.doubleValue() - p.doubleValue()) / 1000.0});
+          }
+          previous = tv;
+        }
+      } else if (entry != null) {
         for (var tv : log.values().get(entry)) {
           var v = toDouble(tv.value());
           if (v != null && Double.isFinite(v) && scope.contains(tv.timestamp())) {
             raw.add(new double[] {tv.timestamp(), v});
-          }
-        }
-      } else {
-        var timestamp = log.entries().get("/Timestamp");
-        if (timestamp != null && isNumericType(timestamp.type())) {
-          entry = "/Timestamp";
-          basisOverride = "derived: differences between consecutive /Timestamp values "
-              + "(AdvantageKit's per-cycle FPGA time, microseconds)";
-          TimestampedValue previous = null;
-          for (var tv : log.values().get("/Timestamp")) {
-            if (previous != null && scope.contains(tv.timestamp())
-                && tv.value() instanceof Number n && previous.value() instanceof Number p) {
-              raw.add(new double[] {tv.timestamp(), (n.doubleValue() - p.doubleValue()) / 1000.0});
-            }
-            previous = tv;
           }
         }
       }
@@ -2254,13 +2257,19 @@ public final class FrcDomainTools {
             }
           }
         }
-        var nm = ResponseBuilder.noMatch("No loop time entry found.")
+        var nm = ResponseBuilder.noMatch(full.needsConfirmation()
+                ? "No entry follows a known loop-time convention." : "No loop time entry found.")
             .lookedFor(List.of("LoggedRobot/FullCycleMS and LoggedRobot/UserCodeMS (AdvantageKit)",
-                "numeric entries whose names contain looptime, loop_time, or cycletime",
                 "/Timestamp (AdvantageKit per-cycle time, to derive loop periods)"))
-            .hint("Pass entry to name the robot's loop time entry"
-                + (overrunMessages > 0 ? "; search_strings with pattern 'overrun' lists the "
-                    + overrunMessages + " loop overrun console messages in this log" : "") + ".");
+            .hint((full.needsConfirmation() ? SignalResolver.unresolvedReason(full, "entry")
+                    : "Pass entry to name the robot's loop time entry.")
+                + (overrunMessages > 0 ? " search_strings with pattern 'overrun' lists the "
+                    + overrunMessages + " loop overrun console messages in this log." : ""));
+        if (full.needsConfirmation()) {
+          var candidates = new JsonArray();
+          full.candidates().stream().limit(10).forEach(candidates::add);
+          nm.addData("candidates", candidates);
+        }
         if (overrunMessages > 0) nm.addProperty("overrun_messages", overrunMessages);
         return nm.build();
       }
@@ -2558,7 +2567,10 @@ public final class FrcDomainTools {
           + "internal resistance plus wiring and connectors) and open-circuit voltage. "
           + "observations state what the evidence is consistent with and what would distinguish "
           + "the causes; one log cannot tell a weak battery from high current draw or a bad "
-          + "connection, so no replacement advice is given."
+          + "connection, so no replacement advice is given. The voltage entry is BatteryVoltage "
+          + "or Voltage under PowerDistribution/PDH/PDP/Battery, the current entry TotalCurrent; "
+          + "the server does not guess among other names: it lists them to confirm, and "
+          + "voltage_entry / total_current_entry name the ones to use."
           + GUIDANCE_UNIVERSAL + GUIDANCE_POWER;
     }
 
@@ -2573,21 +2585,11 @@ public final class FrcDomainTools {
           .addNumberProperty("brownout_threshold", "Brownout threshold in volts (default: the log's "
               + "BrownoutVoltage entry when logged, else 6.8 V for roboRIO 1; roboRIO 2 is 6.3 V)", false, null)
           .addNumberProperty("warning_threshold", "Voltage below which a dip is reported (default: 9.0V)", false, 9.0)
+          .addProperty("voltage_entry", "string", "Battery voltage entry (default: "
+              + "BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)", false)
+          .addProperty("total_current_entry", "string", "Total robot current entry for the load "
+              + "line (default: TotalCurrent)", false)
           .build();
-    }
-
-    /** A scalar total-current entry (total, battery, or input current), lowest entry id. */
-    static java.util.Optional<String> findTotalCurrentEntry(LogData log) {
-      return log.entries().values().stream()
-          .filter(e -> isNumericType(e.type()))
-          .filter(e -> {
-            var lower = e.name().toLowerCase(java.util.Locale.ROOT);
-            return lower.contains("totalcurrent") || lower.contains("total_current")
-                || lower.contains("batterycurrent") || lower.contains("battery_current");
-          })
-          .filter(e -> log.sampleCount(e.name()) > 0)
-          .min(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name);
     }
 
     @Override
@@ -2602,13 +2604,17 @@ public final class FrcDomainTools {
       if (scopeArg == null) scopeArg = timeline.hasEnabledData() ? "enabled" : "all";
       var scope = TimeScope.resolve(log, timeline, scopeArg, startTime, endTime);
 
-      var voltageEntry = ToolUtils.selectVoltageEntry(log, null);
+      var battery = SignalResolver.batteryVoltage(log, null,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = battery.chosen();
       if (voltageEntry.isEmpty()) {
-        return ResponseBuilder.noMatch("No battery voltage entry with finite samples found.")
-            .lookedFor(List.of("scalar numeric entries named with 'voltage', ranked battery > "
-                + "input/bus > other > rails and regulators (the same choice power_analysis "
+        return ResponseBuilder.noMatch(battery.needsConfirmation()
+                ? "No entry follows a known battery-voltage convention." : "No battery voltage "
+                + "entry with finite samples found.")
+            .lookedFor(List.of("BatteryVoltage (e.g. /SystemStats/BatteryVoltage), or Voltage "
+                + "under PowerDistribution, PDH, PDP, or Battery (the same choice power_analysis "
                 + "and get_ds_timeline make)"))
-            .hint("Use search_entries with pattern 'voltage' to find how this robot logs it.")
+            .hint(SignalResolver.unresolvedReason(battery, "voltage_entry"))
             .build();
       }
       var voltageValues = log.values().get(voltageEntry.get()).stream()
@@ -2621,7 +2627,9 @@ public final class FrcDomainTools {
             .addData("scope", scope.toJson())
             .build();
       }
-      var currentEntry = findTotalCurrentEntry(log);
+      var current = SignalResolver.totalCurrent(log,
+          getOptString(arguments, "total_current_entry", null));
+      var currentEntry = current.chosen();
 
       double minVoltage = Double.MAX_VALUE;
       double maxVoltage = -Double.MAX_VALUE;
@@ -2698,7 +2706,7 @@ public final class FrcDomainTools {
         response.addData("load_line", loadLine);
       } else {
         response.addSkipped("load_line", currentEntry.isEmpty()
-            ? "No total-current entry (TotalCurrent, BatteryCurrent) to regress voltage on."
+            ? SignalResolver.unresolvedReason(current, "total_current_entry")
             : "Too few samples or too little current variation in scope to fit voltage against "
                 + currentEntry.get() + ".");
       }

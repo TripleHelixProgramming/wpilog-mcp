@@ -873,6 +873,11 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var args = new JsonObject();
       args.addProperty("path", log.path());
       args.addProperty("power_prefix", "/PDH");
+      var guessed = tool.execute(args).getAsJsonObject();
+      // InputVoltage is not a battery-voltage convention: listed to confirm, not used
+      assertFalse(guessed.has("voltage_analysis"));
+      assertTrue(guessed.getAsJsonArray("skipped").toString().contains("/PDH/InputVoltage"));
+      args.addProperty("voltage_entry", "/PDH/InputVoltage");
       var resultObj = tool.execute(args).getAsJsonObject();
       assertEquals("/PDH/InputVoltage", resultObj.getAsJsonObject("voltage_analysis").get("entry").getAsString());
       assertEquals(1, resultObj.get("current_entries_analyzed").getAsInt());
@@ -880,6 +885,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           resultObj.getAsJsonArray("channel_analysis").get(0).getAsJsonObject().get("entry").getAsString());
 
       args.remove("power_prefix");
+      args.remove("voltage_entry");
       args.addProperty("channel_limit", 0);
       var clamped = tool.execute(args).getAsJsonObject();
       assertEquals(1, clamped.getAsJsonArray("channel_analysis").size());
@@ -925,7 +931,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       args.addProperty("path", nanLog.path());
       var r3 = findTool("power_analysis").execute(args).getAsJsonObject();
       assertFalse(r3.has("voltage_analysis"));
-      assertTrue(r3.getAsJsonArray("warnings").toString().contains("none is a scalar numeric entry with finite samples"));
+      assertTrue(r3.getAsJsonArray("warnings").toString().contains("with no finite samples: /SystemStats/BatteryVoltage"),
+          r3.toString());
 
       var voltageOnly = new MockLogBuilder()
           .setPath("/test/power_voltage_only.wpilog")

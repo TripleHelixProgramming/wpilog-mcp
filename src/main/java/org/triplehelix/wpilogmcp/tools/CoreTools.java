@@ -506,16 +506,22 @@ public final class CoreTools {
     @Override
     public String description() {
       return "Show which entry plays each role in this log: robot_enabled, autonomous, "
-          + "battery_voltage, brownout_flag, brownout_threshold, loop_time_full, loop_time_user, "
-          + "robot_pose, module_states_measured, module_states_setpoint, "
+          + "test_mode, fms_attached, battery_voltage, total_current, brownout_flag, "
+          + "brownout_threshold, loop_time_full, loop_time_user, robot_pose, auto_chooser, "
+          + "path_setpoint, path_actual, module_states_measured, module_states_setpoint, "
           + "chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, "
           + "vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: "
-          + "the entry (or entries, or a value), the basis for the choice, the other candidates "
-          + "best first, ambiguous when another candidate ranked as well (the one declared "
-          + "first wins), and the tools that use it. These are the choices the tools make; each "
-          + "tool's result records the entries it used under inputs.entries, and tools with an "
-          + "entry parameter (pose_entry, measured_entry, entry, ...) accept an override. Check "
-          + "it once per log before trusting automatic choices, especially ambiguous ones.";
+          + "the entry (or entries, or a value); match, how it was chosen (explicit, convention: "
+          + "a well-known AdvantageKit/WPILib/CTRE/PathPlanner name, type: the only entry of its "
+          + "type or schema, heuristic, or none); the basis; the other candidates best first; "
+          + "ambiguous when another candidate ranked as well (the one declared first wins); and "
+          + "the tools that use it. The server does not guess: a heuristic role has no entry, "
+          + "needs_confirmation, and candidates that match by name only, and the tools skip it. "
+          + "Establish which candidate is right (get_entry_info, read_entry, or ask the user) "
+          + "and pass it with the tool's parameter (voltage_entry, entry, pose_entry, "
+          + "chooser_entry, ...). needs_confirmation lists those roles. These are the choices "
+          + "the tools make; each tool's result records the entries it used under "
+          + "inputs.entries.";
     }
 
     @Override
@@ -542,6 +548,7 @@ public final class CoreTools {
       result.addProperty("log_path", log.path());
       var rolesJson = new JsonObject();
       var unresolved = new JsonArray();
+      var confirm = new JsonArray();
       var warnings = new JsonArray();
       for (var role : roles) {
         var resolution = SignalResolver.resolve(log, role);
@@ -549,6 +556,7 @@ public final class CoreTools {
         if (resolution.entries().isEmpty() && resolution.value() == null) {
           unresolved.add(role.wire());
         }
+        if (resolution.needsConfirmation()) confirm.add(role.wire());
         if (resolution.ambiguous()) {
           warnings.add(role.wire() + ": " + (resolution.entries().isEmpty() ? "nothing"
               : resolution.entries().get(0)) + " was chosen, but "
@@ -559,6 +567,7 @@ public final class CoreTools {
       }
       result.add("roles", rolesJson);
       result.add("unresolved", unresolved);
+      if (!confirm.isEmpty()) result.add("needs_confirmation", confirm);
       if (!warnings.isEmpty()) result.add("warnings", warnings);
       return result;
     }

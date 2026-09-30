@@ -94,89 +94,21 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     this.path = path;
     this.reader = reader;
 
-    // Single-pass scan using WPILib's iterator for correct Start record parsing,
-    // while tracking byte offsets for data records via our WpilogRecordReader.
-    // This gives us reliable entry metadata AND random-access offsets in one pass.
-    var entriesById = new HashMap<Integer, EntryInfo>();
-    // Declaration order: entries iterate in the order the robot program declared them, so any
-    // "first match" over entries() is deterministic (and ties broken by entry id agree with it)
-    var entriesByName = new LinkedHashMap<String, EntryInfo>();
-    var offsetLists = new HashMap<String, List<Integer>>();
-
-    double minTs = Double.MAX_VALUE;
-    double maxTs = Double.NEGATIVE_INFINITY;
-    boolean trunc = false;
-    String truncMsg = null;
-
+    // One pass over the records (shared with LogParser): entries in declaration order, each
+    // data record's byte offset for random-access decoding later, and where the file stops being
+    // a valid log (a damaged tail is not read; see LogScan)
     logger.debug("Scanning log: {}", path);
     long startTime = System.nanoTime();
-    int totalDataRecords = 0;
+    var scan = LogScan.of(reader, java.nio.file.Path.of(path));
+    var entriesByName = scan.entries();
+    var offsetLists = scan.offsets();
+    int totalDataRecords = scan.dataRecords();
 
-    // Walk records by their own bounds (DataLogAccess.recordEnd), not WPILib's iterator, whose
-    // hasNext() skips a final record shorter than 16 bytes. Each record's byte offset is kept for
-    // random-access decoding later.
-    int pos = DataLogAccess.firstRecordOffset(java.nio.file.Path.of(path));
-    int size = DataLogAccess.size(reader);
-
-    try {
-      while (pos < size) {
-        int next = DataLogAccess.recordEnd(reader, pos);
-        if (next < 0) {
-          throw new java.nio.BufferUnderflowException(); // the file ends inside this record
-        }
-        var record = DataLogAccess.getRecord(reader, pos);
-        if (record.isStart()) {
-          var startData = record.getStartData();
-          if (startData.name != null && !startData.name.isEmpty()) {
-            var info = new EntryInfo(startData.entry, startData.name, startData.type, startData.metadata);
-            var existing = entriesByName.get(startData.name);
-            if (existing == null) {
-              entriesByName.put(startData.name, info);
-              entriesById.put(startData.entry, info);
-              offsetLists.put(startData.name, new ArrayList<>());
-            } else if (existing.type().equals(startData.type)) {
-              // The same name started again (after a Finish, or by another writer): one entry,
-              // keeping the first declaration and all records
-              entriesById.put(startData.entry, existing);
-            } else {
-              logger.warn("Entry '{}' restarted with type '{}' (was '{}'); ignoring its records",
-                  startData.name, startData.type, existing.type());
-            }
-          }
-        } else if (!record.isFinish() && !record.isSetMetadata()) {
-          // Data record — record its byte offset for random-access decode
-          var info = entriesById.get(record.getEntry());
-          if (info != null) {
-            double timestamp = record.getTimestamp() / 1_000_000.0;
-            minTs = Math.min(minTs, timestamp);
-            maxTs = Math.max(maxTs, timestamp);
-            offsetLists.get(info.name()).add(pos);
-            totalDataRecords++;
-          }
-        }
-
-        pos = next;
-      }
-    } catch (java.util.NoSuchElementException | java.nio.BufferUnderflowException
-             | IndexOutOfBoundsException | IllegalArgumentException e) {
-      // WPILib's DataLogReader may throw various exceptions when encountering truncated data:
-      // - NoSuchElementException: getRecord() catches BufferUnderflowException and rethrows
-      // - BufferUnderflowException: direct buffer access past end
-      // - IndexOutOfBoundsException: array/buffer index past bounds
-      // - IllegalArgumentException: ByteBuffer.limit() past capacity (truncated record payload)
-      // All indicate the file was truncated mid-record. Recover what we have so far.
-      trunc = true;
-      truncMsg = "Log file is truncated (incomplete write). Data up to "
-          + String.format("%.2f", maxTs) + " seconds was recovered.";
-      logger.warn("Log file '{}' is truncated: {}", path, truncMsg);
-    }
-
-
-    this.entries = Collections.unmodifiableMap(entriesByName);
-    this.minTimestamp = minTs == Double.MAX_VALUE ? 0 : minTs;
-    this.maxTimestamp = maxTs == Double.NEGATIVE_INFINITY ? 0 : maxTs;
-    this.truncated = trunc;
-    this.truncationMessage = truncMsg;
+    this.entries = entriesByName;
+    this.minTimestamp = scan.minTimestamp();
+    this.maxTimestamp = scan.maxTimestamp();
+    this.truncated = scan.truncated();
+    this.truncationMessage = scan.truncationMessage();
 
     // Compact offset lists to int[] arrays
     this.recordOffsets = new HashMap<>();
@@ -278,13 +210,22 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     return Optional.ofNullable(decodeProblems.get(entryName));
   }
 
+  /** The number of entries whose decoded values are cached (for tests). */
+  long cachedEntryCount() {
+    valueCache.cleanUp();
+    return valueCache.estimatedSize();
+  }
+
+  /**
+   * Releases the cached values. A closed log still reads correctly: a tool call that obtained it
+   * before it was evicted (heap pressure, idle expiry, replacement) decodes what it asks for
+   * again, without caching, instead of silently getting empty values. The memory-mapped file is
+   * released by the garbage collector once nothing references this log.
+   */
   @Override
   public void close() {
     closed = true;
     valueCache.invalidateAll();
-    // Don't clear recordOffsets — in-flight decodeEntry() calls may race with close().
-    // The volatile 'closed' flag short-circuits new requests, and GC handles cleanup
-    // when this object is unreferenced.
     logger.debug("Closed LazyParsedLog: {}", path);
   }
 
@@ -293,8 +234,6 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    * No file re-scan — reads only the records for the requested entry.
    */
   private List<TimestampedValue> decodeEntry(String entryName) {
-    if (closed) return List.of();
-
     var info = entries.get(entryName);
     if (info == null) return null;
 
@@ -410,6 +349,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     public List<TimestampedValue> get(Object key) {
       if (!(key instanceof String name)) return null;
       if (!entries.containsKey(name)) return null;
+      // Closed (evicted while a call still holds it): decode without refilling the cache
+      if (closed) return decodeEntry(name);
       return valueCache.get(name, LazyParsedLog.this::decodeEntry);
     }
 
@@ -428,17 +369,69 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       return entries.size();
     }
 
+    /**
+     * Every entry, in declaration order; each one's values are decoded when taken
+     * ({@link Entry#getValue()}), so iterating to filter by name or type decodes nothing.
+     */
     @Override
     public Set<Entry<String, List<TimestampedValue>>> entrySet() {
-      logger.debug("LazyValuesMap.entrySet() called — materializing all entries");
-      var result = new java.util.LinkedHashSet<Entry<String, List<TimestampedValue>>>();
-      for (var name : entries.keySet()) {
-        var values = get(name);
-        if (values != null) {
-          result.add(new SimpleImmutableEntry<>(name, values));
+      return new java.util.AbstractSet<>() {
+        @Override
+        public java.util.Iterator<Entry<String, List<TimestampedValue>>> iterator() {
+          var names = entries.keySet().iterator();
+          return new java.util.Iterator<>() {
+            @Override
+            public boolean hasNext() {
+              return names.hasNext();
+            }
+
+            @Override
+            public Entry<String, List<TimestampedValue>> next() {
+              return new LazyEntry(names.next());
+            }
+          };
         }
-      }
-      return result;
+
+        @Override
+        public int size() {
+          return entries.size();
+        }
+      };
+    }
+  }
+
+  /** A map entry whose values are decoded when taken. */
+  private final class LazyEntry implements Map.Entry<String, List<TimestampedValue>> {
+    private final String name;
+
+    LazyEntry(String name) {
+      this.name = name;
+    }
+
+    @Override
+    public String getKey() {
+      return name;
+    }
+
+    @Override
+    public List<TimestampedValue> getValue() {
+      return valuesView.get(name);
+    }
+
+    @Override
+    public List<TimestampedValue> setValue(List<TimestampedValue> value) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof Map.Entry<?, ?> e && name.equals(e.getKey())
+          && java.util.Objects.equals(getValue(), e.getValue());
+    }
+
+    @Override
+    public int hashCode() {
+      return name.hashCode() ^ java.util.Objects.hashCode(getValue());
     }
   }
 }

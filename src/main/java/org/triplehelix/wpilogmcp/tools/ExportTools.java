@@ -324,7 +324,8 @@ public final class ExportTools {
     public String description() {
       return "Generate a one-call summary of a log: duration and truncation; the DriverStation "
           + "timeline (enabled segments, enabled time, FMS matches, as in get_match_phases); "
-          + "battery voltage (min with time, max, average; entry chosen as power_analysis does), "
+          + "battery voltage (min with time, max, average; entry chosen as power_analysis does, "
+          + "or voltage_entry), "
           + "brownouts from the roboRIO flag when logged, and the brownout threshold with its "
           + "basis; the three largest current peaks (power_analysis channel_analysis); error and "
           + "warning counts from console and message text (one classification per line, as in "
@@ -336,7 +337,10 @@ public final class ExportTools {
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder().build();
+      return new SchemaBuilder()
+          .addProperty("voltage_entry", "string", "Battery voltage entry (default: "
+              + "BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)", false)
+          .build();
     }
 
     @Override
@@ -376,7 +380,9 @@ public final class ExportTools {
       }
 
       // Battery: the same entry choice and threshold as power_analysis
-      var voltageEntry = ToolUtils.selectVoltageEntry(log, null);
+      var batteryRole = SignalResolver.batteryVoltage(log, null,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = batteryRole.chosen();
       var threshold = PowerFacts.threshold(log, null);
       if (voltageEntry.isPresent()) {
         var values = log.values().get(voltageEntry.get());
@@ -412,7 +418,8 @@ public final class ExportTools {
             : (min < 9.0 ? "MODERATE" : "LOW"));
         report.add("battery", battery);
       } else {
-        skipped.add(skippedSection("battery", "no battery voltage entry with finite samples"));
+        skipped.add(skippedSection("battery",
+            SignalResolver.unresolvedReason(batteryRole, "voltage_entry")));
       }
 
       // Peak currents: the same amperage entries and ranking as power_analysis

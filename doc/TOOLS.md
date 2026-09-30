@@ -379,13 +379,28 @@ List struct types and how they decode. Struct values are decoded from each log's
 ### `resolve_signals`
 Show which entry plays each role in a log — the same choices the tools make — with the basis for each choice and the other candidates.
 
+#### The server does not guess
+A tool uses an entry for a role only when it was passed explicitly, follows a well-known logging convention, or is the only entry of the role's type or schema. Entries that match a role by name alone are listed as candidates and not used: the role reports `match: heuristic` and `needs_confirmation`, and a tool that needs it lists the candidates in its `skipped` reason (or its `no_match` hint) with the parameter to pass. The conventions:
+
+| Role | Chosen by convention | Override |
+|---|---|---|
+| DriverStation state | AdvantageKit `/DriverStation/...`, WPILib `DS:...`, NetworkTables `FMSControlData` | — |
+| `battery_voltage` | a leaf named `BatteryVoltage`; `Voltage` under `PowerDistribution`, `PowerDistribution[<id>]`, `PDH`, `PDP`, or `Battery` | `voltage_entry` |
+| `total_current` | a leaf named `TotalCurrent` (not AdvantageKit's `SystemStats/BatteryCurrent`, the roboRIO's own input current) | `total_current_entry` |
+| `brownout_flag` | a boolean leaf named `BrownedOut` or `IsBrownedOut` | — |
+| `loop_time_full` / `_user` | AdvantageKit `LoggedRobot/FullCycleMS` / `UserCodeMS`; periods from AdvantageKit `/Timestamp` | `entry` |
+| `robot_pose` | `DriveState/Pose` (CTRE), `Odometry/Robot` (AdvantageKit template), `Drive/Pose`, `EstimatedPose`, `RobotPose`, `PathPlanner/currentPose`; or the only `Pose2d` outside vision paths | `pose_entry` |
+| `auto_chooser` | the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry, or AdvantageKit's `/NetworkInputs/SmartDashboard/<key>` | `chooser_entry` |
+| `path_setpoint` / `path_actual` | `PathPlanner/targetPose`, AdvantageKit `Odometry/TrajectorySetpoint` / `PathPlanner/currentPose`, else the robot pose | `path_setpoint_entry` / `path_actual_entry` |
+| `gyro_yaw` | a yaw entry under a gyro, Pigeon, NavX, Canandgyro, or IMU path | — |
+
 **Parameters:**
 - `path` (required): Path to the log file
 - `roles` (optional): Only these roles (default: all)
 
-**Roles:** `robot_enabled`, `autonomous` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
+**Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
 
-**Returns:** `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `basis` (why), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked as well; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry; `warnings` name ambiguous choices.
+**Returns:** `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `match` (`explicit`, `convention`, `type`, `heuristic`, or `none`), `basis` (why), `needs_confirmation` (heuristic: candidates only, not used), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked as well; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry, `needs_confirmation` the ones with name-only candidates; `warnings` name ambiguous choices.
 
 Each tool's result records the entries it used under `inputs.entries`; tools with an entry parameter (`pose_entry`, `measured_entry`, `entry`, ...) accept an override when a choice is wrong.
 
@@ -904,6 +919,7 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 **Parameters:**
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
+- `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 - `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
 
@@ -1387,6 +1403,7 @@ Sections that cannot be produced are listed in `skipped` (status `partial`); an 
 
 **Parameters:**
 - `path` (required): Path to the log file
+- `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 
 **Example Response (abridged):**
 ```json
@@ -1425,6 +1442,7 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 - `path` (required): Path to the log file
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
+- `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 - `brownout_threshold` (optional): Voltage threshold for BROWNOUT_START/END crossings (default: the log's `BrownoutVoltage` entry when logged, else 6.8V for roboRIO 1; reported as `brownout_threshold` with `brownout_threshold_basis`)
 
 **Returns:** Chronologically sorted `events` with category, type, timestamp, and source entry; `summary` (count per category); `inputs.entries` (the DriverStation, voltage, and brownout flag entries used); `brownout_voltage_entry` (the voltage entry scanned for threshold crossings — selected exactly as `power_analysis` does — with a warning instead when the log has none); `rio_brownout_flag_logged` (whether the log contains a boolean roboRIO brownout flag entry) and, when it does, `rio_brownout_flag_entry`; `text_event_counts` and `text_event_summary` / `text_event_groups_total` (see below); `warnings`
@@ -1511,7 +1529,7 @@ Analyze vision data, found by type and content: pose observation streams, target
 **Parameters:**
 - `path` (required): Path to the log file
 - `vision_prefix` (optional): Only vision entries under this prefix (case-insensitive). It limits vision entries only — the robot pose can live elsewhere
-- `pose_entry` (optional): Robot pose entry (`struct:Pose2d` or `Pose3d`) for residuals and jump detection; default: the scalar `Pose2d` with the most samples that is not a vision entry
+- `pose_entry` (optional): Robot pose entry (`struct:Pose2d` or `Pose3d`) for residuals and jump detection; default: the `robot_pose` role (a conventional name, or the only `Pose2d` outside vision paths; several others are listed in `skipped` to confirm, not guessed)
 - `start_time`, `end_time` (optional): Time window
 - `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
@@ -1613,6 +1631,9 @@ Analyze every autonomous period in the log: when it started and ended, which rou
 **Parameters:**
 - `path` (required): Path to the log file
 - `auto_prefix` (optional): Entry name prefix to search for the path setpoint and actual pose entries
+- `chooser_entry` (optional): String entry holding the selected routine (default: the one chooser whose key contains `auto`)
+- `path_setpoint_entry` (optional): Path-following setpoint pose (default: `PathPlanner/targetPose` or `Odometry/TrajectorySetpoint`)
+- `path_actual_entry` (optional): Actual pose for path following (default: `PathPlanner/currentPose`, else the robot pose)
 
 **How it works:**
 - Autonomous periods are the enabled `auto` segments of the same DriverStation timeline `get_match_phases` reports (a log can hold several; all are listed in `auto_periods`, and the top-level `auto_*` fields describe the first).
@@ -1817,7 +1838,7 @@ How often robot code exceeded the loop period, and the distribution of loop time
 - `unit` (optional): `ms`, `s`, `us`, or `auto` (default: from the entry name — `...MS`, `...Ms`, `_ms`, `...Micros`, `...Sec` — else from the median: 0.001–1 looks like seconds, above 500 like microseconds)
 - `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
 
-**Entry discovery, in order:** the `entry` argument; AdvantageKit's `LoggedRobot/FullCycleMS` (the whole cycle, including logging), reported with `LoggedRobot/UserCodeMS` alongside as `user_code`; numeric entries whose names contain `looptime`, `loop_time`, or `cycletime`; else loop periods derived from consecutive AdvantageKit `/Timestamp` values. A first sample more than 10× the median — the slow boot cycle, often several seconds — is excluded and reported as `excluded_boot_cycle`.
+**Entry discovery, in order:** the `entry` argument; AdvantageKit's `LoggedRobot/FullCycleMS` (the whole cycle, including logging), reported with `LoggedRobot/UserCodeMS` alongside as `user_code`; loop periods derived from consecutive AdvantageKit `/Timestamp` values; `UserCodeMS` alone. Other entries named like a loop time (`looptime`, `cycletime`) are not guessed at: `no_match` lists them in `candidates` to confirm and pass as `entry`. A first sample more than 10× the median — the slow boot cycle, often several seconds — is excluded and reported as `excluded_boot_cycle`.
 
 **Returns:** `loop_time_entry`, `unit` (`value` and `basis`), `scope`, `threshold_ms`, `violation_count` (true total), `total_samples`, `violation_rate`, `percent_over_threshold`, `health_score` (100 minus the percent over threshold — a heuristic kept by design), `statistics` (`avg_ms`, `median_ms`, `p90_ms`, `p95_ms`, `p99_ms`, `max_ms` with `max_time_sec`, `min_ms`), `violations[]` (first 50, with `limits.violations`), `user_code` (median, p95, percent over threshold), and `excluded_boot_cycle`.
 
@@ -1860,13 +1881,15 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 - `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
 - `brownout_threshold` (optional): Brownout threshold (default: the logged `BrownoutVoltage`, else 6.8V — see `power_analysis`)
 - `warning_threshold` (optional): Voltage below which a dip is reported (default: 9.0V)
+- `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
+- `total_current_entry` (optional): Total robot current for the load line (default: a leaf named `TotalCurrent`)
 
 **Evidence returned:**
 - `voltage_stats`: `min_volts` (with `min_time_sec`), `max_volts`, `avg_volts`, `voltage_sag` (nominal − min), `samples`, all over the scope; the voltage entry is chosen as `power_analysis` chooses it (`inputs.entries.voltage`)
 - `brownout_events` and `brownout_basis`: when the roboRIO's brownout flag is logged, brownouts are its true intervals (`rio_brownouts`, with start and duration) — the times outputs were actually disabled; otherwise they are crossings below the threshold, and the basis says the roboRIO state cannot be determined
 - `threshold_crossings` and `brownout_details`: voltage crossings below the threshold (0.2 V exit hysteresis), whether or not the roboRIO browned out
 - `warning_events`: dips below `warning_threshold`
-- `load_line` (when a total-current entry such as `TotalCurrent` or `BatteryCurrent` exists and the scope has at least 30 samples spanning 10 A): battery voltage regressed on total current — `resistance_ohm` (effective source resistance: battery internal resistance plus wiring and connectors), `open_circuit_voltage`, `r_squared`, `samples`, `current_range_a`; otherwise listed in `skipped`
+- `load_line` (when a `TotalCurrent` entry exists (or `total_current_entry` names one) and the scope has at least 30 samples spanning 10 A): battery voltage regressed on total current — `resistance_ohm` (effective source resistance: battery internal resistance plus wiring and connectors), `open_circuit_voltage`, `r_squared`, `samples`, `current_range_a`; otherwise listed in `skipped`
 - `recovery_analysis`: time to recover 90% of drops larger than 0.5 V
 - `observations` (also returned as `recommendations`): what the evidence is consistent with and what would distinguish the candidate causes. One log cannot tell a weak battery from high current draw or a high-resistance connection, so no replacement advice is given.
 

@@ -246,7 +246,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertEquals(2, overrun.getAsJsonArray("sources").size());
 
       // No voltage entry in this log: the timeline says so instead of staying silent
-      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("No battery voltage entry found"));
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("No battery voltage entry found"),
+          resultObj.toString());
       assertFalse(resultObj.has("brownout_voltage_entry"));
     }
 
@@ -725,8 +726,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
           .setPath("/test/auto_path.wpilog")
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
-          .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
-          .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
+          .addEntry("/PathPlanner/targetPose", "struct:Pose2d", desiredPoses)
+          .addEntry("/PathPlanner/currentPose", "struct:Pose2d", actualPoses)
           .build();
       putLogInCache(log);
 
@@ -748,6 +749,42 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("path poses named only like a setpoint are candidates, used when passed")
+    void pathPosesByNameAreNotGuessed() throws Exception {
+      var desiredPoses = new ArrayList<TimestampedValue>();
+      var actualPoses = new ArrayList<TimestampedValue>();
+      for (int i = 0; i <= 5; i++) {
+        desiredPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i, 0)));
+        actualPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i + 0.1, 0.1)));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/auto_path_names.wpilog")
+          .addBooleanEntry("/DriverStation/Enabled", new double[]{0, 5}, new boolean[]{true, false})
+          .addBooleanEntry("/DriverStation/Autonomous", new double[]{0, 5},
+              new boolean[]{true, false})
+          .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
+          .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var guessed = findTool("analyze_auto").execute(args).getAsJsonObject();
+      assertEquals("partial", guessed.get("status").getAsString());
+      assertFalse(guessed.has("path_following_error"));
+      var skipped = guessed.getAsJsonArray("skipped").toString();
+      assertTrue(skipped.contains("/Auto/DesiredPose") && skipped.contains("path_setpoint_entry"),
+          skipped);
+
+      args.addProperty("path_setpoint_entry", "/Auto/DesiredPose");
+      args.addProperty("path_actual_entry", "/Auto/ActualPose");
+      var named = findTool("analyze_auto").execute(args).getAsJsonObject();
+      assertTrue(named.has("path_following_error"), named.toString());
+      var inputs = named.getAsJsonObject("inputs").getAsJsonObject("entries");
+      assertEquals("/Auto/DesiredPose", inputs.get("path_setpoint").getAsString());
+    }
+
+    @Test
     @DisplayName("detects the auto period from WPILib DataLogManager DS: entries")
     void detectsAutoFromDsEntries() throws Exception {
       var desiredPoses = new ArrayList<TimestampedValue>();
@@ -760,8 +797,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
           .setPath("/test/auto_path_ds.wpilog")
           .addBooleanEntry("DS:enabled", new double[]{0, 5}, new boolean[]{true, false})
           .addBooleanEntry("DS:autonomous", new double[]{0, 5}, new boolean[]{true, false})
-          .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
-          .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
+          .addEntry("NT:/PathPlanner/targetPose", "struct:Pose2d", desiredPoses)
+          .addEntry("NT:/PathPlanner/currentPose", "struct:Pose2d", actualPoses)
           .build();
       putLogInCache(log);
 
@@ -771,6 +808,26 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertTrue(resultObj.has("path_following_error"), resultObj.toString());
+    }
+  }
+
+  @Nested
+  @DisplayName("analyze_loop_timing does not guess")
+  class LoopTimingNoGuessTests {
+    @Test
+    @DisplayName("a name like LoopTime is a candidate in no_match, not the loop time")
+    void loopTimeByNameIsACandidate() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/loop_by_name.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime", new double[]{0, 1, 2}, new double[]{20, 21, 19})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var r = findTool("analyze_loop_timing").execute(args).getAsJsonObject();
+      assertEquals("no_match", r.get("status").getAsString());
+      assertEquals("/RobotCode/LoopTime", r.getAsJsonArray("candidates").get(0).getAsString());
+      assertTrue(r.get("hint").getAsString().contains("pass it as entry"), r.toString());
     }
   }
 
@@ -1265,6 +1322,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -1295,6 +1353,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1325,6 +1384,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1356,6 +1416,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1502,6 +1563,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1526,6 +1588,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1550,6 +1613,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -2163,6 +2227,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
 
       var result = tool.execute(args).getAsJsonObject();
 

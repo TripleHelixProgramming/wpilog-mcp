@@ -332,22 +332,38 @@ class LazyParsedLogTest {
     }
 
     @Test
-    @DisplayName("values().get() returns empty list after close, not cached data or null")
-    void testDecodeEntryReturnsEmptyAfterClose(@TempDir Path tempDir) throws Exception {
+    @DisplayName("a closed (evicted) log still reads its values, decoded again, not cached")
+    void testDecodeEntryAfterClose(@TempDir Path tempDir) throws Exception {
       var logFile = createTestLog(tempDir, "test.wpilog", 10);
       var lazy = openLazy(logFile);
 
-      // Populate cache before closing
       var beforeClose = lazy.values().get("/Test/Voltage");
       assertNotNull(beforeClose);
       assertFalse(beforeClose.isEmpty());
 
+      // Evicted while a tool call still holds it: that call must not see empty data
       lazy.close();
 
-      // After close, should return empty list (not cached data, not null)
       var afterClose = lazy.values().get("/Test/Voltage");
-      assertNotNull(afterClose, "Should not return null after close");
-      assertTrue(afterClose.isEmpty(), "Should return empty list after close, not cached data");
+      assertEquals(beforeClose, afterClose);
+      assertNotSame(beforeClose, afterClose, "decoded again, not served from the cache");
+    }
+
+    @Test
+    @DisplayName("iterating entrySet decodes only the values that are taken")
+    void entrySetIsLazy(@TempDir Path tempDir) throws Exception {
+      var logFile = createTestLog(tempDir, "test.wpilog", 10);
+      var lazy = openLazy(logFile);
+
+      var names = new java.util.ArrayList<String>();
+      for (var entry : lazy.values().entrySet()) names.add(entry.getKey());
+      assertEquals(new java.util.ArrayList<>(lazy.entries().keySet()), names);
+      assertEquals(0, lazy.cachedEntryCount(), "no values decoded by iterating");
+
+      var voltage = lazy.values().entrySet().stream()
+          .filter(e -> e.getKey().equals("/Test/Voltage")).findFirst().orElseThrow();
+      assertFalse(voltage.getValue().isEmpty());
+      assertEquals(1, lazy.cachedEntryCount());
     }
 
     @Test
