@@ -8,8 +8,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Reads numbers out of decoded struct values by field path ({@code "angle.value"}), trying each
- * candidate path in turn, so domain tools do not depend on one decoder's key names.
+ * Reads numbers out of decoded struct values by field path ({@code "angle.value"},
+ * {@code "currents[1]"}; see {@link FieldPath}), trying each candidate path in turn. Enum fields
+ * read as their stored value and booleans as 1 or 0.
  *
  * @since 0.9.0
  */
@@ -21,19 +22,12 @@ final class StructFields {
    * The finite number at the first candidate path that resolves, or null.
    *
    * @param value A decoded struct (nested maps)
-   * @param paths Dot-separated field paths, e.g. {@code "speed"}, {@code "angle.value"}
+   * @param paths Field paths, e.g. {@code "speed"}, {@code "angle.value"}
    */
   static Double number(Object value, String... paths) {
     for (var path : paths) {
-      Object current = value;
-      for (var part : path.split("\\.")) {
-        if (!(current instanceof Map<?, ?> map)) {
-          current = null;
-          break;
-        }
-        current = map.get(part);
-      }
-      if (current instanceof Number n && Double.isFinite(n.doubleValue())) return n.doubleValue();
+      var number = FieldPath.toNumber(FieldPath.parse(path).resolveOne(value));
+      if (number != null && Double.isFinite(number)) return number;
     }
     return null;
   }

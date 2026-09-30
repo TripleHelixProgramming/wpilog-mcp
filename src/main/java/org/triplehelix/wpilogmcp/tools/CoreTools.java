@@ -27,7 +27,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *   <li>{@code get_entry_info} - Get detailed info about a specific entry</li>
  *   <li>{@code read_entry} - Read values from an entry with pagination</li>
  *   <li>{@code list_loaded_logs} - Show cache status</li>
- *   <li>{@code list_struct_types} - List supported struct types</li>
+ *   <li>{@code list_struct_types} - List a log's struct types and their schemas</li>
  *   <li>{@code health_check} - Server status and diagnostics</li>
  * </ul>
  */
@@ -182,6 +182,9 @@ public final class CoreTools {
   }
 
   static class GetEntryInfoTool extends LogRequiringTool {
+    /** Longest array or list shown whole in a sample; longer ones are cut, and say so. */
+    static final int SAMPLE_ELEMENTS = 20;
+
     @Override
     public String name() {
       return "get_entry_info";
@@ -189,7 +192,14 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "Get detailed information about a specific entry including metadata and sample values.";
+      return "Describe one entry: type, metadata, sample count, time range, and three "
+          + "representative samples (first, middle, last among non-empty values; "
+          + "non_empty_sample_count says how many values are not empty arrays or strings). "
+          + "For a struct entry: its schema, where the schema came from (logged by this log, "
+          + "WPILib's, or an assumed template), fields, and numeric_leaf_paths, the numeric "
+          + "fields that other tools can address as entry + path (e.g. "
+          + "/Vision/Camera0/PoseObservations[*].tagCount). decode_problem reports records that "
+          + "could not be decoded and why.";
     }
 
     @Override
@@ -217,37 +227,100 @@ public final class CoreTools {
         return result;
       }
 
-      var values = log.values().get(name);
+      var decoded = log.values().get(name);
+      var values = decoded != null ? decoded
+          : java.util.List.<org.triplehelix.wpilogmcp.log.TimestampedValue>of();
 
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("name", entry.name());
       result.addProperty("type", entry.type());
       result.addProperty("metadata", entry.metadata());
-      result.addProperty("sample_count", values != null ? values.size() : 0);
+      result.addProperty("sample_count", values.size());
+      log.decodeProblem(name).ifPresent(problem -> {
+        var o = AccessTrackingLogData.toJson(name, problem);
+        o.remove("entry");
+        result.add("decode_problem", o);
+      });
 
-      if (values != null && !values.isEmpty()) {
+      var structName = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(entry.type());
+      if (structName != null) {
+        var schemas = log.structSchemas();
+        boolean isArray = org.triplehelix.wpilogmcp.log.struct.StructSchemas.isArrayType(
+            entry.type());
+        var struct = schemas.info(structName)
+            .map(info -> StructDescriptions.describe(schemas, info))
+            .orElseGet(() -> StructDescriptions.missing(structName));
+        struct.addProperty("is_array", isArray);
+        if (struct.has("numeric_leaf_paths")) {
+          // Paths relative to the entry: an array's elements are selected with [i] or [*]
+          var paths = new JsonArray();
+          for (var p : struct.remove("numeric_leaf_paths").getAsJsonArray()) {
+            paths.add((isArray ? "[*]." : ".") + p.getAsString());
+          }
+          result.add("numeric_leaf_paths", paths);
+        }
+        result.add("struct", struct);
+      } else if (entry.type().equals("double[]") || entry.type().equals("float[]")
+          || entry.type().equals("int64[]") || entry.type().equals("boolean[]")) {
+        var paths = new JsonArray();
+        paths.add("[*]");
+        result.add("numeric_leaf_paths", paths);
+      }
+
+      if (!values.isEmpty()) {
         var timeRange = new JsonObject();
         timeRange.addProperty("start", values.get(0).timestamp());
         timeRange.addProperty("end", values.get(values.size() - 1).timestamp());
         result.add("time_range_sec", timeRange);
 
-        var samples = new JsonArray();
-        int[] rawIndices = {0, values.size() / 2, values.size() - 1};
-        var indices = java.util.Arrays.stream(rawIndices).distinct().toArray();
-        for (int idx : indices) {
-          if (idx >= 0 && idx < values.size()) {
-            var tv = values.get(idx);
-            var sample = new JsonObject();
-            sample.addProperty("timestamp_sec", tv.timestamp());
-            sample.add("value", GSON.toJsonTree(tv.value()));
-            samples.add(sample);
-          }
+        // Representative samples: first, middle, and last among the non-empty values
+        var nonEmpty = new java.util.ArrayList<Integer>();
+        for (int i = 0; i < values.size(); i++) {
+          if (!isEmptyValue(values.get(i).value())) nonEmpty.add(i);
         }
+        if (canBeEmpty(entry.type())) result.addProperty("non_empty_sample_count", nonEmpty.size());
+        var pool = nonEmpty.isEmpty()
+            ? java.util.stream.IntStream.range(0, values.size()).boxed().toList() : nonEmpty;
+        var samples = new JsonArray();
+        java.util.stream.IntStream.of(0, pool.size() / 2, pool.size() - 1).distinct()
+            .forEach(k -> samples.add(sample(values.get(pool.get(k)))));
         result.add("sample_values", samples);
       }
 
       return result;
+    }
+
+    static boolean canBeEmpty(String type) {
+      return type.endsWith("[]") || type.startsWith("structarray:") || type.equals("string")
+          || type.equals("json") || type.equals("raw");
+    }
+
+    static boolean isEmptyValue(Object value) {
+      if (value instanceof java.util.List<?> list) return list.isEmpty();
+      if (value instanceof String str) return str.isEmpty();
+      if (value != null && value.getClass().isArray()) {
+        return java.lang.reflect.Array.getLength(value) == 0;
+      }
+      return false;
+    }
+
+    /** One sample; a long array is cut to its first elements, with its full length. */
+    static JsonObject sample(org.triplehelix.wpilogmcp.log.TimestampedValue tv) {
+      var sample = new JsonObject();
+      sample.addProperty("timestamp_sec", tv.timestamp());
+      var json = GSON.toJsonTree(tv.value());
+      if (json.isJsonArray() && json.getAsJsonArray().size() > SAMPLE_ELEMENTS) {
+        var full = json.getAsJsonArray();
+        var cut = new JsonArray();
+        for (int i = 0; i < SAMPLE_ELEMENTS; i++) cut.add(full.get(i));
+        sample.add("value", cut);
+        sample.addProperty("value_length", full.size());
+        sample.addProperty("value_truncated", true);
+      } else {
+        sample.add("value", json);
+      }
+      return sample;
     }
   }
 
@@ -262,7 +335,10 @@ public final class CoreTools {
       return "Read values from an entry, in time order, with optional time range and paging: "
           + "total_in_range is the true count, offset/limit select a page, has_more says whether "
           + "another page exists, and limits.samples gives total (after offset) and returned. "
-          + "One page is not the whole signal: use get_statistics, find_condition, or "
+          + "Struct values are decoded by the log's own schema: nested objects with the schema's "
+          + "field names, enum fields as {value, label}, rotations with a _derived block "
+          + "(degrees; roll, pitch, yaw). Records that could not be decoded are reported in "
+          + "warnings. One page is not the whole signal: use get_statistics, find_condition, or "
           + "find_peaks for claims about a window.";
     }
 
@@ -281,6 +357,11 @@ public final class CoreTools {
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       var allValues = requireEntry(log, name); // not found: error with suggestions
+      var problem = log.decodeProblem(name);
+      if (allValues.isEmpty() && problem.isPresent()) {
+        throw new IllegalArgumentException("Entry " + name + " has " + problem.get().totalRecords()
+            + " records but none could be decoded: " + problem.get().message());
+      }
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -363,6 +444,9 @@ public final class CoreTools {
   }
 
   static class ListStructTypesTool extends ToolBase {
+    /** Entries listed per struct type; the count is always complete. */
+    static final int ENTRY_LIMIT = 20;
+
     @Override
     public String name() {
       return "list_struct_types";
@@ -370,47 +454,81 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List all supported struct types for decoding.";
+      return "List struct types and how they decode. Struct values are decoded from each log's "
+          + "own schemas (/.schema/struct:<Name> entries), so any struct the log records a "
+          + "schema for decodes, including a team's own. With path: every struct type the log "
+          + "records or uses, with source (logged; wpilib or assumed when the log has no schema "
+          + "for it: assumed layouts may not match the team's struct), size, schema, fields, "
+          + "numeric leaf paths, and the entries that use it. Without path: the fallback "
+          + "schemas used when a log records none.";
     }
 
     @Override
     public JsonObject inputSchema() {
-      return new SchemaBuilder().build();
+      return new SchemaBuilder()
+          .addProperty("path", "string", "Path to the log file (from list_available_logs); "
+              + "omit to list only the fallback schemas", false)
+          .build();
     }
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var path = getOptString(arguments, "path", null);
       var result = new JsonObject();
       result.addProperty("success", true);
+      if (path == null) {
+        var schemas = org.triplehelix.wpilogmcp.log.struct.StructSchemas.fallbackOnly();
+        var types = new JsonArray();
+        for (var name : schemas.allStructs()) {
+          schemas.info(name).ifPresent(info -> types.add(StructDescriptions.describe(schemas, info)));
+        }
+        result.addProperty("note", "Structs are decoded from each log's own schemas; these are "
+            + "used only for struct types a log records no schema for. Pass path to see a log's "
+            + "struct types.");
+        result.add("struct_types", types);
+        return result;
+      }
 
-      var geometry = new JsonArray();
-      geometry.add("Pose2d");
-      geometry.add("Pose3d");
-      geometry.add("Translation2d");
-      geometry.add("Translation3d");
-      geometry.add("Rotation2d");
-      geometry.add("Rotation3d");
-      geometry.add("Transform2d");
-      geometry.add("Transform3d");
-      geometry.add("Twist2d");
-      geometry.add("Twist3d");
+      var log = logManager.getOrLoad(path);
+      var schemas = log.structSchemas();
+      // Declaration (entry id) order, whatever order the entry map iterates in
+      var usedBy = new java.util.LinkedHashMap<String, java.util.List<String>>();
+      var byId = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(EntryInfo::id)).toList();
+      for (var entry : byId) {
+        var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(entry.type());
+        if (struct != null) usedBy.computeIfAbsent(struct, k -> new java.util.ArrayList<>())
+            .add(entry.name());
+      }
+      var names = new java.util.LinkedHashSet<>(schemas.loggedStructs());
+      names.addAll(usedBy.keySet());
 
-      var kinematics = new JsonArray();
-      kinematics.add("ChassisSpeeds");
-      kinematics.add("SwerveModuleState");
-      kinematics.add("SwerveModulePosition");
-
-      var vision = new JsonArray();
-      vision.add("TargetObservation");
-      vision.add("PoseObservation");
-      vision.add("SwerveSample");
-
-      var structs = new JsonObject();
-      structs.add("geometry", geometry);
-      structs.add("kinematics", kinematics);
-      structs.add("vision", vision);
-
-      result.add("struct_types", structs);
+      var types = new JsonArray();
+      var warnings = new JsonArray();
+      for (var name : names) {
+        var info = schemas.info(name);
+        var o = info.map(i -> StructDescriptions.describe(schemas, i))
+            .orElseGet(() -> StructDescriptions.missing(name));
+        var entries = usedBy.getOrDefault(name, java.util.List.of());
+        var listed = new JsonArray();
+        entries.stream().limit(ENTRY_LIMIT).forEach(listed::add);
+        o.addProperty("entry_count", entries.size());
+        ResultContract.addLimitedList(o, "entries", listed, entries.size(), ENTRY_LIMIT);
+        types.add(o);
+        if (entries.isEmpty()) continue;
+        if (info.isEmpty() || !info.get().valid()) {
+          warnings.add(entries.size() + " entries of struct " + name + " cannot be decoded: "
+              + o.get("error").getAsString());
+        } else if (info.get().source()
+            == org.triplehelix.wpilogmcp.log.struct.StructSchemas.Source.ASSUMED) {
+          warnings.add(entries.size() + " entries of struct " + name + " are decoded by an "
+              + "assumed template layout; the log records no schema for it.");
+        }
+      }
+      result.addProperty("log_path", log.path());
+      result.addProperty("struct_type_count", types.size());
+      result.add("struct_types", types);
+      if (!warnings.isEmpty()) result.add("warnings", warnings);
       return result;
     }
   }

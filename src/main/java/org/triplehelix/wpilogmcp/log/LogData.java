@@ -6,6 +6,8 @@ package org.triplehelix.wpilogmcp.log;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 
 /**
  * Common interface for wpilog data access.
@@ -61,6 +63,28 @@ public interface LogData {
   default int sampleCount(String entryName) {
     var vals = values().get(entryName);
     return vals != null ? vals.size() : 0;
+  }
+
+  /**
+   * The struct schemas this log records, with WPILib's canonical schemas as a fallback. Struct
+   * values are decoded by these; tools use them to describe a struct entry's fields.
+   */
+  default StructSchemas structSchemas() {
+    return StructSchemas.fromLog(entries(), name -> {
+      var vals = values().get(name);
+      return vals == null || vals.isEmpty() ? null : vals.get(0).value();
+    });
+  }
+
+  /**
+   * Why some or all of an entry's records could not be decoded, if any could not. For a lazily
+   * decoded log this decodes the entry first.
+   *
+   * @param entryName The entry name
+   * @return The problem, or empty when every record decoded
+   */
+  default Optional<DecodeProblem> decodeProblem(String entryName) {
+    return Optional.empty();
   }
 
   /** Number of entries in the log. */

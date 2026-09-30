@@ -21,7 +21,6 @@ import org.triplehelix.wpilogmcp.log.LogDirectory.RevLogFileInfo;
 import org.triplehelix.wpilogmcp.log.subsystems.LogCache;
 import org.triplehelix.wpilogmcp.log.subsystems.LogParser;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 import org.triplehelix.wpilogmcp.revlog.RevLogParser;
 import org.triplehelix.wpilogmcp.revlog.dbc.DbcDatabase;
@@ -41,8 +40,10 @@ import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
  *   <li>{@link LogCache} - LRU cache with memory/count-based eviction
  *   <li>{@link LogParser} - WPILOG file parsing with struct decoding
  *   <li>{@link SecurityValidator} - Path validation to prevent traversal attacks
- *   <li>{@link StructDecoderRegistry} - Extensible struct decoder registry
  * </ul>
+ *
+ * <p>Struct values are decoded by each log's own schemas
+ * ({@link org.triplehelix.wpilogmcp.log.struct.StructSchemas}).
  *
  * @since 0.1.0 (refactored in 0.4.0)
  */
@@ -59,7 +60,6 @@ public class LogManager {
   static final int MAX_METADATA_RECORDS = 2000;
 
   // Subsystems (initialized in constructor)
-  private final StructDecoderRegistry decoderRegistry;
   private final SecurityValidator securityValidator;
   private final LogParser logParser;
   private final LogCache logCache;
@@ -85,9 +85,8 @@ public class LogManager {
   /** Private constructor for singleton pattern. */
   private LogManager() {
     // Initialize subsystems
-    this.decoderRegistry = new StructDecoderRegistry();
     this.securityValidator = new SecurityValidator();
-    this.logParser = new LogParser(decoderRegistry);
+    this.logParser = new LogParser();
     this.logCache = new LogCache();
 
     // Initialize disk cache
@@ -163,16 +162,6 @@ public class LogManager {
    */
   public static LogManager getInstance() {
     return INSTANCE;
-  }
-
-  /**
-   * Gets the struct decoder registry for registering custom decoders.
-   *
-   * @return The decoder registry
-   * @since 0.4.0
-   */
-  public StructDecoderRegistry getDecoderRegistry() {
-    return decoderRegistry;
   }
 
   /**
@@ -294,8 +283,7 @@ public class LogManager {
         try {
           long perLogBudgetBytes = getPerLogCacheBudgetBytes();
           var reader = new edu.wpi.first.util.datalog.DataLogReader(filePath.toString());
-          log = new LazyParsedLog(filePath.toString(), reader,
-              logParser.getDecoderRegistry(), perLogBudgetBytes);
+          log = new LazyParsedLog(filePath.toString(), reader, perLogBudgetBytes);
         } catch (Exception e) {
           // If lazy scan fails (e.g., not a valid WPILOG), fall back to eager parse
           logger.debug("Lazy scan failed for {}, falling back to eager parse: {}",
@@ -1033,11 +1021,6 @@ public class LogManager {
     return logCache;
   }
 
-  /** Test accessor: Gets the decoder registry. */
-  public StructDecoderRegistry testGetDecoderRegistry() {
-    return decoderRegistry;
-  }
-
   /** Test accessor: Triggers eviction check. */
   public void testEvictIfNeeded() {
     logCache.evictIfNeeded();
@@ -1046,121 +1029,5 @@ public class LogManager {
   /** Test accessor: Checks if a log is in cache. */
   public boolean testContainsLog(String path) {
     return testIsLogLoaded(path);
-  }
-
-  /** Test accessor: Reads double from binary data. */
-  public double testReadDouble(byte[] data, int offset) {
-    return new org.triplehelix.wpilogmcp.log.subsystems.BinaryReader().readDouble(data, offset);
-  }
-
-  /** Test accessor: Reads float from binary data. */
-  public float testReadFloat(byte[] data, int offset) {
-    return new org.triplehelix.wpilogmcp.log.subsystems.BinaryReader().readFloat(data, offset);
-  }
-
-  /** Test accessor: Reads int32 from binary data. */
-  public int testReadInt32(byte[] data, int offset) {
-    return new org.triplehelix.wpilogmcp.log.subsystems.BinaryReader().readInt32(data, offset);
-  }
-
-  // Test accessors for struct decoding (delegate to registry)
-  // Note: These methods slice the array from offset to support legacy test interface
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodePose2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Pose2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodePose3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Pose3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTranslation2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Translation2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTranslation3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Translation3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeRotation2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Rotation2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeRotation3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Rotation3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTwist2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Twist2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTwist3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Twist3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeChassisSpeeds(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:ChassisSpeeds", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeSwerveModuleState(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:SwerveModuleState", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeSwerveModulePosition(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:SwerveModulePosition", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTargetObservation(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:TargetObservation", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  java.util.List<java.util.Map<String, Object>> testDecodeTargetObservationArray(byte[] data) {
-    return (java.util.List<java.util.Map<String, Object>>) decoderRegistry.decodeStruct("structarray:TargetObservation", data);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodePoseObservation(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:PoseObservation", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  java.util.List<java.util.Map<String, Object>> testDecodePoseObservationArray(byte[] data) {
-    return (java.util.List<java.util.Map<String, Object>>) decoderRegistry.decodeStruct("structarray:PoseObservation", data);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeSwerveSample(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:SwerveSample", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  java.util.List<java.util.Map<String, Object>> testDecodeSwerveSampleArray(byte[] data) {
-    return (java.util.List<java.util.Map<String, Object>>) decoderRegistry.decodeStruct("structarray:SwerveSample", data);
   }
 }

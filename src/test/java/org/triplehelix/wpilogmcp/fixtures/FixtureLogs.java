@@ -665,6 +665,11 @@ public final class FixtureLogs {
         byte[] arm = packArm(armDesc, 0.5 * Math.sin(0.2 * t), 10.0 + t, 11.0 + t, (i / 250) % 3,
             i % 8, i > 100, (float) (30.0 + 0.1 * t));
         w.raw("/RealOutputs/Arm/State", "struct:ArmState", t, arm);
+        if (i % 100 == 0) {
+          // every fourth of these records is cut to 29 bytes: 3 of 15 cannot be decoded
+          w.raw("/RealOutputs/Arm/Partial", "struct:ArmState", t,
+              (i / 100) % 4 == 3 ? java.util.Arrays.copyOf(arm, 29) : arm);
+        }
         if (i % 10 == 0) {
           byte[] arm2 = packArm(armDesc, -0.25, 1.0, 2.0, 1, 5, true, 41.5f);
           var both = ByteBuffer.allocate(arm.length * 2).put(arm).put(arm2).array();
@@ -682,7 +687,8 @@ public final class FixtureLogs {
       w.raw("/RealOutputs/Mystery", "struct:Mystery", 5.0, new byte[] {1, 2, 3, 4});
     }
     return new Fixture("struct_custom", path,
-        "Unknown custom structs: nested, fixed array, enum, bit-fields, out-of-order schemas",
+        "Unknown custom structs: nested, fixed array, enum, bit-fields, out-of-order schemas; "
+            + "a struct with no schema; an entry with 3 of 15 records cut short",
         List.of("C1", "C3", "C4", "C5", "R1", "R5"));
   }
 

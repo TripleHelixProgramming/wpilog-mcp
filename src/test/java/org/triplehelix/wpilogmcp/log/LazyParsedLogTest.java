@@ -27,7 +27,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 
 /**
  * Dedicated tests for LazyParsedLog — the on-demand parsing engine.
@@ -100,7 +99,7 @@ class LazyParsedLogTest {
 
   private LazyParsedLog openLazy(Path logFile) throws IOException {
     var reader = new DataLogReader(logFile.toString());
-    return new LazyParsedLog(logFile.toString(), reader, new StructDecoderRegistry(), 10_000_000);
+    return new LazyParsedLog(logFile.toString(), reader, 10_000_000);
   }
 
   // ==================== Construction ====================
@@ -158,7 +157,7 @@ class LazyParsedLogTest {
 
       var reader = new DataLogReader(badFile.toString());
       assertThrows(IOException.class, () -> new LazyParsedLog(
-          badFile.toString(), reader, new StructDecoderRegistry(), 10_000_000));
+          badFile.toString(), reader, 10_000_000));
     }
 
     @Test
@@ -386,7 +385,7 @@ class LazyParsedLogTest {
 
       // Very small cache: 1 KB — not enough for all entries
       try (var lazy = new LazyParsedLog(logFile.toString(), reader,
-          new StructDecoderRegistry(), 1024)) {
+          1024)) {
         // Access all 4 entries to force eviction of earlier ones
         var v1 = lazy.values().get("/Test/Voltage");
         var v2 = lazy.values().get("/Test/Counter");
@@ -409,7 +408,7 @@ class LazyParsedLogTest {
 
       // Tiny cache
       try (var lazy = new LazyParsedLog(logFile.toString(), reader,
-          new StructDecoderRegistry(), 512)) {
+          512)) {
         // Access, let evict, re-access
         var first = lazy.values().get("/Test/Voltage");
         assertNotNull(first);
@@ -508,6 +507,26 @@ class LazyParsedLogTest {
         assertTrue(longEstimate > shortEstimate,
             "Long strings should produce larger estimate than short strings");
       }
+    }
+
+    @Test
+    @DisplayName("nested struct values and struct arrays weigh by their whole contents")
+    void nestedStructEstimates() {
+      var schemas = org.triplehelix.wpilogmcp.log.struct.StructSchemas.fallbackOnly();
+      var buffer = java.nio.ByteBuffer.allocate(24 * 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+      for (int i = 0; i < 24; i++) buffer.putDouble(i);
+      var translation = schemas.decode("struct:Translation2d", java.util.Arrays.copyOf(
+          buffer.array(), 16));
+      var pose = schemas.decode("struct:Pose2d", java.util.Arrays.copyOf(buffer.array(), 24));
+      var poses = schemas.decode("struct:Pose2d[]", buffer.array()); // 8 poses
+      long t = LazyParsedLog.estimateValueBytes(translation, 0);
+      long p = LazyParsedLog.estimateValueBytes(pose, 0);
+      long ps = LazyParsedLog.estimateValueBytes(poses, 0);
+      assertTrue(p > 2 * t, "a pose holds a translation and a rotation: " + p + " vs " + t);
+      assertTrue(ps >= 8 * p, "eight poses weigh at least eight times one: " + ps + " vs " + p);
+      // generous against the compact layout: a Pose2d is under 300 bytes of heap
+      assertTrue(p >= 256 && p <= 600, "Pose2d estimate " + p);
+      assertEquals(16, LazyParsedLog.estimateValueBytes(List.of(), 0));
     }
 
     @Test
@@ -712,8 +731,7 @@ class LazyParsedLogTest {
       var logFile = createTestLog(tempDir, "test.wpilog", 50);
 
       try (var lazy = openLazy(logFile)) {
-        var parser = new org.triplehelix.wpilogmcp.log.subsystems.LogParser(
-            new StructDecoderRegistry());
+        var parser = new org.triplehelix.wpilogmcp.log.subsystems.LogParser();
         var eager = parser.parse(logFile);
 
         assertEquals(eager.entries().keySet(), lazy.entries().keySet());

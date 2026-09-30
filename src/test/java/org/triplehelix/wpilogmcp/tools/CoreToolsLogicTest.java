@@ -176,46 +176,58 @@ class CoreToolsLogicTest extends ToolTestBase {
   @DisplayName("list_struct_types Tool")
   class ListStructTypesToolTests {
     @Test
-    @DisplayName("returns all struct type categories")
-    void returnsStructTypeCategories() throws Exception {
-      var tool = findTool("list_struct_types");
-      var result = tool.execute(new JsonObject());
-      var resultObj = result.getAsJsonObject();
-
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("struct_types"), "Should have struct_types field");
-
-      var structTypes = resultObj.getAsJsonObject("struct_types");
-      assertTrue(structTypes.has("geometry"), "Should have geometry types");
-      assertTrue(structTypes.has("kinematics"), "Should have kinematics types");
-      assertTrue(structTypes.has("vision"), "Should have vision types");
-
-      // Check that geometry includes expected types
-      var geometry = structTypes.getAsJsonArray("geometry");
-      assertTrue(geometry.size() > 0, "Geometry should have struct types");
-
-      // Check that kinematics includes expected types
-      var kinematics = structTypes.getAsJsonArray("kinematics");
-      assertTrue(kinematics.size() > 0, "Kinematics should have struct types");
+    @DisplayName("without a path: the fallback schemas, each with its source and fields")
+    void fallbackSchemas() throws Exception {
+      var result = findTool("list_struct_types").execute(new JsonObject()).getAsJsonObject();
+      assertTrue(result.get("success").getAsBoolean());
+      assertTrue(result.get("note").getAsString().contains("each log's own schemas"));
+      var bySource = new java.util.HashMap<String, String>();
+      for (var t : result.getAsJsonArray("struct_types")) {
+        var o = t.getAsJsonObject();
+        bySource.put(o.get("name").getAsString(), o.get("source").getAsString());
+        assertTrue(o.get("valid").getAsBoolean(), o.toString());
+        assertTrue(o.has("fields") && o.has("numeric_leaf_paths") && o.has("size_bytes"));
+      }
+      assertEquals("wpilib", bySource.get("Pose2d"));
+      assertEquals("wpilib", bySource.get("SwerveModuleState"));
+      assertEquals("assumed", bySource.get("PoseObservation"));
+      assertEquals("assumed", bySource.get("SwerveSample"));
     }
 
     @Test
-    @DisplayName("includes standard WPILib struct types")
-    void includesStandardWpilibStructs() throws Exception {
-      var tool = findTool("list_struct_types");
-      var result = tool.execute(new JsonObject());
-      var resultObj = result.getAsJsonObject();
-
-      var structTypes = resultObj.getAsJsonObject("struct_types");
-      var geometry = structTypes.getAsJsonArray("geometry");
-      boolean hasPose2d = false;
-      for (var element : geometry) {
-        if (element.getAsString().equals("Pose2d")) {
-          hasPose2d = true;
-          break;
-        }
-      }
-      assertTrue(hasPose2d, "Should include Pose2d in geometry types");
+    @DisplayName("with a path: the log's struct types, including ones it logs no schema for")
+    void perLog() throws Exception {
+      var pose = new java.util.LinkedHashMap<String, Object>();
+      pose.put("translation", java.util.Map.of("x", 1.0, "y", 2.0));
+      pose.put("rotation", java.util.Map.of("value", 0.0));
+      var log = new MockLogBuilder()
+          .setPath("/test/structs.wpilog")
+          .addEntry("/.schema/struct:Widget", "structschema", java.util.List.of(
+              new org.triplehelix.wpilogmcp.log.TimestampedValue(0, "double a;int16 b[3]")))
+          .addEntry("/Drive/Pose", "struct:Pose2d", java.util.List.of(
+              new org.triplehelix.wpilogmcp.log.TimestampedValue(0, pose)))
+          .addEntry("/Thing/Gadget", "struct:Gadget", java.util.List.of())
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", "/test/structs.wpilog");
+      var result = findTool("list_struct_types").execute(args).getAsJsonObject();
+      assertTrue(result.get("success").getAsBoolean(), result.toString());
+      var types = result.getAsJsonArray("struct_types");
+      assertEquals(3, types.size(), types.toString());
+      var widget = types.get(0).getAsJsonObject();
+      assertEquals("Widget", widget.get("name").getAsString());
+      assertEquals("logged", widget.get("source").getAsString());
+      assertEquals(14, widget.get("size_bytes").getAsInt());
+      assertEquals(0, widget.get("entry_count").getAsInt());
+      var poseType = types.get(1).getAsJsonObject();
+      assertEquals("wpilib", poseType.get("source").getAsString());
+      assertEquals("/Drive/Pose", poseType.getAsJsonArray("entries").get(0).getAsString());
+      var gadget = types.get(2).getAsJsonObject();
+      assertEquals("missing", gadget.get("source").getAsString());
+      assertFalse(gadget.get("valid").getAsBoolean());
+      assertTrue(result.getAsJsonArray("warnings").get(0).getAsString()
+          .contains("struct Gadget cannot be decoded"), result.toString());
     }
   }
 

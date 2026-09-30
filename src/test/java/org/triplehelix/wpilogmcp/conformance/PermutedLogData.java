@@ -11,10 +11,13 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import org.triplehelix.wpilogmcp.log.DecodeProblem;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 
 /**
  * A view of a log whose entries iterate in the reverse of their natural order, with every entry
@@ -86,4 +89,10 @@ final class PermutedLogData implements LogData {
   @Override public boolean truncated() { return delegate.truncated(); }
   @Override public String truncationMessage() { return delegate.truncationMessage(); }
   @Override public int sampleCount(String entryName) { return delegate.sampleCount(entryName); }
+  @Override public StructSchemas structSchemas() { return delegate.structSchemas(); }
+
+  @Override
+  public Optional<DecodeProblem> decodeProblem(String entryName) {
+    return delegate.decodeProblem(entryName);
+  }
 }

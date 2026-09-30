@@ -238,13 +238,53 @@ List all entries in the specified log file.
 **Returns:** List of entries with name, type, and sample count
 
 ### `get_entry_info`
-Get detailed information about a specific entry.
+Describe one entry: what it is, how it decodes, and what it looks like.
 
 **Parameters:**
 - `path` (required): Path to the log file
 - `name` (required): The entry name (e.g., `/Drive/Odometry/Pose`)
 
-**Returns:** Entry metadata, sample count, time range, and sample values
+**Returns:**
+- `type`, `metadata`, `sample_count`, `time_range_sec`
+- `sample_values`: three representative samples — first, middle, and last among the non-empty values (an empty struct array or string is not representative); an array longer than 20 elements is cut, with `value_length` and `value_truncated`
+- `non_empty_sample_count` (array and string entries): how many values are not empty — for example, how many `PoseObservations` records held at least one observation
+- `struct` (struct entries): `name`, `is_array`, `source` (`logged`: the log's own `/.schema/struct:` entry; `wpilib`: WPILib's schema, used because the log records none; `assumed`: a template layout that may not match the team's struct; `missing`: no schema at all), `source_note`, `size_bytes`, `schema`, `schema_entry`, and `fields` (`name`, `type`, and when present `array_size`, `bit_width`, `enum`)
+- `numeric_leaf_paths`: the numeric fields inside the entry's values, relative to the entry (`.translation.x`, `.currents[1]`, `[*].tagCount` for each element of an array; enum fields and booleans count as numbers). Numeric tools accept these appended to the entry name
+- `decode_problem`: `{failed_records, total_records, reason}` when some records could not be decoded
+
+**Example Response (struct array):**
+```json
+{
+  "success": true,
+  "status": "ok",
+  "name": "/Vision/Camera0/PoseObservations",
+  "type": "struct:PoseObservation[]",
+  "sample_count": 5000,
+  "struct": {
+    "name": "PoseObservation",
+    "source": "logged",
+    "source_note": "decoded by the schema this log records",
+    "valid": true,
+    "size_bytes": 88,
+    "schema": "double timestamp;Pose3d pose;double ambiguity;int32 tagCount;double averageTagDistance;enum {MEGATAG_1=0, MEGATAG_2=1, PHOTONVISION=2} int32 type;",
+    "schema_entry": "/.schema/struct:PoseObservation",
+    "fields": [
+      {"name": "timestamp", "type": "double"},
+      {"name": "pose", "type": "Pose3d"},
+      {"name": "ambiguity", "type": "double"},
+      {"name": "tagCount", "type": "int32"},
+      {"name": "averageTagDistance", "type": "double"},
+      {"name": "type", "type": "int32", "enum": {"MEGATAG_1": 0, "MEGATAG_2": 1, "PHOTONVISION": 2}}
+    ],
+    "is_array": true
+  },
+  "numeric_leaf_paths": ["[*].timestamp", "[*].pose.translation.x", "[*].pose.translation.y",
+    "[*].pose.translation.z", "[*].pose.rotation.q.w", "...", "[*].pose.rotation._derived.yaw_deg",
+    "[*].ambiguity", "[*].tagCount", "[*].averageTagDistance", "[*].type"],
+  "non_empty_sample_count": 4943,
+  "sample_values": ["..."]
+}
+```
 
 ### `read_entry`
 Read values from an entry with time range filtering and pagination.
@@ -259,20 +299,21 @@ Read values from an entry with time range filtering and pagination.
 
 **Returns:** Array of timestamped values, `total_in_range` (the true count), `returned_count`, `has_more`, and `limits.samples` (total after `offset` vs returned). An unknown entry name is an error with suggestions
 
+**Struct values** are decoded by the log's own schema for the type: nested objects with the schema's field names, in schema order; fixed-size array fields as arrays; enum fields as `{"value": 2, "label": "PHOTONVISION"}` (`label` is null for a number the schema does not name); WPILib's `Rotation2d` gains `_derived.degrees`, and `Rotation3d` gains `_derived` roll, pitch, and yaw (radians and degrees), wherever they are nested. An entry none of whose records can be decoded is an error that says why; records that fail among others are reported in `warnings` and `_metadata.decode_problems`.
+
 **Example Response (Pose2d):**
 ```json
 {
   "success": true,
+  "status": "ok",
   "name": "/Drive/Odometry/Pose",
   "type": "struct:Pose2d",
   "samples": [
     {
       "timestamp_sec": 0.02,
       "value": {
-        "x": 1.54,
-        "y": 5.55,
-        "rotation_rad": 0.0,
-        "rotation_deg": 0.0
+        "translation": {"x": 1.54, "y": 5.55},
+        "rotation": {"value": 0.0, "_derived": {"degrees": 0.0}}
       }
     }
   ]
@@ -280,33 +321,49 @@ Read values from an entry with time range filtering and pagination.
 ```
 
 ### `list_struct_types`
-List all supported WPILib struct types organized by category. Useful for discovering what struct types can be decoded and what fields they contain.
+List struct types and how they decode. Struct values are decoded from each log's own schemas (`/.schema/struct:<Name>` entries, also `NT:/.schema/struct:<Name>`), so any struct a log records a schema for decodes — WPILib's, a vendor's, or a team's own, with nested structs, fixed-size arrays, enums, and bit-fields.
 
-**Parameters:** None
+**Parameters:**
+- `path` (optional): Path to the log file. Omit it to list only the fallback schemas
 
-**Returns:** Struct types organized into categories (geometry, kinematics, vision)
+**Returns:**
+- With `path`: `struct_types`, every struct type the log records a schema for (in declaration order) and every one its entries use, each with `source` (`logged`, `wpilib`, `assumed`, or `missing`), `source_note`, `valid`, `error` (an invalid schema, or one that references a struct with no schema), `size_bytes`, `schema`, `schema_entry`, `fields`, `numeric_leaf_paths`, `entry_count`, and `entries` (up to 20; `limits.entries` gives the total). `warnings` name struct types whose entries cannot be decoded or rely on an assumed layout
+- Without `path`: the fallback schemas — WPILib's geometry and kinematics structs (`source: wpilib`) and the template layouts (`source: assumed`: AdvantageKit vision's `PoseObservation` and `TargetObservation`, Choreo's `SwerveSample`) — used only for struct types a log records no schema for
 
-**Example Response:**
+**Example Response (with path, abridged):**
 ```json
 {
   "success": true,
-  "struct_types": {
-    "geometry": [
-      "Pose2d", "Pose3d", "Translation2d", "Translation3d",
-      "Rotation2d", "Rotation3d", "Transform2d", "Transform3d",
-      "Twist2d", "Twist3d"
-    ],
-    "kinematics": [
-      "ChassisSpeeds", "SwerveModuleState", "SwerveModulePosition"
-    ],
-    "vision": [
-      "TargetObservation", "PoseObservation", "SwerveSample"
-    ]
-  }
+  "status": "ok",
+  "log_path": "/logs/2026-struct_custom.wpilog",
+  "struct_type_count": 4,
+  "struct_types": [
+    {
+      "name": "ArmState",
+      "source": "logged",
+      "valid": true,
+      "size_bytes": 30,
+      "schema": "Rotation2d angle;double currents[2];enum {STOWED=0, SCORING=1, INTAKE=2} int8 mode;uint8 flags:3;bool homed:1;float temperature",
+      "schema_entry": "/.schema/struct:ArmState",
+      "fields": [
+        {"name": "angle", "type": "Rotation2d"},
+        {"name": "currents", "type": "double", "array_size": 2},
+        {"name": "mode", "type": "int8", "enum": {"STOWED": 0, "SCORING": 1, "INTAKE": 2}},
+        {"name": "flags", "type": "uint8", "bit_width": 3},
+        {"name": "homed", "type": "bool", "bit_width": 1},
+        {"name": "temperature", "type": "float"}
+      ],
+      "numeric_leaf_paths": ["angle.value", "angle._derived.degrees", "currents[0]", "currents[1]", "mode", "flags", "homed", "temperature"],
+      "entry_count": 3,
+      "entries": ["/RealOutputs/Arm/State", "/RealOutputs/Arm/Partial", "/RealOutputs/Arm/States"]
+    },
+    {"name": "Mystery", "source": "missing", "valid": false, "error": "no schema for struct Mystery in this log (...)", "entry_count": 1}
+  ],
+  "warnings": ["1 entries of struct Mystery cannot be decoded: no schema for struct Mystery in this log (...)"]
 }
 ```
 
-**Use Case:** When exploring a new log file, use this tool to see what struct types are available for decoding. Each struct type is automatically decoded into its component fields when read.
+**Use Case:** Before analyzing a team's own structs (vision observations, mechanism states), check that they decode by a logged schema and find the numeric fields to address.
 
 ### `health_check`
 Get system health status including JVM memory usage, loaded log count, disk cache status, and TBA availability. Useful for monitoring server performance and resource usage.
@@ -1188,7 +1245,7 @@ Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return 
 
 **Export directory:** `{java.io.tmpdir}/wpilog-export` by default, or `-exportdir`, the `WPILOG_EXPORT_DIR` environment variable, or `exportdir` in the server config. Every result names it (`export_directory`); a refused path's error names it too. Symlinks cannot escape it.
 
-**Columns:** every value is flattened. A scalar is one `value` column; a struct is one column per field, nested fields as dot paths (`translation.x`) and array fields as `field[i]`, sorted by name; a struct array or primitive array is one row per element with an `index` column. Header and rows always align.
+**Columns:** every value is flattened. A scalar is one `value` column; a struct is one column per field, nested fields as dot paths (`translation.x`), array fields as `field[i]`, and an enum field as two columns, `field` (the number) and `field.label`, sorted by name; a struct array or primitive array is one row per element with an `index` column. Header and rows always align.
 
 **Returns:** `entry`, `type`, `columns`, `rows_exported`, and either `output_path` (absolute) and `export_directory`, or (inline) `rows` with `limits.rows` (total vs returned).
 
@@ -1202,7 +1259,7 @@ Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return 
   "export_directory": "/private/var/folders/.../T/wpilog-export",
   "rows_exported": 59138,
   "type": "struct:Pose2d",
-  "columns": ["timestamp_sec", "rotation_deg", "rotation_rad", "x", "y"]
+  "columns": ["timestamp_sec", "rotation._derived.degrees", "rotation.value", "translation.x", "translation.y"]
 }
 ```
 
@@ -2101,6 +2158,7 @@ Every tool result, however the tool built it, is normalized by the server so tha
 | `skipped` | Sections not produced, each `{section, reason}` |
 | `limits` | For each list cut short by a limit: `{total, returned, limit}` |
 | `_metadata.non_finite_fields` | Fields whose value could not be computed (NaN or infinite). They are emitted as `null` — never as a bare `NaN`, which is not valid JSON — and named in a warning |
+| `_metadata.decode_problems` | Entries the tool read whose records could not all be decoded, each `{entry, failed_records, total_records, reason}` (e.g. a struct with no schema, or a record whose size does not fit its schema). Each also gets a warning; the result uses the records that did decode |
 
 `not_applicable` and `no_match` are answers, not failures of the server: they tell the agent that the absence of findings is not evidence of the absence of problems, and how to find the right data.
 

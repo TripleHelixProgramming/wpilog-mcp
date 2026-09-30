@@ -279,6 +279,16 @@ class ReviewLogGoldenTest {
     near(369.970913, findNumber(value, "timestamp").orElseThrow(), 1e-6, "embedded timestamp");
     near(2.857566, findNumber(value, "averageTagDistance").orElseThrow(), 1e-6, "distance");
     near(1, findNumber(value, "tagCount").orElseThrow(), 0, "tagCount");
+    // decoded by the log's own schema: nested exactly as the schema declares
+    var observation = value.getAsJsonArray().get(0).getAsJsonObject();
+    var translation = observation.getAsJsonObject("pose").getAsJsonObject("translation");
+    near(3.1805, translation.get("x").getAsDouble(), 5e-5, "pose.translation.x");
+    near(4.5455, translation.get("y").getAsDouble(), 5e-5, "pose.translation.y");
+    near(0.3667, translation.get("z").getAsDouble(), 5e-5, "pose.translation.z");
+    near(0.0, observation.get("ambiguity").getAsDouble(), 0, "ambiguity");
+    var type = observation.getAsJsonObject("type");
+    assertEquals(2, type.get("value").getAsInt());
+    assertEquals("PHOTONVISION", type.get("label").getAsString());
   }
 
   @Test

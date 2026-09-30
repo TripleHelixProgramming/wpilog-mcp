@@ -15,12 +15,16 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import edu.wpi.first.util.datalog.DataLogAccess;
+import org.triplehelix.wpilogmcp.log.struct.EnumValue;
+import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
+import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 
 /**
  * Lazily-loaded wpilog data backed by a memory-mapped file and Caffeine cache.
@@ -32,6 +36,10 @@ import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
  * <p>Decoded values are cached in a Caffeine weight-based LRU cache. If an entry is evicted
  * under memory pressure, re-decoding uses the stored byte offsets for direct access — no
  * full file re-scan needed.
+ *
+ * <p>Struct values are decoded by the log's own schemas ({@code /.schema/struct:*} entries, read
+ * once after the scan). Records that cannot be decoded are counted per entry and reported through
+ * {@link #decodeProblem(String)}.
  *
  * @since 0.8.0
  */
@@ -49,7 +57,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final Map<String, int[]> recordOffsets;
 
   private final DataLogReader reader;
-  private final StructDecoderRegistry decoderRegistry;
+  private final StructSchemas structSchemas;
+  private final Map<String, DecodeProblem> decodeProblems = new ConcurrentHashMap<>();
+  /** Entries decoded at least once, whose decode problems (if any) are therefore known. */
+  private final Set<String> decodedOnce = ConcurrentHashMap.newKeySet();
   private final Cache<String, List<TimestampedValue>> valueCache;
   private final LazyValuesMap valuesView;
   private volatile boolean closed = false;
@@ -63,12 +74,11 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    *
    * @param path The file path
    * @param reader The DataLogReader (memory-mapped)
-   * @param decoderRegistry The struct decoder registry
    * @param maxCacheWeightBytes Maximum total weight of cached decoded values in bytes
    * @throws IOException if the reader is invalid
    */
-  public LazyParsedLog(String path, DataLogReader reader,
-      StructDecoderRegistry decoderRegistry, long maxCacheWeightBytes) throws IOException {
+  public LazyParsedLog(String path, DataLogReader reader, long maxCacheWeightBytes)
+      throws IOException {
     if (!reader.isValid()) {
       throw new IOException("Invalid WPILOG file: " + path);
     }
@@ -83,7 +93,6 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
     this.path = path;
     this.reader = reader;
-    this.decoderRegistry = decoderRegistry;
 
     // Single-pass scan using WPILib's iterator for correct Start record parsing,
     // while tracking byte offsets for data records via our WpilogRecordReader.
@@ -103,16 +112,19 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     long startTime = System.nanoTime();
     int totalDataRecords = 0;
 
-    // Walk byte offsets in parallel with the WPILib iterator, using DataLogAccess
-    // to call the package-private getNextRecord() for offset tracking.
-    // WPILOG header layout: [magic:6 "WPILOG"][version:2][extraHeaderLen:4][extraHeaderBytes:N]
-    // Initial offset = 6 + 2 + 4 = 12, plus the byte length of the extra header content.
-    // getExtraHeader().getBytes(UTF_8).length returns the byte count of the extra header
-    // content (not including the 4-byte length prefix, which is already in the 12-byte base).
-    int pos = 12 + reader.getExtraHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    // Walk records by their own bounds (DataLogAccess.recordEnd), not WPILib's iterator, whose
+    // hasNext() skips a final record shorter than 16 bytes. Each record's byte offset is kept for
+    // random-access decoding later.
+    int pos = DataLogAccess.firstRecordOffset(java.nio.file.Path.of(path));
+    int size = DataLogAccess.size(reader);
 
     try {
-      for (var record : reader) {
+      while (pos < size) {
+        int next = DataLogAccess.recordEnd(reader, pos);
+        if (next < 0) {
+          throw new java.nio.BufferUnderflowException(); // the file ends inside this record
+        }
+        var record = DataLogAccess.getRecord(reader, pos);
         if (record.isStart()) {
           var startData = record.getStartData();
           if (startData.name != null && !startData.name.isEmpty()) {
@@ -143,8 +155,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
           }
         }
 
-        // Advance our byte offset tracker in lockstep with the iterator
-        pos = DataLogAccess.getNextRecord(reader, pos);
+        pos = next;
       }
     } catch (java.util.NoSuchElementException | java.nio.BufferUnderflowException
              | IndexOutOfBoundsException | IllegalArgumentException e) {
@@ -204,6 +215,18 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       break; // Only spot-check one entry to keep startup fast
     }
 
+    // Struct schemas: the first record of each /.schema/struct: entry
+    this.structSchemas = StructSchemas.fromLog(entries, name -> {
+      int[] offsets = recordOffsets.get(name);
+      if (offsets == null || offsets.length == 0) return null;
+      try {
+        return DataLogAccess.getRecord(reader, offsets[0]).getString();
+      } catch (RuntimeException e) {
+        logger.warn("Unreadable struct schema entry '{}': {}", name, e.getMessage());
+        return null;
+      }
+    });
+
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     long offsetMemoryKb = (long) totalDataRecords * 4 / 1024;
     logger.info("Scanned {}: {} entries, {} records, {} KB offsets in {}ms",
@@ -243,6 +266,19 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   }
 
   @Override
+  public StructSchemas structSchemas() {
+    return structSchemas;
+  }
+
+  @Override
+  public Optional<DecodeProblem> decodeProblem(String entryName) {
+    if (!entries.containsKey(entryName)) return Optional.empty();
+    // Known once decoded (even if the values were evicted since): never decode twice to ask
+    if (!decodedOnce.contains(entryName)) valuesView.get(entryName);
+    return Optional.ofNullable(decodeProblems.get(entryName));
+  }
+
+  @Override
   public void close() {
     closed = true;
     valueCache.invalidateAll();
@@ -263,23 +299,39 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     if (info == null) return null;
 
     int[] offsets = recordOffsets.get(entryName);
-    if (offsets == null || offsets.length == 0) return List.of();
+    if (offsets == null || offsets.length == 0) {
+      decodedOnce.add(entryName);
+      return List.of();
+    }
 
     var type = info.type();
     var values = new ArrayList<TimestampedValue>(offsets.length);
 
     long startTime = System.nanoTime();
+    int failed = 0;
+    String firstFailure = null;
 
     for (int offset : offsets) {
       try {
         var record = DataLogAccess.getRecord(reader, offset);
         double timestamp = record.getTimestamp() / 1_000_000.0;
-        var value = EntryDecoder.decodeValue(record, type, decoderRegistry);
+        var value = EntryDecoder.decodeValue(record, type, structSchemas);
         values.add(new TimestampedValue(timestamp, value));
+      } catch (StructDecodeException e) {
+        failed++;
+        if (firstFailure == null) firstFailure = e.getMessage();
       } catch (Exception e) {
+        failed++;
+        if (firstFailure == null) firstFailure = "malformed record (" + e.getMessage() + ")";
         logger.trace("Malformed record at offset {} for {}: {}", offset, entryName, e.getMessage());
       }
     }
+    if (failed > 0) {
+      decodeProblems.put(entryName, new DecodeProblem(firstFailure, failed, offsets.length));
+      logger.debug("{}: {} of {} records not decoded: {}", entryName, failed, offsets.length,
+          firstFailure);
+    }
+    decodedOnce.add(entryName);
 
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     if (elapsedMs > 10) {
@@ -290,59 +342,56 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   }
 
   /**
-   * Estimates the memory usage of a cached entry in bytes (for Caffeine weigher).
+   * Estimates the memory usage of a cached entry in bytes (for Caffeine weigher): the average
+   * size of up to three sampled values (first, middle, last), nested structs included.
    */
   private int estimateMemoryBytes(String key, List<TimestampedValue> values) {
     if (values == null || values.isEmpty()) return 64;
-
-    // For types with variable size (String, Map), sample up to 3 values
-    // (first, middle, last) and average the per-value estimate.
-    long perValue = 32;
-    var firstValue = values.get(0).value();
-    if (firstValue instanceof Double || firstValue instanceof Long) {
-      perValue += 24;
-    } else if (firstValue instanceof String) {
-      perValue += averageStringEstimate(values);
-    } else if (firstValue instanceof Map<?, ?>) {
-      perValue += averageMapEstimate(values);
-    } else if (firstValue instanceof byte[] b) {
-      perValue += 16 + b.length;
-    } else if (firstValue instanceof double[] d) {
-      perValue += 16 + d.length * 8L;
-    } else {
-      perValue += 40;
-    }
-
+    long sum = 0;
+    int[] indices = sampleIndices(values.size());
+    for (int idx : indices) sum += estimateValueBytes(values.get(idx).value(), 0);
+    long perValue = 32 + sum / indices.length;
     long total = (long) values.size() * perValue + 200;
     return (int) Math.min(total, Integer.MAX_VALUE);
   }
 
-  /** Samples up to 3 String values (first, middle, last) and returns the average size estimate. */
-  private long averageStringEstimate(List<TimestampedValue> values) {
-    long sum = 0;
-    int count = 0;
-    int[] indices = sampleIndices(values.size());
-    for (int idx : indices) {
-      if (values.get(idx).value() instanceof String s) {
-        sum += 40 + s.length() * 2L;
-        count++;
-      }
+  /**
+   * Approximate heap size of one decoded value, following nested maps and lists. Slightly
+   * generous: decoded structs are {@link org.triplehelix.wpilogmcp.log.struct.StructMap}s
+   * (a shared key array and one values array) and immutable lists; enum labels are shared.
+   */
+  static long estimateValueBytes(Object value, int depth) {
+    if (value == null) return 8;
+    if (value instanceof Number || value instanceof Boolean) return 24;
+    if (value instanceof String s) return 40 + s.length() * 2L;
+    if (value instanceof EnumValue) return 32;
+    if (value instanceof byte[] b) return 16 + b.length;
+    if (value instanceof double[] d) return 16 + d.length * 8L;
+    if (value instanceof long[] l) return 16 + l.length * 8L;
+    if (value instanceof float[] f) return 16 + f.length * 4L;
+    if (value instanceof boolean[] b) return 16 + b.length;
+    if (value instanceof String[] a) {
+      long size = 16 + a.length * 8L;
+      for (var str : a) size += str == null ? 0 : 40 + str.length() * 2L;
+      return size;
     }
-    return count > 0 ? sum / count : 40;
-  }
-
-  /** Samples up to 3 Map values (first, middle, last) and returns the average size estimate. */
-  private long averageMapEstimate(List<TimestampedValue> values) {
-    long sum = 0;
-    int count = 0;
-    int[] indices = sampleIndices(values.size());
-    for (int idx : indices) {
-      if (values.get(idx).value() instanceof Map<?, ?> m) {
-        sum += 200 + m.size() * 50L;
-        count++;
-      }
+    if (depth > 8) return 64;
+    if (value instanceof org.triplehelix.wpilogmcp.log.struct.StructMap m) {
+      long size = 48 + 8L * m.size(); // the map and its values array
+      for (var v : m.values()) size += estimateValueBytes(v, depth + 1);
+      return size;
     }
-    return count > 0 ? sum / count : 200;
+    if (value instanceof Map<?, ?> m) {
+      long size = 160; // a hash map, its table, and a wrapper
+      for (var v : m.values()) size += 40 + estimateValueBytes(v, depth + 1);
+      return size;
+    }
+    if (value instanceof List<?> list) {
+      if (list.isEmpty()) return 16;
+      // struct arrays hold records of one type: size the first, scale by the count
+      return 40 + list.size() * (8L + estimateValueBytes(list.get(0), depth + 1));
+    }
+    return 64;
   }
 
   /** Returns up to 3 sample indices (first, middle, last) for the given size. */

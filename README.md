@@ -170,35 +170,20 @@ wpilog-mcp provides 45 tools organized into categories. All log-requiring tools 
 ### Primitive Types
 `boolean`, `int64`, `float`, `double`, `string`, `raw`, `json`, and arrays of each
 
-### WPILib Geometry Types
+### Structs
 
-| Type | Decoded Fields |
-|------|----------------|
-| `Pose2d` | `x`, `y`, `rotation_rad`, `rotation_deg` |
-| `Pose3d` | `x`, `y`, `z`, `qw`, `qx`, `qy`, `qz` |
-| `Translation2d/3d` | `x`, `y`, (`z`) |
-| `Rotation2d` | `radians`, `degrees` |
-| `Rotation3d` | `qw`, `qx`, `qy`, `qz` |
-| `Transform2d/3d` | Same as Pose |
-| `Twist2d/3d` | `dx`, `dy`, (`dz`), `dtheta`/(`rx`, `ry`, `rz`) |
+Struct entries (`struct:Name` and `struct:Name[]`) are decoded from the schema each log records for its struct types (`/.schema/struct:Name`), so any struct decodes — WPILib geometry and kinematics, vendor structs, and a team's own, including nested structs, fixed-size arrays, enums, and bit-fields. A team that edits a template struct (adding a field to `PoseObservation`, say) gets its own layout decoded, not the template's.
 
-### WPILib Kinematics Types
+Decoded values keep the schema's field names and nesting:
 
-| Type | Decoded Fields |
-|------|----------------|
-| `ChassisSpeeds` | `vx_mps`, `vy_mps`, `omega_radps` |
-| `SwerveModuleState` | `speed_mps`, `angle_rad`, `angle_deg` |
-| `SwerveModulePosition` | `distance_m`, `angle_rad`, `angle_deg` |
+| Schema | Decoded value |
+|--------|---------------|
+| `Pose2d` | `{"translation": {"x", "y"}, "rotation": {"value", "_derived": {"degrees"}}}` |
+| `Pose3d` | `{"translation": {"x", "y", "z"}, "rotation": {"q": {"w", "x", "y", "z"}, "_derived": {"roll", "pitch", "yaw", "roll_deg", "pitch_deg", "yaw_deg"}}}` |
+| `SwerveModuleState` | `{"speed", "angle": {"value", "_derived": {"degrees"}}}` |
+| enum field, e.g. `PoseObservation.type` | `{"value": 2, "label": "PHOTONVISION"}` |
 
-### Vision & Autonomous Types
-
-| Type | Decoded Fields |
-|------|----------------|
-| `TargetObservation` | `yaw_rad`, `yaw_deg`, `pitch_rad`, `pitch_deg`, `skew_rad`, `skew_deg`, `area`, `confidence`, `objectID` |
-| `PoseObservation` | `timestamp`, `pose_x`, `pose_y`, `pose_z`, `pose_qw`, `pose_qx`, `pose_qy`, `pose_qz`, `ambiguity`, `tagCount`, `averageTagDistance`, `type` |
-| `SwerveSample` | `timestamp`, `x`, `y`, `heading`, `heading_deg`, `vx`, `vy`, `omega`, `ax`, `ay`, `alpha`, `moduleForcesX[4]`, `moduleForcesY[4]` |
-
-*Note: `PoseObservation.type` is decoded as an enum string: `MEGATAG_1`, `MEGATAG_2`, or `PHOTONVISION`.*
+`_derived` values are computed from WPILib's `Rotation2d` and `Rotation3d` (only when the log's schema for them is WPILib's). When a log records no schema for a struct type, WPILib's own schema is used for WPILib types, and a template layout for AdvantageKit vision's `PoseObservation` and `TargetObservation` and Choreo's `SwerveSample`; `list_struct_types` and `get_entry_info` say which source each type used. A record whose size does not fit its schema is not decoded, and tools that read the entry say how many records failed and why.
 
 ## Troubleshooting
 

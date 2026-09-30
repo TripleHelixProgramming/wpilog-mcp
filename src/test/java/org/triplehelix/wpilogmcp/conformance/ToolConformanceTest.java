@@ -33,7 +33,6 @@ import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs.Fixture;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
@@ -149,7 +148,7 @@ class ToolConformanceTest {
             // its own LazyParsedLog because the cache closes whatever log it replaces; the path
             // is unloaded afterwards so the next call reloads a fresh log.
             var inner = new LazyParsedLog(path, new DataLogReader(path),
-                new StructDecoderRegistry(), 256L * 1024 * 1024);
+                256L * 1024 * 1024);
             logManager.testPutLog(path, new PermutedLogData(inner));
             try {
               assertInstanceOf(PermutedLogData.class, logManager.getOrLoad(path));

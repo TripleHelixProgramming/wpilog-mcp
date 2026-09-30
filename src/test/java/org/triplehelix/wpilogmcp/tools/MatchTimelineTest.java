@@ -22,7 +22,6 @@ import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 import org.triplehelix.wpilogmcp.tools.MatchTimeline.EndReason;
 import org.triplehelix.wpilogmcp.tools.MatchTimeline.Mode;
 import org.triplehelix.wpilogmcp.tools.MatchTimeline.State;
@@ -37,7 +36,7 @@ class MatchTimelineTest {
   static void loadFixtures() throws Exception {
     for (var f : FixtureLogs.generateAll(dir)) {
       fixtures.put(f.id(), new LazyParsedLog(f.path().toString(),
-          new DataLogReader(f.path().toString()), new StructDecoderRegistry(), 100_000_000));
+          new DataLogReader(f.path().toString()), 100_000_000));
     }
   }
 

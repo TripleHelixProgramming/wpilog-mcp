@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.subsystems.LogParser;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 
 /**
  * Entries iterate in declaration order in both parsers (review issue B9), and an entry name started
@@ -53,7 +52,7 @@ class EntryOrderTest {
   void lazy(@TempDir Path dir) throws Exception {
     var path = write(dir);
     try (var log = new LazyParsedLog(path.toString(), new DataLogReader(path.toString()),
-        new StructDecoderRegistry(), 10_000_000)) {
+        10_000_000)) {
       assertEquals(NAMES, new ArrayList<>(log.entries().keySet()));
       var first = log.values().get("/A/First");
       assertEquals(2, first.size());
@@ -69,7 +68,7 @@ class EntryOrderTest {
   @DisplayName("LogParser (eager): the same order and merging")
   void eager(@TempDir Path dir) throws Exception {
     var path = write(dir);
-    var log = new LogParser(new StructDecoderRegistry()).parse(path);
+    var log = new LogParser().parse(path);
     assertEquals(NAMES, new ArrayList<>(log.entries().keySet()));
     assertEquals(NAMES, new ArrayList<>(log.values().keySet()));
     assertEquals(2, log.values().get("/A/First").size());

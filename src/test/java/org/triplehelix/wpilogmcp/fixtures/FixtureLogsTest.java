@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs.Fixture;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 
 /**
  * Checks the fixture corpus itself, reading the files back with WPILib's own reader so the
@@ -30,6 +29,10 @@ import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
  */
 @DisplayName("Fixture corpus")
 class FixtureLogsTest {
+
+  /** Entries with records undecodable on purpose (no schema; records cut short). */
+  static final java.util.Set<String> UNDECODABLE = java.util.Set.of(
+      "struct_custom /RealOutputs/Mystery", "struct_custom /RealOutputs/Arm/Partial");
 
   @TempDir static Path dir;
   static List<Fixture> fixtures;
@@ -52,7 +55,9 @@ class FixtureLogsTest {
     var schemas = new HashMap<String, String>();
     var schemaOrder = new ArrayList<String>();
     try {
-      for (var record : reader) {
+      // forEachRemaining bounds each record by the file size; the for-each form (hasNext) skips
+      // a final record shorter than 16 bytes, which is the bug the parsers work around
+      reader.iterator().forEachRemaining(record -> {
         if (record.isStart()) {
           var data = record.getStartData();
           names.put(data.entry, data.name);
@@ -60,13 +65,13 @@ class FixtureLogsTest {
           if (data.name.startsWith("/.schema/")) schemaOrder.add(data.name);
         } else if (!record.isFinish() && !record.isSetMetadata() && !record.isControl()) {
           var name = names.get(record.getEntry());
-          if (name == null) continue;
+          if (name == null) return;
           counts.merge(name, 1, Integer::sum);
           if (name.startsWith("/.schema/")) {
             schemas.put(name, new String(record.getRaw(), StandardCharsets.UTF_8));
           }
         }
-      }
+      });
     } catch (RuntimeException truncatedTail) {
       // the truncated fixture ends mid-record; everything before it is still counted
     }
@@ -103,7 +108,7 @@ class FixtureLogsTest {
   void everyFixtureLoads() throws Exception {
     for (var f : fixtures) {
       try (var log = new LazyParsedLog(f.path().toString(), new DataLogReader(f.path().toString()),
-          new StructDecoderRegistry(), 50_000_000)) {
+          50_000_000)) {
         if (f.id().equals("empty")) {
           assertEquals(0, log.entryCount());
         } else {
@@ -120,11 +125,20 @@ class FixtureLogsTest {
     for (var f : fixtures) {
       var expected = read(f.path()).counts();
       try (var log = new LazyParsedLog(f.path().toString(), new DataLogReader(f.path().toString()),
-          new StructDecoderRegistry(), 200_000_000)) {
+          200_000_000)) {
         for (var name : log.entries().keySet()) {
           int want = expected.getOrDefault(name, 0);
           assertEquals(want, log.sampleCount(name), f.id() + " " + name + " (offsets)");
-          assertEquals(want, log.values().get(name).size(), f.id() + " " + name + " (decoded)");
+          int decoded = log.values().get(name).size();
+          var problem = log.decodeProblem(name);
+          if (problem.isPresent()) {
+            // only the deliberately undecodable entries, and every missing record accounted for
+            assertTrue(UNDECODABLE.contains(f.id() + " " + name), f.id() + " " + name + ": "
+                + problem.get().describe());
+            assertEquals(want, decoded + problem.get().failedRecords(), f.id() + " " + name);
+          } else {
+            assertEquals(want, decoded, f.id() + " " + name + " (decoded)");
+          }
         }
       }
     }

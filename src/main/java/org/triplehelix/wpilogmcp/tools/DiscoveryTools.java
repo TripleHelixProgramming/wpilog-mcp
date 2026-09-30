@@ -87,10 +87,11 @@ public final class DiscoveryTools {
         true, List.of("get_entry_info", "search_entries")));
 
     tools.add(new ToolInfo("get_entry_info", "core",
-        "Get detailed info about a specific entry",
-        List.of("entry", "info", "type", "metadata"),
-        List.of("Check entry data type", "See sample count for an entry"),
-        true, List.of("read_entry", "list_entries")));
+        "Describe an entry: type, samples, struct schema and source, numeric field paths",
+        List.of("entry", "info", "type", "metadata", "fields", "schema", "struct", "paths"),
+        List.of("Check entry data type", "See sample count for an entry",
+            "Find the numeric fields of a struct entry", "Check why an entry did not decode"),
+        true, List.of("read_entry", "list_entries", "list_struct_types")));
 
     tools.add(new ToolInfo("read_entry", "core",
         "Read raw values from an entry with pagination",
@@ -105,10 +106,11 @@ public final class DiscoveryTools {
         false, List.of("list_entries")));
 
     tools.add(new ToolInfo("list_struct_types", "core",
-        "List all supported WPILib struct types",
-        List.of("struct", "types", "schema", "wpilib", "protobuf"),
-        List.of("See what struct types are supported", "Find available struct decoders"),
-        false, List.of("get_types", "search_entries")));
+        "List a log's struct types: schema source, fields, numeric paths, entries",
+        List.of("struct", "types", "schema", "wpilib", "fields", "custom", "decode"),
+        List.of("Check that a team's own structs decode by a logged schema",
+            "Find which entries use a struct type", "See the fallback WPILib schemas"),
+        false, List.of("get_entry_info", "get_types")));
 
     tools.add(new ToolInfo("health_check", "core",
         "Check server health and version information",

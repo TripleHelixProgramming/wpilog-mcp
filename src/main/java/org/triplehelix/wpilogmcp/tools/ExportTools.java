@@ -244,6 +244,10 @@ public final class ExportTools {
         for (int i = 0; i < elements.size(); i++) {
           flattenInto(prefix + "[" + i + "]", elements.get(i), out);
         }
+      } else if (value instanceof org.triplehelix.wpilogmcp.log.struct.EnumValue e) {
+        // the number in the field's own column, its schema label beside it
+        out.put(prefix, e.value());
+        out.put(prefix + ".label", e.label());
       } else {
         out.put(prefix, value);
       }

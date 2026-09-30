@@ -343,6 +343,27 @@ class DiskCacheSerializerTest {
   class StructRoundTrips {
 
     @Test
+    @DisplayName("enum fields come back as enum values, labeled or not, inside arrays of structs")
+    void enumValues() throws IOException {
+      var first = new LinkedHashMap<String, Object>();
+      first.put("type", new org.triplehelix.wpilogmcp.log.struct.EnumValue(2, "PHOTONVISION"));
+      first.put("tagCount", 1L);
+      var second = new LinkedHashMap<String, Object>();
+      second.put("type", new org.triplehelix.wpilogmcp.log.struct.EnumValue(9, null));
+      second.put("tagCount", 2L);
+      var values = List.of(new TimestampedValue(0.0, List.of(first, second)));
+      var log = new ParsedLog("/test/log.wpilog",
+          Map.of("obs", new EntryInfo(1, "obs", "struct:PoseObservation[]", "")),
+          Map.of("obs", new ArrayList<>(values)), 0.0, 0.0);
+
+      var restored = (List<?>) roundTrip(log).values().get("obs").get(0).value();
+      assertEquals(new org.triplehelix.wpilogmcp.log.struct.EnumValue(2, "PHOTONVISION"),
+          ((Map<?, ?>) restored.get(0)).get("type"));
+      assertEquals(new org.triplehelix.wpilogmcp.log.struct.EnumValue(9, null),
+          ((Map<?, ?>) restored.get(1)).get("type"));
+    }
+
+    @Test
     @DisplayName("Pose2d with nested translation and rotation")
     void pose2dStruct() throws IOException {
       var pose = new LinkedHashMap<String, Object>();
