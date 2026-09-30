@@ -118,6 +118,33 @@ public final class WallClock {
   }
 
   /**
+   * Whether the log's wall clock is known to have been set: it was set during the log (its first
+   * valid reading follows an implausible reading or a jump), or the log's filename time agrees
+   * with it. AdvantageKit and DataLogManager name a log with its time once the clock is set (a
+   * log whose clock never was keeps a placeholder name such as {@code akit_cfb6568c35d66529}), so
+   * a clock that reads one plausible date throughout, in a log whose name carries no time, may be
+   * the roboRIO's unset default: it cannot place the log in time.
+   */
+  public static boolean confirmed(LogData log) {
+    if (filenameOffset(log).isPresent()) return true;
+    var clock = entry(log);
+    if (clock.isEmpty()) return false;
+    var values = log.values().get(clock.get());
+    var first = first(log);
+    if (values == null || values.isEmpty() || first.isEmpty()) return false;
+    return values.get(0).timestamp() < first.get().logTime();
+  }
+
+  /** Why a log's wall clock does not place it in time, for results; empty when it does. */
+  public static Optional<String> unconfirmedReason(LogData log) {
+    if (entry(log).isEmpty() || confirmed(log)) return Optional.empty();
+    return Optional.of("The wpilog's wall clock was never seen being set (the clock reads one "
+        + "date throughout and the log's name carries no time to confirm it), so it may be the "
+        + "roboRIO's unset default date, which every boot shares; REV logs are not matched to it "
+        + "by time.");
+  }
+
+  /**
    * The date and time in a log or REV log filename, in the zone of the clock that named it:
    * AdvantageKit's {@code akit_26-03-21_16-29-56...}, DataLogManager's
    * {@code FRC_20260321_162956...}, or REV's {@code REV_20260321_162932...}.

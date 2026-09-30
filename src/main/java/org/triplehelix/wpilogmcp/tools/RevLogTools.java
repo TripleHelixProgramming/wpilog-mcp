@@ -62,11 +62,15 @@ public final class RevLogTools {
    * The result for a wpilog with no synchronized revlog: not applicable, with the same reason from
    * every revlog tool (or, while synchronization is still running, a pointer to wait_for_sync).
    */
-  static ResponseBuilder noRevlogs(boolean syncInProgress) {
+  static ResponseBuilder noRevlogs(LogData log, boolean syncInProgress) {
     if (syncInProgress) {
       return ResponseBuilder.notApplicable("REV log synchronization for this wpilog is still in "
           + "progress, so no revlog signals are available yet.")
           .hint("Call wait_for_sync, then try again.");
+    }
+    var unconfirmed = org.triplehelix.wpilogmcp.log.WallClock.unconfirmedReason(log);
+    if (unconfirmed.isPresent()) {
+      return ResponseBuilder.notApplicable(unconfirmed.get());
     }
     return ResponseBuilder.notApplicable("No REV log (.revlog) files were found for this wpilog.")
         .hint("Revlogs are discovered in the configured log directory tree by recording time: a "
@@ -121,7 +125,7 @@ public final class RevLogTools {
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        return noRevlogs(syncInProgress).build();
+        return noRevlogs(log, syncInProgress).build();
       }
 
       String deviceFilter = getOptString(arguments, "device_filter", null);
@@ -246,7 +250,7 @@ public final class RevLogTools {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        return noRevlogs(logManager.isRevLogSyncInProgress(log.path())).build();
+        return noRevlogs(log, logManager.isRevLogSyncInProgress(log.path())).build();
       }
 
       String signalKey = getRequiredString(arguments, "signal_key");
@@ -377,7 +381,7 @@ public final class RevLogTools {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        return noRevlogs(syncInProgress).build();
+        return noRevlogs(log, syncInProgress).build();
       }
 
       boolean includeSignalPairs = arguments.has("include_signal_pairs")
@@ -517,7 +521,7 @@ public final class RevLogTools {
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
-        return noRevlogs(logManager.isRevLogSyncInProgress(log.path())).build();
+        return noRevlogs(log, logManager.isRevLogSyncInProgress(log.path())).build();
       }
 
       double offsetMs = getOptDouble(arguments, "offset_ms", 0.0);
@@ -608,7 +612,7 @@ public final class RevLogTools {
       boolean completed = logManager.waitForRevLogSync(log.path(), timeoutMs);
       var syncLogs = logManager.getSynchronizedLogs(log.path());
       if (completed && (syncLogs == null || syncLogs.revlogCount() == 0)) {
-        return noRevlogs(false).build();
+        return noRevlogs(log, false).build();
       }
 
       var response = success()

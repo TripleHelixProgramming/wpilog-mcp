@@ -108,6 +108,31 @@ class WallClockZoneTest {
   }
 
   @Test
+  @DisplayName("a clock is confirmed set by its filename time, by being set during the log (from "
+      + "1970 or a default date), and not by one plausible date throughout in an unnamed log")
+  void confirmed() {
+    assertTrue(WallClock.confirmed(log("akit_26-03-21_16-29-56_vache_q10.wpilog",
+        "/SystemStats/EpochTimeMicros", Q10_EPOCH_MICROS, 150)), "filename agrees");
+    // log() starts with a 1970 reading at 1 s: set during the log
+    assertTrue(WallClock.confirmed(log("match.wpilog", "systemTime", Q10_EPOCH_MICROS, 150)));
+    // One date throughout, no filename time: AdvantageKit's placeholder name for a clock that
+    // was never set
+    var values = new ArrayList<TimestampedValue>();
+    for (double t = 7.8; t < 300; t += 10) {
+      values.add(new TimestampedValue(t, Q10_EPOCH_MICROS + Math.round(t * 1e6)));
+    }
+    var never = new MockLogBuilder().setPath("/logs/akit_cfb6568c35d66529.wpilog")
+        .addEntry("/SystemStats/EpochTimeMicros", "int64", values).build();
+    assertFalse(WallClock.confirmed(never));
+    assertTrue(WallClock.unconfirmedReason(never).orElseThrow().contains("unset default"));
+    // No wall clock at all: nothing to confirm, no reason given
+    var none = new MockLogBuilder().setPath("/logs/x.wpilog")
+        .addNumericEntry("/X", new double[] {0, 1}, new double[] {0, 1}).build();
+    assertFalse(WallClock.confirmed(none));
+    assertTrue(WallClock.unconfirmedReason(none).isEmpty());
+  }
+
+  @Test
   @DisplayName("no inference without both a filename time and a wall clock, or when they "
       + "do not describe the same moment: UTC, the roboRIO's default")
   void fallbacks() {

@@ -842,6 +842,14 @@ public class LogManager {
    * and the wpilog's parent directory.
    */
   private List<RevLogFileInfo> findMatchingRevLogs(LogData wpilog) {
+    // A wall clock never seen being set may read the roboRIO's default date, which every boot
+    // shares: REV logs named with it would match every such log
+    var unconfirmed = WallClock.unconfirmedReason(wpilog);
+    if (unconfirmed.isPresent()) {
+      logger.info("{}: {}", Path.of(wpilog.path()).getFileName(), unconfirmed.get());
+      return List.of();
+    }
+
     // Step 1: Determine the wpilog's wall-clock time window, and the zone REV log names are in
     var zone = WallClock.revlogFilenameZone(wpilog);
     long[] wallClockRange = estimateWallClockRange(wpilog, zone.offset());

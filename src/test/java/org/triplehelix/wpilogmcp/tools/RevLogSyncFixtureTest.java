@@ -144,6 +144,25 @@ class RevLogSyncFixtureTest extends FixtureToolTestBase {
         revlog.toString());
   }
 
+  @Test
+  @DisplayName("a clock never seen being set (one date throughout, a placeholder name) matches "
+      + "no REV log by time, and the revlog tools say why")
+  void neverSetClock(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+    // The whole log reads the roboRIO's default date (set at FPGA 1000 s: after the log ends)
+    var wpilog = FixtureLogs.writeRevlogPair(dir, "akit_cfb6568c35d66529.wpilog",
+        java.time.ZoneOffset.UTC, "/SystemStats/EpochTimeMicros", 1000.0);
+    // A REV log named by the same unset clock: it could come from any boot
+    var decoy = "REV_" + FixtureLogs.UNSET_CLOCK.plusSeconds(5).format(
+        java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".revlog";
+    FixtureLogs.writeRevlog(dir.resolve(decoy));
+    org.triplehelix.wpilogmcp.log.LogManager.getInstance().addAllowedDirectory(dir);
+
+    callPath("wait_for_sync", wpilog, "timeout_ms", 30_000);
+    var r = callPath("sync_status", wpilog);
+    assertEquals("not_applicable", r.get("status").getAsString(), r.toString());
+    assertTrue(r.get("reason").getAsString().contains("unset default date"), r.toString());
+  }
+
   static com.google.gson.JsonObject callPath(String tool, java.nio.file.Path path,
       Object... keyValues) throws Exception {
     var args = new com.google.gson.JsonObject();

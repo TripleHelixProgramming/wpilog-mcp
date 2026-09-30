@@ -1037,7 +1037,11 @@ public final class FixtureLogs {
         w.dbl("/Drive/FrontLeft/AppliedOutput", t, revlogPairOutput(t));
         if (i % 50 == 0) {
           boolean unset = clockSetAt != null && t < clockSetAt;
-          w.i64(clockEntry, t, (unset ? unset0 : wall0) + Math.round((t - start) * 1e6));
+          // As on a roboRIO: the first reading, before the Driver Station sets the clock, is
+          // 1970 (or, with clockSetAt, the default date until then)
+          long wall = i == 0 && clockSetAt == null ? 0L
+              : (unset ? unset0 : wall0) + Math.round((t - start) * 1e6);
+          w.i64(clockEntry, t, wall);
         }
       }
     }
