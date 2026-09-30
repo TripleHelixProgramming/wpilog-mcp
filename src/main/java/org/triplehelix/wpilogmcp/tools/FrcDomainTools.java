@@ -427,18 +427,23 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze vision data three ways. observation_streams: struct arrays of pose "
-          + "observations (for example the AdvantageKit vision template's "
-          + "/Vision/Camera<N>/PoseObservations from PhotonVision or Limelight), found by content "
-          + "(each record holds a timestamp and a pose), one stream per camera, with record and "
-          + "observation counts, observation rate, tag-count and ambiguity distributions, latency "
-          + "(log time minus the observation's own timestamp), and the residual between each "
-          + "observation and the robot pose at the observation's timestamp (robot_pose_entry, "
-          + "chosen or passed as pose_entry). target_acquisition: Limelight-style has-target "
-          + "entries (tv, hasTarget, targetValid) with acquisition rate and flicker. pose_jumps: "
-          + "steps larger than jump_threshold in scalar pose entries. vision_prefix limits the "
-          + "vision entries only (case-insensitive); the robot pose may live elsewhere. Returns "
-          + "no_match with what was searched when none of these exist."
+      return "Analyze vision data, found by type and content. observation_streams: struct "
+          + "arrays of pose observations (for example the AdvantageKit vision template's "
+          + "/Vision/Camera<N>/PoseObservations from PhotonVision or Limelight: each record holds "
+          + "a timestamp and a pose), one stream per camera, with record and observation counts, "
+          + "the fraction of records with an observation, observation rate, tag-count and "
+          + "ambiguity distributions, latency (log time minus the observation's own timestamp, "
+          + "and a sibling Latency entry when logged), and the residual between each observation "
+          + "and the robot pose at the observation's timestamp (robot_pose_entry, chosen or "
+          + "passed as pose_entry). target_streams: structs with yaw and pitch fields (such as "
+          + "TargetObservation), with yaw, pitch, area, and confidence distributions and the "
+          + "object ids seen. pose_sets: Pose3d[]/Pose2d[] entries (e.g. accepted or rejected "
+          + "robot poses per loop), with how often they are non-empty and poses per record. "
+          + "target_acquisition: Limelight-style has-target entries (tv, hasTarget, targetValid) "
+          + "with acquisition rate and flicker. pose_jumps: steps larger than jump_threshold in "
+          + "scalar pose entries. vision_prefix limits the vision entries only "
+          + "(case-insensitive); the robot pose may live elsewhere. Returns no_match with what "
+          + "was searched when none of these exist."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -498,15 +503,21 @@ public final class FrcDomainTools {
       // Vision entries (prefix applies only here)
       var targetEntries = new ArrayList<String>();
       var streams = new ArrayList<String>();
+      var targetStreams = new ArrayList<String>();
+      var poseSets = new ArrayList<String>();
       for (var e : entries) {
         if (!underPrefix(e.name(), visionPrefix)) continue;
         var lower = e.name().toLowerCase();
         if (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
             || lower.contains("targetvalid")) {
           targetEntries.add(e.name());
+        } else if (e.type().equals("struct:Pose3d[]") || e.type().equals("struct:Pose2d[]")) {
+          poseSets.add(e.name());
         } else if (e.type().startsWith("struct:") && e.type().endsWith("[]")
             && isObservationStream(log.values().get(e.name()))) {
           streams.add(e.name());
+        } else if (e.type().startsWith("struct:") && isTargetStream(log.values().get(e.name()))) {
+          targetStreams.add(e.name());
         }
       }
       // Jumps: the robot pose plus scalar vision pose estimates
@@ -518,11 +529,14 @@ public final class FrcDomainTools {
         if (lower.contains("vision") && underPrefix(e.name(), visionPrefix)) jumpEntries.add(e.name());
       }
 
-      if (targetEntries.isEmpty() && streams.isEmpty() && jumpEntries.isEmpty()) {
+      if (targetEntries.isEmpty() && streams.isEmpty() && jumpEntries.isEmpty()
+          && targetStreams.isEmpty() && poseSets.isEmpty()) {
         return ResponseBuilder.noMatch("No vision data or pose entries found"
                 + (visionPrefix != null ? " (vision entries under " + visionPrefix + ")" : "") + ".")
             .lookedFor(List.of(
                 "struct arrays whose records hold a timestamp and a pose (pose observations)",
+                "structs with yaw and pitch fields (target observations)",
+                "struct:Pose3d[] and struct:Pose2d[] entries (pose sets)",
                 "has-target entries: names containing hasTarget or targetValid, or ending in /tv",
                 "scalar struct:Pose2d/Pose3d entries (robot pose; vision pose estimates)"))
             .hint("Use search_entries with pattern 'vision' or 'camera', then pass vision_prefix "
@@ -547,10 +561,36 @@ public final class FrcDomainTools {
       for (var name : streams) {
         var o = observationStream(name, log.values().get(name), startTime, endTime,
             robotPose, robotPoseValues);
+        var latencyEntry = siblingLatency(log, name);
+        if (latencyEntry != null) {
+          var latencies = new ArrayList<Double>();
+          for (var tv : log.values().get(latencyEntry)) {
+            if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+            var v = toDouble(tv.value());
+            if (v != null && Double.isFinite(v)) latencies.add(v);
+          }
+          if (!latencies.isEmpty()) {
+            var l = distribution(latencies, "");
+            l.addProperty("entry", latencyEntry);
+            l.addProperty("basis", "as logged by the robot program (units per the entry name)");
+            o.add("logged_latency", l);
+          }
+        }
         streamsJson.add(o);
       }
       builder.addData("observation_streams", streamsJson);
-      if (streams.isEmpty() && targetEntries.isEmpty()) {
+      var targetStreamsJson = new JsonArray();
+      for (var name : targetStreams) {
+        targetStreamsJson.add(targetStream(name, log.values().get(name), startTime, endTime));
+      }
+      builder.addData("target_streams", targetStreamsJson);
+      var poseSetsJson = new JsonArray();
+      for (var name : poseSets) {
+        poseSetsJson.add(poseSet(name, log.values().get(name), startTime, endTime));
+      }
+      builder.addData("pose_sets", poseSetsJson);
+      if (streams.isEmpty() && targetEntries.isEmpty() && targetStreams.isEmpty()
+          && poseSets.isEmpty()) {
         builder.addSkipped("observation_streams", "No pose observation streams or has-target "
             + "entries" + (visionPrefix != null ? " under " + visionPrefix : "")
             + "; only pose jumps were checked.");
@@ -606,6 +646,112 @@ public final class FrcDomainTools {
             && StructFields.number(first, "pose.translation.x", "pose_x") != null;
       }
       return false;
+    }
+
+    /** A struct (or struct array) whose records have yaw and pitch fields: target observations. */
+    static boolean isTargetStream(List<TimestampedValue> values) {
+      if (values == null) return false;
+      for (var tv : values) {
+        var elements = StructFields.elements(tv.value());
+        if (elements.isEmpty()) continue;
+        var first = elements.get(0);
+        return StructFields.number(first, "yaw.value", "yaw") != null
+            && StructFields.number(first, "pitch.value", "pitch") != null;
+      }
+      return false;
+    }
+
+    /** A numeric entry beside a stream (same parent) whose name mentions latency, or null. */
+    static String siblingLatency(LogData log, String stream) {
+      var parent = stream.substring(0, Math.max(0, stream.lastIndexOf('/') + 1));
+      return log.entries().values().stream()
+          .filter(e -> e.name().startsWith(parent) && e.name().indexOf('/', parent.length()) < 0)
+          .filter(e -> e.name().substring(parent.length()).toLowerCase().contains("latency"))
+          .filter(e -> isNumericType(e.type()))
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
+    }
+
+    static String camera(String name) {
+      var parent = name.substring(0, Math.max(0, name.lastIndexOf('/')));
+      return parent.substring(parent.lastIndexOf('/') + 1);
+    }
+
+    static JsonObject targetStream(String name, List<TimestampedValue> values, Double start,
+        Double end) {
+      int records = 0;
+      int observations = 0;
+      var yaw = new ArrayList<Double>();
+      var pitch = new ArrayList<Double>();
+      var area = new ArrayList<Double>();
+      var confidence = new ArrayList<Double>();
+      var ids = new java.util.TreeMap<Long, Integer>();
+      boolean degrees = false;
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        records++;
+        for (var obs : StructFields.elements(tv.value())) {
+          observations++;
+          var y = StructFields.number(obs, "yaw._derived.degrees");
+          var p = StructFields.number(obs, "pitch._derived.degrees");
+          if (y != null) degrees = true;
+          if (y == null) y = StructFields.number(obs, "yaw.value", "yaw");
+          if (p == null) p = StructFields.number(obs, "pitch.value", "pitch");
+          if (y != null) yaw.add(y);
+          if (p != null) pitch.add(p);
+          var a = StructFields.number(obs, "area");
+          if (a != null) area.add(a);
+          var c = StructFields.number(obs, "confidence");
+          if (c != null) confidence.add(c);
+          var id = StructFields.number(obs, "objectID", "objectId", "fiducialId", "id");
+          if (id != null) ids.merge(id.longValue(), 1, Integer::sum);
+        }
+      }
+      var o = new JsonObject();
+      o.addProperty("entry", name);
+      o.addProperty("camera", camera(name));
+      o.addProperty("records", records);
+      o.addProperty("observation_count", observations);
+      var unit = degrees ? "_deg" : "";
+      if (!yaw.isEmpty()) o.add("yaw", distribution(yaw, unit));
+      if (!pitch.isEmpty()) o.add("pitch", distribution(pitch, unit));
+      if (!area.isEmpty()) o.add("area", distribution(area, ""));
+      if (!confidence.isEmpty()) o.add("confidence", distribution(confidence, ""));
+      if (!ids.isEmpty()) {
+        var idCounts = new JsonObject();
+        ids.forEach((k, v) -> idCounts.addProperty(String.valueOf(k), v));
+        o.add("object_ids", idCounts);
+      }
+      return o;
+    }
+
+    static JsonObject poseSet(String name, List<TimestampedValue> values, Double start,
+        Double end) {
+      int records = 0;
+      int nonEmpty = 0;
+      int poses = 0;
+      int maxPerRecord = 0;
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        records++;
+        int n = StructFields.elements(tv.value()).size();
+        if (n > 0) nonEmpty++;
+        poses += n;
+        maxPerRecord = Math.max(maxPerRecord, n);
+      }
+      var o = new JsonObject();
+      o.addProperty("entry", name);
+      o.addProperty("records", records);
+      o.addProperty("records_non_empty", nonEmpty);
+      if (records > 0) o.addProperty("fraction_non_empty", (double) nonEmpty / records);
+      o.addProperty("pose_count", poses);
+      if (nonEmpty > 0) o.addProperty("mean_poses_per_non_empty_record", (double) poses / nonEmpty);
+      o.addProperty("max_poses_per_record", maxPerRecord);
+      return o;
     }
 
     static JsonObject targetAcquisition(List<TimestampedValue> values, Double start, Double end,
@@ -685,6 +831,9 @@ public final class FrcDomainTools {
       o.addProperty("camera", parent.substring(parent.lastIndexOf('/') + 1));
       o.addProperty("records", records);
       o.addProperty("records_with_observations", withObservations);
+      if (records > 0) {
+        o.addProperty("fraction_with_observations", (double) withObservations / records);
+      }
       o.addProperty("observation_count", observations);
       double span = last - first;
       if (span > 0) o.addProperty("observations_per_second", observations / span);

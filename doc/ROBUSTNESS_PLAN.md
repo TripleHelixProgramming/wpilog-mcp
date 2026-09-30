@@ -327,8 +327,8 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   statistics, and shortest-difference angle comparison; `list_entries` notes; guidance traps updated.
 - [ ] **Phase 3 — Roles, one resolver, scope.** Done: `scope` and `windows` on the seven numeric tools (per-window
   differences, peaks, unwrapping, and condition search; `DataQuality.fromSegments`); `compare_matches` (E4:
-  per-log scope, field paths, percentiles, boot-transient flags). Remaining: `SignalResolver`/`resolve_signals`,
-  `resolved` in results, vision target streams.
+  per-log scope, field paths, percentiles, boot-transient flags); vision target streams, `Pose3d[]` pose sets, and
+  logged latency (the rest of B4). Remaining: `SignalResolver`/`resolve_signals`, `resolved` in results.
 - [x] **Phase 4 — Strings, intervals, alignment, quality.** Done: one text source (`TextEvents`: string lines,
   `string[]` alerts as appear/clear episodes, json string values) behind `search_strings`, `get_ds_timeline` (with
   `ALERT_RAISED` events), `can_health`, and `generate_report` (F1); compound `all`/`any` conditions in

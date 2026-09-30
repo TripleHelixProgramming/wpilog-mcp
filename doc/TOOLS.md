@@ -1485,7 +1485,7 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 ```
 
 ### `analyze_vision`
-Analyze vision data three ways: pose observation streams, has-target flags, and pose jumps.
+Analyze vision data, found by type and content: pose observation streams, target streams, pose sets, has-target flags, and pose jumps.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1495,13 +1495,17 @@ Analyze vision data three ways: pose observation streams, has-target flags, and 
 - `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
 
-**observation_streams:** struct arrays whose records hold a `timestamp` and a pose — for example the AdvantageKit vision template's `/Vision/Camera<N>/PoseObservations` (`struct:PoseObservation[]`, from PhotonVision or Limelight) — found by content, not by name, one stream per camera. Per stream: `records`, `records_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (median, p95, max), `latency` (log timestamp minus the observation's own timestamp, in ms), and `residual_vs_robot_pose` (planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp; note the robot pose may itself include vision corrections).
+**observation_streams:** struct arrays whose records hold a `timestamp` and a pose — for example the AdvantageKit vision template's `/Vision/Camera<N>/PoseObservations` (`struct:PoseObservation[]`, from PhotonVision or Limelight) — found by content, not by name, one stream per camera. Per stream: `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (median, p95, max), `latency` (log timestamp minus the observation's own timestamp, in ms), `logged_latency` (median, p95, max of a sibling entry whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`, as logged), and `residual_vs_robot_pose` (planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp; note the robot pose may itself include vision corrections).
+
+**target_streams:** struct entries (single or arrays) whose records have `yaw` and `pitch` fields — for example the vision template's `TargetObservation` — found by content. Per stream: `camera`, `records`, `observation_count`, `yaw` and `pitch` distributions (median, p95, max; `_deg` when they are WPILib `Rotation2d`s), `area`, `confidence`, and `object_ids` (counts per id).
+
+**pose_sets:** `struct:Pose3d[]` and `struct:Pose2d[]` entries (for example `/RealOutputs/Vision/Summary/RobotPosesAccepted`): `records`, `records_non_empty`, `fraction_non_empty`, `pose_count`, `mean_poses_per_non_empty_record`, `max_poses_per_record`.
 
 **target_acquisition:** entries named `hasTarget`, `targetValid`, or ending in `/tv` (Limelight): `total_samples`, `valid_samples`, `acquisition_rate`, `flicker_events`. Values logged only on change make the per-sample rate approximate.
 
 **pose_jumps:** steps larger than `jump_threshold` between consecutive samples of the robot pose and of scalar vision pose entries (`pose_entries_checked`); always present (empty when none), with `jump_count` the true total and `limits.pose_jumps`. Samples whose pose cannot be read are counted in `unreadable_pose_samples`, never treated as zero movement.
 
-**Status:** `no_match` (with `looked_for`) when the log has no observation streams, has-target entries, or scalar poses; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing).
+**Status:** `no_match` (with `looked_for`) when the log has no observation streams, target streams, pose sets, has-target entries, or scalar poses; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing).
 
 **Pose Jump Detection** helps diagnose ambiguous AprilTag detections, tag misidentification, poorly tuned vision standard deviations, and exposure problems.
 

@@ -90,6 +90,49 @@ class VisionFixtureTest extends FixtureToolTestBase {
   void noMatch() {
     var r = call("analyze_vision", "canivore");
     assertEquals("no_match", r.get("status").getAsString());
-    assertEquals(3, r.getAsJsonArray("looked_for").size());
+    assertEquals(5, r.getAsJsonArray("looked_for").size());
+  }
+
+  @Test
+  @DisplayName("target streams: TargetObservation found by its yaw and pitch fields")
+  void targetStreams() {
+    var r = call("analyze_vision", "vision_photon_akit");
+    var streams = objects(r.getAsJsonArray("target_streams"));
+    assertEquals(2, streams.size(), r.toString());
+    var camera1 = streams.stream().filter(s -> s.get("camera").getAsString().equals("Camera1"))
+        .findFirst().orElseThrow();
+    assertEquals("/Vision/Camera1/LatestTargetObservation", camera1.get("entry").getAsString());
+    // yaw 0.1 rad (5.73 deg), confidence 0.95, object id 8 in every record
+    assertEquals(Math.toDegrees(0.1), camera1.getAsJsonObject("yaw").get("median_deg")
+        .getAsDouble(), 1e-9);
+    assertEquals(0.95, camera1.getAsJsonObject("confidence").get("median").getAsDouble(), 1e-6);
+    assertEquals(camera1.get("observation_count").getAsInt(),
+        camera1.getAsJsonObject("object_ids").get("8").getAsInt());
+  }
+
+  @Test
+  @DisplayName("pose sets: Pose3d[] per loop, with how often they hold a pose")
+  void poseSets() {
+    var r = call("analyze_vision", "vision_photon_akit");
+    var sets = objects(r.getAsJsonArray("pose_sets"));
+    assertEquals(1, sets.size(), r.toString());
+    var set = sets.get(0);
+    assertEquals("/RealOutputs/Vision/Summary/RobotPosesAccepted", set.get("entry").getAsString());
+    // one empty record at the start, then one pose per loop
+    assertEquals(set.get("records").getAsInt() - 1, set.get("records_non_empty").getAsInt());
+    assertEquals(1, set.get("max_poses_per_record").getAsInt());
+  }
+
+  @Test
+  @DisplayName("observation streams report the fraction of records with an observation and logged latency")
+  void streamExtras() {
+    var r = call("analyze_vision", "vision_photon_akit");
+    for (var stream : objects(r.getAsJsonArray("observation_streams"))) {
+      assertEquals(1.0, stream.get("fraction_with_observations").getAsDouble(), 1e-9);
+      var logged = stream.getAsJsonObject("logged_latency");
+      assertTrue(logged.get("entry").getAsString().endsWith("/LatencyMs"), logged.toString());
+      double expected = stream.get("camera").getAsString().equals("Camera0") ? 61.0 : 62.0;
+      assertEquals(expected, logged.get("median").getAsDouble(), 1e-9);
+    }
   }
 }
