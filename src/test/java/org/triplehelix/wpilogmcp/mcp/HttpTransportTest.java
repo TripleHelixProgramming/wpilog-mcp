@@ -8,12 +8,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -22,13 +28,14 @@ import org.junit.jupiter.api.Test;
 
 class HttpTransportTest {
   private static final int TEST_PORT = 0; // Will find a free port
+  private ToolRegistry registry;
   private HttpTransport transport;
   private HttpClient client;
   private int actualPort;
 
   @BeforeEach
   void setUp() throws IOException {
-    var registry = new ToolRegistry();
+    registry = new ToolRegistry();
     // Register a simple test tool
     registry.registerTool(new ToolRegistry.Tool() {
       @Override public String name() { return "echo"; }
@@ -518,6 +525,171 @@ class HttpTransportTest {
       assertEquals(200, response.statusCode());
       var body = JsonParser.parseString(response.body()).getAsJsonObject();
       assertEquals("ok", body.get("status").getAsString());
+    }
+  }
+
+  @Nested
+  @DisplayName("Shutdown")
+  class ShutdownTest {
+
+    private String initialize() throws IOException, InterruptedException {
+      var initResponse = post(
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", null);
+      return initResponse.headers().firstValue("Mcp-Session-Id").orElseThrow();
+    }
+
+    @Test
+    @DisplayName("stop() returns promptly with nothing in flight")
+    void stopIsPromptWhenIdle() {
+      long start = System.nanoTime();
+      transport.stop();
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+      assertTrue(elapsedMs < 1000, "stop() took " + elapsedMs + " ms with nothing in flight");
+    }
+
+    @Test
+    @DisplayName("stop() returns promptly while an SSE stream is open")
+    void stopIsPromptWithOpenSseStream() throws Exception {
+      var sessionId = initialize();
+
+      // A raw socket, so the stream is known to be open (first ping received) when stop() runs
+      try (var socket = new Socket("127.0.0.1", actualPort)) {
+        socket.setSoTimeout(5000);
+        var request = "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n"
+            + "Mcp-Session-Id: " + sessionId + "\r\n\r\n";
+        socket.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));
+        socket.getOutputStream().flush();
+        var in = new BufferedReader(
+            new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+        String line;
+        boolean pinged = false;
+        while ((line = in.readLine()) != null) {
+          if (line.contains(":ping")) {
+            pinged = true;
+            break;
+          }
+        }
+        assertTrue(pinged, "The SSE stream should have sent its first ping");
+
+        long start = System.nanoTime();
+        transport.stop();
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(elapsedMs < 1000,
+            "stop() took " + elapsedMs + " ms with an SSE stream open");
+
+        // The server has ended the stream: the socket reaches end of stream (or is reset)
+        try {
+          while (in.readLine() != null) {
+            // drain the chunk terminator
+          }
+        } catch (IOException ignored) {
+          // A reset also means the server closed the connection
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("stop() lets a request in flight finish")
+    void stopDrainsRequestInFlight() throws Exception {
+      var started = new CountDownLatch(1);
+      registry.registerTool(new ToolRegistry.Tool() {
+        @Override public String name() { return "slow"; }
+        @Override public String description() { return "Takes a while"; }
+        @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+        @Override public com.google.gson.JsonElement execute(JsonObject arguments) {
+          started.countDown();
+          try {
+            Thread.sleep(500);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+          var result = new JsonObject();
+          result.addProperty("done", true);
+          return result;
+        }
+      });
+      var sessionId = initialize();
+
+      var request = HttpRequest.newBuilder()
+          .uri(URI.create("http://127.0.0.1:" + actualPort + "/mcp"))
+          .header("Content-Type", "application/json")
+          .header("Accept", "application/json, text/event-stream")
+          .header("Mcp-Session-Id", sessionId)
+          .POST(HttpRequest.BodyPublishers.ofString(
+              "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                  + "\"params\":{\"name\":\"slow\",\"arguments\":{}}}"))
+          .build();
+      var pending = client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+      assertTrue(started.await(5, TimeUnit.SECONDS), "The tool call should be in flight");
+
+      transport.stop();
+
+      var response = pending.get(5, TimeUnit.SECONDS);
+      assertEquals(200, response.statusCode());
+      assertTrue(response.body().contains("done"),
+          "The request in flight should have completed: " + response.body());
+    }
+  }
+
+  @Nested
+  @DisplayName("Malformed JSON-RPC over HTTP")
+  class MalformedMessagesTest {
+
+    private String initialize() throws IOException, InterruptedException {
+      var initResponse = post(
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", null);
+      return initResponse.headers().firstValue("Mcp-Session-Id").orElseThrow();
+    }
+
+    @Test
+    @DisplayName("non-string method is a JSON-RPC invalid request, not HTTP 500")
+    void nonStringMethod() throws Exception {
+      var sessionId = initialize();
+      var response = post("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":5}", sessionId);
+
+      assertEquals(200, response.statusCode());
+      var body = JsonParser.parseString(response.body()).getAsJsonObject();
+      assertEquals(JsonRpc.INVALID_REQUEST, body.getAsJsonObject("error").get("code").getAsInt());
+      assertEquals(7, body.get("id").getAsInt());
+    }
+
+    @Test
+    @DisplayName("batch with a non-string method is answered element by element")
+    void batchWithNonStringMethod() throws Exception {
+      var sessionId = initialize();
+      var response = post("[{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":{\"x\":1}},"
+          + "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}]", sessionId);
+
+      assertEquals(200, response.statusCode());
+      var body = JsonParser.parseString(response.body()).getAsJsonArray();
+      assertEquals(2, body.size());
+      assertEquals(JsonRpc.INVALID_REQUEST,
+          body.get(0).getAsJsonObject().getAsJsonObject("error").get("code").getAsInt());
+      assertEquals(2, body.get(0).getAsJsonObject().get("id").getAsInt());
+      assertTrue(body.get(1).getAsJsonObject().has("result"));
+    }
+
+    @Test
+    @DisplayName("non-object arguments are invalid params with the id preserved")
+    void nonObjectArguments() throws Exception {
+      var sessionId = initialize();
+      var response = post("{\"jsonrpc\":\"2.0\",\"id\":\"call-1\",\"method\":\"tools/call\","
+          + "\"params\":{\"name\":\"echo\",\"arguments\":\"nope\"}}", sessionId);
+
+      assertEquals(200, response.statusCode());
+      var body = JsonParser.parseString(response.body()).getAsJsonObject();
+      assertEquals(JsonRpc.INVALID_PARAMS, body.getAsJsonObject("error").get("code").getAsInt());
+      assertEquals("call-1", body.get("id").getAsString());
+    }
+
+    @Test
+    @DisplayName("a request without an id is a notification: 202 and no body")
+    void notificationGetsNoBody() throws Exception {
+      var sessionId = initialize();
+      var response = post("{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}", sessionId);
+
+      assertEquals(202, response.statusCode());
+      assertTrue(response.body().isEmpty(), "A notification must not be answered");
     }
   }
 }

@@ -10,7 +10,9 @@ import com.google.gson.JsonParser;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +21,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>This is a thin I/O adapter that reads JSON-RPC messages from stdin and writes responses to
  * stdout. All message routing and tool execution is delegated to {@link McpMessageHandler}.
+ *
+ * <p>MCP stdio is UTF-8 in both directions, whatever the platform charset (which on JDK 17 for
+ * Windows is not UTF-8): entry names and text values with non-ASCII characters survive the round
+ * trip.
  */
 public class McpServer {
   private static final Logger logger = LoggerFactory.getLogger(McpServer.class);
@@ -37,13 +43,13 @@ public class McpServer {
 
   public McpServer(ToolRegistry toolRegistry) {
     this.gson = new GsonBuilder().serializeNulls().create();
-    this.reader = new BufferedReader(new InputStreamReader(System.in));
+    this.reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
     this.toolRegistry = toolRegistry;
     this.handler = new McpMessageHandler(toolRegistry);
 
     var mcpOut = System.out;
     System.setOut(System.err);
-    this.writer = new PrintWriter(mcpOut, true);
+    this.writer = new PrintWriter(new OutputStreamWriter(mcpOut, StandardCharsets.UTF_8), true);
     logger.debug("McpServer initialized, stdout redirected to stderr");
   }
 

@@ -240,6 +240,61 @@ class ConfigLoaderTest {
     }
   }
 
+  // ==================== Detailed loading ====================
+
+  @Nested
+  @DisplayName("loadDetailed")
+  class LoadDetailedTests {
+
+    @Test
+    @DisplayName("returns the file the configuration came from, with no warnings")
+    void returnsFile() throws Exception {
+      var file = writeYaml("""
+          servers:
+            dev:
+              logdir: /logs
+          """);
+
+      var loaded = new ConfigLoader().loadDetailed("dev", file);
+
+      assertEquals(file, loaded.file());
+      assertEquals("/logs", loaded.config().logdir());
+      assertTrue(loaded.warnings().isEmpty());
+    }
+
+    @Test
+    @DisplayName("notes an unset environment variable once and leaves the reference as written")
+    void unsetVariableIsAWarning() throws Exception {
+      var file = writeYaml("""
+          tba_key: "${WPILOG_TEST_UNSET_KEY}"
+          servers:
+            dev:
+              logdir: /logs
+              tba_key: "${WPILOG_TEST_UNSET_KEY}"
+          """);
+
+      var loaded = new ConfigLoader(name -> null).loadDetailed("dev", file);
+
+      assertEquals(List.of("Environment variable WPILOG_TEST_UNSET_KEY is not set"),
+          loaded.warnings());
+      assertEquals("${WPILOG_TEST_UNSET_KEY}", loaded.config().tbaKey());
+    }
+
+    @Test
+    @DisplayName("load resolves the same configuration")
+    void loadMatchesLoadDetailed() throws Exception {
+      var file = writeYaml("""
+          servers:
+            dev:
+              logdir: /logs
+              debug: true
+          """);
+
+      var loader = new ConfigLoader();
+      assertEquals(loader.loadDetailed("dev", file).config(), loader.load("dev", file));
+    }
+  }
+
   // ==================== YAML Parsing ====================
 
   @Nested

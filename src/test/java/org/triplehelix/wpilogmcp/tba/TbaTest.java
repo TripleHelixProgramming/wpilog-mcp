@@ -54,6 +54,19 @@ class TbaTest {
     }
 
     @Test
+    @DisplayName("a key set explicitly (-tba-key, config) is not overwritten by the environment")
+    void explicitKeyWinsOverEnvironment() {
+      TbaConfig config = TbaConfig.getInstance();
+      config.setApiKey("from_cli");
+
+      config.refreshFromEnvironment();
+      assertEquals("from_cli", config.getApiKey());
+
+      config.applyToClient();
+      assertEquals("from_cli", config.getApiKey());
+    }
+
+    @Test
     @DisplayName("can set and get API key")
     void canSetAndGetApiKey() {
       TbaConfig config = TbaConfig.getInstance();

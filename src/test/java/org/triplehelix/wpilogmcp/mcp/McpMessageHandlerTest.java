@@ -10,6 +10,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 class McpMessageHandlerTest {
@@ -274,6 +275,175 @@ class McpMessageHandlerTest {
 
     // Verify SessionContext is cleared after each call (ThreadLocal cleanup)
     assertNull(SessionContext.current(), "SessionContext should be cleared after calls");
+  }
+
+  @Nested
+  @DisplayName("Malformed messages and notifications")
+  class MalformedMessages {
+
+    /** Registers a tool that returns its arguments, and records that it ran. */
+    private java.util.concurrent.atomic.AtomicInteger registerEcho() {
+      var calls = new java.util.concurrent.atomic.AtomicInteger();
+      registry.registerTool(new ToolRegistry.Tool() {
+        @Override public String name() { return "echo"; }
+        @Override public String description() { return "Returns its arguments"; }
+        @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+        @Override public com.google.gson.JsonElement execute(JsonObject arguments) {
+          calls.incrementAndGet();
+          return arguments.deepCopy();
+        }
+      });
+      return calls;
+    }
+
+    private JsonObject errorOf(McpMessageHandler.HandlerResult result) {
+      assertNotNull(result.response(), "A malformed request must be answered");
+      assertTrue(result.response().has("error"), "Expected an error: " + result.response());
+      return result.response().getAsJsonObject("error");
+    }
+
+    private void assertInvalidParams(String json) {
+      var result = handler.handleMessage(parse(json));
+      assertEquals(JsonRpc.INVALID_PARAMS, errorOf(result).get("code").getAsInt(),
+          "Expected INVALID_PARAMS for " + json + ": " + result.response());
+      assertEquals(1, result.response().get("id").getAsInt(), "The id must be preserved");
+    }
+
+    @Test
+    @DisplayName("numeric method is INVALID_REQUEST with the id preserved")
+    void numericMethod() {
+      var result = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":5}"));
+      assertEquals(JsonRpc.INVALID_REQUEST, errorOf(result).get("code").getAsInt());
+      assertEquals(7, result.response().get("id").getAsInt());
+    }
+
+    @Test
+    @DisplayName("object method is INVALID_REQUEST with a string id preserved")
+    void objectMethod() {
+      var result = handler.handleMessage(
+          parse("{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":{\"a\":1}}"));
+      assertEquals(JsonRpc.INVALID_REQUEST, errorOf(result).get("code").getAsInt());
+      assertEquals("abc", result.response().get("id").getAsString());
+    }
+
+    @Test
+    @DisplayName("null method is INVALID_REQUEST")
+    void nullMethod() {
+      var result = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":null}"));
+      assertEquals(JsonRpc.INVALID_REQUEST, errorOf(result).get("code").getAsInt());
+      assertEquals(3, result.response().get("id").getAsInt());
+    }
+
+    @Test
+    @DisplayName("non-string method without an id is still answered, with id null")
+    void nonStringMethodWithoutId() {
+      var result = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":5}"));
+      assertEquals(JsonRpc.INVALID_REQUEST, errorOf(result).get("code").getAsInt());
+      assertTrue(result.response().get("id").isJsonNull());
+    }
+
+    @Test
+    @DisplayName("tools/call with non-object, null, or missing params is INVALID_PARAMS")
+    void badParams() {
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\"bar\"}");
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":[1,2]}");
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":7}");
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":null}");
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\"}");
+    }
+
+    @Test
+    @DisplayName("tools/call with a null, non-string, or missing name is INVALID_PARAMS")
+    void badName() {
+      registerEcho();
+      assertInvalidParams(
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":null}}");
+      assertInvalidParams(
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":5}}");
+      assertInvalidParams(
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":{}}}");
+      assertInvalidParams(
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{}}");
+    }
+
+    @Test
+    @DisplayName("tools/call with non-object arguments is INVALID_PARAMS, and the tool does not run")
+    void badArguments() {
+      var calls = registerEcho();
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+          + "\"params\":{\"name\":\"echo\",\"arguments\":\"nope\"}}");
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+          + "\"params\":{\"name\":\"echo\",\"arguments\":[1]}}");
+      assertInvalidParams("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+          + "\"params\":{\"name\":\"echo\",\"arguments\":3}}");
+      assertEquals(0, calls.get());
+    }
+
+    @Test
+    @DisplayName("tools/call with null or missing arguments runs the tool without any")
+    void nullArgumentsMeanNone() {
+      var calls = registerEcho();
+      var withNull = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"id\":1,"
+          + "\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":null}}"));
+      var without = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"id\":2,"
+          + "\"method\":\"tools/call\",\"params\":{\"name\":\"echo\"}}"));
+
+      assertTrue(withNull.response().has("result"), withNull.response().toString());
+      assertTrue(without.response().has("result"), without.response().toString());
+      assertEquals(2, calls.get());
+    }
+
+    @Test
+    @DisplayName("a request without an id for a known method is a notification: no reply")
+    void knownMethodNotificationsGetNoReply() {
+      assertNull(handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}")).response());
+      assertNull(handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\"}")).response());
+      assertNull(handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"prompts/list\"}")).response());
+      assertNull(handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}")).response(),
+          "An explicit null id is treated as no id");
+      assertNull(handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"bogus\"}")).response(),
+          "An unknown notification gets no reply either");
+    }
+
+    @Test
+    @DisplayName("a tools/call notification runs the tool but gets no reply")
+    void toolCallNotificationRunsSilently() {
+      var calls = registerEcho();
+      var result = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\","
+          + "\"params\":{\"name\":\"echo\",\"arguments\":{\"a\":1}}}"));
+
+      assertNull(result.response());
+      assertEquals(1, calls.get());
+    }
+
+    @Test
+    @DisplayName("a tools/call notification with bad params gets no reply")
+    void badNotificationGetsNoReply() {
+      var result = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\","
+          + "\"params\":\"bar\"}"));
+      assertNull(result.response());
+    }
+
+    @Test
+    @DisplayName("a shutdown notification shuts down without a reply")
+    void shutdownNotification() {
+      var result = handler.handleMessage(parse("{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}"));
+      assertNull(result.response());
+      assertTrue(result.shouldShutdown());
+    }
+
+    @Test
+    @DisplayName("an initialize notification creates no session and gets no reply")
+    void initializeNotificationCreatesNoSession() {
+      var sessionManager = new SessionManager();
+      var sessionHandler = new McpMessageHandler(registry, sessionManager);
+      var result = sessionHandler.handleMessage(
+          parse("{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{}}"));
+
+      assertNull(result.response());
+      assertNull(result.newSessionId());
+      assertEquals(0, sessionManager.size());
+    }
   }
 
   private JsonObject parse(String json) {

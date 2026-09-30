@@ -13,6 +13,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -46,11 +48,34 @@ import org.yaml.snakeyaml.Yaml;
  * @since 0.8.0
  */
 public class ConfigLoader {
-  private static final Logger logger = LoggerFactory.getLogger(ConfigLoader.class);
   private static final Pattern ENV_VAR_PATTERN = Pattern.compile("\\$\\{([^}]+)\\}");
   private static final String APP_NAME = "wpilog-mcp";
 
   private final Function<String, String> envResolver;
+
+  /**
+   * Created on first use, not when this class loads: SimpleLogger fixes its level when the first
+   * logger in the JVM is created, and {@code Main} decides that level from the configuration this
+   * class loads. {@link #loadDetailed} therefore logs nothing itself.
+   */
+  private static Logger logger() {
+    return LoggerHolder.LOGGER;
+  }
+
+  private static final class LoggerHolder {
+    static final Logger LOGGER = LoggerFactory.getLogger(ConfigLoader.class);
+  }
+
+  /**
+   * A loaded configuration, with the file it came from and what the loader has to say about it,
+   * for the caller to log once logging is configured.
+   *
+   * @param config The resolved server configuration
+   * @param file The configuration file it was read from
+   * @param warnings Problems worth a warning that did not prevent loading (an unset
+   *     {@code ${VAR}} reference, left as written)
+   */
+  public record Loaded(ServerConfig config, Path file, List<String> warnings) {}
 
   /** Creates a ConfigLoader using system environment variables. */
   public ConfigLoader() {
@@ -67,27 +92,46 @@ public class ConfigLoader {
   }
 
   /**
-   * Loads a named server configuration.
-   *
-   * <p>Discovers the config file, parses it, merges defaults, interpolates
-   * environment variables, and expands tilde in path values.
+   * Loads a named server configuration and logs where it came from and any warnings.
    *
    * @param configName The server configuration name
    * @param explicitPath Optional explicit config file path (from --config flag), or null
    * @return The resolved ServerConfig
    * @throws ConfigException if the config file is not found, unparseable, or the name is missing
+   * @see #loadDetailed
    */
   public ServerConfig load(String configName, Path explicitPath) throws ConfigException {
+    var loaded = loadDetailed(configName, explicitPath);
+    loaded.warnings().forEach(warning -> logger().warn("{}", warning));
+    logger().info("Loaded configuration '{}' from {}", configName, loaded.file());
+    return loaded.config();
+  }
+
+  /**
+   * Loads a named server configuration without logging anything.
+   *
+   * <p>Discovers the config file, parses it, merges defaults, interpolates environment
+   * variables, and expands tilde in path values. The caller logs the outcome (the file, the
+   * warnings); {@code Main} does so after it has set the log level from the configuration.
+   *
+   * @param configName The server configuration name
+   * @param explicitPath Optional explicit config file path (from --config flag), or null
+   * @return The resolved configuration, its file, and the warnings
+   * @throws ConfigException if the config file is not found, unparseable, or the name is missing
+   */
+  public Loaded loadDetailed(String configName, Path explicitPath) throws ConfigException {
     var configFile = discoverConfigFile(explicitPath);
     var root = parseFile(configFile);
+    var warnings = new LinkedHashSet<String>();
 
     // Parse defaults from three layers (lowest to highest priority):
     // 1. Top-level properties on the root object (excluding "servers" and "defaults")
     // 2. Explicit "defaults" block (if present)
     // This allows a clean flat config where team, logdir, etc. live at the root.
-    ServerConfig defaults = parseServerBlock("_defaults", root);
+    ServerConfig defaults = parseServerBlock("_defaults", root, warnings);
     if (root.has("defaults") && root.get("defaults").isJsonObject()) {
-      var explicitDefaults = parseServerBlock("_defaults", root.getAsJsonObject("defaults"));
+      var explicitDefaults =
+          parseServerBlock("_defaults", root.getAsJsonObject("defaults"), warnings);
       defaults = explicitDefaults.mergeWithDefaults(defaults);
     }
 
@@ -104,13 +148,12 @@ public class ConfigLoader {
     }
 
     var serverBlock = servers.getAsJsonObject(configName);
-    var config = parseServerBlock(configName, serverBlock).mergeWithDefaults(defaults);
+    var config = parseServerBlock(configName, serverBlock, warnings).mergeWithDefaults(defaults);
 
     // Validate
     validate(config);
 
-    logger.info("Loaded configuration '{}' from {}", configName, configFile);
-    return config;
+    return new Loaded(config, configFile, List.copyOf(warnings));
   }
 
   /**
@@ -148,7 +191,6 @@ public class ConfigLoader {
     var searchPaths = configSearchPaths();
     for (var path : searchPaths) {
       if (Files.isRegularFile(path)) {
-        logger.debug("Found configuration file: {}", path);
         return path;
       }
     }
@@ -290,19 +332,20 @@ public class ConfigLoader {
     return arr;
   }
 
-  private ServerConfig parseServerBlock(String name, JsonObject block) {
+  private ServerConfig parseServerBlock(
+      String name, JsonObject block, Collection<String> warnings) {
     return new ServerConfig(
         name,
-        expandPath(interpolate(getString(block, "logdir"))),
+        expandPath(interpolate(getString(block, "logdir"), warnings)),
         getInteger(block, "team"),
-        interpolate(getString(block, "tba_key")),
+        interpolate(getString(block, "tba_key"), warnings),
         getString(block, "transport"),
         getInteger(block, "port"),
-        expandPath(interpolate(getString(block, "diskcachedir"))),
+        expandPath(interpolate(getString(block, "diskcachedir"), warnings)),
         getLong(block, "diskcachesize"),
         getBoolean(block, "diskcachedisable"),
         getBoolean(block, "debug"),
-        expandPath(interpolate(getString(block, "exportdir"))),
+        expandPath(interpolate(getString(block, "exportdir"), warnings)),
         getInteger(block, "scandepth")
     );
   }
@@ -324,10 +367,19 @@ public class ConfigLoader {
 
   }
 
-  /**
-   * Interpolates {@code ${VAR_NAME}} references in a string value.
-   */
+  /** As {@link #interpolate(String, Collection)}, logging each warning at once. */
   String interpolate(String value) {
+    var warnings = new ArrayList<String>();
+    var result = interpolate(value, warnings);
+    warnings.forEach(warning -> logger().warn("{}", warning));
+    return result;
+  }
+
+  /**
+   * Interpolates {@code ${VAR_NAME}} references in a string value. A reference to an unset
+   * variable is left as written and noted in {@code warnings}.
+   */
+  String interpolate(String value, Collection<String> warnings) {
     if (value == null || !value.contains("${")) return value;
     var matcher = ENV_VAR_PATTERN.matcher(value);
     var sb = new StringBuilder();
@@ -337,7 +389,7 @@ public class ConfigLoader {
       if (envValue != null) {
         matcher.appendReplacement(sb, Matcher.quoteReplacement(envValue));
       } else {
-        logger.warn("Environment variable {} is not set", envName);
+        warnings.add("Environment variable " + envName + " is not set");
         matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group(0)));
       }
     }

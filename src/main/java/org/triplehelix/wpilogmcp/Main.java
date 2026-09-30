@@ -31,13 +31,30 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  * </ul>
  */
 public class Main {
-  private static final Logger logger = LoggerFactory.getLogger(Main.class);
   private static final String VERSION = Version.VERSION;
+  /** SimpleLogger's level property, read once, when the first logger in the JVM is created. */
+  static final String LOG_LEVEL_PROPERTY = "org.slf4j.simpleLogger.defaultLogLevel";
+
+  /**
+   * Created on first use, not when this class loads: SimpleLogger fixes its level when the first
+   * logger in the JVM is created, so {@link #main} decides the level ({@code -debug},
+   * {@code WPILOG_DEBUG}, {@code debug: true} in the configuration) before anything logs.
+   */
+  private static Logger logger() {
+    return LoggerHolder.LOGGER;
+  }
+
+  private static final class LoggerHolder {
+    static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
+  }
 
   public static void main(String[] args) {
-    // Set default log level if not specified
-    if (System.getProperty("org.slf4j.simpleLogger.defaultLogLevel") == null) {
-      System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "info");
+    // Decide the log level before any logger exists (see logger()). A configuration file's
+    // debug setting is applied where the file is loaded, still before the first log line.
+    if (debugRequested(args, System.getenv("WPILOG_DEBUG"))) {
+      enableDebugLogging();
+    } else if (System.getProperty(LOG_LEVEL_PROPERTY) == null) {
+      System.setProperty(LOG_LEVEL_PROPERTY, "info");
     }
 
     // Check for "--internal-daemon" flag (used by DaemonManager for HTTP daemon re-exec)
@@ -63,7 +80,36 @@ public class Main {
     handleLegacyCli(args);
   }
 
+  /** Whether {@code -debug} is among the arguments or {@code WPILOG_DEBUG} is {@code true}. */
+  static boolean debugRequested(String[] args, String wpilogDebug) {
+    return java.util.Arrays.asList(args).contains("-debug")
+        || "true".equalsIgnoreCase(wpilogDebug);
+  }
+
+  /**
+   * Turns on debug logging. Effective only before the first logger is created, so every start
+   * path calls it before its first log line.
+   */
+  static void enableDebugLogging() {
+    System.setProperty(LOG_LEVEL_PROPERTY, "debug");
+  }
+
   // ==================== Named Config Mode ====================
+
+  /**
+   * Loads a named configuration, applying its debug setting before the first log line (see
+   * {@link #logger()}), then logs where it came from and any warnings.
+   */
+  private static ServerConfig loadConfig(String configName, Path configPath)
+      throws ConfigException {
+    var loaded = new ConfigLoader().loadDetailed(configName, configPath);
+    if (Boolean.TRUE.equals(loaded.config().debug())) {
+      enableDebugLogging();
+    }
+    loaded.warnings().forEach(warning -> logger().warn("{}", warning));
+    logger().info("Loaded configuration '{}' from {}", configName, loaded.file());
+    return loaded.config();
+  }
 
   private static void handleStartCommand(String[] args) {
     var configName = args[1];
@@ -77,32 +123,24 @@ public class Main {
     }
 
     try {
-      var loader = new ConfigLoader();
-      var config = loader.load(configName, configPath);
+      var config = loadConfig(configName, configPath);
 
       if (config.isHttp()) {
-        // HTTP transport: spawn as daemon
+        // HTTP transport: spawn as daemon, or find the one already running on the port
         var daemon = new DaemonManager();
-        int port = config.effectivePort();
-
-        if (daemon.isAlreadyRunning(configName, port)) {
+        if (daemon.spawnDaemon(configName, config.effectivePort(), configPath)) {
           System.exit(0);
         }
-
-        if (daemon.spawnDaemon(configName, port, configPath)) {
-          System.exit(0);
-        } else {
-          logger.error("Failed to start server '{}'", configName);
-          System.exit(1);
-        }
+        logger().error("Failed to start server '{}'", configName);
+        System.exit(1);
       } else {
         // Stdio transport: run in foreground
-        logger.info("Starting wpilog-mcp server (config: {})...", configName);
+        logger().info("Starting wpilog-mcp server (config: {})...", configName);
         applyConfig(config);
         initializeAndRun(false, 2363, null, null, null);
       }
     } catch (ConfigException e) {
-      logger.error("{}", e.getMessage());
+      logger().error("{}", e.getMessage());
       System.exit(1);
     }
   }
@@ -122,16 +160,15 @@ public class Main {
     }
 
     try {
-      logger.info("Starting wpilog-mcp daemon (config: {})...", configName);
-      var loader = new ConfigLoader();
-      var config = loader.load(configName, configPath);
+      var config = loadConfig(configName, configPath);
+      logger().info("Starting wpilog-mcp daemon (config: {})...", configName);
       applyConfig(config);
       var daemonBind = System.getenv("WPILOG_HTTP_BIND");
       var daemonPath = System.getenv("WPILOG_HTTP_PATH");
       var daemonOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath, daemonOrigins);
     } catch (ConfigException e) {
-      logger.error("{}", e.getMessage());
+      logger().error("{}", e.getMessage());
       System.exit(1);
     }
   }
@@ -143,15 +180,15 @@ public class Main {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
-    // Debug mode
+    // Debug mode (the start paths enabled it before their first log line; see logger())
     if (Boolean.TRUE.equals(config.debug())) {
-      System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
-      logger.info("Debug logging enabled");
+      enableDebugLogging();
+      logger().info("Debug logging enabled");
     }
 
     // Log directory
     if (config.logdir() != null && !config.logdir().isEmpty()) {
-      logger.info("Configuring log directory: {}", config.logdir());
+      logger().info("Configuring log directory: {}", config.logdir());
       LogDirectory.getInstance().setLogDirectory(config.logdir());
       logManager.addAllowedDirectory(config.logdir());
     }
@@ -159,28 +196,28 @@ public class Main {
     // Team number
     if (config.team() != null) {
       LogDirectory.getInstance().setDefaultTeamNumber(config.team());
-      logger.debug("Default team number: {}", config.team());
+      logger().debug("Default team number: {}", config.team());
     }
 
     // TBA API key
     if (config.tbaKey() != null && !config.tbaKey().isEmpty()) {
       tbaConfig.setApiKey(config.tbaKey());
-      logger.debug("TBA API key set from configuration");
+      logger().debug("TBA API key set from configuration");
     }
 
     // Cache settings
     if (config.diskcachedir() != null && !config.diskcachedir().isEmpty()) {
       logManager.getCacheDirectory().setOverride(config.diskcachedir());
-      logger.debug("Disk cache directory: {}", config.diskcachedir());
+      logger().debug("Disk cache directory: {}", config.diskcachedir());
     }
     if (config.diskcachesize() != null) {
       logManager.getDiskCache().setMaxTotalSizeMb(config.diskcachesize());
-      logger.debug("Disk cache size limit: {} MB", config.diskcachesize());
+      logger().debug("Disk cache size limit: {} MB", config.diskcachesize());
     }
     if (Boolean.TRUE.equals(config.diskcachedisable())) {
       logManager.getDiskCache().setEnabled(false);
       logManager.getSyncDiskCache().setEnabled(false);
-      logger.info("Disk cache disabled");
+      logger().info("Disk cache disabled");
     }
 
     // Export directory
@@ -197,7 +234,7 @@ public class Main {
   // ==================== Legacy CLI Mode ====================
 
   private static void handleLegacyCli(String[] args) {
-    logger.info("Starting wpilog-mcp server...");
+    logger().info("Starting wpilog-mcp server...");
 
     var tbaConfig = TbaConfig.getInstance();
     var logManager = LogManager.getInstance();
@@ -209,7 +246,6 @@ public class Main {
     String httpBind = System.getenv("WPILOG_HTTP_BIND");
     String httpPath = System.getenv("WPILOG_HTTP_PATH");
     var allowedOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
-    boolean debugMode = "true".equalsIgnoreCase(System.getenv("WPILOG_DEBUG"));
 
     applyEnvLong("WPILOG_DISK_CACHE_SIZE", v -> logManager.getDiskCache().setMaxTotalSizeMb(v));
     if ("true".equalsIgnoreCase(System.getenv("WPILOG_DISK_CACHE_DISABLE"))) {
@@ -221,9 +257,6 @@ public class Main {
       ExportTools.setExportDirectory(envExportDir);
     }
     applyEnvInt("WPILOG_SCAN_DEPTH", v -> LogDirectory.getInstance().setScanDepth(v));
-    if (debugMode) {
-      System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
-    }
 
     // Parse command line arguments (override env vars)
     for (int i = 0; i < args.length; i++) {
@@ -235,14 +268,14 @@ public class Main {
         System.out.println("wpilog-mcp version " + VERSION);
         System.exit(0);
       } else if (arg.equals("-debug")) {
-        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
-        logger.info("Debug logging enabled");
+        // Enabled by main() before the first logger was created
+        logger().info("Debug logging enabled");
       } else if (arg.equals("-logdir")) {
         if (i + 1 < args.length) {
           logDir = args[++i];
-          logger.debug("Log directory set from command line: {}", logDir);
+          logger().debug("Log directory set from command line: {}", logDir);
         } else {
-          logger.error("Error: -logdir requires a path argument");
+          logger().error("Error: -logdir requires a path argument");
           printUsage();
           System.exit(1);
         }
@@ -250,9 +283,9 @@ public class Main {
         if (i + 1 < args.length) {
           var key = args[++i];
           tbaConfig.setApiKey(key);
-          logger.debug("TBA API key provided via command line");
+          logger().debug("TBA API key provided via command line");
         } else {
-          logger.error("Error: -tba-key requires an API key argument");
+          logger().error("Error: -tba-key requires an API key argument");
           printUsage();
           System.exit(1);
         }
@@ -261,14 +294,14 @@ public class Main {
           try {
             int team = Integer.parseInt(args[++i]);
             LogDirectory.getInstance().setDefaultTeamNumber(team);
-            logger.debug("Default team number set from command line: {}", team);
+            logger().debug("Default team number set from command line: {}", team);
           } catch (NumberFormatException e) {
-            logger.error("Error: -team requires a numeric team number");
+            logger().error("Error: -team requires a numeric team number");
             printUsage();
             System.exit(1);
           }
         } else {
-          logger.error("Error: -team requires a team number argument");
+          logger().error("Error: -team requires a team number argument");
           printUsage();
           System.exit(1);
         }
@@ -276,9 +309,9 @@ public class Main {
         if (i + 1 < args.length) {
           var dir = args[++i];
           LogManager.getInstance().getCacheDirectory().setOverride(dir);
-          logger.debug("Disk cache directory set from command line: {}", dir);
+          logger().debug("Disk cache directory set from command line: {}", dir);
         } else {
-          logger.error("Error: -diskcachedir requires a path argument");
+          logger().error("Error: -diskcachedir requires a path argument");
           printUsage();
           System.exit(1);
         }
@@ -287,31 +320,31 @@ public class Main {
           try {
             long sizeMb = Long.parseLong(args[++i]);
             if (sizeMb < 1) {
-              logger.error("Error: -diskcachesize must be at least 1 MB");
+              logger().error("Error: -diskcachesize must be at least 1 MB");
               printUsage();
               System.exit(1);
             }
             LogManager.getInstance().getDiskCache().setMaxTotalSizeMb(sizeMb);
-            logger.debug("Disk cache size limit set from command line: {} MB", sizeMb);
+            logger().debug("Disk cache size limit set from command line: {} MB", sizeMb);
           } catch (NumberFormatException e) {
-            logger.error("Error: -diskcachesize requires a numeric value (MB)");
+            logger().error("Error: -diskcachesize requires a numeric value (MB)");
             printUsage();
             System.exit(1);
           }
         } else {
-          logger.error("Error: -diskcachesize requires a number argument (MB)");
+          logger().error("Error: -diskcachesize requires a number argument (MB)");
           printUsage();
           System.exit(1);
         }
       } else if (arg.equals("-diskcachedisable")) {
         LogManager.getInstance().getDiskCache().setEnabled(false);
         LogManager.getInstance().getSyncDiskCache().setEnabled(false);
-        logger.info("Disk cache disabled");
+        logger().info("Disk cache disabled");
       } else if (arg.equals("-exportdir")) {
         if (i + 1 < args.length) {
           ExportTools.setExportDirectory(args[++i]);
         } else {
-          logger.error("Error: -exportdir requires a path argument");
+          logger().error("Error: -exportdir requires a path argument");
           printUsage();
           System.exit(1);
         }
@@ -321,40 +354,40 @@ public class Main {
             int depth = Integer.parseInt(args[++i]);
             LogDirectory.getInstance().setScanDepth(depth);
           } catch (NumberFormatException e) {
-            logger.error("Error: -scandepth requires a numeric value");
+            logger().error("Error: -scandepth requires a numeric value");
             printUsage();
             System.exit(1);
           }
         } else {
-          logger.error("Error: -scandepth requires a number argument");
+          logger().error("Error: -scandepth requires a number argument");
           printUsage();
           System.exit(1);
         }
       } else if (arg.equals("--http")) {
         httpMode = true;
-        logger.info("HTTP transport enabled");
+        logger().info("HTTP transport enabled");
       } else if (arg.equals("--port")) {
         if (i + 1 < args.length) {
           try {
             httpPort = Integer.parseInt(args[++i]);
             if (httpPort < 1 || httpPort > 65535) {
-              logger.error("Error: --port must be between 1 and 65535");
+              logger().error("Error: --port must be between 1 and 65535");
               printUsage();
               System.exit(1);
             }
-            logger.debug("HTTP port set from command line: {}", httpPort);
+            logger().debug("HTTP port set from command line: {}", httpPort);
           } catch (NumberFormatException e) {
-            logger.error("Error: --port requires a numeric value");
+            logger().error("Error: --port requires a numeric value");
             printUsage();
             System.exit(1);
           }
         } else {
-          logger.error("Error: --port requires a port number argument");
+          logger().error("Error: --port requires a port number argument");
           printUsage();
           System.exit(1);
         }
       } else if (arg.startsWith("-")) {
-        logger.error("Unknown option: {}", arg);
+        logger().error("Unknown option: {}", arg);
         printUsage();
         System.exit(1);
       }
@@ -362,11 +395,11 @@ public class Main {
 
     // Configure log directory
     if (logDir != null && !logDir.isEmpty()) {
-      logger.info("Configuring log directory: {}", logDir);
+      logger().info("Configuring log directory: {}", logDir);
       LogDirectory.getInstance().setLogDirectory(logDir);
       LogManager.getInstance().addAllowedDirectory(logDir);
     } else {
-      logger.warn("No log directory configured. Use -logdir or WPILOG_DIR env var.");
+      logger().warn("No log directory configured. Use -logdir or WPILOG_DIR env var.");
     }
 
     // Configure default team number from environment if not set via command line
@@ -376,24 +409,15 @@ public class Main {
         try {
           int team = Integer.parseInt(envTeam);
           LogDirectory.getInstance().setDefaultTeamNumber(team);
-          logger.info("Default team number set from WPILOG_TEAM env var: {}", team);
+          logger().info("Default team number set from WPILOG_TEAM env var: {}", team);
         } catch (NumberFormatException e) {
-          logger.warn("Invalid WPILOG_TEAM environment variable: {}", envTeam);
+          logger().warn("Invalid WPILOG_TEAM environment variable: {}", envTeam);
         }
       }
     }
 
-    // Ensure we have the latest environment variables before applying
-    tbaConfig.refreshFromEnvironment();
-
-    // Initialize TBA client with configuration
-    tbaConfig.applyToClient();
-    if (tbaConfig.isConfigured()) {
-      logger.info("TBA enrichment enabled");
-    } else {
-      logger.info("TBA enrichment disabled (no API key found in env or args)");
-    }
-
+    // The TBA key is -tba-key when given, else TBA_API_KEY: initializeAndRun applies it, filling
+    // it from the environment only when no key was set.
     initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins);
   }
 
@@ -410,9 +434,9 @@ public class Main {
     // Ensure TBA is applied (config mode sets apiKey but doesn't call applyToClient)
     tbaConfig.applyToClient();
     if (tbaConfig.isConfigured()) {
-      logger.info("TBA enrichment enabled");
+      logger().info("TBA enrichment enabled");
     } else {
-      logger.info("TBA enrichment disabled (no API key found)");
+      logger().info("TBA enrichment disabled (no API key found)");
     }
 
     // Run disk cache cleanup in background (non-blocking)
@@ -423,20 +447,20 @@ public class Main {
     // Verify bundled game data is accessible
     var currentGame = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance().getCurrentGame();
     if (currentGame != null) {
-      logger.info("Game data loaded: {} {}", currentGame.season(), currentGame.gameName());
+      logger().info("Game data loaded: {} {}", currentGame.season(), currentGame.gameName());
     } else {
-      logger.warn("No bundled game data for current season");
+      logger().warn("No bundled game data for current season");
     }
 
     // Create tool registry and register all tools
     var toolRegistry = new ToolRegistry();
     WpilogTools.registerAll(toolRegistry);
-    logger.debug("Registered all MCP tools");
+    logger().debug("Registered all MCP tools");
 
     if (httpMode) {
       var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-        logger.info("Shutdown signal received");
+        logger().info("Shutdown signal received");
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
         // so that in-flight tool calls don't encounter closed logs.
         httpTransport.stop();
@@ -446,23 +470,23 @@ public class Main {
         httpTransport.start();
         Thread.currentThread().join();
       } catch (IOException e) {
-        logger.error("Fatal HTTP server error: {}", e.getMessage(), e);
+        logger().error("Fatal HTTP server error: {}", e.getMessage(), e);
         System.exit(1);
       } catch (InterruptedException e) {
-        logger.info("Server interrupted, shutting down");
+        logger().info("Server interrupted, shutting down");
         httpTransport.stop();
       }
     } else {
       var finalLogManager = logManager;
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-        logger.debug("Stdio shutdown: shutting down LogManager");
+        logger().debug("Stdio shutdown: shutting down LogManager");
         finalLogManager.shutdown();
       }, "stdio-shutdown-hook"));
       var server = new McpServer(toolRegistry);
       try {
         server.run();
       } catch (IOException e) {
-        logger.error("Fatal server error: {}", e.getMessage(), e);
+        logger().error("Fatal server error: {}", e.getMessage(), e);
         System.exit(1);
       }
     }
@@ -471,49 +495,49 @@ public class Main {
   // ==================== Usage ====================
 
   private static void printUsage() {
-    logger.info("Usage: wpilog-mcp [options]");
-    logger.info("       wpilog-mcp start <config-name> [--config <path>]");
-    logger.info("");
-    logger.info("With no arguments, starts the \"default\" server configuration.");
-    logger.info("");
-    logger.info("Commands:");
-    logger.info("  start <name>        Start a named server from servers.yaml");
-    logger.info("  --config <path>     Explicit config file path (default: auto-discover)");
-    logger.info("");
-    logger.info("Options:");
-    logger.info("  -logdir <path>    Set default directory for log files");
-    logger.info("  -team <number>    Default team number for logs missing metadata");
-    logger.info("  -tba-key <key>    The Blue Alliance API key for match data");
-    logger.info("  -diskcachedir <path> Set directory for persistent disk cache");
-    logger.info("  -diskcachesize <mb>  Max disk cache size in MB (default: 8192)");
-    logger.info("  -diskcachedisable    Disable persistent disk cache");
-    logger.info("  -exportdir <path> Set directory for CSV exports (default: {tmpdir}/wpilog-export/)");
-    logger.info("  -scandepth <n>   Max directory depth for log file scanning (default: 5)");
-    logger.info("  --http            Use HTTP transport instead of stdio");
-    logger.info("  --port <port>     HTTP port (default: 2363, requires --http)");
-    logger.info("  -debug            Enable debug logging");
-    logger.info("  -version, -v      Show version information");
-    logger.info("  -help, -h         Show this help message");
-    logger.info("");
-    logger.info("Environment variables (CLI flags override these):");
-    logger.info("  WPILOG_DIR             Default directory for log files");
-    logger.info("  WPILOG_TEAM            Default team number for logs missing metadata");
-    logger.info("  TBA_API_KEY            The Blue Alliance API key");
-    logger.info("  WPILOG_DISK_CACHE_DIR     Directory for persistent disk cache");
-    logger.info("  WPILOG_DISK_CACHE_SIZE    Max disk cache size in MB (default: 8192)");
-    logger.info("  WPILOG_DISK_CACHE_DISABLE Set to 'true' to disable persistent disk cache");
-    logger.info("  WPILOG_EXPORT_DIR      Directory for CSV exports (default: {tmpdir}/wpilog-export/)");
-    logger.info("  WPILOG_SCAN_DEPTH      Max directory depth for scanning (default: 5)");
-    logger.info("  WPILOG_HTTP            Set to 'true' to use HTTP transport");
-    logger.info("  WPILOG_HTTP_PORT       HTTP port (default: 2363)");
-    logger.info("  WPILOG_HTTP_BIND       HTTP bind address (default: 127.0.0.1, use 0.0.0.0 for containers)");
-    logger.info("  WPILOG_HTTP_PATH       HTTP endpoint path (default: /mcp)");
-    logger.info("  WPILOG_HTTP_ALLOWED_ORIGINS  Comma-separated hostnames for Origin validation");
-    logger.info("  WPILOG_DEBUG           Set to 'true' to enable debug logging");
-    logger.info("  WPILOG_MAX_HEAP        Max JVM heap size (default: 4g, used by run-mcp.sh/bat)");
-    logger.info("");
-    logger.info("Memory management is automatic — the server adapts to available JVM heap.");
-    logger.info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");
+    logger().info("Usage: wpilog-mcp [options]");
+    logger().info("       wpilog-mcp start <config-name> [--config <path>]");
+    logger().info("");
+    logger().info("With no arguments, starts the \"default\" server configuration.");
+    logger().info("");
+    logger().info("Commands:");
+    logger().info("  start <name>        Start a named server from servers.yaml");
+    logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
+    logger().info("");
+    logger().info("Options:");
+    logger().info("  -logdir <path>    Set default directory for log files");
+    logger().info("  -team <number>    Default team number for logs missing metadata");
+    logger().info("  -tba-key <key>    The Blue Alliance API key for match data");
+    logger().info("  -diskcachedir <path> Set directory for persistent disk cache");
+    logger().info("  -diskcachesize <mb>  Max disk cache size in MB (default: 8192)");
+    logger().info("  -diskcachedisable    Disable persistent disk cache");
+    logger().info("  -exportdir <path> Set directory for CSV exports (default: {tmpdir}/wpilog-export/)");
+    logger().info("  -scandepth <n>   Max directory depth for log file scanning (default: 5)");
+    logger().info("  --http            Use HTTP transport instead of stdio");
+    logger().info("  --port <port>     HTTP port (default: 2363, requires --http)");
+    logger().info("  -debug            Enable debug logging");
+    logger().info("  -version, -v      Show version information");
+    logger().info("  -help, -h         Show this help message");
+    logger().info("");
+    logger().info("Environment variables (CLI flags override these):");
+    logger().info("  WPILOG_DIR             Default directory for log files");
+    logger().info("  WPILOG_TEAM            Default team number for logs missing metadata");
+    logger().info("  TBA_API_KEY            The Blue Alliance API key");
+    logger().info("  WPILOG_DISK_CACHE_DIR     Directory for persistent disk cache");
+    logger().info("  WPILOG_DISK_CACHE_SIZE    Max disk cache size in MB (default: 8192)");
+    logger().info("  WPILOG_DISK_CACHE_DISABLE Set to 'true' to disable persistent disk cache");
+    logger().info("  WPILOG_EXPORT_DIR      Directory for CSV exports (default: {tmpdir}/wpilog-export/)");
+    logger().info("  WPILOG_SCAN_DEPTH      Max directory depth for scanning (default: 5)");
+    logger().info("  WPILOG_HTTP            Set to 'true' to use HTTP transport");
+    logger().info("  WPILOG_HTTP_PORT       HTTP port (default: 2363)");
+    logger().info("  WPILOG_HTTP_BIND       HTTP bind address (default: 127.0.0.1, use 0.0.0.0 for containers)");
+    logger().info("  WPILOG_HTTP_PATH       HTTP endpoint path (default: /mcp)");
+    logger().info("  WPILOG_HTTP_ALLOWED_ORIGINS  Comma-separated hostnames for Origin validation");
+    logger().info("  WPILOG_DEBUG           Set to 'true' to enable debug logging");
+    logger().info("  WPILOG_MAX_HEAP        Max JVM heap size (default: 4g, used by run-mcp.sh/bat)");
+    logger().info("");
+    logger().info("Memory management is automatic — the server adapts to available JVM heap.");
+    logger().info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");
   }
 
   private static java.util.Set<String> parseAllowedOrigins(String value) {
@@ -534,7 +558,7 @@ public class Main {
     try {
       return Integer.parseInt(value);
     } catch (NumberFormatException e) {
-      logger.warn("Invalid {} environment variable '{}', using default {}", name, value, defaultValue);
+      logger().warn("Invalid {} environment variable '{}', using default {}", name, value, defaultValue);
       return defaultValue;
     }
   }
@@ -546,10 +570,10 @@ public class Main {
       int parsed = Integer.parseInt(value);
       if (parsed > 0) {
         setter.accept(parsed);
-        logger.debug("{} set from environment: {}", name, parsed);
+        logger().debug("{} set from environment: {}", name, parsed);
       }
     } catch (NumberFormatException e) {
-      logger.warn("Invalid {} environment variable: {}", name, value);
+      logger().warn("Invalid {} environment variable: {}", name, value);
     }
   }
 
@@ -560,10 +584,10 @@ public class Main {
       long parsed = Long.parseLong(value);
       if (parsed > 0) {
         setter.accept(parsed);
-        logger.debug("{} set from environment: {}", name, parsed);
+        logger().debug("{} set from environment: {}", name, parsed);
       }
     } catch (NumberFormatException e) {
-      logger.warn("Invalid {} environment variable: {}", name, value);
+      logger().warn("Invalid {} environment variable: {}", name, value);
     }
   }
 }

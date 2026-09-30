@@ -17,6 +17,13 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Routes JSON-RPC messages to the appropriate handler and returns responses. Contains no I/O
  * logic — shared by both stdio and HTTP transports.
+ *
+ * <p>A malformed message gets the JSON-RPC 2.0 answer for its shape, never an internal error: a
+ * missing or non-string {@code method} is an invalid request (-32600, answered even without an
+ * id, since it is not a valid notification either); non-object {@code params} or
+ * {@code arguments}, or a missing or non-string tool {@code name}, are invalid params (-32602),
+ * with the request's id. A well-formed request without an id is a notification and gets no
+ * reply, whatever its method.
  */
 public class McpMessageHandler {
   private static final Logger logger = LoggerFactory.getLogger(McpMessageHandler.class);
@@ -65,6 +72,17 @@ public class McpMessageHandler {
   }
 
   /**
+   * Returns the message's method name, or null when it is missing or not a string. JSON-RPC 2.0
+   * requires a string; a number, object, or null there is an invalid request, not a crash.
+   */
+  static String methodName(JsonObject message) {
+    var method = message.get("method");
+    return method != null && method.isJsonPrimitive() && method.getAsJsonPrimitive().isString()
+        ? method.getAsString()
+        : null;
+  }
+
+  /**
    * Handles a JSON-RPC message without session context (stdio mode).
    */
   public HandlerResult handleMessage(JsonObject message) {
@@ -79,14 +97,17 @@ public class McpMessageHandler {
    * @return The handler result containing the response and shutdown flag
    */
   public HandlerResult handleMessage(JsonObject message, McpSession session) {
-    var method = message.has("method") ? message.get("method").getAsString() : null;
     var id = message.get("id");
     var params = message.get("params");
-    boolean isNotification = !message.has("id") || message.get("id").isJsonNull();
+    boolean isNotification = id == null || id.isJsonNull();
 
+    var method = methodName(message);
     if (method == null) {
+      // Not a valid request, so not a valid notification either: JSON-RPC 2.0 answers an invalid
+      // request with its id when it has one, else with id null.
+      var problem = message.has("method") ? "Method must be a string" : "Missing method";
       return HandlerResult.of(
-          JsonRpc.createErrorResponse(id, JsonRpc.INVALID_REQUEST, "Missing method"));
+          JsonRpc.createErrorResponse(id, JsonRpc.INVALID_REQUEST, problem));
     }
 
     logger.debug("Handling request: {}, id: {}", method, id);
@@ -96,8 +117,10 @@ public class McpMessageHandler {
       SessionContext.set(session);
     }
     try {
-      return switch (method) {
-        case "initialize" -> handleInitialize(id, params);
+      var result = switch (method) {
+        // A notification cannot learn a session id, so none is created for it
+        case "initialize" ->
+            isNotification ? HandlerResult.noResponse() : handleInitialize(id, params);
         case "initialized" -> {
           logger.info("Client initialization complete");
           yield HandlerResult.noResponse();
@@ -135,8 +158,16 @@ public class McpMessageHandler {
               JsonRpc.createErrorResponse(id, JsonRpc.METHOD_NOT_FOUND, msg));
         }
       };
+      if (isNotification && result.response() != null) {
+        // A request without an id is a notification; the server must not reply to it
+        return new HandlerResult(null, result.shouldShutdown(), null);
+      }
+      return result;
     } catch (Exception e) {
       logger.error("Error handling request '{}': {}", method, e.getMessage(), e);
+      if (isNotification) {
+        return HandlerResult.noResponse();
+      }
       return HandlerResult.of(
           JsonRpc.createErrorResponse(
               id, JsonRpc.INTERNAL_ERROR, "Internal error: " + e.getMessage()));
@@ -182,24 +213,28 @@ public class McpMessageHandler {
   }
 
   private HandlerResult handleToolCall(JsonElement id, JsonElement params) {
-    if (params == null || !params.isJsonObject()) {
-      return HandlerResult.of(
-          JsonRpc.createErrorResponse(id, JsonRpc.INVALID_PARAMS, "Missing params"));
+    if (params == null || params.isJsonNull()) {
+      return invalidParams(id, "Missing params");
+    }
+    if (!params.isJsonObject()) {
+      return invalidParams(id, "params must be an object");
     }
 
     var paramsObj = params.getAsJsonObject();
-    var toolName = paramsObj.has("name") ? paramsObj.get("name").getAsString() : null;
-
-    if (toolName == null) {
-      return HandlerResult.of(
-          JsonRpc.createErrorResponse(id, JsonRpc.INVALID_PARAMS, "Missing tool name"));
+    var name = paramsObj.get("name");
+    if (name == null || name.isJsonNull()) {
+      return invalidParams(id, "Missing tool name");
     }
+    if (!name.isJsonPrimitive() || !name.getAsJsonPrimitive().isString()) {
+      return invalidParams(id, "Tool name must be a string");
+    }
+    var toolName = name.getAsString();
 
     var tool = toolRegistry.getTool(toolName);
     if (tool == null) {
       var suggestions =
           toolRegistry.getToolNames().stream()
-              .filter(name -> levenshteinDistance(name, toolName) <= 3)
+              .filter(candidate -> levenshteinDistance(candidate, toolName) <= 3)
               .limit(3)
               .toList();
       String msg = "Unknown tool: " + toolName;
@@ -210,8 +245,16 @@ public class McpMessageHandler {
           JsonRpc.createErrorResponse(id, JsonRpc.METHOD_NOT_FOUND, msg));
     }
 
-    var arguments =
-        paramsObj.has("arguments") ? paramsObj.getAsJsonObject("arguments") : new JsonObject();
+    // Arguments are optional; absent or null means none
+    var argumentsElement = paramsObj.get("arguments");
+    JsonObject arguments;
+    if (argumentsElement == null || argumentsElement.isJsonNull()) {
+      arguments = new JsonObject();
+    } else if (argumentsElement.isJsonObject()) {
+      arguments = argumentsElement.getAsJsonObject();
+    } else {
+      return invalidParams(id, "arguments must be an object");
+    }
 
     logger.info("Executing tool '{}' with {} argument(s)", toolName, arguments.size());
     long startTime = System.currentTimeMillis();
@@ -253,6 +296,10 @@ public class McpMessageHandler {
               wrapToolError(
                   e.getMessage() != null ? e.getMessage() : "Unknown error", "internal_error")));
     }
+  }
+
+  private static HandlerResult invalidParams(JsonElement id, String message) {
+    return HandlerResult.of(JsonRpc.createErrorResponse(id, JsonRpc.INVALID_PARAMS, message));
   }
 
   private JsonObject wrapToolResult(JsonElement toolResult, boolean isError) {
