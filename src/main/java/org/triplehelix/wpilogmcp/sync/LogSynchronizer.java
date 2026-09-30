@@ -68,6 +68,13 @@ public class LogSynchronizer {
   /** Pairs cross-correlated at full resolution, after ranking every candidate coarsely. */
   static final int MAX_REFINED_PAIRS = 5;
 
+  /**
+   * The largest clock drift an estimate may claim, in ns/s (1000 ppm). Crystal oscillators
+   * drift by tens of ppm; a larger estimate means the two halves correlated at wrong offsets,
+   * and applying it would skew every revlog timestamp.
+   */
+  static final double MAX_PLAUSIBLE_DRIFT_NS_PER_SEC = 1_000_000.0;
+
   /** The coarse ranking's sample rate, as a fraction of the full rate. */
   private static final int COARSE_DECIMATION = 10;
 
@@ -246,6 +253,7 @@ public class LogSynchronizer {
       ParsedRevLog revlog) {
 
     double midTime = (revlog.minTimestamp() + revlog.maxTimestamp()) / 2.0;
+    String rejected = null;
 
     // Try to get offset from a pair that spans the full recording
     // by cross-correlating just the first half and just the second half
@@ -309,6 +317,15 @@ public class LogSynchronizer {
       long offsetDelta = secondResult.estimatedOffsetMicros() - firstResult.estimatedOffsetMicros();
       double driftNanosPerSec = (offsetDelta * 1000.0) / timeDelta;
 
+      if (!plausibleDrift(driftNanosPerSec)) {
+        logger.warn("Rejecting implausible clock drift estimate of {} ns/s from {} <-> {}",
+            String.format("%.0f", driftNanosPerSec), pair.wpilogEntry(), pair.revlogSignal());
+        rejected = String.format(" A clock-drift estimate of %.0f ns/s was rejected as "
+            + "implausible (crystals drift by tens of ppm); no drift compensation is applied.",
+            driftNanosPerSec);
+        continue;
+      }
+
       // Only report drift if it's significant (>1 ns/s = ~0.1ms per 100s)
       if (Math.abs(driftNanosPerSec) < 1.0) {
         logger.debug("Clock drift negligible ({} ns/s), ignoring", driftNanosPerSec);
@@ -334,7 +351,18 @@ public class LogSynchronizer {
     }
 
     // Could not estimate drift
+    if (rejected != null) {
+      return new SyncResult(baseResult.offsetMicros(), baseResult.confidence(),
+          baseResult.confidenceLevel(), baseResult.signalPairs(), baseResult.method(),
+          baseResult.explanation() + rejected);
+    }
     return baseResult;
+  }
+
+  /** Whether a drift estimate is within {@link #MAX_PLAUSIBLE_DRIFT_NS_PER_SEC}. */
+  static boolean plausibleDrift(double driftNanosPerSec) {
+    return Double.isFinite(driftNanosPerSec)
+        && Math.abs(driftNanosPerSec) <= MAX_PLAUSIBLE_DRIFT_NS_PER_SEC;
   }
 
   /**
@@ -499,13 +527,19 @@ public class LogSynchronizer {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
     }
 
-    // Track original start times (these are in different time domains)
-    double wpiStartTime = wpiValues.get(0).timestamp();
-    double revStartTime = revValues.get(0).timestamp();
+    // A signal longer than the resample budget is trimmed to its highest-variance window. The
+    // resampled arrays start at each window's first sample, so the lag is converted back to an
+    // offset with the windows' start times: the untrimmed signals' start times would be off by
+    // the difference of the two trims (up to a window step, tens of seconds on a long log).
+    double maxDurationSec = maxResampleSamples / sampleRateHz;
+    List<TimestampedValue> wpiWindow = findHighVarianceWindow(wpiValues, maxDurationSec);
+    List<TimestampedValue> revWindow = findHighVarianceWindow(revValues, maxDurationSec);
+    double wpiStartTime = wpiWindow.get(0).timestamp();
+    double revStartTime = revWindow.get(0).timestamp();
 
-    // Resample both signals to uniform rate (0-indexed arrays)
-    double[] wpilogSamples = resample(wpiValues, sampleRateHz, maxResampleSamples);
-    double[] revlogSamples = resample(revValues, sampleRateHz, maxResampleSamples);
+    // Resample both windows to a uniform rate (0-indexed arrays)
+    double[] wpilogSamples = resample(wpiWindow, sampleRateHz, maxResampleSamples);
+    double[] revlogSamples = resample(revWindow, sampleRateHz, maxResampleSamples);
 
     if (wpilogSamples.length < 10 || revlogSamples.length < 10) {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
@@ -570,11 +604,10 @@ public class LogSynchronizer {
           minOverlapSamples);
       double corrPlus = computeCorrelation(wpilogSamples, revlogSamples, bestLag + 1,
           minOverlapSamples);
-      double denom = 2 * (2 * bestCorr - corrMinus - corrPlus);
-      if (Math.abs(denom) > 1e-10) {
+      double delta = parabolicPeakOffset(corrMinus, bestCorr, corrPlus);
+      if (Double.isFinite(delta)) {
         // Clamp refinement to ±1 sample to prevent wild jumps when
         // the correlation landscape is flat near the peak
-        double delta = (corrMinus - corrPlus) / denom;
         refinedLag = bestLag + Math.max(-1.0, Math.min(1.0, delta));
       }
     }
@@ -671,19 +704,26 @@ public class LogSynchronizer {
   }
 
   /**
-   * Resamples timestamped values to a uniform sample rate.
-   * If the signal is longer than the max resample window, the highest-variance
-   * region is selected to maximize correlation quality.
+   * The sub-sample position of the peak of the parabola through three equally spaced
+   * correlation values: {@code left} at -1, {@code center} at 0, {@code right} at +1. Positive
+   * means the true peak lies toward {@code right}. NaN when the three values are collinear.
    */
-  private double[] resample(List<TimestampedValue> values, double sampleRateHz,
+  static double parabolicPeakOffset(double left, double center, double right) {
+    double denom = 2 * (left + right - 2 * center);
+    if (Math.abs(denom) < 1e-10) return Double.NaN;
+    return (left - right) / denom;
+  }
+
+  /**
+   * Resamples timestamped values to a uniform sample rate, starting at the first value. The
+   * caller passes a window no longer than the resample budget (see
+   * {@link #findHighVarianceWindow}); a longer list is cut at the budget.
+   */
+  private double[] resample(List<TimestampedValue> window, double sampleRateHz,
       int maxResampleSamples) {
-    if (values.isEmpty()) {
+    if (window.isEmpty()) {
       return new double[0];
     }
-
-    // If signal is too long, find the most active window
-    double maxDuration = maxResampleSamples / sampleRateHz;
-    List<TimestampedValue> window = findHighVarianceWindow(values, maxDuration);
 
     double startTime = window.get(0).timestamp();
     double endTime = window.get(window.size() - 1).timestamp();

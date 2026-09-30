@@ -35,8 +35,13 @@ public class SynchronizedLogs {
   private final LogData wpilog;
   private final List<SyncedRevLog> revlogs;
 
-  /** Cache of transformed revlog values (signal key → offset-adjusted values). */
-  private final Map<String, List<TimestampedValue>> transformedCache = new HashMap<>();
+  /**
+   * Cache of transformed revlog values (signal key → offset-adjusted values). Tool calls on
+   * different HTTP request threads share one instance, so the map is concurrent and each value
+   * is computed at most once per key.
+   */
+  private final Map<String, List<TimestampedValue>> transformedCache =
+      new java.util.concurrent.ConcurrentHashMap<>();
 
   /**
    * A single revlog with its sync result.
@@ -150,12 +155,12 @@ public class SynchronizedLogs {
    * @return The timestamped values with FPGA timestamps, or null if not found
    */
   public List<TimestampedValue> getRevLogSignal(String signalKey) {
-    // Check cache first
-    List<TimestampedValue> cached = transformedCache.get(signalKey);
-    if (cached != null) {
-      return cached;
-    }
+    // A miss (unknown key) is not cached: computeIfAbsent stores nothing for a null result
+    return transformedCache.computeIfAbsent(signalKey, this::transformRevLogSignal);
+  }
 
+  /** The signal's values converted to FPGA time, or null when the key names no signal. */
+  private List<TimestampedValue> transformRevLogSignal(String signalKey) {
     SignalKeyParts parts = parseSignalKey(signalKey);
     if (parts == null) {
       return null;
@@ -172,11 +177,9 @@ public class SynchronizedLogs {
         // Apply offset (with drift compensation) via SyncResult to convert revlog time → FPGA time
         SyncResult sync = synced.syncResult();
 
-        List<TimestampedValue> transformed = signal.values().stream()
+        return signal.values().stream()
             .map(tv -> new TimestampedValue(sync.toFpgaTime(tv.timestamp()), tv.value()))
             .toList();
-        transformedCache.put(signalKey, transformed);
-        return transformed;
       }
     }
 

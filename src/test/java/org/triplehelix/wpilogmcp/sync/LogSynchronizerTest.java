@@ -665,6 +665,88 @@ class LogSynchronizerTest {
             + result.driftRateNanosPerSec());
   }
 
+  @Test
+  void longSignalsSyncAtTheTrueOffsetAfterTrimming() {
+    // Both signals are longer than the resample budget (600 s at 100 Hz), so each is trimmed to
+    // its highest-variance window. A burst in the middle of a 700 s wpilog makes the wpilog
+    // window start just after the burst begins (about 252 s, stepping by 14 s), while the
+    // revlog, recorded 20 s later on its own clock and stepping by 13.6 s, trims about 231 s:
+    // the lag must be converted back with the windows' start times, not the signals' first
+    // timestamps, or the offset is off by the difference of the trims (about 21 s here).
+    double trueOffset = 20.0; // FPGA time - revlog time
+    double burstStart = 250.0; // FPGA time
+    double burstDuration = 200.0;
+    double dt = 0.02;
+    int wpiSamples = 35_000; // 700 s
+    int revSamples = 34_000; // 680 s
+
+    Map<String, EntryInfo> entries = new HashMap<>();
+    entries.put("/drive/output", new EntryInfo(1, "/drive/output", "double", ""));
+    List<TimestampedValue> wpiVals = new ArrayList<>();
+    for (int i = 0; i < wpiSamples; i++) {
+      double t = i * dt;
+      wpiVals.add(new TimestampedValue(t, burst(t, burstStart, burstDuration)));
+    }
+    Map<String, List<TimestampedValue>> values = new HashMap<>();
+    values.put("/drive/output", wpiVals);
+    ParsedLog wpilog = new ParsedLog("/test.wpilog", entries, values, 0, wpiSamples * dt);
+
+    List<TimestampedValue> revVals = new ArrayList<>();
+    for (int i = 0; i < revSamples; i++) {
+      double r = i * dt; // the revlog's own clock
+      revVals.add(new TimestampedValue(r, burst(r + trueOffset, burstStart, burstDuration)));
+    }
+    Map<Integer, RevLogDevice> devices = new HashMap<>();
+    devices.put(1, new RevLogDevice(1, "SPARK MAX"));
+    Map<String, RevLogSignal> signals = new HashMap<>();
+    signals.put("SparkMax_1/appliedOutput",
+        new RevLogSignal("appliedOutput", "SparkMax_1", revVals, ""));
+    ParsedRevLog revlog = new ParsedRevLog("/test.revlog", "20260320_143052", devices, signals,
+        0, revSamples * dt, revSamples);
+
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+
+    assertEquals(SyncMethod.CROSS_CORRELATION, result.method(), result.explanation());
+    assertEquals(trueOffset, result.offsetSeconds(), 0.05, result.explanation());
+  }
+
+  /** A long chirp between {@code start} and {@code start + duration}, zero elsewhere. */
+  private double burst(double t, double start, double duration) {
+    if (t < start || t > start + duration) return 0.0;
+    return longChirpValue(t - start);
+  }
+
+  @Test
+  void parabolicPeakOffsetPointsTowardTheHigherNeighbor() {
+    // The parabola through (-1, a), (0, b), (1, c) peaks at (a - c) / (2 (a + c - 2b))
+    assertEquals(1.0 / 6.0, LogSynchronizer.parabolicPeakOffset(0.8, 1.0, 0.9), 1e-12);
+    assertEquals(-1.0 / 6.0, LogSynchronizer.parabolicPeakOffset(0.9, 1.0, 0.8), 1e-12);
+    assertEquals(0.0, LogSynchronizer.parabolicPeakOffset(0.9, 1.0, 0.9), 1e-12);
+    assertTrue(Double.isNaN(LogSynchronizer.parabolicPeakOffset(1.0, 1.0, 1.0)));
+  }
+
+  @Test
+  void subSampleOffsetsRefineTowardTheTrueOffset() {
+    // A 4 ms shift is 0.4 samples at the 100 Hz resample rate: the integer lag search lands on
+    // zero and the parabolic refinement must move toward the true offset, not away from it
+    for (double shift : new double[] {0.004, -0.004}) {
+      ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", 1.0, 2000);
+      ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", 1.0 - shift, 2000);
+      SyncResult result = synchronizer.synchronize(wpilog, revlog);
+      assertEquals(SyncMethod.CROSS_CORRELATION, result.method(), result.explanation());
+      assertEquals(shift, result.offsetSeconds(), 0.0025,
+          "shift " + shift + ": " + result.explanation());
+    }
+  }
+
+  @Test
+  void driftEstimatesBeyondAThousandPpmAreRejected() {
+    assertTrue(LogSynchronizer.plausibleDrift(100_000.0)); // 100 ppm
+    assertTrue(LogSynchronizer.plausibleDrift(-999_999.0));
+    assertFalse(LogSynchronizer.plausibleDrift(4e7));
+    assertFalse(LogSynchronizer.plausibleDrift(Double.NaN));
+  }
+
   // ========== Helper Methods ==========
 
   /**
