@@ -599,18 +599,35 @@ class LogManagerTest {
     @Test
     @DisplayName("shutdown does not throw")
     void testShutdownDoesNotThrow() {
-      // LogManager is a singleton; setUp() already resets state via resetConfiguration().
-      // Calling shutdown() should complete without exception.
-      assertDoesNotThrow(() -> logManager.shutdown());
+      // An instance of its own: shutting down the singleton would stop the executors that
+      // tests running after this one rely on
+      var own = new LogManager();
+      assertDoesNotThrow(own::shutdown);
     }
 
     @Test
     @DisplayName("shutdown is idempotent")
     void testShutdownIsIdempotent() {
+      var own = new LogManager();
       assertDoesNotThrow(() -> {
-        logManager.shutdown();
-        logManager.shutdown();
+        own.shutdown();
+        own.shutdown();
       });
+    }
+
+    @Test
+    @DisplayName("a log with a revlog still loads after shutdown (the sync is skipped)")
+    void loadsAfterShutdown(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+        throws Exception {
+      var fixtures = org.triplehelix.wpilogmcp.fixtures.FixtureLogs.generateAll(dir);
+      var pair = fixtures.stream().filter(f -> f.id().equals("revlog_pair")).findFirst()
+          .orElseThrow();
+      var own = new LogManager();
+      own.addAllowedDirectory(dir);
+      own.shutdown();
+      var log = assertDoesNotThrow(() -> own.getOrLoad(pair.path().toString()));
+      assertTrue(log.entries().containsKey("/Drive/FrontLeft/AppliedOutput"));
+      assertNull(own.getSynchronizedLogs(pair.path().toString()));
     }
   }
 

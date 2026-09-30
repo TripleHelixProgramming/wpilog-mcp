@@ -60,6 +60,19 @@ public class TbaClient {
   /** API key for TBA access. Volatile for safe publication to HTTP handler threads. */
   private volatile String apiKey;
 
+  /** The API's base URL (the public TBA API unless a test or mirror sets another). */
+  private volatile String baseUrl = TBA_BASE_URL;
+
+  /** A non-200 HTTP status from TBA. */
+  static final class HttpStatusException extends IOException {
+    final int status;
+
+    HttpStatusException(int status) {
+      super("TBA API returned status " + status);
+      this.status = status;
+    }
+  }
+
   /** Private constructor for singleton pattern. */
   private TbaClient() {
     this.httpClient = HttpClient.newBuilder()
@@ -98,6 +111,27 @@ public class TbaClient {
   }
 
   /**
+   * Points the client at another base URL (a recorded-response server in tests, or a mirror);
+   * null restores the public TBA API. Clears the caches.
+   *
+   * @param url The base URL, e.g. {@code http://localhost:8080/api/v3}, or null
+   */
+  public void setBaseUrl(String url) {
+    this.baseUrl = url == null ? TBA_BASE_URL : url;
+    clearCache();
+  }
+
+  /** The exception for a request TBA could not answer (not a 404). */
+  private static TbaUnavailableException unavailable(Exception e) {
+    if (e instanceof HttpStatusException h) {
+      return new TbaUnavailableException("The Blue Alliance returned HTTP " + h.status
+          + (h.status == 401 ? " (the API key was rejected)" : "") + ".", e);
+    }
+    return new TbaUnavailableException("The Blue Alliance could not be reached: "
+        + e.getMessage(), e);
+  }
+
+  /**
    * Checks if TBA features are available.
    *
    * @return true if TBA API is available
@@ -130,10 +164,14 @@ public class TbaClient {
       eventCache.put(eventKey, new CachedData<>(data));
       evictStaleEntries(eventCache);
       return Optional.ofNullable(data);
+    } catch (HttpStatusException e) {
+      if (e.status == 404) {
+        eventCache.put(eventKey, new CachedData<>(null));
+        return Optional.empty();
+      }
+      throw unavailable(e);
     } catch (Exception e) {
-      logger.warn("TBA API error for event {}: {}", eventKey, e.getMessage());
-      eventCache.put(eventKey, new CachedData<>(null));
-      return Optional.empty();
+      throw unavailable(e);
     }
   }
 
@@ -164,10 +202,14 @@ public class TbaClient {
       matchCache.put(matchKey, new CachedData<>(data));
       evictStaleEntries(matchCache);
       return Optional.ofNullable(data);
+    } catch (HttpStatusException e) {
+      if (e.status == 404) {
+        matchCache.put(matchKey, new CachedData<>(null));
+        return Optional.empty();
+      }
+      throw unavailable(e);
     } catch (Exception e) {
-      logger.warn("TBA API error for match {}: {}", matchKey, e.getMessage());
-      matchCache.put(matchKey, new CachedData<>(null));
-      return Optional.empty();
+      throw unavailable(e);
     }
   }
 
@@ -247,10 +289,14 @@ public class TbaClient {
       eventMatchesCache.put(eventKey, new CachedData<>(data));
       evictStaleEntries(eventMatchesCache);
       return Optional.ofNullable(data);
+    } catch (HttpStatusException e) {
+      if (e.status == 404) {
+        eventMatchesCache.put(eventKey, new CachedData<>(null));
+        return Optional.empty();
+      }
+      throw unavailable(e);
     } catch (Exception e) {
-      logger.warn("TBA API error for event matches {}: {}", eventKey, e.getMessage());
-      eventMatchesCache.put(eventKey, new CachedData<>(null));
-      return Optional.empty();
+      throw unavailable(e);
     }
   }
 
@@ -542,8 +588,26 @@ public class TbaClient {
       return null;
     }
 
-    var lower = matchType.toLowerCase();
+    var lower = matchType.strip().toLowerCase();
 
+    // TBA's own comp_level codes, as list_available_logs reports match types
+    switch (lower) {
+      case "qm", "q" -> {
+        return "qm";
+      }
+      case "qf" -> {
+        return "qf";
+      }
+      case "sf" -> {
+        return "sf";
+      }
+      case "f" -> {
+        return "f";
+      }
+      default -> {
+        // spelled out, below
+      }
+    }
     if (lower.contains("qualification") || lower.contains("qual")) {
       return "qm";
     }
@@ -568,7 +632,7 @@ public class TbaClient {
 
   private <T> T fetchJson(String endpoint, Class<T> type) throws IOException {
     var request = HttpRequest.newBuilder()
-        .uri(URI.create(TBA_BASE_URL + endpoint))
+        .uri(URI.create(baseUrl + endpoint))
         .header("X-TBA-Auth-Key", apiKey)
         .header("Accept", "application/json")
         .timeout(TIMEOUT)
@@ -583,7 +647,7 @@ public class TbaClient {
       if (response.statusCode() != 200) {
         logger.warn("TBA API returned status {} for endpoint {} in {}ms", 
             response.statusCode(), endpoint, duration);
-        throw new IOException("TBA API returned status " + response.statusCode());
+        throw new HttpStatusException(response.statusCode());
       }
 
       logger.trace("TBA API request successful: {} in {}ms", endpoint, duration);

@@ -87,6 +87,7 @@ public final class FixtureLogs {
     all.add(truncated(dir));
     all.add(noDriverStation(dir));
     all.add(dualDriverStation(dir));
+    all.add(revlogPair(dir));
     all.add(empty(dir));
     return List.copyOf(all);
   }
@@ -942,6 +943,61 @@ public final class FixtureLogs {
     }
     return new Fixture("dual_ds", path,
         "DriverStation state logged under both DS: and /DriverStation/ names", List.of("E1"));
+  }
+
+  /** Wall-clock time (local, as REV names its files) of the revlog pair's FPGA 10 s. */
+  static final java.time.LocalDateTime REVLOG_PAIR_WALL =
+      java.time.LocalDateTime.of(2026, 1, 10, 15, 0, 0);
+
+  /** Seconds added to the pair's revlog timestamps to give the wpilog's FPGA time. */
+  public static final double REVLOG_PAIR_OFFSET_SEC = 15.3;
+
+  /** The pair's motor applied output (duty cycle) at FPGA time t: smooth plus seeded steps. */
+  public static double revlogPairOutput(double t) {
+    double steps = (((int) Math.floor(t / 1.7) * 7919) % 11 - 5) * 0.04;
+    return Math.max(-1, Math.min(1, 0.45 * Math.sin(0.9 * t) + 0.2 * Math.sin(3.1 * t + 1)
+        + steps));
+  }
+
+  /** A SPARK MAX Periodic Status 0 frame: AppliedOutput in bits 0-15, 0.0001 per count. */
+  static byte[] sparkStatus0(double appliedOutput) {
+    int raw = (int) Math.round(appliedOutput / 0.0001);
+    return new byte[] {(byte) raw, (byte) (raw >> 8), 0, 0, 0, 0, 0, 0};
+  }
+
+  /**
+   * A wpilog and the REV log recorded alongside it, in the WPILOG format REVLib writes: the
+   * wpilog logs a motor's applied output and systemTime (FPGA to wall clock), the revlog the
+   * same SPARK MAX's Periodic Status 0 frames on its own clock, named for its wall-clock start
+   * (5 s after the wpilog's FPGA 10 s). Its true offset to FPGA time is
+   * {@link #REVLOG_PAIR_OFFSET_SEC}, 0.3 s from the coarse estimate the names and systemTime give.
+   */
+  static Fixture revlogPair(Path dir) throws IOException {
+    var path = dir.resolve("2026-revlog_pair.wpilog");
+    double start = 10.0;
+    double end = 70.0;
+    long wall0 = REVLOG_PAIR_WALL.atZone(java.time.ZoneId.systemDefault()).toInstant()
+        .toEpochMilli() * 1000L;
+    try (var w = new FixtureWriter(path, AKIT_METADATA)) {
+      int n = loops(start, end);
+      for (int i = 0; i < n; i++) {
+        double t = loopTime(start, i);
+        w.dbl("/Drive/FrontLeft/AppliedOutput", t, revlogPairOutput(t));
+        if (i % 50 == 0) w.i64("systemTime", t, wall0 + Math.round((t - start) * 1e6));
+      }
+    }
+    var revName = "REV_" + REVLOG_PAIR_WALL.plusSeconds(5).format(
+        java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".revlog";
+    try (var w = new FixtureWriter(dir.resolve(revName), "")) {
+      for (int i = 0; i <= 5000; i++) {
+        double tr = i * 0.01; // 100 Hz on the revlog's own clock, from 0 s
+        w.raw("CAN/3/Periodic Status 0", "raw", tr,
+            sparkStatus0(revlogPairOutput(tr + REVLOG_PAIR_OFFSET_SEC)));
+      }
+    }
+    return new Fixture("revlog_pair", path,
+        "A wpilog with the REV log recorded alongside it (SPARK MAX 3 applied output)",
+        List.of("revlog sync"));
   }
 
   /** A valid log with a header and no entries. */

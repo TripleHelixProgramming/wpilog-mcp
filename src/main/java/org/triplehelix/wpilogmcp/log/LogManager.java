@@ -83,7 +83,8 @@ public class LogManager {
   private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
 
   /** Private constructor for singleton pattern. */
-  private LogManager() {
+  /** Package-private so tests can use an instance of their own (e.g. to shut one down). */
+  LogManager() {
     // Initialize subsystems
     this.securityValidator = new SecurityValidator();
     this.logParser = new LogParser();
@@ -299,7 +300,14 @@ public class LogManager {
 
         // Auto-sync matching revlogs asynchronously (doesn't block the MCP response)
         if (autoSyncEnabled) {
-          autoSyncRevLogsAsync(log);
+          try {
+            autoSyncRevLogsAsync(log);
+          } catch (java.util.concurrent.RejectedExecutionException e) {
+            // The sync executor is shut down (the server is stopping): the log still loads
+            logger.warn("RevLog sync skipped for {}: the sync executor is shut down",
+                filePath.getFileName());
+            syncCache.remove(normalizedPath);
+          }
         }
 
         // Evict again after adding the new log in case it pushed us over limits
@@ -917,27 +925,23 @@ public class LogManager {
   private long[] estimateWallClockRange(LogData wpilog) {
     long durationMillis = (long) (wpilog.duration() * 1000);
 
-    // Strategy 1: Extract wall-clock time from systemTime entries
-    for (String entryName : wpilog.values().keySet()) {
-      if (entryName.toLowerCase().contains("systemtime")) {
-        List<TimestampedValue> values = wpilog.values().get(entryName);
-        if (values != null && !values.isEmpty()) {
-          // Find the first valid systemTime entry to anchor the time range
-          for (var tv : values) {
-            if (tv.value() instanceof Number num) {
-              long wallClockMicros = num.longValue();
-              double fpgaTime = tv.timestamp();
-              // Compute wall-clock time at log start and end
-              long startMillis = (wallClockMicros / 1000)
-                  - (long) ((fpgaTime - wpilog.minTimestamp()) * 1000);
-              long endMillis = startMillis + durationMillis;
-              logger.debug("Wpilog wall-clock range from systemTime: {} to {}",
-                  java.time.Instant.ofEpochMilli(startMillis),
-                  java.time.Instant.ofEpochMilli(endMillis));
-              return new long[]{startMillis, endMillis, 0};
-            }
-          }
-        }
+    // Strategy 1: the wall-clock entry (WPILib systemTime, AdvantageKit EpochTimeMicros)
+    var clock = WallClock.entry(wpilog);
+    List<TimestampedValue> clockValues = clock.map(c -> wpilog.values().get(c)).orElse(List.of());
+    // The first plausible sample anchors the time range (before the roboRIO's clock is set, it
+    // reads near 1970)
+    for (var tv : clockValues) {
+      if (tv.value() instanceof Number num && WallClock.plausible(num.longValue())) {
+        long wallClockMicros = num.longValue();
+        double fpgaTime = tv.timestamp();
+        // Compute wall-clock time at log start and end
+        long startMillis = (wallClockMicros / 1000)
+            - (long) ((fpgaTime - wpilog.minTimestamp()) * 1000);
+        long endMillis = startMillis + durationMillis;
+        logger.debug("Wpilog wall-clock range from {}: {} to {}", clock.get(),
+            java.time.Instant.ofEpochMilli(startMillis),
+            java.time.Instant.ofEpochMilli(endMillis));
+        return new long[]{startMillis, endMillis, 0};
       }
     }
 

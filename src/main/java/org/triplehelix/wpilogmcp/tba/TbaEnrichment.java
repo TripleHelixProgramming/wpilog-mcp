@@ -153,6 +153,15 @@ public class TbaEnrichment {
    * Enriches a log with TBA match data.
    */
   public Optional<JsonObject> enrichLog(LogFileInfo logInfo) {
+    try {
+      return enrichLogUnchecked(logInfo);
+    } catch (TbaUnavailableException e) {
+      logger.debug("No TBA enrichment for {}: {}", logInfo.filename(), e.getMessage());
+      return Optional.empty();
+    }
+  }
+
+  private Optional<JsonObject> enrichLogUnchecked(LogFileInfo logInfo) {
     if (!client.isAvailable()) {
       return Optional.empty();
     }
@@ -232,6 +241,15 @@ public class TbaEnrichment {
    * Gets the corrected match start time from TBA.
    */
   public Optional<Long> getMatchStartTime(LogFileInfo logInfo) {
+    try {
+      return getMatchStartTimeUnchecked(logInfo);
+    } catch (TbaUnavailableException e) {
+      logger.debug("No TBA match time for {}: {}", logInfo.filename(), e.getMessage());
+      return Optional.empty();
+    }
+  }
+
+  private Optional<Long> getMatchStartTimeUnchecked(LogFileInfo logInfo) {
     if (!client.isAvailable() || !isEligibleForEnrichment(logInfo)) {
       return Optional.empty();
     }

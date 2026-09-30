@@ -127,7 +127,8 @@ public final class TbaTools {
               + "Find the correct code at thebluealliance.com/events/{year}. "
               + "Examples: 'caph' (Poway), 'cmptx' (Houston Championship)", true)
           .addProperty("match_type", "string",
-              "Match type: 'Qualification', 'Quarterfinal', 'Semifinal', 'Final', or 'Elimination'", true)
+              "Match type: 'Qualification', 'Quarterfinal', 'Semifinal', 'Final', or "
+                  + "'Elimination', or TBA's codes 'qm' (or 'q'), 'qf', 'sf', 'f'", true)
           .addIntegerProperty("match_number", "Match number within the type", true, null)
           .addIntegerProperty("team_number",
               "Optional: Your team number to highlight your alliance's data", false, null)
@@ -151,6 +152,17 @@ public final class TbaTools {
           ? arguments.get("team_number").getAsInt()
           : null;
 
+      try {
+        return lookup(client, year, eventCode, matchType, matchNumber, teamNumber);
+      } catch (org.triplehelix.wpilogmcp.tba.TbaUnavailableException e) {
+        return errorResult(e.getMessage() + " Try again, or check the API key with "
+            + "get_tba_status.");
+      }
+    }
+
+    private JsonElement lookup(org.triplehelix.wpilogmcp.tba.TbaClient client, int year,
+        String eventCode, String matchType,
+        int matchNumber, Integer teamNumber) {
       // Try to get match data
       var matchOpt = client.getMatch(year, eventCode, matchType, matchNumber);
 
@@ -185,14 +197,15 @@ public final class TbaTools {
 
       if (matchOpt.isEmpty()) {
         var result = new JsonObject();
-        result.addProperty("success", true);
+        result.addProperty("success", false);
+        result.addProperty("status", "no_match");
         result.addProperty("match_found", false);
 
         // Validate the event code to provide a helpful error
         var eventOpt = client.getEvent(year, eventCode);
         if (eventOpt.isEmpty()) {
           // Event doesn't exist — this is likely the wrong event code
-          result.addProperty("message",
+          result.addProperty("reason",
               "Event '" + eventCode + "' not found on TBA for " + year + ". "
               + "The event_code must be a TBA event code (e.g., 'caph'), not an abbreviation from log filenames.");
 
@@ -209,7 +222,7 @@ public final class TbaTools {
           }
         } else {
           // Event exists but match wasn't found
-          result.addProperty("message",
+          result.addProperty("reason",
               "Event '" + eventCode + "' exists but match " + matchType + " " + matchNumber
               + " was not found. Check match_type and match_number.");
 
@@ -273,12 +286,13 @@ public final class TbaTools {
           if (teamKeys != null) {
             var teams = new JsonArray();
             for (var tk : teamKeys) {
-              // Convert "frc1234" to just "1234"
+              // "frc1234" to 1234; a B team ("frc1234B") stays a string, "1234B"
               var teamKey = tk.getAsString();
-              if (teamKey.startsWith("frc")) {
-                teams.add(Integer.parseInt(teamKey.substring(3)));
+              var number = teamKey.startsWith("frc") ? teamKey.substring(3) : teamKey;
+              if (number.matches("\\d+")) {
+                teams.add(Integer.parseInt(number));
               } else {
-                teams.add(teamKey);
+                teams.add(number);
               }
             }
             allianceResult.add("teams", teams);
@@ -311,28 +325,15 @@ public final class TbaTools {
 
           var colorResult = new JsonObject();
 
-          // Extract common scoring elements (these vary by year/game)
-          // Try to find autonomous-related fields
-          extractIfPresent(colorBreakdown, colorResult, "autoPoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopPoints");
-          extractIfPresent(colorBreakdown, colorResult, "endgamePoints");
-          extractIfPresent(colorBreakdown, colorResult, "foulPoints");
-          extractIfPresent(colorBreakdown, colorResult, "totalPoints");
-
-          // 2024 Crescendo specific
-          extractIfPresent(colorBreakdown, colorResult, "autoLeavePoints");
-          extractIfPresent(colorBreakdown, colorResult, "autoAmpNotePoints");
-          extractIfPresent(colorBreakdown, colorResult, "autoSpeakerNotePoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopAmpNotePoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopSpeakerNotePoints");
-
-          // 2025 Reefscape specific
-          extractIfPresent(colorBreakdown, colorResult, "autoCoralPoints");
-          extractIfPresent(colorBreakdown, colorResult, "autoAlgaePoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopCoralPoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopAlgaePoints");
-          extractIfPresent(colorBreakdown, colorResult, "netAlgaePoints");
-          extractIfPresent(colorBreakdown, colorResult, "bargePoints");
+          // Every points subtotal: TBA names them ...Points in every season's breakdown
+          // (autoPoints, teleopPoints, foulPoints, totalPoints, and the game's own), so each
+          // year's game is covered without a per-game list
+          for (var field : colorBreakdown.entrySet()) {
+            if (field.getKey().endsWith("Points") && field.getValue().isJsonPrimitive()
+                && field.getValue().getAsJsonPrimitive().isNumber()) {
+              colorResult.add(field.getKey(), field.getValue());
+            }
+          }
 
           // Only add if we found something
           if (colorResult.size() > 0) {

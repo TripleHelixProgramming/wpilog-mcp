@@ -1295,15 +1295,15 @@ Query match scores and detailed results directly from The Blue Alliance. **Use t
 **Parameters:**
 - `year` (required): Competition year (e.g., 2024, 2025, 2026)
 - `event_code` (required): TBA event code (e.g., "caph" for Poway, "cmptx" for Houston Championship). Must be lowercase.
-- `match_type` (required): Match type: "Qualification", "Quarterfinal", "Semifinal", "Final", or "Elimination"
+- `match_type` (required): Match type: "Qualification", "Quarterfinal", "Semifinal", "Final", or "Elimination", or TBA's codes `qm` (or `q`), `qf`, `sf`, `f` (as `list_available_logs` reports match types)
 - `match_number` (required): Match number within the type (1-indexed)
 - `team_number` (optional): Your team number to highlight your alliance's data
 
 **Returns:**
 - `match_found`: Whether the match was found in TBA
 - `winning_alliance`: "red", "blue", or "tie_or_not_played"
-- `alliances`: Score and team list for each alliance, with `your_alliance` and `won` flags if team_number provided
-- `score_breakdown`: Detailed scoring (autoPoints, teleopPoints, endgamePoints, etc.) when available
+- `alliances`: Score and team list for each alliance (team numbers; a B team such as `frc1234B` as the string `"1234B"`), with `your_alliance` and `won` flags if team_number provided
+- `score_breakdown`: every points subtotal of each alliance's breakdown — the numeric fields TBA names `...Points` in every season (`autoPoints`, `teleopPoints`, `foulPoints`, `totalPoints`, and the game's own) — when available
 
 **Example Request:**
 ```json
@@ -1356,12 +1356,11 @@ Query match scores and detailed results directly from The Blue Alliance. **Use t
 
 **Error Handling:**
 - If TBA is not configured: Returns error with instructions to set `TBA_API_KEY`
-- If match not found: Returns `match_found: false` with suggestions (verify event code, try specific elimination type)
+- If the match or the event is not found (TBA answers 404): `status: no_match` with `match_found: false`, a `reason` (the event code is wrong, or the event has no such match), and suggestions or similar event codes
+- If TBA cannot answer (a rejected API key, a server error, no network): `status: error` saying so — never reported as a missing match
 
 **Game-Specific Scoring:**
-The score breakdown includes game-specific fields that vary by year:
-- **2024 Crescendo**: `autoLeavePoints`, `autoAmpNotePoints`, `autoSpeakerNotePoints`, `teleopAmpNotePoints`, `teleopSpeakerNotePoints`
-- **2025 Reefscape**: `autoCoralPoints`, `autoAlgaePoints`, `teleopCoralPoints`, `teleopAlgaePoints`, `netAlgaePoints`, `bargePoints`
+Each season's breakdown names its own point subtotals (2024: `autoAmpNotePoints`, ...; 2025: `autoCoralPoints`, `bargePoints`, ...); all of them are passed through, so a new season needs no update.
 
 ---
 

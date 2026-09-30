@@ -369,21 +369,16 @@ public class LogSynchronizer {
   private List<SystemTimeEntry> extractSystemTimeEntries(LogData wpilog) {
     List<SystemTimeEntry> entries = new ArrayList<>();
 
-    // Look for systemTime entry
-    for (String entryName : wpilog.values().keySet()) {
-      if (entryName.toLowerCase().contains("systemtime")) {
-        List<TimestampedValue> values = wpilog.values().get(entryName);
-        for (TimestampedValue tv : values) {
-          if (tv.value() instanceof Number num) {
-            long fpgaMicros = (long) (tv.timestamp() * 1_000_000);
-            long wallClockMicros = num.longValue();
-            entries.add(new SystemTimeEntry(fpgaMicros, wallClockMicros));
-          }
-        }
-        break;
+    // WPILib's systemTime, else AdvantageKit's /SystemStats/EpochTimeMicros (exact names)
+    var clock = org.triplehelix.wpilogmcp.log.WallClock.entry(wpilog);
+    if (clock.isEmpty()) return entries;
+    for (TimestampedValue tv : wpilog.values().get(clock.get())) {
+      if (tv.value() instanceof Number num
+          && org.triplehelix.wpilogmcp.log.WallClock.plausible(num.longValue())) {
+        long fpgaMicros = (long) (tv.timestamp() * 1_000_000);
+        entries.add(new SystemTimeEntry(fpgaMicros, num.longValue()));
       }
     }
-
     return entries;
   }
 

@@ -135,6 +135,9 @@ class ToolConformanceTest {
       for (var fixture : fixtures) {
         var path = fixture.path().toString();
         var log = logManager.getOrLoad(path);
+        // Revlog tools answer from the synchronized revlogs: let the background sync finish so
+        // every call sees the same state
+        logManager.waitForRevLogSync(path, 30_000);
         // Harness self-check: the log the tools will see must decode (an empty decode would
         // make every check below pass vacuously)
         for (var name : log.entries().keySet()) {
@@ -149,6 +152,8 @@ class ToolConformanceTest {
           var call = evaluate(tool, fixture.id(), variant);
           calls.add(call);
           if (call.result() == null) continue;
+          // Revlog tools depend on the load-time sync, which the reordered view below is not
+          if (RealLogConformanceTest.REVLOG_TOOLS.contains(tool.name())) continue;
           // Determinism: the same call with the entries iterating in other orders. Each view
           // wraps its own LazyParsedLog because the cache closes whatever log it replaces; the
           // path is unloaded afterwards so the next call reloads a fresh log.
