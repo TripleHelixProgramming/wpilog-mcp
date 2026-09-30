@@ -57,7 +57,13 @@ final class NumericSignal {
       + "or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. "
       + "Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's "
       + "value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so "
-      + "crossing +-180 degrees is not a jump.";
+      + "crossing +-180 degrees is not a jump; for an angle logged as a plain number (a gyro "
+      + "yaw double), pass angle: 'radians' or 'degrees'.";
+
+  /** The schema text of the {@code angle} parameter. */
+  static final String ANGLE_PARAM = "Treat the values as an angle in 'radians' or 'degrees' "
+      + "(unwrapped across +-180 degrees, circular statistics), for an angle logged as a plain "
+      + "number such as a gyro yaw double; struct angle fields are recognized without it";
 
   /** The schema text of a {@code field} parameter. */
   static final String FIELD_PARAM = "Field path inside the entry's values, e.g. 'translation.x', "
@@ -110,6 +116,36 @@ final class NumericSignal {
 
   boolean isAngle() {
     return angle != AngleUnit.NONE;
+  }
+
+  /** This signal with its values declared an angle in {@code unit}. */
+  NumericSignal asAngle(AngleUnit unit) {
+    return new NumericSignal(entry, path, type, unit, values, recordCount, recordsWithoutValue);
+  }
+
+  /**
+   * The {@code angle} argument: the unit a caller declares a plain-number signal to be in, or
+   * null when absent.
+   *
+   * @throws IllegalArgumentException for anything but 'radians' or 'degrees'
+   */
+  static AngleUnit angleArgument(JsonObject arguments) {
+    if (arguments == null || !arguments.has("angle") || arguments.get("angle").isJsonNull()) {
+      return null;
+    }
+    var value = arguments.get("angle").getAsString().strip().toLowerCase(java.util.Locale.ROOT);
+    return switch (value) {
+      case "radians", "rad" -> AngleUnit.RADIANS;
+      case "degrees", "deg" -> AngleUnit.DEGREES;
+      default -> throw new IllegalArgumentException("angle must be 'radians' or 'degrees', got '"
+          + arguments.get("angle").getAsString() + "'");
+    };
+  }
+
+  /** The signal, declared an angle when the arguments say so. */
+  NumericSignal withAngleArgument(JsonObject arguments) {
+    var unit = angleArgument(arguments);
+    return unit == null ? this : asAngle(unit);
   }
 
   /** The entry and path as one name, e.g. {@code /RealOutputs/Drive/Pose.translation.x}. */

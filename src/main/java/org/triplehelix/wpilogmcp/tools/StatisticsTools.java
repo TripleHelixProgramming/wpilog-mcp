@@ -83,6 +83,7 @@ public final class StatisticsTools {
           .addProperty("name", "string", "The entry name, optionally with a field path "
               + "(e.g. /RealOutputs/Drive/Pose.translation.x)", true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
@@ -202,6 +203,7 @@ public final class StatisticsTools {
           .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM + " (both signals)", false)
           .addNumberProperty("max_lag_sec", LAG_SCHEMA_MAX, false, null)
           .addNumberProperty("lag_step_sec", "Lag search step (default: the first signal's "
               + "median sample interval)", false, null)
@@ -433,7 +435,7 @@ public final class StatisticsTools {
       String nameKey, String fieldKey, String singleValuedTool) {
     var name = getRequiredString(arguments, nameKey);
     var field = getOptString(arguments, fieldKey, null);
-    var signal = NumericSignal.resolve(log, name, field);
+    var signal = NumericSignal.resolve(log, name, field).withAngleArgument(arguments);
     return singleValuedTool == null ? signal : signal.requireSingleValued(singleValuedTool);
   }
 
@@ -460,6 +462,7 @@ public final class StatisticsTools {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name (optionally with a field path)", true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .addNumberProperty("iqr_multiplier", "IQR multiplier (default 1.5)", false, 1.5)
           .addNumberProperty("spike_threshold",
               "Flag sample-to-sample jumps larger than this, in the entry's units (off by default)", false, null)
@@ -602,6 +605,7 @@ public final class StatisticsTools {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name (optionally with a field path)", true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .addProperty("type", "string", "Type: 'max', 'min', or 'both'", false)
           .addNumberProperty("min_height_diff", "Minimum height difference from neighbors to count as a peak. Filters out noise", false, null)
           .addIntegerProperty("limit", "Max peaks to return", false, 20)
@@ -695,6 +699,7 @@ public final class StatisticsTools {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name (optionally with a field path)", true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
@@ -813,7 +818,10 @@ public final class StatisticsTools {
     @Override
     public String description() {
       return "BUILT-IN correlation: NEVER compute correlation manually—always use this tool! "
-          + "Computes Pearson correlation coefficient with statistical significance (p-value). "
+          + "Computes Pearson correlation coefficient with statistical significance (p-value, "
+          + "from a t test on the effective sample size: consecutive samples are autocorrelated, "
+          + "so n is reduced by their lag-1 autocorrelations, lag1_autocorrelation, reported "
+          + "as effective_sample_size). "
           + "Handles timestamp alignment automatically via linear interpolation. "
           + "Returns sample count for confidence assessment." + NumericSignal.PATH_HELP
           + SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL
@@ -827,6 +835,7 @@ public final class StatisticsTools {
           .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM + " (both signals)", false)
           .addNumberProperty("max_lag_sec", LAG_SCHEMA_MAX, false, null)
           .addNumberProperty("lag_step_sec", "Lag search step (default: the first signal's "
               + "median sample interval)", false, null)
@@ -933,13 +942,24 @@ public final class StatisticsTools {
       } else {
         double corr = Math.max(-1.0, Math.min(1.0, num / Math.sqrt(denX * denY)));
         builder.addProperty("correlation", corr);
-        double pValue = computePValue(corr, sampleCount);
-        if (Double.isNaN(pValue)) {
-          builder.addData("p_value", com.google.gson.JsonNull.INSTANCE);
-          builder.addWarning(
-              "P-value cannot be reliably computed for n < 15 (asymptotic approximation unreliable)");
-        } else {
-          builder.addProperty("p_value", pValue);
+        // Consecutive samples of a signal are not independent: test with the effective number
+        double r1x = lag1Autocorrelation(x);
+        double r1y = lag1Autocorrelation(y);
+        double nEff = effectiveSampleSize(sampleCount, r1x, r1y);
+        var lag1 = new JsonObject();
+        lag1.addProperty("entry1", r1x);
+        lag1.addProperty("entry2", r1y);
+        builder.addData("lag1_autocorrelation", lag1)
+            .addProperty("effective_sample_size", nEff)
+            .addProperty("p_value", computePValue(corr, nEff))
+            .addProperty("p_value_basis", "two-sided t test on the correlation with the "
+                + "effective sample size n(1 - r1x r1y)/(1 + r1x r1y) (Bretherton et al. 1999), "
+                + "since consecutive samples are autocorrelated; still assumes the pairing is "
+                + "otherwise independent, so treat it as a rough guide");
+        if (nEff < 30) {
+          builder.addWarning(String.format("Only %.1f effective independent samples (of %d) "
+              + "after autocorrelation: the p-value is weak evidence either way.", nEff,
+              sampleCount));
         }
       }
 
@@ -1073,6 +1093,7 @@ public final class StatisticsTools {
               + "seconds (e.g. '[*].timestamp')", false)
           .addProperty("interpolation", "string", "'previous' (default), 'linear', or 'nearest'",
               false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM + " (every signal)", false)
           .addProperty("difference", "boolean", "With two signals: statistics of signal 1 minus "
               + "signal 2", false)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
@@ -1114,7 +1135,7 @@ public final class StatisticsTools {
       var signals = new ArrayList<NumericSignal>();
       for (var n : names) {
         signals.add(NumericSignal.resolve(log, n.getAsString(), null)
-            .requireSingleValued(name()));
+            .withAngleArgument(arguments).requireSingleValued(name()));
       }
       var scope = TimeScope.fromArguments(log, null, arguments);
 
@@ -1263,50 +1284,103 @@ public final class StatisticsTools {
   }
 
   /**
-   * Compute two-tailed p-value for Pearson correlation coefficient.
-   *
-   * <p>Uses the t-statistic t = r * sqrt((n-2) / (1 - r^2)) and approximates
-   * the t-distribution CDF via the Abramowitz and Stegun formula 26.7.4
-   * (complete Cornish-Fisher expansion with correction terms).
-   *
-   * @param r Pearson correlation coefficient
-   * @param n Sample count
-   * @return Two-tailed p-value
+   * Two-sided p-value of a Pearson correlation {@code r} over {@code n} samples: Student's t test
+   * with n - 2 degrees of freedom, computed exactly as the regularized incomplete beta function
+   * I_x(df/2, 1/2), x = df / (df + t^2). {@code n} may be an effective sample size (not an
+   * integer). 1.0 when n <= 2 (no degrees of freedom to test with); 0.0 when |r| >= 1.
    */
-  static double computePValue(double r, int n) {
-    if (n <= 2) return 1.0;
-    // For small samples, the Cornish-Fisher normal approximation is unreliable.
-    // Return NaN to avoid understating p-values (overstating significance).
-    if (n < 15) return Double.NaN;
+  static double computePValue(double r, double n) {
+    if (!(n > 2)) return 1.0;
     if (Math.abs(r) >= 1.0) return 0.0;
-    double t = Math.abs(r) * Math.sqrt((n - 2.0) / (1.0 - r * r));
-    double df = n - 2;
-    // Abramowitz and Stegun formula 26.7.4 — Cornish-Fisher expansion with
-    // higher-order correction terms for improved accuracy at moderate df.
-    double a = df - 0.5;
-    double b = 48.0 * a * a;
-    double z2 = a * Math.log1p(t * t / df);
-    double z = Math.sqrt(z2);
-    // Full correction: first-order + second-order terms from A&S 26.7.5.
-    // Coefficients (4, 33, 240, 855) are from Abramowitz & Stegun Table 26.7.4/26.7.5
-    // and should be validated against the original reference if modifying this code.
-    double z3 = z * z * z;
-    z = z + (z3 + 3.0 * z) / b - (4.0 * z3 * z * z * z * z + 33.0 * z3 * z * z + 240.0 * z3 + 855.0 * z) / (10.0 * b * b);
-    // Two-tailed p-value
-    return 2.0 * (1.0 - normalCdf(z));
+    double df = n - 2.0;
+    double t2 = r * r * df / (1.0 - r * r);
+    return regularizedIncompleteBeta(df / (df + t2), df / 2.0, 0.5);
+  }
+
+  /** The regularized incomplete beta function I_x(a, b), by continued fraction. */
+  static double regularizedIncompleteBeta(double x, double a, double b) {
+    if (x <= 0) return 0.0;
+    if (x >= 1) return 1.0;
+    double front = Math.exp(logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x)
+        + b * Math.log1p(-x));
+    // The continued fraction converges fast for x < (a + 1) / (a + b + 2); use the symmetry
+    // I_x(a, b) = 1 - I_{1-x}(b, a) otherwise
+    if (x < (a + 1.0) / (a + b + 2.0)) return front * betaContinuedFraction(x, a, b) / a;
+    return 1.0 - front * betaContinuedFraction(1.0 - x, b, a) / b;
+  }
+
+  /** The continued fraction for the incomplete beta function (modified Lentz's method). */
+  private static double betaContinuedFraction(double x, double a, double b) {
+    final double tiny = 1e-300;
+    final double eps = 1e-15;
+    double qab = a + b;
+    double qap = a + 1.0;
+    double qam = a - 1.0;
+    double c = 1.0;
+    double d = 1.0 - qab * x / qap;
+    if (Math.abs(d) < tiny) d = tiny;
+    d = 1.0 / d;
+    double h = d;
+    for (int m = 1; m <= 10_000; m++) {
+      int m2 = 2 * m;
+      double aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+      d = 1.0 + aa * d;
+      if (Math.abs(d) < tiny) d = tiny;
+      c = 1.0 + aa / c;
+      if (Math.abs(c) < tiny) c = tiny;
+      d = 1.0 / d;
+      h *= d * c;
+      aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+      d = 1.0 + aa * d;
+      if (Math.abs(d) < tiny) d = tiny;
+      c = 1.0 + aa / c;
+      if (Math.abs(c) < tiny) c = tiny;
+      d = 1.0 / d;
+      double del = d * c;
+      h *= del;
+      if (Math.abs(del - 1.0) < eps) break;
+    }
+    return h;
+  }
+
+  private static final double[] LANCZOS = {0.99999999999980993, 676.5203681218851,
+      -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905,
+      -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7};
+
+  /** ln Gamma(x) for x > 0 (Lanczos, g = 7), with the reflection formula below 1/2. */
+  static double logGamma(double x) {
+    if (x < 0.5) {
+      return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - logGamma(1.0 - x);
+    }
+    x -= 1.0;
+    double sum = LANCZOS[0];
+    for (int i = 1; i < LANCZOS.length; i++) sum += LANCZOS[i] / (x + i);
+    double t = x + 7.5;
+    return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(sum);
+  }
+
+  /** Lag-1 autocorrelation of a series (0 when it has no variance or fewer than 3 values). */
+  static double lag1Autocorrelation(List<Double> v) {
+    int n = v.size();
+    if (n < 3) return 0.0;
+    double mean = v.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+    double num = 0;
+    double den = 0;
+    for (int i = 0; i < n; i++) {
+      double d = v.get(i) - mean;
+      den += d * d;
+      if (i + 1 < n) num += d * (v.get(i + 1) - mean);
+    }
+    return den > 0 ? num / den : 0.0;
   }
 
   /**
-   * Normal CDF approximation using Abramowitz and Stegun formula 26.2.17.
-   * Full-precision polynomial coefficients for maximum accuracy (~7.5e-8).
+   * The effective number of independent samples behind a correlation of two autocorrelated
+   * series (Bretherton et al. 1999): n (1 - r1x r1y) / (1 + r1x r1y), at most n.
    */
-  private static double normalCdf(double z) {
-    if (z < -8.0) return 0.0;
-    if (z > 8.0) return 1.0;
-    double t = 1.0 / (1.0 + 0.2316419 * Math.abs(z));
-    double d = 0.3989422804014327; // 1/sqrt(2*pi)
-    double p = d * Math.exp(-z * z / 2.0) * t
-        * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-    return z > 0 ? 1.0 - p : p;
+  static double effectiveSampleSize(int n, double r1x, double r1y) {
+    double product = r1x * r1y;
+    if (product <= -1.0) return n;
+    return Math.min(n, n * (1.0 - product) / (1.0 + product));
   }
 }

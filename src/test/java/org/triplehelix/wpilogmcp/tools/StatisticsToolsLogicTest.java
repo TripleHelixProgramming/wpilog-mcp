@@ -27,6 +27,38 @@ class StatisticsToolsLogicTest extends ToolTestBase {
   @Nested
   @DisplayName("get_statistics Tool")
   class GetStatisticsToolTests {
+    @Test
+    @DisplayName("angle: 'degrees' unwraps a plain-double yaw crossing 180 (358 -> 20 degrees)")
+    void plainDoubleAngle() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/yaw_degrees.wpilog")
+          .addNumericEntry("/Gyro/YawDeg", new double[]{0, 1, 2, 3, 4, 5},
+              new double[]{170, 175, 179, -179, -175, -170})
+          .build();
+      putLogInCache(log);
+      var tool = findTool("get_statistics");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Gyro/YawDeg");
+
+      var plain = tool.execute(args).getAsJsonObject();
+      assertEquals(358.0, plain.get("max").getAsDouble() - plain.get("min").getAsDouble(), 1e-9);
+      assertFalse(plain.has("angle"));
+
+      args.addProperty("angle", "degrees");
+      var angle = tool.execute(args).getAsJsonObject();
+      assertEquals(20.0, angle.get("max").getAsDouble() - angle.get("min").getAsDouble(), 1e-9);
+      var a = angle.getAsJsonObject("angle");
+      assertEquals("degrees", a.get("unit").getAsString());
+      assertEquals(1, a.get("wraps").getAsInt());
+      assertEquals(180.0, Math.abs(a.get("circular_mean").getAsDouble()), 1e-6);
+
+      args.addProperty("angle", "gradians");
+      var bad = tool.execute(args).getAsJsonObject();
+      assertEquals("error", bad.get("status").getAsString());
+      assertTrue(bad.get("error").getAsString().contains("'radians' or 'degrees'"));
+    }
+
 
     @Test
     @DisplayName("calculates correct statistics for uniform data")
@@ -675,10 +707,12 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.get("success").getAsBoolean());
       double correlation = resultObj.get("correlation").getAsDouble();
       assertEquals(1.0, correlation, 0.01); // Perfect positive correlation
-      // With n=5 (< 15), p_value is NaN (serialized as JSON null) because the
-      // Cornish-Fisher approximation is unreliable for small degrees of freedom.
-      assertTrue(resultObj.has("p_value"));
-      assertTrue(resultObj.get("p_value").isJsonNull(), "p_value should be null for n < 15");
+      // The ramps are autocorrelated (lag-1 0.4 each): 5 samples count as 5 * 0.84 / 1.16
+      assertEquals(5 * 0.84 / 1.16, resultObj.get("effective_sample_size").getAsDouble(), 1e-9);
+      assertEquals(0.4, resultObj.getAsJsonObject("lag1_autocorrelation").get("entry1")
+          .getAsDouble(), 1e-9);
+      assertEquals(0.0, resultObj.get("p_value").getAsDouble(), "|r| = 1");
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("effective independent"));
     }
 
     @Test
@@ -736,11 +770,41 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("returns NaN for n < 15 (unreliable approximation)")
-    void returnsNanForSmallN() {
-      assertTrue(Double.isNaN(StatisticsTools.computePValue(0.5, 3)));
-      assertTrue(Double.isNaN(StatisticsTools.computePValue(0.5, 10)));
-      assertTrue(Double.isNaN(StatisticsTools.computePValue(0.5, 14)));
+    @DisplayName("exact for small n (scipy.stats.t reference values)")
+    void exactForSmallN() {
+      assertEquals(0.1, StatisticsTools.computePValue(0.9, 4), 1e-9);
+      assertEquals(0.14111328125, StatisticsTools.computePValue(0.5, 10), 1e-9);
+      assertEquals(0.05769884126896, StatisticsTools.computePValue(0.5, 15), 1e-9);
+      assertEquals(0.04999165148026, StatisticsTools.computePValue(0.576, 12), 1e-9);
+    }
+
+    @Test
+    @DisplayName("exact for large n and for a non-integer (effective) n")
+    void exactForLargeAndNonIntegerN() {
+      assertEquals(0.03428618003293, StatisticsTools.computePValue(0.3, 50), 1e-9);
+      assertEquals(0.00154411610740, StatisticsTools.computePValue(0.1, 1000), 1e-9);
+      // t = 2 with 7.3 degrees of freedom: r = 2 / sqrt(4 + 7.3), n = 9.3
+      assertEquals(0.08394103933410, StatisticsTools.computePValue(2 / Math.sqrt(11.3), 9.3),
+          1e-9);
+    }
+
+    @Test
+    @DisplayName("effective sample size shrinks with shared autocorrelation, never grows past n")
+    void effectiveSampleSize() {
+      assertEquals(100.0, StatisticsTools.effectiveSampleSize(100, 0.0, 0.9), 1e-12);
+      // r1 = 0.9 in both: n (1 - 0.81) / (1 + 0.81)
+      assertEquals(100 * 0.19 / 1.81, StatisticsTools.effectiveSampleSize(100, 0.9, 0.9), 1e-9);
+      assertEquals(100.0, StatisticsTools.effectiveSampleSize(100, -0.5, 0.5), 1e-12);
+      assertEquals(0.0, StatisticsTools.lag1Autocorrelation(java.util.List.of(5.0, 5.0, 5.0)));
+      // a slow ramp is strongly autocorrelated; alternating values are anti-correlated
+      var ramp = new java.util.ArrayList<Double>();
+      var alternating = new java.util.ArrayList<Double>();
+      for (int i = 0; i < 200; i++) {
+        ramp.add((double) i);
+        alternating.add(i % 2 == 0 ? 1.0 : -1.0);
+      }
+      assertTrue(StatisticsTools.lag1Autocorrelation(ramp) > 0.95);
+      assertTrue(StatisticsTools.lag1Autocorrelation(alternating) < -0.95);
     }
 
     @Test
@@ -763,8 +827,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     @DisplayName("known reference value: r=0.5, n=30 yields p ≈ 0.005")
     void knownReferenceValue() {
       double pValue = StatisticsTools.computePValue(0.5, 30);
-      // Reference from statistical tables: r=0.5, df=28, p ≈ 0.005
-      assertEquals(0.005, pValue, 0.003);
+      // scipy.stats.t: r=0.5, df=28 gives p = 0.004899933667
+      assertEquals(0.004899933667068, pValue, 1e-9);
     }
 
     @Test

@@ -526,7 +526,7 @@ public final class QueryTools {
           + "in the same entry into one match with repeat_count. Each match carries its level and "
           + "the matching line (line is cut at 200 chars; value at max_value_chars, with "
           + "*_truncated flags). Regex mode is case-insensitive with ^/$ anchoring to lines; a "
-          + "pattern that backtracks for more than a second is rejected.";
+          + "pattern that backtracks for more than a second on one value is rejected.";
     }
 
     @Override
@@ -559,7 +559,11 @@ public final class QueryTools {
           .build();
     }
 
-    /** Regex evaluation budget per call; a pattern that backtracks past this is rejected. */
+    /**
+     * Regex evaluation budget per text value: a pattern that backtracks past this on one value is
+     * rejected. Per value, not per call, so a cheap pattern over a long console log is not
+     * mistaken for a catastrophic one.
+     */
     private static final long REGEX_BUDGET_NANOS = 1_000_000_000L;
 
     /** One matching sample. */
@@ -608,7 +612,8 @@ public final class QueryTools {
       @Override public char charAt(int index) {
         if (System.nanoTime() > deadlineNanos) {
           throw new IllegalArgumentException("Regex evaluation exceeded "
-              + (REGEX_BUDGET_NANOS / 1_000_000) + " ms; simplify the pattern (avoid nested quantifiers)");
+              + (REGEX_BUDGET_NANOS / 1_000_000) + " ms on a single value (" + text.length()
+              + " characters); simplify the pattern (avoid nested quantifiers)");
         }
         return text.charAt(index);
       }
@@ -656,8 +661,6 @@ public final class QueryTools {
           patternLower = pattern.toLowerCase(java.util.Locale.ROOT);
         }
       }
-      long deadline = System.nanoTime() + REGEX_BUDGET_NANOS;
-
       var matches = new ArrayList<Match>();
       for (var info : TextEvents.textEntries(log)) {
         var entryName = info.name();
@@ -671,7 +674,8 @@ public final class QueryTools {
           if (!level.equals("any") && !level.equals(sampleLevel)) continue;
           String line;
           if (compiled != null) {
-            var m = compiled.matcher(new DeadlineCharSequence(value, deadline));
+            var m = compiled.matcher(
+                new DeadlineCharSequence(value, System.nanoTime() + REGEX_BUDGET_NANOS));
             if (!m.find()) continue;
             line = lineAt(value, m.start());
           } else if (patternLower != null) {

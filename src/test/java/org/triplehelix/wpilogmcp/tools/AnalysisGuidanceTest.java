@@ -46,6 +46,7 @@ class AnalysisGuidanceTest {
           "brownout_voltage_entry",
           "brownout_threshold",
           "voltage_entry",
+          "effective_sample_size",
           "pose_entry",
           "chooser_entry",
           "needs_confirmation",

@@ -583,6 +583,7 @@ Get statistics for a numeric entry or field. Supports optional time range filter
 - `path` (required): Path to the log file
 - `name` (required): The entry name, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it
 - `start_time` (number, optional): Start timestamp in seconds
 - `end_time` (number, optional): End timestamp in seconds
 - `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows)
@@ -618,6 +619,7 @@ Compare two entries (useful for RealOutputs vs ReplayOutputs).
 - `name1` (required): First entry name, optionally with a [field path](#field-paths)
 - `name2` (required): Second entry name, optionally with a field path
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it (both signals)
 - `start_time`, `end_time`, `scope`, `windows` (optional): Only the reference signal's samples in this time are compared ([Scopes and windows](#scopes-and-windows))
 - `max_lag_sec`, `lag_step_sec` (optional): Also search for the time shift that minimizes RMSE, as in `time_correlate` (the first signal's samples are the reference); returns `lag_search` with `best_lag_sec`, `rmse_at_best_lag`, `samples_at_best_lag`, `rmse_at_zero_lag`
 
@@ -630,6 +632,7 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 - `path` (required): Path to the log file
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths) (a struct entry without one is an error listing its numeric fields)
 - `field` (optional): The field path, instead of appending it to `name`
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it
 - `iqr_multiplier` (optional): Multiplier k for the IQR fences (default 1.5). Use 3.0 for extreme outliers only
 - `spike_threshold` (optional): Flag consecutive samples that differ by more than this, in the entry's units (off by default)
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)). Boot transients and disabled time count unless the scope excludes them — `scope: "enabled"`. Spikes are jumps within one window
@@ -666,6 +669,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
 - `path` (required): Path to the log file
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it
 - `type` (optional): Type of peaks to find: `max` (maxima only), `min` (minima only), or `both` (default)
 - `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
@@ -703,6 +707,7 @@ Compute rate of change (derivative) of numeric data over time. Calculates dv/dt 
 - `path` (required): Path to the log file
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows); derivatives never span the gap between two windows
@@ -744,12 +749,13 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - `name1` (required): First entry name, optionally with a [field path](#field-paths)
 - `name2` (required): Second entry name, optionally with a field path
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it (both signals)
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `scope`, `windows` (optional): The first signal's samples in this time are paired with the second, interpolated ([Scopes and windows](#scopes-and-windows))
 - `max_lag_sec` (optional): Also search for the time shift that best aligns the signals, from −max to +max; `lag_step_sec` (optional) sets the step (default: the first signal's median sample interval; at most 401 lags are evaluated, widening the step if needed). Returns `lag_search`: `best_lag_sec` (positive: the second signal follows the first), `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, `lags_evaluated`, `lag_step_sec`. Shared timing (both signals following the match phase) also aligns signals
 
-**Returns:** Correlation coefficient, sample count, and p-value. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` is `null`, `p_value` is 1, and a warning names the constant entry.
+**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, and `p_value_basis`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta); a warning says when fewer than 30 effective samples remain. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` is `null`, `p_value` is 1, and a warning names the constant entry.
 
 **Example Response:**
 ```json
@@ -757,7 +763,10 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
   "success": true,
   "sample_count": 5432,
   "correlation": -0.81,
-  "p_value": 0.0001,
+  "lag1_autocorrelation": {"entry1": 0.97, "entry2": 0.95},
+  "effective_sample_size": 104.6,
+  "p_value": 1.2e-25,
+  "p_value_basis": "two-sided t test on the correlation with the effective sample size ...",
   "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
   "server_analysis_directives": { "confidence": "high" }
 }
@@ -780,6 +789,7 @@ Sample several numeric signals at common times: to read them side by side, or to
 - `time_field` (optional): A path inside `at` (or the first signal's entry) whose values are timestamps in seconds — e.g. `[*].timestamp` of a `PoseObservation[]` entry, to sample the robot pose when the camera saw the target rather than when its result arrived
 - `interpolation` (optional): `previous` (default: the value in force, right for values logged when they change), `linear` (between the samples around the time; no extrapolation), or `nearest`. Angles interpolate along the shortest arc
 - `difference` (optional): With two signals, `difference_statistics` of signal 1 minus signal 2 — two angles by their shortest difference, in the first one's unit
+- `angle` (optional): `radians` or `degrees` — treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double; struct angle fields are recognized without it (every signal)
 - `start_time`, `end_time`, `scope`, `windows` (optional): Which sample times to use ([Scopes and windows](#scopes-and-windows))
 - `offset`, `limit` (optional): Row paging (default limit 100, max 2000)
 
