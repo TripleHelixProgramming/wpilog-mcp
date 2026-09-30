@@ -36,6 +36,19 @@ public class TbaClient {
   /** HTTP request timeout. */
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
+  /** lookup_method: a key built from the match type and number. */
+  public static final String LOOKUP_DIRECT = "direct";
+  /** lookup_method: "Elimination N" read as double-elimination bracket match N (TBA's sfNm1). */
+  public static final String LOOKUP_BRACKET = "double_elimination_bracket";
+  /** lookup_method: the team's playoff match nearest the log's time. */
+  public static final String LOOKUP_NEAREST_TIME = "nearest_time";
+  /** lookup_method: playoff match number N in the order the team played (a pre-2023 heuristic). */
+  public static final String LOOKUP_PLAY_ORDER = "play_order";
+  /** The first season of the double-elimination bracket, whose matches TBA keys sf1m1-sf13m1. */
+  public static final int DOUBLE_ELIMINATION_FIRST_YEAR = 2023;
+  /** Matches of the double-elimination bracket before the finals. */
+  public static final int DOUBLE_ELIMINATION_BRACKET_MATCHES = 13;
+
   /** Maximum entries per cache map to prevent unbounded memory growth. */
   private static final int MAX_CACHE_SIZE = 200;
 
@@ -322,15 +335,18 @@ public class TbaClient {
       int year, String eventCode, String matchType, int matchNumber, int teamNumber,
       Long logFileTimestampMs) {
 
-    // First try direct lookup (works for Qualification, Semifinal, Final, etc.)
+    // A key from the match type and number ("Elimination N" is sfNm1 since 2023)
     var matchOpt = getMatch(year, eventCode, matchType, matchNumber);
     if (matchOpt.isPresent()) {
-      return extractTeamResult(matchOpt.get(), teamNumber);
+      var method = matchType != null && isGenericElimination(matchType)
+          ? LOOKUP_BRACKET : LOOKUP_DIRECT;
+      return extractTeamResult(matchOpt.get(), teamNumber, method);
     }
 
-    // If match type is generic "Elimination", try smart matching
+    // A generic "Elimination" that built no key (the finals since 2023, every playoff match
+    // before): search the team's playoff matches
     if (matchType != null && isGenericElimination(matchType)) {
-      logger.debug("Attempting smart elimination match lookup for team {} at {}{}, match #{}",
+      logger.debug("Searching the playoff matches of team {} at {}{} for Elimination {}",
           teamNumber, year, eventCode, matchNumber);
       return findEliminationMatch(year, eventCode, matchNumber, teamNumber, logFileTimestampMs);
     }
@@ -341,7 +357,7 @@ public class TbaClient {
   /**
    * Checks if match type is a generic "Elimination" that needs smart matching.
    */
-  private boolean isGenericElimination(String matchType) {
+  public static boolean isGenericElimination(String matchType) {
     var lower = matchType.toLowerCase();
     return (lower.contains("elimination") || lower.contains("elim"))
         && !lower.contains("semi")
@@ -393,22 +409,25 @@ public class TbaClient {
     logger.debug("Found {} elimination matches for team {} at {}{}",
         candidateMatches.size(), teamNumber, year, eventCode);
 
-    // Try to find by match number first (most reliable if the numbering is consistent)
-    // Match number in logs often corresponds to the overall elimination match sequence
-    var byNumber = findMatchByEliminationNumber(candidateMatches, matchNumber);
-    if (byNumber.isPresent()) {
-      logger.info("Found elimination match by number {} for team {} at {}{}",
-          matchNumber, teamNumber, year, eventCode);
-      return extractTeamResult(byNumber.get(), teamNumber);
+    // Before 2023 the Driver Station's "Elimination N" was, at best, playoff match number N in
+    // the order the team played: a heuristic, labeled as one. Since 2023 N is the bracket match
+    // number, which the direct lookup already tried, so only the log's time can place a match
+    // the bracket does not number (the finals)
+    if (year < DOUBLE_ELIMINATION_FIRST_YEAR) {
+      var byNumber = findMatchByEliminationNumber(candidateMatches, matchNumber);
+      if (byNumber.isPresent()) {
+        logger.info("Elimination {} read as playoff match number {} in play order for team {} "
+            + "at {}{}", matchNumber, matchNumber, teamNumber, year, eventCode);
+        return extractTeamResult(byNumber.get(), teamNumber, LOOKUP_PLAY_ORDER);
+      }
     }
 
-    // Fall back to timestamp matching if available
     if (logFileTimestampMs != null) {
       var byTime = findMatchByTimestamp(candidateMatches, logFileTimestampMs);
       if (byTime.isPresent()) {
-        logger.info("Found elimination match by timestamp for team {} at {}{}",
-            teamNumber, year, eventCode);
-        return extractTeamResult(byTime.get(), teamNumber);
+        logger.info("Elimination {} of team {} at {}{} taken as its playoff match nearest the "
+            + "log's time", matchNumber, teamNumber, year, eventCode);
+        return extractTeamResult(byTime.get(), teamNumber, LOOKUP_NEAREST_TIME);
       }
     }
 
@@ -505,8 +524,11 @@ public class TbaClient {
     return Optional.ofNullable(bestMatch);
   }
 
-  private Optional<TeamMatchResult> extractTeamResult(JsonObject match, int teamNumber) {
+  private Optional<TeamMatchResult> extractTeamResult(JsonObject match, int teamNumber,
+      String lookupMethod) {
     var teamKey = "frc" + teamNumber;
+    var matchKey = match.has("key") && !match.get("key").isJsonNull()
+        ? match.get("key").getAsString() : null;
 
     var alliances = match.getAsJsonObject("alliances");
     if (alliances == null) {
@@ -539,9 +561,15 @@ public class TbaClient {
               ? match.get("time").getAsLong()
               : null;
 
+          var other = alliances.getAsJsonObject("red".equals(alliance) ? "blue" : "red");
+          var opponentScore = other != null && other.has("score")
+              && !other.get("score").isJsonNull() ? (Integer) other.get("score").getAsInt() : null;
           return Optional.of(new TeamMatchResult(
+              matchKey,
+              lookupMethod,
               alliance,
               score,
+              opponentScore,
               won,
               actualTime,
               scheduledTime
@@ -553,9 +581,23 @@ public class TbaClient {
     return Optional.empty();
   }
 
+  /**
+   * Whether "Elimination N" names a double-elimination bracket match: since 2023 the Driver
+   * Station numbers playoff matches by the bracket, whose matches 1-13 TBA keys as sf1m1-sf13m1
+   * (the finals, f1m1-f1m3, carry no bracket number).
+   */
+  public static boolean isBracketMatch(int year, int matchNumber) {
+    return year >= DOUBLE_ELIMINATION_FIRST_YEAR && matchNumber >= 1
+        && matchNumber <= DOUBLE_ELIMINATION_BRACKET_MATCHES;
+  }
+
   private String buildMatchKey(int year, String eventCode, String matchType, int matchNumber) {
     var compLevel = mapMatchTypeToCompLevel(matchType);
     if (compLevel == null) {
+      if (matchType != null && isGenericElimination(matchType)
+          && isBracketMatch(year, matchNumber)) {
+        return year + eventCode + "_sf" + matchNumber + "m1";
+      }
       logger.info("Unsupported match type for TBA lookup: '{}' (year={}, event={}, match={})",
           matchType, year, eventCode, matchNumber);
       return null;
@@ -630,6 +672,28 @@ public class TbaClient {
     return null;
   }
 
+  /** What The Blue Alliance says about the configured key, from its {@code /status} endpoint. */
+  public record KeyCheck(boolean valid, String detail, JsonObject status) {}
+
+  /**
+   * Asks The Blue Alliance whether the configured key works ({@code /status}; not cached: this
+   * is the check a user runs right after configuring a key).
+   */
+  public KeyCheck checkKey() {
+    if (!isAvailable()) return new KeyCheck(false, "no API key is configured", null);
+    try {
+      var status = fetchJson("/status", JsonObject.class);
+      return new KeyCheck(true, "accepted by The Blue Alliance", status);
+    } catch (HttpStatusException e) {
+      return new KeyCheck(false, e.status == 401
+          ? "rejected by The Blue Alliance (HTTP 401): check the key"
+          : "The Blue Alliance returned HTTP " + e.status, null);
+    } catch (IOException e) {
+      return new KeyCheck(false, "The Blue Alliance could not be reached: " + e.getMessage(),
+          null);
+    }
+  }
+
   private <T> T fetchJson(String endpoint, Class<T> type) throws IOException {
     var request = HttpRequest.newBuilder()
         .uri(URI.create(baseUrl + endpoint))
@@ -694,10 +758,20 @@ public class TbaClient {
     );
   }
 
-  /** Result of a team's performance in a specific match. */
+  /**
+   * Result of a team's performance in a specific match.
+   *
+   * @param matchKey TBA's key of the match the result came from
+   * @param lookupMethod How the match was found: {@link #LOOKUP_DIRECT}, {@link #LOOKUP_BRACKET},
+   *     {@link #LOOKUP_NEAREST_TIME}, or {@link #LOOKUP_PLAY_ORDER}
+   * @param opponentScore The other alliance's score, or null when not reported
+   */
   public record TeamMatchResult(
+      String matchKey,
+      String lookupMethod,
       String alliance,
       int score,
+      Integer opponentScore,
       Boolean won,
       Long actualTimeSeconds,
       Long scheduledTimeSeconds

@@ -338,7 +338,7 @@ public class ConfigLoader {
         name,
         expandPath(interpolate(getString(block, "logdir"), warnings)),
         getInteger(block, "team"),
-        interpolate(getString(block, "tba_key"), warnings),
+        secretOrNull("tba_key", interpolate(getString(block, "tba_key"), warnings), warnings),
         getString(block, "transport"),
         getInteger(block, "port"),
         expandPath(interpolate(getString(block, "diskcachedir"), warnings)),
@@ -365,6 +365,25 @@ public class ConfigLoader {
               + "'. Must be between 1 and 65535.");
     }
 
+  }
+
+  /**
+   * A secret that still references an unset {@code ${VAR}} is not a value: the literal text
+   * would be sent as the key and rejected, and the server would report TBA as configured. It is
+   * treated as not configured, with a warning.
+   */
+  static String secretOrNull(String key, String value, Collection<String> warnings) {
+    if (value == null || !value.contains("${")) return value;
+    var names = new ArrayList<String>();
+    var matcher = ENV_VAR_PATTERN.matcher(value);
+    while (matcher.find()) {
+      names.add(matcher.group(1));
+      // One warning for the secret, in place of the generic one for its variable
+      warnings.remove("Environment variable " + matcher.group(1) + " is not set");
+    }
+    warnings.add(key + " references environment variable " + String.join(", ", names)
+        + ", which is not set; treated as not configured");
+    return null;
   }
 
   /** As {@link #interpolate(String, Collection)}, logging each warning at once. */

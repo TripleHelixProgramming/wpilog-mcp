@@ -43,6 +43,17 @@ class TbaEnrichmentRobustnessTest {
   }
 
   @Test
+  @DisplayName("extractYear prefers the log's file-name time to the file's modification time")
+  void extractYearPrefersTheFilenameTime() {
+    // A 2025 log copied onto a laptop in 2026 is still a 2025 log
+    long copied2026 = Instant.parse("2026-01-10T12:00:00Z").toEpochMilli();
+    long named2025 = Instant.parse("2025-03-15T12:00:00Z").toEpochMilli();
+    var info = new LogFileInfo("/path", "file.wpilog", "VADC", "Qualification", 1, 2363,
+        copied2026, 0, named2025);
+    assertEquals(2025, enrichment.extractYear(info));
+  }
+
+  @Test
   @DisplayName("normalizeEventCode handles various formats")
   void testNormalizeEventCode() throws Exception {
     Method method = TbaEnrichment.class.getDeclaredMethod("normalizeEventCode", String.class);

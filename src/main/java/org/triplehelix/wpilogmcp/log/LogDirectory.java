@@ -105,10 +105,16 @@ public class LogDirectory {
       if (value == null || value.isEmpty()) return null;
       var lower = value.toLowerCase().trim();
       if (lower.contains("practice") || lower.equals("p")) return PRACTICE;
-      if (lower.contains("qualification") || lower.contains("qual") || lower.equals("q")) return QUALIFICATION;
+      if (lower.contains("qualification") || lower.contains("qual") || lower.equals("q")
+          || lower.equals("qm")) {
+        return QUALIFICATION;
+      }
       if (lower.contains("elimination") || lower.contains("elim") || lower.equals("e")) return ELIMINATION;
       if (lower.contains("semifinal") || lower.contains("semi") || lower.equals("sf")) return SEMIFINAL;
-      if (lower.contains("final") && !lower.contains("semi") && !lower.contains("quarter")) return FINAL;
+      if ((lower.contains("final") && !lower.contains("semi") && !lower.contains("quarter"))
+          || lower.equals("f")) {
+        return FINAL;
+      }
       if (lower.contains("quarterfinal") || lower.contains("quarter") || lower.equals("qf")) return QUARTERFINAL;
       return null;
     }

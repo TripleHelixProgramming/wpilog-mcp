@@ -158,7 +158,7 @@ List WPILOG files in the configured log directory with user-friendly names, newe
   "success": true,
   "log_directory": "/Users/team2363/Documents/FRC/logs",
   "log_count": 3,
-  "tba_enrichment": true,
+  "tba_enrichment": {"available": true},
   "metadata_cache": {
     "size": 3,
     "hits": 2,
@@ -177,6 +177,8 @@ List WPILOG files in the configured log directory with user-friendly names, newe
       "last_modified": 1710523456000,
       "tba": {
         "team_number": 2363,
+        "match_key": "2024vadc_qm42",
+        "lookup_method": "direct",
         "alliance": "red",
         "score": 85,
         "won": true,
@@ -201,10 +203,10 @@ List WPILOG files in the configured log directory with user-friendly names, newe
 ```
 
 **Response Fields:**
-- `tba_enrichment`: Present and `true` when TBA API is configured
+- `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected (then no log carries a `tba` field for that reason, not because TBA has no data)
 - `metadata_cache`: Cache statistics for log file metadata (size, hits, misses)
 - `team_number`: Team number extracted from DriverStation/FMS metadata in the log
-- `tba`: TBA enrichment data (only present for qualifying competition matches when TBA is configured)
+- `tba`: TBA enrichment data (only present for qualifying competition matches when TBA is configured). `match_key` is the TBA match the data came from and `lookup_method` how it was found: `direct` (a key built from the match type and number), `double_elimination_bracket` (a Driver Station "Elimination N" read as bracket match N, TBA's `sfNm1`, for 2023 and later), `nearest_time` (the team's playoff match nearest the log's file-name time, for the finals, which carry no bracket number), or `play_order` (before 2023: playoff match number N in the order the team played, a heuristic). The last three carry a `lookup_basis` sentence.
 
 **Note:** Requires `-logdir` to be configured. Team numbers and friendly names are extracted from DriverStation metadata in the log file, or parsed from common filename patterns.
 
@@ -1240,8 +1242,9 @@ Get The Blue Alliance API integration status, including configuration and cache 
 **Parameters:** None
 
 **Returns:**
-- `available`: Whether TBA API is available
+- `available`: Whether TBA can be used now: a key is configured and The Blue Alliance accepted it (its `/status` endpoint is asked on every call)
 - `configuration`: "configured" or "not_configured"
+- `key_check` (when configured): `valid`, `detail` (accepted; rejected with HTTP 401; unreachable), and TBA's `current_season`, `max_season`, `datafeed_down`
 - `cache`: Cache statistics (events, matches, eventMatches counts)
 - `hint`: Helpful message about TBA features
 
@@ -1252,6 +1255,7 @@ Get The Blue Alliance API integration status, including configuration and cache 
   "status": "ok",
   "available": true,
   "configuration": "configured",
+  "key_check": {"valid": true, "detail": "accepted by The Blue Alliance", "current_season": 2026, "max_season": 2026, "datafeed_down": false},
   "cache": {
     "events": 2,
     "matches": 15,
@@ -1295,12 +1299,13 @@ Query match scores and detailed results directly from The Blue Alliance. **Use t
 **Parameters:**
 - `year` (required): Competition year (e.g., 2024, 2025, 2026)
 - `event_code` (required): TBA event code (e.g., "caph" for Poway, "cmptx" for Houston Championship). Must be lowercase.
-- `match_type` (required): Match type: "Qualification", "Quarterfinal", "Semifinal", "Final", or "Elimination", or TBA's codes `qm` (or `q`), `qf`, `sf`, `f` (as `list_available_logs` reports match types)
+- `match_type` (required): Match type: "Qualification", "Quarterfinal", "Semifinal", "Final", or "Elimination", or TBA's codes `qm` (or `q`), `qf`, `sf`, `f` (as `list_available_logs` reports match types). "Elimination" N, as the Driver Station names playoff matches, is read as double-elimination bracket match N (TBA's `sfNm1`) for 2023 and later; the finals carry no bracket number, so query them as `f` with the finals match number. Before 2023, with `team_number`, Elimination N is read as playoff match number N in the order the team played (a heuristic, `lookup_method: play_order`)
 - `match_number` (required): Match number within the type (1-indexed)
 - `team_number` (optional): Your team number to highlight your alliance's data
 
 **Returns:**
 - `match_found`: Whether the match was found in TBA
+- `match_key`, `lookup_method` (`direct`, `double_elimination_bracket`, `play_order`) and, for the last two, `lookup_basis`: which TBA match was looked up and why
 - `winning_alliance`: "red", "blue", or "tie_or_not_played"
 - `alliances`: Score and team list for each alliance (team numbers; a B team such as `frc1234B` as the string `"1234B"`), with `your_alliance` and `won` flags if team_number provided
 - `score_breakdown`: every points subtotal of each alliance's breakdown — the numeric fields TBA names `...Points` in every season (`autoPoints`, `teleopPoints`, `foulPoints`, `totalPoints`, and the game's own) — when available

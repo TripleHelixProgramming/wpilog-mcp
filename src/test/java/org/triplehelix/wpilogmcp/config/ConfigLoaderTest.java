@@ -266,18 +266,18 @@ class ConfigLoaderTest {
     @DisplayName("notes an unset environment variable once and leaves the reference as written")
     void unsetVariableIsAWarning() throws Exception {
       var file = writeYaml("""
-          tba_key: "${WPILOG_TEST_UNSET_KEY}"
+          exportdir: "${WPILOG_TEST_UNSET_KEY}"
           servers:
             dev:
               logdir: /logs
-              tba_key: "${WPILOG_TEST_UNSET_KEY}"
+              exportdir: "${WPILOG_TEST_UNSET_KEY}"
           """);
 
       var loaded = new ConfigLoader(name -> null).loadDetailed("dev", file);
 
       assertEquals(List.of("Environment variable WPILOG_TEST_UNSET_KEY is not set"),
           loaded.warnings());
-      assertEquals("${WPILOG_TEST_UNSET_KEY}", loaded.config().tbaKey());
+      assertEquals("${WPILOG_TEST_UNSET_KEY}", loaded.config().exportdir());
     }
 
     @Test
@@ -917,6 +917,21 @@ class ConfigLoaderTest {
   class InterpolationTests {
 
     @Test
+    @DisplayName("a tba_key whose ${VAR} is unset is not configured, with a warning")
+    void unresolvedTbaKeyIsNotConfigured() throws Exception {
+      var file = writeYaml("""
+          servers:
+            dev:
+              logdir: /logs
+              tba_key: ${TBA_KEY_NOT_SET_ANYWHERE}
+          """);
+      var loaded = new ConfigLoader(name -> null).loadDetailed("dev", file);
+      assertNull(loaded.config().tbaKey(), "the literal ${VAR} must not become the key");
+      assertEquals(List.of("tba_key references environment variable TBA_KEY_NOT_SET_ANYWHERE, "
+          + "which is not set; treated as not configured"), loaded.warnings());
+    }
+
+    @Test
     @DisplayName("interpolates single ${VAR}")
     void interpolatesSingleVar() throws Exception {
       var file = writeJson("""
@@ -933,12 +948,12 @@ class ConfigLoaderTest {
     @DisplayName("preserves literal ${VAR} when env var is unset")
     void preservesLiteralWhenUnset() throws Exception {
       var file = writeJson("""
-          { "servers": { "dev": { "logdir": "/logs", "tba_key": "${UNSET_VAR}" } } }
+          { "servers": { "dev": { "logdir": "/logs", "exportdir": "${UNSET_VAR}" } } }
           """);
 
       var config = new ConfigLoader(n -> null).load("dev", file);
 
-      assertEquals("${UNSET_VAR}", config.tbaKey());
+      assertEquals("${UNSET_VAR}", config.exportdir());
     }
 
     @Test

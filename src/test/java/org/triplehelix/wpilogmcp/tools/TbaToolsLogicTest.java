@@ -34,7 +34,14 @@ class TbaToolsLogicTest extends ToolTestBase {
       assertEquals("ok", resultObj.get("status").getAsString());
       var configuration = resultObj.get("configuration").getAsString();
       assertTrue(configuration.equals("configured") || configuration.equals("not_configured"));
-      assertEquals(configuration.equals("configured"), resultObj.get("available").getAsBoolean());
+      if (configuration.equals("configured")) {
+        // available follows the key check against The Blue Alliance, which needs the network
+        var check = resultObj.getAsJsonObject("key_check");
+        assertEquals(check.get("valid").getAsBoolean(), resultObj.get("available").getAsBoolean());
+        assertTrue(check.has("detail"));
+      } else {
+        assertFalse(resultObj.get("available").getAsBoolean());
+      }
     }
   }
 

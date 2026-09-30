@@ -67,8 +67,13 @@ public final class CoreTools {
           + "IMPORTANT: When TBA is configured, this tool automatically enriches each listed log "
           + "with match data including alliance scores, win/loss results, and actual match "
           + "times. Check the 'tba' field in each log entry for match outcomes—don't guess from "
-          + "telemetry! Use this tool first to find logs and get match results, then pass the "
-          + "path to other tools.";
+          + "telemetry! tba_enrichment.available says whether The Blue Alliance answered for "
+          + "this page; when false, its reason (not configured, an outage, a rejected key) is why "
+          + "no log carries a tba field. A tba field's match_key and lookup_method say which TBA "
+          + "match it came from: an 'Elimination N' log is read as double-elimination bracket "
+          + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
+          + "this tool first to find logs and get match results, then pass the path to other "
+          + "tools.";
     }
 
     static final int DEFAULT_LIMIT = 50;
@@ -151,6 +156,7 @@ public final class CoreTools {
           Math.min(logs.size(), Math.min(offset, logs.size()) + limit));
       var tbaEnrichment = TbaEnrichment.getInstance();
       boolean tbaAvailable = tbaClient.isAvailable();
+      String tbaFailure = null; // the first outage or rejected key ends the page's enrichment
 
       var logsArray = new JsonArray();
       for (var log : page) {
@@ -165,9 +171,13 @@ public final class CoreTools {
         logObj.addProperty("size_bytes", log.fileSize());
         logObj.addProperty("last_modified", log.lastModified());
 
-        if (tbaAvailable && tbaEnrichment.isEligibleForEnrichment(log)) {
-          var tbaData = tbaEnrichment.enrichLog(log);
-          tbaData.ifPresent(data -> logObj.add("tba", data));
+        if (tbaAvailable && tbaFailure == null && tbaEnrichment.isEligibleForEnrichment(log)) {
+          try {
+            tbaEnrichment.enrichLogOrThrow(log).ifPresent(data -> logObj.add("tba", data));
+          } catch (org.triplehelix.wpilogmcp.tba.TbaUnavailableException e) {
+            // An outage is not "no data": said once, at the top level
+            tbaFailure = e.getMessage();
+          }
         }
 
         logsArray.add(logObj);
@@ -181,7 +191,19 @@ public final class CoreTools {
       result.addProperty("offset", Math.min(offset, logs.size()));
       result.addProperty("returned", page.size());
       result.addProperty("has_more", Math.min(offset, logs.size()) + page.size() < logs.size());
-      if (tbaAvailable) result.addProperty("tba_enrichment", true);
+      // TBA's availability as an object: an outage or a rejected key is not "no match data"
+      var tbaStatus = new JsonObject();
+      if (!tbaAvailable) {
+        tbaStatus.addProperty("available", false);
+        tbaStatus.addProperty("reason", "not configured (set TBA_API_KEY, -tba-key, or tba_key)");
+      } else if (tbaFailure != null) {
+        tbaStatus.addProperty("available", false);
+        tbaStatus.addProperty("reason", tbaFailure + " The logs on this page carry no tba field "
+            + "for that reason, not because The Blue Alliance has no data for them.");
+      } else {
+        tbaStatus.addProperty("available", true);
+      }
+      result.add("tba_enrichment", tbaStatus);
 
       var cacheStats = new JsonObject();
       for (var entry : logDirectory.getCacheStats().entrySet()) {

@@ -43,6 +43,15 @@ final class DescriptionOutputs {
       Map.entry("list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)"),
       Map.entry("profile_mechanism | other_stems", "NoGuessRolesTest.explicitEntriesWithSeveralStems"),
       Map.entry("profile_mechanism | needs_confirmation", "MechanismFixtureTest.stems"),
+      Map.entry("get_tba_match_data | lookup_method", "TbaReplayTest.found (no TBA in the corpus)"),
+      Map.entry("get_tba_match_data | match_key", "TbaReplayTest.found"),
+      Map.entry("get_tba_match_data | double_elimination_bracket",
+          "TbaReplayTest.eliminationBracket"),
+      Map.entry("get_tba_match_data | play_order", "TbaReplayTest.enrichmentPlayOrderBefore2023"),
+      Map.entry("get_tba_status | key_check", "TbaReplayTest.statusChecksTheKey"),
+      Map.entry("list_available_logs | match_key", "TbaReplayTest.enrichmentNearestTime"),
+      Map.entry("list_available_logs | lookup_method", "TbaReplayTest.enrichmentNearestTime"),
+      Map.entry("list_available_logs | nearest_time", "TbaReplayTest.enrichmentNearestTime"),
       Map.entry("search_strings | repeat_count", "QueryToolsLogicTest (collapse_repeats)"),
       Map.entry("get_match_phases | mode_change", "MatchTimelineTest (a mode change while enabled)"));
 
