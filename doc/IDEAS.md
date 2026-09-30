@@ -64,12 +64,11 @@ Analyze battery energy consumption patterns.
 **Priority:** Medium
 **Complexity:** Medium
 
-Enhanced CAN bus analysis. The current `can_health` tool counts CAN errors but does not distinguish between disabled-state timeouts (normal) and enabled-state errors (problematic).
+Enhanced CAN bus analysis. *Partially completed in the robustness work:* `can_health` splits CAN error lines by the robot's enabled state and reads the bus counters; `analyze_can_bus` reports TEC/REC levels (error-passive excursions) and bus-off and TX-full counts per bus, overall and while enabled.
 
-**Features:**
-- Distinguish disabled-state timeouts from real errors (cross-reference with robot enable state)
+**Remaining:**
 - Identify noisy devices by error rate
-- Detect bus-off events and recovery time
+- Bus-off recovery time
 - Bandwidth utilization by device category
 
 ### 3.5 Mechanism Health Tracking
@@ -251,6 +250,8 @@ FRC teams use wildly different naming conventions: `/Robot/Drive/FrontLeft/Veloc
 - Fuzzy search that ranks by edit distance and structural similarity
 - "Did you mean?" suggestions with confidence scores
 
+*Partially covered by `resolve_signals`:* built-in roles (battery voltage, robot pose, module states, gyro yaw, ...) resolve with a basis, ranked candidates, and an ambiguity flag, and tools accept an explicit entry. A team-configurable alias map is still open.
+
 ### 5.6 Auto-Organize Log Directory
 **Priority:** Medium
 **Complexity:** Medium
@@ -408,7 +409,7 @@ For derived calculations, propagate uncertainty through the computation chain.
 Allow teams to add custom analysis tools.
 
 **Plugin types:**
-- Custom struct decoders (already supported)
+- Custom structs: no plugin needed — every struct decodes from the schema the log records
 - Custom analysis tools
 - Custom data sources (e.g., team-specific CAN devices)
 
@@ -421,14 +422,9 @@ Allow teams to add custom analysis tools.
 **Priority:** High
 **Complexity:** Low
 
-Build a library of reference log files for testing.
+Build a library of reference log files for testing. *Mostly completed in the robustness work:* the fixture corpus (`src/test/java/.../fixtures`) generates about 20 logs per run — AdvantageKit match and practice, plain WPILib, swerve arrays and per-module entries, three vision conventions, custom and mismatched structs, brownouts on roboRIO 1 and 2, CANivore counters, alerts, replay with and without divergence, truncated, empty.
 
-**Categories:**
-- Clean match (no issues)
-- Brownout event
-- CAN bus failure
-- Truncated log
-- High-frequency struct data
+**Remaining:**
 - Multi-revlog scenario
 
 ---
