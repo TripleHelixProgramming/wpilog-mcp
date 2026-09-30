@@ -252,6 +252,8 @@ FRC teams use wildly different naming conventions: `/Robot/Drive/FrontLeft/Veloc
 
 *Partially covered by `resolve_signals`:* built-in roles (battery voltage, robot pose, module states, gyro yaw, ...) resolve with a basis, ranked candidates, and an ambiguity flag, and tools accept an explicit entry. A team-configurable alias map is still open.
 
+**Caveat (see §6.8):** Fuzzy or heuristic matches should be offered to the LLM as candidates to confirm, never used to pick an entry on the server's own authority.
+
 ### 5.6 Auto-Organize Log Directory
 **Priority:** Medium
 **Complexity:** Medium
@@ -398,6 +400,37 @@ For derived calculations, propagate uncertainty through the computation chain.
 - Identifies which inputs most affect accuracy
 - Enables proper "I don't know" responses
 
+### 6.8 Don't Guess What Entries Mean
+**Priority:** High
+**Complexity:** Medium
+
+Apart from well-known logging conventions, the server should not infer what a log entry represents from its name. When a log doesn't follow a known convention, the server should say so and tell the LLM it has to work out which entries correspond to what: by listing and searching entries, by asking the user, or by passing the entry name explicitly. The server should not guess.
+
+**Why:** A silent wrong guess is worse than no answer. The tool's result looks authoritative, the LLM (and then the team) reason from it, and nobody sees the choice that was made. Team naming varies too much for keyword matching to be reliable, and the LLM, with the user in the loop, is better placed to resolve ambiguity than a substring heuristic.
+
+**Well-known conventions (fine to recognize):**
+- WPILib DataLogManager DS logging (`DS:enabled`, `DS:autonomous`, ...) and `systemTime`
+- AdvantageKit paths (`/DriverStation/Enabled`, `/SystemStats/BatteryVoltage`, `/SystemStats/BrownedOut`, `/RealOutputs/` ↔ `/ReplayOutputs/`, metadata such as `GitSHA`)
+- Struct types (`SwerveModuleState`, `Pose2d`, `ChassisSpeeds`): these are type-based, so they are reliable
+
+**Already in place (robustness work):** `SignalResolver` / `resolve_signals` resolve each role in one shared place, so tools agree on which entry is, for example, the battery voltage. Every resolution reports its basis, the ranked candidates, and an `ambiguous` flag. Tool results record the entries they used under `inputs.entries`, and many tools take an explicit entry (`loop_time_entry`, `pose_entry`, `module_prefix`, `vision_prefix`, `auto_prefix`, ...). DS state resolves by exact leaf names or the FMS control word. The server guidance already says every entry name must come from `list_entries` / `search_entries`.
+
+**What's left: the ranked fallbacks still choose.** Each role ranks exact-convention matches first, but its lower tiers are name heuristics. When nothing conventional exists, the resolver picks the best heuristic match instead of stopping. Examples:
+- Battery voltage: any name containing "battery", then any numeric entry named "...voltage"
+- Loop time: any name containing looptime or cycletime, after `FullCycleMS` / `UserCodeMS`
+- Auto routine: any name containing "chooser"
+- Robot pose: the `Pose2d` with the most samples that isn't under a vision path
+- Gyro yaw: entries under a gyro-like path (gyro, pigeon, navx, imu, ...)
+- Revlog `SignalMatcher`: a substring table in which "output" matches every AdvantageKit `/RealOutputs/...` entry and "arm" matches "alarm". The ≥0.5 correlation gate limits the damage.
+
+**Direction:**
+1. **Split each role's ranking into convention tiers and heuristic tiers.** Convention tiers (exact paths, exact leaf names under a known prefix, struct types) may be selected automatically. Heuristic tiers only produce candidates.
+2. **When only heuristic candidates exist, hand the question back.** Return a structured "no conventional entry found" result instead of a guess or a bare error. It should list the conventions checked and the candidates (name, type, sample count), and tell the LLM to confirm one with `resolve_signals` / `search_entries`, or ask the user, and then call again with the entry named explicitly.
+3. **Every consumer of a role accepts an explicit entry.** Audit the tools listed in each `SignalResolver.Role`'s `usedBy`.
+4. **Say it in the guidance.** Tool descriptions and the server-level guidance should state plainly that for non-conventional logs the LLM must establish the entry mapping itself (or ask), and that the server will not guess.
+
+**Relationship to §5.5:** Fuzzy matching and aliasing are fine for *suggesting* candidates, but never for *silently selecting* one. A team-supplied alias file isn't guessing: it is the team declaring its own conventions, so its mappings would count as "known."
+
 ---
 
 ## 7. Developer Experience
@@ -455,6 +488,7 @@ Remaining work:
 | 5.5 | Entry name aliasing | Medium | Medium | **P2** |
 | 6.3 | MCP guided prompts | Medium | Medium | **P2** |
 | 6.4 | Primitive tool design | Medium | Medium | **P2** |
+| 6.8 | Don't guess entry meaning | High | Medium | **P2** |
 | 3.4 | CAN bus diagnostics | Medium | Medium | **P3** |
 | 3.3 | Energy budget analysis | Medium | Low | **P3** |
 | 3.2 | Autonomous routine library | Medium | Medium | **P3** |
