@@ -59,6 +59,21 @@ class PowerFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
+  @DisplayName("power_analysis start_time/end_time clip the scope, as its scope text says")
+  void startEndClipScope() {
+    var before = call("power_analysis", "brownout_rio1", "scope", "all",
+        "start_time", 5.0, "end_time", 20.0);
+    assertEquals(15.0, before.getAsJsonObject("scope").get("total_sec").getAsDouble(), 1e-9);
+    assertEquals(0, before.getAsJsonObject("rio_brownouts").get("count").getAsInt());
+    var around = call("power_analysis", "brownout_rio1", "scope", "all",
+        "start_time", 25.0, "end_time", 35.0);
+    assertEquals(1, around.getAsJsonObject("rio_brownouts").get("count").getAsInt());
+    var inverted = call("power_analysis", "brownout_rio1", "start_time", 35.0, "end_time", 25.0);
+    assertTrue(inverted.get("error").getAsString().contains("start_time must not be after"),
+        inverted.toString());
+  }
+
+  @Test
   @DisplayName("battery health gives evidence and candidate causes, never replacement advice (G2)")
   void noReplacementAdvice() {
     for (var id : List.of("akit_practice", "brownout_rio1", "brownout_rio2", "akit_match")) {

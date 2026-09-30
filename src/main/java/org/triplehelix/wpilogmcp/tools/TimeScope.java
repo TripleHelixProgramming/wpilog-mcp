@@ -221,6 +221,7 @@ public final class TimeScope {
         }
       }
     }
+    ToolUtils.validateTimeRange(start, end);
     var clipped = new ArrayList<Window>();
     for (var w : base) {
       double s = start != null ? Math.max(w.start(), start) : w.start();

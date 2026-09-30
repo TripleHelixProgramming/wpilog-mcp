@@ -340,6 +340,7 @@ public final class RevLogTools {
       Double startTime = getOptDouble(arguments, "start_time");
       Double endTime = getOptDouble(arguments, "end_time");
       int limit = getOptInt(arguments, "limit", 1000);
+      validatePositive(limit, "limit");
       boolean includeStats = arguments.has("include_stats")
           && arguments.get("include_stats").getAsBoolean();
 

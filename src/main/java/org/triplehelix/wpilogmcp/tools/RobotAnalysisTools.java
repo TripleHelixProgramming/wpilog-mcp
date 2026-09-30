@@ -648,6 +648,8 @@ public final class RobotAnalysisTools {
       return new SchemaBuilder()
           .addProperty("power_prefix", "string", "Entry path prefix (e.g., '/PDP')", false)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION + " Default: 'enabled' when the log records enabled state, else 'all'.", false)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("voltage_entry", "string", "Battery voltage entry to use (default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery; other voltage entries are never guessed: when the log has only those, they are listed to confirm and pass here)", false)
           .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
           .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
@@ -673,7 +675,8 @@ public final class RobotAnalysisTools {
       var timeline = MatchTimeline.of(log);
       var scopeArg = getOptString(arguments, "scope", null);
       if (scopeArg == null) scopeArg = timeline.hasEnabledData() ? "enabled" : "all";
-      var scope = TimeScope.resolve(log, timeline, scopeArg, null, null);
+      var scope = TimeScope.resolve(log, timeline, scopeArg,
+          getOptDouble(arguments, "start_time"), getOptDouble(arguments, "end_time"));
       result.add("scope", scope.toJson());
 
       // The roboRIO's own brownouts in scope, when its flag is logged
@@ -1124,10 +1127,13 @@ public final class RobotAnalysisTools {
           .addProperty("name", "string", "Entry name to compare, optionally with a field path",
               true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION
               + " Resolved in each log's own timeline.", false)
           .addNumberProperty("start_time", "Start timestamp (s), on each log's clock", false, null)
           .addNumberProperty("end_time", "End timestamp (s), on each log's clock", false, null)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION + " On each log's clock.",
+              TimeScope.windowItemSchema(), false)
           .build();
     }
 
@@ -1347,6 +1353,7 @@ public final class RobotAnalysisTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject args) throws Exception {
+      validateTimeRange(getOptDouble(args, "start_time"), getOptDouble(args, "end_time"));
       // ── Required params ──────────────────────────────────────────────────────
       var velEntry  = getRequiredString(args, "velocity_entry");
       var currEntry = getRequiredString(args, "current_entry");
@@ -1378,6 +1385,7 @@ public final class RobotAnalysisTools {
       Double endTime     = getOptDouble(args, "end_time");
       double alphaThr    = getOptDouble(args, "alpha_threshold", 1.0);
       int    smoothW     = getOptInt(args,    "smooth_window",   2);
+      validateNonNegative(smoothW, "smooth_window");
 
       double torqueScale = G * motorCount * kt;
 

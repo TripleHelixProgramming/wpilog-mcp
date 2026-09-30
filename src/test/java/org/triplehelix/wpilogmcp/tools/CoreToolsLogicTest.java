@@ -705,4 +705,28 @@ class CoreToolsLogicTest extends ToolTestBase {
           "100 value entry should have exactly 3 samples (first, middle, last)");
     }
   }
+
+  @Nested
+  @DisplayName("read_entry argument validation (review 4.3)")
+  class ReadEntryValidation {
+
+    @Test
+    @DisplayName("read_entry rejects start_time after end_time")
+    void invertedRange() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/read_range.wpilog")
+          .addNumericEntry("/Test/Values", new double[]{0, 1, 2}, new double[]{1, 2, 3})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Test/Values");
+      args.addProperty("start_time", 2.0);
+      args.addProperty("end_time", 1.0);
+      var result = findTool("read_entry").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("start_time must not be after end_time"),
+          result.get("error").getAsString());
+    }
+  }
 }

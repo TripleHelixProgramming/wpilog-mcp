@@ -276,6 +276,13 @@ public class LogManager {
           System.gc(); // Single GC hint after eviction loop, not per-iteration
         }
 
+        // DataLogReader maps the whole file into one int-indexed ByteBuffer, so a file over 2 GB
+        // cannot be read: say so here, before the reader fails and the eager fallback rethrows.
+        if (fileSizeBytes > Integer.MAX_VALUE) {
+          throw new IOException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
+              + filePath + " (" + (fileSizeBytes / (1024 * 1024)) + " MB)");
+        }
+
         // Lazy loading: single-pass scan collects entry metadata and stashes
         // lightweight DataLogRecord references (ByteBuffer slices into the memory-mapped
         // file — no data copying, no value decoding). Values are decoded on demand

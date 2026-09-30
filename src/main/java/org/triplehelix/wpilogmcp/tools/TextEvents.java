@@ -104,12 +104,23 @@ final class TextEvents {
    * text classified line by line ({@link ToolUtils#classifyText}); null when neither.
    */
   static String level(Event event) {
-    if (event.source() == Source.ALERT) {
-      var level = alertLevel(event.entry());
-      if (level != null) return level;
-    }
-    var classified = ToolUtils.classifyText(event.text());
+    var level = alertLevel(event);
+    return level != null ? level : level(event, ToolUtils.classifyText(event.text()));
+  }
+
+  /**
+   * As {@link #level(Event)}, with the text already classified by the caller, so a tool that
+   * also needs the classification classifies each sample once.
+   */
+  static String level(Event event, ToolUtils.ClassifiedText classified) {
+    var level = alertLevel(event);
+    if (level != null) return level;
     return classified == null ? null : classified.type().toLowerCase(Locale.ROOT);
+  }
+
+  /** An alert's level from its entry name; null for other sources and unnamed alert entries. */
+  private static String alertLevel(Event event) {
+    return event.source() == Source.ALERT ? alertLevel(event.entry()) : null;
   }
 
   /** Every text event of every text entry, in time order (ties by entry id). */

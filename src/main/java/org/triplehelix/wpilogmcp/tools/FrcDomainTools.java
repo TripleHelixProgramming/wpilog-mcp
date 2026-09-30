@@ -69,11 +69,6 @@ public final class FrcDomainTools {
 
   // ==================== SHARED HELPER METHODS ====================
 
-  /** Delegate to shared percentile implementation in ToolUtils. */
-  private static double interpolatedPercentile(double[] sortedData, double p) {
-    return ToolUtils.percentile(sortedData, p);
-  }
-
   /**
    * Calculate the Euclidean distance between two poses (works for Pose2d and Pose3d).
    *
@@ -164,6 +159,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -505,6 +502,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var visionPrefix = getOptString(arguments, "vision_prefix", null);
       var poseArg = getOptString(arguments, "pose_entry", null);
       var startTime = getOptDouble(arguments, "start_time");
@@ -1043,6 +1042,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var mechanismName = getOptString(arguments, "mechanism_name", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -1497,22 +1498,11 @@ public final class FrcDomainTools {
     }
 
     /**
-     * The string entry holding the selected autonomous routine: a chooser's {@code /active}
-     * entry first, then names with "auto" and "selected"/"mode"/"routine"/"choice", then any name
-     * containing "chooser"; ties by entry id.
+     * Ranks a lower-cased string entry name as the chooser holding the selected autonomous
+     * routine (used by {@link SignalResolver}): 0 for a chooser's {@code /active} entry, 1 for
+     * names with "auto" and "selected"/"mode"/"routine"/"choice", 2 for any name containing
+     * "chooser", {@code Integer.MAX_VALUE} for none.
      */
-    static java.util.Optional<String> findChooserEntry(LogData log) {
-      return log.entries().values().stream()
-          .filter(e -> "string".equals(e.type()))
-          .filter(e -> chooserRank(e.name().toLowerCase()) < Integer.MAX_VALUE)
-          .filter(e -> log.sampleCount(e.name()) > 0)
-          .sorted(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
-                  chooserRank(e.name().toLowerCase()))
-              .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
-          .findFirst();
-    }
-
     static int chooserRank(String lower) {
       var leaf = lower.substring(lower.lastIndexOf('/') + 1);
       if (leaf.startsWith(".") || leaf.equals("default") || leaf.equals("options")) {
@@ -1525,35 +1515,6 @@ public final class FrcDomainTools {
           || lower.contains("choice") || lower.contains("mode"))) return 1;
       if (chooser) return 2;
       return Integer.MAX_VALUE;
-    }
-
-    /** {setpoint, actual} pose entries for path following, or null; ranked, ties by entry id. */
-    static String[] findPathEntries(LogData log, String prefix) {
-      String setpoint = null;
-      String actual = null;
-      int setpointId = Integer.MAX_VALUE;
-      int actualId = Integer.MAX_VALUE;
-      for (var entry : log.entries().values()) {
-        var name = entry.name();
-        if (prefix != null && !name.startsWith(prefix)) continue;
-        var type = entry.type();
-        boolean scalarPose = (type.equals("struct:Pose2d") || type.equals("struct:Pose3d"));
-        if (!scalarPose || log.sampleCount(name) < 2) continue;
-        var lower = name.toLowerCase();
-        if (lower.contains("setpoint") || lower.contains("target") || lower.contains("desired")) {
-          if (entry.id() < setpointId) {
-            setpoint = name;
-            setpointId = entry.id();
-          }
-        } else if (lower.contains("actual") || lower.contains("estimated")
-            || lower.contains("odometry") || lower.endsWith("/pose")) {
-          if (entry.id() < actualId) {
-            actual = name;
-            actualId = entry.id();
-          }
-        }
-      }
-      return setpoint != null && actual != null ? new String[] {setpoint, actual} : null;
     }
 
     private JsonObject calculatePathFollowingError(LogData log, String setpointEntry,
@@ -1642,6 +1603,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {// Parse parameters
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var stateEntry = getRequiredString(arguments, "state_entry");
       var cycleMode = getOptString(arguments, "cycle_mode", "start_to_start");
       var cycleStartState = getOptString(arguments, "cycle_start_state", null);
@@ -1653,6 +1616,7 @@ public final class FrcDomainTools {
           ? arguments.get("case_sensitive").getAsBoolean()
           : true; // Default: true
       int limit = getOptInt(arguments, "limit", 10);
+      validatePositive(limit, "limit");
 
       // Validate cycle mode
       if (!cycleMode.equals("start_to_start") && !cycleMode.equals("start_to_end")) {
@@ -2466,6 +2430,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var busName = getOptString(arguments, "bus_name", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");

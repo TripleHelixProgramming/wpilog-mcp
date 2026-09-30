@@ -585,6 +585,55 @@ class ToolUtilsTest {
     }
   }
 
+  @Nested
+  @DisplayName("getRequiredInt")
+  class GetRequiredIntTests {
+
+    @Test
+    @DisplayName("returns value when present")
+    void returnsValue() {
+      var args = new JsonObject();
+      args.addProperty("year", 2026);
+      assertEquals(2026, ToolUtils.getRequiredInt(args, "year"));
+    }
+
+    @Test
+    @DisplayName("names the missing parameter instead of a NullPointerException")
+    void throwsWhenMissing() {
+      var e = assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.getRequiredInt(args(), "year"));
+      assertEquals("Missing required parameter: year", e.getMessage());
+      var explicitNull = new JsonObject();
+      explicitNull.add("year", com.google.gson.JsonNull.INSTANCE);
+      assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.getRequiredInt(explicitNull, "year"));
+    }
+  }
+
+  @Nested
+  @DisplayName("validateTimeRange")
+  class ValidateTimeRangeTests {
+
+    @Test
+    @DisplayName("accepts open, ordered, and point ranges")
+    void accepts() {
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(null, null));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(5.0, null));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(null, 5.0));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(1.0, 5.0));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(5.0, 5.0));
+    }
+
+    @Test
+    @DisplayName("rejects start_time after end_time, naming both")
+    void rejectsInverted() {
+      var e = assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.validateTimeRange(10.0, 5.0));
+      assertTrue(e.getMessage().contains("start_time=10.0"), e.getMessage());
+      assertTrue(e.getMessage().contains("end_time=5.0"), e.getMessage());
+    }
+  }
+
   private static JsonObject args() {
     return new JsonObject();
   }

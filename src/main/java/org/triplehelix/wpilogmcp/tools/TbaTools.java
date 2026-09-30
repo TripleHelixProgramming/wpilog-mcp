@@ -144,10 +144,10 @@ public final class TbaTools {
             + "Get a free API key at https://www.thebluealliance.com/account");
       }
 
-      int year = arguments.get("year").getAsInt();
+      int year = getRequiredInt(arguments, "year");
       String eventCode = getRequiredString(arguments, "event_code");
       String matchType = getRequiredString(arguments, "match_type");
-      int matchNumber = arguments.get("match_number").getAsInt();
+      int matchNumber = getRequiredInt(arguments, "match_number");
       Integer teamNumber = arguments.has("team_number") && !arguments.get("team_number").isJsonNull()
           ? arguments.get("team_number").getAsInt()
           : null;

@@ -476,6 +476,25 @@ class StatisticsToolsLogicTest extends ToolTestBase {
   class FindPeaksToolTests {
 
     @Test
+    @DisplayName("rejects a non-positive limit")
+    void rejectsNonPositiveLimit() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/peaks_limit.wpilog")
+          .addNumericEntry("/Sensor/Oscillating", new double[]{0, 1, 2, 3, 4},
+              new double[]{0, 10, 0, 10, 0})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Sensor/Oscillating");
+      args.addProperty("limit", -1);
+      var result = findTool("find_peaks").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("limit must be positive"),
+          result.get("error").getAsString());
+    }
+
+    @Test
     @DisplayName("finds local maxima")
     void findsLocalMaxima() throws Exception {
       var log = new MockLogBuilder()
@@ -573,6 +592,24 @@ class StatisticsToolsLogicTest extends ToolTestBase {
   @Nested
   @DisplayName("rate_of_change Tool")
   class RateOfChangeToolTests {
+
+    @Test
+    @DisplayName("rejects a non-positive limit")
+    void rejectsNonPositiveLimit() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/roc_limit.wpilog")
+          .addNumericEntry("/Position", new double[]{0, 0.1, 0.2}, new double[]{0, 1, 2})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Position");
+      args.addProperty("limit", 0);
+      var result = findTool("rate_of_change").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("limit must be positive"),
+          result.get("error").getAsString());
+    }
 
     @Test
     @DisplayName("calculates correct rate for linear data")

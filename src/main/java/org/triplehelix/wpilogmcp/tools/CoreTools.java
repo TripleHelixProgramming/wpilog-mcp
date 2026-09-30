@@ -394,7 +394,7 @@ public final class CoreTools {
     }
 
     static boolean canBeEmpty(String type) {
-      return type.endsWith("[]") || type.startsWith("structarray:") || type.equals("string")
+      return type.endsWith("[]") || type.equals("string")
           || type.equals("json") || type.equals("raw");
     }
 
@@ -461,6 +461,8 @@ public final class CoreTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var name = getRequiredString(arguments, "name");
       var allValues = requireEntry(log, name); // not found: error with suggestions
       var problem = log.decodeProblem(name);

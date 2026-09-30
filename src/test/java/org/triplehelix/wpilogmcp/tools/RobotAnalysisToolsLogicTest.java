@@ -185,6 +185,46 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
   class MoiRegressionToolTests {
 
     @Test
+    @DisplayName("rejects a negative smooth_window and an inverted time range")
+    void rejectsNegativeSmoothWindowAndInvertedRange() throws Exception {
+      int n = 50;
+      double[] ts = new double[n];
+      double[] vel = new double[n];
+      double[] cur = new double[n];
+      for (int i = 0; i < n; i++) {
+        ts[i] = i * 0.02;
+        vel[i] = 10.0 * Math.sin(2 * Math.PI * ts[i]);
+        cur[i] = 5.0 + Math.abs(Math.cos(2 * Math.PI * ts[i]));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/moi_validation.wpilog")
+          .addNumericEntry("/Motor/Velocity", ts, vel)
+          .addNumericEntry("/Motor/Current", ts, cur)
+          .build();
+      putLogInCache(log);
+      var tool = findTool("moi_regression");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("velocity_entry", "/Motor/Velocity");
+      args.addProperty("current_entry", "/Motor/Current");
+      args.addProperty("kt", 0.0194);
+      args.addProperty("gear_ratio", 10.0);
+      args.addProperty("smooth_window", -1);
+      var smooth = tool.execute(args).getAsJsonObject();
+      assertEquals("error", smooth.get("status").getAsString());
+      assertTrue(smooth.get("error").getAsString().contains("smooth_window must be non-negative"),
+          smooth.get("error").getAsString());
+
+      args.addProperty("smooth_window", 2);
+      args.addProperty("start_time", 0.8);
+      args.addProperty("end_time", 0.2);
+      var range = tool.execute(args).getAsJsonObject();
+      assertEquals("error", range.get("status").getAsString());
+      assertTrue(range.get("error").getAsString().contains("start_time must not be after end_time"),
+          range.get("error").getAsString());
+    }
+
+    @Test
     @DisplayName("skips samples with missing current instead of inserting zero")
     void skipsMissingCurrentInsteadOfInsertingZero() throws Exception {
       // Create velocity data spanning 0-2s at 100Hz
@@ -1615,6 +1655,28 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
         assertTrue(error.toLowerCase().contains("singular") || error.toLowerCase().contains("insufficient"),
             "If regression fails, it should be due to singularity or insufficient samples");
       }
+    }
+  }
+
+  @Nested
+  @DisplayName("Schemas declare every honored parameter (review 4.3)")
+  class SchemaDeclarations {
+
+    @Test
+    @DisplayName("compare_matches declares angle and windows")
+    void compareMatchesDeclaresAngleAndWindows() {
+      var properties = findTool("compare_matches").inputSchema().getAsJsonObject("properties");
+      assertTrue(properties.has("angle"), properties.keySet().toString());
+      assertTrue(properties.has("windows"), properties.keySet().toString());
+      assertEquals("array", properties.getAsJsonObject("windows").get("type").getAsString());
+    }
+
+    @Test
+    @DisplayName("power_analysis declares the start_time/end_time its scope text promises")
+    void powerAnalysisDeclaresStartEnd() {
+      var properties = findTool("power_analysis").inputSchema().getAsJsonObject("properties");
+      assertTrue(properties.has("start_time"), properties.keySet().toString());
+      assertTrue(properties.has("end_time"), properties.keySet().toString());
     }
   }
 }

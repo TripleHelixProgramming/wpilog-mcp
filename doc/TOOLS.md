@@ -448,9 +448,10 @@ Find when a numeric or boolean entry satisfies a condition — or several entrie
 - `path` (required): Path to the log file
 - `name`: Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0), or a number inside a struct or array by [field path](#field-paths) (thresholds apply to angles as logged)
 - `field` (optional): The field path, instead of appending it to `name`
+- `angle` (optional): `radians` or `degrees`, declaring a plain-number signal an angle as in the statistics tools; thresholds still apply to the value as logged (not unwrapped)
 - `operator`: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==, with a relative tolerance of 1e-6), `ne` (!=), or `abs_lt`, `abs_lte`, `abs_gt`, `abs_gte` on the absolute value
 - `threshold`: Threshold value to compare against
-- `conditions` (instead of `name`/`operator`/`threshold`): `{"all": [...]}` (every condition true) or `{"any": [...]}` (at least one), each item `{name, field?, operator, threshold}`. Each entry's value holds until its next sample, so entries logged only on change (DriverStation state, AdvantageKit outputs) combine correctly; the combined condition is evaluated at every sample of every entry, and time before all entries have a value is not searched. Example — disabled and stationary:
+- `conditions` (instead of `name`/`operator`/`threshold`): `{"all": [...]}` (every condition true) or `{"any": [...]}` (at least one), each item `{name, field?, angle?, operator, threshold}`. Each entry's value holds until its next sample, so entries logged only on change (DriverStation state, AdvantageKit outputs) combine correctly; the combined condition is evaluated at every sample of every entry, and time before all entries have a value is not searched. Example — disabled and stationary:
   ```json
   {"all": [
     {"name": "/DriverStation/Enabled", "operator": "eq", "threshold": 0},
@@ -933,7 +934,8 @@ Analyze battery and current distribution data. Reports battery voltage statistic
 **Parameters:**
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
-- `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (default: `enabled` when the log records enabled state, else `all`)
+- `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` ([Scopes and windows](#scopes-and-windows)); default `enabled` when the log records enabled state, else `all`
+- `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 - `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
@@ -1065,8 +1067,10 @@ Compare one numeric signal across two log files, over the same phase of each.
 - `compare_path` (required): Path to the second log file (must differ from `path`)
 - `name` (required): Entry name to compare, optionally with a [field path](#field-paths) (`/PowerDistribution/ChannelCurrent[3]`; `[*]` pools elements)
 - `field` (optional): The field path, instead of appending it to `name`
+- `angle` (optional): `radians` or `degrees` for an angle logged as a plain number ([Field paths](#field-paths))
 - `scope` (optional): `enabled`, `teleop`, `segment:<i>`, ... — resolved in **each log's own timeline**, so the same phase is compared
 - `start_time`, `end_time` (optional): On each log's own clock
+- `windows` (optional): Explicit `{start, end}` windows ([Scopes and windows](#scopes-and-windows)), on each log's own clock
 
 **Returns:**
 - `entry`, `logs_compared`
@@ -1148,7 +1152,7 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 - `applied_volts_entry` (string): Entry for applied voltage, used to recover torque sign when current is always non-negative (TalonFX/SparkMax)
 - `start_time` / `end_time` (number): Analysis time window
 - `alpha_threshold` (number, default 1.0): Min |α| (rad/s²) to include in OLS
-- `smooth_window` (integer, default 2): Moving-average half-width for velocity smoothing
+- `smooth_window` (integer, default 2): Moving-average half-width for velocity smoothing; must be non-negative (0 disables smoothing)
 
 **Returns:**
 - `J_kg_m2`: Estimated moment of inertia

@@ -310,6 +310,20 @@ class RevLogToolsTest extends ToolTestBase {
   class GetRevLogDataTests {
 
     @Test
+    @DisplayName("rejects a non-positive limit")
+    void rejectsNonPositiveLimit() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), createGoodSyncResult());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
+      args.addProperty("limit", 0);
+      var result = findTool("get_revlog_data").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("limit must be positive"),
+          result.get("error").getAsString());
+    }
+
+    @Test
     @DisplayName("returns signal data with timestamps")
     void returnsSignalData() throws Exception {
       var wpilog = createMockWpilog();

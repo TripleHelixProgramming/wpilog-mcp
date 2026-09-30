@@ -1156,4 +1156,39 @@ class QueryToolsLogicTest extends ToolTestBase {
       assertEquals("/Z/Last", entries.get(2).getAsString());
     }
   }
+
+  @Nested
+  @DisplayName("Argument validation and schema (review 4.3)")
+  class ValidationAndSchema {
+
+    @Test
+    @DisplayName("find_condition declares angle at the top level and per condition item")
+    void findConditionDeclaresAngle() {
+      var properties = findTool("find_condition").inputSchema().getAsJsonObject("properties");
+      assertTrue(properties.has("angle"), properties.keySet().toString());
+      var item = properties.getAsJsonObject("conditions").getAsJsonObject("properties")
+          .getAsJsonObject("all").getAsJsonObject("items").getAsJsonObject("properties");
+      assertTrue(item.has("angle"), item.keySet().toString());
+    }
+
+    @Test
+    @DisplayName("search_strings rejects start_time after end_time")
+    void searchStringsInvertedRange() throws Exception {
+      var console = new java.util.ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+      console.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(1.0, "CAN error dev 1"));
+      var log = new MockLogBuilder()
+          .setPath("/test/search_range.wpilog")
+          .addEntry("/RealOutputs/Console", "string", console)
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("start_time", 5.0);
+      args.addProperty("end_time", 1.0);
+      var result = findTool("search_strings").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("start_time must not be after end_time"),
+          result.get("error").getAsString());
+    }
+  }
 }

@@ -860,6 +860,38 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
   @DisplayName("analyze_cycles Tool")
   class AnalyzeCyclesToolTests {
     @Test
+    @DisplayName("rejects a non-positive limit and an inverted time range")
+    void rejectsBadLimitAndRange() throws Exception {
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "Idle"));
+      stateValues.add(new TimestampedValue(1.0, "Intake"));
+      stateValues.add(new TimestampedValue(3.0, "Idle"));
+      var log = new MockLogBuilder()
+          .setPath("/test/cycles_validation.wpilog")
+          .addEntry("/Superstructure/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/Superstructure/State");
+      args.addProperty("cycle_start_state", "Intake");
+      args.addProperty("limit", 0);
+      var limit = tool.execute(args).getAsJsonObject();
+      assertEquals("error", limit.get("status").getAsString());
+      assertTrue(limit.get("error").getAsString().contains("limit must be positive"),
+          limit.get("error").getAsString());
+
+      args.addProperty("limit", 10);
+      args.addProperty("start_time", 5.0);
+      args.addProperty("end_time", 2.0);
+      var range = tool.execute(args).getAsJsonObject();
+      assertEquals("error", range.get("status").getAsString());
+      assertTrue(range.get("error").getAsString().contains("start_time must not be after end_time"),
+          range.get("error").getAsString());
+    }
+
+    @Test
     @DisplayName("calculates cycle times and dead time")
     void calculatesCycleTimesAndDeadTime() throws Exception {
       // Simulate state machine: Idle -> Intake -> Shoot -> Idle -> Intake -> Shoot

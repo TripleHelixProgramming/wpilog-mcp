@@ -110,6 +110,8 @@ public final class ExportTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var name = getRequiredString(arguments, "name");
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");

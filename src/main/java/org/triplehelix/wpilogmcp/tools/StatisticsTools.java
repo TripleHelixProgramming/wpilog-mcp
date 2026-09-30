@@ -627,6 +627,7 @@ public final class StatisticsTools {
       var peakType = getOptString(arguments, "type", "both");
       var minHeightDiff = getOptDouble(arguments, "min_height_diff");
       int limit = getOptInt(arguments, "limit", 20);
+      validatePositive(limit, "limit");
       var scope = TimeScope.fromArguments(log, null, arguments);
 
       var windows = finiteWindows(signal, scope, true);
@@ -720,6 +721,7 @@ public final class StatisticsTools {
       int window = getOptInt(arguments, "window_size", 1);
       int limit = getOptInt(arguments, "limit", 100);
       validatePositive(window, "window_size");
+      validatePositive(limit, "limit");
 
       var windows = finiteWindows(signal, scope, true);
       if (windows.stream().noneMatch(w -> w.size() >= 2)) {

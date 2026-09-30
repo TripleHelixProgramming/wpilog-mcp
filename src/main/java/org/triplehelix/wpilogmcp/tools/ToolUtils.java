@@ -427,6 +427,21 @@ public final class ToolUtils {
   }
 
   /**
+   * Gets a required integer parameter from JSON arguments.
+   *
+   * @param args The JSON arguments object
+   * @param key The parameter key
+   * @return The int value
+   * @throws IllegalArgumentException if the parameter is missing or null
+   */
+  public static int getRequiredInt(com.google.gson.JsonObject args, String key) {
+    if (!args.has(key) || args.get(key).isJsonNull()) {
+      throw new IllegalArgumentException("Missing required parameter: " + key);
+    }
+    return args.get(key).getAsInt();
+  }
+
+  /**
    * Validates that a numeric parameter is within a specified range.
    *
    * @param value The value to validate
@@ -472,6 +487,22 @@ public final class ToolUtils {
       throw new IllegalArgumentException(paramName + " must be non-negative, got " + value);
     }
     return value;
+  }
+
+  /**
+   * Validates a {@code start_time}/{@code end_time} pair: when both are given, the start must not
+   * be after the end (an inverted range would otherwise select nothing and succeed silently).
+   * Either bound may be null (open).
+   *
+   * @param start The start_time argument, or null
+   * @param end The end_time argument, or null
+   * @throws IllegalArgumentException if both are given and start > end
+   */
+  public static void validateTimeRange(Double start, Double end) {
+    if (start != null && end != null && start > end) {
+      throw new IllegalArgumentException("start_time must not be after end_time, got start_time="
+          + start + " and end_time=" + end);
+    }
   }
 
   // ==================== DATA QUALITY HELPERS ====================

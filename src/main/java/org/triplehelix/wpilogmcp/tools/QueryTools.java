@@ -190,7 +190,7 @@ public final class QueryTools {
       var conditionItem = new JsonObject();
       conditionItem.addProperty("type", "object");
       var itemProperties = new JsonObject();
-      for (var key : List.of("name", "field", "operator")) {
+      for (var key : List.of("name", "field", "angle", "operator")) {
         var p = new JsonObject();
         p.addProperty("type", "string");
         itemProperties.add(key, p);
@@ -203,7 +203,7 @@ public final class QueryTools {
       conditions.addProperty("type", "object");
       conditions.addProperty("description", "Compound condition instead of name/operator/"
           + "threshold: {\"all\": [...]} (every condition true) or {\"any\": [...]} (at least "
-          + "one), each item {name, field?, operator, threshold}");
+          + "one), each item {name, field?, angle?, operator, threshold}");
       var conditionsProperties = new JsonObject();
       for (var key : List.of("all", "any")) {
         var list = new JsonObject();
@@ -217,6 +217,9 @@ public final class QueryTools {
               + "a field path (e.g. /RealOutputs/Drive/Pose.translation.x); not with conditions",
               false)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("angle", "string", "Declare the values an angle in 'radians' or 'degrees', "
+              + "as in the statistics tools; thresholds still apply to the value as logged (not "
+              + "unwrapped)", false)
           .addProperty(
               "operator",
               "string",
@@ -638,6 +641,8 @@ public final class QueryTools {
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var pattern = getOptString(arguments, "pattern", null);
       boolean regex = getOptBoolean(arguments, "regex");
       var level = getOptString(arguments, "level", "any").toLowerCase();
@@ -681,7 +686,7 @@ public final class QueryTools {
           if (!event.overlaps(startTime, endTime)) continue;
           var value = event.text();
           var classified = classifyText(value);
-          var sampleLevel = TextEvents.level(event);
+          var sampleLevel = TextEvents.level(event, classified);
           if (!level.equals("any") && !level.equals(sampleLevel)) continue;
           String line;
           if (compiled != null) {

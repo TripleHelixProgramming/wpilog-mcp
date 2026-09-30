@@ -116,6 +116,37 @@ class TbaToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a missing year or match_number is an argument error, not an internal error")
+    void missingIntegerParametersAreNamed() throws Exception {
+      // The arguments are read after the availability check, so give the client a key when the
+      // environment has none; the argument error fires before any request is made.
+      var client = org.triplehelix.wpilogmcp.tba.TbaClient.getInstance();
+      boolean wasAvailable = client.isAvailable();
+      if (!wasAvailable) client.configure("validation-test-key");
+      try {
+        var tool = findTool("get_tba_match_data");
+        var args = new JsonObject();
+        args.addProperty("event_code", "caph");
+        args.addProperty("match_type", "Qualification");
+        args.addProperty("match_number", 1);
+        var noYear = tool.execute(args).getAsJsonObject();
+        assertEquals("error", noYear.get("status").getAsString());
+        assertTrue(noYear.get("error").getAsString().contains("Missing required parameter: year"),
+            noYear.get("error").getAsString());
+
+        args.addProperty("year", 2026);
+        args.remove("match_number");
+        var noNumber = tool.execute(args).getAsJsonObject();
+        assertEquals("error", noNumber.get("status").getAsString());
+        assertTrue(noNumber.get("error").getAsString()
+            .contains("Missing required parameter: match_number"),
+            noNumber.get("error").getAsString());
+      } finally {
+        if (!wasAvailable) client.configure(null);
+      }
+    }
+
+    @Test
     @DisplayName("schema includes team_number as optional")
     void hasOptionalTeamNumber() {
       var tool = findTool("get_tba_match_data");

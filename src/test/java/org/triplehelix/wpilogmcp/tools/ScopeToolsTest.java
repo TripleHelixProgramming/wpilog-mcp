@@ -255,6 +255,17 @@ class ScopeToolsTest extends FixtureToolTestBase {
     }
 
     @Test
+    @DisplayName("start_time after end_time is an error, not an empty success")
+    void invertedRange() {
+      var error = call("get_statistics", "akit_match", "name", "/SystemStats/BatteryVoltage",
+          "start_time", 60, "end_time", 50).get("error").getAsString();
+      assertTrue(error.contains("start_time must not be after end_time"), error);
+      var scoped = call("get_statistics", "akit_match", "name", "/SystemStats/BatteryVoltage",
+          "scope", "enabled", "start_time", 60, "end_time", 50).get("error").getAsString();
+      assertTrue(scoped.contains("start_time must not be after end_time"), scoped);
+    }
+
+    @Test
     @DisplayName("no samples in scope: the error names the scope")
     void emptyScope() {
       var error = call("get_statistics", "akit_match", "name", "/SystemStats/BatteryVoltage",

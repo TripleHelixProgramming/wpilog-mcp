@@ -84,14 +84,6 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       throw new IOException("Invalid WPILOG file: " + path);
     }
 
-    // DataLogReader uses a memory-mapped ByteBuffer (int-indexed), so files > 2GB
-    // would overflow. Check proactively to give a clear error.
-    long fileSize = java.nio.file.Files.size(java.nio.file.Path.of(path));
-    if (fileSize > Integer.MAX_VALUE) {
-      throw new IOException("WPILOG file exceeds 2 GB limit for memory-mapped access: " + path
-          + " (" + (fileSize / (1024 * 1024)) + " MB)");
-    }
-
     this.path = path;
     this.reader = reader;
 
