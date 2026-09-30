@@ -175,10 +175,19 @@ public final class DiscoveryTools {
         true, List.of("find_peaks", "get_statistics")));
 
     tools.add(new ToolInfo("time_correlate", "statistics",
-        "Compute correlation between two entries",
-        List.of("correlation", "correlate", "relationship", "lag"),
+        "Compute correlation between two entries, optionally searching for a time lag",
+        List.of("correlation", "correlate", "relationship", "lag", "delay", "shift"),
         List.of("Check if signals are correlated", "Find time lag between signals", "Measure relationship strength"),
-        true, List.of("compare_entries")));
+        true, List.of("compare_entries", "align_entries")));
+
+    tools.add(new ToolInfo("align_entries", "statistics",
+        "Sample several signals at common times; statistics of their difference",
+        List.of("align", "sample", "interpolate", "resample", "difference", "side by side",
+            "timestamp", "residual"),
+        List.of("Read two signals side by side at the same times",
+            "Sample the robot pose at each vision observation's own timestamp",
+            "Measure the mean and spread of the difference between two signals"),
+        true, List.of("compare_entries", "time_correlate")));
 
     // === ROBOT ANALYSIS TOOLS ===
     tools.add(new ToolInfo("get_match_phases", "robot_analysis",

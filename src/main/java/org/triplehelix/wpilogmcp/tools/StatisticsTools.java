@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
@@ -45,6 +46,7 @@ public final class StatisticsTools {
     registry.registerTool(new FindPeaksTool());
     registry.registerTool(new RateOfChangeTool());
     registry.registerTool(new TimeCorrelateTool());
+    registry.registerTool(new AlignEntriesTool());
   }
 
   /** Delegate to shared percentile implementation in ToolUtils. */
@@ -200,6 +202,9 @@ public final class StatisticsTools {
           .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
+          .addNumberProperty("max_lag_sec", LAG_SCHEMA_MAX, false, null)
+          .addNumberProperty("lag_step_sec", "Lag search step (default: the first signal's "
+              + "median sample interval)", false, null)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
@@ -246,6 +251,47 @@ public final class StatisticsTools {
             + scopeText(scope));
       }
       double rmse = Math.sqrt(sumSq / compared);
+      JsonObject lagSearch = null;
+      if (arguments.has("max_lag_sec") && !arguments.get("max_lag_sec").isJsonNull()) {
+        var reference1 = scope.filter(v1.stream().filter(StatisticsTools::isFinite).toList());
+        var lags = lagGrid(arguments, reference1);
+        double bestRmse = Double.POSITIVE_INFINITY;
+        double bestLag = Double.NaN;
+        int bestN = 0;
+        Double zeroRmse = null;
+        for (double lag : lags) {
+          double ss = 0;
+          int n = 0;
+          for (var tv : reference1) {
+            var y = getValueAtTimeLinear(v2, tv.timestamp() + lag);
+            if (y == null || !Double.isFinite(y)) continue;
+            double x = ((Number) tv.value()).doubleValue();
+            double d = angles ? NumericSignal.wrapToHalfTurn(x - y, s1.angle().period) : x - y;
+            ss += d * d;
+            n++;
+          }
+          if (n == 0) continue;
+          double r = Math.sqrt(ss / n);
+          if (Math.abs(lag) < 1e-12) zeroRmse = r;
+          if (r < bestRmse) {
+            bestRmse = r;
+            bestLag = lag;
+            bestN = n;
+          }
+        }
+        lagSearch = new JsonObject();
+        lagSearch.addProperty("lags_evaluated", lags.length);
+        lagSearch.addProperty("lag_step_sec", lags.length > 1 ? lags[1] - lags[0] : 0);
+        if (!Double.isNaN(bestLag)) {
+          lagSearch.addProperty("best_lag_sec", bestLag);
+          lagSearch.addProperty("rmse_at_best_lag", bestRmse);
+          lagSearch.addProperty("samples_at_best_lag", bestN);
+          if (zeroRmse != null) lagSearch.addProperty("rmse_at_zero_lag", zeroRmse);
+        }
+        lagSearch.addProperty("note", "The first signal's samples are the reference here "
+            + "(unlike the zero-lag rmse, which uses the denser signal); positive lag: the "
+            + "second signal follows the first.");
+      }
 
       DataQuality q1 = DataQuality.fromSegments(scope.split(v1));
       DataQuality q2 = DataQuality.fromSegments(scope.split(v2));
@@ -260,6 +306,7 @@ public final class StatisticsTools {
           .addProperty("max_difference", maxDiff)
           .addProperty("samples_compared", compared)
           .addProperty("reference_entry", reference == v1 ? n1 : n2);
+      if (lagSearch != null) builder.addData("lag_search", lagSearch);
       if (angles) {
         builder.addProperty("angle_unit", s1.angle().wire())
             .addProperty("difference", "shortest angular difference");
@@ -323,6 +370,47 @@ public final class StatisticsTools {
     lists.forEach(out::addAll);
     return out;
   }
+
+  /** Lags evaluated by a lag search, at most. */
+  static final int MAX_LAGS = 401;
+
+  /**
+   * The lags a search evaluates: -max..+max in steps of {@code lag_step_sec}, or of the reference
+   * signal's median sample interval; widened so at most {@value #MAX_LAGS} are evaluated.
+   */
+  static double[] lagGrid(JsonObject arguments,
+      List<org.triplehelix.wpilogmcp.log.TimestampedValue> reference) {
+    double maxLag = getOptDouble(arguments, "max_lag_sec");
+    if (!(maxLag > 0) || !Double.isFinite(maxLag)) {
+      throw new IllegalArgumentException("max_lag_sec must be a positive number of seconds");
+    }
+    var stepArg = getOptDouble(arguments, "lag_step_sec");
+    double step;
+    if (stepArg != null) {
+      if (!(stepArg > 0)) throw new IllegalArgumentException("lag_step_sec must be positive");
+      step = stepArg;
+    } else {
+      var dts = new ArrayList<Double>();
+      for (int i = 1; i < reference.size(); i++) {
+        double dt = reference.get(i).timestamp() - reference.get(i - 1).timestamp();
+        if (dt > 0) dts.add(dt);
+      }
+      java.util.Collections.sort(dts);
+      step = dts.isEmpty() ? 0.02 : dts.get(dts.size() / 2);
+    }
+    int count = (int) Math.floor(maxLag / step + 1e-9);
+    if (2 * count + 1 > MAX_LAGS) {
+      count = (MAX_LAGS - 1) / 2;
+      step = maxLag / count;
+    }
+    var lags = new double[2 * count + 1];
+    for (int k = -count; k <= count; k++) lags[k + count] = k * step;
+    return lags;
+  }
+
+  static final String LAG_SCHEMA_MAX = "Also search for the time shift that best aligns the two "
+      + "signals, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal "
+      + "follows the first)";
 
   /** " in scope enabled (4 windows, 1052.3 s)" or " between 10 and 20 s", for messages. */
   static String scopeText(TimeScope scope) {
@@ -720,6 +808,9 @@ public final class StatisticsTools {
           .addProperty("name2", "string", "Second entry (optionally with a field path)", true)
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
+          .addNumberProperty("max_lag_sec", LAG_SCHEMA_MAX, false, null)
+          .addNumberProperty("lag_step_sec", "Lag search step (default: the first signal's "
+              + "median sample interval)", false, null)
           .addNumberProperty("start_time", "Start time", false, null)
           .addNumberProperty("end_time", "End time", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
@@ -805,6 +896,9 @@ public final class StatisticsTools {
       builder.addProperty("sample_count", sampleCount)
           .addInputSignal("entry1", s1)
           .addInputSignal("entry2", s2);
+      if (arguments.has("max_lag_sec") && !arguments.get("max_lag_sec").isJsonNull()) {
+        builder.addData("lag_search", correlationLagSearch(arguments, d1, d2Full));
+      }
 
       // Handle edge case: zero variance means correlation is undefined (NaN).
       // Use a relative threshold (variance = denX / n < 1e-15) to avoid
@@ -840,6 +934,313 @@ public final class StatisticsTools {
       return builder.addInputScope(scope).addDataQuality(quality).addDirectives(directives)
           .build();
     }
+  }
+
+  /**
+   * Samples a numeric signal at arbitrary times: the value in force ({@code previous}), the
+   * nearest sample, or linear interpolation between the samples around the time (no
+   * extrapolation; an angle along the shortest arc, continuing from the earlier sample).
+   */
+  static final class Sampler {
+    private final List<org.triplehelix.wpilogmcp.log.TimestampedValue> raw;
+    private final List<org.triplehelix.wpilogmcp.log.TimestampedValue> unwrapped;
+    private final double[] times;
+
+    Sampler(NumericSignal signal) {
+      raw = signal.values().stream().filter(StatisticsTools::isFinite).toList();
+      unwrapped = signal.unwrap(raw);
+      times = raw.stream().mapToDouble(org.triplehelix.wpilogmcp.log.TimestampedValue::timestamp)
+          .toArray();
+    }
+
+    /** The value at {@code t}, or null when there is none (before the first sample, etc.). */
+    Double at(double t, String mode) {
+      int i = lastAtOrBefore(t);
+      switch (mode) {
+        case "previous":
+          return i < 0 ? null : value(raw, i);
+        case "nearest": {
+          boolean hasNext = i + 1 < times.length;
+          if (i < 0) return hasNext ? value(raw, 0) : null;
+          if (!hasNext || t - times[i] <= times[i + 1] - t) return value(raw, i);
+          return value(raw, i + 1);
+        }
+        default: {
+          if (i < 0) return null;
+          if (times[i] == t) return value(raw, i);
+          if (i + 1 >= times.length) return null; // no extrapolation
+          double u0 = value(unwrapped, i);
+          double u1 = value(unwrapped, i + 1);
+          double f = (t - times[i]) / (times[i + 1] - times[i]);
+          return value(raw, i) + (u1 - u0) * f;
+        }
+      }
+    }
+
+    private static double value(List<org.triplehelix.wpilogmcp.log.TimestampedValue> list,
+        int i) {
+      return ((Number) list.get(i).value()).doubleValue();
+    }
+
+    private int lastAtOrBefore(double t) {
+      int lo = 0;
+      int hi = times.length;
+      while (lo < hi) {
+        int mid = (lo + hi) >>> 1;
+        if (times[mid] <= t) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo - 1;
+    }
+  }
+
+  /** Descriptive statistics of a difference series, for results. */
+  static JsonObject differenceStatistics(double[] d) {
+    var o = new JsonObject();
+    o.addProperty("count", d.length);
+    if (d.length == 0) return o;
+    var sorted = d.clone();
+    java.util.Arrays.sort(sorted);
+    double mean = java.util.Arrays.stream(d).average().orElse(0);
+    double ss = java.util.Arrays.stream(d).map(v -> (v - mean) * (v - mean)).sum();
+    o.addProperty("mean", mean);
+    o.addProperty("std_dev", d.length > 1 ? Math.sqrt(ss / (d.length - 1)) : 0.0);
+    o.addProperty("min", sorted[0]);
+    o.addProperty("max", sorted[sorted.length - 1]);
+    o.addProperty("median", percentile(sorted, 0.5));
+    o.addProperty("p5", percentile(sorted, 0.05));
+    o.addProperty("p95", percentile(sorted, 0.95));
+    o.addProperty("mean_abs", java.util.Arrays.stream(d).map(Math::abs).average().orElse(0));
+    o.addProperty("rmse", Math.sqrt(java.util.Arrays.stream(d).map(v -> v * v).average()
+        .orElse(0)));
+    return o;
+  }
+
+  static class AlignEntriesTool extends LogRequiringTool {
+    static final int DEFAULT_LIMIT = 100;
+    static final int MAX_LIMIT = 2000;
+    static final int MAX_SIGNALS = 8;
+
+    @Override
+    public String name() { return "align_entries"; }
+
+    @Override
+    public String description() {
+      return "Sample several numeric signals at common times, to read them side by side or to "
+          + "measure one against another. Times: every record of at (default: the first "
+          + "signal's own samples), or the timestamps stored inside it (time_field, e.g. "
+          + "[*].timestamp of a PoseObservation[] entry: sample the robot pose when the camera "
+          + "saw the target, not when the result arrived), within start_time/end_time, scope, "
+          + "and windows. interpolation: previous (the value in force; default, right for "
+          + "values logged when they change), linear (no extrapolation), or nearest; angles "
+          + "interpolate along the shortest arc. Rows [timestamp_sec, v1, v2, ...] are paged "
+          + "(offset/limit; limits.rows gives the total); a value is null where a signal had "
+          + "none, and unaligned counts those per signal. With difference=true and two "
+          + "signals, difference_statistics summarizes signal 1 minus signal 2 (two angles: "
+          + "their shortest difference): count, mean, std_dev, min, max, median, p5, p95, "
+          + "mean_abs, rmse." + NumericSignal.PATH_HELP + GUIDANCE_UNIVERSAL;
+    }
+
+    @Override
+    protected JsonObject toolSchema() {
+      var nameItem = new JsonObject();
+      nameItem.addProperty("type", "string");
+      return new SchemaBuilder()
+          .addArrayProperty("names", "The signals to sample: entry names, optionally with field "
+              + "paths (1-8)", nameItem, true)
+          .addProperty("at", "string", "Entry whose record times (or time_field values) are the "
+              + "sample times; default: the first signal", false)
+          .addProperty("time_field", "string", "Path inside at whose values are timestamps in "
+              + "seconds (e.g. '[*].timestamp')", false)
+          .addProperty("interpolation", "string", "'previous' (default), 'linear', or 'nearest'",
+              false)
+          .addProperty("difference", "boolean", "With two signals: statistics of signal 1 minus "
+              + "signal 2", false)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
+          .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(),
+              false)
+          .addIntegerProperty("offset", "Rows to skip", false, 0)
+          .addIntegerProperty("limit", "Maximum rows to return (max 2000)", false, DEFAULT_LIMIT)
+          .build();
+    }
+
+    @Override
+    protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log,
+        JsonObject arguments) throws Exception {
+      if (!arguments.has("names") || !arguments.get("names").isJsonArray()) {
+        throw new IllegalArgumentException("names must be an array of 1-" + MAX_SIGNALS
+            + " signal names");
+      }
+      var names = arguments.getAsJsonArray("names");
+      if (names.isEmpty() || names.size() > MAX_SIGNALS) {
+        throw new IllegalArgumentException("names must hold 1-" + MAX_SIGNALS + " signals, got "
+            + names.size());
+      }
+      var interpolation = getOptString(arguments, "interpolation", "previous")
+          .toLowerCase(java.util.Locale.ROOT);
+      if (!List.of("previous", "linear", "nearest").contains(interpolation)) {
+        throw new IllegalArgumentException("interpolation must be 'previous', 'linear', or "
+            + "'nearest'");
+      }
+      int offset = Math.max(0, getOptInt(arguments, "offset", 0));
+      int limit = Math.min(MAX_LIMIT, Math.max(1, getOptInt(arguments, "limit", DEFAULT_LIMIT)));
+      boolean difference = getOptBoolean(arguments, "difference");
+      if (difference && names.size() != 2) {
+        throw new IllegalArgumentException("difference needs exactly two signals, got "
+            + names.size());
+      }
+
+      var signals = new ArrayList<NumericSignal>();
+      for (var n : names) {
+        signals.add(NumericSignal.resolve(log, n.getAsString(), null)
+            .requireSingleValued(name()));
+      }
+      var scope = TimeScope.fromArguments(log, null, arguments);
+
+      // The sample times
+      var at = getOptString(arguments, "at", null);
+      var timeField = getOptString(arguments, "time_field", null);
+      String timeSource;
+      var times = new java.util.TreeSet<Double>();
+      if (timeField != null) {
+        var atEntry = at != null ? at : signals.get(0).entry();
+        var timeSignal = NumericSignal.resolve(log, atEntry, timeField);
+        timeSignal.values().forEach(tv -> times.add(((Number) tv.value()).doubleValue()));
+        timeSource = "values of " + timeSignal.label();
+      } else if (at != null) {
+        if (!log.entries().containsKey(at)) throw new IllegalArgumentException("Entry not found: "
+            + at);
+        var values = log.values().get(at);
+        if (values != null) values.forEach(tv -> times.add(tv.timestamp()));
+        timeSource = "records of " + at;
+      } else {
+        signals.get(0).values().forEach(tv -> times.add(tv.timestamp()));
+        timeSource = "samples of " + signals.get(0).label();
+      }
+      var sampleTimes = times.stream().filter(t -> Double.isFinite(t) && scope.contains(t))
+          .toList();
+
+      var samplers = signals.stream().map(Sampler::new).toList();
+      var unaligned = new int[signals.size()];
+      var rows = new JsonArray();
+      var differences = new ArrayList<Double>();
+      var differenceTimes = new ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+      boolean angles = difference && signals.get(0).isAngle() && signals.get(1).isAngle();
+      int index = 0;
+      for (double t : sampleTimes) {
+        var row = new JsonArray();
+        row.add(t);
+        var sampled = new Double[signals.size()];
+        for (int k = 0; k < signals.size(); k++) {
+          sampled[k] = samplers.get(k).at(t, interpolation);
+          if (sampled[k] == null) {
+            unaligned[k]++;
+            row.add(com.google.gson.JsonNull.INSTANCE);
+          } else {
+            row.add(sampled[k]);
+          }
+        }
+        if (difference && sampled[0] != null && sampled[1] != null) {
+          double second = angles ? sampled[1] * signals.get(0).angle().period
+              / signals.get(1).angle().period : sampled[1];
+          double d = angles ? NumericSignal.wrapToHalfTurn(sampled[0] - second,
+              signals.get(0).angle().period) : sampled[0] - second;
+          differences.add(d);
+          differenceTimes.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(t, d));
+        }
+        if (index >= offset && rows.size() < limit) rows.add(row);
+        index++;
+      }
+
+      var columns = new JsonArray();
+      columns.add("timestamp_sec");
+      signals.forEach(sg -> columns.add(sg.label()));
+      var unalignedJson = new JsonObject();
+      for (int k = 0; k < signals.size(); k++) {
+        unalignedJson.addProperty(signals.get(k).label(), unaligned[k]);
+      }
+      var builder = success()
+          .addProperty("interpolation", interpolation)
+          .addProperty("time_source", timeSource)
+          .addData("columns", columns)
+          .addProperty("total_rows", sampleTimes.size())
+          .addLimitedList("rows", rows, Math.max(0, sampleTimes.size() - offset), limit)
+          .addData("unaligned", unalignedJson);
+      for (int k = 0; k < signals.size(); k++) {
+        builder.addInputSignal("signal" + (k + 1), signals.get(k));
+      }
+      builder.addInputScope(scope);
+      if (difference) {
+        var stats = differenceStatistics(differences.stream().mapToDouble(Double::doubleValue)
+            .toArray());
+        if (angles) stats.addProperty("angle_unit", signals.get(0).angle().wire());
+        builder.addData("difference_statistics", stats);
+        var quality = DataQuality.fromValues(differenceTimes);
+        builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat());
+        if (differences.isEmpty()) {
+          builder.addWarning("No time had values for both signals; difference_statistics is "
+              + "empty.");
+        }
+      }
+      return builder.build();
+    }
+  }
+
+  /**
+   * Pearson correlation of the first signal at its times with the second at time + lag, for each
+   * lag of the grid: the lag with the highest correlation, and the correlation at zero lag.
+   */
+  static JsonObject correlationLagSearch(JsonObject arguments,
+      List<org.triplehelix.wpilogmcp.log.TimestampedValue> first,
+      List<org.triplehelix.wpilogmcp.log.TimestampedValue> secondFull) {
+    var lags = lagGrid(arguments, first);
+    double bestR = Double.NEGATIVE_INFINITY;
+    double bestLag = Double.NaN;
+    int bestN = 0;
+    Double zeroR = null;
+    for (double lag : lags) {
+      double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+      int n = 0;
+      for (var tv : first) {
+        var y = getValueAtTimeLinear(secondFull, tv.timestamp() + lag);
+        if (y == null) continue;
+        double xv = ((Number) tv.value()).doubleValue();
+        sx += xv; sy += y; sxx += xv * xv; syy += y * y; sxy += xv * y;
+        n++;
+      }
+      if (n < 3) continue;
+      double cov = sxy - sx * sy / n;
+      double vx = sxx - sx * sx / n;
+      double vy = syy - sy * sy / n;
+      if (vx <= 1e-15 * n || vy <= 1e-15 * n) continue;
+      double r = Math.max(-1, Math.min(1, cov / Math.sqrt(vx * vy)));
+      if (Math.abs(lag) < 1e-12) zeroR = r;
+      if (r > bestR) {
+        bestR = r;
+        bestLag = lag;
+        bestN = n;
+      }
+    }
+    var o = new JsonObject();
+    o.addProperty("lags_evaluated", lags.length);
+    o.addProperty("lag_step_sec", lags.length > 1 ? lags[1] - lags[0] : 0);
+    o.addProperty("max_lag_sec", lags[lags.length - 1]);
+    if (Double.isNaN(bestLag)) {
+      o.addProperty("note", "No lag had at least 3 overlapping samples with variance in both "
+          + "signals.");
+      return o;
+    }
+    o.addProperty("best_lag_sec", bestLag);
+    o.addProperty("correlation_at_best_lag", bestR);
+    o.addProperty("samples_at_best_lag", bestN);
+    if (zeroR != null) o.addProperty("correlation_at_zero_lag", zeroR);
+    o.addProperty("note", "Positive lag: the second signal follows the first (the second at "
+        + "t + lag pairs with the first at t). A best lag at the edge of the range may lie "
+        + "beyond it. Shared timing (both follow the match phase) also aligns signals.");
+    return o;
   }
 
   /**

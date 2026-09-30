@@ -328,12 +328,14 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
 - [ ] **Phase 3 — Roles, one resolver, scope.** Done: `scope` and `windows` on the seven numeric tools (per-window
   differences, peaks, unwrapping, and condition search; `DataQuality.fromSegments`). Remaining:
   `SignalResolver`/`resolve_signals`, `resolved` in results, `compare_matches` (E4), vision target streams.
-- [ ] **Phase 4 — Strings, intervals, alignment, quality.** Done: one text source (`TextEvents`: string lines,
+- [x] **Phase 4 — Strings, intervals, alignment, quality.** Done: one text source (`TextEvents`: string lines,
   `string[]` alerts as appear/clear episodes, json string values) behind `search_strings`, `get_ds_timeline` (with
   `ALERT_RAISED` events), `can_health`, and `generate_report` (F1); compound `all`/`any` conditions in
   `find_condition` with held values and `abs_`/`ne` operators, whose intervals feed `windows`; `DataQuality`
   recalibration (G1: sampling classification, time-weighted gaps, MAD jitter, `reasons`), with the guidance and
-  CLAUDE.md calibration text. Remaining: `align_entries`; lag search.
+  CLAUDE.md calibration text; `align_entries` (sample times from records or embedded timestamps, three
+  interpolations, angle-aware difference statistics) and lag search in `time_correlate`/`compare_entries`. The
+  optional §5.6 pose helpers remain deferred.
 - [ ] **Phase 5 — Consistency and docs.**
 
 Golden checks on the review log: all 16 pass (timeline, flag brownouts, logged threshold, loop timing

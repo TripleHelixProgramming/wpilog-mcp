@@ -131,6 +131,18 @@ final class ToolArguments {
         }
         return withLimitVariant(tool, variants);
       }
+      case "align_entries" -> {
+        var first = pick(log, Kind.NUMERIC, n -> true, 0);
+        var second = pick(log, Kind.NUMERIC, n -> true, 1);
+        var args = base.deepCopy();
+        var names = new com.google.gson.JsonArray();
+        names.add(first.orElse("/Missing/A"));
+        names.add(second.orElse(first.orElse("/Missing/B")));
+        args.add("names", names);
+        args.addProperty("difference", true);
+        variants.add(new Variant(first.isPresent() ? "numeric" : "missing", args));
+        return withLimitVariant(tool, variants);
+      }
       case "compare_entries", "time_correlate" -> {
         for (var kind : List.of(Kind.NUMERIC, Kind.STRUCT)) {
           var first = pick(log, kind, n -> true, 0);

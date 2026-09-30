@@ -29,6 +29,7 @@ Complete documentation for all tools available in wpilog-mcp.
   - [find_peaks](#find_peaks)
   - [rate_of_change](#rate_of_change)
   - [time_correlate](#time_correlate)
+  - [align_entries](#align_entries)
 - [Robot Analysis Tools](#robot-analysis-tools)
   - [get_match_phases](#get_match_phases)
   - [analyze_swerve](#analyze_swerve)
@@ -582,6 +583,7 @@ Compare two entries (useful for RealOutputs vs ReplayOutputs).
 - `name2` (required): Second entry name, optionally with a field path
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
 - `start_time`, `end_time`, `scope`, `windows` (optional): Only the reference signal's samples in this time are compared ([Scopes and windows](#scopes-and-windows))
+- `max_lag_sec`, `lag_step_sec` (optional): Also search for the time shift that minimizes RMSE, as in `time_correlate` (the first signal's samples are the reference); returns `lag_search` with `best_lag_sec`, `rmse_at_best_lag`, `samples_at_best_lag`, `rmse_at_zero_lag`
 
 **Returns:** RMSE (root mean square error), max difference, `samples_compared`, and `reference_entry` (the denser signal, whose timestamps are used; the other is linearly interpolated, never extrapolated), with data quality and analysis directives. Two angles are compared by their shortest angular difference in the first one's unit (`angle_unit`); an angle against a non-angle is compared as plain numbers, with a warning. A struct entry without a field (e.g. `struct:ChassisSpeeds`) is an error listing its numeric fields, and signals with no overlapping time span are an error naming both spans — never a success with `rmse: NaN`
 
@@ -709,6 +711,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `scope`, `windows` (optional): The first signal's samples in this time are paired with the second, interpolated ([Scopes and windows](#scopes-and-windows))
+- `max_lag_sec` (optional): Also search for the time shift that best aligns the signals, from −max to +max; `lag_step_sec` (optional) sets the step (default: the first signal's median sample interval; at most 401 lags are evaluated, widening the step if needed). Returns `lag_search`: `best_lag_sec` (positive: the second signal follows the first), `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, `lags_evaluated`, `lag_step_sec`. Shared timing (both signals following the match phase) also aligns signals
 
 **Returns:** Correlation coefficient, sample count, and p-value. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` is `null`, `p_value` is 1, and a warning names the constant entry.
 
@@ -730,6 +733,26 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - Arm position vs arm motor current: Variable (depends on mechanism)
 
 ---
+
+### `align_entries`
+Sample several numeric signals at common times: to read them side by side, or to measure one against another.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `names` (required): 1–8 signals, each an entry name optionally with a [field path](#field-paths) (no `[*]`)
+- `at` (optional): The entry whose record times are the sample times (default: the first signal's own samples)
+- `time_field` (optional): A path inside `at` (or the first signal's entry) whose values are timestamps in seconds — e.g. `[*].timestamp` of a `PoseObservation[]` entry, to sample the robot pose when the camera saw the target rather than when its result arrived
+- `interpolation` (optional): `previous` (default: the value in force, right for values logged when they change), `linear` (between the samples around the time; no extrapolation), or `nearest`. Angles interpolate along the shortest arc
+- `difference` (optional): With two signals, `difference_statistics` of signal 1 minus signal 2 — two angles by their shortest difference, in the first one's unit
+- `start_time`, `end_time`, `scope`, `windows` (optional): Which sample times to use ([Scopes and windows](#scopes-and-windows))
+- `offset`, `limit` (optional): Row paging (default limit 100, max 2000)
+
+**Returns:** `columns` (`timestamp_sec` and each signal's name), `rows` (`[t, v1, v2, ...]`, a value `null` where a signal had none), `total_rows` and `limits.rows`, `unaligned` (per signal, the times it had no value), `time_source`, `interpolation`, `inputs` (signals and scope); with `difference`, `difference_statistics` (`count`, `mean`, `std_dev`, `min`, `max`, `median`, `p5`, `p95`, `mean_abs`, `rmse`, and `angle_unit` for angles) with `data_quality` of the difference series.
+
+**Example** — how far the pose heading and the gyro differ while enabled:
+```json
+{"names": ["/RealOutputs/Drive/Pose.rotation.value", "/Drive/Gyro/YawPosition.value"], "difference": true, "scope": "enabled"}
+```
 
 ## Robot Analysis Tools
 
