@@ -695,7 +695,8 @@ public class LogManager {
     String wpilogPath = wpilog.path();
 
     // Put a placeholder immediately so tools see "sync pending" rather than null
-    syncCache.put(wpilogPath, new SynchronizedLogs(wpilog));
+    var placeholder = new SynchronizedLogs(wpilog);
+    syncCache.put(wpilogPath, placeholder);
 
     List<RevLogFileInfo> matchingRevLogs = findMatchingRevLogs(wpilog);
 
@@ -715,7 +716,7 @@ public class LogManager {
     } catch (IOException e) {
       logger.debug("Cannot fingerprint wpilog for sync cache: {}", e.getMessage());
       // Fall through with null — will skip cache lookup/save
-      startSyncWithoutCache(wpilog, matchingRevLogs, wpilogPath);
+      startSyncWithoutCache(wpilog, matchingRevLogs, wpilogPath, placeholder);
       return;
     }
 
@@ -754,10 +755,7 @@ public class LogManager {
         }
       }
 
-      // Atomically replace the placeholder with the final result
-      syncCache.put(wpilogPath, builder.build());
-      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
-
+      completeSync(wpilogPath, placeholder, builder.build());
     }, syncExecutor);
 
     syncInProgress.put(wpilogPath, future);
@@ -768,7 +766,7 @@ public class LogManager {
    * Fallback sync path when wpilog fingerprint cannot be computed (skips disk cache).
    */
   private void startSyncWithoutCache(LogData wpilog, List<RevLogFileInfo> matchingRevLogs,
-      String wpilogPath) {
+      String wpilogPath, SynchronizedLogs placeholder) {
     var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
       SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
       for (RevLogFileInfo revlogInfo : matchingRevLogs) {
@@ -784,11 +782,43 @@ public class LogManager {
           logger.warn("Failed to sync revlog {}: {}", revlogInfo.path(), e.getMessage());
         }
       }
-      syncCache.put(wpilogPath, builder.build());
-      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
+      completeSync(wpilogPath, placeholder, builder.build());
     }, syncExecutor);
     syncInProgress.put(wpilogPath, future);
     future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
+  }
+
+  /**
+   * Replaces this sync's placeholder with its result, atomically and only if the placeholder is
+   * still there: a log unloaded, evicted, or reloaded while its sync ran is not brought back (the
+   * result holds the parsed REV logs and the wpilog itself, which would never be released).
+   */
+  private void completeSync(String wpilogPath, SynchronizedLogs placeholder,
+      SynchronizedLogs result) {
+    if (syncCache.replace(wpilogPath, placeholder, result)) {
+      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
+    } else {
+      logger.debug("RevLog sync result for {} discarded: the log was unloaded or reloaded "
+          + "while it ran", Path.of(wpilogPath).getFileName());
+    }
+  }
+
+  /**
+   * Waits until every sync submitted so far has finished running (the executor runs one at a
+   * time, in order), including syncs whose log was unloaded. For tests.
+   *
+   * @return false if the wait timed out
+   */
+  boolean awaitSyncExecutorIdle(long timeoutMs) throws InterruptedException {
+    var marker = syncExecutor.submit(() -> { });
+    try {
+      marker.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+      return true;
+    } catch (java.util.concurrent.TimeoutException e) {
+      return false;
+    } catch (java.util.concurrent.ExecutionException e) {
+      return true;
+    }
   }
 
   /** Tolerance for timestamp-based revlog matching (minutes). */
