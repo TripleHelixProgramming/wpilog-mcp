@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.log;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import edu.wpi.first.util.datalog.DataLogReader;
+import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -113,10 +114,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     // Compact offset lists to int[] arrays
     this.recordOffsets = new HashMap<>();
     for (var entry : offsetLists.entrySet()) {
-      var list = entry.getValue();
-      int[] arr = new int[list.size()];
-      for (int i = 0; i < list.size(); i++) arr[i] = list.get(i);
-      recordOffsets.put(entry.getKey(), arr);
+      recordOffsets.put(entry.getKey(), entry.getValue().toArray());
     }
 
     // Spot-check: validate a few random offsets to ensure entry IDs match.
@@ -251,8 +249,9 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     String firstFailure = null;
 
     for (int offset : offsets) {
+      DataLogRecord record = null;
       try {
-        var record = DataLogAccess.getRecord(reader, offset);
+        record = DataLogAccess.getRecord(reader, offset);
         double timestamp = record.getTimestamp() / 1_000_000.0;
         var value = EntryDecoder.decodeValue(record, type, structSchemas);
         values.add(new TimestampedValue(timestamp, value));
@@ -261,7 +260,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
         if (firstFailure == null) firstFailure = e.getMessage();
       } catch (Exception e) {
         failed++;
-        if (firstFailure == null) firstFailure = "malformed record (" + e.getMessage() + ")";
+        if (firstFailure == null) firstFailure = EntryDecoder.malformedMessage(record, type, e);
         logger.trace("Malformed record at offset {} for {}: {}", offset, entryName, e.getMessage());
       }
     }

@@ -83,6 +83,15 @@ public record ParsedLog(
     return Optional.ofNullable(decodeProblems.get(entryName));
   }
 
+  /** Records of the entry, including any that could not be decoded (as the lazy log counts). */
+  @Override
+  public int sampleCount(String entryName) {
+    var vals = values.get(entryName);
+    if (vals == null) return 0;
+    var problem = decodeProblems.get(entryName);
+    return vals.size() + (problem == null ? 0 : problem.failedRecords());
+  }
+
   /**
    * Gets the number of entries in the log.
    *

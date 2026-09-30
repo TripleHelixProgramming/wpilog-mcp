@@ -60,4 +60,19 @@ public final class EntryDecoder {
   public static boolean isStruct(String type) {
     return type.startsWith("struct:") || type.startsWith("structarray:");
   }
+
+  /**
+   * Why a record could not be decoded as its declared type, for {@code DecodeProblem}: the
+   * record's size against the type, since WPILib's decode exceptions often carry no message.
+   *
+   * @param record The record, or null when it could not even be read
+   * @param type The entry's declared type
+   * @param e The exception
+   */
+  public static String malformedMessage(edu.wpi.first.util.datalog.DataLogRecord record,
+      String type, Exception e) {
+    var detail = e.getMessage() != null ? " (" + e.getMessage() + ")" : "";
+    if (record == null) return "record could not be read as " + type + detail;
+    return "record of " + record.getSize() + " bytes cannot be read as " + type + detail;
+  }
 }

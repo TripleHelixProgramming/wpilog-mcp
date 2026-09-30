@@ -64,10 +64,16 @@ public class LogParser {
     var scan = LogScan.of(reader, path);
     var entriesByName = new java.util.LinkedHashMap<>(scan.entries());
     var valuesByEntry = new java.util.LinkedHashMap<String, java.util.List<TimestampedValue>>();
+    // Records that could not be decoded are reported, never silently dropped (as the lazy log
+    // reports them), so both implementations agree on sample counts and problems
+    var problems = new LinkedHashMap<String, DecodeProblem>();
     for (var info : entriesByName.values()) {
       var values = new ArrayList<TimestampedValue>();
-      for (int pos : scan.offsets().get(info.name())) {
-        var record = DataLogAccess.getRecord(reader, pos);
+      var offsets = scan.offsets().get(info.name());
+      int failed = 0;
+      String firstFailure = null;
+      for (int k = 0; k < offsets.size(); k++) {
+        var record = DataLogAccess.getRecord(reader, offsets.get(k));
         double timestamp = record.getTimestamp() / 1_000_000.0;
         try {
           // Structs wait for the schemas: keep their bytes until the pass is done
@@ -75,9 +81,16 @@ public class LogParser {
               : EntryDecoder.decodeValue(record, info.type(), StructSchemas.fallbackOnly());
           values.add(new TimestampedValue(timestamp, value));
         } catch (Exception e) {
+          failed++;
+          if (firstFailure == null) {
+            firstFailure = EntryDecoder.malformedMessage(record, info.type(), e);
+          }
           logger.trace("Malformed record at timestamp {} for entry {}: {}", timestamp,
               info.name(), e.getMessage());
         }
+      }
+      if (failed > 0) {
+        problems.put(info.name(), new DecodeProblem(firstFailure, failed, offsets.size()));
       }
       valuesByEntry.put(info.name(), values);
     }
@@ -87,7 +100,6 @@ public class LogParser {
       var vals = valuesByEntry.get(name);
       return vals == null || vals.isEmpty() ? null : vals.get(0).value();
     });
-    var problems = new LinkedHashMap<String, DecodeProblem>();
     for (var info : entriesByName.values()) {
       if (!EntryDecoder.isStruct(info.type())) continue;
       var raw = valuesByEntry.get(info.name());
@@ -103,7 +115,13 @@ public class LogParser {
           if (firstFailure == null) firstFailure = e.getMessage();
         }
       }
-      if (failed > 0) problems.put(info.name(), new DecodeProblem(firstFailure, failed, raw.size()));
+      if (failed > 0) {
+        var earlier = problems.get(info.name());
+        int total = scan.offsets().get(info.name()).size();
+        problems.put(info.name(), earlier == null
+            ? new DecodeProblem(firstFailure, failed, total)
+            : new DecodeProblem(earlier.message(), earlier.failedRecords() + failed, total));
+      }
       valuesByEntry.put(info.name(), decoded);
     }
 

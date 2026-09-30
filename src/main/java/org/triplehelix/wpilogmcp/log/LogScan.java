@@ -31,12 +31,14 @@ import org.slf4j.LoggerFactory;
  * <ul>
  *   <li>A data record for an entry id that was never declared ends the scan: the rest of the file
  *       is damaged. So does a record that cannot be read at all (the file ends inside it).
- *   <li>The last few records before that point whose timestamps run backward more than
- *       {@value #MAX_BACKWARD_NEAR_DAMAGE_SEC} s past the log so far belong to the damage and are
- *       dropped. (Elsewhere a backward timestamp can be real: NetworkTables logging records a
- *       value with the time it last changed.)
- *   <li>A record whose timestamp jumps more than {@value #MAX_FORWARD_JUMP_SEC} s past the log so
- *       far is ignored wherever it is: a robot's clock cannot do that within one log.
+ *   <li>The last few records before that point whose timestamps run more than
+ *       {@value #MAX_BACKWARD_NEAR_DAMAGE_SEC} s backward or ahead of the log so far belong to
+ *       the damage and are dropped. (Elsewhere a backward timestamp can be real: NetworkTables
+ *       logging records a value with the time it last changed.)
+ *   <li>A record whose timestamp is negative, or jumps more than {@value #MAX_FORWARD_JUMP_SEC} s
+ *       past the log so far, is ignored wherever it is: a robot's clock cannot do that within one
+ *       log.
+ *   <li>A header whose extra-header length runs past the end of the file is damage too.
  * </ul>
  * The result says what was ignored, with byte offsets, in {@link #truncationMessage()}.
  *
@@ -49,7 +51,7 @@ import org.slf4j.LoggerFactory;
  * @param truncationMessage What was not read, and why, or null
  * @since 0.9.0
  */
-public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>> offsets,
+public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offsets,
     double minTimestamp, double maxTimestamp, int dataRecords, boolean truncated,
     String truncationMessage) {
 
@@ -58,7 +60,10 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
   /** A forward jump in time larger than this (a day) cannot happen within one log. */
   static final double MAX_FORWARD_JUMP_SEC = 86_400.0;
 
-  /** Near damage, a record whose time runs backward more than this is part of the damage. */
+  /**
+   * Near damage, a record whose time runs backward or ahead more than this is part of the
+   * damage.
+   */
   static final double MAX_BACKWARD_NEAR_DAMAGE_SEC = 60.0;
 
   /** How many records before the damage are examined. */
@@ -79,7 +84,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
     var entriesById = new HashMap<Integer, EntryInfo>();
     var ignoredIds = new HashSet<Integer>(); // declared, deliberately not indexed
     var entriesByName = new LinkedHashMap<String, EntryInfo>();
-    var offsets = new HashMap<String, List<Integer>>();
+    var offsets = new HashMap<String, IntList>();
     double minTs = Double.MAX_VALUE;
     double maxTs = Double.NEGATIVE_INFINITY;
     int dataRecords = 0;
@@ -92,6 +97,10 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
     // hasNext() skips a final record shorter than 16 bytes
     int pos = DataLogAccess.firstRecordOffset(path);
     int size = DataLogAccess.size(reader);
+    if (pos < 12 || pos > size) {
+      damage = "the header's extra-header length runs past the end of the file";
+      pos = size; // nothing to read
+    }
     try {
       while (pos < size) {
         int next = DataLogAccess.recordEnd(reader, pos);
@@ -110,7 +119,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
             if (existing == null) {
               entriesByName.put(start.name, info);
               entriesById.put(start.entry, info);
-              offsets.put(start.name, new ArrayList<>());
+              offsets.put(start.name, new IntList());
             } else if (existing.type().equals(start.type)) {
               // The same name started again (after a Finish, or by another writer): one entry,
               // keeping the first declaration and all records
@@ -133,7 +142,8 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
             }
           } else {
             double timestamp = record.getTimestamp() / 1_000_000.0;
-            if (dataRecords > 0 && timestamp > maxTs + MAX_FORWARD_JUMP_SEC) {
+            if (timestamp < 0 || (dataRecords > 0 && timestamp > maxTs + MAX_FORWARD_JUMP_SEC)) {
+              // FPGA time is never negative, and a clock cannot jump a day within one log
               jumps++;
               if (firstJump < 0) firstJump = pos;
             } else {
@@ -148,24 +158,28 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
         }
         pos = next;
       }
-    } catch (java.util.NoSuchElementException | java.nio.BufferUnderflowException
-             | IndexOutOfBoundsException | IllegalArgumentException e) {
-      // WPILib's reader throws these on a record cut off mid-write
+    } catch (RuntimeException e) {
+      // WPILib's reader throws NoSuchElement, BufferUnderflow, IndexOutOfBounds, and
+      // IllegalArgument exceptions on a record cut off mid-write, and NegativeArraySize on a
+      // Start record whose string length is garbage; any of them means the file stops being a
+      // log here
       damage = "the record at byte " + pos + " cannot be read ("
           + e.getClass().getSimpleName() + ")";
     }
 
     int rolledBack = 0;
     if (damage != null) {
+      // The last records before the damage are examined newest first; one whose time runs more
+      // than MAX_BACKWARD_NEAR_DAMAGE_SEC backward or ahead of the log before it is dropped, and
+      // the examination continues past it, so a garbage record does not shield an earlier one
       while (!recent.isEmpty()) {
         var last = recent.peekLast();
-        if (last.maxBefore() == Double.NEGATIVE_INFINITY
-            || last.timestamp() >= last.maxBefore() - MAX_BACKWARD_NEAR_DAMAGE_SEC) {
-          break;
-        }
+        boolean fits = last.maxBefore() == Double.NEGATIVE_INFINITY
+            || (last.timestamp() >= last.maxBefore() - MAX_BACKWARD_NEAR_DAMAGE_SEC
+                && last.timestamp() <= last.maxBefore() + MAX_BACKWARD_NEAR_DAMAGE_SEC);
+        if (fits) break;
         recent.removeLast();
-        var list = offsets.get(last.name());
-        list.remove(list.size() - 1);
+        offsets.get(last.name()).removeLast();
         minTs = last.minBefore();
         maxTs = last.maxBefore();
         dataRecords--;
@@ -181,13 +195,14 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, List<Integer>>
       if (damage != null) {
         parts.add("Log file is truncated or damaged: " + damage + "; the rest of the file was "
             + "not read" + (rolledBack > 0 ? ", and the " + rolledBack + " record"
-                + (rolledBack == 1 ? "" : "s") + " just before it, whose timestamps ran backward, "
-                + (rolledBack == 1 ? "was" : "were") + " dropped" : "") + ".");
+                + (rolledBack == 1 ? "" : "s") + " just before it, whose timestamps ran backward "
+                + "or jumped ahead, " + (rolledBack == 1 ? "was" : "were") + " dropped" : "")
+            + ".");
       }
       if (jumps > 0) {
-        parts.add(jumps + " record" + (jumps == 1 ? " whose timestamp jumps" : "s whose "
-            + "timestamps jump") + " more than a day past the rest of the log " + (jumps == 1
-                ? "was" : "were") + " ignored (the first at byte " + firstJump + ").");
+        parts.add(jumps + " record" + (jumps == 1 ? " whose timestamp is" : "s whose "
+            + "timestamps are") + " negative or more than a day past the rest of the log "
+            + (jumps == 1 ? "was" : "were") + " ignored (the first at byte " + firstJump + ").");
       }
       parts.add(String.format("Data from %.2f to %.2f s was recovered.", min, max));
       message = String.join(" ", parts);
