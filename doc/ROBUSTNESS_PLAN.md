@@ -326,8 +326,9 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   in all seven numeric tools, with type errors that list numeric fields (D1, D2), angle unwrapping, circular
   statistics, and shortest-difference angle comparison; `list_entries` notes; guidance traps updated.
 - [ ] **Phase 3 — Roles, one resolver, scope.** Done: `scope` and `windows` on the seven numeric tools (per-window
-  differences, peaks, unwrapping, and condition search; `DataQuality.fromSegments`). Remaining:
-  `SignalResolver`/`resolve_signals`, `resolved` in results, `compare_matches` (E4), vision target streams.
+  differences, peaks, unwrapping, and condition search; `DataQuality.fromSegments`); `compare_matches` (E4:
+  per-log scope, field paths, percentiles, boot-transient flags). Remaining: `SignalResolver`/`resolve_signals`,
+  `resolved` in results, vision target streams.
 - [x] **Phase 4 — Strings, intervals, alignment, quality.** Done: one text source (`TextEvents`: string lines,
   `string[]` alerts as appear/clear episodes, json string values) behind `search_strings`, `get_ds_timeline` (with
   `ALERT_RAISED` events), `can_health`, and `generate_report` (F1); compound `all`/`any` conditions in
@@ -338,8 +339,9 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   optional §5.6 pose helpers remain deferred.
 - [ ] **Phase 5 — Consistency and docs.**
 
-Golden checks on the review log: all 16 pass (timeline, flag brownouts, logged threshold, loop timing
+Golden checks on the review log: all 17 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation
 decode by schema path, per-camera observation counts, pose wander with heading range and circular mean, 189
 heading wraps, loop time over scope `enabled` and `segment:0`, the camera 3 alert as two appear/clear episodes, and
-"disabled and stationary" as one compound condition, and the data-quality calibration).
+"disabled and stationary" as one compound condition, the data-quality calibration, and compare_matches' boot-loop
+flag against a second log).

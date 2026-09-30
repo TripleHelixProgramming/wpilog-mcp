@@ -412,6 +412,27 @@ class ReviewLogGoldenTest {
     }
   }
 
+  @Test
+  @DisplayName("compare_matches flags the 9.6 s boot loop; scope enabled compares the match")
+  void compareMatchesBootTransient() throws Exception {
+    var other = logPath.resolveSibling("akit_26-09-29_23-11-20.wpilog");
+    Assumptions.assumeTrue(Files.exists(other), "second log not found: " + other);
+    LogManager.getInstance().addAllowedDirectory(other.getParent());
+    var all = call("compare_matches", "compare_path", other.toString(),
+        "name", "/RealOutputs/LoggedRobot/FullCycleMS");
+    var first = all.getAsJsonArray("comparisons").get(0).getAsJsonObject();
+    near(9603.512, first.getAsJsonObject("statistics").get("max").getAsDouble(), 0.001,
+        "boot loop");
+    assertTrue(first.get("max_likely_boot_transient").getAsBoolean());
+    var enabled = call("compare_matches", "compare_path", other.toString(),
+        "name", "/RealOutputs/LoggedRobot/FullCycleMS", "scope", "enabled");
+    var stats = enabled.getAsJsonArray("comparisons").get(0).getAsJsonObject()
+        .getAsJsonObject("statistics");
+    near(53.11, stats.get("p95").getAsDouble(), 0.01, "enabled p95 (numpy)");
+    near(17.60, stats.get("median").getAsDouble(), 0.01, "enabled median (numpy)");
+    assertTrue(enabled.has("differences"));
+  }
+
   // ==================== strings ====================
 
   @Test

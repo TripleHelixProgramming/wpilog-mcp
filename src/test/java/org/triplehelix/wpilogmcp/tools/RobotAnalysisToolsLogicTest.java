@@ -501,7 +501,9 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       assertFalse(second.get("entry_found").getAsBoolean());
       assertFalse(second.has("sample_count"));
       assertFalse(second.has("statistics"));
-      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("not found in cmp_q13.wpilog"));
+      assertTrue(resultObj.getAsJsonArray("warnings").toString()
+          .contains("cmp_q13.wpilog: Entry not found: /SystemStats/BatteryVoltage"));
+      assertEquals("partial", resultObj.get("status").getAsString());
     }
 
     @Test
@@ -529,12 +531,14 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
 
       var first = resultObj.getAsJsonArray("comparisons").get(0).getAsJsonObject();
       assertTrue(first.get("entry_found").getAsBoolean());
-      assertEquals(0, first.get("sample_count").getAsLong());
       assertFalse(first.has("statistics"));
+      assertTrue(first.get("reason").getAsString().contains("is double[], one value per element"),
+          first.toString());
       var second = resultObj.getAsJsonArray("comparisons").get(1).getAsJsonObject();
       assertEquals(2, second.get("sample_count").getAsLong());
       assertTrue(second.has("statistics"));
-      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("no finite scalar numeric values"));
+      assertTrue(resultObj.getAsJsonArray("warnings").toString()
+          .contains("/PowerDistribution/ChannelCurrent[0]"), resultObj.toString());
     }
 
     @Test

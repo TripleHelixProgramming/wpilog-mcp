@@ -1052,15 +1052,23 @@ public final class RobotAnalysisTools {
 
   // Extends ToolBase directly because this tool requires TWO log paths, not one
   static class CompareMatchesTool extends ToolBase {
+    /** A maximum or minimum this early in a log is flagged as a likely boot transient. */
+    static final double BOOT_SECONDS = 5.0;
+
     @Override
     public String name() { return "compare_matches"; }
 
     @Override
     public String description() {
-      return "Compare whole-log min/max/mean of one scalar numeric entry across two log files. "
-          + "Reports per log whether the entry was found and its finite sample count; array entries "
-          + "are not compared (use power_analysis or read_entry). For phase-scoped comparisons run "
-          + "get_statistics with start_time/end_time on each log instead."
+      return "Compare one numeric signal across two logs: per log, count, min, max (with when), "
+          + "mean, std_dev, median, p5, p25, p75, p95, and data_quality; and the differences "
+          + "(second minus first) of mean, median, and p95. scope ('enabled', 'teleop', "
+          + "'segment:<i>', ...) is resolved in each log's own timeline, so the same phase is "
+          + "compared; start_time/end_time apply to each log's own clock. The name may carry a "
+          + "field path (/RealOutputs/Drive/Pose.translation.x, ChannelCurrent[3]). A maximum or "
+          + "minimum in the first 5 s of a log is flagged as a likely boot transient: compare "
+          + "scope 'enabled' instead. Samples within a log are autocorrelated, so no "
+          + "significance test is made; two logs are two samples."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -1069,7 +1077,13 @@ public final class RobotAnalysisTools {
       return new SchemaBuilder()
           .addProperty("path", "string", "Path to the first log file", true)
           .addProperty("compare_path", "string", "Path to the second log file", true)
-          .addProperty("name", "string", "Entry name to compare", true)
+          .addProperty("name", "string", "Entry name to compare, optionally with a field path",
+              true)
+          .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION
+              + " Resolved in each log's own timeline.", false)
+          .addNumberProperty("start_time", "Start timestamp (s), on each log's clock", false, null)
+          .addNumberProperty("end_time", "End timestamp (s), on each log's clock", false, null)
           .build();
     }
 
@@ -1083,67 +1097,128 @@ public final class RobotAnalysisTools {
         throw new IllegalArgumentException("path and compare_path must be different log files");
       }
 
-      var log1 = logManager.getOrLoad(path1);
-      var log2 = logManager.getOrLoad(path2);
-
-      // Use a LinkedHashMap to ensure deterministic output order (path1 first, path2 second)
-      var logsByPath = new java.util.LinkedHashMap<String, LogData>();
-      logsByPath.put(path1, log1);
-      logsByPath.put(path2, log2);
+      var logs = new java.util.LinkedHashMap<String, LogData>();
+      logs.put(path1, new AccessTrackingLogData(logManager.getOrLoad(path1)));
+      logs.put(path2, new AccessTrackingLogData(logManager.getOrLoad(path2)));
 
       var comparisons = new JsonArray();
       var warnings = new ArrayList<String>();
-      for (var entry : logsByPath.entrySet()) {
+      var found = new ArrayList<JsonObject>();
+      DataQuality worst = null;
+      for (var entry : logs.entrySet()) {
         var logPath = entry.getKey();
         var log = entry.getValue();
         var filename = Path.of(logPath).getFileName().toString();
         var stats = new JsonObject();
         stats.addProperty("log_path", logPath);
         stats.addProperty("log_filename", filename);
-
-        var vals = log.values().get(name);
-        boolean found = vals != null && !vals.isEmpty();
-        stats.addProperty("entry_found", found);
-        if (found) {
-          var s = vals.stream()
-              .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
-              .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-              .summaryStatistics();
-          stats.addProperty("sample_count", s.getCount());
-          if (s.getCount() > 0) {
-            var sObj = new JsonObject();
-            sObj.addProperty("min", s.getMin());
-            sObj.addProperty("max", s.getMax());
-            sObj.addProperty("mean", s.getAverage());
-            stats.add("statistics", sObj);
-          } else {
-            warnings.add("Entry '" + name + "' in " + filename + " has no finite scalar numeric values "
-                + "(array and non-numeric entries are not compared; use read_entry or power_analysis).");
-          }
-        } else {
-          warnings.add("Entry '" + name + "' not found in " + filename + ".");
+        NumericSignal signal;
+        try {
+          signal = StatisticsTools.signal(log, arguments, "name", "field", null);
+        } catch (IllegalArgumentException e) {
+          // present but not a number here (e.g. an array without an index), or not logged
+          boolean exists = log.entries().containsKey(name)
+              || NumericSignal.longestEntryPrefix(log, name) != null;
+          stats.addProperty("entry_found", exists);
+          stats.addProperty("reason", e.getMessage());
+          warnings.add(filename + ": " + e.getMessage());
+          comparisons.add(stats);
+          continue;
         }
+        stats.addProperty("entry_found", true);
+        stats.addProperty("signal", signal.label());
+        var scope = TimeScope.fromArguments(log, null, arguments);
+        if (!scope.isAll()) stats.add("scope", scope.toJson());
+        var windows = StatisticsTools.finiteWindows(signal, scope,
+            signal.isAngle() && !signal.multiValued());
+        var values = StatisticsTools.flatten(windows);
+        stats.addProperty("sample_count", values.size());
+        if (values.isEmpty()) {
+          warnings.add(filename + ": no finite values of " + signal.label()
+              + StatisticsTools.scopeText(scope) + ".");
+          comparisons.add(stats);
+          continue;
+        }
+        var data = values.stream().mapToDouble(tv -> ((Number) tv.value()).doubleValue())
+            .toArray();
+        var sorted = data.clone();
+        java.util.Arrays.sort(sorted);
+        int maxIndex = 0;
+        int minIndex = 0;
+        for (int i = 1; i < data.length; i++) {
+          if (data[i] > data[maxIndex]) maxIndex = i;
+          if (data[i] < data[minIndex]) minIndex = i;
+        }
+        double mean = java.util.Arrays.stream(data).average().orElse(0);
+        double ss = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
+        var sObj = new JsonObject();
+        sObj.addProperty("min", sorted[0]);
+        sObj.addProperty("min_at_sec", values.get(minIndex).timestamp());
+        sObj.addProperty("max", sorted[sorted.length - 1]);
+        sObj.addProperty("max_at_sec", values.get(maxIndex).timestamp());
+        sObj.addProperty("mean", mean);
+        sObj.addProperty("std_dev", data.length > 1 ? Math.sqrt(ss / (data.length - 1)) : 0.0);
+        sObj.addProperty("median", percentile(sorted, 0.5));
+        sObj.addProperty("p5", percentile(sorted, 0.05));
+        sObj.addProperty("p25", percentile(sorted, 0.25));
+        sObj.addProperty("p75", percentile(sorted, 0.75));
+        sObj.addProperty("p95", percentile(sorted, 0.95));
+        if (signal.isAngle()) sObj.addProperty("angle_unit", signal.angle().wire());
+        stats.add("statistics", sObj);
+        for (var extreme : List.of("max", "min")) {
+          double at = sObj.get(extreme + "_at_sec").getAsDouble();
+          if (at - log.minTimestamp() < BOOT_SECONDS) {
+            stats.addProperty(extreme + "_likely_boot_transient", true);
+            warnings.add(filename + ": the " + extreme + " of " + signal.label() + " is at "
+                + String.format("%.2f", at) + " s, within " + (int) BOOT_SECONDS + " s of the "
+                + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
+          }
+        }
+        var quality = DataQuality.fromSegments(windows);
+        stats.add("data_quality", quality.toJson());
+        if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
+        found.add(sObj);
         comparisons.add(stats);
       }
 
       var result = new JsonObject();
-      result.addProperty("success", true);
+      result.addProperty("success", !found.isEmpty());
+      if (found.isEmpty()) {
+        result.addProperty("status", "no_match");
+        result.addProperty("reason", "Neither log has finite values of " + name + ".");
+      } else if (found.size() < logs.size()) {
+        result.addProperty("status", "partial");
+        var skipped = new JsonArray();
+        var item = new JsonObject();
+        item.addProperty("section", "differences");
+        item.addProperty("reason", "Only one log has values to compare.");
+        skipped.add(item);
+        result.add("skipped", skipped);
+      }
       result.addProperty("entry", name);
-      result.addProperty("logs_compared", logsByPath.size());
+      result.addProperty("logs_compared", logs.size());
       result.add("comparisons", comparisons);
+      if (found.size() == 2) {
+        var differences = new JsonObject();
+        for (var key : List.of("mean", "median", "p95")) {
+          differences.addProperty(key, found.get(1).get(key).getAsDouble()
+              - found.get(0).get(key).getAsDouble());
+        }
+        differences.addProperty("note", "Second log minus first. Two logs are two samples: a "
+            + "difference may reflect battery, field, opponents, or code changes "
+            + "(get_code_metadata), not only the robot.");
+        result.add("differences", differences);
+      }
       if (!warnings.isEmpty()) {
         result.add("warnings", GSON.toJsonTree(warnings));
       }
-
-      // Data quality from first log's values for this entry
-      var vals1 = log1.values().get(name);
-      if (vals1 != null && !vals1.isEmpty()) {
-        var quality = DataQuality.fromValues(vals1);
-        var directives = AnalysisDirectives.fromQuality(quality)
-            .addGuidance("Cross-match comparisons require consistent logging configurations for valid comparison");
-        appendQualityToResult(result, quality, directives);
+      if (worst != null) {
+        var directives = AnalysisDirectives.fromQuality(worst)
+            .addGuidance("Cross-match comparisons require consistent logging configurations for "
+                + "valid comparison");
+        result.add("server_analysis_directives", directives.toJson());
       }
-
+      for (var log : logs.values()) ((AccessTrackingLogData) log).annotate(result);
       return result;
     }
   }

@@ -135,7 +135,7 @@ public final class AnalysisGuidance {
         ],
         "cross_match": [
           "One log is one sample. compare_matches shows that two matches differ, not why.",
-          "compare_matches compares one scalar entry across exactly two logs with whole-log min, max, and mean; it has no start_time/end_time and its data_quality reflects only the first log. For phase-scoped or n-bearing comparisons, run get_statistics with the same name and start_time/end_time on each log (windows from get_match_phases per log) and tabulate the results.",
+          "compare_matches compares one signal across two logs with percentiles, and resolves scope (enabled, teleop, segment:<i>) in each log's own timeline, so pass scope 'enabled' rather than comparing whole logs: a whole-log max is often the multi-second boot loop, which it flags. For more than two logs, run get_statistics with the same name and scope on each and tabulate the results.",
           "Keep only FMS-connected match logs unless asked; exclude practice, pit, and replay (_sim) logs.",
           "Check get_code_metadata on each log; a different git SHA between matches is a confounder for any behavior change. Battery, alliance partners, and field position also change.",
           "Run the same tool with the same parameters and the same phase windows on every log before comparing.",

@@ -1005,18 +1005,23 @@ CAN bus health overview from two sources: console and message text with CAN fail
 ```
 
 ### `compare_matches`
-Compare statistics for one scalar numeric entry across two log files. Useful as a quick whole-log comparison of robot performance across matches; for phase-scoped comparisons run `get_statistics` with `start_time`/`end_time` on each log instead.
+Compare one numeric signal across two log files, over the same phase of each.
 
 **Parameters:**
 - `path` (required): Path to the first log file
 - `compare_path` (required): Path to the second log file (must differ from `path`)
-- `name` (required): Entry name to compare across logs
+- `name` (required): Entry name to compare, optionally with a [field path](#field-paths) (`/PowerDistribution/ChannelCurrent[3]`; `[*]` pools elements)
+- `field` (optional): The field path, instead of appending it to `name`
+- `scope` (optional): `enabled`, `teleop`, `segment:<i>`, ... — resolved in **each log's own timeline**, so the same phase is compared
+- `start_time`, `end_time` (optional): On each log's own clock
 
 **Returns:**
 - `entry`, `logs_compared`
-- `comparisons[]` — one per log, in argument order: `{log_path, log_filename, entry_found, sample_count, statistics: {min, max, mean}}`. `sample_count` (finite scalar samples) and `statistics` are present only when `entry_found`; `statistics` is also omitted when `sample_count` is 0 (array entries such as `/PowerDistribution/ChannelCurrent` are not compared — use `power_analysis` or `read_entry`)
-- `warnings` — when the entry is missing from a log or has no finite scalar values
-- `data_quality` / `server_analysis_directives` — computed from the **first** log only
+- `comparisons[]` — one per log, in argument order: `{log_path, log_filename, entry_found, signal, scope?, sample_count, statistics: {min, min_at_sec, max, max_at_sec, mean, std_dev, median, p5, p25, p75, p95, angle_unit?}, max_likely_boot_transient?, min_likely_boot_transient?, data_quality}`; when the signal cannot be read, `reason` (for example an array entry named without an index, with the element form to use)
+- `differences` — second log minus first, for `mean`, `median`, and `p95`, with a note: two logs are two samples, and samples within a log are autocorrelated, so no significance test is made
+- `warnings` — a missing entry, no finite values, or an extreme within 5 s of a log's start (likely a boot transient: compare `scope: "enabled"`)
+- `status` — `partial` when only one log has values (`skipped: differences`), `no_match` when neither does
+- `server_analysis_directives` from the lower-quality log
 
 **Example Response:**
 ```json
