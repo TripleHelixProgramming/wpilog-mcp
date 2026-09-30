@@ -58,16 +58,50 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List WPILOG files available in the configured log directory with friendly names. "
-          + "IMPORTANT: When TBA is configured, this tool automatically enriches each log with "
-          + "match data including alliance scores, win/loss results, and actual match times. "
-          + "Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! "
-          + "Use this tool first to find logs and get match results, then pass the path to other tools.";
+      return "List WPILOG files available in the configured log directory with friendly names, "
+          + "newest first, paged: log_count is the number matching the filters, offset/limit "
+          + "select a page (default 50), has_more says whether another page exists. Filters: "
+          + "name (substring of the file or friendly name), event (event code, e.g. VACHE), "
+          + "match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). "
+          + "IMPORTANT: When TBA is configured, this tool automatically enriches each listed log "
+          + "with match data including alliance scores, win/loss results, and actual match "
+          + "times. Check the 'tba' field in each log entry for match outcomes—don't guess from "
+          + "telemetry! Use this tool first to find logs and get match results, then pass the "
+          + "path to other tools.";
     }
+
+    static final int DEFAULT_LIMIT = 50;
+    static final int MAX_LIMIT = 500;
 
     @Override
     public JsonObject inputSchema() {
-      return new SchemaBuilder().build();
+      return new SchemaBuilder()
+          .addProperty("name", "string", "Only logs whose file or friendly name contains this "
+              + "(case-insensitive)", false)
+          .addProperty("event", "string", "Only logs from this event code (case-insensitive)",
+              false)
+          .addProperty("match_type", "string", "Only this match type (qm, sf, f, p, e, ...)",
+              false)
+          .addProperty("since", "string", "Only logs from this date on: 2026-03-20, or an "
+              + "ISO-8601 instant", false)
+          .addIntegerProperty("offset", "Logs to skip", false, 0)
+          .addIntegerProperty("limit", "Maximum logs to return (max 500)", false, DEFAULT_LIMIT)
+          .build();
+    }
+
+    /** Milliseconds since the epoch for a date (start of day, UTC) or an ISO-8601 instant. */
+    static long parseSince(String since) {
+      try {
+        return java.time.LocalDate.parse(since).atStartOfDay(java.time.ZoneOffset.UTC).toInstant()
+            .toEpochMilli();
+      } catch (java.time.format.DateTimeParseException e) {
+        try {
+          return java.time.Instant.parse(since).toEpochMilli();
+        } catch (java.time.format.DateTimeParseException e2) {
+          throw new IllegalArgumentException("since must be a date like 2026-03-20 or an "
+              + "ISO-8601 instant like 2026-03-20T14:00:00Z, got '" + since + "'");
+        }
+      }
     }
 
     @Override
@@ -80,12 +114,45 @@ public final class CoreTools {
         return result;
       }
 
-      var logs = logDirectory.listAvailableLogs();
+      var all = logDirectory.listAvailableLogs();
+      var nameFilter = getOptString(arguments, "name", null);
+      var eventFilter = getOptString(arguments, "event", null);
+      var matchTypeArg = getOptString(arguments, "match_type", null);
+      org.triplehelix.wpilogmcp.log.LogDirectory.MatchType matchTypeFilter = null;
+      if (matchTypeArg != null) {
+        var code = matchTypeArg.strip().toLowerCase();
+        // qm/pm/em are the filename codes for q/p/e
+        if (code.length() == 2 && code.endsWith("m")) code = code.substring(0, 1);
+        matchTypeFilter = org.triplehelix.wpilogmcp.log.LogDirectory.MatchType.fromString(code);
+        if (matchTypeFilter == null) {
+          throw new IllegalArgumentException("Unknown match_type '" + matchTypeArg + "': use p, "
+              + "q (or qm), qf, sf, f, or e");
+        }
+      }
+      var wantedType = matchTypeFilter;
+      var sinceArg = getOptString(arguments, "since", null);
+      Long since = sinceArg != null ? parseSince(sinceArg) : null;
+      int offset = Math.max(0, getOptInt(arguments, "offset", 0));
+      int limit = Math.min(MAX_LIMIT, Math.max(1, getOptInt(arguments, "limit", DEFAULT_LIMIT)));
+      var logs = all.stream()
+          .filter(l -> nameFilter == null
+              || l.filename().toLowerCase().contains(nameFilter.toLowerCase())
+              || l.friendlyName().toLowerCase().contains(nameFilter.toLowerCase()))
+          .filter(l -> eventFilter == null || (l.eventName() != null
+              && l.eventName().equalsIgnoreCase(eventFilter)))
+          .filter(l -> wantedType == null || (l.matchType() != null
+              && org.triplehelix.wpilogmcp.log.LogDirectory.MatchType.fromString(l.matchType())
+                  == wantedType))
+          .filter(l -> since == null || (l.getBestTimestamp() != null
+              && l.getBestTimestamp() >= since))
+          .toList();
+      var page = logs.subList(Math.min(offset, logs.size()),
+          Math.min(logs.size(), Math.min(offset, logs.size()) + limit));
       var tbaEnrichment = TbaEnrichment.getInstance();
       boolean tbaAvailable = tbaClient.isAvailable();
 
       var logsArray = new JsonArray();
-      for (var log : logs) {
+      for (var log : page) {
         var logObj = new JsonObject();
         logObj.addProperty("friendly_name", log.friendlyName());
         logObj.addProperty("path", log.path());
@@ -109,6 +176,10 @@ public final class CoreTools {
       result.addProperty("success", true);
       result.addProperty("log_directory", logDirectory.getLogDirectory().toString());
       result.addProperty("log_count", logs.size());
+      result.addProperty("total_logs", all.size());
+      result.addProperty("offset", Math.min(offset, logs.size()));
+      result.addProperty("returned", page.size());
+      result.addProperty("has_more", Math.min(offset, logs.size()) + page.size() < logs.size());
       if (tbaAvailable) result.addProperty("tba_enrichment", true);
 
       var cacheStats = new JsonObject();
@@ -116,7 +187,13 @@ public final class CoreTools {
         cacheStats.addProperty(entry.getKey(), entry.getValue());
       }
       result.add("metadata_cache", cacheStats);
-      result.add("logs", logsArray);
+      ResultContract.addLimitedList(result, "logs", logsArray,
+          Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);
+      if (logs.isEmpty() && !all.isEmpty()) {
+        result.addProperty("status", "no_match");
+        result.addProperty("reason", "No log matches the filters (" + all.size()
+            + " logs in the directory).");
+      }
       return result;
     }
   }

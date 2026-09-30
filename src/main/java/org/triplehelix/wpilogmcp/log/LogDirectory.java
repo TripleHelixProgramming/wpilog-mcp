@@ -195,8 +195,9 @@ public class LogDirectory {
           .filter(Files::isRegularFile)
           .filter(p -> p.toString().endsWith(".wpilog"))
           .map(this::getOrExtractLogInfo)
-          .sorted(Comparator.comparing(LogFileInfo::getBestTimestamp, 
-              Comparator.nullsLast(Comparator.reverseOrder())))
+          .sorted(Comparator.comparing(LogFileInfo::getBestTimestamp,
+                  Comparator.nullsLast(Comparator.<Long>reverseOrder()))
+              .thenComparing(LogFileInfo::path))
           .toList();
 
       logger.info("Found {} log files. Cache hits: {}, misses: {}",

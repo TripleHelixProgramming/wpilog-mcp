@@ -139,11 +139,16 @@ Given a natural language description of what you want to analyze, this tool reco
 ## Core Tools
 
 ### `list_available_logs`
-List WPILOG files in the configured log directory with user-friendly names.
+List WPILOG files in the configured log directory with user-friendly names, newest first.
 
-**Parameters:** None
+**Parameters:**
+- `name` (optional): Only logs whose file or friendly name contains this (case-insensitive)
+- `event` (optional): Only logs from this event code (e.g. `VACHE`)
+- `match_type` (optional): `p`, `q` (or `qm`), `qf`, `sf`, `f`, or `e`
+- `since` (optional): Only logs from this date on (`2026-03-20`, or an ISO-8601 instant)
+- `offset`, `limit` (optional): Paging (default limit 50, max 500)
 
-**Returns:** List of available logs with friendly names, event info, file details, and optional TBA enrichment
+**Returns:** `log_count` (logs matching the filters), `total_logs` (in the directory), `offset`, `returned`, `has_more`, `limits.logs`, and the page of logs with friendly names, event info, file details, and TBA enrichment when configured (only the listed page is enriched). No log matching the filters is `no_match`
 
 **Example Response:**
 ```json

@@ -513,6 +513,73 @@ class CoreToolsLogicTest extends ToolTestBase {
       var logs = resultObj.getAsJsonArray("logs");
       assertEquals("valid.wpilog", logs.get(0).getAsJsonObject().get("filename").getAsString());
     }
+
+    /** Five logs: two from each of two events, one without an event; distinct mtimes. */
+    void writeLogs(Path dir) throws Exception {
+      String[] names = {"akit_26-03-20_10-00-00_vache_q10.wpilog",
+          "akit_26-03-21_11-00-00_vache_sf2.wpilog", "akit_26-04-02_09-00-00_dcmp_q5.wpilog",
+          "akit_26-04-03_09-30-00_dcmp_f1.wpilog", "bench_test.wpilog"};
+      long base = java.time.Instant.parse("2026-03-01T00:00:00Z").toEpochMilli();
+      for (int i = 0; i < names.length; i++) {
+        var file = dir.resolve(names[i]);
+        Files.write(file, new byte[] {0});
+        Files.setLastModifiedTime(file,
+            java.nio.file.attribute.FileTime.fromMillis(base + i * 86_400_000L * 10));
+      }
+      LogDirectory.getInstance().setLogDirectory(dir.toString());
+    }
+
+    JsonObject list(Object... kv) throws Exception {
+      var args = new JsonObject();
+      for (int i = 0; i < kv.length; i += 2) {
+        if (kv[i + 1] instanceof Number n) args.addProperty((String) kv[i], n);
+        else args.addProperty((String) kv[i], kv[i + 1].toString());
+      }
+      return findTool("list_available_logs").execute(args).getAsJsonObject();
+    }
+
+    @Test
+    @DisplayName("pages with true totals, newest first, stable order")
+    void paging(@TempDir Path tempDir) throws Exception {
+      writeLogs(tempDir);
+      var first = list("limit", 2);
+      assertEquals(5, first.get("log_count").getAsInt());
+      assertEquals(2, first.get("returned").getAsInt());
+      assertTrue(first.get("has_more").getAsBoolean());
+      assertEquals(5, first.getAsJsonObject("limits").getAsJsonObject("logs").get("total")
+          .getAsInt());
+      var last = list("limit", 2, "offset", 4);
+      assertEquals(1, last.get("returned").getAsInt());
+      assertFalse(last.get("has_more").getAsBoolean());
+      var again = list("limit", 2);
+      assertEquals(first.getAsJsonArray("logs"), again.getAsJsonArray("logs"));
+    }
+
+    @Test
+    @DisplayName("filters by name, event, match type, and date")
+    void filters(@TempDir Path tempDir) throws Exception {
+      writeLogs(tempDir);
+      assertEquals(1, list("name", "BENCH").get("log_count").getAsInt());
+      assertEquals(2, list("event", "vache").get("log_count").getAsInt());
+      var qual = list("match_type", "qm");
+      assertEquals(2, qual.get("log_count").getAsInt(), qual.toString());
+      for (var l : qual.getAsJsonArray("logs")) {
+        assertTrue(l.getAsJsonObject().get("filename").getAsString().contains("_q"), qual.toString());
+      }
+      assertEquals(1, list("match_type", "sf").get("log_count").getAsInt());
+      assertTrue(list("match_type", "zz").get("error").getAsString().contains("Unknown match_type"));
+      var recent = list("since", "2026-04-01");
+      assertTrue(recent.get("log_count").getAsInt() >= 2, recent.toString());
+      for (var l : recent.getAsJsonArray("logs")) {
+        assertFalse(l.getAsJsonObject().get("filename").getAsString().contains("26-03-2"),
+            recent.toString());
+      }
+      var none = list("event", "nope");
+      assertEquals("no_match", none.get("status").getAsString());
+      assertEquals(5, none.get("total_logs").getAsInt());
+      var bad = list("since", "yesterday");
+      assertTrue(bad.get("error").getAsString().contains("since must be a date"), bad.toString());
+    }
   }
 
   @Nested
