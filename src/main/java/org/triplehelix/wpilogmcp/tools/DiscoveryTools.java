@@ -457,6 +457,11 @@ public final class DiscoveryTools {
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
       String categoryFilter = getOptString(arguments, "category", null);
+      if (categoryFilter != null
+          && CATEGORIES.stream().noneMatch(c -> c.name().equals(categoryFilter))) {
+        throw new IllegalArgumentException("Unknown category '" + categoryFilter + "'. Valid "
+            + "categories: " + String.join(", ", CATEGORIES.stream().map(c -> c.name()).toList()));
+      }
       boolean includeExamples = !arguments.has("include_examples")
           || arguments.get("include_examples").getAsBoolean();
 
@@ -659,15 +664,21 @@ public final class DiscoveryTools {
         }
       }
 
-      // Sort by score and take top N
+      // Sort by score, ties by name so the order is stable, and take top N
       var sortedTools = scores.entrySet().stream()
-          .sorted((a, b) -> b.getValue() - a.getValue())
+          .sorted(Comparator.comparingInt((Map.Entry<ToolInfo, Integer> e) -> -e.getValue())
+              .thenComparing(e -> e.getKey().name()))
           .limit(maxSuggestions)
           .toList();
 
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("task", task);
+      if (sortedTools.isEmpty()) {
+        result.addProperty("status", "no_match");
+        result.addProperty("reason", "No tool's keywords or use cases match this task.");
+        result.addProperty("hint", "Call get_server_guide for the full catalog by category.");
+      }
 
       var suggestions = new JsonArray();
       for (var entry : sortedTools) {

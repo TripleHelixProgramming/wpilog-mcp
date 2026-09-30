@@ -274,22 +274,25 @@ class ReviewLogGoldenTest {
   @Test
   @DisplayName("analyze_vision counts PoseObservations per camera")
   void visionObservationCounts() throws Exception {
-    pending("Phase 3 (B4)", () -> {
-      var result = call("analyze_vision");
-      var streams = result.getAsJsonArray("observation_streams");
-      long[] expected = {4943, 5433, 4132, 2377};
-      for (int c = 0; c < 4; c++) {
-        boolean found = false;
-        for (var s : streams) {
-          var stream = s.getAsJsonObject();
-          if (stream.get("entry").getAsString().equals("/Vision/Camera" + c + "/PoseObservations")) {
-            assertEquals(expected[c], stream.get("observation_count").getAsLong(), "camera " + c);
-            found = true;
-          }
+    var result = call("analyze_vision");
+    var streams = result.getAsJsonArray("observation_streams");
+    long[] expected = {4943, 5433, 4132, 2377};
+    for (int c = 0; c < 4; c++) {
+      boolean found = false;
+      for (var s : streams) {
+        var stream = s.getAsJsonObject();
+        if (stream.get("entry").getAsString().equals("/Vision/Camera" + c + "/PoseObservations")) {
+          assertEquals(expected[c], stream.get("observation_count").getAsLong(), "camera " + c);
+          // every observation used exactly one tag
+          assertEquals(expected[c], stream.getAsJsonObject("tag_count_distribution").get("1")
+              .getAsLong(), "camera " + c + " tag counts");
+          found = true;
         }
-        assertTrue(found, "no stream for camera " + c);
       }
-    });
+      assertTrue(found, "no stream for camera " + c);
+    }
+    assertEquals("/RealOutputs/Drive/Pose",
+        result.getAsJsonObject("inputs").getAsJsonObject("entries").get("robot_pose").getAsString());
   }
 
   // ==================== pose while disabled ====================

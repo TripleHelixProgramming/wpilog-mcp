@@ -55,7 +55,11 @@ class AnalysisGuidanceTest {
           "entry_pattern",
           "collapse_repeats",
           "max_value_chars",
-          "value_truncated");
+          "value_truncated",
+          // Result contract fields and statuses (ResultContract)
+          "no_match",
+          "not_applicable",
+          "looked_for");
 
   private static final Pattern SNAKE_CASE = Pattern.compile("\\b[a-z]+(?:_[a-z0-9]+)+\\b");
 

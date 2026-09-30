@@ -511,7 +511,54 @@ class QueryToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args).getAsJsonObject();
 
       assertTrue(result.get("success").getAsBoolean());
-      assertEquals(2, result.get("transition_count").getAsInt());
+      // transition_count is the true total; the list is cut at the limit (review A7, R7)
+      assertEquals(4, result.get("transition_count").getAsInt());
+      assertEquals(2, result.getAsJsonArray("transitions").size());
+      var limits = result.getAsJsonObject("limits").getAsJsonObject("transitions");
+      assertEquals(4, limits.get("total").getAsInt());
+      assertEquals(2, limits.get("returned").getAsInt());
+      // intervals: 1-2, 3-4, 5-6, and 7 to the end of the log
+      assertEquals(4, result.get("interval_count").getAsInt());
+      assertEquals(3.0, result.get("total_true_sec").getAsDouble(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("time window and intervals, with the value in force at the window start")
+    void windowAndIntervals() throws Exception {
+      var log = buildNumericLog("/Voltage",
+          new double[]{0, 1, 2, 3, 4, 5, 6, 7},
+          new double[]{12.0, 10.0, 12.0, 10.0, 12.0, 10.0, 12.0, 10.0});
+      putLogInCache(log);
+      var args = makeArgs("/Voltage", "lt", 11.0);
+      args.addProperty("start_time", 1.5);
+      args.addProperty("end_time", 5.5);
+      var result = tool.execute(args).getAsJsonObject();
+      // 1.5 is inside the 1-2 interval (value held from t=1)
+      var intervals = result.getAsJsonArray("intervals");
+      assertEquals(3, intervals.size());
+      var first = intervals.get(0).getAsJsonObject();
+      assertEquals(1.5, first.get("start").getAsDouble(), 1e-9);
+      assertEquals(2.0, first.get("end").getAsDouble(), 1e-9);
+      var last = intervals.get(2).getAsJsonObject();
+      assertEquals("window_end", last.get("end_reason").getAsString());
+      assertEquals(5.5, last.get("end").getAsDouble(), 1e-9);
+      assertEquals(0.5 + 1.0 + 0.5, result.get("total_true_sec").getAsDouble(), 1e-9);
+      assertEquals(0.5, result.get("fraction_of_window").getAsDouble(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("boolean entries compare as 1/0")
+    void booleanEntries() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/condition.wpilog") // the path makeArgs uses
+          .addBooleanEntry("/SystemStats/BrownedOut", new double[]{0, 5, 5.2, 9},
+              new boolean[]{false, true, false, false})
+          .build();
+      putLogInCache(log);
+      var args = makeArgs("/SystemStats/BrownedOut", "eq", 1.0);
+      var result = tool.execute(args).getAsJsonObject();
+      assertEquals(1, result.get("interval_count").getAsInt());
+      assertEquals(0.2, result.get("total_true_sec").getAsDouble(), 1e-9);
     }
 
     @Test

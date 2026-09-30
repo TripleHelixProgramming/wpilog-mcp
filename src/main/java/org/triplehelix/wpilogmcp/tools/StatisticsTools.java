@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
+import java.util.List;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
@@ -85,18 +86,21 @@ public final class StatisticsTools {
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
 
-      var values = requireEntry(log, name);
+      var values = requireScalarNumeric(log, name);
       var filtered = filterTimeRange(values, start, end);
       var numericFiltered = filtered.stream()
-          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
+          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
           .toList();
       var quality = DataQuality.fromValues(numericFiltered);
       var data = numericFiltered.stream()
-          .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
+          .mapToDouble(tv -> toDouble(tv.value()))
           .toArray();
 
       if (data.length == 0) {
-        throw new IllegalArgumentException("No numeric data in range");
+        throw new IllegalArgumentException("No numeric data in range: no finite samples of " + name
+            + (start != null || end != null ? " between " + (start != null ? start : "start")
+                + " and " + (end != null ? end : "end") + " s" : "") + " (" + values.size()
+            + " sample(s) in the log, " + filtered.size() + " in the window)");
       }
 
       var stats = java.util.Arrays.stream(data).summaryStatistics();
@@ -145,7 +149,10 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Compare two numeric entries using RMSE and max difference."
+      return "Compare two numeric entries: RMSE and maximum absolute difference, evaluated at the "
+          + "denser entry's timestamps with the other linearly interpolated (no extrapolation), "
+          + "plus the number of compared samples. Both entries must be scalar numeric "
+          + "(double, float, int64, or boolean as 0/1); other types are an error naming the type."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -162,26 +169,32 @@ public final class StatisticsTools {
       var n1 = getRequiredString(arguments, "name1");
       var n2 = getRequiredString(arguments, "name2");
 
-      var v1 = log.values().get(n1);
-      var v2 = log.values().get(n2);
+      var v1 = requireScalarNumeric(log, n1);
+      var v2 = requireScalarNumeric(log, n2);
 
-      if (v1 == null || v2 == null) {
-        throw new IllegalArgumentException("One or both entries not found");
-      }
-
-      double rmse = calculateRmseLinear(v1, v2);
-
-      // Max diff calculation
-      double maxDiff = 0.0;
+      // Evaluate at the denser entry's timestamps, interpolating the other (no extrapolation)
       var reference = v1.size() >= v2.size() ? v1 : v2;
       var other = v1.size() >= v2.size() ? v2 : v1;
+      double sumSq = 0.0;
+      double maxDiff = 0.0;
+      int compared = 0;
       for (var tv : reference) {
         var refValue = toDouble(tv.value());
         var otherValue = getValueAtTimeLinear(other, tv.timestamp());
-        if (refValue != null && otherValue != null) {
-          maxDiff = Math.max(maxDiff, Math.abs(refValue - otherValue));
+        if (refValue == null || otherValue == null
+            || !Double.isFinite(refValue) || !Double.isFinite(otherValue)) {
+          continue;
         }
+        double diff = refValue - otherValue;
+        sumSq += diff * diff;
+        maxDiff = Math.max(maxDiff, Math.abs(diff));
+        compared++;
       }
+      if (compared == 0) {
+        throw new IllegalArgumentException("No overlapping samples: " + n1 + " spans "
+            + span(v1) + " and " + n2 + " spans " + span(v2) + " (no extrapolation)");
+      }
+      double rmse = Math.sqrt(sumSq / compared);
 
       DataQuality q1 = DataQuality.fromValues(v1);
       DataQuality q2 = DataQuality.fromValues(v2);
@@ -194,10 +207,41 @@ public final class StatisticsTools {
       return success()
           .addProperty("rmse", rmse)
           .addProperty("max_difference", maxDiff)
+          .addProperty("samples_compared", compared)
+          .addProperty("reference_entry", reference == v1 ? n1 : n2)
+          .addInput("entry1", n1)
+          .addInput("entry2", n2)
           .addDataQuality(quality)
           .addDirectives(directives)
           .build();
     }
+
+    static String span(List<org.triplehelix.wpilogmcp.log.TimestampedValue> values) {
+      if (values.isEmpty()) return "no samples";
+      return String.format("%.3f-%.3f s", values.get(0).timestamp(),
+          values.get(values.size() - 1).timestamp());
+    }
+  }
+
+  /** Scalar numeric (or boolean) values of an entry; other types are an error naming the type. */
+  static List<org.triplehelix.wpilogmcp.log.TimestampedValue> requireScalarNumeric(
+      org.triplehelix.wpilogmcp.log.LogData log, String name) {
+    var info = log.entries().get(name);
+    if (info == null) {
+      var suggestions = log.entries().keySet().stream()
+          .filter(n -> n.toLowerCase().contains(name.toLowerCase())).limit(5).toList();
+      throw new IllegalArgumentException("Entry not found: " + name
+          + (suggestions.isEmpty() ? "" : ". Did you mean: " + String.join(", ", suggestions) + "?"));
+    }
+    var type = info.type();
+    if (!isNumericType(type) && !"boolean".equals(type)) {
+      throw new IllegalArgumentException("Entry " + name + " is " + type + ", not a scalar "
+          + "number. Numeric tools read double, float, int64, and boolean entries"
+          + (type.startsWith("struct:") ? "; read_entry shows the struct's fields, and export_csv "
+              + "writes them out for external analysis" : "") + ".");
+    }
+    var values = log.values().get(name);
+    return values == null ? List.of() : values;
   }
 
   static class DetectAnomaliesTool extends LogRequiringTool {
@@ -206,8 +250,13 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Detect anomalies (outliers) in numeric data using the IQR method. "
-          + "Finds values that fall outside 1.5*IQR from Q1/Q3, or sudden spikes/drops."
+      return "Detect anomalies in a numeric entry within an optional time window: outliers outside "
+          + "iqr_multiplier x IQR beyond Q1/Q3 (Tukey fences), and, when spike_threshold is given, "
+          + "spikes: sample-to-sample jumps larger than spike_threshold (in the entry's units). "
+          + "anomaly_count is the true total; the list is sorted by time (default) or severity "
+          + "(distance beyond the fence, or jump size) and cut at limit, with limits.anomalies "
+          + "giving total and returned. Boot transients and disabled periods count unless the "
+          + "window excludes them: take windows from get_match_phases."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -216,7 +265,11 @@ public final class StatisticsTools {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name", true)
           .addNumberProperty("iqr_multiplier", "IQR multiplier (default 1.5)", false, 1.5)
-          .addNumberProperty("spike_threshold", "Spike percentage threshold", false, null)
+          .addNumberProperty("spike_threshold",
+              "Flag sample-to-sample jumps larger than this, in the entry's units (off by default)", false, null)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addProperty("sort", "string", "'time' (default) or 'severity'", false)
           .addIntegerProperty("limit", "Max anomalies to return", false, 50)
           .build();
     }
@@ -225,63 +278,96 @@ public final class StatisticsTools {
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
       double iqrMult = getOptDouble(arguments, "iqr_multiplier", 1.5);
+      var spikeThreshold = getOptDouble(arguments, "spike_threshold");
+      var start = getOptDouble(arguments, "start_time");
+      var end = getOptDouble(arguments, "end_time");
+      var sort = getOptString(arguments, "sort", "time");
+      if (!sort.equals("time") && !sort.equals("severity")) {
+        throw new IllegalArgumentException("sort must be 'time' or 'severity'");
+      }
       int limit = getOptInt(arguments, "limit", 50);
+      validatePositive(limit, "limit");
+      if (spikeThreshold != null && !(spikeThreshold > 0)) {
+        throw new IllegalArgumentException("spike_threshold must be positive");
+      }
 
-      var values = requireEntry(log, name);
-
-      var numeric = values.stream()
-          .filter(tv -> tv.value() instanceof Number)
+      var values = requireScalarNumeric(log, name);
+      var inWindow = filterTimeRange(values, start, end);
+      long nonFiniteCount = inWindow.stream()
+          .filter(tv -> toDouble(tv.value()) != null && !Double.isFinite(toDouble(tv.value())))
+          .count();
+      var finite = inWindow.stream()
+          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
           .toList();
-      if (numeric.size() < 4) {
-        throw new IllegalArgumentException("Not enough data");
+      if (finite.size() < 4) {
+        throw new IllegalArgumentException("Not enough data for IQR calculation: "
+            + finite.size() + " finite sample(s) in the window (need 4)");
       }
-
-      var sortedData = numeric.stream()
-          .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-          .filter(Double::isFinite)
-          .sorted()
-          .toArray();
-
-      if (sortedData.length < 4) {
-        throw new IllegalArgumentException("Not enough finite data for IQR calculation");
-      }
-
+      var sortedData = finite.stream().mapToDouble(tv -> toDouble(tv.value())).sorted().toArray();
       double q1 = percentile(sortedData, 0.25);
       double q3 = percentile(sortedData, 0.75);
       double iqr = q3 - q1;
       double low = q1 - iqrMult * iqr;
       double high = q3 + iqrMult * iqr;
 
-      long nonFiniteCount = numeric.stream()
-          .filter(tv -> tv.value() instanceof Number && !Double.isFinite(((Number) tv.value()).doubleValue()))
-          .count();
-
       var anomalies = new ArrayList<JsonObject>();
-      for (var tv : numeric) {
-        double v = ((Number) tv.value()).doubleValue();
-        if (!Double.isFinite(v)) continue; // non-finite values counted separately
+      long outliers = 0;
+      long spikes = 0;
+      Double previous = null;
+      for (var tv : finite) {
+        double v = toDouble(tv.value());
         if (v < low || v > high) {
           var obj = new JsonObject();
           obj.addProperty("timestamp_sec", tv.timestamp());
           obj.addProperty("value", v);
           obj.addProperty("type", v < low ? "below_lower_bound" : "above_upper_bound");
+          obj.addProperty("severity", v < low ? low - v : v - high);
           anomalies.add(obj);
-          if (anomalies.size() >= limit) break;
+          outliers++;
         }
+        if (spikeThreshold != null && previous != null && Math.abs(v - previous) > spikeThreshold) {
+          var obj = new JsonObject();
+          obj.addProperty("timestamp_sec", tv.timestamp());
+          obj.addProperty("value", v);
+          obj.addProperty("type", v > previous ? "spike_up" : "spike_down");
+          obj.addProperty("jump", v - previous);
+          obj.addProperty("severity", Math.abs(v - previous));
+          anomalies.add(obj);
+          spikes++;
+        }
+        previous = v;
       }
+      if (sort.equals("severity")) {
+        anomalies.sort(java.util.Comparator.comparingDouble(
+            (JsonObject a) -> -a.get("severity").getAsDouble()));
+      }
+      var list = new com.google.gson.JsonArray();
+      anomalies.stream().limit(limit).forEach(list::add);
 
-      var quality = DataQuality.fromValues(values);
+      var bounds = new JsonObject();
+      bounds.addProperty("q1", q1);
+      bounds.addProperty("q3", q3);
+      bounds.addProperty("iqr", iqr);
+      bounds.addProperty("lower", low);
+      bounds.addProperty("upper", high);
+
+      var quality = DataQuality.fromValues(inWindow);
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addFollowup("Use find_peaks if looking for signal extrema rather than statistical outliers");
 
       var builder = success()
           .addProperty("anomaly_count", anomalies.size())
+          .addProperty("outlier_count", outliers)
           .addProperty("non_finite_count", nonFiniteCount)
-          .addData("anomalies", GSON.toJsonTree(anomalies))
-          .addDataQuality(quality)
-          .addDirectives(directives);
-      return builder.build();
+          .addData("bounds", bounds)
+          .addProperty("samples_analyzed", finite.size())
+          .addProperty("sort", sort)
+          .addLimitedList("anomalies", list, anomalies.size(), limit);
+      if (spikeThreshold != null) builder.addProperty("spike_count", spikes);
+      if (start != null || end != null) builder.addInputWindow(start, end);
+      return builder.addInput("entry", name).addDataQuality(quality).addDirectives(directives)
+          .build();
     }
   }
 
@@ -291,7 +377,9 @@ public final class StatisticsTools {
 
     @Override
     public String description() {
-      return "Find local maxima and minima (peaks and valleys) in numeric data."
+      return "Find local maxima and minima (peaks and valleys) in numeric data, in time order. "
+          + "maxima_count and minima_count are the true totals; each list is cut at limit "
+          + "(limits gives total and returned). A flat signal has none."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -312,15 +400,16 @@ public final class StatisticsTools {
       var minHeightDiff = getOptDouble(arguments, "min_height_diff");
       int limit = getOptInt(arguments, "limit", 20);
 
-      var values = requireEntry(log, name);
+      var values = requireScalarNumeric(log, name);
 
       var data = values.stream()
-          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
-          .map(tv -> new double[]{tv.timestamp(), ((Number) tv.value()).doubleValue()})
+          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
+          .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
           .toList();
 
       if (data.size() < 3) {
-        throw new IllegalArgumentException("Not enough data");
+        throw new IllegalArgumentException("Not enough data: " + data.size()
+            + " finite sample(s), need 3");
       }
 
       var maxima = new ArrayList<JsonObject>();
@@ -348,12 +437,18 @@ public final class StatisticsTools {
           .addSingleMatchCaveat()
           .addFollowup("Use get_statistics to understand baseline before interpreting peaks");
 
-      var builder = success();
+      var builder = success().addInput("entry", name);
       if (!"min".equals(peakType)) {
-        builder.addData("maxima", GSON.toJsonTree(maxima.stream().limit(limit).toList()));
+        var list = new com.google.gson.JsonArray();
+        maxima.stream().limit(limit).forEach(list::add);
+        builder.addProperty("maxima_count", maxima.size())
+            .addLimitedList("maxima", list, maxima.size(), limit);
       }
       if (!"max".equals(peakType)) {
-        builder.addData("minima", GSON.toJsonTree(minima.stream().limit(limit).toList()));
+        var list = new com.google.gson.JsonArray();
+        minima.stream().limit(limit).forEach(list::add);
+        builder.addProperty("minima_count", minima.size())
+            .addLimitedList("minima", list, minima.size(), limit);
       }
       return builder.addDataQuality(quality).addDirectives(directives).build();
     }
@@ -388,15 +483,16 @@ public final class StatisticsTools {
       int window = getOptInt(arguments, "window_size", 1);
       int limit = getOptInt(arguments, "limit", 100);
 
-      var values = requireEntry(log, name);
+      var values = requireScalarNumeric(log, name);
 
       var data = filterTimeRange(values, start, end).stream()
-          .filter(tv -> tv.value() instanceof Number && Double.isFinite(((Number) tv.value()).doubleValue()))
-          .map(tv -> new double[]{tv.timestamp(), ((Number) tv.value()).doubleValue()})
+          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
+          .map(tv -> new double[]{tv.timestamp(), toDouble(tv.value())})
           .toList();
 
       if (data.size() < 2) {
-        throw new IllegalArgumentException("Not enough data");
+        throw new IllegalArgumentException("Not enough data: " + data.size()
+            + " finite sample(s) in the window, need 2");
       }
 
       var samples = new ArrayList<JsonObject>();
@@ -458,18 +554,21 @@ public final class StatisticsTools {
 
       var stats = new JsonObject();
       stats.addProperty("avg_rate", rateCount == 0 ? 0 : sumRate / rateCount);
+      stats.addProperty("rate_count", rateCount);
 
-      var quality = DataQuality.fromValues(values);
+      var quality = DataQuality.fromValues(filterTimeRange(values, start, end));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Derivatives amplify noise — increase window_size for smoother results");
 
-      return success()
+      var sampleList = new com.google.gson.JsonArray();
+      samples.forEach(sampleList::add);
+      var builder = success()
           .addData("statistics", stats)
-          .addData("samples", GSON.toJsonTree(samples))
-          .addDataQuality(quality)
-          .addDirectives(directives)
-          .build();
+          .addLimitedList("samples", sampleList, rateCount, limit)
+          .addInput("entry", name);
+      if (start != null || end != null) builder.addInputWindow(start, end);
+      return builder.addDataQuality(quality).addDirectives(directives).build();
     }
   }
 
@@ -504,21 +603,23 @@ public final class StatisticsTools {
       var start = getOptDouble(arguments, "start_time");
       var end = getOptDouble(arguments, "end_time");
 
-      var v1 = log.values().get(n1);
-      var v2 = log.values().get(n2);
-      if (v1 == null || v2 == null) {
-        throw new IllegalArgumentException("Entries not found");
-      }
+      var v1 = requireScalarNumeric(log, n1);
+      var v2 = requireScalarNumeric(log, n2);
 
       var d1 = filterTimeRange(v1, start, end).stream()
-          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
+          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
+          .map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(tv.timestamp(),
+              toDouble(tv.value())))
           .toList();
       var d2 = filterTimeRange(v2, start, end).stream()
-          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
+          .filter(tv -> toDouble(tv.value()) != null && Double.isFinite(toDouble(tv.value())))
+          .map(tv -> new org.triplehelix.wpilogmcp.log.TimestampedValue(tv.timestamp(),
+              toDouble(tv.value())))
           .toList();
 
       if (d1.isEmpty() || d2.isEmpty()) {
-        throw new IllegalArgumentException("No numeric data");
+        throw new IllegalArgumentException("No finite samples in the window for "
+            + (d1.isEmpty() ? n1 : n2));
       }
 
       // Estimate sample rates from timestamps to warn about aliasing risk

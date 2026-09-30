@@ -257,7 +257,7 @@ Read values from an entry with time range filtering and pagination.
 - `limit` (optional): Max samples to return (default 100)
 - `offset` (optional): Samples to skip (default 0)
 
-**Returns:** Array of timestamped values
+**Returns:** Array of timestamped values, `total_in_range` (the true count), `returned_count`, `has_more`, and `limits.samples` (total after `offset` vs returned). An unknown entry name is an error with suggestions
 
 **Example Response (Pose2d):**
 ```json
@@ -343,21 +343,26 @@ Get all data types used in the log file.
 **Returns:** Types with entry counts and entry names
 
 ### `find_condition`
-Find timestamps where a numeric entry crosses a threshold. Useful for questions like "When did battery voltage drop below 11V?"
+Find when a numeric or boolean entry satisfies a condition, and for how long. Useful for questions like "When did battery voltage drop below 11V, and for how long?"
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name (e.g., `/Robot/BatteryVoltage`)
-- `operator` (required): Comparison operator: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==)
+- `name` (required): Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0)
+- `operator` (required): Comparison operator: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==, with a relative tolerance of 1e-6)
 - `threshold` (required): Threshold value to compare against
-- `limit` (optional): Maximum transitions to return (default 100)
+- `start_time`, `end_time` (optional): Time window
+- `limit` (optional): Maximum transitions and intervals to return (default 100)
 
-**Returns:** List of timestamps where the condition first becomes true (transitions)
+**Returns:**
+- `transitions[]`: each time the condition becomes true (`timestamp_sec`, `value`; `at_window_start: true` when it was already true at `start_time`); `transition_count` is the true total
+- `intervals[]`: `start`, `end`, `duration`, and `end_reason` (`condition_false`, or `window_end` when still true at the end of the window). Each sample's value holds until the next sample
+- `interval_count`, `total_true_sec`, `fraction_of_window`, `inputs` (entry and window), and `limits` for both lists
 
 **Example Response:**
 ```json
 {
   "success": true,
+  "status": "ok",
   "name": "/Robot/BatteryVoltage",
   "condition": "/Robot/BatteryVoltage < 11.0",
   "transition_count": 3,
@@ -365,7 +370,16 @@ Find timestamps where a numeric entry crosses a threshold. Useful for questions 
     {"timestamp_sec": 45.23, "value": 10.89},
     {"timestamp_sec": 89.45, "value": 10.95},
     {"timestamp_sec": 134.12, "value": 10.78}
-  ]
+  ],
+  "interval_count": 3,
+  "intervals": [
+    {"start": 45.23, "end": 45.61, "duration": 0.38, "end_reason": "condition_false"},
+    {"start": 89.45, "end": 89.52, "duration": 0.07, "end_reason": "condition_false"},
+    {"start": 134.12, "end": 135.0, "duration": 0.88, "end_reason": "condition_false"}
+  ],
+  "total_true_sec": 1.33,
+  "fraction_of_window": 0.0089,
+  "limits": {"transitions": {"total": 3, "returned": 3, "limit": 100}, "intervals": {"total": 3, "returned": 3, "limit": 100}}
 }
 ```
 
@@ -460,42 +474,40 @@ Compare two entries (useful for RealOutputs vs ReplayOutputs).
 - `name1` (required): First entry name
 - `name2` (required): Second entry name
 
-**Returns:** RMSE (root mean square error) and max difference between the two entries, with data quality and analysis directives
+**Returns:** RMSE (root mean square error), max difference, `samples_compared`, and `reference_entry` (the denser entry, whose timestamps are used; the other is linearly interpolated, never extrapolated), with data quality and analysis directives. Entries that are not scalar numbers (e.g. `struct:ChassisSpeeds`) are an error naming the type, and entries with no overlapping time span are an error naming both spans — never a success with `rmse: NaN`
 
 ### `detect_anomalies`
-Detect anomalies (outliers) in numeric data using the IQR (Interquartile Range) method with proper linear percentile interpolation. Values outside Q1 - 1.5xIQR or Q3 + 1.5xIQR are flagged as outliers. Optionally detects sudden spikes (large percentage changes between consecutive samples).
-
-**Note:** IQR calculation uses linear interpolation between data points for accurate percentile estimates, ensuring reliable outlier detection even with small datasets.
+Detect anomalies in a numeric entry within an optional time window: outliers outside Tukey fences (Q1 − k·IQR, Q3 + k·IQR, with linearly interpolated percentiles), and, when `spike_threshold` is given, spikes — sample-to-sample jumps larger than the threshold.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name to analyze (must be numeric type)
-- `iqr_multiplier` (optional): Multiplier for IQR bounds (default 1.5). Use 3.0 for extreme outliers only
-- `spike_threshold` (optional): Detect spikes larger than this percentage change (e.g., 50 for 50% change)
+- `name` (required): Entry name to analyze (double, float, int64, or boolean; other types are an error naming the type)
+- `iqr_multiplier` (optional): Multiplier k for the IQR fences (default 1.5). Use 3.0 for extreme outliers only
+- `spike_threshold` (optional): Flag consecutive samples that differ by more than this, in the entry's units (off by default)
+- `start_time`, `end_time` (optional): Time window. Boot transients and disabled time count unless the window excludes them — take windows from `get_match_phases`
+- `sort` (optional): `time` (default) or `severity` (distance beyond the fence, or jump size)
 - `limit` (optional): Maximum anomalies to return (default 50)
 
-**Returns:** Anomaly count, non-finite count, and list of anomalies with timestamps, values, and type
+**Returns:** `anomaly_count` (the true total), `outlier_count`, `spike_count` (when enabled), `non_finite_count`, `samples_analyzed`, `bounds` (`q1`, `q3`, `iqr`, `lower`, `upper`), `anomalies[]` (`timestamp_sec`, `value`, `type` — `below_lower_bound`, `above_upper_bound`, `spike_up`, `spike_down` — `severity`, and `jump` for spikes), and `limits.anomalies` (total vs returned).
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "anomaly_count": 3,
+  "status": "ok",
+  "anomaly_count": 38,
+  "outlier_count": 38,
   "non_finite_count": 0,
+  "bounds": {"q1": 16.4, "q3": 19.1, "iqr": 2.7, "lower": 12.35, "upper": 23.15},
+  "samples_analyzed": 11952,
+  "sort": "severity",
   "anomalies": [
-    {
-      "timestamp_sec": 45.23,
-      "value": 10.5,
-      "type": "below_lower_bound"
-    },
-    {
-      "timestamp_sec": 89.1,
-      "value": 9.8,
-      "type": "below_lower_bound"
-    }
+    {"timestamp_sec": 245.1, "value": 91.9, "type": "above_upper_bound", "severity": 68.75},
+    {"timestamp_sec": 301.7, "value": 60.2, "type": "above_upper_bound", "severity": 37.05}
   ],
-  "data_quality": { "sample_count": 7716, "quality_score": 0.95 },
-  "server_analysis_directives": { "confidence": "high" }
+  "limits": {"anomalies": {"total": 38, "returned": 2, "limit": 2}},
+  "data_quality": { "sample_count": 11952, "quality_score": 0.5 },
+  "server_analysis_directives": { "confidence_level": "low", "...": "..." }
 }
 ```
 
@@ -509,7 +521,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple 
 - `min_height_diff` (optional): Minimum height difference from neighbors to count as a peak. Filters out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
 
-**Returns:** Lists of maxima and/or minima with height difference from neighbors
+**Returns:** Lists of maxima and/or minima (in time order) with height difference from neighbors; `maxima_count` and `minima_count` are the true totals, and `limits` gives total vs returned for each list. Entries that are not scalar numbers are an error naming the type
 
 **Example Response:**
 ```json
@@ -545,7 +557,7 @@ Compute rate of change (derivative) of numeric data over time. Calculates dv/dt 
 - `window_size` (optional): Number of samples to average for smoothing (default 1 = no smoothing). Higher values reduce noise but may miss short events
 - `limit` (optional): Maximum samples to return (default 100)
 
-**Returns:** Derivative values with timestamp and statistics
+**Returns:** Derivative values with timestamp (`samples`, cut at `limit`, with `limits.samples` giving the true count) and `statistics` (`avg_rate`, `rate_count`). Entries that are not scalar numbers are an error naming the type
 
 **Example Response:**
 ```json
@@ -1326,131 +1338,94 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 ```
 
 ### `analyze_vision`
-Analyze vision system reliability and pose estimation quality. Detects target acquisition rate, flicker (rapid loss/reacquisition), and sudden pose jumps ("teleportation"). Enhanced with pose jump detection to identify unreliable vision estimates that can cause odometry drift.
+Analyze vision data three ways: pose observation streams, has-target flags, and pose jumps.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `vision_prefix` (optional): Entry path prefix for vision data (auto-detect if not specified)
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
-- `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5). Lower values detect smaller jumps
+- `vision_prefix` (optional): Only vision entries under this prefix (case-insensitive). It limits vision entries only — the robot pose can live elsewhere
+- `pose_entry` (optional): Robot pose entry (`struct:Pose2d` or `Pose3d`) for residuals and jump detection; default: the scalar `Pose2d` with the most samples that is not a vision entry
+- `start_time`, `end_time` (optional): Time window
+- `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
 
-**Searches for entries containing:**
-- Target valid: `hasTarget`, `tv`, `targetValid`, `hasResult`
-- Vision pose: `visionPose`, `estimatedPose`, `botPose`, `robotPose`
-- Odometry: `odometry` + `pose`
+**observation_streams:** struct arrays whose records hold a `timestamp` and a pose — for example the AdvantageKit vision template's `/Vision/Camera<N>/PoseObservations` (`struct:PoseObservation[]`, from PhotonVision or Limelight) — found by content, not by name, one stream per camera. Per stream: `records`, `records_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (median, p95, max), `latency` (log timestamp minus the observation's own timestamp, in ms), and `residual_vs_robot_pose` (planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp; note the robot pose may itself include vision corrections).
 
-**Returns:** Target acquisition analysis, flicker detection, and pose jump analysis with specific jump locations
+**target_acquisition:** entries named `hasTarget`, `targetValid`, or ending in `/tv` (Limelight): `total_samples`, `valid_samples`, `acquisition_rate`, `flicker_events`. Values logged only on change make the per-sample rate approximate.
 
-**Pose Jump Detection:** Identifies sudden position changes that exceed the threshold. Useful for diagnosing:
-- Ambiguous AprilTag detections causing incorrect pose estimates
-- Tag ID misidentification
-- Poorly tuned vision standard deviations
-- Lighting or camera exposure issues
+**pose_jumps:** steps larger than `jump_threshold` between consecutive samples of the robot pose and of scalar vision pose entries (`pose_entries_checked`); always present (empty when none), with `jump_count` the true total and `limits.pose_jumps`. Samples whose pose cannot be read are counted in `unreadable_pose_samples`, never treated as zero movement.
 
-**Example Response:**
+**Status:** `no_match` (with `looked_for`) when the log has no observation streams, has-target entries, or scalar poses; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing).
+
+**Pose Jump Detection** helps diagnose ambiguous AprilTag detections, tag misidentification, poorly tuned vision standard deviations, and exposure problems.
+
+**Example Response (abridged):**
 ```json
 {
   "success": true,
-  "entries_found": {
-    "target_valid_entries": 2,
-    "vision_pose_entries": 1,
-    "odometry_pose_entries": 1
-  },
-  "target_acquisition": [
+  "status": "ok",
+  "inputs": {"entries": {"robot_pose": "/RealOutputs/Drive/Pose"}},
+  "observation_streams": [
     {
-      "entry": "/Vision/HasTarget",
-      "total_samples": 7500,
-      "valid_samples": 6200,
-      "acquisition_rate": 0.827,
-      "flicker_events": 12
+      "entry": "/Vision/Camera3/PoseObservations",
+      "camera": "Camera3",
+      "records": 4225,
+      "records_with_observations": 2377,
+      "observation_count": 2377,
+      "observations_per_second": 1.5,
+      "tag_count_distribution": {"1": 2377},
+      "ambiguity": {"n": 2377, "median": 0.0, "p95": 0.12, "max": 0.31},
+      "latency": {"n": 2377, "median_ms": 61.2, "p95_ms": 84.0, "max_ms": 180.0, "basis": "log timestamp minus the observation's own timestamp"},
+      "residual_vs_robot_pose": {"n": 2377, "median_m": 0.04, "p95_m": 0.21, "max_m": 1.3, "robot_pose_entry": "/RealOutputs/Drive/Pose", "basis": "..."}
     }
   ],
-  "pose_jumps": [
-    {
-      "entry": "/Vision/EstimatedPose",
-      "jump_count": 3,
-      "jumps": [
-        {
-          "timestamp": 45.23,
-          "distance_m": 0.82,
-          "from_x": 2.1,
-          "from_y": 5.5,
-          "to_x": 2.9,
-          "to_y": 5.4
-        }
-      ]
-    }
-  ]
+  "target_acquisition": [],
+  "pose_jumps": [{"timestamp": 370.1, "entry": "/RealOutputs/Drive/Pose", "distance": 0.61}],
+  "jump_count": 1,
+  "limits": {"pose_jumps": {"total": 1, "returned": 1, "limit": 100}},
+  "pose_entries_checked": ["/RealOutputs/Drive/Pose"]
 }
 ```
 
 ### `profile_mechanism`
-Analyze closed-loop mechanism performance including following error RMSE, stall detection, settling time, overshoot calculations, and temperature profiling. Enhanced with advanced control system metrics for PID tuning and mechanism health monitoring.
+Profile one closed-loop mechanism: following error, step response, stalls, and motor temperature.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `mechanism_name` (required): Name or prefix of mechanism to analyze (e.g., "Elevator", "Arm", "Shooter")
-- `start_time` (optional): Start timestamp in seconds
-- `end_time` (optional): End timestamp in seconds
-- `stall_current_threshold` (optional): Current threshold for stall detection in amperes (default: 30A)
+- `mechanism_name` (optional if role entries are given): Text contained in the mechanism's entry names, case-insensitive, anywhere in the name (e.g. `Elevator`, or `ModuleFrontLeft/Drive` to pick one stem)
+- `setpoint_entry`, `measurement_entry`, `velocity_entry`, `current_entry`, `temperature_entry` (optional): Choose any role explicitly (scalar numeric entries)
+- `start_time`, `end_time` (optional): Time window (applies to every section)
+- `stall_current_threshold` (optional): Current above which a stopped mechanism counts as stalled (default: 30 A)
+- `stall_velocity_threshold` (optional): `|velocity|` below this counts as stopped, in the velocity entry's units (default: 0.01)
 
-**Searches for entries containing the mechanism name plus:**
-- Setpoint: `setpoint`, `goal`, `target`, `desired`
-- Measurement: `position`, `measurement`, `actual`
-- Velocity: `velocity`, `speed`
-- Output: `output`, `voltage`, `dutyCycle`
-- Current: `current`
-- Temperature: `temp`, `temperature`
+**How entries are found:** scalar numeric entries containing `mechanism_name` are assigned a role by leaf name — setpoint (`setpoint`, `goal`, `target`, `reference`, `desired`, `commanded`), temperature (`temp`, `celsius`), current (the amperage rule `power_analysis` uses), velocity (`velocity`, `speed`, `rpm`, `rps`), measurement (`position`, `actual`, `measured`, `angle`, `height`, `distance`, `rotations`, but not velocity, current, or voltage names) — and grouped by the **stem** before the role word, so `DriveVelocityRadPerSec` and `TurnVelocityRadPerSec` under one module are different mechanisms. The stem with the most roles is used (ties by entry id); `other_stems` and a warning list the rest. `roles` names every entry used (null when unresolved).
 
-**Returns:** Comprehensive mechanism performance analysis including:
-- **Following Error**: RMSE, max error, mean error - indicates control loop accuracy
-- **Stall Detection**: Detects when velocity is near zero (< 0.01) while current exceeds threshold - indicates mechanical binding or overload
-- **Settling Time**: Time to reach and stay within threshold of setpoint - measures control response speed
-- **Overshoot**: Maximum overshoot percentage beyond setpoint - indicates control aggressiveness
-- **Temperature Analysis**: Max/avg temperature with overheat warnings
+**Returns:**
+- `following_error` (setpoint and measurement): `rmse`, `mean_error` (bias), `max_abs_error`, `samples` — the measurement minus the setpoint **in force** (held until the next setpoint sample); `steps` (setpoint changes larger than 5%, at least 0.01), `settled_steps`, `settling_time_sec` (`avg`, `max`, `min`: time until the measurement enters and stays within 5% of the step size, before the next step), `overshoot_percent` (average over steps of the overshoot beyond the new setpoint as a percent of the step size) and `max_overshoot_percent`, and `step_details` (first 20 steps)
+- `stall_events` (velocity and current): intervals of `|velocity|` below the velocity threshold with current above the current threshold (`start_time`, `end_time`, `duration`, `max_current`, `open_at_end` when still stalled at the end of the data); `stall_count` is the true total
+- `temperature` (temperature entry): `max`, `max_time_sec`, `first`, `last`
+- `skipped`: each section whose entries were not found, with the missing role (status `partial`)
 
-**Example Response:**
+**Status:** `no_match` when nothing containing `mechanism_name` has a recognizable role.
+
+**Example Response (abridged):**
 ```json
 {
   "success": true,
+  "status": "partial",
   "mechanism": "Elevator",
-  "entries": {
-    "setpoint": "/Elevator/Setpoint",
-    "measurement": "/Elevator/Position",
-    "velocity": "/Elevator/Velocity",
-    "current": "/Elevator/Current",
-    "temperature": "/Elevator/Temperature"
-  },
+  "roles": {"setpoint": "/RealOutputs/Elevator/GoalMeters", "measurement": "/Elevator/PositionMeters",
+    "velocity": "/Elevator/VelocityMetersPerSec", "current": "/Elevator/CurrentAmps", "temperature": null},
+  "stem": "",
   "following_error": {
-    "rmse": 0.015,
-    "max_error": 0.089,
-    "mean_error": 0.012,
-    "sample_count": 7500
+    "rmse": 0.015, "mean_error": -0.004, "max_abs_error": 0.089, "samples": 7500,
+    "steps": 14, "settled_steps": 13,
+    "settling_time_sec": {"avg": 0.45, "max": 0.9, "min": 0.3},
+    "overshoot_percent": 12.5, "max_overshoot_percent": 21.0,
+    "step_details": [{"time": 45.0, "from": 0.1, "to": 1.2, "overshoot_percent": 12.0, "settling_time_sec": 0.42}]
   },
-  "settling_time_sec": 0.45,
-  "overshoot_percent": 12.5,
-  "stall_events": [
-    {
-      "start_time": 45.23,
-      "end_time": 45.78,
-      "duration": 0.55,
-      "max_current": 38.2
-    },
-    {
-      "start_time": 89.12,
-      "end_time": 89.34,
-      "duration": 0.22,
-      "max_current": 35.5
-    }
-  ],
-  "temperature": {
-    "max_temperature_c": 58.2,
-    "avg_temperature_c": 42.1,
-    "overheat_warning": false
-  },
-  "_execution_time_ms": 125
+  "stall_events": [{"start_time": 45.23, "end_time": 45.78, "duration": 0.55, "max_current": 38.2}],
+  "stall_count": 1,
+  "skipped": [{"section": "temperature", "reason": "No temperature entry for this mechanism."}]
 }
 ```
 

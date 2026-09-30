@@ -897,8 +897,32 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      // Should succeed but with NaN RMSE since no points overlap
-      assertTrue(resultObj.get("success").getAsBoolean());
+      // No overlap means nothing to compare: an error naming both time spans, never a
+      // "success" carrying rmse NaN (review A6)
+      assertFalse(resultObj.get("success").getAsBoolean());
+      var error = resultObj.get("error").getAsString();
+      assertTrue(error.contains("No overlapping samples"), error);
+      assertTrue(error.contains("0.000-2.000 s") && error.contains("5.000-7.000 s"), error);
+    }
+
+    @Test
+    @DisplayName("rejects struct entries with an error naming the type (review A6, D2)")
+    void rejectsStructEntries() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/compare_struct.wpilog")
+          .addStructEntry("/Drive/Speeds", "struct:ChassisSpeeds", new double[]{0, 1},
+              java.util.List.of(java.util.Map.of("vx", 1.0), java.util.Map.of("vx", 2.0)))
+          .addNumericEntry("/Entry/A", new double[]{0, 1}, new double[]{1, 2})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name1", "/Drive/Speeds");
+      args.addProperty("name2", "/Entry/A");
+      var resultObj = findTool("compare_entries").execute(args).getAsJsonObject();
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("struct:ChassisSpeeds"));
+      assertFalse(resultObj.toString().contains("NaN"));
     }
   }
 

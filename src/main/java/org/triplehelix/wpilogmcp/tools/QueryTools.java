@@ -148,9 +148,14 @@ public final class QueryTools {
 
     @Override
     public String description() {
-      return "Find timestamps where a numeric entry crosses a threshold. "
-          + "Useful for questions like 'When did battery voltage drop below 11V?' "
-          + "Returns transition points where the condition first becomes true.";
+      return "Find when a numeric or boolean entry satisfies a condition (value <op> threshold; "
+          + "booleans read as 1/0), within an optional time window. Returns transitions (each "
+          + "time the condition becomes true, with the value) and intervals (start, end, "
+          + "duration; each value holds until the next sample, and an interval still true at "
+          + "the end of the window ends with end_reason window_end), plus total_true_sec and "
+          + "fraction_of_window. transition_count and interval_count are true totals; lists are "
+          + "cut at limit, with limits giving total and returned. Useful for questions like "
+          + "'When did battery voltage drop below 11V, and for how long?'";
     }
 
     @Override
@@ -163,26 +168,32 @@ public final class QueryTools {
               "Comparison operator: lt (<), lte (<=), gt (>), gte (>=), eq (==)",
               true)
           .addNumberProperty("threshold", "Threshold value to compare against", true, null)
-          .addIntegerProperty("limit", "Maximum number of transitions to return", false, 100)
+          .addNumberProperty("start_time", "Start timestamp (s)", false, null)
+          .addNumberProperty("end_time", "End timestamp (s)", false, null)
+          .addIntegerProperty("limit", "Maximum number of transitions and intervals to return", false, 100)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var name = arguments.get("name").getAsString();
-      var operator = arguments.get("operator").getAsString();
-      double threshold = arguments.get("threshold").getAsDouble();
-      int limit = arguments.has("limit") && !arguments.get("limit").isJsonNull()
-          ? arguments.get("limit").getAsInt()
-          : 100;
+      var name = getRequiredString(arguments, "name");
+      var operator = getRequiredString(arguments, "operator");
+      var thresholdArg = getOptDouble(arguments, "threshold");
+      if (thresholdArg == null) throw new IllegalArgumentException("Missing required parameter: threshold");
+      double threshold = thresholdArg;
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      int limit = getOptInt(arguments, "limit", 100);
+      validatePositive(limit, "limit");
+      evaluateCondition(0, operator, threshold); // validates the operator up front
 
       var entry = log.entries().get(name);
       if (entry == null) {
-        throw new IllegalArgumentException("Entry not found: " + name);
+        requireEntry(log, name); // throws with suggestions
       }
-
-      if (!isNumericType(entry.type())) {
-        throw new IllegalArgumentException("Entry is not numeric type: " + entry.type());
+      if (!isNumericType(entry.type()) && !"boolean".equals(entry.type())) {
+        throw new IllegalArgumentException("Entry " + name + " is " + entry.type()
+            + ", not numeric; find_condition reads double, float, int64, and boolean entries");
       }
 
       var values = log.values().get(name);
@@ -190,35 +201,75 @@ public final class QueryTools {
         throw new IllegalArgumentException("No values for entry: " + name);
       }
 
+      double windowStart = startTime != null ? startTime : values.get(0).timestamp();
+      double windowEnd = endTime != null ? endTime : log.maxTimestamp();
       var transitions = new ArrayList<JsonObject>();
+      var intervals = new ArrayList<JsonObject>();
       boolean wasTrue = false;
-
+      double openedAt = 0;
+      double totalTrue = 0;
+      // The value in force at the window start counts, so an interval can begin there
+      if (startTime != null) {
+        var held = toDouble(getValueAtTimeZoh(values, startTime));
+        if (held != null && Double.isFinite(held) && evaluateCondition(held, operator, threshold)) {
+          wasTrue = true;
+          openedAt = startTime;
+          var t = new JsonObject();
+          t.addProperty("timestamp_sec", startTime);
+          t.addProperty("value", held);
+          t.addProperty("at_window_start", true);
+          transitions.add(t);
+        }
+      }
       for (var tv : values) {
-        if (!(tv.value() instanceof Number)) continue;
-
-        double value = ((Number) tv.value()).doubleValue();
-        boolean isTrue = evaluateCondition(value, operator, threshold);
-
+        if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+        var v = toDouble(tv.value());
+        if (v == null || !Double.isFinite(v)) continue;
+        boolean isTrue = evaluateCondition(v, operator, threshold);
         if (isTrue && !wasTrue) {
-          var transition = new JsonObject();
-          transition.addProperty("timestamp_sec", tv.timestamp());
-          transition.addProperty("value", value);
-          transitions.add(transition);
-
-          if (transitions.size() >= limit) break;
+          var t = new JsonObject();
+          t.addProperty("timestamp_sec", tv.timestamp());
+          t.addProperty("value", v);
+          transitions.add(t);
+          openedAt = tv.timestamp();
+        } else if (!isTrue && wasTrue) {
+          intervals.add(interval(openedAt, tv.timestamp(), "condition_false"));
+          totalTrue += tv.timestamp() - openedAt;
         }
         wasTrue = isTrue;
       }
+      if (wasTrue) {
+        intervals.add(interval(openedAt, windowEnd, "window_end"));
+        totalTrue += Math.max(0, windowEnd - openedAt);
+      }
 
       var transitionsArray = new JsonArray();
-      transitions.forEach(transitionsArray::add);
+      transitions.stream().limit(limit).forEach(transitionsArray::add);
+      var intervalsArray = new JsonArray();
+      intervals.stream().limit(limit).forEach(intervalsArray::add);
+      double windowLength = windowEnd - windowStart;
 
-      return success()
+      var builder = success()
           .addProperty("name", name)
           .addProperty("condition", name + " " + operatorSymbol(operator) + " " + threshold)
           .addProperty("transition_count", transitions.size())
-          .addData("transitions", transitionsArray)
-          .build();
+          .addLimitedList("transitions", transitionsArray, transitions.size(), limit)
+          .addProperty("interval_count", intervals.size())
+          .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
+          .addProperty("total_true_sec", totalTrue)
+          .addInput("entry", name)
+          .addInputWindow(windowStart, windowEnd);
+      if (windowLength > 0) builder.addProperty("fraction_of_window", totalTrue / windowLength);
+      return builder.build();
+    }
+
+    static JsonObject interval(double start, double end, String reason) {
+      var o = new JsonObject();
+      o.addProperty("start", start);
+      o.addProperty("end", end);
+      o.addProperty("duration", Math.max(0, end - start));
+      o.addProperty("end_reason", reason);
+      return o;
     }
 
     private boolean evaluateCondition(double value, String operator, double threshold) {
@@ -486,7 +537,7 @@ public final class QueryTools {
           .addProperty("returned", page.size())
           .addProperty("match_count", page.size())
           .addProperty("has_more", to < available)
-          .addData("matches", matchesArray)
+          .addLimitedList("matches", matchesArray, Math.max(0, available - from), limit)
           .build();
     }
 

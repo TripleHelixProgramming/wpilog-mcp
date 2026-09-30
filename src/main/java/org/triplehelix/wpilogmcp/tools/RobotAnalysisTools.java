@@ -1220,12 +1220,29 @@ public final class RobotAnalysisTools {
       // ── Required params ──────────────────────────────────────────────────────
       var velEntry  = getRequiredString(args, "velocity_entry");
       var currEntry = getRequiredString(args, "current_entry");
-      double kt     = args.get("kt").getAsDouble();
-      double G      = args.get("gear_ratio").getAsDouble();
+      var ktArg = getOptDouble(args, "kt");
+      var gearArg = getOptDouble(args, "gear_ratio");
+      if (ktArg == null || gearArg == null) {
+        throw new IllegalArgumentException("Missing required parameter: "
+            + (ktArg == null ? "kt (motor torque constant, Nm/A)" : "gear_ratio"));
+      }
+      double kt     = ktArg;
+      double G      = gearArg;
+      if (!(kt > 0) || !Double.isFinite(kt)) {
+        throw new IllegalArgumentException("kt must be a positive number (Nm/A), got " + kt);
+      }
+      if (!(G > 0) || !Double.isFinite(G)) {
+        throw new IllegalArgumentException("gear_ratio must be a positive number, got " + G);
+      }
 
       // ── Optional params ──────────────────────────────────────────────────────
       int    motorCount  = getOptInt(args,    "motor_count",     1);
+      validatePositive(motorCount, "motor_count");
       Double wheelRadius = getOptDouble(args, "wheel_radius");
+      if (wheelRadius != null && !(wheelRadius > 0)) {
+        throw new IllegalArgumentException("wheel_radius must be positive (meters), got "
+            + wheelRadius);
+      }
       String voltsEntry  = getOptString(args, "applied_volts_entry", null);
       Double startTime   = getOptDouble(args, "start_time");
       Double endTime     = getOptDouble(args, "end_time");
@@ -1368,8 +1385,11 @@ public final class RobotAnalysisTools {
       result.addProperty("success", true);
       result.addProperty("J_kg_m2", J);
       result.addProperty("B_Nm_s_per_rad", B);
-      result.addProperty("r_squared", r2);
-      result.addProperty("rmse_nm", rmse);
+      // Undefined fit quality (all-zero torque) is null with a warning, never NaN
+      if (Double.isFinite(r2)) result.addProperty("r_squared", r2);
+      else result.add("r_squared", com.google.gson.JsonNull.INSTANCE);
+      if (Double.isFinite(rmse)) result.addProperty("rmse_nm", rmse);
+      else result.add("rmse_nm", com.google.gson.JsonNull.INSTANCE);
       result.addProperty("n_samples_used", nUsed);
       result.addProperty("n_samples_total", n);
       result.addProperty("filtered_by_alpha_threshold", filtByThr);
@@ -1378,6 +1398,9 @@ public final class RobotAnalysisTools {
       var warnings = new JsonArray();
       if (J < 0)
         warnings.add("J is negative — physically invalid. If current is unsigned, add applied_volts_entry.");
+      if (!Double.isFinite(r2))
+        warnings.add("R² is undefined: the modeled torque is zero for every sample used "
+            + "(check the current entry and kt).");
       if (!Double.isNaN(r2) && r2 < 0.2)
         warnings.add(String.format("R²=%.3f is low. Narrow the window to a clean acceleration transient, "
             + "raise alpha_threshold, or increase smooth_window.", r2));

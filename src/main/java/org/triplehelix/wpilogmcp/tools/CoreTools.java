@@ -259,7 +259,11 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "Read values from an entry. Supports time range filtering and pagination.";
+      return "Read values from an entry, in time order, with optional time range and paging: "
+          + "total_in_range is the true count, offset/limit select a page, has_more says whether "
+          + "another page exists, and limits.samples gives total (after offset) and returned. "
+          + "One page is not the whole signal: use get_statistics, find_condition, or "
+          + "find_peaks for claims about a window.";
     }
 
     @Override
@@ -276,11 +280,7 @@ public final class CoreTools {
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var name = getRequiredString(arguments, "name");
-      var allValues = log.values().get(name);
-
-      if (allValues == null) {
-        throw new IllegalArgumentException("Entry not found: " + name);
-      }
+      var allValues = requireEntry(log, name); // not found: error with suggestions
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
@@ -320,7 +320,9 @@ public final class CoreTools {
       result.addProperty("returned_count", paged.size());
       result.addProperty("offset", offset);
       result.addProperty("limit", limit);
-      result.add("samples", samples);
+      result.addProperty("has_more", offset + paged.size() < totalInRange);
+      ResultContract.addLimitedList(result, "samples", samples, Math.max(0, totalInRange - offset),
+          limit);
       return result;
     }
   }

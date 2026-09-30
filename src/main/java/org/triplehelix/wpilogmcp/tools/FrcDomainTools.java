@@ -397,15 +397,29 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze vision system reliability: target acquisition rate, flicker detection, "
-          + "pose discrepancy between vision and odometry, and sudden pose jumps."
+      return "Analyze vision data three ways. observation_streams: struct arrays of pose "
+          + "observations (for example the AdvantageKit vision template's "
+          + "/Vision/Camera<N>/PoseObservations from PhotonVision or Limelight), found by content "
+          + "(each record holds a timestamp and a pose), one stream per camera, with record and "
+          + "observation counts, observation rate, tag-count and ambiguity distributions, latency "
+          + "(log time minus the observation's own timestamp), and the residual between each "
+          + "observation and the robot pose at the observation's timestamp (robot_pose_entry, "
+          + "chosen or passed as pose_entry). target_acquisition: Limelight-style has-target "
+          + "entries (tv, hasTarget, targetValid) with acquisition rate and flicker. pose_jumps: "
+          + "steps larger than jump_threshold in scalar pose entries. vision_prefix limits the "
+          + "vision entries only (case-insensitive); the robot pose may live elsewhere. Returns "
+          + "no_match with what was searched when none of these exist."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("vision_prefix", "string", "Entry path prefix for vision data", false)
+          .addProperty("vision_prefix", "string",
+              "Only vision entries under this prefix (case-insensitive), e.g. '/Vision'", false)
+          .addProperty("pose_entry", "string",
+              "Robot pose entry (struct:Pose2d or Pose3d) for residuals and jump detection; "
+                  + "default: the scalar Pose2d with the most samples that is not a vision entry", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("jump_threshold", "Distance threshold for jump detection (meters)", false, 0.5)
@@ -413,391 +427,660 @@ public final class FrcDomainTools {
           .build();
     }
 
+    static boolean underPrefix(String name, String prefix) {
+      return prefix == null || name.toLowerCase().startsWith(prefix.toLowerCase());
+    }
+
+    static boolean isScalarPose(org.triplehelix.wpilogmcp.log.EntryInfo e) {
+      return e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d");
+    }
+
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
       var visionPrefix = getOptString(arguments, "vision_prefix", null);
+      var poseArg = getOptString(arguments, "pose_entry", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double jumpThreshold = getOptDouble(arguments, "jump_threshold", 0.5);
       double flickerWindow = getOptDouble(arguments, "flicker_window", 0.5);
+      var entries = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id)).toList();
 
-      var targetValidEntries = new ArrayList<String>();
-      var poseEntries = new ArrayList<String>();
-
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      // Robot pose: explicit, else the scalar Pose2d with the most samples outside vision entries
+      String robotPose = poseArg;
+      if (robotPose != null) {
+        requireEntry(log, robotPose);
+        if (!isScalarPose(log.entries().get(robotPose))) {
+          throw new IllegalArgumentException("pose_entry " + robotPose + " is "
+              + log.entries().get(robotPose).type() + ", not struct:Pose2d or struct:Pose3d");
+        }
+      } else {
+        robotPose = entries.stream()
+            .filter(e -> e.type().equals("struct:Pose2d"))
+            .filter(e -> !e.name().toLowerCase().contains("vision"))
+            .filter(e -> log.sampleCount(e.name()) >= 2)
+            .max(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
+                    log.sampleCount(e.name()))
+                .thenComparingInt(e -> -e.id()))
+            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).orElse(null);
       }
 
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        boolean matchesPrefix = visionPrefix == null || entryName.startsWith(visionPrefix);
-
-        if (matchesPrefix && (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv") || lower.contains("targetvalid"))) {
-          targetValidEntries.add(entryName);
-        }
-
-        if (matchesPrefix && lower.contains("pose") && !lower.contains("target")) {
-          var entry = log.entries().get(entryName);
-          if (entry != null && (entry.type().contains("Pose2d") || entry.type().contains("Pose3d"))) {
-            poseEntries.add(entryName);
-          }
+      // Vision entries (prefix applies only here)
+      var targetEntries = new ArrayList<String>();
+      var streams = new ArrayList<String>();
+      for (var e : entries) {
+        if (!underPrefix(e.name(), visionPrefix)) continue;
+        var lower = e.name().toLowerCase();
+        if (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
+            || lower.contains("targetvalid")) {
+          targetEntries.add(e.name());
+        } else if (e.type().startsWith("struct:") && e.type().endsWith("[]")
+            && isObservationStream(log.values().get(e.name()))) {
+          streams.add(e.name());
         }
       }
+      // Jumps: the robot pose plus scalar vision pose estimates
+      var jumpEntries = new ArrayList<String>();
+      if (robotPose != null) jumpEntries.add(robotPose);
+      for (var e : entries) {
+        if (!isScalarPose(e) || e.name().equals(robotPose) || log.sampleCount(e.name()) < 2) continue;
+        var lower = e.name().toLowerCase();
+        if (lower.contains("vision") && underPrefix(e.name(), visionPrefix)) jumpEntries.add(e.name());
+      }
 
-      var targetAnalysis = targetValidEntries.stream()
-          .map(name -> {
-            var values = log.values().get(name);
-            if (values == null || values.isEmpty()) return null;
+      if (targetEntries.isEmpty() && streams.isEmpty() && jumpEntries.isEmpty()) {
+        return ResponseBuilder.noMatch("No vision data or pose entries found"
+                + (visionPrefix != null ? " (vision entries under " + visionPrefix + ")" : "") + ".")
+            .lookedFor(List.of(
+                "struct arrays whose records hold a timestamp and a pose (pose observations)",
+                "has-target entries: names containing hasTarget or targetValid, or ending in /tv",
+                "scalar struct:Pose2d/Pose3d entries (robot pose; vision pose estimates)"))
+            .hint("Use search_entries with pattern 'vision' or 'camera', then pass vision_prefix "
+                + "or pose_entry.")
+            .build();
+      }
 
-            int totalSamples = 0;
-            int validSamples = 0;
-            int flickerCount = 0;
-            var lastTransition = (Double) null;
-            var lastState = (Boolean) null;
+      var builder = success();
+      if (robotPose != null) builder.addInput("robot_pose", robotPose);
+      if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
 
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              totalSamples++;
+      var targetAnalysis = new JsonArray();
+      for (var name : targetEntries) {
+        var a = targetAcquisition(log.values().get(name), startTime, endTime, flickerWindow);
+        a.addProperty("entry", name);
+        targetAnalysis.add(a);
+      }
+      builder.addData("target_acquisition", targetAnalysis);
 
-              boolean hasTarget = false;
-              if (tv.value() instanceof Boolean b) hasTarget = b;
-              else if (tv.value() instanceof Number n) hasTarget = n.doubleValue() > 0.5;
+      var streamsJson = new JsonArray();
+      var robotPoseValues = robotPose != null ? log.values().get(robotPose) : null;
+      for (var name : streams) {
+        var o = observationStream(name, log.values().get(name), startTime, endTime,
+            robotPose, robotPoseValues);
+        streamsJson.add(o);
+      }
+      builder.addData("observation_streams", streamsJson);
+      if (streams.isEmpty() && targetEntries.isEmpty()) {
+        builder.addSkipped("observation_streams", "No pose observation streams or has-target "
+            + "entries" + (visionPrefix != null ? " under " + visionPrefix : "")
+            + "; only pose jumps were checked.");
+      }
 
-              if (hasTarget) validSamples++;
-
-              if (lastState != null && !lastState.equals(hasTarget)) {
-                if (lastTransition != null && (tv.timestamp() - lastTransition) < flickerWindow) {
-                  flickerCount++;
-                }
-                lastTransition = tv.timestamp();
-              }
-              lastState = hasTarget;
-            }
-
-            var analysis = new JsonObject();
-            analysis.addProperty("entry", name);
-            analysis.addProperty("total_samples", totalSamples);
-            analysis.addProperty("valid_samples", validSamples);
-            analysis.addProperty("acquisition_rate", totalSamples > 0 ? (double) validSamples / totalSamples : 0);
-            analysis.addProperty("flicker_events", flickerCount);
-            return analysis;
-          })
-          .filter(Objects::nonNull)
-          .toList();
-
-      // Detect pose jumps
-      var poseJumps = new ArrayList<JsonObject>();
-      for (var poseName : poseEntries) {
-        var values = log.values().get(poseName);
-        if (values == null || values.size() < 2) continue;
-
-        java.util.Map<String, Object> lastPose = null;
-        for (TimestampedValue tv : values) {
+      var jumps = new ArrayList<JsonObject>();
+      int unreadable = 0;
+      for (var name : jumpEntries) {
+        Object last = null;
+        for (var tv : log.values().get(name)) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-
-          if (tv.value() instanceof java.util.Map) {
-            @SuppressWarnings("unchecked")
-            var currentPose = (java.util.Map<String, Object>) tv.value();
-
-            if (lastPose != null) {
-              double distance = calculatePoseDistance(lastPose, currentPose);
-              if (distance > jumpThreshold) {
-                var jump = new JsonObject();
-                jump.addProperty("timestamp", tv.timestamp());
-                jump.addProperty("entry", poseName);
-                jump.addProperty("distance", distance);
-                poseJumps.add(jump);
-              }
+          if (last != null) {
+            var distance = StructFields.planarDistance(last, tv.value());
+            if (distance == null) {
+              unreadable++;
+            } else if (distance > jumpThreshold) {
+              var jump = new JsonObject();
+              jump.addProperty("timestamp", tv.timestamp());
+              jump.addProperty("entry", name);
+              jump.addProperty("distance", distance);
+              jumps.add(jump);
             }
-            lastPose = currentPose;
           }
+          last = tv.value();
         }
       }
+      var jumpList = new JsonArray();
+      jumps.stream().limit(100).forEach(jumpList::add);
+      builder.addLimitedList("pose_jumps", jumpList, jumps.size(), 100);
+      builder.addProperty("jump_count", jumps.size());
+      builder.addData("pose_entries_checked", GSON.toJsonTree(jumpEntries));
+      if (unreadable > 0) builder.addProperty("unreadable_pose_samples", unreadable);
 
-      var builder = success()
-          .addData("target_acquisition", GSON.toJsonTree(targetAnalysis));
-
-      if (!poseJumps.isEmpty()) {
-        builder.addData("pose_jumps", GSON.toJsonTree(poseJumps));
-        builder.addProperty("jump_count", poseJumps.size());
-      }
-
-      // Data quality from first target entry, or first pose entry as fallback
-      List<TimestampedValue> qualitySource = null;
-      if (!targetValidEntries.isEmpty()) {
-        qualitySource = log.values().get(targetValidEntries.get(0));
-      } else if (!poseEntries.isEmpty()) {
-        qualitySource = log.values().get(poseEntries.get(0));
-      }
+      List<TimestampedValue> qualitySource = !streams.isEmpty() ? log.values().get(streams.get(0))
+          : !targetEntries.isEmpty() ? log.values().get(targetEntries.get(0))
+          : !jumpEntries.isEmpty() ? log.values().get(jumpEntries.get(0)) : null;
       if (qualitySource != null) {
         var quality = DataQuality.fromValues(qualitySource);
         builder.addDataQuality(quality)
             .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
       }
-
       return builder.build();
+    }
+
+    /** A struct array whose non-empty records hold a timestamp and a readable pose. */
+    static boolean isObservationStream(List<TimestampedValue> values) {
+      if (values == null) return false;
+      for (var tv : values) {
+        var elements = StructFields.elements(tv.value());
+        if (elements.isEmpty()) continue;
+        var first = elements.get(0);
+        return StructFields.number(first, "timestamp") != null
+            && StructFields.number(first, "pose.translation.x", "pose_x") != null;
+      }
+      return false;
+    }
+
+    static JsonObject targetAcquisition(List<TimestampedValue> values, Double start, Double end,
+        double flickerWindow) {
+      int totalSamples = 0;
+      int validSamples = 0;
+      int flickerCount = 0;
+      Double lastTransition = null;
+      Boolean lastState = null;
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        totalSamples++;
+        boolean hasTarget = tv.value() instanceof Boolean b ? b
+            : tv.value() instanceof Number n && n.doubleValue() > 0.5;
+        if (hasTarget) validSamples++;
+        if (lastState != null && !lastState.equals(hasTarget)) {
+          if (lastTransition != null && (tv.timestamp() - lastTransition) < flickerWindow) {
+            flickerCount++;
+          }
+          lastTransition = tv.timestamp();
+        }
+        lastState = hasTarget;
+      }
+      var analysis = new JsonObject();
+      analysis.addProperty("total_samples", totalSamples);
+      analysis.addProperty("valid_samples", validSamples);
+      analysis.addProperty("acquisition_rate", totalSamples > 0 ? (double) validSamples / totalSamples : 0);
+      analysis.addProperty("flicker_events", flickerCount);
+      return analysis;
+    }
+
+    static JsonObject observationStream(String name, List<TimestampedValue> values, Double start,
+        Double end, String robotPose, List<TimestampedValue> robotPoseValues) {
+      int records = 0;
+      int withObservations = 0;
+      int observations = 0;
+      double first = Double.NaN;
+      double last = Double.NaN;
+      var tagCounts = new java.util.TreeMap<Integer, Integer>();
+      var latencies = new ArrayList<Double>();
+      var ambiguities = new ArrayList<Double>();
+      var residuals = new ArrayList<Double>();
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        records++;
+        if (Double.isNaN(first)) first = tv.timestamp();
+        last = tv.timestamp();
+        var elements = StructFields.elements(tv.value());
+        if (!elements.isEmpty()) withObservations++;
+        for (var obs : elements) {
+          observations++;
+          var tags = StructFields.number(obs, "tagCount");
+          if (tags != null) tagCounts.merge(tags.intValue(), 1, Integer::sum);
+          var ambiguity = StructFields.number(obs, "ambiguity");
+          if (ambiguity != null) ambiguities.add(ambiguity);
+          var obsTime = StructFields.number(obs, "timestamp");
+          if (obsTime == null) continue;
+          latencies.add((tv.timestamp() - obsTime) * 1000.0);
+          if (robotPoseValues != null) {
+            var ox = StructFields.number(obs, "pose.translation.x", "pose_x");
+            var oy = StructFields.number(obs, "pose.translation.y", "pose_y");
+            var rx = interpolate(robotPoseValues, obsTime, true);
+            var ry = interpolate(robotPoseValues, obsTime, false);
+            if (ox != null && oy != null && rx != null && ry != null) {
+              residuals.add(Math.hypot(ox - rx, oy - ry));
+            }
+          }
+        }
+      }
+      var o = new JsonObject();
+      o.addProperty("entry", name);
+      var parent = name.substring(0, Math.max(0, name.lastIndexOf('/')));
+      o.addProperty("camera", parent.substring(parent.lastIndexOf('/') + 1));
+      o.addProperty("records", records);
+      o.addProperty("records_with_observations", withObservations);
+      o.addProperty("observation_count", observations);
+      double span = last - first;
+      if (span > 0) o.addProperty("observations_per_second", observations / span);
+      if (!tagCounts.isEmpty()) {
+        var t = new JsonObject();
+        tagCounts.forEach((k, v) -> t.addProperty(String.valueOf(k), v));
+        o.add("tag_count_distribution", t);
+      }
+      if (!ambiguities.isEmpty()) o.add("ambiguity", distribution(ambiguities, ""));
+      if (!latencies.isEmpty()) {
+        var l = distribution(latencies, "_ms");
+        l.addProperty("basis", "log timestamp minus the observation's own timestamp");
+        o.add("latency", l);
+      }
+      if (!residuals.isEmpty()) {
+        var r = distribution(residuals, "_m");
+        r.addProperty("robot_pose_entry", robotPose);
+        r.addProperty("basis", "planar distance to the robot pose interpolated at the "
+            + "observation's timestamp; the robot pose may itself include vision corrections");
+        o.add("residual_vs_robot_pose", r);
+      }
+      return o;
+    }
+
+    static JsonObject distribution(List<Double> values, String unit) {
+      var sorted = values.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+      var o = new JsonObject();
+      o.addProperty("n", sorted.length);
+      o.addProperty("median" + unit, percentile(sorted, 0.5));
+      o.addProperty("p95" + unit, percentile(sorted, 0.95));
+      o.addProperty("max" + unit, sorted[sorted.length - 1]);
+      return o;
+    }
+
+    /** Robot pose x (or y) linearly interpolated at t; null outside the logged range. */
+    static Double interpolate(List<TimestampedValue> poses, double t, boolean x) {
+      int n = poses.size();
+      if (n == 0 || t < poses.get(0).timestamp() || t > poses.get(n - 1).timestamp()) return null;
+      int lo = 0;
+      int hi = n - 1;
+      while (lo < hi) {
+        int mid = (lo + hi + 1) >>> 1;
+        if (poses.get(mid).timestamp() <= t) lo = mid; else hi = mid - 1;
+      }
+      var a = poses.get(lo);
+      var va = x ? StructFields.poseX(a.value()) : StructFields.poseY(a.value());
+      if (lo == n - 1 || a.timestamp() == t) return va;
+      var b = poses.get(lo + 1);
+      var vb = x ? StructFields.poseX(b.value()) : StructFields.poseY(b.value());
+      if (va == null || vb == null) return null;
+      double f = (t - a.timestamp()) / (b.timestamp() - a.timestamp());
+      return va + f * (vb - va);
     }
   }
 
   static class ProfileMechanismTool extends LogRequiringTool {
+    /** Mechanism roles, resolved from entry names or passed explicitly. */
+    enum Role {
+      SETPOINT("setpoint_entry", "(setpoint|goal|target|reference|desired|commanded)"),
+      MEASUREMENT("measurement_entry", "(position|actual|measured|angle|height|distance|rotations)"),
+      VELOCITY("velocity_entry", "(velocity|speed|rpm|rps)"),
+      CURRENT("current_entry", "(current|amps)"),
+      TEMPERATURE("temperature_entry", "(temp|temperature|celsius)");
+
+      final String param;
+      final java.util.regex.Pattern pattern;
+
+      Role(String param, String regex) {
+        this.param = param;
+        this.pattern = java.util.regex.Pattern.compile("(?i)" + regex);
+      }
+
+      String key() {
+        return name().toLowerCase(java.util.Locale.ROOT);
+      }
+    }
+
+    static final java.util.regex.Pattern NOT_MEASUREMENT = java.util.regex.Pattern.compile(
+        "(?i)(setpoint|goal|target|reference|desired|commanded|velocity|speed|current|amps|volt|"
+            + "temp|celsius|applied|output)");
+
     @Override
     public String name() { return "profile_mechanism"; }
 
     @Override
     public String description() {
-      return "Analyze closed-loop mechanism performance: following error (RMSE), settling time, "
-          + "stall detection, and motor temperature profiling."
+      return "Profile one closed-loop mechanism from its numeric entries: following error "
+          + "(measurement minus the setpoint in force, as RMSE, bias, and maximum), step response "
+          + "for each setpoint step (settling time into a 5% band of the step, percent overshoot "
+          + "of the step), stall events (current above stall_current_threshold while |velocity| "
+          + "is below stall_velocity_threshold), and motor temperature (maximum and final). "
+          + "Entries are found among names containing mechanism_name (case-insensitive substring "
+          + "anywhere in the name) by role — setpoint (setpoint/goal/target/reference), "
+          + "measurement (position/angle/height/...), velocity, current, temperature — and "
+          + "grouped by the stem before the role word, so /Drive/ModuleFrontLeft/DriveVelocity and "
+          + "TurnVelocity are different stems; the first stem is used and other_stems lists the "
+          + "rest. roles names every entry used; any role can be passed explicitly "
+          + "(setpoint_entry, measurement_entry, velocity_entry, current_entry, "
+          + "temperature_entry). Sections without their entries are listed in skipped. Returns "
+          + "no_match when nothing matches."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder()
-          .addProperty("mechanism_name", "string", "Mechanism name or prefix", true)
+      var b = new SchemaBuilder()
+          .addProperty("mechanism_name", "string",
+              "Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' or 'ModuleFrontLeft/Drive'", false)
           .addNumberProperty("start_time", "Start timestamp", false, null)
           .addNumberProperty("end_time", "End timestamp", false, null)
           .addNumberProperty("stall_current_threshold", "Current threshold for stall (default: 30A)", false, 30.0)
-          .build();
+          .addNumberProperty("stall_velocity_threshold",
+              "|velocity| below this counts as stopped, in the velocity entry's units (default: 0.01)", false, 0.01);
+      for (var role : Role.values()) {
+        b.addProperty(role.param, "string", "Explicit " + role.key() + " entry", false);
+      }
+      return b.build();
+    }
+
+    /** The name's leaf up to its role word ("DriveVelocityRadPerSec" -> "drive"). */
+    static String stem(String name) {
+      var leaf = name.substring(name.lastIndexOf('/') + 1);
+      int cut = leaf.length();
+      for (var role : Role.values()) {
+        var m = role.pattern.matcher(leaf);
+        if (m.find()) cut = Math.min(cut, m.start());
+      }
+      var vm = java.util.regex.Pattern.compile("(?i)(volt|applied|output)").matcher(leaf);
+      if (vm.find()) cut = Math.min(cut, vm.start());
+      return leaf.substring(0, cut).toLowerCase(java.util.Locale.ROOT);
+    }
+
+    static Role roleOf(String name) {
+      var leaf = name.substring(name.lastIndexOf('/') + 1);
+      if (Role.SETPOINT.pattern.matcher(leaf).find()) return Role.SETPOINT;
+      if (Role.TEMPERATURE.pattern.matcher(leaf).find()) return Role.TEMPERATURE;
+      if (RobotAnalysisTools.PowerAnalysisTool.isCurrentEntryName(name)) return Role.CURRENT;
+      if (Role.VELOCITY.pattern.matcher(leaf).find()) return Role.VELOCITY;
+      if (Role.MEASUREMENT.pattern.matcher(leaf).find() && !NOT_MEASUREMENT.matcher(leaf).find()) {
+        return Role.MEASUREMENT;
+      }
+      return null;
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
-      var mechanismName = getRequiredString(arguments, "mechanism_name");
+      var mechanismName = getOptString(arguments, "mechanism_name", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double stallCurrentThreshold = getOptDouble(arguments, "stall_current_threshold", 30.0);
+      double stallVelocityThreshold = getOptDouble(arguments, "stall_velocity_threshold", 0.01);
 
-      var lowerName = mechanismName.toLowerCase();
-      var setpointEntry = (String) null;
-      var measurementEntry = (String) null;
-      var velocityEntry = (String) null;
-      var currentEntry = (String) null;
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = entryName.toLowerCase();
-        if (!lower.contains(lowerName)) continue;
-
-        if (setpointEntry == null && (lower.contains("setpoint") || lower.contains("goal"))) {
-          setpointEntry = entryName;
+      var explicit = new java.util.EnumMap<Role, String>(Role.class);
+      for (var role : Role.values()) {
+        var name = getOptString(arguments, role.param, null);
+        if (name == null) continue;
+        requireEntry(log, name);
+        if (!isNumericType(log.entries().get(name).type())) {
+          throw new IllegalArgumentException(role.param + " " + name + " is "
+              + log.entries().get(name).type() + "; profile_mechanism needs scalar numeric entries");
         }
-        if (measurementEntry == null && (lower.contains("position") || lower.contains("actual"))) {
-          if (!lower.contains("setpoint")) measurementEntry = entryName;
-        }
-        if (velocityEntry == null && lower.contains("velocity")) {
-          velocityEntry = entryName;
-        }
-        if (currentEntry == null && (lower.contains("current") || lower.contains("supplycurrent"))) {
-          currentEntry = entryName;
-        }
+        explicit.put(role, name);
+      }
+      if (mechanismName == null && explicit.isEmpty()) {
+        throw new IllegalArgumentException("Pass mechanism_name, or the role entries "
+            + "(setpoint_entry, measurement_entry, velocity_entry, current_entry, "
+            + "temperature_entry)");
       }
 
-      var builder = success()
-          .addProperty("mechanism", mechanismName);
+      // Candidates by stem: stem -> role -> entry (lowest id first)
+      var byStem = new LinkedHashMap<String, java.util.EnumMap<Role, String>>();
+      if (mechanismName != null) {
+        var lowerName = mechanismName.toLowerCase(java.util.Locale.ROOT);
+        log.entries().values().stream()
+            .filter(e -> isNumericType(e.type()))
+            .filter(e -> e.name().toLowerCase(java.util.Locale.ROOT).contains(lowerName))
+            .filter(e -> log.sampleCount(e.name()) > 0)
+            .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+            .forEach(e -> {
+              var role = roleOf(e.name());
+              if (role == null) return;
+              byStem.computeIfAbsent(stem(e.name()), k -> new java.util.EnumMap<>(Role.class))
+                  .putIfAbsent(role, e.name());
+            });
+      }
+      String chosenStem = byStem.entrySet().stream()
+          .max(Comparator.comparingInt((java.util.Map.Entry<String,
+              java.util.EnumMap<Role, String>> en) -> en.getValue().size()))
+          .map(java.util.Map.Entry::getKey).orElse(null);
+      var roles = new java.util.EnumMap<Role, String>(Role.class);
+      if (chosenStem != null) roles.putAll(byStem.get(chosenStem));
+      roles.putAll(explicit);
 
-      if (setpointEntry != null && measurementEntry != null) {
-        var setpointVals = log.values().get(setpointEntry);
-        var measurementVals = log.values().get(measurementEntry);
-
-        double rmse = calculateRmseLinear(setpointVals, measurementVals);
-        if (!Double.isNaN(rmse)) {
-          var errorAnalysis = new JsonObject();
-          errorAnalysis.addProperty("rmse", rmse);
-
-          // Calculate settling time and overshoot
-          var settlingData = calculateSettlingTime(setpointVals, measurementVals, startTime, endTime);
-          if (settlingData != null) {
-            errorAnalysis.add("settling_time_sec", settlingData);
-          }
-
-          var overshoot = calculateOvershoot(setpointVals, measurementVals, startTime, endTime);
-          if (!Double.isNaN(overshoot)) {
-            errorAnalysis.addProperty("overshoot_percent", overshoot);
-          }
-
-          builder.addData("following_error", errorAnalysis);
-        }
+      if (roles.isEmpty()) {
+        return ResponseBuilder.noMatch("No numeric entries containing '" + mechanismName
+                + "' with a recognizable role.")
+            .lookedFor(List.of("scalar numeric entries whose name contains the mechanism name, "
+                + "with a leaf naming a setpoint/goal/target, position/angle/height, "
+                + "velocity/speed, current/amps, or temperature"))
+            .hint("Use search_entries with the mechanism name, then pass the entries "
+                + "explicitly (setpoint_entry, measurement_entry, ...).")
+            .build();
       }
 
-      // Detect stalls
-      if (velocityEntry != null && currentEntry != null) {
-        var stallEvents = detectStalls(
-            log.values().get(velocityEntry),
-            log.values().get(currentEntry),
-            stallCurrentThreshold,
-            startTime,
-            endTime
-        );
-        if (!stallEvents.isEmpty()) {
-          builder.addData("stall_events", GSON.toJsonTree(stallEvents));
-          builder.addProperty("stall_count", stallEvents.size());
+      var builder = success();
+      if (mechanismName != null) builder.addProperty("mechanism", mechanismName);
+      var rolesJson = new JsonObject();
+      for (var role : Role.values()) {
+        rolesJson.addProperty(role.key(), roles.get(role));
+      }
+      builder.addData("roles", rolesJson);
+      if (chosenStem != null) builder.addProperty("stem", chosenStem);
+      var otherStems = byStem.keySet().stream().filter(k -> !k.equals(chosenStem)).toList();
+      if (!otherStems.isEmpty()) {
+        builder.addData("other_stems", GSON.toJsonTree(otherStems));
+        builder.addWarning("'" + mechanismName + "' matches several mechanisms by stem ("
+            + (chosenStem.isEmpty() ? "(none)" : chosenStem) + " used; also "
+            + String.join(", ", otherStems.stream().map(x -> x.isEmpty() ? "(none)" : x)
+                .toList()) + "). Use a more specific mechanism_name or pass the entries.");
+      }
+      roles.forEach((role, entry) -> builder.addInput(role.key(), entry));
+      if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
+
+      var setpoint = roles.get(Role.SETPOINT);
+      var measurement = roles.get(Role.MEASUREMENT);
+      if (setpoint != null && measurement != null) {
+        var fe = followingError(window(log.values().get(setpoint), startTime, endTime),
+            window(log.values().get(measurement), startTime, endTime));
+        if (fe != null) {
+          fe.addProperty("setpoint_entry", setpoint);
+          fe.addProperty("measurement_entry", measurement);
+          builder.addData("following_error", fe);
+        } else {
+          builder.addSkipped("following_error", "No measurement samples with a setpoint in "
+              + "force inside the window.");
         }
+      } else {
+        builder.addSkipped("following_error", "Needs both a setpoint and a measurement entry; "
+            + "missing " + (setpoint == null ? "setpoint" : "measurement") + ".");
       }
 
-      // Data quality from measurement entry if available
-      var qualityEntry = measurementEntry != null ? measurementEntry
-          : (velocityEntry != null ? velocityEntry : null);
+      var velocity = roles.get(Role.VELOCITY);
+      var current = roles.get(Role.CURRENT);
+      if (velocity != null && current != null) {
+        var stalls = detectStalls(window(log.values().get(velocity), startTime, endTime),
+            log.values().get(current), stallCurrentThreshold, stallVelocityThreshold);
+        var list = new JsonArray();
+        stalls.stream().limit(50).forEach(list::add);
+        builder.addLimitedList("stall_events", list, stalls.size(), 50);
+        builder.addProperty("stall_count", stalls.size());
+      } else {
+        builder.addSkipped("stall_events", "Needs a velocity and a current entry; missing "
+            + (velocity == null ? "velocity" : "current") + ".");
+      }
+
+      var temperature = roles.get(Role.TEMPERATURE);
+      if (temperature != null) {
+        var values = window(log.values().get(temperature), startTime, endTime);
+        if (!values.isEmpty()) {
+          var max = values.stream().max(Comparator.comparingDouble(
+              tv -> ((Number) tv.value()).doubleValue())).orElseThrow();
+          var t = new JsonObject();
+          t.addProperty("entry", temperature);
+          t.addProperty("max", ((Number) max.value()).doubleValue());
+          t.addProperty("max_time_sec", max.timestamp());
+          t.addProperty("first", ((Number) values.get(0).value()).doubleValue());
+          t.addProperty("last", ((Number) values.get(values.size() - 1).value()).doubleValue());
+          builder.addData("temperature", t);
+        }
+      } else {
+        builder.addSkipped("temperature", "No temperature entry for this mechanism.");
+      }
+
+      var qualityEntry = measurement != null ? measurement : velocity;
       if (qualityEntry != null) {
-        var qVals = log.values().get(qualityEntry);
-        if (qVals != null) {
-          var quality = DataQuality.fromValues(qVals);
-          builder.addDataQuality(quality)
-              .addDirectives(AnalysisDirectives.fromQuality(quality)
-                  .addSingleMatchCaveat()
-                  .addFollowup("Use moi_regression for mechanism inertia estimation"));
-        }
+        var quality = DataQuality.fromValues(window(log.values().get(qualityEntry), startTime,
+            endTime));
+        builder.addDataQuality(quality)
+            .addDirectives(AnalysisDirectives.fromQuality(quality)
+                .addSingleMatchCaveat()
+                .addFollowup("Use moi_regression for mechanism inertia estimation"));
       }
-
       return builder.build();
     }
 
-    private JsonElement calculateSettlingTime(
-        java.util.List<TimestampedValue> setpoints,
-        java.util.List<TimestampedValue> measurements,
-        Double startTime,
-        Double endTime
-    ) {
-      if (setpoints == null || measurements == null || setpoints.isEmpty() || measurements.isEmpty()) {
-        return null;
-      }
-
-      var settlingTimes = new ArrayList<Double>();
-
-      Double lastSetpoint = null;
-      Double setpointChangeTime = null;
-
-      // Use setpoints as reference, interpolate measurements
-      for (TimestampedValue spTv : setpoints) {
-        if (startTime != null && spTv.timestamp() < startTime) continue;
-        if (endTime != null && spTv.timestamp() > endTime) break;
-
-        var spVal = toDouble(spTv.value());
-        var measVal = getValueAtTimeLinear(measurements, spTv.timestamp());
-
-        if (spVal == null || measVal == null) continue;
-
-        // Detect setpoint change (more than 5% change, with absolute minimum threshold)
-        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.max(Math.abs(lastSetpoint * 0.05), 0.01)) {
-          lastSetpoint = spVal;
-          setpointChangeTime = spTv.timestamp();
+    /** Finite numeric samples inside [start, end]. */
+    static List<TimestampedValue> window(List<TimestampedValue> values, Double start, Double end) {
+      var out = new ArrayList<TimestampedValue>();
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
         }
-
-        // Check if settled (within 5% of setpoint, with absolute minimum threshold)
-        if (setpointChangeTime != null && Math.abs(measVal - spVal) <= Math.max(Math.abs(spVal * 0.05), 0.01)) {
-          double settlingTime = spTv.timestamp() - setpointChangeTime;
-          if (settlingTime > 0.01) { // Ignore very quick "settling" (likely noise)
-            settlingTimes.add(settlingTime);
-            setpointChangeTime = null; // Reset to avoid counting same settling multiple times
-          }
-        }
+        if (tv.value() instanceof Number n && Double.isFinite(n.doubleValue())) out.add(tv);
       }
-
-      if (settlingTimes.isEmpty()) return null;
-
-      var stats = new JsonObject();
-      stats.addProperty("avg", settlingTimes.stream().mapToDouble(d -> d).average().orElse(0));
-      stats.addProperty("max", settlingTimes.stream().mapToDouble(d -> d).max().orElse(0));
-      stats.addProperty("min", settlingTimes.stream().mapToDouble(d -> d).min().orElse(0));
-      return stats;
+      return out;
     }
 
-    private double calculateOvershoot(
-        java.util.List<TimestampedValue> setpoints,
-        java.util.List<TimestampedValue> measurements,
-        Double startTime,
-        Double endTime
-    ) {
-      if (setpoints == null || measurements == null || setpoints.isEmpty() || measurements.isEmpty()) {
-        return Double.NaN;
+    /**
+     * Error of each measurement against the setpoint in force (held until the next setpoint
+     * sample), and the response to each setpoint step.
+     */
+    static JsonObject followingError(List<TimestampedValue> setpoints,
+        List<TimestampedValue> measurements) {
+      if (setpoints.isEmpty() || measurements.isEmpty()) return null;
+      double sumSq = 0;
+      double sum = 0;
+      double maxAbs = 0;
+      int n = 0;
+      for (var m : measurements) {
+        var sp = ToolUtils.getValueAtTimeZoh(setpoints, m.timestamp());
+        if (!(sp instanceof Number s)) continue;
+        double err = ((Number) m.value()).doubleValue() - s.doubleValue();
+        sumSq += err * err;
+        sum += err;
+        maxAbs = Math.max(maxAbs, Math.abs(err));
+        n++;
       }
+      if (n == 0) return null;
+      var o = new JsonObject();
+      o.addProperty("rmse", Math.sqrt(sumSq / n));
+      o.addProperty("mean_error", sum / n);
+      o.addProperty("max_abs_error", maxAbs);
+      o.addProperty("samples", n);
 
+      // Steps: a setpoint change larger than 5% of the previous value (at least 0.01)
+      var stepTimes = new ArrayList<double[]>(); // {time, from, to}
+      double previous = ((Number) setpoints.get(0).value()).doubleValue();
+      for (var sp : setpoints) {
+        double v = ((Number) sp.value()).doubleValue();
+        if (Math.abs(v - previous) > Math.max(Math.abs(previous) * 0.05, 0.01)) {
+          stepTimes.add(new double[] {sp.timestamp(), previous, v});
+        }
+        previous = v;
+      }
+      var settling = new ArrayList<Double>();
       var overshoots = new ArrayList<Double>();
-
-      Double lastSetpoint = null;
-      Double maxOvershoot = null;
-
-      // Use setpoints as reference, interpolate measurements
-      for (TimestampedValue spTv : setpoints) {
-        if (startTime != null && spTv.timestamp() < startTime) continue;
-        if (endTime != null && spTv.timestamp() > endTime) break;
-
-        var spVal = toDouble(spTv.value());
-        var measVal = getValueAtTimeLinear(measurements, spTv.timestamp());
-
-        if (spVal == null || measVal == null) continue;
-
-        // Detect setpoint change
-        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.max(Math.abs(lastSetpoint * 0.05), 0.01)) {
-          if (maxOvershoot != null && lastSetpoint != null && Math.abs(lastSetpoint) > 0.001) {
-            overshoots.add(maxOvershoot * 100.0 / Math.abs(lastSetpoint));
+      var details = new JsonArray();
+      for (int k = 0; k < stepTimes.size(); k++) {
+        double t0 = stepTimes.get(k)[0];
+        double from = stepTimes.get(k)[1];
+        double to = stepTimes.get(k)[2];
+        double tEnd = k + 1 < stepTimes.size() ? stepTimes.get(k + 1)[0] : Double.MAX_VALUE;
+        double step = to - from;
+        double band = Math.max(Math.abs(step) * 0.05, 1e-9);
+        double worstOvershoot = 0;
+        Double settledAt = null;
+        for (var m : measurements) {
+          double t = m.timestamp();
+          if (t < t0 || t >= tEnd) continue;
+          double v = ((Number) m.value()).doubleValue();
+          worstOvershoot = Math.max(worstOvershoot, (v - to) * Math.signum(step));
+          if (Math.abs(v - to) <= band) {
+            if (settledAt == null) settledAt = t;
+          } else {
+            settledAt = null; // left the band: not settled yet
           }
-          lastSetpoint = spVal;
-          maxOvershoot = 0.0;
         }
-
-        // Track maximum overshoot
-        if (lastSetpoint != null) {
-          double error = measVal - lastSetpoint;
-          if (Math.abs(error) > Math.abs(maxOvershoot)) {
-            maxOvershoot = error;
-          }
+        double overshootPct = worstOvershoot / Math.abs(step) * 100.0;
+        overshoots.add(overshootPct);
+        if (settledAt != null) settling.add(settledAt - t0);
+        if (details.size() < 20) {
+          var d = new JsonObject();
+          d.addProperty("time", t0);
+          d.addProperty("from", from);
+          d.addProperty("to", to);
+          d.addProperty("overshoot_percent", overshootPct);
+          if (settledAt != null) d.addProperty("settling_time_sec", settledAt - t0);
+          else d.addProperty("settled", false);
+          details.add(d);
         }
       }
-
-      if (overshoots.isEmpty()) return Double.NaN;
-      return overshoots.stream().mapToDouble(d -> d).average().orElse(Double.NaN);
+      o.addProperty("steps", stepTimes.size());
+      o.addProperty("settled_steps", settling.size());
+      if (!settling.isEmpty()) {
+        var st = new JsonObject();
+        st.addProperty("avg", settling.stream().mapToDouble(d -> d).average().orElse(0));
+        st.addProperty("max", settling.stream().mapToDouble(d -> d).max().orElse(0));
+        st.addProperty("min", settling.stream().mapToDouble(d -> d).min().orElse(0));
+        o.add("settling_time_sec", st);
+      }
+      if (!overshoots.isEmpty()) {
+        o.addProperty("overshoot_percent", overshoots.stream().mapToDouble(d -> d).average()
+            .orElse(0));
+        o.addProperty("max_overshoot_percent", overshoots.stream().mapToDouble(d -> d).max()
+            .orElse(0));
+        o.add("step_details", details);
+      }
+      return o;
     }
 
-    private java.util.List<JsonObject> detectStalls(
-        java.util.List<TimestampedValue> velocities,
-        java.util.List<TimestampedValue> currents,
-        double stallCurrentThreshold,
-        Double startTime,
-        Double endTime
-    ) {
+    static List<JsonObject> detectStalls(List<TimestampedValue> velocities,
+        List<TimestampedValue> currents, double currentThreshold, double velocityThreshold) {
       var stallEvents = new ArrayList<JsonObject>();
-      if (velocities == null || currents == null) return stallEvents;
-
       boolean inStall = false;
-      double stallStartTime = 0;
+      double stallStart = 0;
       double stallMaxCurrent = 0;
-
-      // Use velocities as reference, interpolate currents
-      for (TimestampedValue velTv : velocities) {
-        if (startTime != null && velTv.timestamp() < startTime) continue;
-        if (endTime != null && velTv.timestamp() > endTime) break;
-
-        var velVal = toDouble(velTv.value());
-        var currVal = getValueAtTimeLinear(currents, velTv.timestamp());
-
-        if (velVal == null || currVal == null) continue;
-
-        boolean isStalled = Math.abs(velVal) < 0.01 && currVal > stallCurrentThreshold;
-
-        if (isStalled && !inStall) {
-          // Stall started
+      double lastTime = 0;
+      for (var velTv : velocities) {
+        double vel = ((Number) velTv.value()).doubleValue();
+        var cur = getValueAtTimeLinear(currents, velTv.timestamp());
+        if (cur == null) continue;
+        lastTime = velTv.timestamp();
+        boolean stalled = Math.abs(vel) < velocityThreshold && cur > currentThreshold;
+        if (stalled && !inStall) {
           inStall = true;
-          stallStartTime = velTv.timestamp();
-          stallMaxCurrent = currVal;
-        } else if (isStalled && inStall) {
-          // Stall continuing
-          stallMaxCurrent = Math.max(stallMaxCurrent, currVal);
-        } else if (!isStalled && inStall) {
-          // Stall ended
-          var event = new JsonObject();
-          event.addProperty("start_time", stallStartTime);
-          event.addProperty("end_time", velTv.timestamp());
-          event.addProperty("duration", velTv.timestamp() - stallStartTime);
-          event.addProperty("max_current", stallMaxCurrent);
-          stallEvents.add(event);
+          stallStart = velTv.timestamp();
+          stallMaxCurrent = cur;
+        } else if (stalled) {
+          stallMaxCurrent = Math.max(stallMaxCurrent, cur);
+        } else if (inStall) {
+          stallEvents.add(stall(stallStart, velTv.timestamp(), stallMaxCurrent, false));
           inStall = false;
         }
       }
-
+      if (inStall) stallEvents.add(stall(stallStart, lastTime, stallMaxCurrent, true));
       return stallEvents;
+    }
+
+    static JsonObject stall(double start, double end, double maxCurrent, boolean open) {
+      var event = new JsonObject();
+      event.addProperty("start_time", start);
+      event.addProperty("end_time", end);
+      event.addProperty("duration", end - start);
+      event.addProperty("max_current", maxCurrent);
+      if (open) event.addProperty("open_at_end", true);
+      return event;
     }
   }
 
@@ -1232,13 +1515,15 @@ public final class FrcDomainTools {
           lastState = currentState;
         }
 
-        // Handle incomplete idle period
+        // Handle incomplete idle period (bounded by the window, like incomplete cycles)
         if (idleStartTime != null) {
-          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - idleStartTime;
+          double lastTimestamp = vals.get(vals.size() - 1).timestamp();
+          double boundedEnd = endTime != null ? Math.min(lastTimestamp, endTime) : lastTimestamp;
+          double incompleteDuration = boundedEnd - idleStartTime;
 
           var deadPeriod = new JsonObject();
           deadPeriod.addProperty("start_time", idleStartTime);
-          deadPeriod.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          deadPeriod.addProperty("end_time", boundedEnd);
           deadPeriod.addProperty("duration", incompleteDuration);
           deadPeriod.addProperty("incomplete", true);
           deadTimePeriods.add(deadPeriod);
@@ -1248,7 +1533,9 @@ public final class FrcDomainTools {
       // Build result
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("sample_count", vals.size());
+      // Samples inside the window (the whole entry when no window is given)
+      result.addProperty("sample_count",
+          vals.stream().filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).count());
       result.addProperty("cycle_mode", cycleMode);
 
       // Add data quality warnings
