@@ -132,12 +132,15 @@ public final class FrcDomainTools {
       return "Generate a chronological timeline of critical robot events: enable/disable, "
           + "match phases, battery-voltage threshold brownouts (BROWNOUT_START/END, basis "
           + "voltage_threshold), roboRIO brownout flag transitions when a flag such as "
-          + "/SystemStats/BrownedOut is logged (RIO_BROWNOUT_START/END, basis rio_flag), and "
-          + "for errors/warnings found in string entries, exact counts (text_event_counts, per "
-          + "source) and text_event_summary: each distinct message (numbers normalized to #) with "
-          + "its count, first/last time, sources, and how many distinct raw texts it covers. "
-          + "Individual messages are deliberately not listed here; use search_strings (level, "
-          + "regex, time window, offset/limit paging) for the complete list. "
+          + "/SystemStats/BrownedOut is logged (RIO_BROWNOUT_START/END, basis rio_flag), alerts "
+          + "(ALERT_RAISED, category alert: each message of a string[] alert entry such as "
+          + "/RealOutputs/Alerts/warnings when it appears, with cleared_at and duration_sec), and "
+          + "for errors/warnings found in text (string lines, alerts, json strings), exact counts "
+          + "(text_event_counts, per source) and text_event_summary: each distinct message "
+          + "(numbers normalized to #) with its count, first/last time, sources, and how many "
+          + "distinct raw texts it covers. Individual console messages are deliberately not "
+          + "listed here; use search_strings (level, regex, time window, offset/limit paging) for "
+          + "the complete list. "
           + "rio_brownout_flag_logged says whether the roboRIO's own brownout state is available "
           + "in this log; brownout_voltage_entry names the voltage entry scanned for threshold "
           + "crossings, and a warning says when there is none."
@@ -243,24 +246,47 @@ public final class FrcDomainTools {
       var countsBySource = new LinkedHashMap<String, int[]>(); // [error, warning]
       int errorSamples = 0;
       int warningSamples = 0;
-      for (var entry : log.entries().entrySet()) {
-        if (!"string".equals(entry.getValue().type())) continue;
-        var values = log.values().get(entry.getKey());
-        if (values == null) continue;
-        for (var tv : values) {
-          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-          if (!(tv.value() instanceof String message) || message.isBlank()) continue;
-          var classified = ToolUtils.classifyText(message);
-          if (classified == null) continue;
-          boolean isError = "ERROR".equals(classified.type());
+      final int maxAlertEvents = 100;
+      int alertEvents = 0;
+      for (var info : TextEvents.textEntries(log)) {
+        for (var event : TextEvents.of(log, info)) {
+          if (!event.overlaps(startTime, endTime)) continue;
+          var level = TextEvents.level(event);
+          if (event.source() == TextEvents.Source.ALERT) {
+            // An alert is state: one timeline event per appearance, with when it cleared
+            if (alertEvents++ < maxAlertEvents) {
+              var alert = new JsonObject();
+              alert.addProperty("timestamp", event.timestamp());
+              alert.addProperty("type", "ALERT_RAISED");
+              alert.addProperty("category", "alert");
+              alert.addProperty("entry", event.entry());
+              if (level != null) alert.addProperty("level", level);
+              alert.addProperty("message", ToolUtils.truncate(event.text(),
+                  ToolUtils.MESSAGE_LINE_LIMIT));
+              if (event.end() != null) {
+                alert.addProperty("cleared_at", event.end());
+                alert.addProperty("duration_sec", event.duration());
+              } else {
+                alert.addProperty("active_at_log_end", true);
+              }
+              events.add(alert);
+            }
+          }
+          if (!"error".equals(level) && !"warning".equals(level)) continue;
+          boolean isError = "error".equals(level);
+          // The matching line: an alert's whole text, or the first line of the winning kind
+          var classified = ToolUtils.classifyText(event.text());
+          var message = event.source() == TextEvents.Source.ALERT || classified == null
+              ? event.text().strip() : classified.message();
+          var type = isError ? "ERROR" : "WARNING";
           if (isError) errorSamples++; else warningSamples++;
-          countsBySource.computeIfAbsent(entry.getKey(), k -> new int[2])[isError ? 0 : 1]++;
+          countsBySource.computeIfAbsent(event.entry(), k -> new int[2])[isError ? 0 : 1]++;
           // The same error usually recurs with varying numbers (loop times, device ids, line
           // numbers), so group on a normalized pattern and count how many raw texts it covers.
-          var pattern = ToolUtils.normalizeMessage(classified.message());
-          textGroups.computeIfAbsent(classified.type() + "|" + pattern,
-                  k -> new TextGroup(classified.type(), pattern, classified.message()))
-              .add(tv.timestamp(), entry.getKey(), classified.message());
+          var pattern = ToolUtils.normalizeMessage(message);
+          textGroups.computeIfAbsent(type + "|" + pattern,
+                  k -> new TextGroup(type, pattern, message))
+              .add(event.timestamp(), event.entry(), message);
         }
       }
 
@@ -281,6 +307,10 @@ public final class FrcDomainTools {
           .addData("events", GSON.toJsonTree(events));
       if (rioFlagEntry != null) {
         builder.addProperty("rio_brownout_flag_entry", rioFlagEntry);
+      }
+      if (alertEvents > maxAlertEvents) {
+        builder.addWarning("The timeline lists the first " + maxAlertEvents + " of " + alertEvents
+            + " alert appearances; search_strings lists every one.");
       }
       var textCounts = new JsonObject();
       textCounts.addProperty("error", errorSamples);

@@ -924,24 +924,20 @@ public final class RobotAnalysisTools {
       var errorCounts = new JsonObject();
       var firstEnabled = new ArrayList<JsonObject>();
 
-      for (var entry : log.entries().values().stream()
-          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id)).toList()) {
-        if (!"string".equals(entry.type())) continue;
-        var values = log.values().get(entry.name());
-        if (values == null) continue;
+      // Text from string lines, alerts (once per appearance), and json strings
+      for (var entry : TextEvents.textEntries(log)) {
         long enabled = 0;
         long disabled = 0;
         long unknown = 0;
-        for (var tv : values) {
-          if (!(tv.value() instanceof String text)) continue;
-          for (var line : text.split("\\R")) {
+        for (var event : TextEvents.of(log, entry)) {
+          for (var line : event.text().split("\\R")) {
             if (!CanBusAnalysis.isCanErrorLine(line)) continue;
-            switch (timeline.stateAt(tv.timestamp())) {
+            switch (timeline.stateAt(event.timestamp())) {
               case ENABLED -> {
                 enabled++;
                 if (firstEnabled.size() < 5) {
                   var example = new JsonObject();
-                  example.addProperty("timestamp_sec", tv.timestamp());
+                  example.addProperty("timestamp_sec", event.timestamp());
                   example.addProperty("entry", entry.name());
                   example.addProperty("line", ToolUtils.truncate(line.strip(),
                       ToolUtils.MESSAGE_LINE_LIMIT));

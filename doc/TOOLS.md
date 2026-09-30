@@ -444,15 +444,20 @@ Find when a numeric or boolean entry satisfies a condition, and for how long. Us
 ```
 
 ### `search_strings`
-List or search the text logged in string entries (console output, alerts, WPILib `messages`), completely and in time order across all entries. This is the tool for "show me every error": nothing is prioritized or silently dropped — results are paged with explicit totals.
+List or search the text a log holds, completely and in time order across all entries. This is the tool for "show me every error": nothing is prioritized or silently dropped — results are paged with explicit totals.
+
+**Text sources:**
+- `string` entries (console output, WPILib `messages`): one match per sample.
+- `string[]` entries — WPILib `Alert`s (`/RealOutputs/Alerts/{errors,warnings,infos}`, `/RealOutputs/PhotonAlerts/*`, NetworkTables copies) and any other string array — are **state**: the robot program logs the whole array whenever any alert changes, so each message is one match from the record in which it appears (`timestamp_sec`) to the record in which it is gone (`end_sec`, `duration_sec`), or `active_at_log_end: true`. A message that clears and returns is a new match.
+- `json` entries: the string values of each sample, one per line.
 
 **Parameters:**
 - `path` (required): Path to the log file
 - `pattern` (optional): Case-insensitive substring, or a Java regular expression when `regex` is true. Omit to list every string sample (narrow with `level`, `entry_pattern`, or a time window)
 - `regex` (optional): Treat `pattern` as a Java regex, case-insensitive (Unicode-aware) with `^`/`$` anchoring to lines of a multi-line sample; `.` does not cross a line break. Default `false`. An invalid regex returns an error, and a pattern that backtracks for more than about a second (nested quantifiers on long text) is rejected with an error rather than hanging the server
-- `level` (optional): `error`, `warning`, or `any` (default). Classification is the same rule `get_ds_timeline` uses for `text_event_counts`, so the numbers agree
+- `level` (optional): `error`, `warning`, `info`, or `any` (default). An alert's level comes from its entry name (`errors`, `warnings`, `infos`); other text is classified line by line, the same rule `get_ds_timeline` uses for `text_event_counts`, so the numbers agree
 - `entry_pattern` (optional): Only search entries whose name contains this substring
-- `start_time` / `end_time` (optional): Time window in seconds
+- `start_time` / `end_time` (optional): Time window in seconds; an alert matches when it was present in the window, whenever it appeared
 - `offset` (optional, default 0) and `limit` (optional, default 100, max 1000): Paging over the time-ordered result; values outside those ranges are clamped and the clamped values are echoed
 - `collapse_repeats` (optional, default `false`): Fold runs of identical samples that are **adjacent in the same entry's stream** into one match with `repeat_count` and `last_timestamp_sec`. Any other sample in between — even one the filters exclude — ends the run, so a `repeat_count` never spans a gap
 - `max_value_chars` (optional, default 500, minimum 1): Truncate each returned `value`
@@ -460,7 +465,7 @@ List or search the text logged in string entries (console output, alerts, WPILib
 **Returns:**
 - `total_matches` — the full number of matching samples (before paging); with `collapse_repeats`, also `total_after_collapse`
 - `offset`, `limit`, `returned` (= `match_count`, kept for compatibility), `has_more` — whether another page exists
-- `matches[]` sorted by time across entries (ties by entry declaration order): `{timestamp_sec, entry, level? ("error"/"warning" when classified), line, value, repeat_count?, last_timestamp_sec?}`. `line` is the line containing the pattern match; without a pattern it is the classified line, or the first line for unclassified samples; it is cut at 200 characters (`line_truncated: true`). `value` is the whole sample cut at `max_value_chars` (`value_truncated: true`)
+- `matches[]` sorted by time across entries (ties by entry declaration order): `{timestamp_sec, entry, source ("string", "alert", or "json"), end_sec?, duration_sec?, active_at_log_end?, level? ("error"/"warning"/"info" when known), line, value, repeat_count?, last_timestamp_sec?}`. `collapse_repeats` never folds alerts, which are already one match per appearance. `line` is the line containing the pattern match; without a pattern it is the classified line, or the first line for unclassified samples; it is cut at 200 characters (`line_truncated: true`). `value` is the whole sample cut at `max_value_chars` (`value_truncated: true`)
 - `pattern` (echoed when given), `regex`, `level`
 
 **Example Response** (`level: "error"`, `limit: 2`):
@@ -1370,8 +1375,9 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 - `robot_state`: ENABLED, DISABLED — transitions of the same DriverStation timeline `get_match_phases` uses (one entry per role, AdvantageKit first; a log with both `DS:` and `/DriverStation/` entries gets one set of events and a warning naming the ignored entries). The state at the start of the log is reported once with `initial: true`. A warning says when the log has no DriverStation enabled entry.
 - `match_phase`: AUTO_START, TELEOP_START, TEST_START — at the start of each enabled segment in that mode, and at a mode change while enabled. A practice session with `Autonomous` held false has a TELEOP_START at every enable.
 - `power`: BROWNOUT_START, BROWNOUT_END (`basis: "voltage_threshold"` — the battery voltage crossed `brownout_threshold`, with 0.2 V exit hysteresis; includes `voltage`) and RIO_BROWNOUT_START, RIO_BROWNOUT_END (`basis: "rio_flag"` — a logged boolean brownout flag such as AdvantageKit `/SystemStats/BrownedOut` changed state; this is the roboRIO's own brownout state). A voltage crossing does not by itself mean the roboRIO cut outputs; when `rio_brownout_flag_logged` is false, that cannot be determined from the log.
+- `alert`: ALERT_RAISED — each message of a `string[]` alert entry (WPILib `Alert`s, e.g. `/RealOutputs/Alerts/warnings`) when it appears, with `entry`, `level` (from the entry name), `message`, and `cleared_at`/`duration_sec`, or `active_at_log_end: true`. At most 100 are listed, with a warning when there are more; `search_strings` lists every one
 **Error/warning text** (string entries such as `/RealOutputs/Console`, alerts, or WPILib `messages`): a sample is an ERROR when any of its lines contains "error", "exception", or "fault" ("default" does not count); otherwise a WARNING when any line contains "warning", "overrun", or "watchdog" — errors dominate regardless of line order, and the first matching line of the winning kind is the message. This is the same rule `search_strings` uses for its `level` filter, so the two agree (a test enforces it).
-- `text_event_counts`: `{error, warning, total, by_source: {<entry>: {error, warning}}}` — exact sample counts within the time window; never capped
+- `text_event_counts`: `{error, warning, total, by_source: {<entry>: {error, warning}}}` — exact counts within the time window, over string lines, alerts (once per appearance, at their entry's level), and json string values; never capped
 - `text_event_summary`: one entry per distinct message, where "distinct" is judged after normalizing numbers to `#` and collapsing whitespace, so `Loop time of 0.023s overrun` and `... 0.031s ...` are one group. Each entry: `{type, message (the normalized pattern), example (the first actual text, when it differs), count, variants (how many different raw texts the group covers — `CAN timeout on device #` with `variants: 2` hides two devices; judged on the full line, while `message`/`example` are cut at 200 characters for display; `variants_capped: true` if a group exceeded 10,000 distinct texts), first_timestamp, last_timestamp, sources[]}`, sorted by count. At most 200 groups are shown; `text_event_groups_total` is the true number and a warning says when the summary was cut. Absent when the log has no error/warning text (`text_event_counts` is always present)
 - Individual messages are not placed on the timeline. Use `search_strings` (optionally `level=error`, a regex, a time window) to list them completely with paging totals
 

@@ -328,11 +328,13 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
 - [ ] **Phase 3 — Roles, one resolver, scope.** Done: `scope` and `windows` on the seven numeric tools (per-window
   differences, peaks, unwrapping, and condition search; `DataQuality.fromSegments`). Remaining:
   `SignalResolver`/`resolve_signals`, `resolved` in results, `compare_matches` (E4), vision target streams.
-- [ ] **Phase 4 — Strings, intervals, alignment, quality.** Remaining: `string[]`/`json` text (F1) and line
-  classification in `can_health`; compound conditions; `align_entries`; lag search; `DataQuality` recalibration (G1).
+- [ ] **Phase 4 — Strings, intervals, alignment, quality.** Done: one text source (`TextEvents`: string lines,
+  `string[]` alerts as appear/clear episodes, json string values) behind `search_strings`, `get_ds_timeline` (with
+  `ALERT_RAISED` events), `can_health`, and `generate_report` (F1). Remaining: compound conditions; `align_entries`;
+  lag search; `DataQuality` recalibration (G1).
 - [ ] **Phase 5 — Consistency and docs.**
 
-Golden checks on the review log: 13 of 14 pass (timeline, flag brownouts, logged threshold, loop timing
+Golden checks on the review log: all 14 pass (timeline, flag brownouts, logged threshold, loop timing
 percentiles, first-segment statistics, CAN TEC peak, per-module swerve speeds, ObservationScore, PoseObservation
 decode by schema path, per-camera observation counts, pose wander with heading range and circular mean, 189
-heading wraps, loop time over scope `enabled` and `segment:0`); pending: the camera alert in `string[]` (Phase 4).
+heading wraps, loop time over scope `enabled` and `segment:0`, and the camera 3 alert as two appear/clear episodes).

@@ -430,29 +430,25 @@ public final class ExportTools {
       var firstSeen = new HashMap<String, Double>();
       var examples = new HashMap<String, String>();
       var firstErrors = new JsonArray();
-      for (var e : log.entries().values().stream()
-          .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .toList()) {
-        if (!"string".equals(e.type()) || log.sampleCount(e.name()) == 0) continue;
-        for (var tv : log.values().get(e.name())) {
-          if (!(tv.value() instanceof String str) || str.isBlank()) continue;
-          var classified = ToolUtils.classifyText(str);
-          if (classified == null) continue;
-          boolean error = "ERROR".equals(classified.type());
-          if (error) errorSamples++; else warningSamples++;
-          if (!error) continue;
-          var pattern = ToolUtils.normalizeMessage(classified.message());
-          groups.computeIfAbsent(pattern, k -> new int[1])[0]++;
-          firstSeen.putIfAbsent(pattern, tv.timestamp());
-          examples.putIfAbsent(pattern, classified.message());
-          if (firstErrors.size() < 5) {
-            var o = new JsonObject();
-            o.addProperty("timestamp_sec", tv.timestamp());
-            o.addProperty("entry", e.name());
-            o.addProperty("line", ToolUtils.truncate(classified.message(),
-                ToolUtils.MESSAGE_LINE_LIMIT));
-            firstErrors.add(o);
-          }
+      for (var event : TextEvents.all(log)) {
+        var level = TextEvents.level(event);
+        if (!"error".equals(level) && !"warning".equals(level)) continue;
+        boolean error = "error".equals(level);
+        if (error) errorSamples++; else warningSamples++;
+        if (!error) continue;
+        var classified = ToolUtils.classifyText(event.text());
+        var message = event.source() == TextEvents.Source.ALERT || classified == null
+            ? event.text().strip() : classified.message();
+        var pattern = ToolUtils.normalizeMessage(message);
+        groups.computeIfAbsent(pattern, k -> new int[1])[0]++;
+        firstSeen.putIfAbsent(pattern, event.timestamp());
+        examples.putIfAbsent(pattern, message);
+        if (firstErrors.size() < 5) {
+          var o = new JsonObject();
+          o.addProperty("timestamp_sec", event.timestamp());
+          o.addProperty("entry", event.entry());
+          o.addProperty("line", ToolUtils.truncate(message, ToolUtils.MESSAGE_LINE_LIMIT));
+          firstErrors.add(o);
         }
       }
       var errors = new JsonObject();
@@ -476,8 +472,9 @@ public final class ExportTools {
           });
       errors.add("top_messages", top);
       errors.add("samples", firstErrors);
-      errors.addProperty("note", "Counts are samples classified ERROR or WARNING (a multi-line "
-          + "sample counts once, by its most severe line); search_strings lists every message.");
+      errors.addProperty("note", "Counts are text samples classified ERROR or WARNING (a "
+          + "multi-line sample counts once, by its most severe line; an alert once per "
+          + "appearance, by its entry's level); search_strings lists every message.");
       report.add("errors", errors);
 
       // Code metadata: the same entries and choice as get_code_metadata

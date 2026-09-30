@@ -374,18 +374,40 @@ class ReviewLogGoldenTest {
   @Test
   @DisplayName("search_strings finds the camera 3 alert in the string[] warnings entry")
   void cameraAlert() throws Exception {
-    pending("Phase 4 (F1)", () -> {
-      var result = call("search_strings", "pattern", "Vision camera 3 is disconnected");
-      boolean found = false;
-      for (var m : result.getAsJsonArray("matches")) {
-        var match = m.getAsJsonObject();
-        if (match.get("entry").getAsString().equals("/RealOutputs/Alerts/warnings")
-            && Math.abs(match.get("timestamp_sec").getAsDouble() - 737.678) < 0.001) {
-          found = true;
+    var result = call("search_strings", "pattern", "Vision camera 3 is disconnected");
+    // one match per appearance (Python: raised 10.827 and 737.678, cleared 26.719 and 783.804),
+    // not one per record of the alert array
+    var alerts = new ArrayList<JsonObject>();
+    for (var m : result.getAsJsonArray("matches")) {
+      var match = m.getAsJsonObject();
+      if (match.get("entry").getAsString().equals("/RealOutputs/Alerts/warnings")) {
+        alerts.add(match);
+      }
+    }
+    assertEquals(2, alerts.size(), result.toString());
+    near(10.827, alerts.get(0).get("timestamp_sec").getAsDouble(), 0.001, "boot alert raised");
+    near(26.719, alerts.get(0).get("end_sec").getAsDouble(), 0.001, "boot alert cleared");
+    var alert = alerts.get(1);
+    assertEquals("alert", alert.get("source").getAsString());
+    assertEquals("warning", alert.get("level").getAsString());
+    near(737.678, alert.get("timestamp_sec").getAsDouble(), 0.001, "alert raised");
+    near(783.804, alert.get("end_sec").getAsDouble(), 0.001, "alert cleared");
+    near(46.126, alert.get("duration_sec").getAsDouble(), 0.002, "alert duration");
+
+    // and on the timeline
+    var timeline = call("get_ds_timeline");
+    boolean onTimeline = false;
+    for (var e : timeline.getAsJsonArray("events")) {
+      var event = e.getAsJsonObject();
+      if (event.get("type").getAsString().equals("ALERT_RAISED")
+          && event.get("message").getAsString().contains("Vision camera 3 is disconnected")) {
+        if (event.get("timestamp").getAsDouble() > 700) {
+          near(783.804, event.get("cleared_at").getAsDouble(), 0.001, "timeline cleared_at");
+          onTimeline = true;
         }
       }
-      assertTrue(found, "alert not found: " + result);
-    });
+    }
+    assertTrue(onTimeline, "no ALERT_RAISED for camera 3");
   }
 
   static List<String> names(JsonElement array) {

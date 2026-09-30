@@ -317,15 +317,21 @@ public final class QueryTools {
 
     @Override
     public String description() {
-      return "List or search the text logged in string entries (console output, alerts, messages), "
-          + "completely and in time order across all entries. Filters: pattern (case-insensitive "
-          + "substring, or a regex with regex=true), level (error, warning, or any; classified exactly "
-          + "as get_ds_timeline counts them), entry_pattern, start_time/end_time. Results are paged: "
-          + "total_matches is the full count, offset/limit select a page, has_more says whether more "
-          + "remain, so nothing is silently dropped. collapse_repeats folds runs of identical samples "
-          + "that are adjacent in the same entry into one match with repeat_count. Each match carries "
-          + "its level and the matching line (line is cut at 200 chars; value at max_value_chars, "
-          + "with *_truncated flags). Regex mode is case-insensitive with ^/$ anchoring to lines; a "
+      return "List or search the text a log holds, completely and in time order across all "
+          + "entries: string entries (console output, messages); string[] entries such as WPILib "
+          + "Alerts (/RealOutputs/Alerts/warnings), where each message is one match from when it "
+          + "appeared (timestamp_sec) to when it cleared (end_sec, duration_sec; "
+          + "active_at_log_end when it never did); and the string values of json entries. Each "
+          + "match says its source (string, alert, json). Filters: pattern (case-insensitive "
+          + "substring, or a regex with regex=true), level (error, warning, info, or any; an "
+          + "alert's level comes from its entry name, other text is classified exactly as "
+          + "get_ds_timeline counts it), entry_pattern, start_time/end_time (an alert matches when "
+          + "it was present in the range). Results are paged: total_matches is the full count, "
+          + "offset/limit select a page, has_more says whether more remain, so nothing is "
+          + "silently dropped. collapse_repeats folds runs of identical samples that are adjacent "
+          + "in the same entry into one match with repeat_count. Each match carries its level and "
+          + "the matching line (line is cut at 200 chars; value at max_value_chars, with "
+          + "*_truncated flags). Regex mode is case-insensitive with ^/$ anchoring to lines; a "
           + "pattern that backtracks for more than a second is rejected.";
     }
 
@@ -340,7 +346,7 @@ public final class QueryTools {
               "Treat pattern as a Java regular expression (case-insensitive). Default: false", false)
           .addProperty("level", "string",
               "Only messages classified as 'error' or 'warning' (same rules as get_ds_timeline), "
-              + "or 'any' (default)", false)
+              + "'info' (info alerts), or 'any' (default)", false)
           .addProperty("entry_pattern", "string",
               "Optional: filter which entries to search (e.g., 'Console' or 'Output')", false)
           .addNumberProperty("start_time", "Start timestamp in seconds (optional)", false, null)
@@ -371,18 +377,20 @@ public final class QueryTools {
       final String level;
       final String line;
       final String value;
+      final TextEvents.Event event;
       int repeatCount = 1;
       double lastTimestamp;
       int lastSampleIndex;
 
-      Match(double timestamp, String entry, int entryId, int sampleIndex, String level, String line, String value) {
-        this.timestamp = timestamp;
-        this.entry = entry;
-        this.entryId = entryId;
-        this.sampleIndex = sampleIndex;
+      Match(TextEvents.Event event, String level, String line) {
+        this.timestamp = event.timestamp();
+        this.entry = event.entry();
+        this.entryId = event.entryId();
+        this.sampleIndex = event.sampleIndex();
         this.level = level;
         this.line = line;
-        this.value = value;
+        this.value = event.text();
+        this.event = event;
         this.lastTimestamp = timestamp;
         this.lastSampleIndex = sampleIndex;
       }
@@ -423,8 +431,10 @@ public final class QueryTools {
       var pattern = getOptString(arguments, "pattern", null);
       boolean regex = getOptBoolean(arguments, "regex");
       var level = getOptString(arguments, "level", "any").toLowerCase();
-      if (!level.equals("any") && !level.equals("error") && !level.equals("warning")) {
-        throw new IllegalArgumentException("level must be 'error', 'warning', or 'any' (got '" + level + "')");
+      if (!level.equals("any") && !level.equals("error") && !level.equals("warning")
+          && !level.equals("info")) {
+        throw new IllegalArgumentException("level must be 'error', 'warning', 'info', or 'any' "
+            + "(got '" + level + "')");
       }
       var entryPattern = getOptString(arguments, "entry_pattern", null);
       var entryPatternLower = entryPattern == null ? null : entryPattern.toLowerCase();
@@ -455,21 +465,15 @@ public final class QueryTools {
       long deadline = System.nanoTime() + REGEX_BUDGET_NANOS;
 
       var matches = new ArrayList<Match>();
-      for (var e : log.entries().entrySet()) {
-        var entryName = e.getKey();
-        var info = e.getValue();
-        if (!"string".equals(info.type())) continue;
+      for (var info : TextEvents.textEntries(log)) {
+        var entryName = info.name();
         if (entryPatternLower != null
             && !entryName.toLowerCase(java.util.Locale.ROOT).contains(entryPatternLower)) continue;
-        var values = log.values().get(entryName);
-        if (values == null) continue;
-        int sampleIndex = -1;
-        for (var tv : values) {
-          sampleIndex++;
-          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-          if (!(tv.value() instanceof String value) || value.isBlank()) continue;
+        for (var event : TextEvents.of(log, info)) {
+          if (!event.overlaps(startTime, endTime)) continue;
+          var value = event.text();
           var classified = classifyText(value);
-          var sampleLevel = classified == null ? null : classified.type().toLowerCase(java.util.Locale.ROOT);
+          var sampleLevel = TextEvents.level(event);
           if (!level.equals("any") && !level.equals(sampleLevel)) continue;
           String line;
           if (compiled != null) {
@@ -483,7 +487,7 @@ public final class QueryTools {
           } else {
             line = classified != null ? classified.message() : lineAt(value, 0);
           }
-          matches.add(new Match(tv.timestamp(), entryName, info.id(), sampleIndex, sampleLevel, line, value));
+          matches.add(new Match(event, sampleLevel, line));
         }
       }
       matches.sort(Comparator.comparingDouble((Match m) -> m.timestamp).thenComparingInt(m -> m.entryId));
@@ -496,7 +500,9 @@ public final class QueryTools {
         var lastByEntry = new HashMap<String, Match>();
         for (var m : matches) {
           var previous = lastByEntry.get(m.entry);
-          if (previous != null && previous.lastSampleIndex + 1 == m.sampleIndex
+          // alerts are already one match per appearance
+          if (previous != null && m.event.source() != TextEvents.Source.ALERT
+              && previous.lastSampleIndex + 1 == m.sampleIndex
               && previous.value.equals(m.value)) {
             previous.repeatCount++;
             previous.lastTimestamp = m.timestamp;
@@ -519,6 +525,15 @@ public final class QueryTools {
         var obj = new JsonObject();
         obj.addProperty("timestamp_sec", m.timestamp);
         obj.addProperty("entry", m.entry);
+        obj.addProperty("source", m.event.source().wire());
+        if (m.event.source() == TextEvents.Source.ALERT) {
+          if (m.event.end() != null) {
+            obj.addProperty("end_sec", m.event.end());
+            obj.addProperty("duration_sec", m.event.duration());
+          } else {
+            obj.addProperty("active_at_log_end", true);
+          }
+        }
         if (m.level != null) obj.addProperty("level", m.level);
         obj.addProperty("line", truncate(m.line, MESSAGE_LINE_LIMIT));
         if (m.line.length() > MESSAGE_LINE_LIMIT) obj.addProperty("line_truncated", true);
