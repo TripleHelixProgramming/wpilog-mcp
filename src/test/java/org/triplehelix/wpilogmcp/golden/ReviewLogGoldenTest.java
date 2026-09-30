@@ -369,6 +369,31 @@ class ReviewLogGoldenTest {
         .getAsDouble()), 0.01, "unwrapped range");
   }
 
+  @Test
+  @DisplayName("disabled and stationary is one compound find_condition (Python: four intervals)")
+  void disabledAndStationary() throws Exception {
+    var conditions = com.google.gson.JsonParser.parseString("""
+        {"all": [
+          {"name": "/DriverStation/Enabled", "operator": "eq", "threshold": 0},
+          {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vx", "operator": "abs_lt", "threshold": 0.05},
+          {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vy", "operator": "abs_lt", "threshold": 0.05},
+          {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.omega", "operator": "abs_lt", "threshold": 0.05}
+        ]}""");
+    var args = new JsonObject();
+    args.addProperty("path", logPath.toString());
+    args.add("conditions", conditions);
+    var result = tools.get("find_condition").execute(args).getAsJsonObject();
+    double[][] expected = {{10.827, 40.207}, {359.162, 395.210}, {744.929, 791.534},
+        {840.133, 995.211}};
+    var intervals = result.getAsJsonArray("intervals");
+    assertEquals(expected.length, intervals.size(), result.toString());
+    for (int i = 0; i < expected.length; i++) {
+      var interval = intervals.get(i).getAsJsonObject();
+      near(expected[i][0], interval.get("start").getAsDouble(), 0.001, "start " + i);
+      near(expected[i][1], interval.get("end").getAsDouble(), 0.001, "end " + i);
+    }
+  }
+
   // ==================== strings ====================
 
   @Test

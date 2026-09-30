@@ -9,6 +9,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -141,6 +142,10 @@ public final class QueryTools {
   }
 
   static class FindConditionTool extends LogRequiringTool {
+    private static final java.util.Set<String> OPERATORS = java.util.Set.of("lt", "<", "lte",
+        "<=", "gt", ">", "gte", ">=", "eq", "==", "ne", "!=", "abs_lt", "abs_lte", "abs_gt",
+        "abs_gte");
+
     @Override
     public String name() {
       return "find_condition";
@@ -149,31 +154,62 @@ public final class QueryTools {
     @Override
     public String description() {
       return "Find when a numeric or boolean entry satisfies a condition (value <op> threshold; "
-          + "booleans read as 1/0), within an optional time window. Returns transitions (each "
-          + "time the condition becomes true, with the value) and intervals (start, end, "
-          + "duration; each value holds until the next sample, and an interval still true at "
-          + "the end of the window ends with end_reason window_end), plus total_true_sec and "
-          + "fraction_of_window. transition_count and interval_count are true totals; lists are "
-          + "cut at limit, with limits giving total and returned. Useful for questions like "
-          + "'When did battery voltage drop below 11V, and for how long?'" + NumericSignal.PATH_HELP
+          + "booleans read as 1/0), or when several do at once: conditions {all: [...]} or "
+          + "{any: [...]} of {name, field, operator, threshold} (e.g. disabled AND stationary: "
+          + "/DriverStation/Enabled eq 0 with a chassis speed abs_lt 0.05). Each value holds until "
+          + "the entry's next sample, so entries logged only on change combine correctly. "
+          + "Operators: lt, lte, gt, gte, eq, ne, and abs_lt/abs_lte/abs_gt/abs_gte on the "
+          + "absolute value. Returns transitions (each time the condition becomes true) and "
+          + "intervals (start, end, duration; an interval still true at the end of a window ends "
+          + "with end_reason window_end), plus total_true_sec and fraction_of_window. "
+          + "transition_count and interval_count are true totals; lists are cut at limit, with "
+          + "limits giving total and returned. Useful for questions like 'When did battery "
+          + "voltage drop below 11V, and for how long?'" + NumericSignal.PATH_HELP
           + " Thresholds on an angle apply to the value as logged (not unwrapped). scope and "
           + "windows restrict the time (each window is searched on its own; window_sec is the "
-          + "time searched after the entry's first sample), and the intervals returned can be "
+          + "time searched once every entry has a value), and the intervals returned can be "
           + "passed as windows to the statistics tools.";
     }
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder()
+      var conditionItem = new JsonObject();
+      conditionItem.addProperty("type", "object");
+      var itemProperties = new JsonObject();
+      for (var key : List.of("name", "field", "operator")) {
+        var p = new JsonObject();
+        p.addProperty("type", "string");
+        itemProperties.add(key, p);
+      }
+      var thresholdProperty = new JsonObject();
+      thresholdProperty.addProperty("type", "number");
+      itemProperties.add("threshold", thresholdProperty);
+      conditionItem.add("properties", itemProperties);
+      var conditions = new JsonObject();
+      conditions.addProperty("type", "object");
+      conditions.addProperty("description", "Compound condition instead of name/operator/"
+          + "threshold: {\"all\": [...]} (every condition true) or {\"any\": [...]} (at least "
+          + "one), each item {name, field?, operator, threshold}");
+      var conditionsProperties = new JsonObject();
+      for (var key : List.of("all", "any")) {
+        var list = new JsonObject();
+        list.addProperty("type", "array");
+        list.add("items", conditionItem);
+        conditionsProperties.add(key, list);
+      }
+      conditions.add("properties", conditionsProperties);
+      var schema = new SchemaBuilder()
           .addProperty("name", "string", "Entry name (e.g., /Robot/BatteryVoltage), optionally with "
-              + "a field path (e.g. /RealOutputs/Drive/Pose.translation.x)", true)
+              + "a field path (e.g. /RealOutputs/Drive/Pose.translation.x); not with conditions",
+              false)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addProperty(
               "operator",
               "string",
-              "Comparison operator: lt (<), lte (<=), gt (>), gte (>=), eq (==)",
-              true)
-          .addNumberProperty("threshold", "Threshold value to compare against", true, null)
+              "Comparison operator: lt (<), lte (<=), gt (>), gte (>=), eq (==), ne (!=), or "
+                  + "abs_lt, abs_lte, abs_gt, abs_gte (on the absolute value)",
+              false)
+          .addNumberProperty("threshold", "Threshold value to compare against", false, null)
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
@@ -181,67 +217,128 @@ public final class QueryTools {
               false)
           .addIntegerProperty("limit", "Maximum number of transitions and intervals to return", false, 100)
           .build();
+      schema.getAsJsonObject("properties").add("conditions", conditions);
+      return schema;
+    }
+
+    /** One condition: a signal compared with a threshold. */
+    private record Condition(NumericSignal signal, String operator, double threshold) {
+      String describe() {
+        var op = operator.toLowerCase(java.util.Locale.ROOT);
+        var subject = op.startsWith("abs_") ? "|" + signal.label() + "|" : signal.label();
+        return subject + " " + operatorSymbol(op.startsWith("abs_") ? op.substring(4) : op) + " "
+            + threshold;
+      }
     }
 
     @Override
     protected JsonElement executeWithLog(org.triplehelix.wpilogmcp.log.LogData log, JsonObject arguments) throws Exception {
-      var operator = getRequiredString(arguments, "operator");
-      var thresholdArg = getOptDouble(arguments, "threshold");
-      if (thresholdArg == null) throw new IllegalArgumentException("Missing required parameter: threshold");
-      double threshold = thresholdArg;
       int limit = getOptInt(arguments, "limit", 100);
       validatePositive(limit, "limit");
-      evaluateCondition(0, operator, threshold); // validates the operator up front
 
-      var signal = StatisticsTools.signal(log, arguments, "name", "field", name());
-      var name = signal.label();
-      var values = signal.values();
-      if (values.isEmpty()) {
-        throw new IllegalArgumentException("No values for entry: " + name);
+      boolean all = true;
+      var conditions = new ArrayList<Condition>();
+      if (arguments.has("conditions") && !arguments.get("conditions").isJsonNull()) {
+        if (arguments.has("name")) {
+          throw new IllegalArgumentException("Pass either name/operator/threshold or conditions, "
+              + "not both");
+        }
+        var spec = arguments.get("conditions");
+        if (!spec.isJsonObject() || spec.getAsJsonObject().size() != 1
+            || !(spec.getAsJsonObject().has("all") || spec.getAsJsonObject().has("any"))) {
+          throw new IllegalArgumentException("conditions must be {\"all\": [...]} or "
+              + "{\"any\": [...]}");
+        }
+        all = spec.getAsJsonObject().has("all");
+        var items = spec.getAsJsonObject().get(all ? "all" : "any");
+        if (!items.isJsonArray() || items.getAsJsonArray().isEmpty()) {
+          throw new IllegalArgumentException("conditions." + (all ? "all" : "any")
+              + " must be a non-empty array of {name, field?, operator, threshold}");
+        }
+        for (var item : items.getAsJsonArray()) {
+          if (!item.isJsonObject()) {
+            throw new IllegalArgumentException("Each condition must be {name, field?, operator, "
+                + "threshold}, got " + item);
+          }
+          conditions.add(condition(log, item.getAsJsonObject()));
+        }
+      } else {
+        conditions.add(condition(log, arguments));
       }
       var scope = TimeScope.fromArguments(log, null, arguments);
 
-      double firstSample = values.get(0).timestamp();
+      // Values are known once every condition's entry has logged
+      double firstKnown = Double.NEGATIVE_INFINITY;
+      for (var c : conditions) {
+        if (c.signal().values().isEmpty()) {
+          throw new IllegalArgumentException("No values for entry: " + c.signal().label());
+        }
+        firstKnown = Math.max(firstKnown, c.signal().values().get(0).timestamp());
+      }
+
       var transitions = new ArrayList<JsonObject>();
       var intervals = new ArrayList<JsonObject>();
       double totalTrue = 0;
       double knownDuration = 0;
-      var perWindow = scope.split(values);
-      for (int w = 0; w < perWindow.size(); w++) {
-        var window = scope.windows().get(w);
-        // Before the entry's first sample its value is unknown: that time is not counted
-        double windowStart = Math.max(window.start(), firstSample);
+      int n = conditions.size();
+      for (var window : scope.windows()) {
+        double windowStart = Math.max(window.start(), firstKnown);
         double windowEnd = window.end();
         if (windowEnd < windowStart) continue;
         knownDuration += windowEnd - windowStart;
-        boolean wasTrue = false;
-        double openedAt = windowStart;
-        // The value in force at the window start counts, so an interval can begin there
-        if (windowStart > firstSample) {
-          var held = toDouble(getValueAtTimeZoh(values, windowStart));
-          if (held != null && Double.isFinite(held)
-              && evaluateCondition(held, operator, threshold)) {
-            wasTrue = true;
-            var t = new JsonObject();
-            t.addProperty("timestamp_sec", windowStart);
-            t.addProperty("value", held);
-            t.addProperty("at_window_start", true);
-            transitions.add(t);
+
+        // Each condition's truth from the value in force before the window (null: none yet)
+        var truth = new Boolean[n];
+        var current = new double[n];
+        for (int k = 0; k < n; k++) {
+          var before = lastFiniteBefore(conditions.get(k).signal().values(), windowStart);
+          if (before != null) {
+            current[k] = before;
+            truth[k] = evaluateCondition(before, conditions.get(k).operator(),
+                conditions.get(k).threshold());
           }
         }
-        for (var tv : perWindow.get(w)) {
-          var v = toDouble(tv.value());
-          if (v == null || !Double.isFinite(v)) continue;
-          boolean isTrue = evaluateCondition(v, operator, threshold);
+        boolean wasTrue = combine(truth, all);
+        double openedAt = windowStart;
+        if (wasTrue) {
+          transitions.add(transition(windowStart, n == 1 ? current[0] : null, current, true));
+        }
+
+        // Every sample of every entry in the window, in time order
+        var cursors = new int[n];
+        for (int k = 0; k < n; k++) {
+          cursors[k] = firstAtOrAfter(conditions.get(k).signal().values(), windowStart);
+        }
+        while (true) {
+          double t = Double.POSITIVE_INFINITY;
+          for (int k = 0; k < n; k++) {
+            var values = conditions.get(k).signal().values();
+            if (cursors[k] < values.size() && window.contains(values.get(cursors[k]).timestamp())) {
+              t = Math.min(t, values.get(cursors[k]).timestamp());
+            }
+          }
+          if (t == Double.POSITIVE_INFINITY) break;
+          Double trigger = null;
+          for (int k = 0; k < n; k++) {
+            var values = conditions.get(k).signal().values();
+            while (cursors[k] < values.size() && values.get(cursors[k]).timestamp() == t) {
+              var v = toDouble(values.get(cursors[k]).value());
+              if (v != null && Double.isFinite(v)) {
+                current[k] = v;
+                truth[k] = evaluateCondition(v, conditions.get(k).operator(),
+                    conditions.get(k).threshold());
+                if (trigger == null) trigger = v;
+              }
+              cursors[k]++;
+            }
+          }
+          boolean isTrue = combine(truth, all);
           if (isTrue && !wasTrue) {
-            var t = new JsonObject();
-            t.addProperty("timestamp_sec", tv.timestamp());
-            t.addProperty("value", v);
-            transitions.add(t);
-            openedAt = tv.timestamp();
+            transitions.add(transition(t, n == 1 ? trigger : null, current, false));
+            openedAt = t;
           } else if (!isTrue && wasTrue) {
-            intervals.add(interval(openedAt, tv.timestamp(), "condition_false"));
-            totalTrue += tv.timestamp() - openedAt;
+            intervals.add(interval(openedAt, t, "condition_false"));
+            totalTrue += t - openedAt;
           }
           wasTrue = isTrue;
         }
@@ -256,21 +353,97 @@ public final class QueryTools {
       var intervalsArray = new JsonArray();
       intervals.stream().limit(limit).forEach(intervalsArray::add);
 
-      var builder = success()
-          .addProperty("name", name)
-          .addProperty("condition", name + " " + operatorSymbol(operator) + " " + threshold)
-          .addProperty("transition_count", transitions.size())
+      var description = n == 1 ? conditions.get(0).describe()
+          : String.join(all ? " AND " : " OR ",
+              conditions.stream().map(c -> "(" + c.describe() + ")").toList());
+      var builder = success();
+      if (n == 1) builder.addProperty("name", conditions.get(0).signal().label());
+      builder.addProperty("condition", description);
+      if (n > 1) {
+        builder.addProperty("combine", all ? "all" : "any");
+        var labels = new JsonArray();
+        conditions.forEach(c -> labels.add(c.describe()));
+        builder.addData("conditions", labels);
+      }
+      builder.addProperty("transition_count", transitions.size())
           .addLimitedList("transitions", transitionsArray, transitions.size(), limit)
           .addProperty("interval_count", intervals.size())
           .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
           .addProperty("total_true_sec", totalTrue)
-          .addProperty("window_sec", knownDuration)
-          .addInputSignal("entry", signal)
-          .addInputScope(scope);
+          .addProperty("window_sec", knownDuration);
+      for (int k = 0; k < n; k++) {
+        builder.addInputSignal(n == 1 ? "entry" : "condition" + k, conditions.get(k).signal());
+      }
+      builder.addInputScope(scope);
       if (knownDuration > 0) {
         builder.addProperty("fraction_of_window", totalTrue / knownDuration);
       }
       return builder.build();
+    }
+
+    /** A condition from {name, field?, operator, threshold} (the tool's own arguments or an item). */
+    private Condition condition(org.triplehelix.wpilogmcp.log.LogData log, JsonObject args) {
+      if (!args.has("name") || args.get("name").isJsonNull()) {
+        throw new IllegalArgumentException("Missing required parameter: name (or pass conditions)");
+      }
+      var operator = getRequiredString(args, "operator");
+      if (!OPERATORS.contains(operator.toLowerCase(java.util.Locale.ROOT))) {
+        throw new IllegalArgumentException("Unknown operator: " + operator + ". Valid operators: "
+            + "lt, <, lte, <=, gt, >, gte, >=, eq, ==, ne, !=, abs_lt, abs_lte, abs_gt, abs_gte");
+      }
+      var threshold = getOptDouble(args, "threshold");
+      if (threshold == null) {
+        throw new IllegalArgumentException("Missing required parameter: threshold");
+      }
+      var signal = StatisticsTools.signal(log, args, "name", "field", name());
+      return new Condition(signal, operator, threshold);
+    }
+
+    private static boolean combine(Boolean[] truth, boolean all) {
+      boolean any = false;
+      for (var t : truth) {
+        if (t == null) return false; // an entry with no value yet: not known to hold
+        if (t) any = true;
+        else if (all) return false;
+      }
+      return all || any;
+    }
+
+    private static JsonObject transition(double t, Double value, double[] values,
+        boolean atWindowStart) {
+      var o = new JsonObject();
+      o.addProperty("timestamp_sec", t);
+      if (values.length == 1) {
+        o.addProperty("value", value != null ? value : values[0]);
+      } else {
+        var array = new JsonArray();
+        for (double v : values) array.add(v);
+        o.add("values", array);
+      }
+      if (atWindowStart) o.addProperty("at_window_start", true);
+      return o;
+    }
+
+    /** The last finite value strictly before {@code t}, or null. */
+    private static Double lastFiniteBefore(List<org.triplehelix.wpilogmcp.log.TimestampedValue>
+        values, double t) {
+      for (int i = firstAtOrAfter(values, t) - 1; i >= 0; i--) {
+        var v = toDouble(values.get(i).value());
+        if (v != null && Double.isFinite(v)) return v;
+      }
+      return null;
+    }
+
+    private static int firstAtOrAfter(List<org.triplehelix.wpilogmcp.log.TimestampedValue> values,
+        double t) {
+      int lo = 0;
+      int hi = values.size();
+      while (lo < hi) {
+        int mid = (lo + hi) >>> 1;
+        if (values.get(mid).timestamp() < t) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
     }
 
     static JsonObject interval(double start, double end, String reason) {
@@ -282,24 +455,31 @@ public final class QueryTools {
       return o;
     }
 
-    private boolean evaluateCondition(double value, String operator, double threshold) {
-      return switch (operator.toLowerCase()) {
+    private static boolean evaluateCondition(double value, String operator, double threshold) {
+      var op = operator.toLowerCase(java.util.Locale.ROOT);
+      if (op.startsWith("abs_")) {
+        value = Math.abs(value);
+        op = op.substring(4);
+      }
+      return switch (op) {
         case "lt", "<" -> value < threshold;
         case "lte", "<=" -> value <= threshold;
         case "gt", ">" -> value > threshold;
         case "gte", ">=" -> value >= threshold;
         case "eq", "==" -> Math.abs(value - threshold) <= Math.max(1e-9, Math.abs(threshold) * 1e-6);
-        default -> throw new IllegalArgumentException("Unknown operator: " + operator + ". Valid operators: lt, <, lte, <=, gt, >, gte, >=, eq, ==");
+        case "ne", "!=" -> Math.abs(value - threshold) > Math.max(1e-9, Math.abs(threshold) * 1e-6);
+        default -> throw new IllegalArgumentException("Unknown operator: " + operator);
       };
     }
 
-    private String operatorSymbol(String operator) {
-      return switch (operator.toLowerCase()) {
+    private static String operatorSymbol(String operator) {
+      return switch (operator.toLowerCase(java.util.Locale.ROOT)) {
         case "lt" -> "<";
         case "lte" -> "<=";
         case "gt" -> ">";
         case "gte" -> ">=";
         case "eq" -> "==";
+        case "ne" -> "!=";
         default -> operator;
       };
     }

@@ -402,19 +402,28 @@ Get all data types used in the log file.
 **Returns:** Types with entry counts and entry names
 
 ### `find_condition`
-Find when a numeric or boolean entry satisfies a condition, and for how long. Useful for questions like "When did battery voltage drop below 11V, and for how long?"
+Find when a numeric or boolean entry satisfies a condition — or several entries at once — and for how long. Useful for questions like "When did battery voltage drop below 11V, and for how long?" or "When was the robot disabled and stationary?"
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `name` (required): Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0), or a number inside a struct or array by [field path](#field-paths) (thresholds apply to angles as logged)
+- `name`: Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0), or a number inside a struct or array by [field path](#field-paths) (thresholds apply to angles as logged)
 - `field` (optional): The field path, instead of appending it to `name`
-- `operator` (required): Comparison operator: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==, with a relative tolerance of 1e-6)
-- `threshold` (required): Threshold value to compare against
+- `operator`: `lt` (<), `lte` (<=), `gt` (>), `gte` (>=), `eq` (==, with a relative tolerance of 1e-6), `ne` (!=), or `abs_lt`, `abs_lte`, `abs_gt`, `abs_gte` on the absolute value
+- `threshold`: Threshold value to compare against
+- `conditions` (instead of `name`/`operator`/`threshold`): `{"all": [...]}` (every condition true) or `{"any": [...]}` (at least one), each item `{name, field?, operator, threshold}`. Each entry's value holds until its next sample, so entries logged only on change (DriverStation state, AdvantageKit outputs) combine correctly; the combined condition is evaluated at every sample of every entry, and time before all entries have a value is not searched. Example — disabled and stationary:
+  ```json
+  {"all": [
+    {"name": "/DriverStation/Enabled", "operator": "eq", "threshold": 0},
+    {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vx", "operator": "abs_lt", "threshold": 0.05},
+    {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vy", "operator": "abs_lt", "threshold": 0.05}
+  ]}
+  ```
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)); each window is searched on its own
 - `limit` (optional): Maximum transitions and intervals to return (default 100)
 
 **Returns:**
-- `transitions[]`: each time the condition becomes true (`timestamp_sec`, `value`; `at_window_start: true` when it was already true at `start_time`); `transition_count` is the true total
+- `transitions[]`: each time the condition becomes true (`timestamp_sec`, and `value` — or `values`, one per condition, for compound conditions; `at_window_start: true` when it was already true at the window's start); `transition_count` is the true total
+- `condition` (readable form, e.g. `(/DriverStation/Enabled == 0.0) AND (|/RealOutputs/SwerveChassisSpeeds/Measured.vx| < 0.05)`); for compound conditions also `combine` and `conditions`
 - `intervals[]`: `start`, `end`, `duration`, and `end_reason` (`condition_false`, or `window_end` when still true at the end of the window). Each sample's value holds until the next sample
 - `interval_count`, `total_true_sec`, `window_sec` (the time searched, after the entry's first sample), `fraction_of_window` (`total_true_sec / window_sec`), `inputs` (entry, field, and scope or window), and `limits` for both lists. The `intervals` can be passed as `windows` to the statistics tools
 

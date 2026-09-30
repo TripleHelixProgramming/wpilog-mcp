@@ -336,10 +336,27 @@ class QueryToolsLogicTest extends ToolTestBase {
           new double[]{1.0, 2.0});
       putLogInCache(log);
 
-      var result = tool.execute(makeArgs("/Sensor", "ne", 1.5)).getAsJsonObject();
+      var result = tool.execute(makeArgs("/Sensor", "approx", 1.5)).getAsJsonObject();
 
       assertFalse(result.get("success").getAsBoolean());
       assertTrue(result.get("error").getAsString().contains("Unknown operator"));
+    }
+
+    @Test
+    @DisplayName("ne and abs_ operators")
+    void notEqualAndAbsolute() throws Exception {
+      var log = buildNumericLog("/Sensor",
+          new double[]{0, 1, 2, 3},
+          new double[]{1.0, -2.0, 1.0, 0.5});
+      putLogInCache(log);
+
+      var ne = tool.execute(makeArgs("/Sensor", "ne", 1.0)).getAsJsonObject();
+      assertEquals(2, ne.get("interval_count").getAsInt(), ne.toString());
+      var abs = tool.execute(makeArgs("/Sensor", "abs_gt", 1.5)).getAsJsonObject();
+      assertEquals(1, abs.get("interval_count").getAsInt(), abs.toString());
+      assertEquals(1.0, abs.getAsJsonArray("intervals").get(0).getAsJsonObject()
+          .get("start").getAsDouble());
+      assertEquals("|/Sensor| > 1.5", abs.get("condition").getAsString());
     }
 
     // --- Equality tolerance edge cases ---
