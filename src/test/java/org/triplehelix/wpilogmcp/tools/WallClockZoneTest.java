@@ -125,6 +125,20 @@ class WallClockZoneTest {
         .addEntry("/SystemStats/EpochTimeMicros", "int64", values).build();
     assertFalse(WallClock.confirmed(never));
     assertTrue(WallClock.unconfirmedReason(never).orElseThrow().contains("unset default"));
+    // An unset clock that steps +127 s and then stands still (as a real log did) was not set
+    long unset = LocalDateTime.of(2024, 12, 18, 14, 4, 32).toEpochSecond(ZoneOffset.UTC)
+        * 1_000_000L;
+    var stepping = new ArrayList<TimestampedValue>();
+    for (double t = 11.2; t < 62.7; t += 5) {
+      stepping.add(new TimestampedValue(t, unset + Math.round((t - 11.2) * 1e6)));
+    }
+    long stepped = unset + 178_000_000L; // 14:07:30
+    stepping.add(new TimestampedValue(62.7, stepped));
+    stepping.add(new TimestampedValue(199.9, stepped + 160_000L));
+    stepping.add(new TimestampedValue(213.5, stepped + 13_800_000L));
+    var steppingLog = new MockLogBuilder().setPath("/logs/akit_da009b002dba910f.wpilog")
+        .addEntry("/SystemStats/EpochTimeMicros", "int64", stepping).build();
+    assertFalse(WallClock.confirmed(steppingLog));
     // No wall clock at all: nothing to confirm, no reason given
     var none = new MockLogBuilder().setPath("/logs/x.wpilog")
         .addNumericEntry("/X", new double[] {0, 1}, new double[] {0, 1}).build();

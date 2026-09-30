@@ -163,6 +163,34 @@ class RevLogSyncFixtureTest extends FixtureToolTestBase {
     assertTrue(r.get("reason").getAsString().contains("unset default date"), r.toString());
   }
 
+  @Test
+  @DisplayName("a REV log named within the matching tolerance but recorded before the wpilog "
+      + "(another session) is not attached; the one recorded with it is")
+  void neighbouringSession(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+      throws Exception {
+    var wpilog = FixtureLogs.writeRevlogPair(dir, "2026-neighbour.wpilog",
+        java.time.ZoneOffset.UTC, "systemTime");
+    // Named 4 minutes before the wpilog's clock starts: 50 s of data, over before it began
+    var earlier = "REV_" + FixtureLogs.REVLOG_PAIR_WALL.minusSeconds(240).format(
+        java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".revlog";
+    FixtureLogs.writeRevlog(dir.resolve(earlier));
+    org.triplehelix.wpilogmcp.log.LogManager.getInstance().addAllowedDirectory(dir);
+
+    var wait = callPath("wait_for_sync", wpilog, "timeout_ms", 30_000);
+    assertTrue(wait.get("completed").getAsBoolean(), wait.toString());
+    var r = callPath("sync_status", wpilog);
+    // (The fixture corpus's REV log, at the same time, may be attached too: the log directory
+    // scan covers it; what matters is which files are and are not)
+    var attached = new java.util.ArrayList<String>();
+    r.getAsJsonArray("revlogs").forEach(e -> attached.add(
+        e.getAsJsonObject().get("path").getAsString()));
+    assertTrue(attached.stream().noneMatch(p -> p.endsWith(earlier)), r.toString());
+    var recorded = dir.resolve("REV_" + FixtureLogs.REVLOG_PAIR_WALL.plusSeconds(5).format(
+        java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".revlog");
+    assertTrue(attached.stream().anyMatch(p -> java.nio.file.Path.of(p).toAbsolutePath()
+        .normalize().equals(recorded.toAbsolutePath().normalize())), r.toString());
+  }
+
   static com.google.gson.JsonObject callPath(String tool, java.nio.file.Path path,
       Object... keyValues) throws Exception {
     var args = new com.google.gson.JsonObject();

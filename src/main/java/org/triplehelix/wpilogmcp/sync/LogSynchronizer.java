@@ -58,6 +58,13 @@ public class LogSynchronizer {
   /** Default minimum correlation for high-quality match. */
   static final double DEFAULT_HIGH_CORRELATION_THRESHOLD = 0.7;
 
+  /**
+   * The least overlapping data a correlation may rest on: a few seconds of a mechanism's output
+   * correlates with some stretch of another log at almost any lag (a 3.7 s REV log from the
+   * next boot "synchronized" at +110 s in a real log).
+   */
+  static final double MIN_OVERLAP_SEC = 10.0;
+
   /** Pairs cross-correlated at full resolution, after ranking every candidate coarsely. */
   static final int MAX_REFINED_PAIRS = 5;
 
@@ -504,8 +511,10 @@ public class LogSynchronizer {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
     }
 
-    // Check for flat signals before wasting computation
-    if (isFlat(wpilogSamples) || isFlat(revlogSamples)) {
+    // Too little data to establish an offset, or flat signals
+    int minOverlapSamples = (int) Math.ceil(MIN_OVERLAP_SEC * sampleRateHz);
+    if (wpilogSamples.length < minOverlapSamples || revlogSamples.length < minOverlapSamples
+        || isFlat(wpilogSamples) || isFlat(revlogSamples)) {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
     }
 
@@ -536,7 +545,7 @@ public class LogSynchronizer {
     for (int lag = centerLag - searchWindowSamples;
          lag <= centerLag + searchWindowSamples;
          lag++) {
-      double corr = computeCorrelation(wpilogSamples, revlogSamples, lag);
+      double corr = computeCorrelation(wpilogSamples, revlogSamples, lag, minOverlapSamples);
       if (corr > bestCorr) {
         bestCorr = corr;
         bestLag = lag;
@@ -557,8 +566,10 @@ public class LogSynchronizer {
     double refinedLag = bestLag;
     if (bestLag > centerLag - searchWindowSamples
         && bestLag < centerLag + searchWindowSamples) {
-      double corrMinus = computeCorrelation(wpilogSamples, revlogSamples, bestLag - 1);
-      double corrPlus = computeCorrelation(wpilogSamples, revlogSamples, bestLag + 1);
+      double corrMinus = computeCorrelation(wpilogSamples, revlogSamples, bestLag - 1,
+          minOverlapSamples);
+      double corrPlus = computeCorrelation(wpilogSamples, revlogSamples, bestLag + 1,
+          minOverlapSamples);
       double denom = 2 * (2 * bestCorr - corrMinus - corrPlus);
       if (Math.abs(denom) > 1e-10) {
         // Clamp refinement to ±1 sample to prevent wild jumps when
@@ -743,7 +754,8 @@ public class LogSynchronizer {
    * <p>Uses the full Pearson formula on the overlapping window, computing
    * local mean and variance rather than assuming pre-normalized data.
    */
-  private double computeCorrelation(double[] wpilog, double[] revlog, int lag) {
+  private double computeCorrelation(double[] wpilog, double[] revlog, int lag,
+      int minOverlapSamples) {
     // Find overlapping region
     int wpiStart = Math.max(0, lag);
     int revStart = Math.max(0, -lag);
@@ -751,7 +763,7 @@ public class LogSynchronizer {
     int minLength = Math.min(wpilog.length, revlog.length);
 
     // Require at least 30% overlap for reliable correlation
-    int minOverlap = Math.max(30, (int) (minLength * 0.3));
+    int minOverlap = Math.max(minOverlapSamples, (int) (minLength * 0.3));
     if (overlapLength < minOverlap) {
       return -1; // Not enough overlap
     }

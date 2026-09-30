@@ -40,8 +40,8 @@ class LogSynchronizerTest {
     // so to convert revlog_time to wpilog_time: wpilog_time = revlog_time - 0.5
     double timeShift = 0.5;
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", -timeShift, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", -timeShift, 600);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -57,13 +57,13 @@ class LogSynchronizerTest {
     // Create logs with no matching signal types and no systemTime data
     // → should fail since there's no coarse offset and no signal pairs
     ParsedLog wpilog = createMockWpilog(Map.of(
-        "/sensors/gyro", createNumericValues(100, 0)
+        "/sensors/gyro", createNumericValues(600, 0)
     ));
 
     ParsedRevLog revlog = createMockRevlog(Map.of(
         1, new RevLogDevice(1, "SPARK MAX")
     ), Map.of(
-        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 100, 0)
+        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 600, 0)
     ));
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
@@ -76,7 +76,7 @@ class LogSynchronizerTest {
   @Test
   void testSynchronizeEmptyRevlog() {
     ParsedLog wpilog = createMockWpilog(Map.of(
-        "/drive/output", createNumericValues(100, 0)
+        "/drive/output", createNumericValues(600, 0)
     ));
 
     ParsedRevLog revlog = createMockRevlog(Map.of(), Map.of());
@@ -90,15 +90,15 @@ class LogSynchronizerTest {
   @Test
   void testSynchronizeWithCanIdHints() {
     ParsedLog wpilog = createMockWpilog(Map.of(
-        "/drive/frontLeft/output", createNumericValues(100, 0),
-        "/drive/frontRight/output", createNumericValues(100, 0.1) // Different phase
+        "/drive/frontLeft/output", createNumericValues(600, 0),
+        "/drive/frontRight/output", createNumericValues(600, 0.1) // Different phase
     ));
 
     // Create revlog signal that matches frontLeft's phase
     ParsedRevLog revlog = createMockRevlog(Map.of(
         1, new RevLogDevice(1, "SPARK MAX")
     ), Map.of(
-        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 100, 0)
+        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 600, 0)
     ));
 
     Map<Integer, String> hints = Map.of(1, "frontLeft");
@@ -110,8 +110,8 @@ class LogSynchronizerTest {
 
   @Test
   void testSynchronizeReturnsSignalPairResults() {
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -128,8 +128,8 @@ class LogSynchronizerTest {
   void testSignalPairResultWarningNullForNormalPeak() {
     // A normal successful sync with well-correlated signals should have
     // null warnings on all signal pair results (no boundary peak issue).
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -146,8 +146,8 @@ class LogSynchronizerTest {
   @Test
   void testSynchronizeConfidenceLevels() {
     // Test with highly correlated signals
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -158,8 +158,8 @@ class LogSynchronizerTest {
 
   @Test
   void testSynchronizeExplanationGenerated() {
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -192,8 +192,8 @@ class LogSynchronizerTest {
     double revStartTime = 50.0;
     double trueOffsetSec = wpiStartTime - revStartTime; // -45.0
 
-    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStartTime, 200);
-    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStartTime, 200);
+    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStartTime, 1200);
+    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStartTime, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -210,8 +210,8 @@ class LogSynchronizerTest {
     double revStart = 0.1; // 100ms later in revlog time domain
     double trueOffset = wpiStart - revStart; // -0.1
 
-    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 200);
-    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 200);
+    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 1200);
+    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -227,8 +227,8 @@ class LogSynchronizerTest {
     double revStart = 40.0;
     double trueOffset = wpiStart - revStart; // -30.0
 
-    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 300);
-    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 300);
+    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 1800);
+    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 1800);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -251,7 +251,7 @@ class LogSynchronizerTest {
     values.put("/drive/output", flatValues);
     ParsedLog wpilog = new ParsedLog("/test.wpilog", entries, values, 0, 4);
 
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -444,8 +444,8 @@ class LogSynchronizerTest {
         0.8     // higher quality threshold
     );
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = customSync.synchronize(wpilog, revlog);
     assertNotNull(result);
@@ -465,8 +465,8 @@ class LogSynchronizerTest {
         ZoneId.of("UTC")
     );
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     // Should not throw and should produce a valid result
     SyncResult result = utcSync.synchronize(wpilog, revlog);
@@ -487,8 +487,8 @@ class LogSynchronizerTest {
         LogSynchronizer.DEFAULT_HIGH_CORRELATION_THRESHOLD
     );
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     SyncResult r1 = defaultSync.synchronize(wpilog, revlog);
     SyncResult r2 = explicitSync.synchronize(wpilog, revlog);
@@ -550,6 +550,16 @@ class LogSynchronizerTest {
         LogSynchronizer.capByAgreement(ConfidenceLevel.LOW, 3, 0));
     assertEquals(ConfidenceLevel.FAILED,
         LogSynchronizer.capByAgreement(ConfidenceLevel.FAILED, 3, 0));
+  }
+
+  @Test
+  void aFewSecondsOfDataDoNotEstablishAnOffset() {
+    // 3.7 s of REV data (as a real log from the next boot) against 24 s of wpilog: a peak in
+    // so short a stretch is not evidence
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 185);
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+    assertNotEquals(SyncMethod.CROSS_CORRELATION, result.method(), result.explanation());
   }
 
   // ========== Drift estimation tests ==========

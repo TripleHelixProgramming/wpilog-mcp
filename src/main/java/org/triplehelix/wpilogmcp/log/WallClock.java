@@ -74,9 +74,16 @@ public final class WallClock {
 
   /**
    * A wall clock that moves this much more (or less) than FPGA time between two readings was
-   * set there: the Driver Station sets the roboRIO's clock when it connects.
+   * changed there: readings before the change do not describe the same clock.
    */
   static final double JUMP_SEC = 60.0;
+
+  /**
+   * A forward jump this large is the clock being set (the Driver Station sets it when it
+   * connects, from 1970 or the roboRIO's default date, months or decades behind); an unset
+   * clock also steps by minutes, which is not a set.
+   */
+  static final double SET_JUMP_SEC = 86_400.0;
 
   /** The first valid wall-clock reading of the log (see {@link #validReadings}). */
   public static Optional<Reading> first(LogData log) {
@@ -97,42 +104,55 @@ public final class WallClock {
    * log names from that time, place nothing in real time.
    */
   public static List<Reading> validReadings(LogData log) {
-    var clock = entry(log);
-    if (clock.isEmpty()) return List.of();
-    var values = log.values().get(clock.get());
-    if (values == null) return List.of();
     var valid = new ArrayList<Reading>();
-    Reading previous = null;
-    for (var tv : values) {
-      if (!(tv.value() instanceof Number num) || !plausible(num.longValue())) continue;
-      var reading = new Reading(tv.timestamp(), num.longValue());
-      if (previous != null) {
+    for (var reading : readings(log)) {
+      if (!valid.isEmpty()) {
+        var previous = valid.get(valid.size() - 1);
         double wallStep = (reading.epochMicros() - previous.epochMicros()) / 1e6;
         double fpgaStep = reading.logTime() - previous.logTime();
         if (Math.abs(wallStep - fpgaStep) > JUMP_SEC) valid.clear();
       }
-      valid.add(reading);
-      previous = reading;
+      if (plausible(reading.epochMicros())) valid.add(reading);
     }
     return valid;
   }
 
+  /** Every numeric reading of the wall-clock entry, in log order (1970 included). */
+  private static List<Reading> readings(LogData log) {
+    var clock = entry(log);
+    if (clock.isEmpty()) return List.of();
+    var values = log.values().get(clock.get());
+    if (values == null) return List.of();
+    var out = new ArrayList<Reading>();
+    for (var tv : values) {
+      if (tv.value() instanceof Number num) out.add(new Reading(tv.timestamp(), num.longValue()));
+    }
+    return out;
+  }
+
+  /** Whether the clock was set during the log: a forward jump of more than a day. */
+  static boolean setDuringLog(LogData log) {
+    var all = readings(log);
+    for (int i = 1; i < all.size(); i++) {
+      var a = all.get(i - 1);
+      var b = all.get(i);
+      double jump = (b.epochMicros() - a.epochMicros()) / 1e6 - (b.logTime() - a.logTime());
+      if (jump > SET_JUMP_SEC && plausible(b.epochMicros())) return true;
+    }
+    return false;
+  }
+
   /**
-   * Whether the log's wall clock is known to have been set: it was set during the log (its first
-   * valid reading follows an implausible reading or a jump), or the log's filename time agrees
-   * with it. AdvantageKit and DataLogManager name a log with its time once the clock is set (a
+   * Whether the log's wall clock is known to have been set: it was set during the log (a
+   * forward jump of more than a day, from 1970 or the default date), or the log's filename time
+   * agrees with it. AdvantageKit and DataLogManager name a log with its time once the clock is set (a
    * log whose clock never was keeps a placeholder name such as {@code akit_cfb6568c35d66529}), so
    * a clock that reads one plausible date throughout, in a log whose name carries no time, may be
    * the roboRIO's unset default: it cannot place the log in time.
    */
   public static boolean confirmed(LogData log) {
-    if (filenameOffset(log).isPresent()) return true;
-    var clock = entry(log);
-    if (clock.isEmpty()) return false;
-    var values = log.values().get(clock.get());
-    var first = first(log);
-    if (values == null || values.isEmpty() || first.isEmpty()) return false;
-    return values.get(0).timestamp() < first.get().logTime();
+    return !validReadings(log).isEmpty()
+        && (filenameOffset(log).isPresent() || setDuringLog(log));
   }
 
   /** Why a log's wall clock does not place it in time, for results; empty when it does. */

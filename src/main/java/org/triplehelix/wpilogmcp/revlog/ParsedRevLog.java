@@ -40,6 +40,15 @@ public record ParsedRevLog(
     long recordCount) {
 
   /**
+   * The same parsed contents as read from another file: a cached parse is keyed by content, so
+   * an identical file elsewhere must report its own path and filename time.
+   */
+  public ParsedRevLog at(String otherPath, String otherFilenameTimestamp) {
+    return new ParsedRevLog(otherPath, otherFilenameTimestamp, devices, signals, minTimestamp,
+        maxTimestamp, recordCount);
+  }
+
+  /**
    * Gets the number of devices discovered in the revlog.
    *
    * @return The device count

@@ -725,14 +725,22 @@ public class LogManager {
 
       for (RevLogFileInfo revlogInfo : matchingRevLogs) {
         try {
-          // Try sync disk cache first
+          // Try sync disk cache first. A sync depends on both files' names as well as their
+          // contents (the REV name's time sets the coarse offset, the wpilog's name the zone),
+          // so both are part of the key
           String revlogFp = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
-              revlogInfo.path());
-          var cached = syncDiskCache.load(wpilogFingerprint, revlogFp);
+              revlogInfo.path()) + "|" + revlogInfo.filename();
+          String wpilogKey = wpilogFingerprint + "|" + Path.of(wpilogPath).getFileName();
+          var cached = syncDiskCache.load(wpilogKey, revlogFp);
 
           if (cached.isPresent()) {
             var entry = cached.get();
-            builder.addRevLog(entry.revlog(), entry.syncResult());
+            // Keyed by content: an identical file elsewhere reports its own path
+            var revlog = entry.revlog().at(revlogInfo.path().toString(),
+                revlogInfo.filenameTimestamp());
+            if (overlaps(wpilog, revlog, entry.syncResult())) {
+              builder.addRevLog(revlog, entry.syncResult());
+            }
             continue;
           }
 
@@ -740,10 +748,10 @@ public class LogManager {
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
-          builder.addRevLog(revlog, result);
+          if (overlaps(wpilog, revlog, result)) builder.addRevLog(revlog, result);
 
           // Save to sync cache
-          syncDiskCache.save(revlog, result, wpilogFingerprint, revlogFp);
+          syncDiskCache.save(revlog, result, wpilogKey, revlogFp);
 
           logger.info("Synced {} (confidence: {}, offset: {}ms)",
               revlogInfo.path().getFileName(),
@@ -773,7 +781,7 @@ public class LogManager {
         try {
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
-          builder.addRevLog(revlog, result);
+          if (overlaps(wpilog, revlog, result)) builder.addRevLog(revlog, result);
           logger.info("Synced {} (no cache, confidence: {}, offset: {}ms)",
               revlogInfo.path().getFileName(),
               result.confidenceLevel().getLabel(),
@@ -786,6 +794,27 @@ public class LogManager {
     }, syncExecutor);
     syncInProgress.put(wpilogPath, future);
     future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
+  }
+
+  /**
+   * Whether a REV log, placed on the wpilog's clock by its sync, overlaps the wpilog at all. REV
+   * logs are candidates by their name's time with minutes of tolerance, so one recorded just
+   * before or after (another session, or the boot before) is a candidate too: when it neither
+   * correlates nor overlaps, it is not this log's data and is not attached. A failed sync is kept,
+   * to be reported.
+   */
+  static boolean overlaps(LogData wpilog, ParsedRevLog revlog, SyncResult result) {
+    if (!result.isSuccessful()) return true;
+    double start = revlog.minTimestamp() + result.offsetSeconds();
+    double end = revlog.maxTimestamp() + result.offsetSeconds();
+    boolean overlap = end >= wpilog.minTimestamp() && start <= wpilog.maxTimestamp();
+    if (!overlap) {
+      logger.info("{} not attached to {}: placed at {}-{} s, outside the log's {}-{} s",
+          Path.of(revlog.path()).getFileName(), Path.of(wpilog.path()).getFileName(),
+          String.format("%.1f", start), String.format("%.1f", end),
+          String.format("%.1f", wpilog.minTimestamp()), String.format("%.1f", wpilog.maxTimestamp()));
+    }
+    return overlap;
   }
 
   /**
