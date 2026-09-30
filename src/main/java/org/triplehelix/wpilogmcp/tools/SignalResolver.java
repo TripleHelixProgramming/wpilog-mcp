@@ -150,9 +150,7 @@ final class SignalResolver {
       case GYRO_YAW -> gyro(log);
       case VISION_POSE_OBSERVATIONS -> {
         var streams = byId(log).stream()
-            .filter(e -> e.type().startsWith("struct:") && e.type().endsWith("[]"))
-            .filter(e -> FrcDomainTools.AnalyzeVisionTool.isObservationStream(
-                log.values().get(e.name())))
+            .filter(e -> FrcDomainTools.AnalyzeVisionTool.isObservationStream(log, e))
             .map(EntryInfo::name).toList();
         yield new Resolution(role, streams, streams.isEmpty()
             ? "no struct array whose records hold a timestamp and a pose"
@@ -163,9 +161,8 @@ final class SignalResolver {
         var targets = byId(log).stream().filter(e -> {
           var lower = e.name().toLowerCase(Locale.ROOT);
           return lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
-              || lower.contains("targetvalid") || (e.type().startsWith("struct:")
-                  && !e.type().startsWith("struct:Pose")
-                  && FrcDomainTools.AnalyzeVisionTool.isTargetStream(log.values().get(e.name())));
+              || lower.contains("targetvalid")
+              || FrcDomainTools.AnalyzeVisionTool.isTargetStream(log, e);
         }).map(EntryInfo::name).toList();
         yield new Resolution(role, targets, targets.isEmpty()
             ? "no struct with yaw and pitch fields and no has-target entry"

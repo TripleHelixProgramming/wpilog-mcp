@@ -1,41 +1,30 @@
 # wpilog-mcp Tool Response Reference
 
-Reference for the JSON returned by every tool of **wpilog-mcp 0.8.2**, including the LLM guidance the server attaches to results.
+The JSON every tool of **wpilog-mcp 0.8.2** returns, captured from real logs by `ToolResponsesDoc` running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate:
 
-> **Note:** these captures predate the robustness work in [ROBUSTNESS_PLAN.md](ROBUSTNESS_PLAN.md). Since then every
-> result carries the result contract (`status`, and `reason`/`looked_for`/`hint`/`inputs`/`skipped`/`limits` where they
-> apply — see [TOOLS.md](TOOLS.md#result-contract-success-status-and-related-fields)), and several tools changed shape
-> (`get_match_phases`, `get_ds_timeline`, `analyze_auto`, `analyze_can_bus`, `can_health`, and others listed in the
-> CHANGELOG). TOOLS.md is current; this file will be regenerated from a checked-in capture harness.
+```
+./gradlew test --tests '*ToolResponsesDoc*' -PtoolResponsesLogDir=/path/to/riologs
+```
 
-How this file was produced: each of the 45 tools was invoked over the stdio transport against real logs
-(Team 2363, VACHE 2026 qualification 10 — `akit_26-03-21_16-29-56_vache_q10.wpilog` — with the REV log
-`REV_20260321_162932.revlog` recorded alongside it, plus a second qual, an AdvantageKit `_sim` replay log, and a
-2025 non-AdvantageKit log). Responses are reproduced verbatim except that:
+The logs: Team 2363 at VACHE 2026 (qualification 10, with its REV log), two practice-session logs, and an AdvantageKit replay (`_sim`) log. Responses are verbatim except that arrays longer than 5 items keep their first 3 and end with `"... (N more items)"`, strings longer than 400 characters are cut the same way, and paths are shown as `<logdir>`, `<exportdir>`, and `~`. What each field means is in [TOOLS.md](TOOLS.md); this file shows what the fields look like on real data.
 
-- long arrays are cut and the cut is marked with a trailing string `"... (N more items)"`;
-- `/Users/<user>/th/riologs` is shown as `<logdir>`, the CSV export directory as `<exportdir>`, and the home directory as `~`.
+## Transport envelope
 
-Shapes that could not be captured live (TBA with a key, loop-timing success, optional sub-objects that this log
-does not trigger) are marked **"Shape derived from source"** and use `<placeholder>` values.
-Parameter tables come from the server's `tools/list` response. For parameter semantics see [TOOLS.md](TOOLS.md).
+Each result travels as the text of an MCP `tools/call` result (`result.content[0].text`, a JSON string to parse); the server adds `_execution_time_ms` before serializing (not shown below). Every result follows the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): `success` and `status` first, with `reason`, `looked_for`, `hint`, `inputs`, `skipped`, `limits`, and `warnings` where they apply.
 
 ## Table of contents
-
-- [Transport envelope](#transport-envelope)
-- [Common response fields](#common-response-fields)
-- [Error responses](#error-responses)
 
 - [Discovery Tools](#discovery-tools)
   - [`get_server_guide`](#get_server_guide)
   - [`suggest_tools`](#suggest_tools)
 - [Core Tools](#core-tools)
   - [`list_available_logs`](#list_available_logs)
-  - [`list_loaded_logs`](#list_loaded_logs)
   - [`list_entries`](#list_entries)
   - [`get_entry_info`](#get_entry_info)
   - [`read_entry`](#read_entry)
+  - [`list_loaded_logs`](#list_loaded_logs)
   - [`list_struct_types`](#list_struct_types)
+  - [`resolve_signals`](#resolve_signals)
   - [`health_check`](#health_check)
 - [Query Tools](#query-tools)
   - [`search_entries`](#search_entries)
@@ -49,6 +38,7 @@ Parameter tables come from the server's `tools/list` response. For parameter sem
   - [`find_peaks`](#find_peaks)
   - [`rate_of_change`](#rate_of_change)
   - [`time_correlate`](#time_correlate)
+  - [`align_entries`](#align_entries)
 - [Robot Analysis Tools](#robot-analysis-tools)
   - [`get_match_phases`](#get_match_phases)
   - [`analyze_swerve`](#analyze_swerve)
@@ -57,7 +47,6 @@ Parameter tables come from the server's `tools/list` response. For parameter sem
   - [`compare_matches`](#compare_matches)
   - [`get_code_metadata`](#get_code_metadata)
   - [`moi_regression`](#moi_regression)
-  - [`analyze_can_bus`](#analyze_can_bus)
 - [FRC Domain Tools](#frc-domain-tools)
   - [`get_ds_timeline`](#get_ds_timeline)
   - [`analyze_vision`](#analyze_vision)
@@ -65,8 +54,9 @@ Parameter tables come from the server's `tools/list` response. For parameter sem
   - [`analyze_auto`](#analyze_auto)
   - [`analyze_cycles`](#analyze_cycles)
   - [`analyze_replay_drift`](#analyze_replay_drift)
-  - [`predict_battery_health`](#predict_battery_health)
   - [`analyze_loop_timing`](#analyze_loop_timing)
+  - [`analyze_can_bus`](#analyze_can_bus)
+  - [`predict_battery_health`](#predict_battery_health)
   - [`get_game_info`](#get_game_info)
 - [Export Tools](#export-tools)
   - [`export_csv`](#export_csv)
@@ -80,195 +70,27 @@ Parameter tables come from the server's `tools/list` response. For parameter sem
   - [`sync_status`](#sync_status)
   - [`set_revlog_offset`](#set_revlog_offset)
   - [`wait_for_sync`](#wait_for_sync)
-- [Caveats](#caveats)
-
-## Transport envelope
-
-Every tool result travels inside a standard MCP `tools/call` result. The tool's JSON object is **serialized as a
-string** in `content[0].text`; clients must `JSON.parse` it. The server adds `_execution_time_ms` to the object
-before serializing.
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 12,
-  "result": {
-    "content": [
-      { "type": "text", "text": "{\"success\":true,\"count\":42,\"_execution_time_ms\":3}" }
-    ]
-  }
-}
-```
-
-The same envelope is used for tool-level failures (`success: false`); `isError` is **not** set on them.
-`isError: true` with `{"error": "...", "error_type": "invalid_parameter|io_error|memory_error|internal_error"}`
-is only produced if a tool throws past its own error handling, which the shared tool base class prevents in practice.
-
-`initialize` reports `protocolVersion "2025-03-26"`, `serverInfo {name: "wpilog-mcp", version}` and a `tools`
-capability only (`prompts/list` and `resources/list` return empty arrays).
-
-## Common response fields
-
-| Field | Present on | Meaning |
-|---|---|---|
-| `success` | every tool result | `true`/`false`. When `false`, `error` holds the message. |
-| `error` | failures | Human-readable message (validation errors, not-found, access denied, "Internal error: ..."). |
-| `_execution_time_ms` | every tool result | Added by the transport layer. |
-| `warnings[]` | optional | Non-fatal issues. Automatically includes `"Low data quality (score: 0.NN). Results should be treated as preliminary."` whenever `data_quality.quality_score < 0.5`. |
-| `_metadata` | optional | Execution metadata (currently only revlog tools: `timing_accuracy_ms`, `confidence_description`). |
-| `data_quality` | analytical tools | See below. |
-| `server_analysis_directives` | analytical tools | See below. |
-
-### `data_quality`
-
-Computed from the tool's primary time series (which series is noted per tool below).
-
-```json
-{
-  "sample_count": 11735,
-  "time_span_seconds": 336.0,
-  "gap_count": 119,
-  "max_gap_ms": 14962.6,
-  "nan_filtered": 3,
-  "effective_sample_rate_hz": 48.7,
-  "quality_score": 0.5
-}
-```
-
-- `gap_count` — intervals > 5× the median sample interval; `max_gap_ms` only when `gap_count > 0`.
-- `nan_filtered` — only when > 0.
-- `quality_score` = 1 − 0.3·min(gaps/20, 1) − 0.2·(non-finite ratio) − 0.3·(n < 100 ? 1 : n < 500 ? 0.5 : 0) − 0.2·min(jitter/median dt, 1). A single sample scores 0.4; an empty series 0.0.
-- Note: a full-match 50 Hz AdvantageKit series typically has 80–160 gaps (disabled periods, log start), so `quality_score` lands at 0.5 and `confidence_level` at `"low"` even for clean data. Treat the score as relative, not absolute.
-
-### `server_analysis_directives`
-
-```json
-{
-  "confidence_level": "low",
-  "sample_context": "Based on 11735 samples over 336.0 seconds",
-  "interpretation_guidance": ["..."],
-  "suggested_followup": ["..."]
-}
-```
-
-- `confidence_level` — `"high"` (score > 0.8 and gaps < 10 % of the time span), `"medium"` (> 0.5), `"low"` (> 0.2), `"insufficient"`.
-- `interpretation_guidance` / `suggested_followup` are omitted when empty.
-
-Auto-generated guidance strings (exact text, produced from `data_quality`):
-
-| Trigger | String |
-|---|---|
-| `sample_count < 100` | `Low sample count (N). Statistical measures have high uncertainty.` |
-| `gap_count / sample_count > 2 %` | `N data gaps detected (max X.Xms). Trend analysis may be affected by missing data.` |
-| `nan_filtered > 0` | `N non-finite values were filtered. This may indicate sensor dropouts or communication errors.` |
-| `time_span_seconds < 10` | `Short time span (X.Xs). Results may not be representative of full-match behavior.` |
-| most analytical tools | `This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.` |
-
-Tool-specific guidance and follow-up strings (always appended by that tool):
-
-| Tool | `interpretation_guidance` | `suggested_followup` |
-|---|---|---|
-| `get_statistics` | — | `Use detect_anomalies to check for outliers that may skew these statistics`; `Use time_correlate to check relationships with other entries` |
-| `compare_entries` | `RMSE is scale-dependent — compare to the entry's typical range for context` | `Use get_statistics on each entry individually for baseline context` |
-| `detect_anomalies` | — | `Use find_peaks if looking for signal extrema rather than statistical outliers` |
-| `find_peaks` | — | `Use get_statistics to understand baseline before interpreting peaks` |
-| `rate_of_change` | `Derivatives amplify noise — increase window_size for smoother results` | — |
-| `time_correlate` | `Correlation does not imply causation — consider confounding variables` | — |
-| `analyze_swerve` | — | `Use power_analysis to check if module issues correlate with brownouts` |
-| `power_analysis` | — | `Use predict_battery_health for comprehensive battery assessment` |
-| `can_health` | `CAN errors while disabled are normal; focus on enabled-state errors` | — |
-| `compare_matches` | `Cross-match comparisons require consistent logging configurations for valid comparison` (replaces the single-log caveat) | — |
-| `moi_regression` | `Regression estimates depend on data quality and model assumptions` | — |
-| `analyze_can_bus` | `Disabled-state CAN timeouts are normal — focus on enabled-state errors` | — |
-| `profile_mechanism` | — | `Use moi_regression for mechanism inertia estimation` |
-| `predict_battery_health` | `Battery health score is a heuristic — consider battery age and connector condition` | — |
-| `analyze_loop_timing` | `Health score is a heuristic based on violation rate — consider context of violations` | — |
-| `generate_report` | `Report is a summary — use individual tools for detailed analysis` | — |
-| `get_revlog_data` | `Revlog timestamps are synchronized via cross-correlation ...` (with confidence) | — |
-
-Every analytical tool's **description** (visible to the agent in `tools/list`) also carries an
-`INTERPRETATION GUIDANCE:` paragraph; it is quoted under each tool below.
-
-## Error responses
-
-Tool-level errors keep the normal envelope with `success: false`:
-
-```json
-{ "success": false, "error": "Missing required parameter: path", "_execution_time_ms": 0 }
-```
-
-Observed messages:
-
-| Situation | `error` |
-|---|---|
-| Missing required argument | `Missing required parameter: path` |
-| Entry not found (most tools) | `Entry not found: /SystemStats/Battery. Did you mean: /SystemStats/BatteryCurrent, /SystemStats/BatteryVoltage?` |
-| Entry not found (`get_entry_info`) | `Entry not found: /SystemStats/Battery` + `suggestions[]` |
-| File missing | `Internal error: File not found: <logdir>/nope.wpilog` |
-| Path outside allowed directories | `Internal error: Access denied: path is outside configured log directories. Configure allowed directories or use list_available_logs to find valid paths.` |
-| Bad operator (`find_condition`) | `Unknown operator: ~. Valid operators: lt, <, lte, <=, gt, >, gte, >=, eq, ==` |
-| `analyze_cycles` argument errors | `start_to_start mode requires cycle_start_state`; `start_to_end mode requires both cycle_start_state and cycle_end_state`; `cycle_mode must be 'start_to_start' or 'start_to_end'`; `State entry has no data` |
-| `moi_regression` | `Velocity entry not found or empty: ...`; `Current entry not found or empty: ...`; `Applied volts entry not found or empty: ...`; `Too few velocity samples in window: ...`; `Insufficient samples after filtering: ...`; `Singular OLS matrix: α and ω are nearly collinear. ...` |
-| `analyze_loop_timing` | `No loop time entry found. Look for entries containing 'LoopTime' or 'loop time'`; `Loop time entry found but has no data`; `No numeric loop time data found` |
-| `export_csv` | `Output path not allowed. CSV files can only be written to the configured log directory or system temp directory. Path: ...` |
-| `detect_anomalies` | `Not enough data`; `Not enough finite data for IQR calculation` (< 4 finite samples) |
-| `get_game_info` | `No game data available for season 2019` + `available_seasons[]` |
-| TBA not configured | `TBA API not configured. Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account` |
-| `get_revlog_data` unknown signal | `Signal not found: REV/Nope/Nope. Use list_revlog_signals to see available signals.` |
-| `get_revlog_data` no revlog | `No REV log files are synchronized. Place .revlog files in the same directory as the .wpilog file to enable auto-sync.` |
-| `set_revlog_offset` no revlog | `No REV log files found for this wpilog. Ensure .revlog files are present in the log directory tree with overlapping timestamps.` |
-| `list_available_logs` no directory | `Log directory not configured. Start server with -logdir /path/to/logs` + `hint` |
-
-JSON-RPC-level errors (no `result`) occur for unknown tools/methods and malformed requests:
-
-```json
-{ "jsonrpc": "2.0", "id": 11, "error": { "code": -32601, "message": "Unknown tool: no_such_tool" } }
-```
-
-Codes: `-32700` parse error, `-32600` invalid request, `-32601` method/tool not found (with "Did you mean" suggestions when close), `-32602` invalid params, `-32603` internal error.
-
 
 ## Discovery Tools
 
-
 ### `get_server_guide`
 
-IMPORTANT: Call this tool first to understand what analysis capabilities are available. Returns a structured overview of all 45 tools organized by category, with usage guidance and anti-patterns to avoid, plus analysis_principles: how to reason about results without confabulating (method, confidence calibration, traps, report format). This server has extensive built-in analysis—don't write custom code when a tool already exists.
+IMPORTANT: Call this tool first to understand what analysis capabilities are available. Returns a structured overview of all 47 tools organized by category, with usage guidance and anti-patterns to avoid, plus analysis_principles: how to reason about results without confabulating (method, confidence calibration, traps, report format). This server has extensive built-in analysis—don't write custom code when a tool already exists.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#get_server_guide))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `category` | string | no | Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery |
 | `include_examples` | boolean | no | Include example use cases for each tool (default: true) |
 
-
-**Response fields**
-
-- `overview` — `server_name`, `version`, `total_tools`, `purpose`.
-- `critical_guidance` — four fixed strings: `primary_rule`, `tba_tip`, `statistics_tip`, `match_phases_tip`.
-- `analysis_principles` — general reasoning guidance for the AI agent (static; the same text every call): `purpose`, `answer_first`, `method` (`applies_to`, `steps[]`, `pit_mode`), `calibration` (what `confidence_level` does and does not bound, `cause_confidence`, `never_high_when[]`, `do_not_hedge`), `user_proposed_cause`, `traps[]` (`{trap, fix}` pairs naming the tool call that avoids each), `cross_match[]`, `naming` (AdvantageKit vs WPILib DataLogManager entry names), `units`, `report_format` (`pit`, `deep_dive`, `choose`, `example`). The same guidance is sent in compact form as the MCP `instructions` field on `initialize`; see [TOOLS.md](TOOLS.md#server-instructions).
-- `architecture` — `concurrency`, `transports`, `log_loading`.
-- `categories[]` — one object per category (all 9 by default; exactly one when `category` is given): `name`, `description`, `anti_pattern`, `tools[]`, `tool_count`. Each tool: `name`, `description`, `requires_log`, `related_tools[]`, and `example_uses[]` unless `include_examples=false`.
-- `common_workflows[]` — `{name, steps[]}`.
-- The tool's `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}` so Claude Code keeps its description loaded when other MCP tools are deferred.
-- Static content; no `data_quality`.
-
-
-**Examples**
-
-**Filtered to one category, no examples**
-
-The default call (no arguments) returns all 9 categories with `example_uses`; trimmed here. `analysis_principles.traps` has 20 entries; only the first few are shown.
+**Example: Overview**
 
 Request:
 ```json
 {
   "name": "get_server_guide",
-  "arguments": {
-    "category": "revlog",
-    "include_examples": false
-  }
+  "arguments": {}
 }
 ```
 
@@ -276,14 +98,15 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "overview": {
     "server_name": "wpilog-mcp",
     "version": "0.8.2",
-    "total_tools": 45,
+    "total_tools": 47,
     "purpose": "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)"
   },
   "critical_guidance": {
-    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 45 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
+    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 47 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
     "tba_tip": "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. TBA data includes autonomous points, final scores, and win/loss results.",
     "statistics_tip": "NEVER compute mean/std/percentiles manually—use get_statistics. NEVER compute correlation manually—use time_correlate.",
     "match_phases_tip": "NEVER manually parse timestamps to find auto/teleop—use get_match_phases."
@@ -297,13 +120,12 @@ Response:
         "Observe: learn what is actually logged (list_entries, search_entries) and where the phases are (get_match_phases). Confirm the event in the question actually occurred (get_ds_timeline, find_condition).",
         "Hypothesize: the candidate cause plus at least one rival. Always include 'normal for this phase or state' and 'logging or timing artifact'; for power questions add 'another load at the same instant'.",
         "Predict before testing: 'if H1, entry E exceeds X during phase P within T of the event; if H2, it does not'. A threshold chosen after seeing the data is not a test; if you change it, say so and why.",
-        "Test: one tool call per prediction, scoped with start_time/end_time where the tool accepts them (get_statistics, rate_of_change, time_correlate, read_entry).",
-        "... (3 more items)"
+        "... (4 more items)"
       ],
       "pit_mode": "With a match coming up, answer with the fewest tool calls that test the leading cause and one rival, then offer the deeper analysis instead of running it. Run the full loop for post-event analysis or when the answer would change a hardware decision."
     },
     "calibration": {
-      "server_confidence_level": "Derived from quality_score, which starts at 1.0 and subtracts up to 0.3 for gaps (intervals over 5x the median sample interval; 20 or more gaps is the full penalty), up to 0.2 for interval jitter (long gaps inflate this too), up to 0.2 for non-finite values, and 0.3 or 0.15 for fewer than 100 or 500 samples. A full-match 50 Hz series with disabled periods typically has 100+ gaps, lands at about 0.5, and reports 'low' even when the data is good. Before quoting it, look at sample_count and gap_count: 11,000 samples with gaps only at disabled transitions is good data.",
+      "server_confidence_level": "Derived from quality_score, which starts at 1.0 and subtracts, each with a line in data_quality.reasons: up to 0.3 for time in intervals over 5x the median (20% of the span is the full penalty; for a change_only series these are holds, not missing data, but statistics weigh samples, not time), up to 0.2 for timing jitter (median absolute deviation, periodic series), up to 0.2 for non-finite values... (318 more characters)",
       "what_it_bounds": "Claims built on a mean, trend, percentile, correlation, or score. It does not bound claims about discrete events.",
       "discrete_events": "A logged brownout flag, a voltage threshold crossing, a DS disable, a joystick disconnect, an enabled-state CAN error, a current peak above stall: these are observations. State them plainly with the timestamp, even from one match. The cause of the event is a separate claim with its own confidence.",
       "cause_confidence": {
@@ -319,11 +141,11 @@ Response:
       ],
       "do_not_hedge": "Do not attach caveats to facts. 'The log shows a 149 A stall at 87.2 s' needs no qualifier. Reserve hedging for the cause and for generalizations."
     },
-    "user_proposed_cause": "Treat it as the first hypothesis. Answer it in the first sentence (yes, no, or cannot tell from this log) with the entry and window that decides it. Do not confirm it from one consistent statistic; do not dismiss it without a tool result. Then name the strongest rival and what the data says about it. Example: a compressor draws a steady 10-20 A and rarely causes a brownout alone; check its channel's peak_current_A in power_analysis channel_analysis, its current around the voltage minimum (read_entry with start_time/end_time on a scalar current entry or on the /PowerDistribution/ChannelCurrent array), and what else was drawing then. A steady load shows near-zero correlation with voltage even when it contributes.",
+    "user_proposed_cause": "Treat it as the first hypothesis. Answer it in the first sentence (yes, no, or cannot tell from this log) with the entry and window that decides it. Do not confirm it from one consistent statistic; do not dismiss it without a tool result. Then name the strongest rival and what the data says about it. Example: a compressor draws a steady 10-20 A and rarely causes a brownout alone; check its channel... (320 more characters)",
     "traps": [
       {
         "trap": "Explaining an event that did not happen",
-        "fix": "Check first with get_ds_timeline, find_condition, or search_strings. get_ds_timeline names the voltage entry it scanned as brownout_voltage_entry and warns when the log has none; in that case the absence of BROWNOUT events is not evidence, so use power_analysis or find_condition on a voltage entry instead. For console errors, get_ds_timeline gives exact counts (text_event_counts) and a distinct-message summary, never the messages themselves; search_strings with level=error lists them all. If the user's event is absent (no crossing below threshold, no error, no disable), say so and ask what they observed; do not explain a hypothetical."
+        "fix": "Check first with get_ds_timeline, find_condition, or search_strings. get_ds_timeline names the voltage entry it scanned as brownout_voltage_entry and warns when the log has none; in that case the absence of BROWNOUT events is not evidence, so use power_analysis or find_condition on a voltage entry instead. For console errors, get_ds_timeline gives exact counts (text_event_counts) and a distinct-me... (242 more characters)"
       },
       {
         "trap": "Naming an entry or quoting a value that no tool returned",
@@ -331,32 +153,27 @@ Response:
       },
       {
         "trap": "Treating a page or a summary as the whole message log",
-        "fix": "search_strings is paged: total_matches is the full count and has_more says whether another page exists, so fetch the next offset before saying how many errors there were or that a message never appeared. get_ds_timeline's text_event_summary groups messages after replacing numbers with #; its variants field says how many distinct raw texts a group covers (device 5 and device 7 are one group with variants 2), so drill into a group with search_strings (regex) before treating it as one issue. Long values are truncated (value_truncated); raise max_value_chars to see the whole text."
+        "fix": "search_strings is paged: total_matches is the full count and has_more says whether another page exists, so fetch the next offset before saying how many errors there were or that a message never appeared. get_ds_timeline's text_event_summary groups messages after replacing numbers with #; its variants field says how many distinct raw texts a group covers (device 5 and device 7 are one group with va... (183 more characters)"
       },
-      {
-        "trap": "Treating one read_entry page or window as the whole signal",
-        "fix": "Use get_statistics, find_condition, or find_peaks for whole-window claims. Use read_entry only to inspect a window already located by another tool, and state its bounds."
-      },
-      "... (17 more items)"
+      "... (20 more items)"
     ],
     "cross_match": [
       "One log is one sample. compare_matches shows that two matches differ, not why.",
-      "compare_matches compares one scalar entry across exactly two logs with whole-log min, max, and mean; it has no start_time/end_time and its data_quality reflects only the first log. For phase-scoped or n-bearing comparisons, run get_statistics with the same name and start_time/end_time on each log (windows from get_match_phases per log) and tabulate the results.",
+      "compare_matches compares one signal across two logs with percentiles, and resolves scope (enabled, teleop, segment:<i>) in each log's own timeline, so pass scope 'enabled' rather than comparing whole logs: a whole-log max is often the multi-second boot loop, which it flags. For more than two logs, run get_statistics with the same name and scope on each and tabulate the results.",
       "Keep only FMS-connected match logs unless asked; exclude practice, pit, and replay (_sim) logs.",
-      "Check get_code_metadata on each log; a different git SHA between matches is a confounder for any behavior change. Battery, alliance partners, and field position also change.",
-      "... (2 more items)"
+      "... (3 more items)"
     ],
     "naming": {
       "advantagekit": "/SystemStats/BatteryVoltage, /SystemStats/BrownedOut, /PowerDistribution/ChannelCurrent (array), /PowerDistribution/TotalCurrent, /DriverStation/Enabled, /RealOutputs/<Subsystem>/..., /AdvantageKit/...",
-      "wpilib_datalog": "DS:enabled, DS:autonomous, DS:test, DS:estop, DS:joystick0/...; NetworkTables entries prefixed NT:/ (for example NT:/SmartDashboard/...); battery and PDH data only if the team logged them (typically NT:/SmartDashboard/PowerDistribution[<CAN id>]/Voltage, TotalCurrent, and per-channel Chan<N>; the id is 1 for a REV PDH, 0 for a CTRE PDP). Phase, DS, and CAN tools recognize both /DriverStation/... and DS:... names; power_analysis and get_ds_timeline both use the PowerDistribution voltage when no BatteryVoltage entry exists.",
+      "wpilib_datalog": "DS:enabled, DS:autonomous, DS:test, DS:estop, DS:joystick0/...; NetworkTables entries prefixed NT:/ (for example NT:/SmartDashboard/...); battery and PDH data only if the team logged them (typically NT:/SmartDashboard/PowerDistribution[<CAN id>]/Voltage, TotalCurrent, and per-channel Chan<N>; the id is 1 for a REV PDH, 0 for a CTRE PDP). Phase, DS, and CAN tools recognize both /DriverStation/... a... (127 more characters)",
       "when_a_tool_finds_nothing": "If analyze_swerve, profile_mechanism, or analyze_cycles reports no matching entries, list the names you searched, run search_entries with the subsystem word (swerve, module, drive, elevator), and ask the user for their naming. Do not reconstruct the analysis from raw entries by hand."
     },
-    "units": "Battery voltage in V (12.0-13.2 V at rest is healthy). Currents in A; ChannelCurrent is an array indexed by channel, TotalCurrent is a scalar. analyze_loop_timing auto-detects ms vs s; a 20 ms nominal loop reported as 0.02 is seconds. Tool timestamps are the log's own clock in seconds (FPGA time, which starts at roboRIO boot, so the first sample is usually not at 0); take the real range from get_entry_info time_range_sec or get_match_phases, and do not rebase or convert by hand.",
+    "units": "Battery voltage in V (12.0-13.2 V at rest is healthy). Currents in A; ChannelCurrent is an array indexed by channel, TotalCurrent is a scalar. analyze_loop_timing auto-detects ms vs s; a 20 ms nominal loop reported as 0.02 is seconds. Tool timestamps are the log's own clock in seconds (FPGA time, which starts at roboRIO boot, so the first sample is usually not at 0); take the real range from get_e... (83 more characters)",
     "report_format": {
       "pit": "Two to four sentences: what happened (event, time, entry, value); the most likely why, with confidence; the one thing to check before the next match. Caveats only if they change the action.",
       "deep_dive": "For each finding, ranked by evidence strength: Finding; Evidence (log, entry, phase or window, n, statistic); Alternatives considered and the observation that ruled them out; Confidence (high, medium, low) and why; Not determinable from telemetry (what needs physical inspection, code review, or another match); Next measurement.",
       "choose": "Use pit when the user mentions an upcoming match, time pressure, or asks a single yes/no question; otherwise deep_dive.",
-      "example": "Finding: 4 of the 6 worst voltage events involved a 149 A stall on the intake or climber. Evidence: battery voltage crossings below 6.8 V from find_condition, per-channel peaks from power_analysis channel_analysis, intake current from read_entry in a 2 s window around each crossing, teleop only, n = 6 events. Alternatives: battery age (ruled out: voltage recovers fully between events); wiring (not testable from logs). Confidence: high that the stalls occur, the events are unambiguous; medium on cause, telemetry cannot distinguish mechanical binding from a control-loop issue. Not determinable from telemetry: the root cause of the stall; needs physical inspection. Next: get_statistics with the teleop window on the same entries in the other logs from this event."
+      "example": "Finding: 4 of the 6 worst voltage events involved a 149 A stall on the intake or climber. Evidence: battery voltage crossings below 6.8 V from find_condition, per-channel peaks from power_analysis channel_analysis, intake current from read_entry in a 2 s window around each crossing, teleop only, n = 6 events. Alternatives: battery age (ruled out: voltage recovers fully between events); wiring (not... (369 more characters)"
     }
   },
   "architecture": {
@@ -366,48 +183,172 @@ Response:
   },
   "categories": [
     {
-      "name": "revlog",
-      "description": "REV Hardware Client log analysis with synchronized timestamps.",
-      "anti_pattern": "Don't manually align REV timestamps—synchronization is automatic.",
+      "name": "core",
+      "description": "Log loading and data access. Start here to discover available data.",
+      "anti_pattern": "Don't manually parse log files—use list_entries and read_entry.",
       "tools": [
         {
-          "name": "list_revlog_signals",
-          "description": "List available REV motor controller signals",
-          "requires_log": true,
+          "name": "list_available_logs",
+          "description": "List WPILOG files with TBA match data enrichment",
+          "requires_log": false,
+          "example_uses": [
+            "Find available log files",
+            "Get match scores from TBA",
+            "See which matches we won/lost"
+          ],
           "related_tools": [
-            "get_revlog_data",
-            "sync_status"
+            "list_entries",
+            "get_tba_status"
           ]
         },
         {
-          "name": "get_revlog_data",
-          "description": "Query REV signal data with synchronized timestamps",
+          "name": "list_entries",
+          "description": "List all data entries in the loaded log",
           "requires_log": true,
+          "example_uses": [
+            "See what data is logged",
+            "Find entry names",
+            "Discover available telemetry"
+          ],
           "related_tools": [
-            "list_revlog_signals"
+            "get_entry_info",
+            "search_entries"
           ]
         },
         {
-          "name": "sync_status",
-          "description": "Get REV log synchronization confidence and details",
+          "name": "get_entry_info",
+          "description": "Describe an entry: type, samples, struct schema and source, numeric field paths",
           "requires_log": true,
+          "example_uses": [
+            "Check entry data type",
+            "See sample count for an entry",
+            "Find the numeric fields of a struct entry",
+            "Check why an entry did not decode"
+          ],
           "related_tools": [
-            "list_revlog_signals"
+            "read_entry",
+            "list_entries",
+            "list_struct_types"
           ]
         },
-        {
-          "name": "set_revlog_offset",
-          "description": "Manually set the REV log time offset",
-          "requires_log": true,
-          "related_tools": [
-            "sync_status",
-            "list_revlog_signals"
-          ]
-        },
-        "... (1 more items)"
+        "... (5 more items)"
       ],
-      "tool_count": 5
-    }
+      "tool_count": 8
+    },
+    {
+      "name": "query",
+      "description": "Search and filter log data. Find specific entries, types, and events.",
+      "anti_pattern": "Don't iterate through all entries manually—use search_entries or find_condition.",
+      "tools": [
+        {
+          "name": "search_entries",
+          "description": "Search entries by type, name pattern, or sample count",
+          "requires_log": true,
+          "example_uses": [
+            "Find all Pose2d entries",
+            "Find entries with enough data",
+            "Search by name pattern"
+          ],
+          "related_tools": [
+            "list_entries",
+            "get_types"
+          ]
+        },
+        {
+          "name": "get_types",
+          "description": "List all data types in the log",
+          "requires_log": true,
+          "example_uses": [
+            "See what types of data are logged",
+            "Find struct types"
+          ],
+          "related_tools": [
+            "search_entries"
+          ]
+        },
+        {
+          "name": "find_condition",
+          "description": "Find timestamps where values cross thresholds",
+          "requires_log": true,
+          "example_uses": [
+            "When did voltage drop below 11V?",
+            "Find brownout events",
+            "Detect threshold crossings"
+          ],
+          "related_tools": [
+            "power_analysis",
+            "detect_anomalies"
+          ]
+        },
+        {
+          "name": "search_strings",
+          "description": "Search string entries for text patterns",
+          "requires_log": true,
+          "example_uses": [
+            "Find error messages",
+            "Search console output",
+            "Find specific warnings"
+          ],
+          "related_tools": [
+            "can_health",
+            "generate_report"
+          ]
+        }
+      ],
+      "tool_count": 4
+    },
+    {
+      "name": "statistics",
+      "description": "Statistical analysis on numeric data. Compute stats, find correlations, detect anomalies.",
+      "anti_pattern": "NEVER compute statistics manually with code—use get_statistics. NEVER compute correlation manually—use time_correlate.",
+      "tools": [
+        {
+          "name": "get_statistics",
+          "description": "Compute comprehensive statistics on numeric entries",
+          "requires_log": true,
+          "example_uses": [
+            "Get battery voltage statistics",
+            "Analyze motor current distribution",
+            "Compute percentiles"
+          ],
+          "related_tools": [
+            "compare_entries",
+            "detect_anomalies"
+          ]
+        },
+        {
+          "name": "compare_entries",
+          "description": "Compare two entries (e.g., setpoint vs actual)",
+          "requires_log": true,
+          "example_uses": [
+            "Compare commanded vs actual velocity",
+            "Validate replay outputs",
+            "Find tracking error"
+          ],
+          "related_tools": [
+            "get_statistics",
+            "time_correlate"
+          ]
+        },
+        {
+          "name": "detect_anomalies",
+          "description": "Find outliers using IQR method",
+          "requires_log": true,
+          "example_uses": [
+            "Find current spikes",
+            "Detect unusual sensor readings",
+            "Identify outliers"
+          ],
+          "related_tools": [
+            "get_statistics",
+            "find_peaks"
+          ]
+        },
+        "... (4 more items)"
+      ],
+      "tool_count": 7
+    },
+    "... (6 more items)"
   ],
   "common_workflows": [
     {
@@ -417,7 +358,7 @@ Response:
         "2. list_entries - Discover available telemetry (pass log path)",
         "3. get_match_phases - Find auto/teleop timing",
         "4. generate_report - Get overview of match health",
-        "... (1 more items)"
+        "5. Use specialized tools as needed (power_analysis, analyze_swerve, etc.)"
       ]
     },
     {
@@ -436,44 +377,33 @@ Response:
         "2. power_analysis - Check for brownouts and current peaks (pass log path)",
         "3. find_condition - Find exact timestamps of voltage drops",
         "4. predict_battery_health - Assess battery condition",
-        "... (1 more items)"
+        "5. can_health - Check for CAN errors (often accompany brownouts)"
       ]
     }
-  ],
-  "_execution_time_ms": 1
+  ]
 }
 ```
-
 
 ### `suggest_tools`
 
 Given a natural language description of what you want to analyze, this tool recommends the most relevant tools and provides a suggested workflow. Use this when unsure which tools to use for a specific analysis task.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#suggest_tools))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Natural language description of what you want to analyze (e.g., 'check why our auto was inconsistent' or 'investigate brownout during teleop') |
 | `max_suggestions` | integer | no | Maximum number of tools to suggest (default: 5) |
 
-
-**Response fields**
-
-- `task` — the request echoed back, lower-cased.
-- `suggestions[]` — `{tool, description, relevance_score (int, keyword hits), category, example_uses[], related_tools[]}` ordered by relevance; `suggestion_count`.
-- `suggested_workflow[]` — numbered step strings; `anti_patterns[]` — strings.
-
-
-**Examples**
-
-**Brownout question**
+**Example: A diagnosis task**
 
 Request:
 ```json
 {
   "name": "suggest_tools",
   "arguments": {
-    "task": "Why did we brownout during teleop?"
+    "task": "why did the robot brown out during teleop",
+    "max_suggestions": 3
   }
 }
 ```
@@ -482,23 +412,9 @@ Response:
 ```json
 {
   "success": true,
-  "task": "why did we brownout during teleop?",
+  "status": "ok",
+  "task": "why did the robot brown out during teleop",
   "suggestions": [
-    {
-      "tool": "power_analysis",
-      "description": "Analyze battery voltage and current distribution",
-      "relevance_score": 5,
-      "category": "robot_analysis",
-      "example_uses": [
-        "Check for brownouts",
-        "Find peak current draw",
-        "Analyze battery health"
-      ],
-      "related_tools": [
-        "predict_battery_health",
-        "can_health"
-      ]
-    },
     {
       "tool": "get_match_phases",
       "description": "Detect match phases (auto/teleop) from DriverStation data",
@@ -514,53 +430,61 @@ Response:
         "get_ds_timeline"
       ]
     },
-    "... (1 more items)"
+    {
+      "tool": "get_tba_match_data",
+      "description": "Query match scores and results from The Blue Alliance",
+      "relevance_score": 2,
+      "category": "tba",
+      "example_uses": [
+        "Get match scores",
+        "Check autonomous points",
+        "Find alliance results"
+      ],
+      "related_tools": [
+        "list_available_logs",
+        "get_tba_status"
+      ]
+    }
   ],
-  "suggestion_count": 3,
+  "suggestion_count": 2,
   "suggested_workflow": [
     "1. list_available_logs - Find available logs (includes TBA match data)",
-    "2. power_analysis - Analyze battery voltage and current distribution",
-    "3. get_match_phases - Detect match phases (auto/teleop) from DriverStation data",
-    "4. get_tba_match_data - Query match scores and results from The Blue Alliance"
+    "2. get_match_phases - Detect match phases (auto/teleop) from DriverStation data",
+    "3. get_tba_match_data - Query match scores and results from The Blue Alliance"
   ],
   "anti_patterns": [
-    "Don't manually parse timestamps for match phases—use get_match_phases",
-    "Don't manually check voltage thresholds—use power_analysis"
-  ],
-  "_execution_time_ms": 5
+    "Don't manually parse timestamps for match phases—use get_match_phases"
+  ]
 }
 ```
 
-
 ## Core Tools
-
 
 ### `list_available_logs`
 
-List WPILOG files available in the configured log directory with friendly names. IMPORTANT: When TBA is configured, this tool automatically enriches each log with match data including alliance scores, win/loss results, and actual match times. Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! Use this tool first to find logs and get match results, then pass the path to other tools.
+List WPILOG files available in the configured log directory with friendly names, newest first, paged: log_count is the number matching the filters, offset/limit select a page (default 50), has_more says whether another page exists. Filters: name (substring of the file or friendly name), event (event code, e.g. VACHE), match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). IMPORTANT: When TBA is configured, this tool automatically enriches each listed log with match data including alliance scores, win/loss results, and actual match times. Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! Use this tool first to find logs and get match results, then pass the path to other tools.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#list_available_logs))
 
-_No parameters._
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | no | Only logs whose file or friendly name contains this (case-insensitive) |
+| `event` | string | no | Only logs from this event code (case-insensitive) |
+| `match_type` | string | no | Only this match type (qm, sf, f, p, e, ...) |
+| `since` | string | no | Only logs from this date on: 2026-03-20, or an ISO-8601 instant |
+| `offset` | integer | no | Logs to skip |
+| `limit` | integer | no | Maximum logs to return (max 500) |
 
-
-**Response fields**
-
-- `log_directory`, `log_count`, `metadata_cache` `{misses, hits, size}` (per-file metadata cache stats).
-- `logs[]` sorted newest first: `friendly_name`, `path`, `filename`, `size_bytes`, `last_modified` (epoch **milliseconds**), plus `event`, `match_type` (`Practice` / `Qualification` / `Elimination`), `match_number`, `team_number` — each only when the log's DriverStation/FMS metadata provides it.
-- When TBA is configured: top-level `tba_enrichment: true`, and eligible logs (event + match type + number + team) gain a `tba` object: `{team_number, alliance, score, won?, actual_time?, actual_time_local?, scheduled_time?, scheduled_time_local?, opponent_score?}`.
-- If no log directory is configured the tool returns `success: false` with `error` and `hint` fields.
-
-
-**Examples**
-
-**Default (TBA not configured)**
+**Example: First page, one event**
 
 Request:
 ```json
 {
   "name": "list_available_logs",
-  "arguments": {}
+  "arguments": {
+    "event": "vache",
+    "limit": 3
+  }
 }
 ```
 
@@ -568,12 +492,17 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "log_directory": "<logdir>",
-  "log_count": 86,
+  "log_count": 37,
+  "total_logs": 88,
+  "offset": 0,
+  "returned": 3,
+  "has_more": true,
   "metadata_cache": {
-    "misses": 86,
-    "hits": 0,
-    "size": 86
+    "size": 88,
+    "misses": 88,
+    "hits": 0
   },
   "logs": [
     {
@@ -597,59 +526,370 @@ Response:
       "size_bytes": 1785856,
       "last_modified": 1774219502000
     },
-    "... (84 more items)"
+    {
+      "friendly_name": "VACHE Elimination 4",
+      "path": "<logdir>/vache/session_55/akit_26-03-22_18-15-22_vache_e4.wpilog",
+      "filename": "akit_26-03-22_18-15-22_vache_e4.wpilog",
+      "event": "VACHE",
+      "match_type": "Elimination",
+      "match_number": 4,
+      "team_number": 2363,
+      "size_bytes": 32751616,
+      "last_modified": 1774218048000
+    }
   ],
-  "_execution_time_ms": 108
-}
-```
-
-**Per-log `tba` object when TBA is configured**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "friendly_name": "VACHE Qualification 10",
-  "path": "<logdir>/.../akit_..._vache_q10.wpilog",
-  "filename": "akit_..._vache_q10.wpilog",
-  "event": "VACHE",
-  "match_type": "Qualification",
-  "match_number": 10,
-  "team_number": 2363,
-  "size_bytes": "<int>",
-  "last_modified": "<epoch ms>",
-  "tba": {
-    "team_number": 2363,
-    "alliance": "blue",
-    "score": "<int>",
-    "won": "<bool>",
-    "actual_time": "<epoch s>",
-    "actual_time_local": "<string>",
-    "scheduled_time": "<epoch s>",
-    "scheduled_time_local": "<string>",
-    "opponent_score": "<int>"
+  "limits": {
+    "logs": {
+      "total": 37,
+      "returned": 3,
+      "limit": 3
+    }
   }
 }
 ```
 
+### `list_entries`
+
+List all entries in a log file. Returns log metadata (time range, duration, truncation status) and entry list with types and sample counts. Optionally filter by name pattern. Struct and array entries hold numeric fields that numeric tools address by path (see get_entry_info).
+
+**Parameters** ([TOOLS.md](TOOLS.md#list_entries))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `pattern` | string | no | Optional pattern to filter entry names (substring match) |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: Filtered by pattern**
+
+Request:
+```json
+{
+  "name": "list_entries",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "pattern": "SystemStats/Battery"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+  "entry_count": 2,
+  "time_range_sec": {
+    "start": 11.897573,
+    "end": 347.901903,
+    "duration": 336.00433
+  },
+  "truncated": true,
+  "warning": "Log file is truncated (incomplete write). Data up to 347.90 seconds was recovered.",
+  "entries": [
+    {
+      "name": "/SystemStats/BatteryCurrent",
+      "type": "double",
+      "sample_count": 11149
+    },
+    {
+      "name": "/SystemStats/BatteryVoltage",
+      "type": "double",
+      "sample_count": 11735
+    }
+  ]
+}
+```
+
+### `get_entry_info`
+
+Describe one entry: type, metadata, sample count, time range, and three representative samples (first, middle, last among non-empty values; non_empty_sample_count says how many values are not empty arrays or strings). For a struct entry: its schema, where the schema came from (logged by this log, WPILib's, or an assumed template), fields, and numeric_leaf_paths, the numeric fields that other tools can address as entry + path (e.g. /Vision/Camera0/PoseObservations[*].tagCount). decode_problem reports records that could not be decoded and why.
+
+**Parameters** ([TOOLS.md](TOOLS.md#get_entry_info))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The entry name (e.g., '/Vision/Summary/ObservationScore') |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: A struct array: schema, source, leaf paths**
+
+Request:
+```json
+{
+  "name": "get_entry_info",
+  "arguments": {
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "name": "/Vision/Camera3/PoseObservations"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "name": "/Vision/Camera3/PoseObservations",
+  "type": "struct:PoseObservation[]",
+  "metadata": "{\"source\":\"AdvantageKit\"}",
+  "sample_count": 4225,
+  "numeric_leaf_paths": [
+    "[*].timestamp",
+    "[*].pose.translation.x",
+    "[*].pose.translation.y",
+    "... (15 more items)"
+  ],
+  "struct": {
+    "name": "PoseObservation",
+    "source": "logged",
+    "source_note": "decoded by the schema this log records",
+    "valid": true,
+    "size_bytes": 88,
+    "schema": "double timestamp;Pose3d pose;double ambiguity;int32 tagCount;double averageTagDistance;enum {MEGATAG_1=0, MEGATAG_2=1, PHOTONVISION=2} int32 type;",
+    "schema_entry": "/.schema/struct:PoseObservation",
+    "fields": [
+      {
+        "name": "timestamp",
+        "type": "double"
+      },
+      {
+        "name": "pose",
+        "type": "Pose3d"
+      },
+      {
+        "name": "ambiguity",
+        "type": "double"
+      },
+      "... (3 more items)"
+    ],
+    "is_array": true
+  },
+  "time_range_sec": {
+    "start": 12.658122,
+    "end": 1581.224901
+  },
+  "non_empty_sample_count": 2377,
+  "sample_values": [
+    {
+      "timestamp_sec": 29.47904,
+      "value": [
+        {
+          "timestamp": 29.380902,
+          "pose": {
+            "translation": {
+              "x": 2.4888400730684945,
+              "y": 6.490135622176096,
+              "z": 0.03916949986882143
+            },
+            "rotation": {
+              "q": {
+                "w": 0.6981147061342652,
+                "x": -0.007706172118600557,
+                "y": -0.007957029222134024,
+                "z": 0.7159002428245888
+              },
+              "_derived": {
+                "roll": -0.022154274755881342,
+                "pitch": -7.613725238884171E-5,
+                "yaw": 1.5959519238585596,
+                "roll_deg": -1.2693464416852231,
+                "pitch_deg": -0.004362343225602975,
+                "yaw_deg": 91.44130954287958
+              }
+            }
+          },
+          "ambiguity": 0.01793597238512702,
+          "tagCount": 1,
+          "averageTagDistance": 3.3327902215729983,
+          "type": {
+            "value": 2,
+            "label": "PHOTONVISION"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp_sec": 468.346144,
+      "value": [
+        {
+          "timestamp": 468.257249,
+          "pose": {
+            "translation": {
+              "x": 2.8045258264355564,
+              "y": 3.421340843183166,
+              "z": -0.0159595118070619
+            },
+            "rotation": {
+              "q": {
+                "w": -0.7463074510244032,
+                "x": 0.0033692345381648174,
+                "y": -0.01576061557959452,
+                "z": 0.6654062216425671
+              },
+              "_derived": {
+                "roll": -0.02601104100455118,
+                "pitch": 0.01904186115023119,
+                "yaw": -1.4565550011774147,
+                "roll_deg": -1.4903228703025078,
+                "pitch_deg": 1.0910182779823743,
+                "yaw_deg": -83.45445419613851
+              }
+            }
+          },
+          "ambiguity": 0.0052213632261841145,
+          "tagCount": 1,
+          "averageTagDistance": 1.4970702222957084,
+          "type": {
+            "value": 2,
+            "label": "PHOTONVISION"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp_sec": 1581.131149,
+      "value": [
+        {
+          "timestamp": 1581.078339,
+          "pose": {
+            "translation": {
+              "x": 2.4507293938415318,
+              "y": 3.749131507377399,
+              "z": 0.41835692899251314
+            },
+            "rotation": {
+              "q": {
+                "w": 0.993296415284395,
+                "x": -0.015794386435016235,
+                "y": -0.08335457073552235,
+                "z": 0.078516140237589
+              },
+              "_derived": {
+                "roll": -0.04508523771348965,
+                "pitch": -0.16384343464879986,
+                "yaw": 0.16146639312960517,
+                "roll_deg": -2.5831938393270066,
+                "pitch_deg": -9.387537306303749,
+                "yaw_deg": 9.25134285952653
+              }
+            }
+          },
+          "ambiguity": 0.0,
+          "tagCount": 1,
+          "averageTagDistance": 2.0894358451532193,
+          "type": {
+            "value": 2,
+            "label": "PHOTONVISION"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `read_entry`
+
+Read values from an entry, in time order, with optional time range and paging: total_in_range is the true count, offset/limit select a page, has_more says whether another page exists, and limits.samples gives total (after offset) and returned. Struct values are decoded by the log's own schema: nested objects with the schema's field names, enum fields as {value, label}, rotations with a _derived block (degrees; roll, pitch, yaw). Records that could not be decoded are reported in warnings. One page is not the whole signal: use get_statistics, find_condition, or find_peaks for claims about a window.
+
+**Parameters** ([TOOLS.md](TOOLS.md#read_entry))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The entry name |
+| `start_time` | number | no | Start timestamp in seconds (optional) |
+| `end_time` | number | no | End timestamp in seconds (optional) |
+| `limit` | integer | no | Maximum number of samples to return |
+| `offset` | integer | no | Number of samples to skip |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: A schema-decoded PoseObservation**
+
+Request:
+```json
+{
+  "name": "read_entry",
+  "arguments": {
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "name": "/Vision/Camera3/PoseObservations",
+    "start_time": 370,
+    "limit": 1
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "name": "/Vision/Camera3/PoseObservations",
+  "type": "struct:PoseObservation[]",
+  "total_in_range": 2781,
+  "returned_count": 1,
+  "offset": 0,
+  "limit": 1,
+  "has_more": true,
+  "samples": [
+    {
+      "timestamp_sec": 370.047375,
+      "value": [
+        {
+          "timestamp": 369.970913,
+          "pose": {
+            "translation": {
+              "x": 3.1804531628245463,
+              "y": 4.545514780485817,
+              "z": 0.3667373536507883
+            },
+            "rotation": {
+              "q": {
+                "w": 0.744332272405248,
+                "x": -0.05028579830371463,
+                "y": -0.05119802447605093,
+                "z": 0.6639424440678179
+              },
+              "_derived": {
+                "roll": -0.143340490539234,
+                "pitch": -0.009443072488214159,
+                "yaw": 1.4574302248222912,
+                "roll_deg": -8.212805141233014,
+                "pitch_deg": -0.5410481992107721,
+                "yaw_deg": 83.50460081712
+              }
+            }
+          },
+          "ambiguity": 0.0,
+          "tagCount": 1,
+          "averageTagDistance": 2.8575662739829073,
+          "type": {
+            "value": 2,
+            "label": "PHOTONVISION"
+          }
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": {
+      "total": 2781,
+      "returned": 1,
+      "limit": 1
+    }
+  }
+}
+```
 
 ### `list_loaded_logs`
 
 List all currently cached log files and cache status.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#list_loaded_logs))
 
-_No parameters._
+None.
 
-
-**Response fields**
-
-- `loaded_count`, `logs[]` of `{path}` for logs currently held in the in-memory cache (logs load on demand and are evicted when idle or under heap pressure).
-
-
-**Examples**
-
-**One log cached**
+**Example: After loading**
 
 Request:
 ```json
@@ -663,463 +903,31 @@ Response:
 ```json
 {
   "success": true,
-  "loaded_count": 1,
-  "logs": [
-    {
-      "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
-    }
-  ],
-  "_execution_time_ms": 0
+  "status": "ok",
+  "loaded_count": 0,
+  "logs": []
 }
 ```
-
-
-### `list_entries`
-
-List all entries in a log file. Returns log metadata (time range, duration, truncation status) and entry list with types and sample counts. Optionally filter by name pattern.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `pattern` | string | no | Optional pattern to filter entry names (substring match) |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `log_path`, `entry_count` (after filtering), `time_range_sec` `{start, end, duration}`, `entries[]` of `{name, type, sample_count}`.
-- `type` is the WPILOG type string (`double`, `boolean`, `int64`, `string`, `double[]`, `struct:Pose2d`, `struct:SwerveModuleState[]`, `structschema`, ...).
-- If the log was truncated at parse time, adds `truncated: true` and `warning` (message).
-- `pattern` is a case-insensitive substring match on the entry name.
-
-
-**Examples**
-
-**Filtered by pattern**
-
-Request:
-```json
-{
-  "name": "list_entries",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "pattern": "Module0"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-  "entry_count": 18,
-  "time_range_sec": {
-    "start": 11.897573,
-    "end": 347.901903,
-    "duration": 336.00433
-  },
-  "entries": [
-    {
-      "name": "/Drive/Module0/DriveAppliedVolts",
-      "type": "double",
-      "sample_count": 6063
-    },
-    {
-      "name": "/Drive/Module0/DriveConnected",
-      "type": "boolean",
-      "sample_count": 1
-    },
-    {
-      "name": "/Drive/Module0/DriveCurrentAmps",
-      "type": "double",
-      "sample_count": 12869
-    },
-    "... (15 more items)"
-  ],
-  "_execution_time_ms": 173
-}
-```
-
-
-### `get_entry_info`
-
-Get detailed information about a specific entry including metadata and sample values.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | yes | The entry name (e.g., '/Vision/Summary/ObservationScore') |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `name`, `type`, `metadata` (the raw metadata **string** from the log, often JSON text such as `{"source":"AdvantageKit"}`), `sample_count`, `time_range_sec` `{start, end}`, `sample_values[]` — first, middle and last sample as `{timestamp_sec, value}`.
-- Struct values are decoded into objects (e.g. `Pose2d` → `{x, y, rotation_rad, rotation_deg}`).
-- Not-found response is tool-specific: `success: false`, `error`, and a `suggestions[]` array of similar entry names (other tools put the suggestions inside the error string instead).
-
-
-**Examples**
-
-**Numeric entry**
-
-Request:
-```json
-{
-  "name": "get_entry_info",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryVoltage"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "name": "/SystemStats/BatteryVoltage",
-  "type": "double",
-  "metadata": "{\"source\":\"AdvantageKit\"}",
-  "sample_count": 11735,
-  "time_range_sec": {
-    "start": 11.897573,
-    "end": 347.901903
-  },
-  "sample_values": [
-    {
-      "timestamp_sec": 11.897573,
-      "value": 12.5108115234375
-    },
-    {
-      "timestamp_sec": 201.438134,
-      "value": 9.168537109375
-    },
-    {
-      "timestamp_sec": 347.901903,
-      "value": 12.27207763671875
-    }
-  ],
-  "_execution_time_ms": 6
-}
-```
-
-**Struct entry**
-
-Request:
-```json
-{
-  "name": "get_entry_info",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/RealOutputs/Drive/Pose"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "name": "/RealOutputs/Drive/Pose",
-  "type": "struct:Pose2d",
-  "metadata": "{\"source\":\"AdvantageKit\"}",
-  "sample_count": 13357,
-  "time_range_sec": {
-    "start": 11.897573,
-    "end": 347.901903
-  },
-  "sample_values": [
-    {
-      "timestamp_sec": 11.897573,
-      "value": {
-        "rotation_rad": 0.0,
-        "y": 0.0,
-        "x": 0.0,
-        "rotation_deg": 0.0
-      }
-    },
-    {
-      "timestamp_sec": 200.381897,
-      "value": {
-        "rotation_rad": 0.07303924887469634,
-        "y": -1.7354588860480624,
-        "x": 11.748853382519204,
-        "rotation_deg": 4.184840699325748
-      }
-    },
-    {
-      "timestamp_sec": 347.901903,
-      "value": {
-        "rotation_rad": 2.0485879930763566,
-        "y": -3.2811841373787414,
-        "x": -4.9938413018507,
-        "rotation_deg": 117.37544596445075
-      }
-    }
-  ],
-  "_execution_time_ms": 11
-}
-```
-
-**Entry not found**
-
-Request:
-```json
-{
-  "name": "get_entry_info",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/Battery"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": false,
-  "error": "Entry not found: /SystemStats/Battery",
-  "suggestions": [
-    "/SystemStats/BatteryCurrent",
-    "/SystemStats/BatteryVoltage"
-  ],
-  "_execution_time_ms": 160
-}
-```
-
-
-### `read_entry`
-
-Read values from an entry. Supports time range filtering and pagination.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | yes | The entry name |
-| `start_time` | number | no | Start timestamp in seconds (optional) |
-| `end_time` | number | no | End timestamp in seconds (optional) |
-| `limit` | integer | no | Maximum number of samples to return (default: `100`) |
-| `offset` | integer | no | Number of samples to skip (default: `0`) |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `name`, `type`, `total_in_range` (samples inside `start_time`/`end_time` before paging), `returned_count`, `offset`, `limit`, `samples[]` of `{timestamp_sec, value}`.
-- `value` is typed by entry: number, boolean, string, array (`double[]`, `boolean[]`, `string[]`, ...), decoded struct object, or array of struct objects.
-- Page with `offset`/`limit`; default limit 100.
-
-
-**Examples**
-
-**Numeric with time filter and paging**
-
-Request:
-```json
-{
-  "name": "read_entry",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryVoltage",
-    "start_time": 120,
-    "limit": 5
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "name": "/SystemStats/BatteryVoltage",
-  "type": "double",
-  "total_in_range": 9019,
-  "returned_count": 5,
-  "offset": 0,
-  "limit": 5,
-  "samples": [
-    {
-      "timestamp_sec": 120.071675,
-      "value": 11.624983154296874
-    },
-    {
-      "timestamp_sec": 120.148045,
-      "value": 10.374771484375
-    },
-    "... (3 more items)"
-  ],
-  "_execution_time_ms": 1
-}
-```
-
-**Struct entry**
-
-Request:
-```json
-{
-  "name": "read_entry",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/RealOutputs/Drive/Pose",
-    "start_time": 120,
-    "limit": 2
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "name": "/RealOutputs/Drive/Pose",
-  "type": "struct:Pose2d",
-  "total_in_range": 9888,
-  "returned_count": 2,
-  "offset": 0,
-  "limit": 2,
-  "samples": [
-    {
-      "timestamp_sec": 120.071675,
-      "value": {
-        "rotation_rad": -0.11761324078747383,
-        "y": 0.5862099053708911,
-        "x": 4.7335431866539235,
-        "rotation_deg": -6.738742311978162
-      }
-    },
-    {
-      "timestamp_sec": 120.148045,
-      "value": {
-        "rotation_rad": -0.13213078648754706,
-        "y": 0.6071620437374313,
-        "x": 4.544850002970969,
-        "rotation_deg": -7.5705364094806535
-      }
-    }
-  ],
-  "_execution_time_ms": 2
-}
-```
-
-**Array entry**
-
-Request:
-```json
-{
-  "name": "read_entry",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/PowerDistribution/ChannelCurrent",
-    "start_time": 140,
-    "limit": 2
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "name": "/PowerDistribution/ChannelCurrent",
-  "type": "double[]",
-  "total_in_range": 704,
-  "returned_count": 2,
-  "offset": 0,
-  "limit": 2,
-  "samples": [
-    {
-      "timestamp_sec": 140.573413,
-      "value": [
-        0.0,
-        0.0,
-        "... (22 more items)"
-      ]
-    },
-    {
-      "timestamp_sec": 140.631512,
-      "value": [
-        0.0,
-        0.0,
-        "... (22 more items)"
-      ]
-    }
-  ],
-  "_execution_time_ms": 2
-}
-```
-
-**String entry**
-
-Request:
-```json
-{
-  "name": "read_entry",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/RealOutputs/GameState/CurrentPhase",
-    "limit": 5
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "name": "/RealOutputs/GameState/CurrentPhase",
-  "type": "string",
-  "total_in_range": 8,
-  "returned_count": 5,
-  "offset": 0,
-  "limit": 5,
-  "samples": [
-    {
-      "timestamp_sec": 26.860151,
-      "value": "Autonomous"
-    },
-    {
-      "timestamp_sec": 135.642118,
-      "value": "Transition"
-    },
-    {
-      "timestamp_sec": 146.137078,
-      "value": "Shift1"
-    },
-    "... (2 more items)"
-  ],
-  "_execution_time_ms": 0
-}
-```
-
 
 ### `list_struct_types`
 
-List all supported struct types for decoding.
+List struct types and how they decode. Struct values are decoded from each log's own schemas (/.schema/struct:<Name> entries), so any struct the log records a schema for decodes, including a team's own. With path: every struct type the log records or uses, with source (logged; wpilib or assumed when the log has no schema for it: assumed layouts may not match the team's struct), size, schema, fields, numeric leaf paths, and the entries that use it. Without path: the fallback schemas used when a log records none.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#list_struct_types))
 
-_No parameters._
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | no | Path to the log file (from list_available_logs); omit to list only the fallback schemas |
 
-
-**Response fields**
-
-- `struct_types` — object keyed by family (`geometry`, `kinematics`, `vision`) with arrays of supported WPILib struct names. Static content.
-
-
-**Examples**
-
-**Full response**
+**Example: A log's struct types**
 
 Request:
 ```json
 {
   "name": "list_struct_types",
-  "arguments": {}
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
+  }
 }
 ```
 
@@ -1127,54 +935,386 @@ Response:
 ```json
 {
   "success": true,
-  "struct_types": {
-    "geometry": [
-      "Pose2d",
-      "Pose3d",
-      "Translation2d",
-      "Translation3d",
-      "Rotation2d",
-      "Rotation3d",
-      "Transform2d",
-      "Transform3d",
-      "Twist2d",
-      "Twist3d"
-    ],
-    "kinematics": [
-      "ChassisSpeeds",
-      "SwerveModuleState",
-      "SwerveModulePosition"
-    ],
-    "vision": [
-      "TargetObservation",
-      "PoseObservation",
-      "SwerveSample"
-    ]
-  },
-  "_execution_time_ms": 0
+  "status": "ok",
+  "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+  "struct_type_count": 12,
+  "struct_types": [
+    {
+      "name": "Rotation2d",
+      "source": "logged",
+      "source_note": "decoded by the schema this log records",
+      "valid": true,
+      "size_bytes": 8,
+      "schema": "double value",
+      "schema_entry": "/.schema/struct:Rotation2d",
+      "fields": [
+        {
+          "name": "value",
+          "type": "double"
+        }
+      ],
+      "numeric_leaf_paths": [
+        "value",
+        "_derived.degrees"
+      ],
+      "entry_count": 23,
+      "entries": [
+        "/RealOutputs/Launcher/HorizontalAimAngle",
+        "/RealOutputs/Drive/Heading",
+        "/Drive/Module1/TurnPosition",
+        "... (17 more items)"
+      ],
+      "limits": {
+        "entries": {
+          "total": 23,
+          "returned": 20,
+          "limit": 20
+        }
+      }
+    },
+    {
+      "name": "SwerveModuleState",
+      "source": "logged",
+      "source_note": "decoded by the schema this log records",
+      "valid": true,
+      "size_bytes": 16,
+      "schema": "double speed;Rotation2d angle",
+      "schema_entry": "/.schema/struct:SwerveModuleState",
+      "fields": [
+        {
+          "name": "speed",
+          "type": "double"
+        },
+        {
+          "name": "angle",
+          "type": "Rotation2d"
+        }
+      ],
+      "numeric_leaf_paths": [
+        "speed",
+        "angle.value",
+        "angle._derived.degrees"
+      ],
+      "entry_count": 3,
+      "entries": [
+        "/RealOutputs/SwerveStates/Measured",
+        "/RealOutputs/SwerveStates/SetpointsOptimized",
+        "/RealOutputs/SwerveStates/Setpoints"
+      ],
+      "limits": {
+        "entries": {
+          "total": 3,
+          "returned": 3,
+          "limit": 20
+        }
+      }
+    },
+    {
+      "name": "Pose2d",
+      "source": "logged",
+      "source_note": "decoded by the schema this log records",
+      "valid": true,
+      "size_bytes": 24,
+      "schema": "Translation2d translation;Rotation2d rotation",
+      "schema_entry": "/.schema/struct:Pose2d",
+      "fields": [
+        {
+          "name": "translation",
+          "type": "Translation2d"
+        },
+        {
+          "name": "rotation",
+          "type": "Rotation2d"
+        }
+      ],
+      "numeric_leaf_paths": [
+        "translation.x",
+        "translation.y",
+        "rotation.value",
+        "rotation._derived.degrees"
+      ],
+      "entry_count": 23,
+      "entries": [
+        "/RealOutputs/Field/Regions/RedLeftBump",
+        "/RealOutputs/Field/Regions/BlueLeftTrench",
+        "/RealOutputs/Launcher/TurretPose",
+        "... (17 more items)"
+      ],
+      "limits": {
+        "entries": {
+          "total": 23,
+          "returned": 20,
+          "limit": 20
+        }
+      }
+    },
+    "... (9 more items)"
+  ]
 }
 ```
 
+### `resolve_signals`
+
+Show which entry plays each role in this log: robot_enabled, autonomous, battery_voltage, brownout_flag, brownout_threshold, loop_time_full, loop_time_user, robot_pose, module_states_measured, module_states_setpoint, chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: the entry (or entries, or a value), the basis for the choice, the other candidates best first, ambiguous when another candidate ranked as well (the one declared first wins), and the tools that use it. These are the choices the tools make; each tool's result records the entries it used under inputs.entries, and tools with an entry parameter (pose_entry, measured_entry, entry, ...) accept an override. Check it once per log before trusting automatic choices, especially ambiguous ones.
+
+**Parameters** ([TOOLS.md](TOOLS.md#resolve_signals))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `roles` | array | no | Only these roles (default: all) |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: Every role**
+
+Request:
+```json
+{
+  "name": "resolve_signals",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+  "roles": {
+    "robot_enabled": {
+      "description": "DriverStation enabled state",
+      "entry": "/DriverStation/Enabled",
+      "basis": "DriverStation enabled entry (AdvantageKit /DriverStation/..., or WPILib DS:...)",
+      "candidates": [
+        "/DriverStation/Enabled"
+      ],
+      "used_by": "get_match_phases, get_ds_timeline, every scope"
+    },
+    "autonomous": {
+      "description": "DriverStation autonomous mode",
+      "entry": "/DriverStation/Autonomous",
+      "basis": "DriverStation autonomous entry (AdvantageKit /DriverStation/..., or WPILib DS:...)",
+      "candidates": [
+        "/DriverStation/Autonomous"
+      ],
+      "used_by": "get_match_phases, analyze_auto"
+    },
+    "battery_voltage": {
+      "description": "Battery voltage",
+      "entry": "/SystemStats/BatteryVoltage",
+      "basis": "numeric entries named voltage, ranked battery > input/bus > other > rails and motor outputs, the first with a finite sample",
+      "candidates": [
+        "/SystemStats/BatteryVoltage",
+        "/PowerDistribution/Voltage",
+        "/RealOutputs/PDH/Voltage",
+        "... (4 more items)"
+      ],
+      "used_by": "power_analysis, get_ds_timeline, predict_battery_health, generate_report"
+    },
+    "brownout_flag": {
+      "description": "The roboRIO's brownout flag",
+      "entry": "/SystemStats/BrownedOut",
+      "basis": "a boolean brownout flag (e.g. AdvantageKit /SystemStats/BrownedOut)",
+      "candidates": [
+        "/SystemStats/BrownedOut"
+      ],
+      "used_by": "power_analysis, get_ds_timeline, predict_battery_health, generate_report"
+    },
+    "brownout_threshold": {
+      "description": "The roboRIO's brownout voltage setting",
+      "entry": "/SystemStats/BrownoutVoltage",
+      "value": 6.75,
+      "basis": "logged",
+      "used_by": "power_analysis (brownout_threshold), get_ds_timeline, predict_battery_health, generate_report"
+    },
+    "loop_time_full": {
+      "description": "Robot loop time (whole cycle)",
+      "entry": "/RealOutputs/LoggedRobot/FullCycleMS",
+      "basis": "LoggedRobot/FullCycleMS, else UserCodeMS, else names with looptime or cycletime",
+      "candidates": [
+        "/RealOutputs/LoggedRobot/FullCycleMS",
+        "/RealOutputs/LoggedRobot/UserCodeMS"
+      ],
+      "used_by": "analyze_loop_timing (entry)"
+    },
+    "loop_time_user": {
+      "description": "Robot loop time (user code)",
+      "entry": "/RealOutputs/LoggedRobot/UserCodeMS",
+      "basis": "LoggedRobot/UserCodeMS",
+      "candidates": [
+        "/RealOutputs/LoggedRobot/FullCycleMS",
+        "/RealOutputs/LoggedRobot/UserCodeMS"
+      ],
+      "used_by": "analyze_loop_timing"
+    },
+    "robot_pose": {
+      "description": "Robot pose (odometry or estimator)",
+      "entry": "/RealOutputs/Launcher/TurretPose",
+      "basis": "the struct:Pose2d with the most samples, not under a vision path",
+      "ambiguous": true,
+      "candidates": [
+        "/RealOutputs/Launcher/TurretPose",
+        "/RealOutputs/Drive/Pose",
+        "/RealOutputs/AutoSelector/AutonomousInitialPose"
+      ],
+      "used_by": "analyze_vision (pose_entry)"
+    },
+    "module_states_measured": {
+      "description": "Measured swerve module states",
+      "entry": "/RealOutputs/SwerveStates/Measured",
+      "basis": "SwerveModuleState[] (one module per index) or per-module entries; setpoints by leaf name (setpoint, desired, target, commanded, goal), optimized setpoints preferred",
+      "candidates": [
+        "/RealOutputs/SwerveStates/Measured",
+        "/RealOutputs/SwerveStates/SetpointsOptimized",
+        "/RealOutputs/SwerveStates/Setpoints"
+      ],
+      "used_by": "analyze_swerve (measured_entry)"
+    },
+    "module_states_setpoint": {
+      "description": "Swerve module setpoints",
+      "entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
+      "basis": "SwerveModuleState[] (one module per index) or per-module entries; setpoints by leaf name (setpoint, desired, target, commanded, goal), optimized setpoints preferred",
+      "candidates": [
+        "/RealOutputs/SwerveStates/Measured",
+        "/RealOutputs/SwerveStates/SetpointsOptimized",
+        "/RealOutputs/SwerveStates/Setpoints"
+      ],
+      "used_by": "analyze_swerve (setpoint_entry)"
+    },
+    "chassis_speeds_measured": {
+      "description": "Measured chassis speeds",
+      "entry": "/RealOutputs/SwerveChassisSpeeds/Measured",
+      "basis": "struct:ChassisSpeeds entries, not named like a setpoint; 'Measured'/'Setpoints' in the name first",
+      "candidates": [
+        "/RealOutputs/SwerveChassisSpeeds/Measured"
+      ],
+      "used_by": "find_condition, get_statistics (by name)"
+    },
+    "chassis_speeds_setpoint": {
+      "description": "Chassis speed setpoints",
+      "entry": "/RealOutputs/SwerveChassisSpeeds/Setpoints",
+      "basis": "struct:ChassisSpeeds entries, named like a setpoint; 'Measured'/'Setpoints' in the name first",
+      "candidates": [
+        "/RealOutputs/SwerveChassisSpeeds/Setpoints"
+      ],
+      "used_by": "compare_entries (by name)"
+    },
+    "gyro_yaw": {
+      "description": "Gyro yaw",
+      "entry": "/Drive/Gyro/YawPosition",
+      "basis": "a Rotation2d named like yaw under a gyro-like path first, then a numeric yaw (address the angle as /Drive/Gyro/YawPosition.value)",
+      "candidates": [
+        "/Drive/Gyro/YawPosition",
+        "/Drive/Gyro/YawVelocityRadPerSec"
+      ],
+      "used_by": "compare_entries, align_entries (by name)"
+    },
+    "vision_pose_observations": {
+      "description": "Vision pose observation streams",
+      "entries": [
+        "/Vision/Camera0/PoseObservations",
+        "/Vision/Camera3/PoseObservations",
+        "/Vision/Camera1/PoseObservations",
+        "/Vision/Camera2/PoseObservations",
+        "/RealOutputs/AutoSelector/AutonomousInitialTrajectory"
+      ],
+      "basis": "struct arrays whose records hold a timestamp and a pose, one per camera",
+      "candidates": [
+        "/Vision/Camera0/PoseObservations",
+        "/Vision/Camera3/PoseObservations",
+        "/Vision/Camera1/PoseObservations",
+        "/Vision/Camera2/PoseObservations",
+        "/RealOutputs/AutoSelector/AutonomousInitialTrajectory"
+      ],
+      "used_by": "analyze_vision"
+    },
+    "vision_targets": {
+      "description": "Vision target streams and has-target entries",
+      "entries": [
+        "/Vision/Camera2/LatestTargetObservation",
+        "/Vision/Camera1/LatestTargetObservation",
+        "/Vision/Camera0/LatestTargetObservation",
+        "/Vision/Camera3/LatestTargetObservation"
+      ],
+      "basis": "structs with yaw and pitch fields, and has-target entries (tv, hasTarget)",
+      "candidates": [
+        "/Vision/Camera2/LatestTargetObservation",
+        "/Vision/Camera1/LatestTargetObservation",
+        "/Vision/Camera0/LatestTargetObservation",
+        "/Vision/Camera3/LatestTargetObservation"
+      ],
+      "used_by": "analyze_vision"
+    },
+    "can_bus": {
+      "description": "CAN bus counters",
+      "entries": [
+        "/SystemStats/CANBus",
+        "/RealOutputs/CANBus/CANHD",
+        "/RealOutputs/CANBus/CAN2"
+      ],
+      "basis": "CAN counter entries by field name, one bus per parent path",
+      "candidates": [
+        "/SystemStats/CANBus",
+        "/RealOutputs/CANBus/CANHD",
+        "/RealOutputs/CANBus/CAN2"
+      ],
+      "used_by": "analyze_can_bus, can_health"
+    },
+    "console_text": {
+      "description": "Console and message text (string entries)",
+      "entries": [
+        "/SystemStats/NTClients/photonvision@2/IPAddress",
+        "/SystemStats/NTClients/photonvision@1/IPAddress",
+        "/RealMetadata/GitBranch",
+        "... (45 more items)"
+      ],
+      "basis": "every string entry",
+      "candidates": [
+        "/SystemStats/NTClients/photonvision@2/IPAddress",
+        "/SystemStats/NTClients/photonvision@1/IPAddress",
+        "/RealMetadata/GitBranch",
+        "... (7 more items)"
+      ],
+      "candidate_count": 48,
+      "used_by": "search_strings, get_ds_timeline, can_health, generate_report"
+    },
+    "alerts": {
+      "description": "Alerts (string[] entries)",
+      "entries": [
+        "/RealOutputs/PathPlanner/warnings",
+        "/RealOutputs/PhotonAlerts/warnings",
+        "/RealOutputs/Alerts/infos",
+        "... (19 more items)"
+      ],
+      "basis": "every string[] entry",
+      "candidates": [
+        "/RealOutputs/PathPlanner/warnings",
+        "/RealOutputs/PhotonAlerts/warnings",
+        "/RealOutputs/Alerts/infos",
+        "... (7 more items)"
+      ],
+      "candidate_count": 22,
+      "used_by": "search_strings, get_ds_timeline"
+    }
+  },
+  "unresolved": [],
+  "warnings": [
+    "robot_pose: /RealOutputs/Launcher/TurretPose was chosen, but another candidate ranked as well (/RealOutputs/Launcher/TurretPose, /RealOutputs/Drive/Pose, /RealOutputs/AutoSelector/AutonomousInitialPose); pass the right one explicitly if it is not."
+  ]
+}
+```
 
 ### `health_check`
 
 Verify server is working correctly and get system status.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#health_check))
 
-_No parameters._
+None.
 
-
-**Response fields**
-
-- `status` (`"OK"`), `server_version`, `loaded_logs` (count), `tba_available`, `revlog_sync_in_progress`.
-- `jvm_memory` `{used_mb, total_mb, max_mb, free_mb}`, `jvm_heap_used_mb` (estimated bytes held by loaded logs).
-- `disk_cache` `{enabled, directory, cached_files, total_size_mb, format_version}`; `directory`/`cached_files`/`total_size_mb` appear only when enabled, and an `error` string replaces the size fields if the directory cannot be scanned.
-
-
-**Examples**
-
-**Idle server**
+**Example: Server status**
 
 Request:
 ```json
@@ -1188,38 +1328,35 @@ Response:
 ```json
 {
   "success": true,
-  "status": "OK",
+  "status": "ok",
   "server_version": "0.8.2",
-  "loaded_logs": 0,
+  "loaded_logs": 2,
   "tba_available": false,
   "revlog_sync_in_progress": false,
   "jvm_memory": {
-    "used_mb": 24,
-    "total_mb": 770,
-    "max_mb": 4096,
-    "free_mb": 745
+    "used_mb": 210,
+    "total_mb": 308,
+    "max_mb": 512,
+    "free_mb": 98
   },
-  "jvm_heap_used_mb": 24,
+  "jvm_heap_used_mb": 210,
   "disk_cache": {
     "enabled": true,
     "directory": "~/Library/Application Support/wpilog-mcp/cache",
-    "cached_files": 100,
-    "total_size_mb": 1235,
-    "format_version": 3
-  },
-  "_execution_time_ms": 2
+    "cached_files": 175,
+    "total_size_mb": 2190,
+    "format_version": 4
+  }
 }
 ```
 
-
 ## Query Tools
-
 
 ### `search_entries`
 
 Search for entries matching various criteria.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#search_entries))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1228,15 +1365,7 @@ Search for entries matching various criteria.
 | `min_samples` | integer | no | Minimum number of samples required |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `match_count`, `matches[]` — entry **names only** (strings). Filters: `type` (case-sensitive substring of the type string), `pattern` (case-insensitive substring of the name), `min_samples`.
-
-
-**Examples**
-
-**Type + pattern + min samples**
+**Example: Voltage entries**
 
 Request:
 ```json
@@ -1244,8 +1373,7 @@ Request:
   "name": "search_entries",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "type": "double",
-    "pattern": "Module0",
+    "pattern": "Voltage",
     "min_samples": 100
   }
 }
@@ -1255,37 +1383,29 @@ Response:
 ```json
 {
   "success": true,
-  "match_count": 9,
+  "status": "ok",
+  "match_count": 5,
   "matches": [
-    "/Drive/Module0/DriveAppliedVolts",
-    "/Drive/Module0/DriveCurrentAmps",
-    "/Drive/Module0/DrivePositionRad",
-    "... (6 more items)"
-  ],
-  "_execution_time_ms": 26
+    "/RealOutputs/PDH/Voltage",
+    "/SystemStats/3v3Rail/Voltage",
+    "/SystemStats/5vRail/Voltage",
+    "/SystemStats/6vRail/Voltage",
+    "/SystemStats/BatteryVoltage"
+  ]
 }
 ```
-
 
 ### `get_types`
 
 Get all data types used in the log file and which entries use each type.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#get_types))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `type_count`, `types[]` of `{type, entry_count, entries[]}` (entry names), sorted by type name.
-
-
-**Examples**
-
-**All types**
+**Example: Entry types**
 
 Request:
 ```json
@@ -1301,6 +1421,7 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "type_count": 25,
   "types": [
     {
@@ -1309,7 +1430,8 @@ Response:
       "entries": [
         "/AllianceSelector/AgreementInAllianceInputs",
         "/AllianceSelector/AllianceChanged",
-        "... (96 more items)"
+        "/Drive/Gyro/Calibrated",
+        "... (95 more items)"
       ]
     },
     {
@@ -1320,38 +1442,42 @@ Response:
         "/RealOutputs/HID/Port1/Buttons"
       ]
     },
-    "... (23 more items)"
-  ],
-  "_execution_time_ms": 3
+    {
+      "type": "double",
+      "entry_count": 119,
+      "entries": [
+        "/Drive/Gyro/YawVelocityRadPerSec",
+        "/Drive/Module0/DriveAppliedVolts",
+        "/Drive/Module0/DriveCurrentAmps",
+        "... (116 more items)"
+      ]
+    },
+    "... (22 more items)"
+  ]
 }
 ```
 
-
 ### `find_condition`
 
-Find timestamps where a numeric entry crosses a threshold. Useful for questions like 'When did battery voltage drop below 11V?' Returns transition points where the condition first becomes true.
+Find when a numeric or boolean entry satisfies a condition (value <op> threshold; booleans read as 1/0), or when several do at once: conditions {all: [...]} or {any: [...]} of {name, field, operator, threshold} (e.g. disabled AND stationary: /DriverStation/Enabled eq 0 with a chassis speed abs_lt 0.05). Each value holds until the entry's next sample, so entries logged only on change combine correctly. Operators: lt, lte, gt, gte, eq, ne, and abs_lt/abs_lte/abs_gt/abs_gte on the absolute value. Returns transitions (each time the condition becomes true) and intervals (start, end, duration; an interval still true at the end of a window ends with end_reason window_end), plus total_true_sec and fraction_of_window. transition_count and interval_count are true totals; lists are cut at limit, with limits giving total and returned. Useful for questions like 'When did battery voltage drop below 11V, and for how long?' The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Thresholds on an angle apply to the value as logged (not unwrapped). scope and windows restrict the time (each window is searched on its own; window_sec is the time searched once every entry has a value), and the intervals returned can be passed as windows to the statistics tools.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#find_condition))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Entry name (e.g., /Robot/BatteryVoltage) |
-| `operator` | string | yes | Comparison operator: lt (<), lte (<=), gt (>), gte (>=), eq (==) |
-| `threshold` | number | yes | Threshold value to compare against |
-| `limit` | integer | no | Maximum number of transitions to return (default: `100`) |
+| `name` | string | no | Entry name (e.g., /Robot/BatteryVoltage), optionally with a field path (e.g. /RealOutputs/Drive/Pose.translation.x); not with conditions |
+| `field` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name) |
+| `operator` | string | no | Comparison operator: lt (<), lte (<=), gt (>), gte (>=), eq (==), ne (!=), or abs_lt, abs_lte, abs_gt, abs_gte (on the absolute value) |
+| `threshold` | number | no | Threshold value to compare against |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
+| `limit` | integer | no | Maximum number of transitions and intervals to return |
+| `conditions` | object | no | Compound condition instead of name/operator/threshold: {"all": [...]} (every condition true) or {"any": [...]} (at least one), each item {name, field?, operator, threshold} |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `name`, `condition` (human-readable, e.g. `"/SystemStats/BatteryVoltage < 10.5"`), `transition_count`, `transitions[]` of `{timestamp_sec, value}`.
-- Each transition is the first sample where the condition **becomes** true (edge-triggered, not every sample).
-- Operators accept both word and symbol forms: `lt`/`<`, `lte`/`<=`, `gt`/`>`, `gte`/`>=`, `eq`/`==`. Unknown operator → `success: false` error listing the valid ones.
-
-
-**Examples**
-
-**Voltage below 10.5 V**
+**Example: Battery below 7.5 V while enabled**
 
 Request:
 ```json
@@ -1360,9 +1486,10 @@ Request:
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
     "name": "/SystemStats/BatteryVoltage",
-    "operator": "<",
-    "threshold": 10.5,
-    "limit": 5
+    "operator": "lt",
+    "threshold": 7.5,
+    "scope": "enabled",
+    "limit": 3
   }
 }
 ```
@@ -1371,35 +1498,110 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "name": "/SystemStats/BatteryVoltage",
-  "condition": "/SystemStats/BatteryVoltage < 10.5",
-  "transition_count": 5,
+  "condition": "/SystemStats/BatteryVoltage < 7.5",
+  "transition_count": 97,
   "transitions": [
     {
-      "timestamp_sec": 111.487347,
-      "value": 8.8418486328125
+      "timestamp_sec": 137.115378,
+      "value": 7.42201025390625
     },
     {
-      "timestamp_sec": 112.139732,
-      "value": 8.8921083984375
+      "timestamp_sec": 137.284257,
+      "value": 7.239818603515625
     },
-    "... (3 more items)"
+    {
+      "timestamp_sec": 142.966994,
+      "value": 7.4722700195312495
+    }
   ],
-  "_execution_time_ms": 2
+  "limits": {
+    "transitions": {
+      "total": 97,
+      "returned": 3,
+      "limit": 3
+    },
+    "intervals": {
+      "total": 97,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "interval_count": 97,
+  "intervals": [
+    {
+      "start": 137.115378,
+      "end": 137.134002,
+      "duration": 0.01862400000001685,
+      "end_reason": "condition_false"
+    },
+    {
+      "start": 137.284257,
+      "end": 137.380068,
+      "duration": 0.09581099999999765,
+      "end_reason": "condition_false"
+    },
+    {
+      "start": 142.966994,
+      "end": 143.079221,
+      "duration": 0.11222699999999008,
+      "end_reason": "condition_false"
+    }
+  ],
+  "total_true_sec": 8.16930099999982,
+  "window_sec": 163.358887,
+  "inputs": {
+    "entries": {
+      "entry": "/SystemStats/BatteryVoltage"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
+  "fraction_of_window": 0.05000830472112496
 }
 ```
 
-**Bad operator**
+**Example: Disabled and stationary (compound)**
 
 Request:
 ```json
 {
   "name": "find_condition",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryVoltage",
-    "operator": "~",
-    "threshold": 1
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "conditions": {
+      "all": [
+        {
+          "name": "/DriverStation/Enabled",
+          "operator": "eq",
+          "threshold": 0
+        },
+        {
+          "name": "/RealOutputs/SwerveChassisSpeeds/Measured.vx",
+          "operator": "abs_lt",
+          "threshold": 0.05
+        },
+        {
+          "name": "/RealOutputs/SwerveChassisSpeeds/Measured.vy",
+          "operator": "abs_lt",
+          "threshold": 0.05
+        }
+      ]
+    }
   }
 }
 ```
@@ -1407,24 +1609,117 @@ Request:
 Response:
 ```json
 {
-  "success": false,
-  "error": "Unknown operator: ~. Valid operators: lt, <, lte, <=, gt, >, gte, >=, eq, ==",
-  "_execution_time_ms": 5
+  "success": true,
+  "status": "ok",
+  "condition": "(/DriverStation/Enabled == 0.0) AND (|/RealOutputs/SwerveChassisSpeeds/Measured.vx| < 0.05) AND (|/RealOutputs/SwerveChassisSpeeds/Measured.vy| < 0.05)",
+  "combine": "all",
+  "conditions": [
+    "/DriverStation/Enabled == 0.0",
+    "|/RealOutputs/SwerveChassisSpeeds/Measured.vx| < 0.05",
+    "|/RealOutputs/SwerveChassisSpeeds/Measured.vy| < 0.05"
+  ],
+  "transition_count": 4,
+  "transitions": [
+    {
+      "timestamp_sec": 10.82707,
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "timestamp_sec": 359.161586,
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "timestamp_sec": 744.929426,
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "timestamp_sec": 840.133016,
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "limits": {
+    "transitions": {
+      "total": 4,
+      "returned": 4,
+      "limit": 100
+    },
+    "intervals": {
+      "total": 4,
+      "returned": 4,
+      "limit": 100
+    }
+  },
+  "interval_count": 4,
+  "intervals": [
+    {
+      "start": 10.82707,
+      "end": 40.207135,
+      "duration": 29.380065000000002,
+      "end_reason": "condition_false"
+    },
+    {
+      "start": 359.161586,
+      "end": 395.209541,
+      "duration": 36.047955,
+      "end_reason": "condition_false"
+    },
+    {
+      "start": 744.929426,
+      "end": 791.534465,
+      "duration": 46.60503899999992,
+      "end_reason": "condition_false"
+    },
+    {
+      "start": 840.133016,
+      "end": 995.211072,
+      "duration": 155.07805599999995,
+      "end_reason": "condition_false"
+    }
+  ],
+  "total_true_sec": 267.11111499999987,
+  "window_sec": 1577.446349,
+  "inputs": {
+    "entries": {
+      "condition0": "/DriverStation/Enabled",
+      "condition1": "/RealOutputs/SwerveChassisSpeeds/Measured",
+      "condition2": "/RealOutputs/SwerveChassisSpeeds/Measured"
+    },
+    "fields": {
+      "condition1": ".vx",
+      "condition2": ".vy"
+    }
+  },
+  "fraction_of_window": 0.16933134693888716
 }
 ```
 
-
 ### `search_strings`
 
-List or search the text logged in string entries (console output, alerts, messages), completely and in time order across all entries. Filters: pattern (case-insensitive substring, or a regex with regex=true), level (error, warning, or any; classified exactly as get_ds_timeline counts them), entry_pattern, start_time/end_time. Results are paged: total_matches is the full count, offset/limit select a page, has_more says whether more remain, so nothing is silently dropped. collapse_repeats folds runs of identical samples that are adjacent in the same entry into one match with repeat_count. Each match carries its level and the matching line (line is cut at 200 chars; value at max_value_chars, with *_truncated flags). Regex mode is case-insensitive with ^/$ anchoring to lines; a pattern that backtracks for more than a second is rejected.
+List or search the text a log holds, completely and in time order across all entries: string entries (console output, messages); string[] entries such as WPILib Alerts (/RealOutputs/Alerts/warnings), where each message is one match from when it appeared (timestamp_sec) to when it cleared (end_sec, duration_sec; active_at_log_end when it never did); and the string values of json entries. Each match says its source (string, alert, json). Filters: pattern (case-insensitive substring, or a regex with regex=true), level (error, warning, info, or any; an alert's level comes from its entry name, other text is classified exactly as get_ds_timeline counts it), entry_pattern, start_time/end_time (an alert matches when it was present in the range). Results are paged: total_matches is the full count, offset/limit select a page, has_more says whether more remain, so nothing is silently dropped. collapse_repeats folds runs of identical samples that are adjacent in the same entry into one match with repeat_count. Each match carries its level and the matching line (line is cut at 200 chars; value at max_value_chars, with *_truncated flags). Regex mode is case-insensitive with ^/$ anchoring to lines; a pattern that backtracks for more than a second is rejected.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#search_strings))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `pattern` | string | no | Text to search for: case-insensitive substring, or a regular expression when regex=true. Omit to list every string sample (use level/entry_pattern/time window to narrow). |
 | `regex` | boolean | no | Treat pattern as a Java regular expression (case-insensitive). Default: false |
-| `level` | string | no | Only messages classified as 'error' or 'warning' (same rules as get_ds_timeline), or 'any' (default) |
+| `level` | string | no | Only messages classified as 'error' or 'warning' (same rules as get_ds_timeline), 'info' (info alerts), or 'any' (default) |
 | `entry_pattern` | string | no | Optional: filter which entries to search (e.g., 'Console' or 'Output') |
 | `start_time` | number | no | Start timestamp in seconds (optional) |
 | `end_time` | number | no | End timestamp in seconds (optional) |
@@ -1434,27 +1729,15 @@ List or search the text logged in string entries (console output, alerts, messag
 | `max_value_chars` | integer | no | Truncate each returned value to this many characters (default: 500) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- Complete and paged: `total_matches` (full count before paging; `total_after_collapse` with `collapse_repeats`), `offset`, `limit`, `returned` (= `match_count`), `has_more`.
-- `matches[]` sorted by time across all string entries: `{timestamp_sec, entry, level? ("error"/"warning", classified exactly as get_ds_timeline counts them), line (the matching line, or the classified/first line without a pattern; cut at 200 chars with line_truncated: true), value (cut at max_value_chars with value_truncated: true), repeat_count?, last_timestamp_sec?}`. `collapse_repeats` folds only samples adjacent in the same entry's stream.
-- Filters: `pattern` (case-insensitive substring, or a regex with `regex: true`; omit to list everything), `level`, `entry_pattern`, `start_time`/`end_time`. `pattern`, `regex`, and `level` are echoed.
-
-
-**Examples**
-
-**Every error in the log**
-
-`level="error"` with no pattern: the four in-match errors, complete (`has_more: false`), in time order. `text_event_counts.error` from `get_ds_timeline` is 4 for the same log.
+**Example: An alert, as one appearance**
 
 Request:
 ```json
 {
   "name": "search_strings",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "level": "error"
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "pattern": "camera 3 is disconnected"
   }
 }
 ```
@@ -1463,61 +1746,49 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
+  "pattern": "camera 3 is disconnected",
   "regex": false,
-  "level": "error",
-  "total_matches": 5,
+  "level": "any",
+  "total_matches": 2,
   "offset": 0,
   "limit": 100,
-  "returned": 5,
-  "match_count": 5,
+  "returned": 2,
+  "match_count": 2,
   "has_more": false,
   "matches": [
     {
-      "timestamp_sec": 123.711426,
-      "entry": "/RealOutputs/Console",
-      "level": "error",
-      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out",
-      "value": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
+      "timestamp_sec": 10.82707,
+      "entry": "/RealOutputs/Alerts/warnings",
+      "source": "alert",
+      "end_sec": 26.719375,
+      "duration_sec": 15.892304999999999,
+      "level": "warning",
+      "line": "Vision camera 3 is disconnected.",
+      "value": "Vision camera 3 is disconnected."
     },
     {
-      "timestamp_sec": 124.739764,
-      "entry": "/RealOutputs/Console",
-      "level": "error",
-      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out",
-      "value": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
-    },
-    {
-      "timestamp_sec": 143.156946,
-      "entry": "/RealOutputs/Console",
-      "level": "error",
-      "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera ...",
-      "line_truncated": true,
-      "value": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera names match!\n\tat org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512)"
-    },
-    {
-      "timestamp_sec": 143.306515,
-      "entry": "/RealOutputs/Console",
-      "level": "error",
-      "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:525): Found the following PhotonVision cameras on NetworkTables:",
-      "value": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:525): Found the following PhotonVision cameras on NetworkTables:\n ==> OV2311_TH_2026_RR\n ==> OV2311_TH_2026_FR"
-    },
-    {
-      "timestamp_sec": 143.370011,
-      "entry": "/RealOutputs/Console",
-      "level": "error",
-      "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL not found on NetworkTables. Double check that your camera ...",
-      "line_truncated": true,
-      "value": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL has not reported a message interface UUID - is your coprocessor's camera started?\nCommandScheduler loop overrun\nError at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL not found on NetworkTables. Double check that your camera names match!\n\tat org.photonvision.PhotonCame...",
-      "value_truncated": true
+      "timestamp_sec": 737.677712,
+      "entry": "/RealOutputs/Alerts/warnings",
+      "source": "alert",
+      "end_sec": 783.804327,
+      "duration_sec": 46.1266149999999,
+      "level": "warning",
+      "line": "Vision camera 3 is disconnected.",
+      "value": "Vision camera 3 is disconnected."
     }
   ],
-  "_execution_time_ms": 3
+  "limits": {
+    "matches": {
+      "total": 2,
+      "returned": 2,
+      "limit": 100
+    }
+  }
 }
 ```
 
-**Regex with paging**
-
-A regex over the PhotonVision lines, three per page; `total_matches` is the full count and `has_more` says to fetch `offset: 3` next.
+**Example: Errors, first page**
 
 Request:
 ```json
@@ -1525,9 +1796,7 @@ Request:
   "name": "search_strings",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "pattern": "PhotonCamera\\.(verifyVersion|checkTimeSyncOrWarn)",
-    "regex": true,
-    "collapse_repeats": true,
+    "level": "error",
     "limit": 3
   }
 }
@@ -1537,11 +1806,10 @@ Response:
 ```json
 {
   "success": true,
-  "pattern": "PhotonCamera\\.(verifyVersion|checkTimeSyncOrWarn)",
-  "regex": true,
-  "level": "any",
-  "total_matches": 10,
-  "total_after_collapse": 10,
+  "status": "ok",
+  "regex": false,
+  "level": "error",
+  "total_matches": 5,
   "offset": 0,
   "limit": 3,
   "returned": 3,
@@ -1549,110 +1817,64 @@ Response:
   "has_more": true,
   "matches": [
     {
-      "timestamp_sec": 127.889981,
+      "timestamp_sec": 123.711426,
       "entry": "/RealOutputs/Console",
-      "level": "warning",
-      "line": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:533): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL is not sending new data.",
-      "value": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:533): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL is not sending new data."
+      "source": "string",
+      "level": "error",
+      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out",
+      "value": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
     },
     {
-      "timestamp_sec": 128.007662,
+      "timestamp_sec": 124.739764,
       "entry": "/RealOutputs/Console",
-      "level": "warning",
-      "line": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL has not reported a message interface UUID - is your copr...",
-      "line_truncated": true,
-      "value": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL has not reported a message interface UUID - is your coprocessor's camera started?\nCommandScheduler loop overrun"
+      "source": "string",
+      "level": "error",
+      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out",
+      "value": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
     },
     {
-      "timestamp_sec": 128.131112,
+      "timestamp_sec": 143.156946,
       "entry": "/RealOutputs/Console",
-      "level": "warning",
-      "line": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL has not reported a message interface UUID - is your copr...",
+      "source": "string",
+      "level": "error",
+      "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera ...",
       "line_truncated": true,
-      "value": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL has not reported a message interface UUID - is your coprocessor's camera started?"
+      "value": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera names match!\n\tat org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512)"
     }
   ],
-  "_execution_time_ms": 4
-}
-```
-
-**A later page of warnings**
-
-Paging deep into the 622 warnings. Trimmed.
-
-Request:
-```json
-{
-  "name": "search_strings",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "level": "warning",
-    "limit": 2,
-    "offset": 200
+  "limits": {
+    "matches": {
+      "total": 5,
+      "returned": 3,
+      "limit": 3
+    }
   }
 }
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "regex": false,
-  "level": "warning",
-  "total_matches": 621,
-  "offset": 200,
-  "limit": 2,
-  "returned": 2,
-  "match_count": 2,
-  "has_more": true,
-  "matches": [
-    {
-      "timestamp_sec": 123.131145,
-      "entry": "/RealOutputs/Console",
-      "level": "warning",
-      "line": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tSmartDashboard.updateValues(): 0.000185s",
-      "value": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tSmartDashboard.updateValues(): 0.000185s"
-    },
-    {
-      "timestamp_sec": 123.268582,
-      "entry": "/RealOutputs/Console",
-      "level": "warning",
-      "line": "Warning at edu.wpi.first.wpilibj.IterativeRobotBase.printLoopOverrunMessage(IterativeRobotBase.java:436): Loop time of 0.02s overrun",
-      "value": "Warning at edu.wpi.first.wpilibj.IterativeRobotBase.printLoopOverrunMessage(IterativeRobotBase.java:436): Loop time of 0.02s overrun"
-    }
-  ],
-  "_execution_time_ms": 1
-}
-```
-
-
 ## Statistics Tools
-
 
 ### `get_statistics`
 
-BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry. NEVER compute these manually—always use this tool! Supports optional time range filtering (start_time, end_time). Includes data quality metrics and sample size for confidence assessment.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry or field. NEVER compute these manually—always use this tool! Supports optional time range filtering (start_time, end_time). Includes data quality metrics and sample size for confidence assessment. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. A [*] path pools every element (count is values, records_in_window is records). For an angle, min/max/mean/percentiles are of the unwrapped angle within the window (so max - min is how far it turned) and angle gives the circular mean and standard deviation and the number of wraps. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+
+**Parameters** ([TOOLS.md](TOOLS.md#get_statistics))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | The entry name |
+| `name` | string | yes | The entry name, optionally with a field path (e.g. /RealOutputs/Drive/Pose.translation.x) |
+| `field` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name) |
 | `start_time` | number | no | Start timestamp (s) |
 | `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `name`, `count`, `min`, `max`, `mean`, `median`, `std_dev` (sample, n−1), `q1`, `q3`, `iqr`, `p5`, `p95`.
-- Non-finite values are excluded before computing. Includes `data_quality` + `server_analysis_directives` (see [Common fields](#common-response-fields)); `suggested_followup` always lists `detect_anomalies` and `time_correlate`.
-
-
-**Examples**
-
-**Full log**
+**Example: Battery while enabled**
 
 Request:
 ```json
@@ -1660,7 +1882,8 @@ Request:
   "name": "get_statistics",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryVoltage"
+    "name": "/SystemStats/BatteryVoltage",
+    "scope": "enabled"
   }
 }
 ```
@@ -1669,29 +1892,55 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "name": "/SystemStats/BatteryVoltage",
-  "count": 11735,
+  "count": 6584,
   "min": 6.680678710937499,
-  "max": 12.843782470703125,
-  "mean": 10.647124485941994,
-  "median": 11.0281484375,
-  "std_dev": 1.750828844560013,
-  "q1": 8.989486694335938,
-  "q3": 12.265795166015625,
-  "iqr": 3.2763084716796875,
-  "p5": 7.765661401367187,
-  "p95": 12.5108115234375,
+  "max": 12.655308349609374,
+  "mean": 9.307719026401005,
+  "median": 9.18110205078125,
+  "std_dev": 1.165562482750581,
+  "q1": 8.458617919921874,
+  "q3": 10.142320068359375,
+  "iqr": 1.6837021484375008,
+  "p5": 7.503682373046875,
+  "p95": 11.348554443359374,
+  "inputs": {
+    "entries": {
+      "entry": "/SystemStats/BatteryVoltage"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
   "data_quality": {
-    "sample_count": 11735,
-    "time_span_seconds": 336.0,
-    "gap_count": 119,
-    "max_gap_ms": 14962.6,
+    "sample_count": 6584,
+    "time_span_seconds": 163.2,
+    "sampling": "periodic",
+    "gap_count": 31,
+    "max_gap_ms": 388.3,
     "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
+    "quality_score": 0.95,
+    "reasons": [
+      "2.5% of the time span is in 31 gaps longer than 5x the median interval (longest 388 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 3% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11735 samples over 336.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 6584 samples over 163.2 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ],
@@ -1699,49 +1948,21 @@ Response:
       "Use detect_anomalies to check for outliers that may skew these statistics",
       "Use time_correlate to check relationships with other entries"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 10
+  }
 }
 ```
 
-
-### `compare_entries`
-
-Compare two numeric entries using RMSE and max difference.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `name1` | string | yes | First entry |
-| `name2` | string | yes | Second entry |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `rmse`, `max_difference` — computed over `name1`'s timestamps with `name2` sampled at those times.
-- `data_quality` is computed from **`name1`** only (note the example: `/PowerDistribution/Voltage` has a single sample, so quality is 0.4).
-- If either entry is non-numeric the server emits `"rmse": NaN` (Gson lenient output — this is not strict JSON; see [Caveats](#caveats)).
-- Guidance always adds "RMSE is scale-dependent — compare to the entry's typical range for context" and follow-up `get_statistics`.
-
-
-**Examples**
-
-**Two voltage entries**
+**Example: Heading wander while disabled (field path, angle)**
 
 Request:
 ```json
 {
-  "name": "compare_entries",
+  "name": "get_statistics",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name1": "/PowerDistribution/Voltage",
-    "name2": "/SystemStats/BatteryVoltage"
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "name": "/RealOutputs/Drive/Pose.rotation._derived.degrees",
+    "start_time": 362,
+    "end_time": 394
   }
 }
 ```
@@ -1750,61 +1971,202 @@ Response:
 ```json
 {
   "success": true,
-  "rmse": 12.5108115234375,
-  "max_difference": 12.5108115234375,
+  "status": "ok",
+  "name": "/RealOutputs/Drive/Pose.rotation._derived.degrees",
+  "field": ".rotation._derived.degrees",
+  "angle": {
+    "resultant_length": 0.9996581121128535,
+    "circular_mean": 91.30692936006177,
+    "circular_std": 1.4983615250584292,
+    "unit": "degrees",
+    "unwrapped": true,
+    "wraps": 0
+  },
+  "count": 1324,
+  "min": 86.73580462096726,
+  "max": 94.06973425133883,
+  "mean": 91.30687006886761,
+  "median": 91.44618049359703,
+  "std_dev": 1.498904305085374,
+  "q1": 90.19054233707965,
+  "q3": 92.5544378038906,
+  "iqr": 2.363895466810945,
+  "p5": 88.89432883711288,
+  "p95": 93.5595033802367,
+  "inputs": {
+    "entries": {
+      "entry": "/RealOutputs/Drive/Pose"
+    },
+    "fields": {
+      "entry": ".rotation._derived.degrees"
+    },
+    "window": {
+      "start": 362.0,
+      "end": 394.0
+    }
+  },
   "data_quality": {
-    "sample_count": 1,
-    "time_span_seconds": 0.0,
-    "gap_count": 0,
-    "effective_sample_rate_hz": 0.0,
-    "quality_score": 0.4
+    "sample_count": 1324,
+    "time_span_seconds": 31.98,
+    "sampling": "periodic",
+    "gap_count": 1,
+    "max_gap_ms": 125.4,
+    "effective_sample_rate_hz": 48.6,
+    "quality_score": 0.98,
+    "reasons": [
+      "0.4% of the time span is in 1 gap longer than 5x the median interval (longest 125 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 1 samples over 0.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 1324 samples over 32.0 seconds",
     "interpretation_guidance": [
-      "Low sample count (1). Statistical measures have high uncertainty.",
-      "Short time span (0.0s). Results may not be representative of full-match behavior.",
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+    ],
+    "suggested_followup": [
+      "Use detect_anomalies to check for outliers that may skew these statistics",
+      "Use time_correlate to check relationships with other entries"
+    ]
+  }
+}
+```
+
+### `compare_entries`
+
+Compare two numeric entries or fields: RMSE and maximum absolute difference, evaluated at the denser signal's timestamps with the other linearly interpolated (no extrapolation), plus the number of compared samples. Two angles (e.g. a pose heading and a gyro's Rotation2d) are compared by their shortest angular difference, in the first one's unit. With a scope or window, only the reference signal's samples inside it are compared. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
+
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+
+**Parameters** ([TOOLS.md](TOOLS.md#compare_entries))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name1` | string | yes | First entry (optionally with a field path) |
+| `name2` | string | yes | Second entry (optionally with a field path) |
+| `field1` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name), for name1 |
+| `field2` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name), for name2 |
+| `max_lag_sec` | number | no | Also search for the time shift that best aligns the two signals, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal follows the first) |
+| `lag_step_sec` | number | no | Lag search step (default: the first signal's median sample interval) |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: Pose heading against the gyro (angles)**
+
+Request:
+```json
+{
+  "name": "compare_entries",
+  "arguments": {
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "name1": "/RealOutputs/Drive/Pose.rotation.value",
+    "name2": "/Drive/Gyro/YawPosition.value",
+    "scope": "enabled"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "rmse": 1.6505281631977604,
+  "max_difference": 1.904312119286189,
+  "samples_compared": 48566,
+  "reference_entry": "/RealOutputs/Drive/Pose.rotation.value",
+  "angle_unit": "radians",
+  "difference": "shortest angular difference",
+  "inputs": {
+    "entries": {
+      "entry1": "/RealOutputs/Drive/Pose",
+      "entry2": "/Drive/Gyro/YawPosition"
+    },
+    "fields": {
+      "entry1": ".rotation.value",
+      "entry2": ".value"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          40.207135,
+          359.161586
+        ],
+        [
+          395.209541,
+          744.929426
+        ],
+        [
+          791.534465,
+          840.133016
+        ],
+        [
+          995.211072,
+          1588.273419
+        ]
+      ],
+      "window_count": 4,
+      "total_sec": 1310.3352340000001
+    }
+  },
+  "data_quality": {
+    "sample_count": 48423,
+    "time_span_seconds": 1310.27,
+    "sampling": "periodic",
+    "gap_count": 421,
+    "max_gap_ms": 287.6,
+    "effective_sample_rate_hz": 47.3,
+    "quality_score": 0.91,
+    "reasons": [
+      "4.3% of the time span is in 421 gaps longer than 5x the median interval (longest 288 ms)",
+      "irregular timing: intervals deviate from the 21.1 ms median by 6% (median absolute deviation)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "high",
+    "sample_context": "Based on 48423 samples over 1310.3 seconds",
+    "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "RMSE is scale-dependent — compare to the entry's typical range for context"
     ],
     "suggested_followup": [
       "Use get_statistics on each entry individually for baseline context"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.40). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 3
+  }
 }
 ```
 
-
 ### `detect_anomalies`
 
-Detect anomalies (outliers) in numeric data using the IQR method. Finds values that fall outside 1.5*IQR from Q1/Q3, or sudden spikes/drops.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+Detect anomalies in a numeric entry within an optional time window: outliers outside iqr_multiplier x IQR beyond Q1/Q3 (Tukey fences), and, when spike_threshold is given, spikes: sample-to-sample jumps larger than spike_threshold (in the entry's units). anomaly_count is the true total; the list is sorted by time (default) or severity (distance beyond the fence, or jump size) and cut at limit, with limits.anomalies giving total and returned. Boot transients and disabled periods count unless the window excludes them: pass scope 'enabled' or windows from get_match_phases. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+
+**Parameters** ([TOOLS.md](TOOLS.md#detect_anomalies))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Entry name |
+| `name` | string | yes | Entry name (optionally with a field path) |
+| `field` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name) |
 | `iqr_multiplier` | number | no | IQR multiplier (default 1.5) |
-| `spike_threshold` | number | no | Spike percentage threshold |
-| `limit` | integer | no | Max anomalies to return (default: `50`) |
+| `spike_threshold` | number | no | Flag sample-to-sample jumps larger than this, in the entry's units (off by default) |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
+| `sort` | string | no | 'time' (default) or 'severity' |
+| `limit` | integer | no | Max anomalies to return |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `anomaly_count`, `non_finite_count` (NaN/Infinity samples skipped), `anomalies[]` of `{timestamp_sec, value, type}` where `type` is `"below_lower_bound"` or `"above_upper_bound"` (IQR fences at `q1 − k·IQR` / `q3 + k·IQR`, `k = iqr_multiplier`).
-- `spike_threshold` is accepted by the schema but **not used** by the current implementation (only the IQR test runs). `limit` caps the array (default 50). Fewer than 4 finite samples → `success: false` (`Not enough finite data for IQR calculation`). Includes `data_quality` + `server_analysis_directives` (see [Common fields](#common-response-fields)).
-
-
-**Examples**
-
-**With outliers**
+**Example: Loop time while enabled, by severity**
 
 Request:
 ```json
@@ -1812,7 +2174,9 @@ Request:
   "name": "detect_anomalies",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryCurrent",
+    "name": "/RealOutputs/LoggedRobot/FullCycleMS",
+    "scope": "enabled",
+    "sort": "severity",
     "limit": 3
   }
 }
@@ -1822,76 +2186,117 @@ Response:
 ```json
 {
   "success": true,
-  "anomaly_count": 3,
+  "status": "ok",
+  "anomaly_count": 672,
+  "outlier_count": 672,
   "non_finite_count": 0,
+  "bounds": {
+    "q1": 15.397,
+    "q3": 20.868,
+    "iqr": 5.470999999999998,
+    "lower": 7.190500000000002,
+    "upper": 29.074499999999997
+  },
+  "samples_analyzed": 6678,
+  "sort": "severity",
   "anomalies": [
     {
-      "timestamp_sec": 136.409309,
-      "value": 0.7486469726562501,
-      "type": "above_upper_bound"
+      "timestamp_sec": 110.991153,
+      "value": 387.862,
+      "type": "above_upper_bound",
+      "severity": 358.7875
     },
     {
-      "timestamp_sec": 137.115378,
-      "value": 0.6571127929687501,
-      "type": "above_upper_bound"
+      "timestamp_sec": 144.253715,
+      "value": 161.961,
+      "type": "above_upper_bound",
+      "severity": 132.8865
     },
     {
-      "timestamp_sec": 137.134002,
-      "value": 0.6446308593750001,
-      "type": "above_upper_bound"
+      "timestamp_sec": 128.239852,
+      "value": 149.792,
+      "type": "above_upper_bound",
+      "severity": 120.7175
     }
   ],
+  "limits": {
+    "anomalies": {
+      "total": 672,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "name": "/RealOutputs/LoggedRobot/FullCycleMS",
+  "inputs": {
+    "entries": {
+      "entry": "/RealOutputs/LoggedRobot/FullCycleMS"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
   "data_quality": {
-    "sample_count": 11149,
-    "time_span_seconds": 336.0,
-    "gap_count": 126,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 48.3,
-    "quality_score": 0.5
+    "sample_count": 6678,
+    "time_span_seconds": 163.2,
+    "sampling": "periodic",
+    "gap_count": 31,
+    "max_gap_ms": 388.3,
+    "effective_sample_rate_hz": 48.7,
+    "quality_score": 0.95,
+    "reasons": [
+      "2.5% of the time span is in 31 gaps longer than 5x the median interval (longest 388 ms)",
+      "irregular timing: intervals deviate from the 20.5 ms median by 3% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11149 samples over 336.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 6678 samples over 163.2 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ],
     "suggested_followup": [
       "Use find_peaks if looking for signal extrema rather than statistical outliers"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 179
+  }
 }
 ```
 
-
 ### `find_peaks`
 
-Find local maxima and minima (peaks and valleys) in numeric data.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+Find local maxima and minima (peaks and valleys) in numeric data, in time order. maxima_count and minima_count are the true totals; each list is cut at limit (limits gives total and returned). A flat signal has none. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+
+**Parameters** ([TOOLS.md](TOOLS.md#find_peaks))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Entry name |
+| `name` | string | yes | Entry name (optionally with a field path) |
+| `field` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name) |
 | `type` | string | no | Type: 'max', 'min', or 'both' |
 | `min_height_diff` | number | no | Minimum height difference from neighbors to count as a peak. Filters out noise |
-| `limit` | integer | no | Max peaks to return (default: `20`) |
+| `limit` | integer | no | Max peaks to return |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `maxima[]` and/or `minima[]` (depending on `type`: `max`, `min`, `both`) of `{timestamp_sec, value, height_diff}`; `height_diff` is the prominence relative to neighbours and must exceed `min_height_diff`.
-- Note `minima` uses the same `height_diff` semantics (difference from neighbours). Includes `data_quality` + `server_analysis_directives` (see [Common fields](#common-response-fields)).
-
-
-**Examples**
-
-**Both maxima and minima**
+**Example: Voltage dips while enabled**
 
 Request:
 ```json
@@ -1899,9 +2304,10 @@ Request:
   "name": "find_peaks",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/Drive/Module0/DriveVelocityRadPerSec",
-    "type": "both",
-    "min_height_diff": 5,
+    "name": "/SystemStats/BatteryVoltage",
+    "type": "min",
+    "min_height_diff": 0.3,
+    "scope": "enabled",
     "limit": 3
   }
 }
@@ -1911,94 +2317,113 @@ Response:
 ```json
 {
   "success": true,
-  "maxima": [
-    {
-      "timestamp_sec": 111.529604,
-      "value": 13.73219601315226,
-      "height_diff": 5.473243451175968
+  "status": "ok",
+  "name": "/SystemStats/BatteryVoltage",
+  "inputs": {
+    "entries": {
+      "entry": "/SystemStats/BatteryVoltage"
     },
-    {
-      "timestamp_sec": 111.815775,
-      "value": 6.6881562351813955,
-      "height_diff": 9.387962421860124
-    },
-    "... (1 more items)"
-  ],
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
+  "minima_count": 581,
   "minima": [
     {
-      "timestamp_sec": 111.79626,
-      "value": -2.6998061866787286,
-      "height_diff": 27.599382335638456
+      "timestamp_sec": 111.487347,
+      "value": 8.8418486328125,
+      "height_diff": 3.1412353515625
     },
     {
-      "timestamp_sec": 114.622446,
-      "value": 32.80264516814655,
-      "height_diff": 5.301437602932779
+      "timestamp_sec": 111.589762,
+      "value": 10.506703369140626,
+      "height_diff": 0.4900327148437498
     },
-    "... (1 more items)"
+    {
+      "timestamp_sec": 112.139732,
+      "value": 8.8921083984375,
+      "height_diff": 1.9664133300781241
+    }
   ],
+  "limits": {
+    "minima": {
+      "total": 581,
+      "returned": 3,
+      "limit": 3
+    }
+  },
   "data_quality": {
-    "sample_count": 6470,
-    "time_span_seconds": 321.04,
-    "gap_count": 79,
-    "max_gap_ms": 69282.9,
-    "effective_sample_rate_hz": 48.5,
-    "quality_score": 0.5
+    "sample_count": 6584,
+    "time_span_seconds": 163.2,
+    "sampling": "periodic",
+    "gap_count": 31,
+    "max_gap_ms": 388.3,
+    "effective_sample_rate_hz": 48.7,
+    "quality_score": 0.95,
+    "reasons": [
+      "2.5% of the time span is in 31 gaps longer than 5x the median interval (longest 388 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 3% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 6470 samples over 321.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 6584 samples over 163.2 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ],
     "suggested_followup": [
       "Use get_statistics to understand baseline before interpreting peaks"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 4
+  }
 }
 ```
 
-
 ### `rate_of_change`
 
-Compute rate of change (derivative) of numeric data over time.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+Compute rate of change (derivative) of numeric data over time, in the signal's units per second. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+
+**Parameters** ([TOOLS.md](TOOLS.md#rate_of_change))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Entry name |
+| `name` | string | yes | Entry name (optionally with a field path) |
+| `field` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name) |
 | `start_time` | number | no | Start timestamp (s) |
 | `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
 | `window_size` | integer | no | Smoothing window (default 1) |
-| `limit` | integer | no | Max samples to return (default: `100`) |
+| `limit` | integer | no | Max samples to return |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `statistics` `{avg_rate}`, `samples[]` of `{timestamp_sec, rate}` (units per second, finite differences over `window_size` samples, non-uniform timestamps handled). `limit` caps `samples`.
-- Guidance always adds "Derivatives amplify noise — increase window_size for smoother results".
-
-
-**Examples**
-
-**Smoothed derivative**
+**Example: Pose x velocity**
 
 Request:
 ```json
 {
   "name": "rate_of_change",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/Drive/Module0/DriveVelocityRadPerSec",
-    "window_size": 5,
-    "limit": 5
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "name": "/RealOutputs/Drive/Pose.translation.x",
+    "start_time": 362,
+    "end_time": 363,
+    "limit": 3
   }
 }
 ```
@@ -2007,71 +2432,95 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
+  "name": "/RealOutputs/Drive/Pose.translation.x",
   "statistics": {
-    "avg_rate": -0.4086576925310306
+    "avg_rate": 0.09540196696033469,
+    "rate_count": 41
   },
   "samples": [
     {
-      "timestamp_sec": 31.018245,
-      "rate": 0.002951315266823002
+      "timestamp_sec": 362.021551,
+      "rate": 0.0
     },
     {
-      "timestamp_sec": 31.156702,
-      "rate": 1.1687689108292074
+      "timestamp_sec": 362.041733,
+      "rate": 3.5342542305745908
     },
-    "... (3 more items)"
+    {
+      "timestamp_sec": 362.062527,
+      "rate": 3.5358074454823165
+    }
   ],
+  "limits": {
+    "samples": {
+      "total": 41,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "inputs": {
+    "entries": {
+      "entry": "/RealOutputs/Drive/Pose"
+    },
+    "fields": {
+      "entry": ".translation.x"
+    },
+    "window": {
+      "start": 362.0,
+      "end": 363.0
+    }
+  },
   "data_quality": {
-    "sample_count": 6470,
-    "time_span_seconds": 321.04,
-    "gap_count": 79,
-    "max_gap_ms": 69282.9,
-    "effective_sample_rate_hz": 48.5,
-    "quality_score": 0.5
+    "sample_count": 41,
+    "time_span_seconds": 0.98,
+    "sampling": "periodic",
+    "gap_count": 0,
+    "effective_sample_rate_hz": 48.6,
+    "quality_score": 0.68,
+    "reasons": [
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)",
+      "only 41 finite samples (fewer than 100)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 6470 samples over 321.0 seconds",
+    "confidence_level": "medium",
+    "sample_context": "Based on 41 samples over 1.0 seconds",
     "interpretation_guidance": [
+      "Low sample count (41). Statistical measures have high uncertainty.",
+      "Short time span (1.0s). Results may not be representative of full-match behavior.",
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Derivatives amplify noise — increase window_size for smoother results"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 1
+  }
 }
 ```
-
 
 ### `time_correlate`
 
-BUILT-IN correlation: NEVER compute correlation manually—always use this tool! Computes Pearson correlation coefficient with statistical significance (p-value). Handles timestamp alignment automatically via linear interpolation. Returns sample count for confidence assessment.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected. Correlation does not imply causation—consider confounding variables.
+BUILT-IN correlation: NEVER compute correlation manually—always use this tool! Computes Pearson correlation coefficient with statistical significance (p-value). Handles timestamp alignment automatically via linear interpolation. Returns sample count for confidence assessment. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump. Time: start_time/end_time, scope ('enabled', 'disabled', 'auto', 'teleop', 'segment:<i>'; from get_match_phases), and windows (e.g. the intervals find_condition returns) combine; differences, peaks, and unwrapping stay within each window, and data_quality does not count the time between windows as a gap.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected. Correlation does not imply causation—consider confounding variables.
+
+**Parameters** ([TOOLS.md](TOOLS.md#time_correlate))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name1` | string | yes | First entry |
-| `name2` | string | yes | Second entry |
+| `name1` | string | yes | First entry (optionally with a field path) |
+| `name2` | string | yes | Second entry (optionally with a field path) |
+| `field1` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name), for name1 |
+| `field2` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name), for name2 |
+| `max_lag_sec` | number | no | Also search for the time shift that best aligns the two signals, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal follows the first) |
+| `lag_step_sec` | number | no | Lag search step (default: the first signal's median sample interval) |
 | `start_time` | number | no | Start time |
 | `end_time` | number | no | End time |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `sample_count` (overlapping samples used), `correlation` (Pearson r), `p_value` (two-tailed; **`null` when n < 15**).
-- `warnings` added for n < 15 (`"Correlation computed from only N overlapping samples..."`, `"P-value cannot be reliably computed for n < 15..."`) and for zero-variance inputs (`"Correlation undefined: ..."`).
-- `data_quality` is computed from `name1`'s full series, not the overlap window.
-- Guidance always adds "Correlation does not imply causation — consider confounding variables".
-
-
-**Examples**
-
-**Voltage vs current, full log**
+**Example: Voltage against drive current, with lag search**
 
 Request:
 ```json
@@ -2080,7 +2529,9 @@ Request:
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
     "name1": "/SystemStats/BatteryVoltage",
-    "name2": "/SystemStats/BatteryCurrent"
+    "name2": "/Drive/Module0/DriveCurrentAmps",
+    "scope": "enabled",
+    "max_lag_sec": 0.2
   }
 }
 ```
@@ -2089,44 +2540,107 @@ Response:
 ```json
 {
   "success": true,
-  "sample_count": 11735,
-  "correlation": -0.8454880521942351,
+  "status": "ok",
+  "sample_count": 6584,
+  "inputs": {
+    "entries": {
+      "entry1": "/SystemStats/BatteryVoltage",
+      "entry2": "/Drive/Module0/DriveCurrentAmps"
+    },
+    "scope": {
+      "scope": "enabled",
+      "windows": [
+        [
+          110.991153,
+          131.611537
+        ],
+        [
+          135.642118,
+          278.380621
+        ]
+      ],
+      "window_count": 2,
+      "total_sec": 163.358887
+    }
+  },
+  "lag_search": {
+    "lags_evaluated": 19,
+    "lag_step_sec": 0.020553000000006705,
+    "max_lag_sec": 0.18497700000006034,
+    "best_lag_sec": 0.18497700000006034,
+    "correlation_at_best_lag": -0.4460458742281736,
+    "samples_at_best_lag": 6584,
+    "correlation_at_zero_lag": -0.6278741197591584,
+    "note": "Positive lag: the second signal follows the first (the second at t + lag pairs with the first at t). A best lag at the edge of the range may lie beyond it. Shared timing (both follow the match phase) also aligns signals."
+  },
+  "correlation": -0.6278741197591579,
   "p_value": 0.0,
   "data_quality": {
-    "sample_count": 11735,
-    "time_span_seconds": 336.0,
-    "gap_count": 119,
-    "max_gap_ms": 14962.6,
+    "sample_count": 6644,
+    "time_span_seconds": 163.2,
+    "sampling": "periodic",
+    "gap_count": 31,
+    "max_gap_ms": 388.3,
     "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
+    "quality_score": 0.95,
+    "reasons": [
+      "2.6% of the time span is in 31 gaps longer than 5x the median interval (longest 388 ms)",
+      "irregular timing: intervals deviate from the 20.5 ms median by 3% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11735 samples over 336.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 6644 samples over 163.2 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Correlation does not imply causation — consider confounding variables"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 9
+  }
 }
 ```
 
-**Too few overlapping samples**
+### `align_entries`
+
+Sample several numeric signals at common times, to read them side by side or to measure one against another. Times: every record of at (default: the first signal's own samples), or the timestamps stored inside it (time_field, e.g. [*].timestamp of a PoseObservation[] entry: sample the robot pose when the camera saw the target, not when the result arrived), within start_time/end_time, scope, and windows. interpolation: previous (the value in force; default, right for values logged when they change), linear (no extrapolation), or nearest; angles interpolate along the shortest arc. Rows [timestamp_sec, v1, v2, ...] are paged (offset/limit; limits.rows gives the total); a value is null where a signal had none, and unaligned counts those per signal. With difference=true and two signals, difference_statistics summarizes signal 1 minus signal 2 (two angles: their shortest difference): count, mean, std_dev, min, max, median, p5, p95, mean_abs, rmse. The name is an entry, or an entry with a field path appended: a struct field (/RealOutputs/Drive/Pose.translation.x) or an array element (/PowerDistribution/ChannelCurrent[3], /Vision/Camera0/PoseObservations[0].tagCount); or pass the path as field. get_entry_info lists an entry's numeric_leaf_paths. Booleans read as 1/0 and enum fields as their number. Angle fields (a Rotation2d's value or derived degrees, a Rotation3d's derived roll/pitch/yaw) are unwrapped, so crossing +-180 degrees is not a jump.
+
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation.
+
+**Parameters** ([TOOLS.md](TOOLS.md#align_entries))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `names` | array | yes | The signals to sample: entry names, optionally with field paths (1-8) |
+| `at` | string | no | Entry whose record times (or time_field values) are the sample times; default: the first signal |
+| `time_field` | string | no | Path inside at whose values are timestamps in seconds (e.g. '[*].timestamp') |
+| `interpolation` | string | no | 'previous' (default), 'linear', or 'nearest' |
+| `difference` | boolean | no | With two signals: statistics of signal 1 minus signal 2 |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `windows` | array | no | Explicit time windows, each {start, end} in seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals returned by find_condition (whose end is the sample where the condition turned false). Intersected with scope and start_time/end_time. |
+| `offset` | integer | no | Rows to skip |
+| `limit` | integer | no | Maximum rows to return (max 2000) |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: Robot pose at each camera observation's own time**
 
 Request:
 ```json
 {
-  "name": "time_correlate",
+  "name": "align_entries",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name1": "/SystemStats/BatteryVoltage",
-    "name2": "/SystemStats/BatteryCurrent",
-    "start_time": 120,
-    "end_time": 120.2
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "names": [
+      "/RealOutputs/Drive/Pose.translation.x",
+      "/RealOutputs/Drive/Pose.translation.y"
+    ],
+    "at": "/Vision/Camera3/PoseObservations",
+    "time_field": "[*].timestamp",
+    "interpolation": "linear",
+    "start_time": 370,
+    "limit": 3
   }
 }
 ```
@@ -2135,61 +2649,76 @@ Response:
 ```json
 {
   "success": true,
-  "sample_count": 4,
-  "correlation": 0.9090665587011777,
-  "p_value": null,
-  "data_quality": {
-    "sample_count": 11735,
-    "time_span_seconds": 336.0,
-    "gap_count": 119,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
-  },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11735 samples over 336.0 seconds",
-    "interpretation_guidance": [
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "Correlation does not imply causation — consider confounding variables"
-    ]
-  },
-  "warnings": [
-    "Correlation computed from only 4 overlapping samples — insufficient for statistical significance. Results may be misleading (with 2 points, correlation is always ±1.0).",
-    "P-value cannot be reliably computed for n < 15 (asymptotic approximation unreliable)",
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
+  "status": "ok",
+  "interpolation": "linear",
+  "time_source": "values of /Vision/Camera3/PoseObservations[*].timestamp",
+  "columns": [
+    "timestamp_sec",
+    "/RealOutputs/Drive/Pose.translation.x",
+    "/RealOutputs/Drive/Pose.translation.y"
   ],
-  "_execution_time_ms": 11
+  "total_rows": 1551,
+  "rows": [
+    [
+      370.222919,
+      3.049737056063155,
+      4.808017982274853
+    ],
+    [
+      370.350862,
+      3.0398357338758006,
+      4.859571507965534
+    ],
+    [
+      370.850907,
+      2.897195404422489,
+      5.082699343930449
+    ]
+  ],
+  "limits": {
+    "rows": {
+      "total": 1551,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "unaligned": {
+    "/RealOutputs/Drive/Pose.translation.x": 0,
+    "/RealOutputs/Drive/Pose.translation.y": 0
+  },
+  "inputs": {
+    "entries": {
+      "signal1": "/RealOutputs/Drive/Pose",
+      "signal2": "/RealOutputs/Drive/Pose"
+    },
+    "fields": {
+      "signal1": ".translation.x",
+      "signal2": ".translation.y"
+    },
+    "window": {
+      "start": 370.0
+    }
+  }
 }
 ```
-
 
 ## Robot Analysis Tools
 
-
 ### `get_match_phases`
 
-ALWAYS use this tool to find match phases—NEVER manually parse timestamps! Detects autonomous/teleop/endgame phases from DriverStation/FMS mode transitions. Handles FMS disabled gaps, practice modes, and edge cases automatically. Returns start/end times for each phase based on actual DS data, not hardcoded durations. Use these timestamps to filter other analyses to specific match phases.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+ALWAYS use this tool to find when the robot was enabled and in which mode—NEVER manually parse timestamps! Returns segments: every interval of constant robot state (enabled/disabled/unknown) with its mode (auto/teleop/test) while enabled and why it ended (disabled, mode_change, log_end, ...). A log can hold any number of enabled segments (practice sessions); DriverStation values logged only on change hold until the next sample. When a segment pattern is an FMS match (FMS attached, or an autonomous segment followed within seconds by teleop), matches lists its autonomous/teleop/endgame phases and phases repeats the first one; endgame comes from the season's timing (basis game_timing). Use segment or phase bounds as start_time/end_time for other tools.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#get_match_phases))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `log_duration`, `source` (`"DriverStation"` when mode entries were found, `"none"` otherwise), `phases` object with `autonomous`, `teleop`, `endgame` — each `{start, end, duration, description}`; `endgame` is the last 30 s of teleop (from the game knowledge base).
-- Top-level `match_duration` (first enable → last disable), `auto_duration`, `teleop_duration` when the corresponding phase exists.
-- If only Enabled transitions exist (no Autonomous entry) `phases.enabled` is returned instead with a warning. If no DriverStation entries exist at all: `success: true`, `source: "none"`, `warnings[]`, no `phases`.
-- Auto start requires **both** Autonomous=true and Enabled=true (the FMS raises the auto flag well before the countdown ends). `data_quality` is computed from the Enabled entry (a handful of samples, so `confidence_level` is typically `"low"` — this is expected).
-
-
-**Examples**
-
-**DriverStation data present**
+**Example: Segments and match**
 
 Request:
 ```json
@@ -2205,12 +2734,100 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
+  "source": "DriverStation",
+  "log_start": 11.897573,
+  "log_end": 347.901903,
   "log_duration": 336.00433,
+  "inputs": {
+    "entries": {
+      "enabled": "/DriverStation/Enabled",
+      "autonomous": "/DriverStation/Autonomous",
+      "test": "/DriverStation/Test",
+      "fms_attached": "/DriverStation/FMSAttached"
+    }
+  },
+  "season": {
+    "year": 2026,
+    "basis": "log_clock:/SystemStats/EpochTimeMicros"
+  },
+  "segments": [
+    {
+      "start": 11.897573,
+      "end": 110.991153,
+      "duration": 99.09358,
+      "state": "disabled",
+      "end_reason": "enabled"
+    },
+    {
+      "start": 110.991153,
+      "end": 131.611537,
+      "duration": 20.620384,
+      "state": "enabled",
+      "mode": "auto",
+      "end_reason": "disabled"
+    },
+    {
+      "start": 131.611537,
+      "end": 135.642118,
+      "duration": 4.030581000000012,
+      "state": "disabled",
+      "end_reason": "enabled"
+    },
+    {
+      "start": 135.642118,
+      "end": 278.380621,
+      "duration": 142.738503,
+      "state": "enabled",
+      "mode": "teleop",
+      "end_reason": "disabled"
+    },
+    {
+      "start": 278.380621,
+      "end": 347.901903,
+      "duration": 69.52128199999999,
+      "state": "disabled",
+      "end_reason": "log_end"
+    }
+  ],
+  "enabled_segment_count": 2,
+  "enabled_time_sec": 163.358887,
+  "matches": [
+    {
+      "autonomous": {
+        "start": 110.991153,
+        "end": 131.611537,
+        "duration": 20.620384
+      },
+      "teleop": {
+        "start": 135.642118,
+        "end": 278.380621,
+        "duration": 142.738503
+      },
+      "endgame": {
+        "start": 248.38062100000002,
+        "end": 278.380621,
+        "duration": 30.0,
+        "basis": "game_timing"
+      },
+      "basis": "fms_attached",
+      "complete": true,
+      "expected_timing": {
+        "season": 2026,
+        "auto_sec": 20.0,
+        "teleop_sec": 140.0,
+        "source": "game_data"
+      }
+    }
+  ],
+  "match_duration": 167.38946800000002,
+  "auto_duration": 20.620384,
+  "teleop_duration": 142.738503,
   "phases": {
     "autonomous": {
       "start": 110.991153,
-      "end": 135.642118,
-      "duration": 24.650965000000014,
+      "end": 131.611537,
+      "duration": 20.620384,
       "description": "Autonomous"
     },
     "teleop": {
@@ -2223,122 +2840,46 @@ Response:
       "start": 248.38062100000002,
       "end": 278.380621,
       "duration": 30.0,
+      "basis": "game_timing",
       "description": "Endgame"
     }
-  },
-  "source": "DriverStation",
-  "match_duration": 167.38946800000002,
-  "auto_duration": 24.650965000000014,
-  "teleop_duration": 142.738503,
-  "data_quality": {
-    "sample_count": 5,
-    "time_span_seconds": 266.48,
-    "gap_count": 0,
-    "effective_sample_rate_hz": 0.0,
-    "quality_score": 0.5
-  },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 5 samples over 266.5 seconds",
-    "interpretation_guidance": [
-      "Low sample count (5). Statistical measures have high uncertainty.",
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
-    ]
-  },
-  "_execution_time_ms": 1
-}
-```
-
-**No DriverStation entries**
-
-Request:
-```json
-{
-  "name": "get_match_phases",
-  "arguments": {
-    "path": "~/FRC_20250304_014350.wpilog"
   }
 }
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "log_duration": 382.961324,
-  "warnings": [
-    "No DriverStation mode entries found in log. Cannot determine match phases. Look for entries containing 'DriverStation' and 'Enabled' or 'Autonomous'."
-  ],
-  "source": "none",
-  "_execution_time_ms": 2
-}
-```
-
-**Enabled-only variant (no Autonomous entry)**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "log_duration": "<s>",
-  "phases": {
-    "enabled": {
-      "start": "<s>",
-      "end": "<s>",
-      "duration": "<s>",
-      "description": "Enabled (mode unknown)"
-    }
-  },
-  "source": "DriverStation",
-  "match_duration": "<s>",
-  "warnings": [
-    "Robot enable/disable detected but autonomous/teleop mode transitions ..."
-  ],
-  "data_quality": "{...}",
-  "server_analysis_directives": "{...}"
-}
-```
-
-
 ### `analyze_swerve`
 
-Analyze swerve drive module performance: per-module speed statistics from SwerveModuleState entries. Returns 'no swerve modules detected' if log does not contain swerve module state entries.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Regression estimates depend on data quality and model assumptions. Physical parameters outside typical ranges (negative inertia, negative damping) indicate model or data issues, not actual physics.
+Analyze swerve modules from SwerveModuleState entries: per module, mean and maximum |speed| (magnitude; measured speeds are signed and negative about half the time), and, when a setpoint entry exists, speed tracking error (| |measured| - |setpoint| |, m/s, events above slip_threshold) and steer error (angle difference modulo 180 deg, while the setpoint speed is above 0.05 m/s, events above sync_threshold_rad). AdvantageKit's struct:SwerveModuleState[] arrays count as one module per index (module[0..N-1]; the FL, FR, BL, BR labels are the AdvantageKit template's order, an assumption); one entry per module also works. Setpoints are paired by index, preferring an optimized setpoint entry. Odometry drift compares a scalar odometry pose to a scalar vision pose. Sections that cannot be produced are listed in skipped with the reason; use measured_entry/setpoint_entry/odometry_entry/vision_entry to point the tool at the right data, and scope (e.g. 'enabled') to exclude disabled time. Returns no_match when the log has no SwerveModuleState entries.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Regression estimates depend on data quality and model assumptions. Physical parameters outside typical ranges (negative inertia, negative damping) indicate model or data issues, not actual physics.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_swerve))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `module_prefix` | string | no | Entry path prefix (e.g., '/Drive/Module') |
-| `slip_threshold` | number | no | Speed difference threshold for slip detection in m/s (default: 0.5) |
-| `sync_threshold_rad` | number | no | Angle threshold for sync deviation in radians (default: 0.1) |
-| `odometry_entry` | string | no | Explicit odometry pose entry name |
-| `vision_entry` | string | no | Explicit vision pose entry name |
+| `module_prefix` | string | no | Only consider module state entries under this prefix (e.g. '/RealOutputs/SwerveStates') |
+| `measured_entry` | string | no | Measured module states: a SwerveModuleState[] entry, or one module's SwerveModuleState entry |
+| `setpoint_entry` | string | no | Setpoint module states, paired with measured_entry by index |
+| `slip_threshold` | number | no | Speed tracking error, in m/s, counted as an event (default: 0.5) |
+| `sync_threshold_rad` | number | no | Steer error, in radians, counted as an event (default: 0.1) |
+| `odometry_entry` | string | no | Explicit odometry pose entry (struct:Pose2d or Pose3d) |
+| `vision_entry` | string | no | Explicit vision pose entry (struct:Pose2d or Pose3d) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `start_time` | number | no | Start timestamp (s) |
+| `end_time` | number | no | End timestamp (s) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `swerve_entries` — every log entry bucketed by type: `module_states` (`SwerveModuleState[]`), `module_positions` (`SwerveModulePosition[]`), `chassis_speeds` (`ChassisSpeeds`), `other` (everything else; large).
-- `module_analysis[]` — one per `module_states` entry: `{entry, max_speed_mps, avg_speed_mps, sample_count}`.
-- `wheel_slip` (when a setpoint/measured pair shares a prefix): `{modules: [{setpoint_entry, measured_entry, max_slip_ratio, avg_slip_ratio, slip_events, slip_event_rate, samples_compared}], pair_count}`.
-- `module_sync` (when ≥2 modules): `{module_count, samples_analyzed, desync_events, max_deviation_rad, max_deviation_deg, worst_module?}`.
-- `odometry_drift` (when odometry and vision pose entries are found or given): `{odometry_entry, vision_entry, avg_error_m, max_error_m, max_error_per_total_time, comparisons}`.
-- `warnings[]` e.g. `"Could not analyze module '<entry>': no valid speed data found"`. `data_quality` comes from the odometry pose entry.
-- Only struct entries are analysed; pointing `module_prefix` at scalar per-module entries (e.g. `/Drive/Module`) yields an empty `swerve_entries`.
-
-
-**Examples**
-
-**AdvantageKit swerve log (only struct entries analysed)**
+**Example: While enabled**
 
 Request:
 ```json
 {
   "name": "analyze_swerve",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "scope": "enabled"
   }
 }
 ```
@@ -2347,138 +2888,199 @@ Response:
 ```json
 {
   "success": true,
-  "swerve_entries": {
-    "other": [
-      "/SystemStats/5vRail/Voltage",
-      "/SystemStats/CANBus/Utilization",
-      "... (468 more items)"
+  "status": "partial",
+  "scope": {
+    "scope": "enabled",
+    "windows": [
+      [
+        110.991153,
+        131.611537
+      ],
+      [
+        135.642118,
+        278.380621
+      ]
     ],
-    "chassis_speeds": [
-      "/RealOutputs/SwerveChassisSpeeds/Measured",
-      "/RealOutputs/SwerveChassisSpeeds/Setpoints"
-    ],
-    "module_states": [
-      "/RealOutputs/SwerveStates/Measured",
-      "/RealOutputs/SwerveStates/SetpointsOptimized",
-      "... (1 more items)"
-    ]
+    "window_count": 2,
+    "total_sec": 163.358887
   },
-  "module_analysis": [
+  "inputs": {
+    "entries": {
+      "measured": "/RealOutputs/SwerveStates/Measured",
+      "setpoint": "/RealOutputs/SwerveStates/SetpointsOptimized"
+    }
+  },
+  "layout": "array",
+  "module_count": 4,
+  "module_order_note": "Indices are the order the robot code logs its modules. The AdvantageKit template logs front-left, front-right, back-left, back-right; that labeling is an assumption, not recorded in the log.",
+  "modules": [
     {
-      "entry": "/RealOutputs/SwerveStates/Measured",
-      "max_speed_mps": 4.115751448082775,
-      "avg_speed_mps": 0.029974730167141007,
-      "sample_count": 53428
+      "module": "module[0]",
+      "index": 0,
+      "assumed_position": "front_left",
+      "measured_entry": "/RealOutputs/SwerveStates/Measured",
+      "samples": 6681,
+      "mean_abs_speed_mps": 1.388971666817831,
+      "max_abs_speed_mps": 4.115751448082775,
+      "setpoint_entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
+      "speed_tracking_error": {
+        "samples": 6502,
+        "mean_mps": 1.2283959774961903,
+        "p95_mps": 2.8811814080518894,
+        "max_mps": 4.192295353180699,
+        "events_over_threshold": 4746
+      },
+      "steer_error": {
+        "samples": 5702,
+        "mean_rad": 0.3552968438807168,
+        "p95_rad": 1.0027900443588937,
+        "max_rad": 1.558669892377086,
+        "events_over_threshold": 4691,
+        "max_deg": 89.30520648731728
+      }
     },
     {
-      "entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
-      "max_speed_mps": 4.258314265497015,
-      "avg_speed_mps": 0.10887284983009282,
-      "sample_count": 25916
+      "module": "module[1]",
+      "index": 1,
+      "assumed_position": "front_right",
+      "measured_entry": "/RealOutputs/SwerveStates/Measured",
+      "samples": 6681,
+      "mean_abs_speed_mps": 1.6279404750181654,
+      "max_abs_speed_mps": 4.048423190525529,
+      "setpoint_entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
+      "speed_tracking_error": {
+        "samples": 6502,
+        "mean_mps": 1.0895396504590344,
+        "p95_mps": 2.610684846975101,
+        "max_mps": 4.201512133851005,
+        "events_over_threshold": 4580
+      },
+      "steer_error": {
+        "samples": 5700,
+        "mean_rad": 0.3155327615416909,
+        "p95_rad": 0.9102651468574149,
+        "max_rad": 1.542558158905294,
+        "events_over_threshold": 4462,
+        "max_deg": 88.38207215874392
+      }
     },
-    "... (1 more items)"
+    {
+      "module": "module[2]",
+      "index": 2,
+      "assumed_position": "back_left",
+      "measured_entry": "/RealOutputs/SwerveStates/Measured",
+      "samples": 6681,
+      "mean_abs_speed_mps": 1.4880940103988112,
+      "max_abs_speed_mps": 4.176845607718055,
+      "setpoint_entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
+      "speed_tracking_error": {
+        "samples": 6502,
+        "mean_mps": 1.091934898147582,
+        "p95_mps": 2.6882881891900214,
+        "max_mps": 4.218406391506481,
+        "events_over_threshold": 4467
+      },
+      "steer_error": {
+        "samples": 5703,
+        "mean_rad": 0.32177370873775946,
+        "p95_rad": 0.9288714220336927,
+        "max_rad": 1.5540776245207155,
+        "events_over_threshold": 4450,
+        "max_deg": 89.04208892075366
+      }
+    },
+    {
+      "module": "module[3]",
+      "index": 3,
+      "assumed_position": "back_right",
+      "measured_entry": "/RealOutputs/SwerveStates/Measured",
+      "samples": 6681,
+      "mean_abs_speed_mps": 1.4526845021615682,
+      "max_abs_speed_mps": 4.103906662031038,
+      "setpoint_entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
+      "speed_tracking_error": {
+        "samples": 6502,
+        "mean_mps": 1.1732265206497399,
+        "p95_mps": 2.7466415519897427,
+        "max_mps": 4.20511800108898,
+        "events_over_threshold": 4708
+      },
+      "steer_error": {
+        "samples": 5693,
+        "mean_rad": 0.33340847364511456,
+        "p95_rad": 0.9454037181563173,
+        "max_rad": 1.5567939602128575,
+        "events_over_threshold": 4560,
+        "max_deg": 89.19772349165414
+      }
+    }
+  ],
+  "module_sync": {
+    "basis": "steer angle vs setpoint, modulo 180 deg, while the setpoint speed exceeds 0.05 m/s",
+    "samples_analyzed": 22798,
+    "desync_events": 18163,
+    "max_deviation_rad": 1.558669892377086,
+    "max_deviation_deg": 89.30520648731728,
+    "worst_module": "module[0]"
+  },
+  "skipped": [
+    {
+      "section": "odometry_drift",
+      "reason": "Needs a scalar odometry pose and a scalar vision pose (struct:Pose2d or struct:Pose3d, at least 2 samples); found odometry /RealOutputs/Drive/Pose, vision none. Pass odometry_entry and vision_entry."
+    }
   ],
   "data_quality": {
-    "sample_count": 13357,
-    "time_span_seconds": 336.0,
-    "gap_count": 83,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 49.2,
-    "quality_score": 0.5
+    "sample_count": 6681,
+    "time_span_seconds": 167.37,
+    "sampling": "periodic",
+    "gap_count": 32,
+    "max_gap_ms": 4173.0,
+    "effective_sample_rate_hz": 48.7,
+    "quality_score": 0.91,
+    "reasons": [
+      "5.0% of the time span is in 32 gaps longer than 5x the median interval (longest 4173 ms)",
+      "irregular timing: intervals deviate from the 20.5 ms median by 3% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 13357 samples over 336.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 6681 samples over 167.4 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ],
     "suggested_followup": [
       "Use power_analysis to check if module issues correlate with brownouts"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 43
-}
-```
-
-**Optional sub-objects**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "wheel_slip": {
-    "modules": [
-      {
-        "setpoint_entry": "<entry>",
-        "measured_entry": "<entry>",
-        "max_slip_ratio": "<number>",
-        "avg_slip_ratio": "<number>",
-        "slip_events": "<int>",
-        "slip_event_rate": "<number>",
-        "samples_compared": "<int>"
-      }
-    ],
-    "pair_count": "<int>"
-  },
-  "module_sync": {
-    "module_count": "<int>",
-    "samples_analyzed": "<int>",
-    "desync_events": "<int>",
-    "max_deviation_rad": "<number>",
-    "max_deviation_deg": "<number>",
-    "worst_module": "<int index>"
-  },
-  "odometry_drift": {
-    "odometry_entry": "<entry>",
-    "vision_entry": "<entry>",
-    "avg_error_m": "<number>",
-    "max_error_m": "<number>",
-    "max_error_per_total_time": "<number>",
-    "comparisons": "<int>"
   }
 }
 ```
 
-
 ### `power_analysis`
 
-Analyze battery and current distribution data. Reports battery voltage statistics (min/max/avg and samples below the brownout threshold; default 6.8V for roboRIO 1, set 6.3V for roboRIO 2) and, for every amperage entry, the peak current by magnitude with its timestamp, signed min/max, average, and sample count, sorted by peak. Amperage entries are named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. Warns when no voltage or current entries are found.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Voltage drops may indicate power issues, aggressive driving, worn battery, or loose connections. Single brownout events are not necessarily concerning—look for patterns across matches.
+Analyze battery and current distribution data. Reports battery voltage statistics (min/max/avg and samples below the brownout threshold, which comes from the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1, with the basis stated), the roboRIO's own brownouts when its flag is logged (rio_brownouts: start and duration of each), and, for every amperage entry, the peak current by magnitude with its timestamp, signed min/max, average, and sample count, sorted by peak. Amperage entries are named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. Warns when no voltage or current entries are found.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Voltage drops may indicate power issues, aggressive driving, worn battery, or loose connections. Single brownout events are not necessarily concerning—look for patterns across matches.
+
+**Parameters** ([TOOLS.md](TOOLS.md#power_analysis))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `power_prefix` | string | no | Entry path prefix (e.g., '/PDP') |
-| `brownout_threshold` | number | no | Voltage threshold (default 6.8V for roboRIO 1, use 6.3V for roboRIO 2) |
+| `brownout_threshold` | number | no | Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V) |
 | `channel_limit` | integer | no | Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `voltage_analysis` `{entry, min_voltage, max_voltage, avg_voltage, samples_below_threshold, brownout_threshold, brownout_risk}` on finite samples only; `brownout_risk` is `"HIGH"` if any sample < threshold, `"MODERATE"` if min < threshold + 1 V, else `"LOW"`. Absent (with a warning) when no scalar numeric voltage entry with finite samples exists.
-- The voltage entry is chosen by ranking (battery > input/bus > other voltage > rails/regulators/motor outputs; ties by WPILOG declaration order), shared with `get_ds_timeline`. On this AdvantageKit log the default call now picks `/SystemStats/BatteryVoltage`; `power_prefix` narrows the candidates.
-- `current_entries_analyzed` (always present) and `channel_analysis[]` sorted by `|peak_current_A|`: `{entry, peak_current_A, peak_current_time_sec, max_current_A, min_current_A, avg_current_A, sample_count}`; entries expanded from an array add `source_entry` and `channel`. `peak_current_A` is the largest-magnitude sample, signed — see `/Drive/Module2/DriveCurrentAmps` below. Only amperage-named entries qualify (`...Current`, `...Amps`, `Current/<sub>`, WPILib `PowerDistribution[<id>]/Chan<N>`).
-- `warnings` when the list is truncated by `channel_limit` (default 30), when no usable voltage entry exists, or when no current entries exist.
-- Follow-up always suggests `predict_battery_health`.
-
-
-**Examples**
-
-**Default call (no prefix)**
-
-71 amperage entries/channels were found; the top 30 are listed (`channel_limit`). Shown trimmed.
+**Example: Top channels**
 
 Request:
 ```json
 {
   "name": "power_analysis",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "channel_limit": 3
   }
 }
 ```
@@ -2487,14 +3089,49 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "voltage_analysis": {
     "entry": "/SystemStats/BatteryVoltage",
     "min_voltage": 6.680678710937499,
     "max_voltage": 12.843782470703125,
     "avg_voltage": 10.647124485941994,
     "samples_below_threshold": 1,
-    "brownout_threshold": 6.8,
+    "brownout_threshold": 6.75,
+    "brownout_threshold_basis": "logged",
+    "brownout_threshold_entry": "/SystemStats/BrownoutVoltage",
     "brownout_risk": "HIGH"
+  },
+  "rio_brownouts": {
+    "flag_entry": "/SystemStats/BrownedOut",
+    "count": 5,
+    "total_sec": 0.45058100000008494,
+    "events": [
+      {
+        "start": 143.079221,
+        "end": 143.133666,
+        "duration_sec": 0.0544450000000154
+      },
+      {
+        "start": 194.071279,
+        "end": 194.20445,
+        "duration_sec": 0.13317100000000437
+      },
+      {
+        "start": 194.444747,
+        "end": 194.526719,
+        "duration_sec": 0.08197200000000748
+      },
+      {
+        "start": 264.272604,
+        "end": 264.393662,
+        "duration_sec": 0.121058000000005
+      },
+      {
+        "start": 264.588604,
+        "end": 264.648539,
+        "duration_sec": 0.059935000000052696
+      }
+    ]
   },
   "current_entries_analyzed": 71,
   "channel_analysis": [
@@ -2524,50 +3161,32 @@ Response:
       "min_current_A": 0.0,
       "avg_current_A": 7.68508317515544,
       "sample_count": 3032
-    },
-    {
-      "entry": "/Drive/Module2/DriveCurrentAmps",
-      "peak_current_A": -113.54,
-      "peak_current_time_sec": 131.611537,
-      "max_current_A": 100.56,
-      "min_current_A": -113.54,
-      "avg_current_A": 14.292830071450787,
-      "sample_count": 12876
-    },
-    {
-      "entry": "/Drive/Module3/DriveCurrentAmps",
-      "peak_current_A": 100.4,
-      "peak_current_time_sec": 160.42963,
-      "max_current_A": 100.4,
-      "min_current_A": -98.9,
-      "avg_current_A": 15.78436831164827,
-      "sample_count": 12989
-    },
-    {
-      "entry": "/Drive/Module0/DriveCurrentAmps",
-      "peak_current_A": 100.34,
-      "peak_current_time_sec": 233.646053,
-      "max_current_A": 100.34,
-      "min_current_A": -95.0,
-      "avg_current_A": 16.759243142435295,
-      "sample_count": 12869
-    },
-    "... (24 more items)"
+    }
   ],
   "warnings": [
-    "Showing the top 30 of 71 current entries/channels by peak current; raise channel_limit to see more.",
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
+    "Showing the top 3 of 71 current entries/channels by peak current; raise channel_limit to see more."
   ],
+  "inputs": {
+    "entries": {
+      "voltage": "/SystemStats/BatteryVoltage",
+      "brownout_flag": "/SystemStats/BrownedOut"
+    }
+  },
   "data_quality": {
     "sample_count": 11735,
     "time_span_seconds": 336.0,
+    "sampling": "periodic",
     "gap_count": 119,
     "max_gap_ms": 14962.6,
     "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
+    "quality_score": 0.84,
+    "reasons": [
+      "9.9% of the time span is in 119 gaps longer than 5x the median interval (longest 14963 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
+    "confidence_level": "high",
     "sample_context": "Based on 11735 samples over 336.0 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
@@ -2575,98 +3194,25 @@ Response:
     "suggested_followup": [
       "Use predict_battery_health for comprehensive battery assessment"
     ]
-  },
-  "_execution_time_ms": 43
-}
-```
-
-**Explicit prefix**
-
-Restricting to `/SystemStats/Battery` leaves the battery voltage plus AdvantageKit's `/SystemStats/BatteryCurrent` (which reads ~1 A on this roboRIO — it is not the PDH total).
-
-Request:
-```json
-{
-  "name": "power_analysis",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "power_prefix": "/SystemStats/Battery"
   }
 }
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "voltage_analysis": {
-    "entry": "/SystemStats/BatteryVoltage",
-    "min_voltage": 6.680678710937499,
-    "max_voltage": 12.843782470703125,
-    "avg_voltage": 10.647124485941994,
-    "samples_below_threshold": 1,
-    "brownout_threshold": 6.8,
-    "brownout_risk": "HIGH"
-  },
-  "current_entries_analyzed": 1,
-  "channel_analysis": [
-    {
-      "entry": "/SystemStats/BatteryCurrent",
-      "peak_current_A": 1.0274101562500002,
-      "peak_current_time_sec": 194.156238,
-      "max_current_A": 1.0274101562500002,
-      "min_current_A": 0.3533857421875,
-      "avg_current_A": 0.5255249926072508,
-      "sample_count": 11149
-    }
-  ],
-  "data_quality": {
-    "sample_count": 11735,
-    "time_span_seconds": 336.0,
-    "gap_count": 119,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
-  },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11735 samples over 336.0 seconds",
-    "interpretation_guidance": [
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
-    ],
-    "suggested_followup": [
-      "Use predict_battery_health for comprehensive battery assessment"
-    ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 4
-}
-```
-
-
 ### `can_health`
 
-Analyze CAN bus health by looking for timeout errors and communication issues. Returns 'no CAN data found' if log does not contain CAN bus utilization or error entries. See also: analyze_can_bus for numeric utilization analysis.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+CAN bus health overview from two sources: console and message text (string entries) with CAN timeout/error/fault lines, each classified by the robot's enabled state at that moment from the DriverStation timeline, and the structured bus counters that analyze_can_bus reads (TEC/REC error counters, bus-off and TX-full counts). health_assessment: POOR if a bus-off count rose while enabled or 50+ CAN text errors occurred while enabled; CONCERNING if any CAN text error occurred while enabled or TEC/REC reached 128 (error-passive) while enabled; otherwise GOOD. assessment_basis says which fact decided it. Errors while disabled are normal (for example devices booting) and do not count; errors before the first DriverStation sample are reported separately. See analyze_can_bus for per-bus detail.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#can_health))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- Scans string entries for CAN error text. `error_counts_by_entry` — object keyed by entry name → `{total, while_enabled?, while_disabled?}`; `total_can_errors`; `errors_while_enabled` / `errors_while_disabled` (only when a DriverStation Enabled entry exists); `health_assessment` — `"GOOD"` (0 enabled-state errors), `"CONCERNING"` (< 50), `"POOR"`.
-- `warnings[]` when no Enabled entry exists, or when disabled-state errors are present ("...are normal"). Guidance: "CAN errors while disabled are normal; focus on enabled-state errors".
-
-
-**Examples**
-
-**Console errors while enabled**
+**Example: Text and counters**
 
 Request:
 ```json
@@ -2682,6 +3228,7 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "error_counts_by_entry": {
     "/RealOutputs/Console": {
       "total": 2,
@@ -2691,63 +3238,90 @@ Response:
   },
   "total_can_errors": 2,
   "errors_while_enabled": 2,
-  "errors_while_disabled": 0,
   "health_assessment": "CONCERNING",
-  "data_quality": {
-    "sample_count": 2,
-    "time_span_seconds": 1.03,
-    "gap_count": 0,
-    "effective_sample_rate_hz": 1.0,
-    "quality_score": 0.7
+  "assessment_basis": "2 CAN error line(s) while enabled",
+  "bus_counters": [
+    {
+      "bus": "rio",
+      "tec_max": 0.0,
+      "tec_max_time_sec": 11.897573,
+      "rec_max": 0.0,
+      "rec_max_time_sec": 11.897573,
+      "bus_off_increase": 0.0,
+      "bus_off_increase_while_enabled": 0.0
+    },
+    {
+      "bus": "CANHD",
+      "tec_max": 0.0,
+      "tec_max_time_sec": 26.860151,
+      "rec_max": 0.0,
+      "rec_max_time_sec": 26.860151,
+      "bus_off_increase": 0.0,
+      "bus_off_increase_while_enabled": 0.0
+    },
+    {
+      "bus": "CAN2",
+      "tec_max": 0.0,
+      "tec_max_time_sec": 26.860151,
+      "rec_max": 6.0,
+      "rec_max_time_sec": 140.349441,
+      "rec_max_while_enabled": 6.0,
+      "bus_off_increase": 0.0,
+      "bus_off_increase_while_enabled": 0.0
+    }
+  ],
+  "inputs": {
+    "entries": {
+      "enabled": "/DriverStation/Enabled"
+    }
   },
-  "server_analysis_directives": {
-    "confidence_level": "medium",
-    "sample_context": "Based on 2 samples over 1.0 seconds",
-    "interpretation_guidance": [
-      "Low sample count (2). Statistical measures have high uncertainty.",
-      "Short time span (1.0s). Results may not be representative of full-match behavior.",
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "CAN errors while disabled are normal; focus on enabled-state errors"
-    ]
-  },
-  "_execution_time_ms": 1
+  "errors_while_disabled": 0,
+  "first_errors_while_enabled": [
+    {
+      "timestamp_sec": 123.711426,
+      "entry": "/RealOutputs/Console",
+      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
+    },
+    {
+      "timestamp_sec": 124.739764,
+      "entry": "/RealOutputs/Console",
+      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
+    }
+  ]
 }
 ```
 
-
 ### `compare_matches`
 
-Compare whole-log min/max/mean of one scalar numeric entry across two log files. Reports per log whether the entry was found and its finite sample count; array entries are not compared (use power_analysis or read_entry). For phase-scoped comparisons run get_statistics with start_time/end_time on each log instead.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+Compare one numeric signal across two logs: per log, count, min, max (with when), mean, std_dev, median, p5, p25, p75, p95, and data_quality; and the differences (second minus first) of mean, median, and p95. scope ('enabled', 'teleop', 'segment:<i>', ...) is resolved in each log's own timeline, so the same phase is compared; start_time/end_time apply to each log's own clock. The name may carry a field path (/RealOutputs/Drive/Pose.translation.x, ChannelCurrent[3]). A maximum or minimum in the first 5 s of a log is flagged as a likely boot transient: compare scope 'enabled' instead. Samples within a log are autocorrelated, so no significance test is made; two logs are two samples.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Sample sizes below 100 have high uncertainty. Correlations below |0.7| are moderate to weak — interpret cautiously, especially with small samples. Consider whether a physical relationship is expected.
+
+**Parameters** ([TOOLS.md](TOOLS.md#compare_matches))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to the first log file |
 | `compare_path` | string | yes | Path to the second log file |
-| `name` | string | yes | Entry name to compare |
+| `name` | string | yes | Entry name to compare, optionally with a field path |
+| `field` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. Resolved in each log's own timeline. |
+| `start_time` | number | no | Start timestamp (s), on each log's clock |
+| `end_time` | number | no | End timestamp (s), on each log's clock |
 
-
-**Response fields**
-
-- `entry`, `logs_compared`, `comparisons[]` — one per log (`path`, then `compare_path`): `{log_path, log_filename, entry_found, sample_count, statistics: {min, max, mean}}`; `sample_count` (finite scalar samples) and `statistics` appear only when `entry_found`, and `statistics` is omitted when the count is 0 (array entries are not compared).
-- `warnings` when the entry is missing from a log or has no finite scalar values.
-- `data_quality` is from the first log only. Guidance: "Cross-match comparisons require consistent logging configurations for valid comparison".
-
-
-**Examples**
-
-**Battery voltage across two quals**
+**Example: Loop time while enabled, two logs**
 
 Request:
 ```json
 {
   "name": "compare_matches",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "compare_path": "<logdir>/vache/session_26/akit_26-03-21_16-54-48_vache_q13.wpilog",
-    "name": "/SystemStats/BatteryVoltage"
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+    "compare_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "name": "/RealOutputs/LoggedRobot/FullCycleMS",
+    "scope": "enabled"
   }
 }
 ```
@@ -2756,74 +3330,142 @@ Response:
 ```json
 {
   "success": true,
-  "entry": "/SystemStats/BatteryVoltage",
+  "status": "ok",
+  "entry": "/RealOutputs/LoggedRobot/FullCycleMS",
   "logs_compared": 2,
   "comparisons": [
+    {
+      "log_path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
+      "log_filename": "akit_26-09-30_00-10-26.wpilog",
+      "entry_found": true,
+      "signal": "/RealOutputs/LoggedRobot/FullCycleMS",
+      "scope": {
+        "scope": "enabled",
+        "windows": [
+          [
+            40.207135,
+            359.161586
+          ],
+          [
+            395.209541,
+            744.929426
+          ],
+          [
+            791.534465,
+            840.133016
+          ],
+          [
+            995.211072,
+            1588.273419
+          ]
+        ],
+        "window_count": 4,
+        "total_sec": 1310.3352340000001
+      },
+      "sample_count": 48596,
+      "statistics": {
+        "min": 7.679,
+        "min_at_sec": 999.841727,
+        "max": 267.882,
+        "max_at_sec": 1130.514642,
+        "mean": 22.18834731253601,
+        "std_dev": 15.867858887414958,
+        "median": 17.603,
+        "p5": 11.205,
+        "p25": 14.34,
+        "p75": 22.191250000000004,
+        "p95": 53.108
+      },
+      "data_quality": {
+        "sample_count": 48596,
+        "time_span_seconds": 1310.19,
+        "sampling": "periodic",
+        "gap_count": 420,
+        "max_gap_ms": 287.6,
+        "effective_sample_rate_hz": 47.4,
+        "quality_score": 0.91,
+        "reasons": [
+          "4.3% of the time span is in 420 gaps longer than 5x the median interval (longest 288 ms)",
+          "irregular timing: intervals deviate from the 21.1 ms median by 6% (median absolute deviation)"
+        ]
+      }
+    },
     {
       "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
       "log_filename": "akit_26-03-21_16-29-56_vache_q10.wpilog",
       "entry_found": true,
-      "sample_count": 11735,
+      "signal": "/RealOutputs/LoggedRobot/FullCycleMS",
+      "scope": {
+        "scope": "enabled",
+        "windows": [
+          [
+            110.991153,
+            131.611537
+          ],
+          [
+            135.642118,
+            278.380621
+          ]
+        ],
+        "window_count": 2,
+        "total_sec": 163.358887
+      },
+      "sample_count": 6678,
       "statistics": {
-        "min": 6.680678710937499,
-        "max": 12.843782470703125,
-        "mean": 10.647124485941994
-      }
-    },
-    {
-      "log_path": "<logdir>/vache/session_26/akit_26-03-21_16-54-48_vache_q13.wpilog",
-      "log_filename": "akit_26-03-21_16-54-48_vache_q13.wpilog",
-      "entry_found": true,
-      "sample_count": 9435,
-      "statistics": {
-        "min": 6.624136474609375,
-        "max": 12.579918701171875,
-        "mean": 10.770654367464891
+        "min": 9.535,
+        "min_at_sec": 244.329295,
+        "max": 387.862,
+        "max_at_sec": 110.991153,
+        "mean": 20.910544474393532,
+        "std_dev": 12.994592460495303,
+        "median": 17.809,
+        "p5": 12.503,
+        "p25": 15.397,
+        "p75": 20.868,
+        "p95": 43.73879999999996
+      },
+      "data_quality": {
+        "sample_count": 6678,
+        "time_span_seconds": 163.2,
+        "sampling": "periodic",
+        "gap_count": 31,
+        "max_gap_ms": 388.3,
+        "effective_sample_rate_hz": 48.7,
+        "quality_score": 0.95,
+        "reasons": [
+          "2.5% of the time span is in 31 gaps longer than 5x the median interval (longest 388 ms)",
+          "irregular timing: intervals deviate from the 20.5 ms median by 3% (median absolute deviation)"
+        ]
       }
     }
   ],
-  "data_quality": {
-    "sample_count": 11735,
-    "time_span_seconds": 336.0,
-    "gap_count": 119,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
+  "differences": {
+    "mean": -1.2778028381424775,
+    "median": 0.20599999999999952,
+    "p95": -9.369200000000035,
+    "note": "Second log minus first. Two logs are two samples: a difference may reflect battery, field, opponents, or code changes (get_code_metadata), not only the robot."
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11735 samples over 336.0 seconds",
+    "confidence_level": "high",
+    "sample_context": "Based on 48596 samples over 1310.2 seconds",
     "interpretation_guidance": [
       "Cross-match comparisons require consistent logging configurations for valid comparison"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 122
+  }
 }
 ```
 
-
 ### `get_code_metadata`
 
-Extract code metadata including Git SHA, branch, and build date. Returns 'no code metadata found' if log does not contain metadata entries.
+Extract code metadata (Git SHA, branch, dirty flag, Git date, build date, project name, version) from string entries with those leaf names, e.g. AdvantageKit's /RealMetadata/GitSHA ('Version' only under a path containing 'metadata'). sources names the entry each value came from (lowest entry id when several exist; a warning says when they disagree). Returns no_match when the log has no metadata entries.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#get_code_metadata))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `metadata` — object keyed by whichever of `GitSHA`, `GitBranch`, `GitDirty`, `BuildDate`, `ProjectName`, `Version` appear as a substring of an entry name (e.g. `/RealMetadata/GitSHA`); the value is that entry's first sample (`"unknown"` if it has none). `Version` is whatever type was logged (an int array here).
-
-
-**Examples**
-
-**AdvantageKit metadata**
+**Example: Build metadata**
 
 Request:
 ```json
@@ -2839,30 +3481,35 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "metadata": {
-    "GitDirty": "Uncomitted changes",
-    "BuildDate": "2026-03-21 10:11:35 EDT",
-    "Version": [
-      0,
-      0,
-      4,
-      1
-    ],
-    "ProjectName": "Rebuilt",
     "GitBranch": "main",
-    "GitSHA": "378d5d47240edd0792ef8a7866bb5fb4b39960a1"
+    "ProjectName": "Rebuilt",
+    "GitSHA": "378d5d47240edd0792ef8a7866bb5fb4b39960a1",
+    "GitDirty": "Uncomitted changes",
+    "GitDate": "2026-03-20 22:42:12 EDT",
+    "BuildDate": "2026-03-21 10:11:35 EDT"
   },
-  "_execution_time_ms": 3
+  "sources": {
+    "GitBranch": "/RealMetadata/GitBranch",
+    "ProjectName": "/RealMetadata/ProjectName",
+    "GitSHA": "/RealMetadata/GitSHA",
+    "GitDirty": "/RealMetadata/GitDirty",
+    "GitDate": "/RealMetadata/GitDate",
+    "BuildDate": "/RealMetadata/BuildDate"
+  }
 }
 ```
-
 
 ### `moi_regression`
 
 Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a DC-motor-driven mechanism using OLS regression on logged velocity and current. Model: G * motor_count * kt * I = J * α + B * ω. Supports angular (rad/s) or linear (m/s, via wheel_radius) velocity entries. Provide applied_volts_entry when current is always non-negative (TalonFX/SparkMax) so torque direction is recovered from voltage sign.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Regression estimates depend on data quality and model assumptions. Physical parameters outside typical ranges (negative inertia, negative damping) indicate model or data issues, not actual physics.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Regression estimates depend on data quality and model assumptions. Physical parameters outside typical ranges (negative inertia, negative damping) indicate model or data issues, not actual physics.
+
+**Parameters** ([TOOLS.md](TOOLS.md#moi_regression))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2879,18 +3526,7 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 | `smooth_window` | integer | no | Moving-average half-width (samples) applied to velocity before differentiating. Default 2 |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `J_kg_m2`, `B_Nm_s_per_rad`, `r_squared`, `rmse_nm`, `n_samples_used`, `n_samples_total`, `filtered_by_alpha_threshold`, `filtered_by_zero_volts`.
-- `parameters_used` `{torque_scale_Nm_per_A (= motor_count·kt·gear_ratio), wheel_radius_m?, applied_volts_used}`.
-- `warnings[]` for negative J ("physically invalid ... add applied_volts_entry") or near-singular data. Errors: velocity/current/volts entry not found, too few samples, insufficient after filtering, singular OLS matrix.
-- `data_quality` from the velocity entry. Guidance: "Regression estimates depend on data quality and model assumptions".
-
-
-**Examples**
-
-**Flywheel, linear velocity + volts sign**
+**Example: Front-left drive module**
 
 Request:
 ```json
@@ -2898,13 +3534,11 @@ Request:
   "name": "moi_regression",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "velocity_entry": "/Flywheel/VelocityMetersPerSec",
-    "wheel_radius": 0.0508,
-    "current_entry": "/Flywheel/CurrentAmps",
-    "applied_volts_entry": "/Flywheel/AppliedVolts",
+    "velocity_entry": "/Drive/Module0/DriveVelocityRadPerSec",
+    "current_entry": "/Drive/Module0/DriveCurrentAmps",
+    "applied_volts_entry": "/Drive/Module0/DriveAppliedVolts",
     "kt": 0.0194,
-    "gear_ratio": 1.0,
-    "motor_count": 1
+    "gear_ratio": 6.75
   }
 }
 ```
@@ -2913,166 +3547,63 @@ Response:
 ```json
 {
   "success": true,
-  "J_kg_m2": 0.00023293301764729628,
-  "B_Nm_s_per_rad": 0.0006318986005504205,
-  "r_squared": 0.7285277082990497,
-  "rmse_nm": 0.128329006246434,
-  "n_samples_used": 6360,
-  "n_samples_total": 6427,
-  "filtered_by_alpha_threshold": 59,
-  "filtered_by_zero_volts": 4,
+  "status": "ok",
+  "J_kg_m2": 0.006002196533613358,
+  "B_Nm_s_per_rad": 0.12191742714078571,
+  "r_squared": 0.5101709181643017,
+  "rmse_nm": 4.212555979822467,
+  "n_samples_used": 6079,
+  "n_samples_total": 6470,
+  "filtered_by_alpha_threshold": 252,
+  "filtered_by_zero_volts": 33,
   "parameters_used": {
-    "torque_scale_Nm_per_A": 0.0194,
-    "wheel_radius_m": 0.0508,
+    "torque_scale_Nm_per_A": 0.13095,
     "applied_volts_used": true
   },
   "data_quality": {
-    "sample_count": 6427,
-    "time_span_seconds": 273.04,
-    "gap_count": 35,
-    "max_gap_ms": 84976.6,
-    "effective_sample_rate_hz": 48.4,
-    "quality_score": 0.5
+    "sample_count": 6470,
+    "time_span_seconds": 321.04,
+    "sampling": "periodic",
+    "gap_count": 79,
+    "max_gap_ms": 69282.9,
+    "effective_sample_rate_hz": 48.5,
+    "quality_score": 0.69,
+    "reasons": [
+      "51.4% of the time span is in 79 gaps longer than 5x the median interval (longest 69283 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 6427 samples over 273.0 seconds",
+    "confidence_level": "medium",
+    "sample_context": "Based on 6470 samples over 321.0 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Regression estimates depend on data quality and model assumptions"
     ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 13
-}
-```
-
-
-### `analyze_can_bus`
-
-Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices. Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries. See also: can_health for string-based error detection.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `bus_name` | string | no | CAN bus name (default: 'rio') |
-| `start_time` | number | no | Start timestamp in seconds |
-| `end_time` | number | no | End timestamp in seconds |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `utilization[]` — every numeric entry containing "can" and one of utilization/busoff/tec/rec/txfull...: `{entry, avg_percent, max_percent, sample_count}` (note: counters such as `BusOffCount` are reported through the same shape).
-- `errors[]` — `{entry, error_count, errors_while_enabled, errors_while_disabled, assessment?}` for error-counter entries that changed; `enabled_error_total`.
-- `ds_enabled_warning` (string) when no DriverStation Enabled entry exists. Guidance: "Disabled-state CAN timeouts are normal — focus on enabled-state errors".
-
-
-**Examples**
-
-**Default bus**
-
-Request:
-```json
-{
-  "name": "analyze_can_bus",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
 }
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "utilization": [
-    {
-      "entry": "/SystemStats/CANBus/Utilization",
-      "avg_percent": 0.2969167176411002,
-      "max_percent": 1.0,
-      "sample_count": 668
-    },
-    {
-      "entry": "/RealOutputs/CANBus/CAN2/BusOffCount",
-      "avg_percent": 0.0,
-      "max_percent": 0.0,
-      "sample_count": 1
-    },
-    "... (3 more items)"
-  ],
-  "errors": [],
-  "enabled_error_total": 0,
-  "data_quality": {
-    "sample_count": 668,
-    "time_span_seconds": 335.69,
-    "gap_count": 1,
-    "max_gap_ms": 18969.7,
-    "effective_sample_rate_hz": 2.3,
-    "quality_score": 0.78
-  },
-  "server_analysis_directives": {
-    "confidence_level": "medium",
-    "sample_context": "Based on 668 samples over 335.7 seconds",
-    "interpretation_guidance": [
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "Disabled-state CAN timeouts are normal — focus on enabled-state errors"
-    ]
-  },
-  "_execution_time_ms": 6
-}
-```
-
-**`errors[]` item shape**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "entry": "<entry>",
-  "error_count": "<int>",
-  "errors_while_enabled": "<int>",
-  "errors_while_disabled": "<int>"
-}
-```
-
-
 ## FRC Domain Tools
-
 
 ### `get_ds_timeline`
 
-Generate a chronological timeline of critical robot events: enable/disable, match phases, battery-voltage threshold brownouts (BROWNOUT_START/END, basis voltage_threshold), roboRIO brownout flag transitions when a flag such as /SystemStats/BrownedOut is logged (RIO_BROWNOUT_START/END, basis rio_flag), and for errors/warnings found in string entries, exact counts (text_event_counts, per source) and text_event_summary: each distinct message (numbers normalized to #) with its count, first/last time, sources, and how many distinct raw texts it covers. Individual messages are deliberately not listed here; use search_strings (level, regex, time window, offset/limit paging) for the complete list. rio_brownout_flag_logged says whether the roboRIO's own brownout state is available in this log; brownout_voltage_entry names the voltage entry scanned for threshold crossings, and a warning says when there is none.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+Generate a chronological timeline of critical robot events: enable/disable, match phases, battery-voltage threshold brownouts (BROWNOUT_START/END, basis voltage_threshold), roboRIO brownout flag transitions when a flag such as /SystemStats/BrownedOut is logged (RIO_BROWNOUT_START/END, basis rio_flag), alerts (ALERT_RAISED, category alert: each message of a string[] alert entry such as /RealOutputs/Alerts/warnings when it appears, with cleared_at and duration_sec), and for errors/warnings found in text (string lines, alerts, json strings), exact counts (text_event_counts, per source) and text_event_summary: each distinct message (numbers normalized to #) with its count, first/last time, sources, and how many distinct raw texts it covers. Individual console messages are deliberately not listed here; use search_strings (level, regex, time window, offset/limit paging) for the complete list. rio_brownout_flag_logged says whether the roboRIO's own brownout state is available in this log; brownout_voltage_entry names the voltage entry scanned for threshold crossings, and a warning says when there is none.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#get_ds_timeline))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `start_time` | number | no | Start timestamp in seconds |
 | `end_time` | number | no | End timestamp in seconds |
-| `brownout_threshold` | number | no | Voltage threshold for brownout detection (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2) |
+| `brownout_threshold` | number | no | Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `event_count`, `summary` (object: category → count), `events[]` sorted by time: `{timestamp, type, category, source, basis?, voltage?}`.
-- `type` ∈ `ENABLED`, `DISABLED` (category `robot_state`); `AUTO_START`, `TELEOP_START` (category `match_phase`); `BROWNOUT_START`, `BROWNOUT_END` (category `power`, `basis: "voltage_threshold"`, with `voltage`; 0.2 V hysteresis on exit); `RIO_BROWNOUT_START`, `RIO_BROWNOUT_END` (category `power`, `basis: "rio_flag"`, from a logged boolean flag such as `/SystemStats/BrownedOut` — on this log the RIO flagged a brownout at 143.08 s with no threshold crossing at all).
-- `brownout_voltage_entry` — the voltage entry scanned for threshold crossings (same selection as `power_analysis`); a warning replaces it when the log has none. `rio_brownout_flag_logged` / `rio_brownout_flag_entry` — whether a boolean brownout flag exists.
-- Error/warning text is counted and summarized, never listed: `text_event_counts` `{error, warning, total, by_source}` are exact within the window; `text_event_summary[]` has one entry per distinct message after normalizing numbers to `#` (`{type, message, example?, count, variants, first_timestamp, last_timestamp, sources[]}`), sorted by count, at most 200 (`text_event_groups_total` is the true number). On this log the 626 matching console samples reduce to 16 patterns. `search_strings` lists the messages themselves.
-- AUTO_START is deferred until the robot is enabled while the Autonomous flag is set; the initial `Autonomous=false` sample is not a transition. `data_quality` is computed from the Enabled entry.
-
-
-**Examples**
-
-**Full match**
-
-119 events; the `events` array is trimmed here. The RIO flagged a brownout at 143.08 s with no voltage-threshold crossing, and the threshold crossing at 194.44 s coincides with another RIO flag.
+**Example: Timeline**
 
 Request:
 ```json
@@ -3088,10 +3619,14 @@ Response:
 ```json
 {
   "success": true,
-  "event_count": 19,
+  "status": "ok",
+  "event_count": 119,
+  "brownout_threshold": 6.75,
+  "brownout_threshold_basis": "logged",
   "rio_brownout_flag_logged": true,
   "summary": {
     "robot_state": 5,
+    "alert": 100,
     "power": 12,
     "match_phase": 2
   },
@@ -3099,6 +3634,13 @@ Response:
     {
       "timestamp": 11.897573,
       "type": "DISABLED",
+      "category": "robot_state",
+      "source": "/DriverStation/Enabled",
+      "initial": true
+    },
+    {
+      "timestamp": 110.991153,
+      "type": "ENABLED",
       "category": "robot_state",
       "source": "/DriverStation/Enabled"
     },
@@ -3108,103 +3650,33 @@ Response:
       "category": "match_phase",
       "source": "/DriverStation/Autonomous"
     },
-    {
-      "timestamp": 110.991153,
-      "type": "ENABLED",
-      "category": "robot_state",
-      "source": "/DriverStation/Enabled"
-    },
-    {
-      "timestamp": 131.611537,
-      "type": "DISABLED",
-      "category": "robot_state",
-      "source": "/DriverStation/Enabled"
-    },
-    {
-      "timestamp": 135.642118,
-      "type": "TELEOP_START",
-      "category": "match_phase",
-      "source": "/DriverStation/Autonomous"
-    },
-    {
-      "timestamp": 135.642118,
-      "type": "ENABLED",
-      "category": "robot_state",
-      "source": "/DriverStation/Enabled"
-    },
-    {
-      "timestamp": 143.079221,
-      "type": "RIO_BROWNOUT_START",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 143.133666,
-      "type": "RIO_BROWNOUT_END",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 194.071279,
-      "type": "RIO_BROWNOUT_START",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 194.20445,
-      "type": "RIO_BROWNOUT_END",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 194.444747,
-      "type": "BROWNOUT_START",
-      "category": "power",
-      "basis": "voltage_threshold",
-      "voltage": 6.680678710937499,
-      "source": "/SystemStats/BatteryVoltage"
-    },
-    {
-      "timestamp": 194.444747,
-      "type": "RIO_BROWNOUT_START",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 194.486707,
-      "type": "BROWNOUT_END",
-      "category": "power",
-      "basis": "voltage_threshold",
-      "voltage": 7.516247314453125,
-      "source": "/SystemStats/BatteryVoltage"
-    },
-    {
-      "timestamp": 194.526719,
-      "type": "RIO_BROWNOUT_END",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    "... (5 more items)"
+    "... (116 more items)"
   ],
   "rio_brownout_flag_entry": "/SystemStats/BrownedOut",
   "text_event_counts": {
     "error": 5,
-    "warning": 621,
-    "total": 626,
+    "warning": 668,
+    "total": 673,
     "by_source": {
+      "/RealOutputs/PhotonAlerts/warnings": {
+        "error": 0,
+        "warning": 17
+      },
       "/RealOutputs/Console": {
         "error": 5,
         "warning": 621
+      },
+      "/RealOutputs/Alerts/warnings": {
+        "error": 0,
+        "warning": 13
+      },
+      "/RealOutputs/Alerts/PhotonAlerts/Warnings": {
+        "error": 0,
+        "warning": 17
       }
     }
   },
-  "text_event_groups_total": 17,
+  "text_event_groups_total": 24,
   "text_event_summary": [
     {
       "type": "WARNING",
@@ -3241,376 +3713,71 @@ Response:
         "/RealOutputs/Console"
       ]
     },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): SmartDashboard.updateValues(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tSmartDashboard.updateValues(): 0.001206s",
-      "count": 86,
-      "variants": 55,
-      "first_timestamp": 30.471613,
-      "last_timestamp": 342.102357,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): Joystick Drive.execute(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tJoystick Drive.execute(): 0.012465s",
-      "count": 34,
-      "variants": 31,
-      "first_timestamp": 137.754648,
-      "last_timestamp": 275.235395,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): buttons.run(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tbuttons.run(): 0.000038s",
-      "count": 15,
-      "variants": 8,
-      "first_timestamp": 112.619064,
-      "last_timestamp": 339.140905,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): Drive.periodic(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tDrive.periodic(): 0.007679s",
-      "count": 9,
-      "variants": 9,
-      "first_timestamp": 37.066547,
-      "last_timestamp": 111.379423,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "ERROR",
-      "message": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:#): HAL: CAN Receive has Timed Out",
-      "example": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out",
-      "count": 2,
-      "variants": 1,
-      "first_timestamp": 123.711426,
-      "last_timestamp": 124.739764,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_RL has not reported a message interface UUID - is your coprocessor'...",
-      "example": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL has not reported a message interface UUID - is your copr...",
-      "count": 2,
-      "variants": 1,
-      "first_timestamp": 128.131112,
-      "last_timestamp": 143.525108,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at org.photonvision.PhotonCamera.checkTimeSyncOrWarn(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_FL is not connected to the TimeSyncServer? It's been #s since...",
-      "example": "Warning at org.photonvision.PhotonCamera.checkTimeSyncOrWarn(PhotonCamera.java:319): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL is not connected to the TimeSyncServer? It's been ...",
-      "count": 2,
-      "variants": 1,
-      "first_timestamp": 130.451903,
-      "last_timestamp": 145.078485,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "[KernelLogMonitor] Detected KERNEL_EVENT: kern :err : [ #] Warning: unable to open an initial console.",
-      "example": "[KernelLogMonitor] Detected KERNEL_EVENT: kern  :err   : [    0.623311] Warning: unable to open an initial console.",
-      "count": 1,
-      "variants": 1,
-      "first_timestamp": 11.897573,
-      "last_timestamp": 11.897573,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_FL is not sending new data.",
-      "example": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:533): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL is not sending new data.",
-      "count": 1,
-      "variants": 1,
-      "first_timestamp": 127.889981,
-      "last_timestamp": 127.889981,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_FL has not reported a message interface UUID - is your coprocessor'...",
-      "example": "Warning at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:545): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL has not reported a message interface UUID - is your copr...",
-      "count": 1,
-      "variants": 1,
-      "first_timestamp": 128.007662,
-      "last_timestamp": 128.007662,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "ERROR",
-      "message": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_FL not found on NetworkTables. Double check that your camera names ma...",
-      "example": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera ...",
-      "count": 1,
-      "variants": 1,
-      "first_timestamp": 143.156946,
-      "last_timestamp": 143.156946,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    "... (3 more items)"
+    "... (21 more items)"
   ],
   "brownout_voltage_entry": "/SystemStats/BatteryVoltage",
-  "data_quality": {
-    "sample_count": 5,
-    "time_span_seconds": 266.48,
-    "gap_count": 0,
-    "effective_sample_rate_hz": 0.0,
-    "quality_score": 0.5
-  },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 5 samples over 266.5 seconds",
-    "interpretation_guidance": [
-      "Low sample count (5). Statistical measures have high uncertainty.",
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
-    ]
-  },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 193
-}
-```
-
-**Windowed**
-
-With `start_time` inside autonomous, the auto→teleop transition is still reported (the state in force at `start_time` seeds the detector); AUTO_START itself is before the window. Trimmed.
-
-Request:
-```json
-{
-  "name": "get_ds_timeline",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "start_time": 120
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "event_count": 16,
-  "rio_brownout_flag_logged": true,
-  "summary": {
-    "robot_state": 3,
-    "power": 12,
-    "match_phase": 1
-  },
-  "events": [
-    {
-      "timestamp": 131.611537,
-      "type": "DISABLED",
-      "category": "robot_state",
-      "source": "/DriverStation/Enabled"
-    },
-    {
-      "timestamp": 135.642118,
-      "type": "TELEOP_START",
-      "category": "match_phase",
-      "source": "/DriverStation/Autonomous"
-    },
-    {
-      "timestamp": 135.642118,
-      "type": "ENABLED",
-      "category": "robot_state",
-      "source": "/DriverStation/Enabled"
-    },
-    {
-      "timestamp": 143.079221,
-      "type": "RIO_BROWNOUT_START",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 143.133666,
-      "type": "RIO_BROWNOUT_END",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    {
-      "timestamp": 194.071279,
-      "type": "RIO_BROWNOUT_START",
-      "category": "power",
-      "basis": "rio_flag",
-      "source": "/SystemStats/BrownedOut"
-    },
-    "... (10 more items)"
-  ],
-  "rio_brownout_flag_entry": "/SystemStats/BrownedOut",
-  "text_event_counts": {
-    "error": 5,
-    "warning": 426,
-    "total": 431,
-    "by_source": {
-      "/RealOutputs/Console": {
-        "error": 5,
-        "warning": 426
-      }
+  "inputs": {
+    "entries": {
+      "enabled": "/DriverStation/Enabled",
+      "autonomous": "/DriverStation/Autonomous",
+      "voltage": "/SystemStats/BatteryVoltage",
+      "rio_brownout_flag": "/SystemStats/BrownedOut"
     }
   },
-  "text_event_groups_total": 15,
-  "text_event_summary": [
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.IterativeRobotBase.printLoopOverrunMessage(IterativeRobotBase.java:#): Loop time of #s overrun",
-      "example": "Warning at edu.wpi.first.wpilibj.IterativeRobotBase.printLoopOverrunMessage(IterativeRobotBase.java:436): Loop time of 0.02s overrun",
-      "count": 149,
-      "variants": 1,
-      "first_timestamp": 120.673326,
-      "last_timestamp": 342.03656,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "CommandScheduler loop overrun",
-      "count": 106,
-      "variants": 1,
-      "first_timestamp": 122.39957,
-      "last_timestamp": 339.251074,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): teleopPeriodic(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tteleopPeriodic(): 0.000445s",
-      "count": 87,
-      "variants": 63,
-      "first_timestamp": 136.431569,
-      "last_timestamp": 273.473645,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): Joystick Drive.execute(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tJoystick Drive.execute(): 0.012465s",
-      "count": 34,
-      "variants": 31,
-      "first_timestamp": 137.754648,
-      "last_timestamp": 275.235395,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): SmartDashboard.updateValues(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tSmartDashboard.updateValues(): 0.022260s",
-      "count": 31,
-      "variants": 25,
-      "first_timestamp": 120.794142,
-      "last_timestamp": 342.102357,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    {
-      "type": "WARNING",
-      "message": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$#(Tracer.java:#): buttons.run(): #s",
-      "example": "Warning at edu.wpi.first.wpilibj.Tracer.lambda$printEpochs$0(Tracer.java:62): \tbuttons.run(): 0.000037s",
-      "count": 12,
-      "variants": 8,
-      "first_timestamp": 124.047292,
-      "last_timestamp": 339.140905,
-      "sources": [
-        "/RealOutputs/Console"
-      ]
-    },
-    "... (9 more items)"
-  ],
-  "brownout_voltage_entry": "/SystemStats/BatteryVoltage",
   "data_quality": {
     "sample_count": 5,
     "time_span_seconds": 266.48,
+    "sampling": "change_only",
     "gap_count": 0,
     "effective_sample_rate_hz": 0.0,
-    "quality_score": 0.5
+    "quality_score": 0.7,
+    "reasons": [
+      "only 5 finite samples (fewer than 100)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
+    "confidence_level": "medium",
     "sample_context": "Based on 5 samples over 266.5 seconds",
     "interpretation_guidance": [
       "Low sample count (5). Statistical measures have high uncertainty.",
+      "Timing is consistent with values logged only when they change (sampling change_only): a long interval between samples means the value held, not missing data; a sample count is a count of changes.",
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ]
   },
   "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 6
+    "The timeline lists the first 100 of 148 alert appearances; search_strings lists every one."
+  ]
 }
 ```
-
 
 ### `analyze_vision`
 
-Analyze vision system reliability: target acquisition rate, flicker detection, pose discrepancy between vision and odometry, and sudden pose jumps.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+Analyze vision data, found by type and content. observation_streams: struct arrays of pose observations (for example the AdvantageKit vision template's /Vision/Camera<N>/PoseObservations from PhotonVision or Limelight: each record holds a timestamp and a pose), one stream per camera, with record and observation counts, the fraction of records with an observation, observation rate, tag-count and ambiguity distributions, latency (log time minus the observation's own timestamp, and a sibling Latency entry when logged), and the residual between each observation and the robot pose at the observation's timestamp (robot_pose_entry, chosen or passed as pose_entry). target_streams: structs with yaw and pitch fields (such as TargetObservation), with yaw, pitch, area, and confidence distributions and the object ids seen. pose_sets: Pose3d[]/Pose2d[] entries (e.g. accepted or rejected robot poses per loop), with how often they are non-empty and poses per record. target_acquisition: Limelight-style has-target entries (tv, hasTarget, targetValid) with acquisition rate and flicker. pose_jumps: steps larger than jump_threshold in scalar pose entries. vision_prefix limits the vision entries only (case-insensitive); the robot pose may live elsewhere. Returns no_match with what was searched when none of these exist.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_vision))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `vision_prefix` | string | no | Entry path prefix for vision data |
+| `vision_prefix` | string | no | Only vision entries under this prefix (case-insensitive), e.g. '/Vision' |
+| `pose_entry` | string | no | Robot pose entry (struct:Pose2d or Pose3d) for residuals and jump detection; default: the scalar Pose2d with the most samples that is not a vision entry |
 | `start_time` | number | no | Start timestamp in seconds |
 | `end_time` | number | no | End timestamp in seconds |
-| `jump_threshold` | number | no | Distance threshold for jump detection (meters) (default: `0.5`) |
-| `flicker_window` | number | no | Time window for flicker detection (seconds) (default: `0.5`) |
+| `jump_threshold` | number | no | Distance threshold for jump detection (meters) |
+| `flicker_window` | number | no | Time window for flicker detection (seconds) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `target_acquisition[]` — one per boolean "has target" entry (`hastarget`, `/tv`, `targetvalid`): `{entry, total_samples, valid_samples, acquisition_rate, flicker_events}` (flicker = transitions closer than `flicker_window`).
-- `pose_jumps[]` `{timestamp, entry, distance}` and `jump_count` — from the first `Pose2d`/`Pose3d` entry whose name contains "pose" (but not "target"); `data_quality` comes from that entry. Both are omitted if no pose entry matches `vision_prefix`.
-- On this log no has-target entry exists, so `target_acquisition` is empty and the pose jumps come from `/RealOutputs/Drive/Pose`.
-
-
-**Examples**
-
-**Default prefix**
+**Example: Streams, targets, pose sets**
 
 Request:
 ```json
 {
   "name": "analyze_vision",
   "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
+    "path": "<logdir>/akit_26-09-30_00-10-26.wpilog"
   }
 }
 ```
@@ -3619,85 +3786,427 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
+  "inputs": {
+    "entries": {
+      "robot_pose": "/RealOutputs/Drive/Pose"
+    }
+  },
   "target_acquisition": [],
+  "observation_streams": [
+    {
+      "entry": "/Vision/Camera0/PoseObservations",
+      "camera": "Camera0",
+      "records": 8794,
+      "records_with_observations": 4943,
+      "fraction_with_observations": 0.562087787127587,
+      "observation_count": 4943,
+      "observations_per_second": 3.149582375348901,
+      "tag_count_distribution": {
+        "1": 4943
+      },
+      "ambiguity": {
+        "n": 4943,
+        "median": 0.007167065169908414,
+        "p95": 0.1271054137632548,
+        "max": 0.9973417594982933
+      },
+      "latency": {
+        "n": 4943,
+        "median_ms": 78.43400000001566,
+        "p95_ms": 95.95689999999875,
+        "max_ms": 128.97700000002033,
+        "basis": "log timestamp minus the observation's own timestamp"
+      },
+      "residual_vs_robot_pose": {
+        "n": 4943,
+        "median_m": 0.05176976324280616,
+        "p95_m": 0.2074056583811134,
+        "max_m": 5.0375639464492,
+        "robot_pose_entry": "/RealOutputs/Drive/Pose",
+        "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
+      },
+      "logged_latency": {
+        "n": 22233,
+        "median": 62.324,
+        "p95": 67.3768,
+        "max": 85.514,
+        "entry": "/Vision/Camera0/LatencyMs",
+        "basis": "as logged by the robot program (units per the entry name)"
+      }
+    },
+    {
+      "entry": "/Vision/Camera3/PoseObservations",
+      "camera": "Camera3",
+      "records": 4225,
+      "records_with_observations": 2377,
+      "fraction_with_observations": 0.562603550295858,
+      "observation_count": 2377,
+      "observations_per_second": 1.5153961130780775,
+      "tag_count_distribution": {
+        "1": 2377
+      },
+      "ambiguity": {
+        "n": 2377,
+        "median": 0.022008811427399022,
+        "p95": 0.6920425093222852,
+        "max": 0.9969928608487769
+      },
+      "latency": {
+        "n": 2377,
+        "median_ms": 80.28200000012475,
+        "p95_ms": 101.62940000000447,
+        "max_ms": 127.8870000000154,
+        "basis": "log timestamp minus the observation's own timestamp"
+      },
+      "residual_vs_robot_pose": {
+        "n": 2377,
+        "median_m": 0.09985291855958224,
+        "p95_m": 0.6088984631705984,
+        "max_m": 6.253259258616024,
+        "robot_pose_entry": "/RealOutputs/Drive/Pose",
+        "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
+      },
+      "logged_latency": {
+        "n": 22325,
+        "median": 61.174,
+        "p95": 67.2644,
+        "max": 5870507.267,
+        "entry": "/Vision/Camera3/LatencyMs",
+        "basis": "as logged by the robot program (units per the entry name)"
+      }
+    },
+    {
+      "entry": "/Vision/Camera1/PoseObservations",
+      "camera": "Camera1",
+      "records": 9495,
+      "records_with_observations": 5425,
+      "fraction_with_observations": 0.5713533438651922,
+      "observation_count": 5433,
+      "observations_per_second": 3.448357675671836,
+      "tag_count_distribution": {
+        "1": 5433
+      },
+      "ambiguity": {
+        "n": 5433,
+        "median": 0.012425314917597718,
+        "p95": 0.08978189182887636,
+        "max": 0.9978572935327278
+      },
+      "latency": {
+        "n": 5433,
+        "median_ms": 75.86099999991802,
+        "p95_ms": 94.25960000002078,
+        "max_ms": 466.77100000010796,
+        "basis": "log timestamp minus the observation's own timestamp"
+      },
+      "residual_vs_robot_pose": {
+        "n": 5433,
+        "median_m": 0.045161785023292954,
+        "p95_m": 0.1413133352206436,
+        "max_m": 2.2748085870461012,
+        "robot_pose_entry": "/RealOutputs/Drive/Pose",
+        "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
+      },
+      "logged_latency": {
+        "n": 22592,
+        "median": 59.5965,
+        "p95": 64.2017,
+        "max": 77.24,
+        "entry": "/Vision/Camera1/LatencyMs",
+        "basis": "as logged by the robot program (units per the entry name)"
+      }
+    },
+    {
+      "entry": "/Vision/Camera2/PoseObservations",
+      "camera": "Camera2",
+      "records": 7227,
+      "records_with_observations": 4131,
+      "fraction_with_observations": 0.5716064757160647,
+      "observation_count": 4132,
+      "observations_per_second": 2.6226051750185952,
+      "tag_count_distribution": {
+        "1": 4132
+      },
+      "ambiguity": {
+        "n": 4132,
+        "median": 0.01583797698626889,
+        "p95": 0.2383023449499473,
+        "max": 0.9996284809531948
+      },
+      "latency": {
+        "n": 4132,
+        "median_ms": 80.38049999998975,
+        "p95_ms": 99.1336499999761,
+        "max_ms": 127.80100000009043,
+        "basis": "log timestamp minus the observation's own timestamp"
+      },
+      "residual_vs_robot_pose": {
+        "n": 4132,
+        "median_m": 0.04816150212300709,
+        "p95_m": 0.2668789299526818,
+        "max_m": 6.254341201227133,
+        "robot_pose_entry": "/RealOutputs/Drive/Pose",
+        "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
+      },
+      "logged_latency": {
+        "n": 22170,
+        "median": 65.0,
+        "p95": 70.782,
+        "max": 86.975,
+        "entry": "/Vision/Camera2/LatencyMs",
+        "basis": "as logged by the robot program (units per the entry name)"
+      }
+    }
+  ],
+  "target_streams": [
+    {
+      "entry": "/Vision/Camera2/LatestTargetObservation",
+      "camera": "Camera2",
+      "records": 10317,
+      "observation_count": 10317,
+      "yaw": {
+        "n": 10317,
+        "median_deg": -7.597144676329875,
+        "p95_deg": 27.081638270581553,
+        "max_deg": 39.65122473201293
+      },
+      "pitch": {
+        "n": 10317,
+        "median_deg": -1.558193437525847,
+        "p95_deg": 17.872899002671474,
+        "max_deg": 19.78640645856259
+      },
+      "area": {
+        "n": 10317,
+        "median": 0.22102864583333331,
+        "p95": 0.6020833333333332,
+        "max": 1.3688693576388888
+      },
+      "confidence": {
+        "n": 10317,
+        "median": -1.0,
+        "p95": -1.0,
+        "max": -1.0
+      },
+      "object_ids": {
+        "-1": 10317
+      }
+    },
+    {
+      "entry": "/Vision/Camera0/LatestTargetObservation",
+      "camera": "Camera0",
+      "records": 11931,
+      "observation_count": 11931,
+      "yaw": {
+        "n": 11931,
+        "median_deg": 3.4646229706860416,
+        "p95_deg": 29.58870244628376,
+        "max_deg": 39.87934569236624
+      },
+      "pitch": {
+        "n": 11931,
+        "median_deg": -7.143715053392951,
+        "p95_deg": 11.411414252756138,
+        "max_deg": 20.468584808801037
+      },
+      "area": {
+        "n": 11931,
+        "median": 0.20930989583333334,
+        "p95": 0.5545247395833334,
+        "max": 1.4576822916666665
+      },
+      "confidence": {
+        "n": 11931,
+        "median": -1.0,
+        "p95": -1.0,
+        "max": -1.0
+      },
+      "object_ids": {
+        "-1": 11931
+      }
+    },
+    {
+      "entry": "/Vision/Camera1/LatestTargetObservation",
+      "camera": "Camera1",
+      "records": 12744,
+      "observation_count": 12744,
+      "yaw": {
+        "n": 12744,
+        "median_deg": -8.730876088851256,
+        "p95_deg": 28.02678691831082,
+        "max_deg": 40.296659915300445
+      },
+      "pitch": {
+        "n": 12744,
+        "median_deg": 1.2122130497618087,
+        "p95_deg": 18.09493564464178,
+        "max_deg": 22.326475248724748
+      },
+      "area": {
+        "n": 12744,
+        "median": 0.2285698784722222,
+        "p95": 0.7676513671874992,
+        "max": 3.4383138020833335
+      },
+      "confidence": {
+        "n": 12744,
+        "median": -1.0,
+        "p95": -1.0,
+        "max": -1.0
+      },
+      "object_ids": {
+        "-1": 12744
+      }
+    },
+    {
+      "entry": "/Vision/Camera3/LatestTargetObservation",
+      "camera": "Camera3",
+      "records": 6474,
+      "observation_count": 6474,
+      "yaw": {
+        "n": 6474,
+        "median_deg": 3.54749351115927,
+        "p95_deg": 35.838028226449715,
+        "max_deg": 38.99313676220798
+      },
+      "pitch": {
+        "n": 6474,
+        "median_deg": -4.488154029410735,
+        "p95_deg": 12.925375584634953,
+        "max_deg": 21.910320785307164
+      },
+      "area": {
+        "n": 6474,
+        "median": 0.18467881944444445,
+        "p95": 0.687578667534722,
+        "max": 1.5343967013888888
+      },
+      "confidence": {
+        "n": 6474,
+        "median": -1.0,
+        "p95": -1.0,
+        "max": -1.0
+      },
+      "object_ids": {
+        "-1": 6474
+      }
+    }
+  ],
+  "pose_sets": [
+    {
+      "entry": "/RealOutputs/Field/Regions/Field",
+      "records": 1,
+      "records_non_empty": 1,
+      "fraction_non_empty": 1.0,
+      "pose_count": 5,
+      "mean_poses_per_non_empty_record": 5.0,
+      "max_poses_per_record": 5
+    },
+    {
+      "entry": "/RealOutputs/Odometry/Trajectory",
+      "records": 1,
+      "records_non_empty": 0,
+      "fraction_non_empty": 0.0,
+      "pose_count": 0,
+      "max_poses_per_record": 0
+    },
+    {
+      "entry": "/RealOutputs/Vision/Summary/RobotPosesAccepted",
+      "records": 18766,
+      "records_non_empty": 12505,
+      "fraction_non_empty": 0.6663647021208569,
+      "pose_count": 15785,
+      "mean_poses_per_non_empty_record": 1.2622950819672132,
+      "max_poses_per_record": 6
+    },
+    {
+      "entry": "/RealOutputs/Vision/Summary/RobotPosesRejected",
+      "records": 2014,
+      "records_non_empty": 1086,
+      "fraction_non_empty": 0.5392254220456802,
+      "pose_count": 1100,
+      "mean_poses_per_non_empty_record": 1.0128913443830572,
+      "max_poses_per_record": 2
+    }
+  ],
   "pose_jumps": [
     {
-      "timestamp": 33.131609,
+      "timestamp": 27.049787,
       "entry": "/RealOutputs/Drive/Pose",
-      "distance": 2.3481903395368757
+      "distance": 6.897997757425444
     },
     {
-      "timestamp": 33.457217,
+      "timestamp": 119.790883,
       "entry": "/RealOutputs/Drive/Pose",
-      "distance": 1.054051815831935
+      "distance": 0.5385212577418298
     },
-    "... (5 more items)"
+    {
+      "timestamp": 120.791303,
+      "entry": "/RealOutputs/Drive/Pose",
+      "distance": 0.5138691792703741
+    },
+    "... (13 more items)"
   ],
-  "jump_count": 7,
-  "data_quality": {
-    "sample_count": 13357,
-    "time_span_seconds": 336.0,
-    "gap_count": 83,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 49.2,
-    "quality_score": 0.5
+  "limits": {
+    "pose_jumps": {
+      "total": 16,
+      "returned": 16,
+      "limit": 100
+    }
   },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 13357 samples over 336.0 seconds",
-    "interpretation_guidance": [
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+  "jump_count": 16,
+  "pose_entries_checked": [
+    "/RealOutputs/Drive/Pose"
+  ],
+  "data_quality": {
+    "sample_count": 8794,
+    "time_span_seconds": 1569.41,
+    "sampling": "change_only",
+    "gap_count": 713,
+    "max_gap_ms": 24492.7,
+    "effective_sample_rate_hz": 19.1,
+    "quality_score": 0.7,
+    "reasons": [
+      "62.4% of the time span is in 713 intervals longer than 5x the median with no new value (longest 24493 ms): the value held or was not logged, and statistics weigh samples, not time"
     ]
   },
-  "warnings": [
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 30
+  "server_analysis_directives": {
+    "confidence_level": "medium",
+    "sample_context": "Based on 8794 samples over 1569.4 seconds",
+    "interpretation_guidance": [
+      "Timing is consistent with values logged only when they change (sampling change_only): a long interval between samples means the value held, not missing data; a sample count is a count of changes.",
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+    ]
+  }
 }
 ```
-
-**`target_acquisition[]` item shape**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "entry": "<entry>",
-  "total_samples": "<int>",
-  "valid_samples": "<int>",
-  "acquisition_rate": "<0..1>",
-  "flicker_events": "<int>"
-}
-```
-
 
 ### `profile_mechanism`
 
-Analyze closed-loop mechanism performance: following error (RMSE), settling time, stall detection, and motor temperature profiling.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Regression estimates depend on data quality and model assumptions. Physical parameters outside typical ranges (negative inertia, negative damping) indicate model or data issues, not actual physics.
+Profile one closed-loop mechanism from its numeric entries: following error (measurement minus the setpoint in force, as RMSE, bias, and maximum), step response for each setpoint step (settling time into a 5% band of the step, percent overshoot of the step), stall events (current above stall_current_threshold while |velocity| is below stall_velocity_threshold), and motor temperature (maximum and final). Entries are found among names containing mechanism_name (case-insensitive substring anywhere in the name) by role — setpoint (setpoint/goal/target/reference), measurement (position/angle/height/...), velocity, current, temperature — and grouped by the stem before the role word, so /Drive/ModuleFrontLeft/DriveVelocity and TurnVelocity are different stems; the first stem is used and other_stems lists the rest. roles names every entry used; any role can be passed explicitly (setpoint_entry, measurement_entry, velocity_entry, current_entry, temperature_entry). Sections without their entries are listed in skipped. Returns no_match when nothing matches.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Regression estimates depend on data quality and model assumptions. Physical parameters outside typical ranges (negative inertia, negative damping) indicate model or data issues, not actual physics.
+
+**Parameters** ([TOOLS.md](TOOLS.md#profile_mechanism))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `mechanism_name` | string | yes | Mechanism name or prefix |
+| `mechanism_name` | string | no | Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' or 'ModuleFrontLeft/Drive' |
 | `start_time` | number | no | Start timestamp |
 | `end_time` | number | no | End timestamp |
 | `stall_current_threshold` | number | no | Current threshold for stall (default: 30A) |
+| `stall_velocity_threshold` | number | no | \|velocity\| below this counts as stopped, in the velocity entry's units (default: 0.01) |
+| `setpoint_entry` | string | no | Explicit setpoint entry |
+| `measurement_entry` | string | no | Explicit measurement entry |
+| `velocity_entry` | string | no | Explicit velocity entry |
+| `current_entry` | string | no | Explicit current entry |
+| `temperature_entry` | string | no | Explicit temperature entry |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `mechanism` (echoed). Entries are located by name containing `mechanism_name` (case-insensitive): setpoint (`setpoint`/`goal`), measurement (`position`/`actual`), `velocity`, `current`.
-- `following_error` `{rmse, settling_time_sec: {avg, max, min}?, overshoot_percent?}` — only when both a setpoint and a measurement entry exist.
-- `stall_events[]` `{start_time, end_time, duration, max_current}` and `stall_count` — only when velocity and current entries exist **and** stalls (|velocity| ≈ 0 with current > `stall_current_threshold`) were found.
-- `data_quality` from the measurement entry (else velocity). Follow-up: `moi_regression`. The captured log has no setpoint entries, so only the base shape appears below.
-
-
-**Examples**
-
-**Mechanism without setpoint entries**
+**Example: A drive module**
 
 Request:
 ```json
@@ -3705,7 +4214,7 @@ Request:
   "name": "profile_mechanism",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "mechanism_name": "Hood"
+    "mechanism_name": "/Drive/Module0"
   }
 }
 ```
@@ -3714,18 +4223,61 @@ Response:
 ```json
 {
   "success": true,
-  "mechanism": "Hood",
+  "status": "partial",
+  "mechanism": "/Drive/Module0",
+  "roles": {
+    "setpoint": null,
+    "measurement": "/Drive/Module0/DrivePositionRad",
+    "velocity": "/Drive/Module0/DriveVelocityRadPerSec",
+    "current": "/Drive/Module0/DriveCurrentAmps",
+    "temperature": null
+  },
+  "stem": "drive",
+  "other_stems": [
+    "turn"
+  ],
+  "inputs": {
+    "entries": {
+      "measurement": "/Drive/Module0/DrivePositionRad",
+      "velocity": "/Drive/Module0/DriveVelocityRadPerSec",
+      "current": "/Drive/Module0/DriveCurrentAmps"
+    }
+  },
+  "skipped": [
+    {
+      "section": "following_error",
+      "reason": "Needs both a setpoint and a measurement entry; missing setpoint."
+    },
+    {
+      "section": "temperature",
+      "reason": "No temperature entry for this mechanism."
+    }
+  ],
+  "stall_events": [],
+  "limits": {
+    "stall_events": {
+      "total": 0,
+      "returned": 0,
+      "limit": 50
+    }
+  },
+  "stall_count": 0,
   "data_quality": {
-    "sample_count": 13355,
-    "time_span_seconds": 321.02,
-    "gap_count": 82,
-    "max_gap_ms": 1510.2,
-    "effective_sample_rate_hz": 49.2,
-    "quality_score": 0.51
+    "sample_count": 6442,
+    "time_span_seconds": 321.04,
+    "sampling": "periodic",
+    "gap_count": 87,
+    "max_gap_ms": 69304.0,
+    "effective_sample_rate_hz": 48.5,
+    "quality_score": 0.69,
+    "reasons": [
+      "51.6% of the time span is in 87 gaps longer than 5x the median interval (longest 69304 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
     "confidence_level": "medium",
-    "sample_context": "Based on 13355 samples over 321.0 seconds",
+    "sample_context": "Based on 6442 samples over 321.0 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ],
@@ -3733,66 +4285,28 @@ Response:
       "Use moi_regression for mechanism inertia estimation"
     ]
   },
-  "_execution_time_ms": 8
+  "warnings": [
+    "'/Drive/Module0' matches several mechanisms by stem (drive used; also turn). Use a more specific mechanism_name or pass the entries."
+  ]
 }
 ```
-
-**Full shape when setpoint / velocity / current entries exist**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "mechanism": "<name>",
-  "following_error": {
-    "rmse": "<number>",
-    "settling_time_sec": {
-      "avg": "<number>",
-      "max": "<number>",
-      "min": "<number>"
-    },
-    "overshoot_percent": "<number>"
-  },
-  "stall_events": [
-    {
-      "start_time": "<s>",
-      "end_time": "<s>",
-      "duration": "<s>",
-      "max_current": "<A>"
-    }
-  ],
-  "stall_count": "<int>",
-  "data_quality": "{...}",
-  "server_analysis_directives": "{...}"
-}
-```
-
 
 ### `analyze_auto`
 
-Analyze autonomous routine: identify selected routine, path following error, completion time, and phase breakdown. Returns 'no auto period detected' if log does not contain autonomous phase data.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+Analyze autonomous periods: every enabled autonomous segment (from the same DriverStation timeline as get_match_phases) with its start, end, duration, and end_reason; the selected routine at each start (from a string chooser entry such as .../Auto Chooser/active or an entry naming the selected auto mode); and path following error (RMSE and max, meters) when a setpoint pose and an actual pose entry can be identified. Returns status not_applicable with the reason when the log has no autonomous period (for example a practice session where Autonomous was never true).
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_auto))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `auto_prefix` | string | no | Entry path prefix for auto data |
+| `auto_prefix` | string | no | Entry name prefix to search for the path setpoint and actual pose entries |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `selected_routine` — first value of the first entry containing "chooser" (absent here: the log uses `/RealOutputs/AutoSelector/SelectedAutoMode`).
-- `auto_start_time`, `auto_end_time`, `auto_duration` — when an auto period is detected; `path_following_error` `{rmse_meters, max_error_meters, samples}` when trajectory + pose entries under `auto_prefix` exist.
-- `data_quality`/`server_analysis_directives` from the DriverStation Enabled entry.
-- **Observed:** on these logs the auto period is *not* detected (the Autonomous flag rises at 26.9 s, long before enable at 111.0 s, and the deferred-enable fallback is skipped), even though `get_match_phases` finds it. Prefer `get_match_phases` for auto timing until this is fixed.
-
-
-**Examples**
-
-**Observed on this log (auto not detected)**
+**Example: Autonomous**
 
 Request:
 ```json
@@ -3808,53 +4322,46 @@ Response:
 ```json
 {
   "success": true,
-  "data_quality": {
-    "sample_count": 5,
-    "time_span_seconds": 266.48,
-    "gap_count": 0,
-    "effective_sample_rate_hz": 0.0,
-    "quality_score": 0.5
+  "status": "partial",
+  "inputs": {
+    "entries": {
+      "enabled": "/DriverStation/Enabled",
+      "autonomous": "/DriverStation/Autonomous",
+      "selected_routine": "/RealOutputs/AutoSelector/SelectedAutoMode"
+    }
   },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 5 samples over 266.5 seconds",
-    "interpretation_guidance": [
-      "Low sample count (5). Statistical measures have high uncertainty.",
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
-    ]
-  },
-  "_execution_time_ms": 1
+  "auto_periods": [
+    {
+      "start": 110.991153,
+      "end": 131.611537,
+      "duration": 20.620384,
+      "end_reason": "disabled",
+      "selected_routine": "BlueRightTrenchMoveFirstAuto"
+    }
+  ],
+  "auto_start_time": 110.991153,
+  "auto_end_time": 131.611537,
+  "auto_duration": 20.620384,
+  "selected_routine": "BlueRightTrenchMoveFirstAuto",
+  "expected_auto_sec": 20,
+  "skipped": [
+    {
+      "section": "path_following_error",
+      "reason": "Could not identify both a setpoint pose (Pose2d/Pose3d named with setpoint, target, or desired) and an actual pose (named with actual, estimated, odometry, or pose)."
+    }
+  ]
 }
 ```
-
-**Full shape when auto is detected**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "selected_routine": "<string>",
-  "auto_start_time": "<s>",
-  "auto_end_time": "<s>",
-  "auto_duration": "<s>",
-  "path_following_error": {
-    "rmse_meters": "<number>",
-    "max_error_meters": "<number>",
-    "samples": "<int>"
-  },
-  "data_quality": "{...}",
-  "server_analysis_directives": "{...}"
-}
-```
-
 
 ### `analyze_cycles`
 
 Analyze game piece handling cycle times with configurable cycle detection modes (start-to-start or start-to-end), dead time tracking, and data quality warnings. Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_cycles))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -3869,18 +4376,7 @@ Analyze game piece handling cycle times with configurable cycle detection modes 
 | `limit` | integer | no | Max cycles/dead periods to return (default: 10) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `sample_count`, `cycle_mode`, `cycle_times` `{count, avg_sec, min_sec, max_sec}`, `cycles[]` `{start_time, end_time, duration, incomplete}`, `cycles_truncated`, `total_cycles`.
-- With `idle_state`: `dead_time` `{total_sec, period_count, avg_duration_sec}`, `dead_time_periods[]` `{start_time, end_time, duration}`, `dead_time_periods_truncated`, `total_dead_time_periods`.
-- `warnings[]`: unknown states seen (`"Detected unknown states: ..."`), incomplete cycles at log end, etc. Parameter errors: missing `cycle_start_state` (start_to_start), missing end state (start_to_end), bad `cycle_mode`, entry not found / no data.
-- `data_quality` from the state entry (low sample counts are normal for state strings).
-
-
-**Examples**
-
-**start_to_start with idle state**
+**Example: Feeder command cycles**
 
 Request:
 ```json
@@ -3888,9 +4384,8 @@ Request:
   "name": "analyze_cycles",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "state_entry": "/RealOutputs/Subsystems/Intake/Command",
-    "cycle_start_state": "Intake",
-    "idle_state": "Retract and stop",
+    "state_entry": "/RealOutputs/Subsystems/Feeder/Command",
+    "cycle_start_state": "ParallelCommandGroup",
     "limit": 3
   }
 }
@@ -3900,105 +4395,92 @@ Response:
 ```json
 {
   "success": true,
-  "sample_count": 28,
+  "status": "ok",
+  "sample_count": 57,
   "cycle_mode": "start_to_start",
   "warnings": [
-    "Detected unknown states: SequentialCommandGroup, None",
+    "Detected 7 rapid state transitions (<0.1s apart) - may indicate state machine instability",
+    "Detected unknown states: SequentialCommandGroup, Reverse, Stop, Spin Forward, None",
     "1 cycle(s) incomplete (log ended mid-cycle). Exclude from statistical analysis."
   ],
   "cycle_times": {
-    "count": 10,
-    "avg_sec": 13.777055300000004,
-    "min_sec": 0.5926350000000298,
-    "max_sec": 37.104118
+    "count": 19,
+    "avg_sec": 7.074489631578949,
+    "min_sec": 0.16114400000000728,
+    "max_sec": 88.40687
   },
   "cycles": [
     {
-      "start_time": 136.545225,
-      "end_time": 140.811298,
-      "duration": 4.266073000000006,
+      "start_time": 139.630758,
+      "end_time": 170.450767,
+      "duration": 30.820009000000027,
       "incomplete": false
     },
     {
-      "start_time": 140.811298,
-      "end_time": 151.29574,
-      "duration": 10.484442000000001,
+      "start_time": 170.450767,
+      "end_time": 171.594356,
+      "duration": 1.1435889999999915,
       "incomplete": false
     },
-    "... (1 more items)"
+    {
+      "start_time": 171.594356,
+      "end_time": 172.397812,
+      "duration": 0.8034559999999829,
+      "incomplete": false
+    }
   ],
   "cycles_truncated": true,
-  "total_cycles": 11,
-  "dead_time": {
-    "total_sec": 124.99663300000009,
-    "period_count": 13,
-    "avg_duration_sec": 9.615125615384622
-  },
-  "dead_time_periods": [
-    {
-      "start_time": 110.991153,
-      "end_time": 111.379423,
-      "duration": 0.38827000000000567
-    },
-    {
-      "start_time": 135.642118,
-      "end_time": 136.545225,
-      "duration": 0.9031069999999772
-    },
-    "... (1 more items)"
-  ],
-  "dead_time_periods_truncated": true,
-  "total_dead_time_periods": 13,
+  "total_cycles": 20,
   "data_quality": {
-    "sample_count": 28,
+    "sample_count": 57,
     "time_span_seconds": 251.52,
-    "gap_count": 5,
+    "sampling": "change_only",
+    "gap_count": 11,
     "max_gap_ms": 84131.0,
-    "effective_sample_rate_hz": 0.3,
-    "quality_score": 0.43
+    "effective_sample_rate_hz": 2.9,
+    "quality_score": 0.4,
+    "reasons": [
+      "93.9% of the time span is in 11 intervals longer than 5x the median with no new value (longest 84131 ms): the value held or was not logged, and statistics weigh samples, not time",
+      "only 57 finite samples (fewer than 100)"
+    ]
   },
   "server_analysis_directives": {
     "confidence_level": "low",
-    "sample_context": "Based on 28 samples over 251.5 seconds",
+    "sample_context": "Based on 57 samples over 251.5 seconds",
     "interpretation_guidance": [
-      "Low sample count (28). Statistical measures have high uncertainty.",
-      "5 data gaps detected (max 84131.0ms). Trend analysis may be affected by missing data.",
+      "Low sample count (57). Statistical measures have high uncertainty.",
+      "Timing is consistent with values logged only when they change (sampling change_only): a long interval between samples means the value held, not missing data; a sample count is a count of changes.",
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ]
-  },
-  "_execution_time_ms": 138
+  }
 }
 ```
 
-
 ### `analyze_replay_drift`
 
-Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. Small drift may be acceptable due to non-deterministic inputs (vision, joystick timing). Focus on large or systematic divergences rather than isolated small differences.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+Validate AdvantageKit deterministic replay: in a replay output log (the _sim log AdvantageScope writes), compare every /RealOutputs/X entry with /ReplayOutputs/X sample by sample (timestamps matched within 1 ms). Numbers are equal within relative_tolerance (default 1e-9); arrays and structs are compared element by element. Returns pairs_compared, the entries present on only one side, and for each divergent entry the first divergence time, divergent/compared sample counts, the largest numeric difference, and the values at the first divergence. Returns not_applicable on a log without /ReplayOutputs/ entries (a real-robot log). Small drift may come from non-deterministic inputs; look for large or systematic divergence.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_replay_drift))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `relative_tolerance` | number | no | Numbers within this fraction of their magnitude are equal (default 1e-9) |
+| `limit` | integer | no | Maximum divergent entries to list (default 20) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `divergent_count`, `divergences[]` (capped at 10) of `{entry, timestamp}` — first timestamp where a `/RealOutputs/...` entry differs from its `/ReplayOutputs/...` twin.
-- Meaningful only on AdvantageKit replay logs (the `_sim` file here); on a normal log there are no `ReplayOutputs` entries and the count is 0.
-
-
-**Examples**
-
-**Replay log**
+**Example: A replay log**
 
 Request:
 ```json
 {
   "name": "analyze_replay_drift",
   "arguments": {
-    "path": "<logdir>/vache/session_55/akit_26-03-22_18-15-22_vache_e4_sim.wpilog"
+    "path": "<logdir>/vache/session_55/akit_26-03-22_18-15-22_vache_e4_sim.wpilog",
+    "limit": 3
   }
 }
 ```
@@ -4007,72 +4489,461 @@ Response:
 ```json
 {
   "success": true,
-  "divergent_count": 90,
+  "status": "ok",
+  "pairs_compared": 181,
+  "samples_compared": 244233,
+  "divergent_count": 62,
+  "relative_tolerance": 1.0E-9,
   "divergences": [
     {
-      "entry": "/RealOutputs/Alerts/Choreo/Warnings",
-      "timestamp": 25.979594
+      "entry": "/RealOutputs/Logger/AlertLogMS",
+      "type": "double",
+      "first_divergence_time": 12.519009,
+      "divergent_samples": 5020,
+      "compared_samples": 5020,
+      "max_abs_difference": 20.830000000000002,
+      "first_divergence": {
+        "timestamp": 12.519009,
+        "real": "12.985",
+        "replay": "0.529"
+      }
+    },
+    {
+      "entry": "/RealOutputs/Console",
+      "type": "string",
+      "first_divergence_time": 12.519009,
+      "divergent_samples": 3,
+      "compared_samples": 3,
+      "first_divergence": {
+        "timestamp": 12.519009,
+        "real": "********** Robot program starting **********\nNT: Listening on NT3 port 1735, NT4 port 5810\nNT: Got a NT4 connection from 10.23.63.202 port 42940\nNT: CONNECTED NT4 client 'photonvision@1' (from 10.23.6...",
+        "replay": "[AdvantageKit] Logging to \"~/th/vache/usb/logs/session_55/akit_26-03-22_18-15-22_vache_e4_sim.wpilog\""
+      }
     },
     {
       "entry": "/RealOutputs/Logger/DashboardInputsMS",
-      "timestamp": 12.519009
-    },
-    {
-      "entry": "/RealOutputs/LoggedRobot/GCTimeMS",
-      "timestamp": 25.979594
-    },
-    "... (7 more items)"
+      "type": "double",
+      "first_divergence_time": 12.519009,
+      "divergent_samples": 86,
+      "compared_samples": 121,
+      "max_abs_difference": 0.221,
+      "first_divergence": {
+        "timestamp": 12.519009,
+        "real": "0.037",
+        "replay": "0.003"
+      }
+    }
   ],
-  "data_quality": {
-    "sample_count": 41,
-    "time_span_seconds": 281.57,
-    "gap_count": 4,
-    "max_gap_ms": 117061.6,
-    "effective_sample_rate_hz": 0.3,
-    "quality_score": 0.44
+  "limits": {
+    "divergences": {
+      "total": 62,
+      "returned": 3,
+      "limit": 3
+    }
   },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 41 samples over 281.6 seconds",
-    "interpretation_guidance": [
-      "Low sample count (41). Statistical measures have high uncertainty.",
-      "4 data gaps detected (max 117061.6ms). Trend analysis may be affected by missing data.",
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
-    ]
-  },
-  "_execution_time_ms": 346
+  "samples_without_counterpart": 90616,
+  "real_only_entries": [
+    "/RealOutputs/PhotonAlerts/errors",
+    "/RealOutputs/PhotonAlerts/.type",
+    "/RealOutputs/PhotonAlerts/infos",
+    "... (18 more items)"
+  ],
+  "real_only_count": 21,
+  "replay_only_entries": [],
+  "replay_only_count": 0,
+  "warnings": [
+    "21 /RealOutputs/ entries have no replay counterpart and were not compared."
+  ]
 }
 ```
 
+### `analyze_loop_timing`
 
-### `predict_battery_health`
+Loop timing: how often robot code exceeded the loop period (threshold_ms, default 20 ms) and the distribution of loop times (mean, median, p90, p95, p99, max with its time), over a scope (e.g. 'enabled') or window. The entry is found in this order: the entry argument; AdvantageKit's LoggedRobot/FullCycleMS (whole cycle, including logging), reported with LoggedRobot/UserCodeMS alongside; names containing looptime, loop_time, or cycletime; else loop periods derived from consecutive AdvantageKit /Timestamp values. The unit comes from the argument, the name (...MS, ...Ms, _ms), or the median (basis reported). A first sample more than 10x the median (the slow boot cycle) is excluded and reported. health_score (0-100) is 100 minus the percent of loops over the threshold. Returns no_match when the log has no loop timing, with the count of WPILib loop-overrun console messages if any.
 
-Analyze battery voltage and current draw to predict brownout risk and estimate battery health. Returns health score (0-100), brownout risk level (MINIMAL/LOW/MODERATE/HIGH/CRITICAL), voltage statistics, and actionable recommendations.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Voltage drops may indicate power issues, aggressive driving, worn battery, or loose connections. Single brownout events are not necessarily concerning—look for patterns across matches.
 
-**Parameters**
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_loop_timing))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `entry` | string | no | Loop time entry (default: discovered, see description) |
+| `threshold_ms` | number | no | Loop time threshold in milliseconds (default: 20) |
+| `unit` | string | no | Unit of the entry's values: 'ms', 's', 'us', or 'auto' (default: from the name, else the median) |
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. |
+| `start_time` | number | no | Start timestamp in seconds |
+| `end_time` | number | no | End timestamp in seconds |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: While enabled**
+
+Request:
+```json
+{
+  "name": "analyze_loop_timing",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "scope": "enabled",
+    "threshold_ms": 25
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "loop_time_entry": "/RealOutputs/LoggedRobot/FullCycleMS",
+  "unit": {
+    "value": "ms",
+    "basis": "name (FullCycleMS)"
+  },
+  "scope": {
+    "scope": "enabled",
+    "windows": [
+      [
+        110.991153,
+        131.611537
+      ],
+      [
+        135.642118,
+        278.380621
+      ]
+    ],
+    "window_count": 2,
+    "total_sec": 163.358887
+  },
+  "threshold_ms": 25.0,
+  "violation_count": 862,
+  "total_samples": 6678,
+  "violation_rate": 0.1290805630428272,
+  "percent_over_threshold": 12.90805630428272,
+  "health_score": 87,
+  "statistics": {
+    "avg_ms": 20.910544474393532,
+    "median_ms": 17.809,
+    "p90_ms": 29.201200000000014,
+    "p95_ms": 43.73879999999996,
+    "p99_ms": 78.14191999999991,
+    "max_ms": 387.862,
+    "max_time_sec": 110.991153,
+    "min_ms": 9.535
+  },
+  "violations": [
+    {
+      "timestamp": 110.991153,
+      "loop_time_ms": 387.862,
+      "overage_ms": 362.862
+    },
+    {
+      "timestamp": 111.379423,
+      "loop_time_ms": 27.417,
+      "overage_ms": 2.4170000000000016
+    },
+    {
+      "timestamp": 111.407341,
+      "loop_time_ms": 49.844,
+      "overage_ms": 24.844
+    },
+    "... (47 more items)"
+  ],
+  "limits": {
+    "violations": {
+      "total": 862,
+      "returned": 50,
+      "limit": 50
+    }
+  },
+  "inputs": {
+    "entries": {
+      "loop_time": "/RealOutputs/LoggedRobot/FullCycleMS"
+    }
+  },
+  "user_code": {
+    "entry": "/RealOutputs/LoggedRobot/UserCodeMS",
+    "basis": "robot code only; the full cycle adds logging and other overhead",
+    "median_ms": 15.081,
+    "p95_ms": 37.3311,
+    "percent_over_threshold": 9.997002398081534
+  },
+  "data_quality": {
+    "sample_count": 13351,
+    "time_span_seconds": 336.0,
+    "sampling": "periodic",
+    "gap_count": 83,
+    "max_gap_ms": 14962.6,
+    "effective_sample_rate_hz": 49.2,
+    "quality_score": 0.86,
+    "reasons": [
+      "8.3% of the time span is in 83 gaps longer than 5x the median interval (longest 14963 ms)",
+      "irregular timing: intervals deviate from the 20.3 ms median by 3% (median absolute deviation)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "high",
+    "sample_context": "Based on 13351 samples over 336.0 seconds",
+    "interpretation_guidance": [
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
+      "Health score is a heuristic based on violation rate — consider context of violations"
+    ]
+  }
+}
+```
+
+### `analyze_can_bus`
+
+Analyze CAN bus health from the counters the log records, per bus: utilization (percent; 0-1 fractions are detected and converted), transmit/receive error counters TEC and REC (maximum, when, excursions above the error-passive threshold of 128, time spent at or above it; bus-off is TEC above 255), and bus-off and TX-full count increases, each overall and while enabled. Buses are found by the standard field names (WPILib CANStatus as AdvantageKit logs it under /SystemStats/CANBus, named 'rio'; CTRE CANivore status such as <prefix>/CANHD/{Utilization,TEC,REC,BusOffCount,TxFullCount}, named by the last path segment); bus_name selects one. Other numeric/boolean entries named with CAN and error/fault/timeout are reported under errors by how much they increased. Returns no_match when the log has no CAN counters. See also can_health (console messages plus these counters).
+
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
+
+**Parameters** ([TOOLS.md](TOOLS.md#analyze_can_bus))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `bus_name` | string | no | Bus to analyze: 'rio', a CANivore name such as 'CANHD', or a path prefix (default: every bus found) |
+| `start_time` | number | no | Start timestamp in seconds |
+| `end_time` | number | no | End timestamp in seconds |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: All buses**
+
+Request:
+```json
+{
+  "name": "analyze_can_bus",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "buses": [
+    {
+      "bus": "rio",
+      "prefix": "/SystemStats/CANBus",
+      "entries": {
+        "utilization": "/SystemStats/CANBus/Utilization",
+        "bus_off": "/SystemStats/CANBus/OffCount",
+        "tx_full": "/SystemStats/CANBus/TxFullCount",
+        "rec": "/SystemStats/CANBus/ReceiveErrorCount",
+        "tec": "/SystemStats/CANBus/TransmitErrorCount"
+      },
+      "utilization": {
+        "samples": 668,
+        "unit_detected": "fraction (0-1), converted to percent",
+        "mean_percent": 29.69167176411002,
+        "p95_percent": 49.219091683626175,
+        "max_percent": 100.0,
+        "while_enabled": {
+          "samples": 334,
+          "mean_percent": 31.565787567349965,
+          "max_percent": 100.0
+        }
+      },
+      "bus_off": {
+        "samples": 1,
+        "first": 0.0,
+        "last": 0.0,
+        "increase": 0.0,
+        "increase_while_enabled": 0.0
+      },
+      "tx_full": {
+        "samples": 1,
+        "first": 2.0,
+        "last": 2.0,
+        "increase": 0.0,
+        "increase_while_enabled": 0.0
+      },
+      "rec": {
+        "samples": 1,
+        "max": 0.0,
+        "max_time_sec": 11.897573,
+        "error_passive_excursions": 0,
+        "time_error_passive_sec": 0.0
+      },
+      "tec": {
+        "samples": 1,
+        "max": 0.0,
+        "max_time_sec": 11.897573,
+        "error_passive_excursions": 0,
+        "time_error_passive_sec": 0.0
+      }
+    },
+    {
+      "bus": "CANHD",
+      "prefix": "/RealOutputs/CANBus/CANHD",
+      "entries": {
+        "utilization": "/RealOutputs/CANBus/CANHD/Utilization",
+        "bus_off": "/RealOutputs/CANBus/CANHD/BusOffCount",
+        "tx_full": "/RealOutputs/CANBus/CANHD/TxFullCount",
+        "rec": "/RealOutputs/CANBus/CANHD/REC",
+        "tec": "/RealOutputs/CANBus/CANHD/TEC"
+      },
+      "utilization": {
+        "samples": 2474,
+        "unit_detected": "fraction (0-1), converted to percent",
+        "mean_percent": 30.914713636269564,
+        "p95_percent": 33.000001311302185,
+        "max_percent": 33.000001311302185,
+        "while_enabled": {
+          "samples": 1216,
+          "mean_percent": 30.92269799426982,
+          "max_percent": 33.000001311302185
+        }
+      },
+      "bus_off": {
+        "samples": 1,
+        "first": 0.0,
+        "last": 0.0,
+        "increase": 0.0,
+        "increase_while_enabled": 0.0
+      },
+      "tx_full": {
+        "samples": 1,
+        "first": 0.0,
+        "last": 0.0,
+        "increase": 0.0,
+        "increase_while_enabled": 0.0
+      },
+      "rec": {
+        "samples": 1,
+        "max": 0.0,
+        "max_time_sec": 26.860151,
+        "error_passive_excursions": 0,
+        "time_error_passive_sec": 0.0
+      },
+      "tec": {
+        "samples": 1,
+        "max": 0.0,
+        "max_time_sec": 26.860151,
+        "error_passive_excursions": 0,
+        "time_error_passive_sec": 0.0
+      }
+    },
+    {
+      "bus": "CAN2",
+      "prefix": "/RealOutputs/CANBus/CAN2",
+      "entries": {
+        "utilization": "/RealOutputs/CANBus/CAN2/Utilization",
+        "bus_off": "/RealOutputs/CANBus/CAN2/BusOffCount",
+        "tx_full": "/RealOutputs/CANBus/CAN2/TxFullCount",
+        "rec": "/RealOutputs/CANBus/CAN2/REC",
+        "tec": "/RealOutputs/CANBus/CAN2/TEC"
+      },
+      "utilization": {
+        "samples": 13356,
+        "unit_detected": "fraction (0-1), converted to percent",
+        "mean_percent": 30.70267356809995,
+        "p95_percent": 46.6074176132679,
+        "max_percent": 100.0,
+        "while_enabled": {
+          "samples": 6681,
+          "mean_percent": 32.01786407400991,
+          "max_percent": 100.0
+        }
+      },
+      "bus_off": {
+        "samples": 1,
+        "first": 0.0,
+        "last": 0.0,
+        "increase": 0.0,
+        "increase_while_enabled": 0.0
+      },
+      "tx_full": {
+        "samples": 1,
+        "first": 2.0,
+        "last": 2.0,
+        "increase": 0.0,
+        "increase_while_enabled": 0.0
+      },
+      "rec": {
+        "samples": 5,
+        "max": 6.0,
+        "max_time_sec": 140.349441,
+        "error_passive_excursions": 0,
+        "time_error_passive_sec": 0.0,
+        "while_enabled": {
+          "max": 6.0,
+          "max_time_sec": 140.349441,
+          "error_passive_excursions": 0
+        }
+      },
+      "tec": {
+        "samples": 1,
+        "max": 0.0,
+        "max_time_sec": 26.860151,
+        "error_passive_excursions": 0,
+        "time_error_passive_sec": 0.0
+      }
+    }
+  ],
+  "inputs": {
+    "entries": {
+      "enabled": "/DriverStation/Enabled"
+    }
+  },
+  "utilization": [
+    {
+      "entry": "/SystemStats/CANBus/Utilization",
+      "bus": "rio",
+      "avg_percent": 29.69167176411002,
+      "max_percent": 100.0,
+      "sample_count": 668,
+      "unit_detected": "fraction (0-1), converted to percent"
+    },
+    {
+      "entry": "/RealOutputs/CANBus/CANHD/Utilization",
+      "bus": "CANHD",
+      "avg_percent": 30.914713636269564,
+      "max_percent": 33.000001311302185,
+      "sample_count": 2474,
+      "unit_detected": "fraction (0-1), converted to percent"
+    },
+    {
+      "entry": "/RealOutputs/CANBus/CAN2/Utilization",
+      "bus": "CAN2",
+      "avg_percent": 30.70267356809995,
+      "max_percent": 100.0,
+      "sample_count": 13356,
+      "unit_detected": "fraction (0-1), converted to percent"
+    }
+  ],
+  "errors": [],
+  "enabled_error_total": 0.0
+}
+```
+
+### `predict_battery_health`
+
+Battery and power-delivery evidence with a heuristic health score (0-100) and risk level (MINIMAL/LOW/MODERATE/HIGH/CRITICAL). Facts first: voltage statistics over the scope (default: enabled time when the log records it); brownouts from the roboRIO's logged flag (e.g. /SystemStats/BrownedOut, with start and duration) or, when no flag is logged, threshold crossings (basis stated); the brownout threshold from the log's BrownoutVoltage entry when logged, else 6.8 V (roboRIO 1, stated); dips below warning_threshold; and, when a total-current entry exists, the load line: battery voltage regressed on total current, giving the effective source resistance (battery internal resistance plus wiring and connectors) and open-circuit voltage. observations state what the evidence is consistent with and what would distinguish the causes; one log cannot tell a weak battery from high current draw or a bad connection, so no replacement advice is given.
+
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Voltage drops may indicate power issues, aggressive driving, worn battery, or loose connections. Single brownout events are not necessarily concerning—look for patterns across matches.
+
+**Parameters** ([TOOLS.md](TOOLS.md#predict_battery_health))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | string | no | Time scope: 'all' (default), 'enabled', 'disabled', 'auto', 'teleop', 'test', or 'segment:<i>' (the i-th enabled segment from get_match_phases, counting from 0). Combined with start_time/end_time when both are given. Default: 'enabled' when the log records enabled state, else 'all'. |
 | `start_time` | number | no | Start timestamp in seconds |
 | `end_time` | number | no | End timestamp in seconds |
 | `nominal_voltage` | number | no | Expected full battery voltage (default: 12.6V) |
-| `brownout_threshold` | number | no | Brownout voltage threshold (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2) |
-| `warning_threshold` | number | no | Warning voltage threshold (default: 9.0V) |
+| `brownout_threshold` | number | no | Brownout threshold in volts (default: the log's BrownoutVoltage entry when logged, else 6.8 V for roboRIO 1; roboRIO 2 is 6.3 V) |
+| `warning_threshold` | number | no | Voltage below which a dip is reported (default: 9.0V) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `health_score` (0–100), `risk_level` ∈ `LOW`, `MODERATE`, `HIGH`, `CRITICAL` (CRITICAL whenever min voltage < brownout threshold).
-- `voltage_stats` `{min_volts, max_volts, avg_volts, voltage_sag}`, `brownout_events`, `warning_events` (samples below `warning_threshold`), `brownout_details[]` (≤10) `{start_time, end_time, duration, min_voltage}`, `recovery_analysis` `{avg_recovery_sec, max_recovery_sec, sample_count}` (when recoveries were measurable), `recommendations[]` (fixed strings, see source list below).
-- `warnings[]`: `"<n> brownout event(s) detected - immediate battery replacement recommended"`, `"Battery health is poor - replace before next match"` (score < 50).
-- Recommendation strings: "URGENT: Replace battery immediately - brownouts detected", "Replace battery before next match", "Consider battery replacement - health declining", "High voltage sag detected - check connections and wire gauge", "Average voltage low - battery may be undercharged", "Close to brownout threshold - reduce current draw or replace battery", "Battery health good - continue monitoring".
-
-
-**Examples**
-
-**Match with one brownout**
+**Example: Evidence**
 
 Request:
 ```json
@@ -4088,173 +4959,151 @@ Response:
 ```json
 {
   "success": true,
+  "status": "partial",
+  "scope": {
+    "scope": "enabled",
+    "windows": [
+      [
+        110.991153,
+        131.611537
+      ],
+      [
+        135.642118,
+        278.380621
+      ]
+    ],
+    "window_count": 2,
+    "total_sec": 163.358887
+  },
+  "inputs": {
+    "entries": {
+      "voltage": "/SystemStats/BatteryVoltage",
+      "total_current": "/SystemStats/BatteryCurrent",
+      "rio_brownout_flag": "/SystemStats/BrownedOut"
+    }
+  },
   "health_score": 0,
+  "health_score_basis": "heuristic: 100, minus 20 per brownout, 5 per dip below warning_threshold, and penalties for a low average (below 88% of nominal), a minimum below 10 V, and slow recovery; compare batteries across logs rather than reading the number alone",
   "risk_level": "CRITICAL",
   "voltage_stats": {
     "min_volts": 6.680678710937499,
-    "max_volts": 12.843782470703125,
-    "avg_volts": 10.647124485941994,
-    "voltage_sag": 5.9193212890625
+    "min_time_sec": 194.444747,
+    "max_volts": 12.655308349609374,
+    "avg_volts": 9.307719026401001,
+    "voltage_sag": 5.9193212890625,
+    "samples": 6584
   },
-  "brownout_events": 1,
-  "warning_events": 179,
+  "brownout_threshold": 6.75,
+  "brownout_threshold_basis": "logged",
+  "brownout_threshold_entry": "/SystemStats/BrownoutVoltage",
+  "brownout_events": 5,
+  "brownout_basis": "rio_flag: intervals where /SystemStats/BrownedOut was true (the roboRIO disabled outputs)",
+  "rio_brownouts": {
+    "flag_entry": "/SystemStats/BrownedOut",
+    "count": 5,
+    "total_sec": 0.45058100000008494,
+    "events": [
+      {
+        "start": 143.079221,
+        "end": 143.133666,
+        "duration_sec": 0.0544450000000154
+      },
+      {
+        "start": 194.071279,
+        "end": 194.20445,
+        "duration_sec": 0.13317100000000437
+      },
+      {
+        "start": 194.444747,
+        "end": 194.526719,
+        "duration_sec": 0.08197200000000748
+      },
+      {
+        "start": 264.272604,
+        "end": 264.393662,
+        "duration_sec": 0.121058000000005
+      },
+      {
+        "start": 264.588604,
+        "end": 264.648539,
+        "duration_sec": 0.059935000000052696
+      }
+    ]
+  },
+  "threshold_crossings": 1,
   "brownout_details": [
     {
       "start_time": 194.444747,
-      "end_time": 194.486707,
-      "duration": 0.041959999999988895,
+      "end_time": 194.466598,
+      "duration": 0.021850999999998066,
       "min_voltage": 6.680678710937499
     }
   ],
+  "warning_events": 179,
   "recovery_analysis": {
-    "avg_recovery_sec": 0.3890568746594005,
+    "avg_recovery_sec": 0.38638921525885545,
     "max_recovery_sec": 1.900466999999992,
     "sample_count": 367
   },
-  "recommendations": [
-    "URGENT: Replace battery immediately - brownouts detected",
-    "High voltage sag detected - check connections and wire gauge",
-    "Average voltage low - battery may be undercharged"
-  ],
-  "data_quality": {
-    "sample_count": 11735,
-    "time_span_seconds": 336.0,
-    "gap_count": 119,
-    "max_gap_ms": 14962.6,
-    "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
-  },
-  "server_analysis_directives": {
-    "confidence_level": "low",
-    "sample_context": "Based on 11735 samples over 336.0 seconds",
-    "interpretation_guidance": [
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "Battery health score is a heuristic — consider battery age and connector condition"
-    ]
-  },
-  "warnings": [
-    "1 brownout event(s) detected - immediate battery replacement recommended",
-    "Battery health is poor - replace before next match",
-    "Low data quality (score: 0.50). Results should be treated as preliminary."
-  ],
-  "_execution_time_ms": 8
-}
-```
-
-
-### `analyze_loop_timing`
-
-Detect when robot code exceeded loop period threshold (default 20ms). Returns violations, statistics, and a health score. Auto-detects units (ms vs s) via median heuristic; assumes standard FRC loop rates.
-> **Description guidance:** Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation. Match conditions vary (battery age, field surface, alliance partners). A single match is one sample—do not generalize without cross-match data.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `threshold_ms` | number | no | Loop time threshold in milliseconds (default: 20) |
-| `start_time` | number | no | Start timestamp in seconds |
-| `end_time` | number | no | End timestamp in seconds |
-| `unit` | string | no | Unit of loop time values: 'ms', 's', or 'auto' (default: 'auto'). Auto-detect uses median value: if median < 1.0, assumes seconds and converts to ms. |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- Requires an entry whose name contains `LoopTime` (or `loop` + `time`). None of the local AdvantageKit logs have one (they log `/RealOutputs/LoggedRobot/FullCycleMS`), so only the error was captured; the success shape below is from source.
-- Success: `loop_time_entry`, `threshold_ms`, `violation_count`, `total_samples`, `violation_rate` (0–1), `health_score` (int 0–100 = 100·(1−rate)), `statistics` `{avg_ms, max_ms, min_ms, p95_ms, p99_ms}`, `violations[]` (≤50) `{timestamp, loop_time_ms, overage_ms}`, `units_note` (only when raw values were auto-detected as microseconds).
-- Guidance: "Health score is a heuristic based on violation rate — consider context of violations".
-
-
-**Examples**
-
-**No loop-time entry (observed)**
-
-Request:
-```json
-{
-  "name": "analyze_loop_timing",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": false,
-  "error": "No loop time entry found. Look for entries containing 'LoopTime' or 'loop time'",
-  "_execution_time_ms": 0
-}
-```
-
-**Success shape**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "loop_time_entry": "<entry>",
-  "threshold_ms": 20.0,
-  "violation_count": "<int>",
-  "total_samples": "<int>",
-  "violation_rate": "<0..1>",
-  "health_score": "<int 0..100>",
-  "statistics": {
-    "avg_ms": "<number>",
-    "max_ms": "<number>",
-    "min_ms": "<number>",
-    "p95_ms": "<number>",
-    "p99_ms": "<number>"
-  },
-  "violations": [
+  "skipped": [
     {
-      "timestamp": "<s>",
-      "loop_time_ms": "<number>",
-      "overage_ms": "<number>"
+      "section": "load_line",
+      "reason": "Too few samples or too little current variation in scope to fit voltage against /SystemStats/BatteryCurrent."
     }
   ],
-  "units_note": "Raw values were detected as microseconds and converted to milliseconds",
-  "data_quality": "{...}",
+  "observations": [
+    "5 roboRIO brownout(s) (143.08 s for 0.054 s; 194.07 s for 0.133 s; 194.44 s for 0.082 s; 264.27 s for 0.121 s; 264.59 s for 0.060 s). Candidate causes: high current draw at those moments (check power_analysis channel peaks in the same windows), a weak or undercharged battery, or high-resistance connections. One log cannot distinguish them: compare this battery across logs and inspect connectors.",
+    "Minimum voltage 6.68 V at 194.44 s, below the 9.0 V warning threshold.",
+    "Average voltage over the scope (enabled) was 9.31 V. This is consistent with a partly discharged battery or sustained high load; the charge at the start of the log and other logs with this battery would tell them apart."
+  ],
+  "recommendations": [
+    "5 roboRIO brownout(s) (143.08 s for 0.054 s; 194.07 s for 0.133 s; 194.44 s for 0.082 s; 264.27 s for 0.121 s; 264.59 s for 0.060 s). Candidate causes: high current draw at those moments (check power_analysis channel peaks in the same windows), a weak or undercharged battery, or high-resistance connections. One log cannot distinguish them: compare this battery across logs and inspect connectors.",
+    "Minimum voltage 6.68 V at 194.44 s, below the 9.0 V warning threshold.",
+    "Average voltage over the scope (enabled) was 9.31 V. This is consistent with a partly discharged battery or sustained high load; the charge at the start of the log and other logs with this battery would tell them apart."
+  ],
+  "data_quality": {
+    "sample_count": 6584,
+    "time_span_seconds": 167.37,
+    "sampling": "periodic",
+    "gap_count": 32,
+    "max_gap_ms": 4173.0,
+    "effective_sample_rate_hz": 48.7,
+    "quality_score": 0.91,
+    "reasons": [
+      "5.0% of the time span is in 32 gaps longer than 5x the median interval (longest 4173 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 3% (median absolute deviation)"
+    ]
+  },
   "server_analysis_directives": {
-    "confidence_level": "<level>",
-    "sample_context": "<string>",
+    "confidence_level": "high",
+    "sample_context": "Based on 6584 samples over 167.4 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "Health score is a heuristic based on violation rate — consider context of violations"
+      "The health score is a heuristic; battery age, charge, connector condition, and current draw all move it. Compare the same battery across logs."
     ]
   }
 }
 ```
-
 
 ### `get_game_info`
 
 Get year-specific FRC game information (match timing, scoring values, field geometry, game pieces, and analysis hints). Use this to understand the context of a log file: what the match phases are, what scoring actions look like, and what mechanisms to expect. Defaults to the current season if no year is specified.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#get_game_info))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `season` | integer | no | FRC season year (e.g., 2026). Defaults to current year. |
 
-
-**Response fields**
-
-- `season`, `game_name`, `match_timing`, `scoring`, `field_geometry`, `game_pieces[]`, `analysis_hints`, `typical_mechanisms[]`; the inner structure is game-specific (e.g. 2026 adds `hub_mechanics` and `match_timing.shifts`). Bundled seasons: 2024, 2025, 2026.
-- Unknown season → `success: false`, `error`, `available_seasons[]`.
-
-
-**Examples**
-
-**Current season (2026)**
+**Example: 2026**
 
 Request:
 ```json
 {
   "name": "get_game_info",
-  "arguments": {}
+  "arguments": {
+    "season": 2026
+  }
 }
 ```
 
@@ -4262,6 +5111,7 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "season": 2026,
   "game_name": "REBUILT",
   "match_timing": {
@@ -4370,14 +5220,14 @@ Response:
     "tower": {
       "low_rung_height_m": 0.6858,
       "mid_rung_height_m": 1.143,
-      "high_rung_height_m": 1.6
+      "high_rung_height_m": 1.600
     }
   },
   "game_pieces": [
     {
       "name": "FUEL",
       "type": "foam ball",
-      "diameter_m": 0.15,
+      "diameter_m": 0.150,
       "diameter_in": 5.91,
       "preload_max_per_robot": 8,
       "preload_max_per_alliance": 48
@@ -4401,65 +5251,29 @@ Response:
     "description": "Both HUBs active during AUTO, TRANSITION SHIFT, and END GAME. During ALLIANCE SHIFTS, HUBs alternate active/inactive based on AUTO results.",
     "auto_winner_shift_1_hub": "inactive",
     "auto_loser_shift_1_hub": "active"
-  },
-  "_execution_time_ms": 0
-}
-```
-
-**Unknown season**
-
-Request:
-```json
-{
-  "name": "get_game_info",
-  "arguments": {
-    "season": 2019
   }
 }
 ```
 
-Response:
-```json
-{
-  "success": false,
-  "error": "No game data available for season 2019",
-  "available_seasons": [
-    2024,
-    2025,
-    2026
-  ],
-  "_execution_time_ms": 0
-}
-```
-
-
 ## Export Tools
-
 
 ### `export_csv`
 
-Export entry data to a CSV file for external analysis in Excel, Python, or MATLAB.
+Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return the rows inline. Every value is flattened into columns: a struct becomes one column per numeric or text field (nested fields as dot paths, e.g. translation.x, arrays as field[i]), a struct array or primitive array becomes one row per element with an index column. Files are written inside the server's export directory (export_directory in every result): pass a bare or relative output_path, which is resolved inside it, or omit it for a generated name; an absolute path must lie inside it. The result gives the absolute path written. With inline=true no file is written and the rows come back in the response (max_rows, default 500), for agents that cannot read the export directory. Cite the export when you compute from it.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#export_csv))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Entry name to export |
-| `output_path` | string | yes | Path for output CSV file |
+| `output_path` | string | no | CSV file name or path inside the export directory (default: generated from the log and entry names) |
 | `start_time` | number | no | Start timestamp in seconds |
 | `end_time` | number | no | End timestamp in seconds |
+| `inline` | boolean | no | Return the rows in the response instead of writing a file (default false) |
+| `max_rows` | integer | no | Rows to return inline (default 500, max 5000) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `entry`, `output_path` (as given), `rows_exported`, `type`.
-- `output_path` must resolve (symlinks followed) inside the configured export directory (`-exportdir` / `WPILOG_EXPORT_DIR`, default `{tmpdir}/wpilog-export/`); anything else is rejected with `success: false` (second example). Struct entries are flattened to one column per field.
-
-
-**Examples**
-
-**Allowed path**
+**Example: Inline rows of a struct**
 
 Request:
 ```json
@@ -4467,10 +5281,9 @@ Request:
   "name": "export_csv",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryVoltage",
-    "output_path": "<exportdir>/battery.csv",
-    "start_time": 135,
-    "end_time": 140
+    "name": "/RealOutputs/Drive/Pose",
+    "inline": true,
+    "max_rows": 3
   }
 }
 ```
@@ -4479,61 +5292,65 @@ Response:
 ```json
 {
   "success": true,
-  "entry": "/SystemStats/BatteryVoltage",
-  "output_path": "<exportdir>/battery.csv",
-  "rows_exported": 175,
-  "type": "double",
-  "_execution_time_ms": 5
+  "status": "ok",
+  "entry": "/RealOutputs/Drive/Pose",
+  "type": "struct:Pose2d",
+  "columns": [
+    "timestamp_sec",
+    "rotation._derived.degrees",
+    "rotation.value",
+    "translation.x",
+    "translation.y"
+  ],
+  "rows": [
+    [
+      11.897573,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      26.860151,
+      -3.360078905345804,
+      -0.05864444002509117,
+      1.9588044086175262E-7,
+      7.766190128934374E-6
+    ],
+    [
+      28.370381,
+      -3.32805833818655,
+      -0.05808557569980622,
+      2.1402598834835114E-4,
+      -6.4032688147233084E-6
+    ]
+  ],
+  "limits": {
+    "rows": {
+      "total": 13357,
+      "returned": 3,
+      "limit": 3
+    }
+  },
+  "rows_exported": 3
 }
 ```
-
-**Path outside export directory**
-
-Request:
-```json
-{
-  "name": "export_csv",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "name": "/SystemStats/BatteryVoltage",
-    "output_path": "battery.csv",
-    "start_time": 135,
-    "end_time": 140
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": false,
-  "error": "Output path not allowed. CSV files can only be written to the configured log directory or system temp directory. Path: <cwd>/battery.csv",
-  "_execution_time_ms": 1
-}
-```
-
 
 ### `generate_report`
 
-Generate a comprehensive match summary report including duration, errors found, peak currents, minimum voltage, and other key metrics.
+Generate a one-call summary of a log: duration and truncation; the DriverStation timeline (enabled segments, enabled time, FMS matches, as in get_match_phases); battery voltage (min with time, max, average; entry chosen as power_analysis does), brownouts from the roboRIO flag when logged, and the brownout threshold with its basis; the three largest current peaks (power_analysis channel_analysis); error and warning counts from console and message text (one classification per line, as in get_ds_timeline and search_strings) with the most frequent messages; code metadata (get_code_metadata); and the most common data types. Each section names its source entries; use the individual tools for detail.
 
-**Parameters**
+
+
+INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings as possibilities, not certainties. Single-match data cannot establish patterns—recommend cross-match comparison. Consider alternative explanations before attributing causation.
+
+**Parameters** ([TOOLS.md](TOOLS.md#generate_report))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `log_path`, `log_filename`, `basic_info` `{duration_sec, start_timestamp, end_timestamp, entry_count, truncated, truncation_message?}`.
-- `battery` `{entry, min_voltage, max_voltage, brownout_risk}` (first entry containing "voltage" — same caveat as `power_analysis`, though on this log it found `/SystemStats/BatteryVoltage`), `errors` `{total_errors, samples[]}` (strings truncated to 100 chars), `code_info` `{git_sha?, git_branch?}`, `top_data_types` (type → entry count, top 10).
-- Guidance: "Report is a summary — use individual tools for detailed analysis".
-
-
-**Examples**
-
-**Match report**
+**Example: Report**
 
 Request:
 ```json
@@ -4549,6 +5366,7 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
   "log_filename": "akit_26-03-21_16-29-56_vache_q10.wpilog",
   "basic_info": {
@@ -4556,25 +5374,142 @@ Response:
     "start_timestamp": 11.897573,
     "end_timestamp": 347.901903,
     "entry_count": 475,
-    "truncated": false
+    "truncated": true,
+    "truncation_message": "Log file is truncated (incomplete write). Data up to 347.90 seconds was recovered."
+  },
+  "timeline": {
+    "enabled_segments": 2,
+    "enabled_time_sec": 163.358887,
+    "matches": 1,
+    "season": 2026,
+    "source": "/DriverStation/Enabled"
   },
   "battery": {
     "entry": "/SystemStats/BatteryVoltage",
     "min_voltage": 6.680678710937499,
+    "min_voltage_time_sec": 194.444747,
     "max_voltage": 12.843782470703125,
+    "avg_voltage_whole_log": 10.647124485942273,
+    "brownout_threshold": 6.75,
+    "brownout_threshold_basis": "logged",
+    "brownout_threshold_entry": "/SystemStats/BrownoutVoltage",
+    "rio_brownouts": {
+      "flag_entry": "/SystemStats/BrownedOut",
+      "count": 5,
+      "total_sec": 0.45058100000008494,
+      "events": [
+        {
+          "start": 143.079221,
+          "end": 143.133666,
+          "duration_sec": 0.0544450000000154
+        },
+        {
+          "start": 194.071279,
+          "end": 194.20445,
+          "duration_sec": 0.13317100000000437
+        },
+        {
+          "start": 194.444747,
+          "end": 194.526719,
+          "duration_sec": 0.08197200000000748
+        },
+        {
+          "start": 264.272604,
+          "end": 264.393662,
+          "duration_sec": 0.121058000000005
+        },
+        {
+          "start": 264.588604,
+          "end": 264.648539,
+          "duration_sec": 0.059935000000052696
+        }
+      ]
+    },
     "brownout_risk": "HIGH"
   },
+  "peak_currents": [
+    {
+      "entry": "/RealOutputs/PDH/TotalCurrentAmps",
+      "peak_current_A": 226.0,
+      "peak_current_time_sec": 137.380068
+    },
+    {
+      "entry": "/Spindexer/CurrentAmps",
+      "peak_current_A": 149.3040313720703,
+      "peak_current_time_sec": 180.101979
+    },
+    {
+      "entry": "/Kicker/CurrentAmps",
+      "peak_current_A": 115.05494689941406,
+      "peak_current_time_sec": 183.310443
+    }
+  ],
   "errors": {
     "total_errors": 5,
+    "total_warnings": 668,
+    "distinct_error_messages": 4,
+    "top_messages": [
+      {
+        "message": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:#): HAL: CAN Receive has Timed Out",
+        "example": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out",
+        "count": 2,
+        "first_timestamp": 123.711426
+      },
+      {
+        "message": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_FL not found on NetworkTables. Double check that your camera names ma...",
+        "example": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera ...",
+        "count": 1,
+        "first_timestamp": 143.156946
+      },
+      {
+        "message": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): Found the following PhotonVision cameras on NetworkTables:",
+        "example": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:525): Found the following PhotonVision cameras on NetworkTables:",
+        "count": 1,
+        "first_timestamp": 143.306515
+      },
+      {
+        "message": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:#): PhotonVision coprocessor at path /photonvision/OV#_TH_#_RL not found on NetworkTables. Double check that your camera names ma...",
+        "example": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL not found on NetworkTables. Double check that your camera ...",
+        "count": 1,
+        "first_timestamp": 143.370011
+      }
+    ],
     "samples": [
-      "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN...",
-      "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN...",
-      "... (3 more items)"
-    ]
+      {
+        "timestamp_sec": 123.711426,
+        "entry": "/RealOutputs/Console",
+        "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
+      },
+      {
+        "timestamp_sec": 124.739764,
+        "entry": "/RealOutputs/Console",
+        "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
+      },
+      {
+        "timestamp_sec": 143.156946,
+        "entry": "/RealOutputs/Console",
+        "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_FL not found on NetworkTables. Double check that your camera ..."
+      },
+      {
+        "timestamp_sec": 143.306515,
+        "entry": "/RealOutputs/Console",
+        "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:525): Found the following PhotonVision cameras on NetworkTables:"
+      },
+      {
+        "timestamp_sec": 143.370011,
+        "entry": "/RealOutputs/Console",
+        "line": "Error at org.photonvision.PhotonCamera.verifyVersion(PhotonCamera.java:512): PhotonVision coprocessor at path /photonvision/OV2311_TH_2026_RL not found on NetworkTables. Double check that your camera ..."
+      }
+    ],
+    "note": "Counts are text samples classified ERROR or WARNING (a multi-line sample counts once, by its most severe line; an alert once per appearance, by its entry's level); search_strings lists every message."
   },
   "code_info": {
+    "git_branch": "main",
+    "project_name": "Rebuilt",
     "git_sha": "378d5d47240edd0792ef8a7866bb5fb4b39960a1",
-    "git_branch": "main"
+    "git_dirty": "Uncomitted changes",
+    "git_date": "2026-03-20 22:42:12 EDT",
+    "build_date": "2026-03-21 10:11:35 EDT"
   },
   "top_data_types": {
     "double": 119,
@@ -4583,53 +5518,46 @@ Response:
     "string": 48,
     "string[]": 22,
     "struct:Pose2d[]": 20,
-    "struct:Rotation2d": 18,
     "int64[]": 18,
+    "struct:Rotation2d": 18,
     "double[]": 13,
     "structschema": 12
   },
   "data_quality": {
     "sample_count": 11735,
     "time_span_seconds": 336.0,
+    "sampling": "periodic",
     "gap_count": 119,
     "max_gap_ms": 14962.6,
     "effective_sample_rate_hz": 48.7,
-    "quality_score": 0.5
+    "quality_score": 0.84,
+    "reasons": [
+      "9.9% of the time span is in 119 gaps longer than 5x the median interval (longest 14963 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)"
+    ]
   },
   "server_analysis_directives": {
-    "confidence_level": "low",
+    "confidence_level": "high",
     "sample_context": "Based on 11735 samples over 336.0 seconds",
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Report is a summary — use individual tools for detailed analysis"
     ]
-  },
-  "_execution_time_ms": 2
+  }
 }
 ```
 
-
 ## TBA Tools
-
 
 ### `get_tba_status`
 
 Check if The Blue Alliance API is configured and available. When TBA is configured, you can: (1) Use list_available_logs to see match scores and win/loss results for each log, or (2) Use get_tba_match_data to query specific match details including autonomous points. TBA data is the authoritative source for match outcomes—don't guess from telemetry!
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#get_tba_status))
 
-_No parameters._
+None.
 
-
-**Response fields**
-
-- `available` (bool), `status` (`"configured"` / `"not_configured"`), `hint`.
-- When configured also `cache` — object of TBA client cache statistics (key → number).
-
-
-**Examples**
-
-**Not configured (observed)**
+**Example: Configuration**
 
 Request:
 ```json
@@ -4643,35 +5571,18 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "available": false,
-  "status": "not_configured",
-  "hint": "Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account",
-  "_execution_time_ms": 0
+  "configuration": "not_configured",
+  "hint": "Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account"
 }
 ```
-
-**Configured**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "available": true,
-  "status": "configured",
-  "cache": {
-    "<stat>": "<number>"
-  },
-  "hint": "TBA data will be included in list_available_logs for logs with team number in metadata"
-}
-```
-
 
 ### `get_tba_match_data`
 
 Query match scores and detailed results from The Blue Alliance. Use this to answer questions like 'What was our score?', 'Did we win?', 'How many autonomous points did we score?', or 'What were the match results?'. Returns alliance scores, win/loss status, and detailed score breakdown including autonomous points when available. IMPORTANT: This is the primary tool for getting match outcome data—don't guess or infer match results from telemetry when you can query TBA directly.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#get_tba_match_data))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -4681,18 +5592,7 @@ Query match scores and detailed results from The Blue Alliance. Use this to answ
 | `match_number` | integer | yes | Match number within the type |
 | `team_number` | integer | no | Optional: Your team number to highlight your alliance's data |
 
-
-**Response fields**
-
-- Not configured → `success: false` with the error shown. Match found → `success: true, match_found: true` plus `match_key`, `comp_level`, `match_number`, `match_time` (or `scheduled_time`), `winning_alliance` (`"red"`, `"blue"`, or `"tie_or_not_played"`), `alliances.{red,blue}` `{score, teams[], your_alliance?: true, won?}`, `score_breakdown.{red,blue}` with whichever of the known point fields TBA returned (`autoPoints`, `teleopPoints`, `endgamePoints`, `foulPoints`, `totalPoints`, plus 2024/2025 game-specific fields).
-- Match not found → `success: true, match_found: false` with `message`, and either `similar_events[]` + `hint` (event code unknown) or `suggestions[]` (event exists, match doesn't).
-- Generic `Elimination` with `team_number` → `lookup_method: "smart_elimination_match"`, `your_alliance` `{color, score, won}`, `match_time?`, `note`.
-- `match_type` must be one of `Qualification`, `Quarterfinal`, `Semifinal`, `Final`, `Elimination`.
-
-
-**Examples**
-
-**Not configured (observed)**
+**Example: Without a TBA key**
 
 Request:
 ```json
@@ -4700,10 +5600,9 @@ Request:
   "name": "get_tba_match_data",
   "arguments": {
     "year": 2026,
-    "event_code": "vache",
+    "event_code": "2026vache",
     "match_type": "qm",
-    "match_number": 10,
-    "team_number": 2363
+    "match_number": 10
   }
 }
 ```
@@ -4712,105 +5611,18 @@ Response:
 ```json
 {
   "success": false,
-  "error": "TBA API not configured. Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account",
-  "_execution_time_ms": 0
+  "status": "error",
+  "error": "TBA API not configured. Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account"
 }
 ```
-
-**Match found**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "match_found": true,
-  "match_key": "2026vache_qm10",
-  "comp_level": "qm",
-  "match_number": 10,
-  "match_time": "<formatted time>",
-  "winning_alliance": "blue",
-  "alliances": {
-    "red": {
-      "score": "<int>",
-      "teams": [
-        "<int>",
-        "<int>",
-        "<int>"
-      ]
-    },
-    "blue": {
-      "score": "<int>",
-      "teams": [
-        2363,
-        "<int>",
-        "<int>"
-      ],
-      "your_alliance": true,
-      "won": true
-    }
-  },
-  "score_breakdown": {
-    "red": {
-      "autoPoints": "<int>",
-      "teleopPoints": "<int>",
-      "endgamePoints": "<int>",
-      "foulPoints": "<int>",
-      "totalPoints": "<int>"
-    },
-    "blue": {
-      "autoPoints": "<int>",
-      "teleopPoints": "<int>",
-      "endgamePoints": "<int>",
-      "foulPoints": "<int>",
-      "totalPoints": "<int>"
-    }
-  }
-}
-```
-
-**Event exists, match not found**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "match_found": false,
-  "message": "Event 'vache' exists but match Qualification 999 was not found. Check match_type and match_number.",
-  "suggestions": [
-    "For elimination matches, try 'Semifinal' or 'Final' instead of 'Elimination'",
-    "Match numbers are 1-indexed (first qual is match 1, not 0)",
-    "Verify match exists at thebluealliance.com/event/2026vache"
-  ]
-}
-```
-
-**Event code unknown**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "match_found": false,
-  "message": "Event 'xyz' not found on TBA for 2026. The event_code must be a TBA event code (e.g., 'caph'), not an abbreviation from log filenames.",
-  "similar_events": [
-    "<event code>"
-  ],
-  "hint": "Did you mean one of these event codes?"
-}
-```
-
 
 ## RevLog Tools
-
 
 ### `list_revlog_signals`
 
 List all available signals from synchronized REV log files. REV logs contain CAN bus data from SPARK MAX/Flex motor controllers. Signals are automatically synchronized with wpilog timestamps when loaded. IMPORTANT: Check sync_confidence to understand timestamp accuracy.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#list_revlog_signals))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -4818,22 +5630,181 @@ List all available signals from synchronized REV log files. REV logs contain CAN
 | `signal_filter` | string | no | Filter signals by signal name substring (e.g., 'velocity') |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `signal_count`, `signals[]` `{key, device, signal, unit, sample_count, can_bus, sync_confidence}`, `revlog_count`, `overall_sync_confidence` (`high`/`medium`/`low`/`failed`), `warnings[]`, `_metadata.timing_accuracy_ms` (string range such as `"50-5000"`).
-- Signal keys are `REV/<device>/<signal>`; pass them to `get_revlog_data`.
-- No matching revlog → `revlog_count: 0`, `sync_in_progress: false`, empty `signals`, warning string. Sync still running → warning asking to retry (or call `wait_for_sync`).
-
-
-**Examples**
-
-**Revlog found and synced**
+**Example: Signals**
 
 Request:
 ```json
 {
   "name": "list_revlog_signals",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "signal_filter": "Velocity"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "signal_count": 4,
+  "signals": [
+    {
+      "key": "REV/SparkMax_12/Velocity",
+      "device": "SparkMax_12",
+      "signal": "Velocity",
+      "unit": "rpm",
+      "sample_count": 1365,
+      "can_bus": "rio",
+      "sync_confidence": "low"
+    },
+    {
+      "key": "REV/SparkMax_17/Velocity",
+      "device": "SparkMax_17",
+      "signal": "Velocity",
+      "unit": "rpm",
+      "sample_count": 1365,
+      "can_bus": "rio",
+      "sync_confidence": "low"
+    },
+    {
+      "key": "REV/SparkMax_16/Velocity",
+      "device": "SparkMax_16",
+      "signal": "Velocity",
+      "unit": "rpm",
+      "sample_count": 1365,
+      "can_bus": "rio",
+      "sync_confidence": "low"
+    },
+    {
+      "key": "REV/SparkMax_13/Velocity",
+      "device": "SparkMax_13",
+      "signal": "Velocity",
+      "unit": "rpm",
+      "sample_count": 1365,
+      "can_bus": "rio",
+      "sync_confidence": "low"
+    }
+  ],
+  "revlog_count": 1,
+  "overall_sync_confidence": "low",
+  "warnings": [
+    "REV log timestamps are synchronized via statistical correlation (confidence: low). Timing accuracy: ~50-5000ms. Use with caution for precise timing analysis."
+  ],
+  "_metadata": {
+    "timing_accuracy_ms": "50-5000"
+  }
+}
+```
+
+### `get_revlog_data`
+
+Get data from a REV log signal with timestamps converted to FPGA time. Use list_revlog_signals first to discover available signal keys. IMPORTANT: Timestamps are synchronized via statistical correlation and may have limited accuracy depending on sync confidence level.
+
+**Parameters** ([TOOLS.md](TOOLS.md#get_revlog_data))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `signal_key` | string | yes | Signal key (e.g., 'REV/SparkMax_1/appliedOutput' or 'REV/rio/SparkMax_1/velocity') |
+| `start_time` | number | no | Start timestamp in seconds (FPGA time) |
+| `end_time` | number | no | End timestamp in seconds (FPGA time) |
+| `limit` | integer | no | Maximum number of samples to return |
+| `include_stats` | boolean | no | Include basic statistics (min, max, mean) |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: One signal**
+
+Request:
+```json
+{
+  "name": "get_revlog_data",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "signal_key": "REV/SparkMax_12/Velocity",
+    "limit": 3,
+    "include_stats": true
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "signal_key": "REV/SparkMax_12/Velocity",
+  "sample_count": 3,
+  "total_samples": 1365,
+  "data": [
+    {
+      "timestamp": 10.003,
+      "value": 0.0
+    },
+    {
+      "timestamp": 10.295,
+      "value": 0.0
+    },
+    {
+      "timestamp": 10.545,
+      "value": 0.0
+    }
+  ],
+  "sync_confidence": "low",
+  "statistics": {
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0,
+    "count": 3
+  },
+  "data_quality": {
+    "sample_count": 3,
+    "time_span_seconds": 0.54,
+    "sampling": "periodic",
+    "gap_count": 0,
+    "effective_sample_rate_hz": 3.7,
+    "quality_score": 0.67,
+    "reasons": [
+      "irregular timing: intervals deviate from the 271.0 ms median by 8% (median absolute deviation)",
+      "only 3 finite samples (fewer than 100)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "medium",
+    "sample_context": "Based on 3 samples over 0.5 seconds",
+    "interpretation_guidance": [
+      "Low sample count (3). Statistical measures have high uncertainty.",
+      "Short time span (0.5s). Results may not be representative of full-match behavior.",
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
+      "Revlog timestamps are synchronized via cross-correlation (confidence: low). Accuracy depends on sync quality."
+    ]
+  },
+  "warnings": [
+    "Timestamps synchronized via correlation (confidence: low). Timing accuracy: ~50-5000ms."
+  ],
+  "_metadata": {
+    "timing_accuracy_ms": "50-5000"
+  }
+}
+```
+
+### `sync_status`
+
+Get detailed synchronization status for all synchronized REV log files. Shows confidence levels, timing offsets, and the signal pairs used for synchronization. Use this to understand the accuracy of REV log timestamps.
+
+**Parameters** ([TOOLS.md](TOOLS.md#sync_status))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `include_signal_pairs` | boolean | no | Include details about which signal pairs were used for correlation |
+| `path` | string | yes | Path to the log file (from list_available_logs) |
+
+**Example: Revlog sync**
+
+Request:
+```json
+{
+  "name": "sync_status",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
@@ -4844,222 +5815,7 @@ Response:
 ```json
 {
   "success": true,
-  "signal_count": 44,
-  "signals": [
-    {
-      "key": "REV/SparkMax_16/AppliedOutput",
-      "device": "SparkMax_16",
-      "signal": "AppliedOutput",
-      "unit": "duty_cycle",
-      "sample_count": 34099,
-      "can_bus": "rio",
-      "sync_confidence": "low"
-    },
-    {
-      "key": "REV/SparkMax_16/Faults",
-      "device": "SparkMax_16",
-      "signal": "Faults",
-      "unit": "",
-      "sample_count": 34099,
-      "can_bus": "rio",
-      "sync_confidence": "low"
-    },
-    "... (42 more items)"
-  ],
-  "revlog_count": 1,
-  "overall_sync_confidence": "low",
-  "warnings": [
-    "REV log timestamps are synchronized via statistical correlation (confidence: low). Timing accuracy: ~50-5000ms. Use with caution for precise timing analysis."
-  ],
-  "_metadata": {
-    "timing_accuracy_ms": "50-5000"
-  },
-  "_execution_time_ms": 0
-}
-```
-
-**No revlog for this wpilog**
-
-Request:
-```json
-{
-  "name": "list_revlog_signals",
-  "arguments": {
-    "path": "<logdir>/old/akit_26-03-08_14-08-47_vaale_q64.wpilog"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "signal_count": 0,
-  "signals": [],
-  "revlog_count": 0,
-  "sync_in_progress": false,
-  "warnings": [
-    "No REV log files found for this wpilog. Revlog files are discovered automatically within the configured log directory tree. Ensure .revlog files are present and timestamps overlap."
-  ],
-  "_execution_time_ms": 0
-}
-```
-
-
-### `get_revlog_data`
-
-Get data from a REV log signal with timestamps converted to FPGA time. Use list_revlog_signals first to discover available signal keys. IMPORTANT: Timestamps are synchronized via statistical correlation and may have limited accuracy depending on sync confidence level.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `signal_key` | string | yes | Signal key (e.g., 'REV/SparkMax_1/appliedOutput' or 'REV/rio/SparkMax_1/velocity') |
-| `start_time` | number | no | Start timestamp in seconds (FPGA time) |
-| `end_time` | number | no | End timestamp in seconds (FPGA time) |
-| `limit` | integer | no | Maximum number of samples to return (default: `1000`) |
-| `include_stats` | boolean | no | Include basic statistics (min, max, mean) |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `signal_key`, `sample_count` (returned), `total_samples`, `data[]` `{timestamp, value}` with timestamps already converted to wpilog FPGA seconds, `sync_confidence`, `warnings[]` (accuracy caveat), `_metadata.timing_accuracy_ms`.
-- With `include_stats=true`: `statistics` `{min, max, mean, count}` plus `data_quality`/`server_analysis_directives` computed over the **returned** samples (so a small `limit` yields low-confidence directives).
-
-
-**Examples**
-
-**With statistics**
-
-Request:
-```json
-{
-  "name": "get_revlog_data",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "signal_key": "REV/SparkMax_16/AppliedOutput",
-    "start_time": 140,
-    "limit": 5,
-    "include_stats": true
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "signal_key": "REV/SparkMax_16/AppliedOutput",
-  "sample_count": 5,
-  "total_samples": 21112,
-  "data": [
-    {
-      "timestamp": 140.007,
-      "value": 0.5562
-    },
-    {
-      "timestamp": 140.017,
-      "value": 0.48660000000000003
-    },
-    "... (3 more items)"
-  ],
-  "sync_confidence": "low",
-  "statistics": {
-    "min": 0.44870000000000004,
-    "max": 0.5562,
-    "mean": 0.50388,
-    "count": 5
-  },
-  "data_quality": {
-    "sample_count": 5,
-    "time_span_seconds": 0.04,
-    "gap_count": 0,
-    "effective_sample_rate_hz": 105.3,
-    "quality_score": 0.66
-  },
-  "server_analysis_directives": {
-    "confidence_level": "medium",
-    "sample_context": "Based on 5 samples over 0.0 seconds",
-    "interpretation_guidance": [
-      "Low sample count (5). Statistical measures have high uncertainty.",
-      "Short time span (0.0s). Results may not be representative of full-match behavior.",
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "Revlog timestamps are synchronized via cross-correlation (confidence: low). Accuracy depends on sync quality."
-    ]
-  },
-  "warnings": [
-    "Timestamps synchronized via correlation (confidence: low). Timing accuracy: ~50-5000ms."
-  ],
-  "_metadata": {
-    "timing_accuracy_ms": "50-5000"
-  },
-  "_execution_time_ms": 3
-}
-```
-
-**Unknown signal**
-
-Request:
-```json
-{
-  "name": "get_revlog_data",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "signal_key": "REV/Nope/Nope"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": false,
-  "error": "Signal not found: REV/Nope/Nope. Use list_revlog_signals to see available signals.",
-  "_execution_time_ms": 0
-}
-```
-
-
-### `sync_status`
-
-Get detailed synchronization status for all synchronized REV log files. Shows confidence levels, timing offsets, and the signal pairs used for synchronization. Use this to understand the accuracy of REV log timestamps.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `include_signal_pairs` | boolean | no | Include details about which signal pairs were used for correlation |
-| `path` | string | yes | Path to the log file (from list_available_logs) |
-
-
-**Response fields**
-
-- `synchronized`, `revlog_count`, `sync_in_progress`, `overall_confidence` (label) and `overall_confidence_value` (0–1), `revlogs[]`, `warnings[]`, `_metadata` `{timing_accuracy_ms, confidence_description}`.
-- Each revlog: `can_bus`, `path`, `device_count`, `signal_count`, `sync` `{method, confidence, confidence_level, offset_microseconds, offset_milliseconds, offset_seconds, explanation, successful, drift_rate_ns_per_sec?, drift_rate_ms_per_hour?, reference_time_sec?}`; `method` ∈ `CROSS_CORRELATION`, `SYSTEM_TIME_ONLY`, `USER_PROVIDED`.
-- With `include_signal_pairs=true` each revlog adds `signal_pairs[]` `{wpilog_entry, revlog_signal, correlation, estimated_offset_us, samples_used}`.
-- Confidence levels: high (`≥0.85`, accuracy 1–5 ms), medium (`≥0.6`, 5–50 ms), low (`≥0.3`, 50–5000 ms), failed. Warnings vary with the level.
-
-
-**Examples**
-
-**Synced (low confidence) with signal pairs**
-
-Request:
-```json
-{
-  "name": "sync_status",
-  "arguments": {
-    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "include_signal_pairs": true
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
+  "status": "ok",
   "synchronized": true,
   "revlog_count": 1,
   "sync_in_progress": false,
@@ -5080,24 +5836,7 @@ Response:
         "offset_seconds": 0.0,
         "explanation": "No signal pairs achieved strong correlation. Using system time estimate only.",
         "successful": true
-      },
-      "signal_pairs": [
-        {
-          "wpilog_entry": "/RealOutputs/Drive/sampleCount",
-          "revlog_signal": "SparkMax_12/AppliedOutput",
-          "correlation": 0.056971190216345294,
-          "estimated_offset_us": -881242,
-          "samples_used": 32104
-        },
-        {
-          "wpilog_entry": "/RealOutputs/Drive/sampleCount",
-          "revlog_signal": "SparkMax_16/AppliedOutput",
-          "correlation": 0.08253993185171463,
-          "estimated_offset_us": 22157576,
-          "samples_used": 32104
-        },
-        "... (3 more items)"
-      ]
+      }
     }
   ],
   "warnings": [
@@ -5106,50 +5845,15 @@ Response:
   "_metadata": {
     "timing_accuracy_ms": "50-5000",
     "confidence_description": "Weak correlation or significant disagreement between signals"
-  },
-  "_execution_time_ms": 0
-}
-```
-
-**No revlog**
-
-Request:
-```json
-{
-  "name": "sync_status",
-  "arguments": {
-    "path": "<logdir>/old/akit_26-03-08_14-08-47_vaale_q64.wpilog"
   }
 }
 ```
-
-Response:
-```json
-{
-  "success": true,
-  "synchronized": false,
-  "revlog_count": 0,
-  "sync_in_progress": false,
-  "overall_confidence": "failed",
-  "overall_confidence_value": 0.0,
-  "revlogs": [],
-  "warnings": [
-    "Synchronization failed. REV log timestamps cannot be reliably correlated with wpilog timestamps. Consider providing CAN ID hints or checking that both logs were recorded during the same time period."
-  ],
-  "_metadata": {
-    "timing_accuracy_ms": "unknown",
-    "confidence_description": "Could not establish reliable synchronization"
-  },
-  "_execution_time_ms": 1
-}
-```
-
 
 ### `set_revlog_offset`
 
 Manually set the synchronization offset for a REV log file. Use this when automatic synchronization fails or when you know the exact offset between revlog and wpilog timestamps. The offset is added to revlog timestamps to convert them to FPGA time. Example: if a revlog event appears 0.5s after the same event in wpilog, set offset_ms to -500.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#set_revlog_offset))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -5157,15 +5861,7 @@ Manually set the synchronization offset for a REV log file. Use this when automa
 | `can_bus` | string | no | CAN bus name to apply offset to (e.g., 'rio'). If omitted, applies to the first/only revlog. |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `can_bus`, `offset_ms`, `offset_us`, `previous_offset_ms`, `previous_method`, `new_method` (`"USER_PROVIDED"`). Affects subsequent `get_revlog_data` timestamps for that bus. Error if no revlog is associated with the wpilog.
-
-
-**Examples**
-
-**Set offset**
+**Example: Manual offset**
 
 Request:
 ```json
@@ -5173,7 +5869,7 @@ Request:
   "name": "set_revlog_offset",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "offset_ms": 0.0
+    "offset_ms": 0
   }
 }
 ```
@@ -5182,59 +5878,28 @@ Response:
 ```json
 {
   "success": true,
+  "status": "ok",
   "can_bus": "rio",
   "offset_ms": 0.0,
   "offset_us": 0,
   "previous_offset_ms": 0.0,
   "previous_method": "SYSTEM_TIME_ONLY",
-  "new_method": "USER_PROVIDED",
-  "_execution_time_ms": 0
+  "new_method": "USER_PROVIDED"
 }
 ```
-
-**No revlog**
-
-Request:
-```json
-{
-  "name": "set_revlog_offset",
-  "arguments": {
-    "path": "<logdir>/old/akit_26-03-08_14-08-47_vaale_q64.wpilog",
-    "offset_ms": 10
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": false,
-  "error": "No REV log files found for this wpilog. Ensure .revlog files are present in the log directory tree with overlapping timestamps.",
-  "_execution_time_ms": 1
-}
-```
-
 
 ### `wait_for_sync`
 
 Wait for background RevLog synchronization to complete. Call this before querying revlog data if synchronization may still be in progress. Returns instantly if sync is already done or no revlogs are present.
 
-**Parameters**
+**Parameters** ([TOOLS.md](TOOLS.md#wait_for_sync))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `timeout_ms` | integer | no | Maximum time to wait in milliseconds (default: 30000) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-
-**Response fields**
-
-- `completed` (false on timeout, with a warning), `was_in_progress`, `revlog_count`, `synchronized`. Blocks up to `timeout_ms` (default 30 s) for the background sync started when the log was first loaded.
-
-
-**Examples**
-
-**Sync was running**
+**Example: Wait for sync**
 
 Request:
 ```json
@@ -5242,7 +5907,7 @@ Request:
   "name": "wait_for_sync",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "timeout_ms": 120000
+    "timeout_ms": 30000
   }
 }
 ```
@@ -5251,64 +5916,11 @@ Response:
 ```json
 {
   "success": true,
-  "completed": true,
-  "was_in_progress": true,
-  "revlog_count": 1,
-  "synchronized": true,
-  "_execution_time_ms": 2273
-}
-```
-
-**Nothing to wait for**
-
-Request:
-```json
-{
-  "name": "wait_for_sync",
-  "arguments": {
-    "path": "<logdir>/old/akit_26-03-08_14-08-47_vaale_q64.wpilog"
-  }
-}
-```
-
-Response:
-```json
-{
-  "success": true,
+  "status": "ok",
   "completed": true,
   "was_in_progress": false,
-  "revlog_count": 0,
-  "synchronized": false,
-  "_execution_time_ms": 0
-}
-```
-
-**Timed out**
-
-Shape derived from source (not captured live); placeholder values in angle brackets.
-
-```json
-{
-  "success": true,
-  "completed": false,
-  "was_in_progress": true,
   "revlog_count": 1,
-  "synchronized": false,
-  "warnings": [
-    "RevLog synchronization did not complete within 30000ms. Try again with a longer timeout."
-  ]
+  "synchronized": true
 }
 ```
 
-
-## Caveats
-
-Observed while capturing these responses (server behaviour, not documentation errors):
-
-- **`NaN` in output.** When a statistic is undefined (e.g. `compare_entries` on a non-numeric entry) the server writes the bare token `NaN` (Gson lenient mode). That is not valid JSON; strict parsers such as JavaScript `JSON.parse` will reject the whole `text` payload.
-- **`power_analysis` / `generate_report` pick the first entry containing "voltage".** On AdvantageKit logs that can be `/SystemStats/5vRail/Voltage`, producing a spurious `brownout_risk: "HIGH"`. Always pass `power_prefix` (e.g. `/SystemStats/Battery`) or use `predict_battery_health`, which looks for battery-specific names.
-- **`analyze_auto` did not detect the auto period** on these logs (Autonomous flag raised at 26.9 s, enable at 111.0 s). `get_match_phases` and `get_ds_timeline` handle the same data correctly.
-- **`get_ds_timeline` emits an extra `TELEOP_START`** at the auto-enable timestamp (110.99 s) in addition to the correct `AUTO_START` and the real `TELEOP_START` at 135.64 s.
-- **`quality_score` saturates at 0.5** for typical full-match 50 Hz series because of the gap penalty, so most directives report `confidence_level: "low"`; the score is only useful as a relative ranking.
-- `detect_anomalies.spike_threshold` is declared in the schema but never read; only the IQR outlier test is applied.
-- `analyze_swerve.swerve_entries.other` echoes every non-swerve entry name in the log (hundreds of strings).

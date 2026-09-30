@@ -144,6 +144,10 @@ tasks.named('test') {
     if (project.hasProperty('goldenLog')) {
         systemProperty 'golden.log', project.property('goldenLog')
     }
+    // Regenerate doc/TOOL_RESPONSES.md from real logs (opt-in): -PtoolResponsesLogDir=/path/to/riologs
+    if (project.hasProperty('toolResponsesLogDir')) {
+        systemProperty 'tool.responses.logdir', project.property('toolResponsesLogDir')
+    }
 }
 
 application {

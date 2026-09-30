@@ -197,13 +197,14 @@ public record DataQuality(
       score -= gapPenalty;
       if (gapPenalty >= 0.005) {
         reasons.add(sampling == Sampling.PERIODIC
-            ? String.format(java.util.Locale.ROOT, "%.1f%% of the time span is in %d gaps "
+            ? String.format(java.util.Locale.ROOT, "%.1f%% of the time span is in %d %s "
                 + "longer than 5x the median interval (longest %.0f ms)", 100 * gapFraction,
-                gapCount, maxGap * 1000)
-            : String.format(java.util.Locale.ROOT, "%.1f%% of the time span is in %d intervals "
+                gapCount, gapCount == 1 ? "gap" : "gaps", maxGap * 1000)
+            : String.format(java.util.Locale.ROOT, "%.1f%% of the time span is in %d %s "
                 + "longer than 5x the median with no new value (longest %.0f ms): the value "
                 + "held or was not logged, and statistics weigh samples, not time",
-                100 * gapFraction, gapCount, maxGap * 1000));
+                100 * gapFraction, gapCount, gapCount == 1 ? "interval" : "intervals",
+                maxGap * 1000));
       }
     }
     if (sampling == Sampling.PERIODIC) {

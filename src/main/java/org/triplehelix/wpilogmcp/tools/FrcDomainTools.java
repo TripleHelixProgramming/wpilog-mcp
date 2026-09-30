@@ -508,10 +508,9 @@ public final class FrcDomainTools {
           targetEntries.add(e.name());
         } else if (e.type().equals("struct:Pose3d[]") || e.type().equals("struct:Pose2d[]")) {
           poseSets.add(e.name());
-        } else if (e.type().startsWith("struct:") && e.type().endsWith("[]")
-            && isObservationStream(log.values().get(e.name()))) {
+        } else if (isObservationStream(log, e)) {
           streams.add(e.name());
-        } else if (e.type().startsWith("struct:") && isTargetStream(log.values().get(e.name()))) {
+        } else if (isTargetStream(log, e)) {
           targetStreams.add(e.name());
         }
       }
@@ -628,6 +627,36 @@ public final class FrcDomainTools {
             .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
       }
       return builder.build();
+    }
+
+    /**
+     * A struct array of pose observations: its schema has a numeric {@code timestamp} field and a
+     * Pose2d/Pose3d field. Decided from the schema without decoding; a struct with no known schema
+     * is judged by its first non-empty record.
+     */
+    static boolean isObservationStream(LogData log, org.triplehelix.wpilogmcp.log.EntryInfo e) {
+      if (!e.type().startsWith("struct:") || !e.type().endsWith("[]")) return false;
+      var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(e.type());
+      var info = log.structSchemas().info(struct);
+      if (info.isEmpty()) return isObservationStream(log.values().get(e.name()));
+      var fields = info.get().fields();
+      return fields.stream().anyMatch(f -> f.name().equalsIgnoreCase("timestamp")
+              && f.structType() == null && !f.type().equals("char"))
+          && fields.stream().anyMatch(f -> "Pose3d".equals(f.structType())
+              || "Pose2d".equals(f.structType()));
+    }
+
+    /**
+     * A struct (or struct array) of target observations: its schema has {@code yaw} and
+     * {@code pitch} fields. A struct with no known schema is judged by its first record.
+     */
+    static boolean isTargetStream(LogData log, org.triplehelix.wpilogmcp.log.EntryInfo e) {
+      if (!e.type().startsWith("struct:") || e.type().startsWith("struct:Pose")) return false;
+      var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(e.type());
+      var info = log.structSchemas().info(struct);
+      if (info.isEmpty()) return isTargetStream(log.values().get(e.name()));
+      var names = info.get().fields().stream().map(f -> f.name().toLowerCase()).toList();
+      return names.contains("yaw") && names.contains("pitch");
     }
 
     /** A struct array whose non-empty records hold a timestamp and a readable pose. */

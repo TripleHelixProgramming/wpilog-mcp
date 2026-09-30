@@ -1135,7 +1135,16 @@ public final class RobotAnalysisTools {
         }
         stats.addProperty("entry_found", true);
         stats.addProperty("signal", signal.label());
-        var scope = TimeScope.fromArguments(log, null, arguments);
+        TimeScope scope;
+        try {
+          scope = TimeScope.fromArguments(log, null, arguments);
+        } catch (IllegalArgumentException e) {
+          // this log cannot be scoped (e.g. no DriverStation data): report it, compare the rest
+          stats.addProperty("reason", e.getMessage());
+          warnings.add(filename + ": " + e.getMessage());
+          comparisons.add(stats);
+          continue;
+        }
         if (!scope.isAll()) stats.add("scope", scope.toJson());
         var windows = StatisticsTools.finiteWindows(signal, scope,
             signal.isAngle() && !signal.multiValued());

@@ -68,6 +68,21 @@ class CompareMatchesFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
+  @DisplayName("a log that cannot be scoped is reported; the other is still described")
+  void unscopableLog() {
+    // no_ds has no DriverStation entries, so scope 'enabled' cannot apply to it
+    var r = call("compare_matches", "akit_match", "compare_path",
+        fixturePath("no_ds").toString(), "name", "/SystemStats/BatteryVoltage", "scope",
+        "enabled");
+    assertEquals("partial", r.get("status").getAsString(), r.toString());
+    var second = r.getAsJsonArray("comparisons").get(1).getAsJsonObject();
+    assertTrue(second.get("entry_found").getAsBoolean());
+    assertTrue(second.get("reason").getAsString().contains("no DriverStation state entries"),
+        second.toString());
+    assertTrue(r.getAsJsonArray("comparisons").get(0).getAsJsonObject().has("statistics"));
+  }
+
+  @Test
   @DisplayName("missing in both logs: no_match with the reason")
   void missingEverywhere() {
     var r = call("compare_matches", "akit_match", "compare_path",
