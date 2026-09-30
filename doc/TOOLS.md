@@ -78,6 +78,7 @@ Get a comprehensive overview of all server capabilities, organized by category w
 **Returns:** Structured overview including:
 - `overview`: Server name, version, total tools, purpose
 - `critical_guidance`: Key anti-patterns to avoid (e.g., "NEVER compute statistics manually")
+- `analysis_principles`: General reasoning guidance for the AI agent (see [Server Instructions](#server-instructions)): the scientific-method loop for causal questions, confidence calibration (what `confidence_level` does and does not bound), a catalogue of confabulation traps with the tool call that avoids each, cross-match rules, entry naming conventions, units, and pit vs. deep-dive report formats
 - `categories`: Array of tool categories with descriptions, anti-patterns, and tool details
 - `common_workflows`: Step-by-step workflows for common analysis tasks
 
@@ -369,42 +370,55 @@ Find timestamps where a numeric entry crosses a threshold. Useful for questions 
 ```
 
 ### `search_strings`
-Search string entries for text patterns. Useful for finding errors, warnings, or specific messages in console output logs.
+List or search the text logged in string entries (console output, alerts, WPILib `messages`), completely and in time order across all entries. This is the tool for "show me every error": nothing is prioritized or silently dropped — results are paged with explicit totals.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `pattern` (required): Text pattern to search for (case-insensitive substring match)
-- `entry_pattern` (optional): Filter which entries to search (e.g., `Console` or `Output`)
-- `limit` (optional): Maximum matches to return (default 50)
+- `pattern` (optional): Case-insensitive substring, or a Java regular expression when `regex` is true. Omit to list every string sample (narrow with `level`, `entry_pattern`, or a time window)
+- `regex` (optional): Treat `pattern` as a Java regex, case-insensitive (Unicode-aware) with `^`/`$` anchoring to lines of a multi-line sample; `.` does not cross a line break. Default `false`. An invalid regex returns an error, and a pattern that backtracks for more than about a second (nested quantifiers on long text) is rejected with an error rather than hanging the server
+- `level` (optional): `error`, `warning`, or `any` (default). Classification is the same rule `get_ds_timeline` uses for `text_event_counts`, so the numbers agree
+- `entry_pattern` (optional): Only search entries whose name contains this substring
+- `start_time` / `end_time` (optional): Time window in seconds
+- `offset` (optional, default 0) and `limit` (optional, default 100, max 1000): Paging over the time-ordered result; values outside those ranges are clamped and the clamped values are echoed
+- `collapse_repeats` (optional, default `false`): Fold runs of identical samples that are **adjacent in the same entry's stream** into one match with `repeat_count` and `last_timestamp_sec`. Any other sample in between — even one the filters exclude — ends the run, so a `repeat_count` never spans a gap
+- `max_value_chars` (optional, default 500, minimum 1): Truncate each returned `value`
 
-**Returns:** Matching strings with timestamps and entry names
+**Returns:**
+- `total_matches` — the full number of matching samples (before paging); with `collapse_repeats`, also `total_after_collapse`
+- `offset`, `limit`, `returned` (= `match_count`, kept for compatibility), `has_more` — whether another page exists
+- `matches[]` sorted by time across entries (ties by entry declaration order): `{timestamp_sec, entry, level? ("error"/"warning" when classified), line, value, repeat_count?, last_timestamp_sec?}`. `line` is the line containing the pattern match; without a pattern it is the classified line, or the first line for unclassified samples; it is cut at 200 characters (`line_truncated: true`). `value` is the whole sample cut at `max_value_chars` (`value_truncated: true`)
+- `pattern` (echoed when given), `regex`, `level`
 
-**Example Response:**
+**Example Response** (`level: "error"`, `limit: 2`):
 ```json
 {
   "success": true,
-  "pattern": "error",
+  "regex": false,
+  "level": "error",
+  "total_matches": 4,
+  "offset": 0,
+  "limit": 2,
+  "returned": 2,
   "match_count": 2,
+  "has_more": true,
   "matches": [
     {
-      "timestamp_sec": 12.34,
-      "entry": "/SmartDashboard/Console",
-      "value": "Error: CAN timeout on device 5"
+      "timestamp_sec": 123.71,
+      "entry": "/RealOutputs/Console",
+      "level": "error",
+      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:88): ...",
+      "value": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:88): ..."
     },
     {
-      "timestamp_sec": 45.67,
-      "entry": "/SmartDashboard/Console",
-      "value": "Error: Vision target not found"
+      "timestamp_sec": 124.74,
+      "entry": "/RealOutputs/Console",
+      "level": "error",
+      "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:88): ...",
+      "value": "..."
     }
   ]
 }
 ```
-
----
-
-## Statistics Tools
-
-Statistical analysis on numeric data. Compute stats, find correlations, detect anomalies.
 
 ### `get_statistics`
 Get statistics for a numeric entry. Supports optional time range filtering. Includes data quality metrics and analysis directives for confidence assessment.
@@ -597,10 +611,10 @@ Robot-specific analysis: power, swerve, CAN health, match phases.
 Detect match phases from DriverStation/FMS data in the log. Phases are derived from actual DS mode transitions (Enabled, Autonomous, Teleop), not hardcoded durations, so they reflect the real match regardless of game year.
 
 **How it works:**
-- Looks for DriverStation entries containing "Enabled" and "Autonomous" mode flags
+- Looks for DriverStation mode flags under either naming convention: AdvantageKit `/DriverStation/Enabled` and `/DriverStation/Autonomous`, or WPILib DataLogManager `DS:enabled` and `DS:autonomous`
 - Detects auto→teleop transition from the actual boolean state change
 - Match start/end come from enable/disable transitions
-- If DriverStation data is not present in the log, returns a warning instead of guessing
+- If DriverStation data is not present in the log, returns a warning instead of guessing; if it is present but the robot was never enabled (a pit or bench log), reports no phases with a warning saying so
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -682,7 +696,11 @@ Analyze swerve drive module performance. Searches for entries containing SwerveM
 ```
 
 ### `power_analysis`
-Analyze power distribution (PDP/PDH) data. Finds battery voltage entries, per-channel current entries, and total current. Assesses brownout risk based on minimum voltage.
+Analyze battery and current distribution data. Reports battery voltage statistics and brownout risk, plus the peak current for every amperage entry in the log, sorted by peak magnitude. Per-channel arrays such as AdvantageKit's `/PowerDistribution/ChannelCurrent` are expanded per channel index, so PDH/PDP channel peaks are reported even though the statistics tools cannot read array entries.
+
+**Voltage entry selection** (shared with `get_ds_timeline`): candidates are scalar numeric entries (`double`, `float`, `int64`) whose name contains "voltage" and that have at least one finite sample. Battery-named entries (`BatteryVoltage`) are preferred, then input/bus voltage, then any other voltage entry (e.g. WPILib `NT:/SmartDashboard/PowerDistribution[1]/Voltage` or AdvantageKit `/RealOutputs/PDH/Voltage`); rail, regulator, and motor-output voltages (`5vRail`, `3v3`, `AppliedVoltage`, ... — judged on the last two path segments, so `/RealOutputs/` does not count as an "output") are used only as a last resort. Ties are broken by WPILOG declaration order. Pass `power_prefix` to force a specific subtree.
+
+**Current entry selection:** an entry counts as amperage when its name ends in `Amps`/`Amperes` at a token boundary (`CurrentAmps`, `StatorAmps`, `stator_amps` — but not `OdometryTimestamps` or `SlewRamps`), when the text after the last `Current` is empty or a unit/plural/draw suffix (`OutputCurrent`, `Current_A`, `CurrentDraw`, `Currents`, `Current(A)`), when it is `Current/<sub-path>` that is not a non-amperage quantity (`Current/Stator` yes, `Current/Setpoint` no), or when it is a WPILib PowerDistribution sendable channel (`PowerDistribution[<id>]/Chan<N>`). Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are excluded; anything containing "voltage" is excluded. `power_prefix` narrows the candidates but does not bypass the rule.
 
 **Brownout Risk Levels:**
 - **HIGH**: Voltage dropped below brownout threshold
@@ -693,121 +711,150 @@ Analyze power distribution (PDP/PDH) data. Finds battery voltage entries, per-ch
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
 - `brownout_threshold` (optional): Voltage threshold for brownout warning (default 6.8V for roboRIO 1; set to 6.3V for roboRIO 2)
+- `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
 
-**Returns:** Voltage analysis (min/max/avg), per-channel current statistics sorted by max current, and brownout risk assessment
+**Returns:**
+- `voltage_analysis`: `{entry, min_voltage, max_voltage, avg_voltage, samples_below_threshold, brownout_threshold, brownout_risk}` — statistics and the below-threshold count use finite samples only; absent when no usable voltage entry exists (a warning says why)
+- `current_entries_analyzed`: number of current entries/channels found (always present; 0 when none)
+- `channel_analysis`: present when at least one current entry exists; sorted by `|peak_current_A|` descending: `{entry, peak_current_A, peak_current_time_sec, max_current_A, min_current_A, avg_current_A, sample_count}`. `peak_current_A` is the sample with the largest magnitude, signed (a −150 A stall on a direction-signed torque current is reported as −150); `max_current_A`/`min_current_A` are the signed extremes. Entries expanded from an array (`double[]`, `float[]`, `int64[]`) add `source_entry` and `channel` (the index) and are named `<entry>[<index>]`; ragged arrays yield per-channel sample counts. Non-finite samples are ignored.
+- `warnings`: when no usable voltage entry exists (distinguishing "no voltage-named entry" from "voltage entries exist but none has finite scalar samples"), when no current entries are found, or when the list was truncated by `channel_limit`
+- `data_quality` / `server_analysis_directives`: computed from the voltage entry, or from the first scalar current entry (declaration order) when there is no voltage entry; absent for array-only logs
 
-**Example Response:**
+**Example Response** (captured from a real AdvantageKit match log; the `channel_analysis` array is trimmed):
 ```json
 {
   "success": true,
   "voltage_analysis": {
-    "entry": "/Robot/BatteryVoltage",
-    "min_voltage": 10.23,
-    "max_voltage": 12.89,
-    "avg_voltage": 11.87,
-    "samples_below_threshold": 0,
+    "entry": "/SystemStats/BatteryVoltage",
+    "min_voltage": 6.681,
+    "max_voltage": 12.844,
+    "avg_voltage": 10.647,
+    "samples_below_threshold": 1,
     "brownout_threshold": 6.8,
-    "brownout_risk": "LOW"
+    "brownout_risk": "HIGH"
   },
+  "current_entries_analyzed": 71,
   "channel_analysis": [
     {
-      "entry": "/PDP/Channel8/Current",
-      "max_current_A": 45.2,
-      "avg_current_A": 12.3,
-      "sample_count": 7700
+      "entry": "/RealOutputs/PDH/TotalCurrentAmps",
+      "peak_current_A": 226.0,
+      "peak_current_time_sec": 137.38,
+      "max_current_A": 226.0,
+      "min_current_A": 2.0,
+      "avg_current_A": 96.217,
+      "sample_count": 2077
     },
     {
-      "entry": "/PDP/Channel12/Current",
-      "max_current_A": 38.7,
-      "avg_current_A": 8.9,
-      "sample_count": 7700
-    }
+      "entry": "/Spindexer/CurrentAmps",
+      "peak_current_A": 149.304,
+      "peak_current_time_sec": 180.102,
+      "max_current_A": 149.304,
+      "min_current_A": 0.0,
+      "avg_current_A": 9.248,
+      "sample_count": 2798
+    },
+    {
+      "entry": "/Kicker/CurrentAmps",
+      "peak_current_A": 115.055,
+      "peak_current_time_sec": 183.31,
+      "max_current_A": 115.055,
+      "min_current_A": 0.0,
+      "avg_current_A": 7.685,
+      "sample_count": 3032
+    },
+    "... (27 more items)"
   ],
-  "highest_current_channel": "/PDP/Channel8/Current",
-  "highest_current_A": 45.2,
-  "peak_total_current_A": 120.5
+  "warnings": [
+    "Showing the top 30 of 71 current entries/channels by peak current; raise channel_limit to see more."
+  ],
+  "data_quality": {
+    "...": "..."
+  },
+  "server_analysis_directives": {
+    "...": "..."
+  }
 }
 ```
 
 ### `can_health`
-Analyze CAN bus health by searching for CAN-related entries and string entries containing CAN error messages (timeout, error, fault). Provides a health assessment based on error count.
+Analyze CAN bus health by scanning string entries (console output, alerts) for CAN error messages (timeout, error, fault) and classifying each by the robot's enabled state at that moment. DriverStation entries are recognized under both the `/DriverStation/...` and `DS:...` naming conventions; without one, all errors are counted as enabled-state.
 
-**Health Levels:**
-- **GOOD**: No CAN errors detected
-- **FAIR**: Few CAN errors (< 10)
-- **CONCERNING**: Multiple CAN errors (10-50)
-- **POOR**: Many CAN errors (> 50)
+**Health Levels** (based on enabled-state errors only, since disabled-state timeouts are normal):
+- **GOOD**: No CAN errors while enabled
+- **CONCERNING**: Fewer than 50 CAN errors while enabled
+- **POOR**: 50 or more CAN errors while enabled
 
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** List of CAN entries, error counts by entry, sample error messages, and health assessment
+**Returns:** Error counts by entry (with enabled/disabled breakdown when DriverStation data exists), totals, health assessment, and warnings
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "can_entries": [
-    "/CAN/Utilization",
-    "/CAN/BusOff",
-    "/CAN/TxErrors"
-  ],
-  "can_entry_count": 3,
   "error_counts_by_entry": {
-    "/SmartDashboard/Console": 5
-  },
-  "total_can_errors": 5,
-  "sample_errors": [
-    {
-      "timestamp_sec": 34.5,
-      "entry": "/SmartDashboard/Console",
-      "message": "CAN timeout on device 5"
+    "/RealOutputs/Console": {
+      "total": 2,
+      "while_enabled": 2,
+      "while_disabled": 0
     }
-  ],
-  "health_assessment": "FAIR - Few CAN errors detected"
+  },
+  "total_can_errors": 2,
+  "errors_while_enabled": 2,
+  "errors_while_disabled": 0,
+  "health_assessment": "CONCERNING",
+  "data_quality": { "...": "..." },
+  "server_analysis_directives": { "...": "..." }
 }
 ```
 
 ### `compare_matches`
-Compare statistics for an entry across two log files. Useful for comparing robot performance across different matches.
+Compare statistics for one scalar numeric entry across two log files. Useful as a quick whole-log comparison of robot performance across matches; for phase-scoped comparisons run `get_statistics` with `start_time`/`end_time` on each log instead.
 
 **Parameters:**
 - `path` (required): Path to the first log file
-- `compare_path` (required): Path to the second log file
+- `compare_path` (required): Path to the second log file (must differ from `path`)
 - `name` (required): Entry name to compare across logs
 
-**Returns:** Statistics (min, max, mean) for each log file
+**Returns:**
+- `entry`, `logs_compared`
+- `comparisons[]` — one per log, in argument order: `{log_path, log_filename, entry_found, sample_count, statistics: {min, max, mean}}`. `sample_count` (finite scalar samples) and `statistics` are present only when `entry_found`; `statistics` is also omitted when `sample_count` is 0 (array entries such as `/PowerDistribution/ChannelCurrent` are not compared — use `power_analysis` or `read_entry`)
+- `warnings` — when the entry is missing from a log or has no finite scalar values
+- `data_quality` / `server_analysis_directives` — computed from the **first** log only
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "entry": "/Robot/BatteryVoltage",
+  "entry": "/SystemStats/BatteryVoltage",
   "logs_compared": 2,
   "comparisons": [
     {
-      "log_path": "/logs/2024vadc_qm8.wpilog",
-      "log_filename": "2024vadc_qm8.wpilog",
+      "log_path": "/logs/akit_26-03-21_16-29-56_vache_q10.wpilog",
+      "log_filename": "akit_26-03-21_16-29-56_vache_q10.wpilog",
       "entry_found": true,
-      "sample_count": 7716,
+      "sample_count": 11735,
       "statistics": {
-        "min": 10.5,
-        "max": 12.9,
-        "mean": 11.8
+        "min": 6.68,
+        "max": 12.84,
+        "mean": 10.65
       }
     },
     {
-      "log_path": "/logs/2024vadc_qm64.wpilog",
-      "log_filename": "2024vadc_qm64.wpilog",
+      "log_path": "/logs/akit_26-03-21_16-54-48_vache_q13.wpilog",
+      "log_filename": "akit_26-03-21_16-54-48_vache_q13.wpilog",
       "entry_found": true,
-      "sample_count": 8234,
+      "sample_count": 11702,
       "statistics": {
-        "min": 9.8,
-        "max": 12.8,
-        "mean": 11.2
+        "min": 6.62,
+        "max": 12.58,
+        "mean": 10.77
       }
     }
-  ]
+  ],
+  "data_quality": { "...": "..." },
+  "server_analysis_directives": { "...": "..." }
 }
 ```
 
@@ -1167,7 +1214,7 @@ Generate a comprehensive match summary report. Collects key metrics from the log
 ## FRC Domain Tools
 
 ### `get_ds_timeline`
-Generate a chronological timeline of critical robot events. Detects enable/disable transitions, match phase changes, brownout events, joystick disconnects, and errors/warnings.
+Generate a chronological timeline of critical robot events. Detects enable/disable transitions, match phase changes, battery-voltage threshold brownouts, and roboRIO brownout flag transitions (when the robot logs one). Errors and warnings found in string entries are **counted and summarized, not listed**: the timeline reports exact counts and a distinct-message summary, and `search_strings` provides the complete, paged listing — so no heuristic decides which messages you see. DriverStation entries are recognized under both the `/DriverStation/...` (AdvantageKit) and `DS:...` (WPILib DataLogManager) naming conventions.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1175,26 +1222,57 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
 - `end_time` (optional): End timestamp in seconds
 - `brownout_threshold` (optional): Voltage threshold for brownout detection (default: 6.8V for roboRIO 1; use 6.3V for roboRIO 2)
 
-**Returns:** Chronologically sorted list of events with category, type, timestamp, and source entry
+**Returns:** Chronologically sorted `events` with category, type, timestamp, and source entry; `summary` (count per category); `brownout_voltage_entry` (the voltage entry scanned for threshold crossings — selected exactly as `power_analysis` does — with a warning instead when the log has none); `rio_brownout_flag_logged` (whether the log contains a boolean roboRIO brownout flag entry) and, when it does, `rio_brownout_flag_entry`; `text_event_counts` and `text_event_summary` / `text_event_groups_total` (see below); `warnings`
 
 **Event Categories:**
 - `robot_state`: ENABLED, DISABLED
 - `match_phase`: AUTO_START, TELEOP_START
-- `controller`: JOYSTICK_CONNECTED, JOYSTICK_DISCONNECTED
-- `power`: BROWNOUT_START, BROWNOUT_END
-- `error`: ERROR (from string entries containing "error", "exception", "fault")
-- `warning`: WARNING (from entries containing "warning", "overrun", "watchdog")
+- `power`: BROWNOUT_START, BROWNOUT_END (`basis: "voltage_threshold"` — the battery voltage crossed `brownout_threshold`, with 0.2 V exit hysteresis; includes `voltage`) and RIO_BROWNOUT_START, RIO_BROWNOUT_END (`basis: "rio_flag"` — a logged boolean brownout flag such as AdvantageKit `/SystemStats/BrownedOut` changed state; this is the roboRIO's own brownout state). A voltage crossing does not by itself mean the roboRIO cut outputs; when `rio_brownout_flag_logged` is false, that cannot be determined from the log.
+**Error/warning text** (string entries such as `/RealOutputs/Console`, alerts, or WPILib `messages`): a sample is an ERROR when any of its lines contains "error", "exception", or "fault" ("default" does not count); otherwise a WARNING when any line contains "warning", "overrun", or "watchdog" — errors dominate regardless of line order, and the first matching line of the winning kind is the message. This is the same rule `search_strings` uses for its `level` filter, so the two agree (a test enforces it).
+- `text_event_counts`: `{error, warning, total, by_source: {<entry>: {error, warning}}}` — exact sample counts within the time window; never capped
+- `text_event_summary`: one entry per distinct message, where "distinct" is judged after normalizing numbers to `#` and collapsing whitespace, so `Loop time of 0.023s overrun` and `... 0.031s ...` are one group. Each entry: `{type, message (the normalized pattern), example (the first actual text, when it differs), count, variants (how many different raw texts the group covers — `CAN timeout on device #` with `variants: 2` hides two devices; judged on the full line, while `message`/`example` are cut at 200 characters for display; `variants_capped: true` if a group exceeded 10,000 distinct texts), first_timestamp, last_timestamp, sources[]}`, sorted by count. At most 200 groups are shown; `text_event_groups_total` is the true number and a warning says when the summary was cut. Absent when the log has no error/warning text (`text_event_counts` is always present)
+- Individual messages are not placed on the timeline. Use `search_strings` (optionally `level=error`, a regex, a time window) to list them completely with paging totals
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "event_count": 12,
+  "event_count": 8,
+  "rio_brownout_flag_logged": false,
+  "text_event_counts": {
+    "error": 3,
+    "warning": 1,
+    "total": 4,
+    "by_source": { "/RealOutputs/Console": { "error": 3, "warning": 1 } }
+  },
+  "text_event_groups_total": 2,
+  "text_event_summary": [
+    {
+      "type": "ERROR",
+      "message": "CAN timeout on device #",
+      "example": "CAN timeout on device 5",
+      "count": 3,
+      "variants": 2,
+      "first_timestamp": 34.5,
+      "last_timestamp": 41.2,
+      "sources": ["/RealOutputs/Console"]
+    },
+    {
+      "type": "WARNING",
+      "message": "Loop time of #s overrun",
+      "example": "Loop time of 0.023s overrun",
+      "count": 1,
+      "variants": 1,
+      "first_timestamp": 28.4,
+      "last_timestamp": 28.4,
+      "sources": ["/RealOutputs/Console"]
+    }
+  ],
+  "brownout_voltage_entry": "/Robot/BatteryVoltage",
   "summary": {
     "robot_state": 4,
     "match_phase": 2,
-    "power": 2,
-    "error": 4
+    "power": 2
   },
   "events": [
     {
@@ -1213,7 +1291,8 @@ Generate a chronological timeline of critical robot events. Detects enable/disab
       "timestamp": 45.23,
       "type": "BROWNOUT_START",
       "category": "power",
-      "voltage": 6.8,
+      "basis": "voltage_threshold",
+      "voltage": 6.79,
       "source": "/Robot/BatteryVoltage"
     }
   ]
@@ -1991,9 +2070,18 @@ Wait for background RevLog synchronization to complete. RevLog synchronization r
 
 ---
 
+## Server Instructions
+
+In addition to per-tool guidance, the server sends general reasoning guidance to the AI agent through two channels:
+
+- **MCP `instructions`** — Returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a compact, ordered checklist (under 2 KB, the limit at which Claude Code truncates it): answer the question asked first; never name an entry or quote a number that no tool returned; never compute statistics by hand; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis needing physical inspection); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; truncated logs, revlog sync, and TBA-sourced scores.
+- **`get_server_guide` → `analysis_principles`** — The long-form version, returned as a tool result so it reaches the model in every client. The tool's `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}` so Claude Code keeps its description in context even when other MCP tools are deferred.
+
+Both come from `AnalysisGuidance.java`; a test verifies that every tool name they mention exists and that the instructions stay under the size limit.
+
 ## Response Fields
 
-The following are **not callable MCP tools**. They are metadata fields embedded in the JSON responses of analytical tools to help LLMs calibrate their confidence when interpreting results.
+The following are **not callable MCP tools**. They are metadata fields embedded in the JSON responses of analytical tools to help LLMs calibrate their confidence when interpreting results. For full captured example responses from every tool, see [TOOL_RESPONSES.md](TOOL_RESPONSES.md).
 
 ### `data_quality`
 

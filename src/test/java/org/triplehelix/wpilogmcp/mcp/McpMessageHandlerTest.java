@@ -37,6 +37,63 @@ class McpMessageHandlerTest {
   }
 
   @Test
+  @DisplayName("initialize omits instructions when the registry has none")
+  void initializeWithoutInstructions() {
+    var msg = parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    var jsonResult = handler.handleMessage(msg).response().getAsJsonObject("result");
+    assertFalse(jsonResult.has("instructions"));
+
+    registry.setServerInstructions("   ");
+    jsonResult = handler.handleMessage(msg).response().getAsJsonObject("result");
+    assertFalse(jsonResult.has("instructions"), "Blank instructions must be omitted");
+  }
+
+  @Test
+  @DisplayName("initialize includes server instructions when set")
+  void initializeWithInstructions() {
+    registry.setServerInstructions("Answer the question asked first.");
+    var msg = parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    var jsonResult = handler.handleMessage(msg).response().getAsJsonObject("result");
+
+    assertEquals("Answer the question asked first.", jsonResult.get("instructions").getAsString());
+    assertEquals("2025-03-26", jsonResult.get("protocolVersion").getAsString());
+  }
+
+  @Test
+  @DisplayName("tools/list includes _meta only for tools that provide it")
+  void toolsListMeta() {
+    registry.registerTool(new ToolRegistry.Tool() {
+      @Override public String name() { return "plain_tool"; }
+      @Override public String description() { return "No metadata"; }
+      @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+      @Override public com.google.gson.JsonElement execute(JsonObject arguments) { return new JsonObject(); }
+    });
+    registry.registerTool(new ToolRegistry.Tool() {
+      @Override public String name() { return "meta_tool"; }
+      @Override public String description() { return "Has metadata"; }
+      @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+      @Override public com.google.gson.JsonElement execute(JsonObject arguments) { return new JsonObject(); }
+      @Override public JsonObject meta() {
+        var meta = new JsonObject();
+        meta.addProperty("anthropic/alwaysLoad", true);
+        return meta;
+      }
+    });
+
+    var msg = parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+    var tools = handler.handleMessage(msg).response().getAsJsonObject("result").getAsJsonArray("tools");
+    assertEquals(2, tools.size());
+    for (var element : tools) {
+      var tool = element.getAsJsonObject();
+      if (tool.get("name").getAsString().equals("meta_tool")) {
+        assertTrue(tool.getAsJsonObject("_meta").get("anthropic/alwaysLoad").getAsBoolean());
+      } else {
+        assertFalse(tool.has("_meta"));
+      }
+    }
+  }
+
+  @Test
   @DisplayName("initialize with SessionManager creates session")
   void initializeWithSession() {
     var sessionManager = new SessionManager();

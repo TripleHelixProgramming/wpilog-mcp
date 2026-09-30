@@ -76,6 +76,9 @@ Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Inc
 - Edge cases (single data points, high jitter, many NaNs) require reduced confidence
 - Always warn that single-match analysis may not generalize
 
+### Server-Level Guidance
+General reasoning guidance (scientific method, confabulation traps) lives in one class and is delivered two ways: as the MCP `instructions` field on `initialize` (system-prompt placement in Claude Code/VS Code; must stay under 2 KB, most important rules first, ASCII only) and as `analysis_principles` in the `get_server_guide` result (reaches every client). Keep rules concrete and checkable, scope heavy rules to causal questions so they don't fire on lookups, and never phrase `confidence_level` as a blanket ceiling — it is gap-driven and reads "low" on good full-match data, so it bounds statistics, not directly observed events. A test verifies every tool name the guidance mentions exists.
+
 ## Tool Architecture
 
 When adding new tools, follow existing patterns. Read the existing tool base classes and a few representative tools to understand the conventions. Key principles:

@@ -380,16 +380,26 @@ tasks.register('buildExtension', Exec) {
     description = 'Build and package the VS Code extension as a .vsix'
 
     def extDir = "${projectDir}/vscode-extension"
-    def extVersion = new groovy.json.JsonSlurper()
-            .parse(file("${extDir}/package.json")).version
+    def pkg = new groovy.json.JsonSlurper().parse(file("${extDir}/package.json"))
+    def extVersion = pkg.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
+
+    // The extension lives in a subdirectory of the repo. vsce rewrites relative README
+    // links/images to absolute URLs derived from package.json's repository.url, which
+    // points at the repo root, so images/icon.png would become .../raw/HEAD/images/icon.png
+    // (404). Point vsce at the subdirectory explicitly. release.yml passes the same
+    // flags pinned to the release tag instead of HEAD.
+    def repoUrl = (pkg.repository.url as String).replaceAll(/\.git$/, '')
+    def vsceFlags = "--no-dependencies" +
+            " --baseContentUrl ${repoUrl}/blob/HEAD/vscode-extension" +
+            " --baseImagesUrl ${repoUrl}/raw/HEAD/vscode-extension"
 
     workingDir extDir
     def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
     if (isWindows) {
-        commandLine 'cmd', '/c', "npm install --silent && npm run compile && npx @vscode/vsce package --no-dependencies -o ${vsixFile}"
+        commandLine 'cmd', '/c', "npm install --silent && npm run compile && npx @vscode/vsce package ${vsceFlags} -o ${vsixFile}"
     } else {
-        commandLine 'bash', '-c', "npm install --silent && npm run compile && npx @vscode/vsce package --no-dependencies -o '${vsixFile}'"
+        commandLine 'bash', '-c', "npm install --silent && npm run compile && npx @vscode/vsce package ${vsceFlags} -o '${vsixFile}'"
     }
 
     doFirst {

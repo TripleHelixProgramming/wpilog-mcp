@@ -160,6 +160,12 @@ public class McpMessageHandler {
     serverInfo.addProperty("version", SERVER_VERSION);
     result.add("serverInfo", serverInfo);
 
+    // Optional guidance for the client's model; clients MAY add it to the system prompt.
+    var instructions = toolRegistry.getServerInstructions();
+    if (instructions != null && !instructions.isBlank()) {
+      result.addProperty("instructions", instructions);
+    }
+
     // Create a new session if session management is enabled
     if (sessionManager != null) {
       var session = sessionManager.createSession();

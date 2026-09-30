@@ -12,6 +12,10 @@ import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 import java.util.List;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Shared utilities for all WPILOG tools.
@@ -200,7 +204,24 @@ public final class ToolUtils {
   }
 
   /**
+   * Returns true if a lower-cased entry name is a DriverStation state entry.
+   *
+   * <p>Two naming conventions are recognized: AdvantageKit-style names containing
+   * {@code driverstation} (e.g. {@code /DriverStation/Enabled}) and WPILib DataLogManager names
+   * with the {@code DS:} prefix (e.g. {@code DS:enabled}, {@code DS:autonomous}).
+   *
+   * @param lowerName The entry name, already lower-cased
+   * @return true if the entry belongs to the DriverStation state family
+   */
+  public static boolean isDsEntry(String lowerName) {
+    return lowerName.contains("driverstation") || lowerName.startsWith("ds:");
+  }
+
+  /**
    * Finds a DriverStation entry name in the log matching the given keyword.
+   *
+   * <p>Accepts both {@code /DriverStation/...} (AdvantageKit) and {@code DS:...} (WPILib
+   * DataLogManager) names; see {@link #isDsEntry(String)}.
    *
    * @param log The parsed log
    * @param keyword The keyword to match (e.g., "enabled", "autonomous")
@@ -209,13 +230,144 @@ public final class ToolUtils {
   public static String findDsEntry(LogData log, String keyword) {
     for (var entryName : log.entries().keySet()) {
       var lower = entryName.toLowerCase();
-      if (lower.contains("driverstation") && lower.contains(keyword)) {
+      if (isDsEntry(lower) && lower.contains(keyword)) {
         // Exclude "command" entries for auto detection
         if (keyword.contains("auto") && lower.contains("command")) continue;
         return entryName;
       }
     }
     return null;
+  }
+
+  // ==================== POWER ENTRY SELECTION ====================
+
+  /** Name fragments that mark a voltage entry as a rail, regulator, or motor output, not the battery. */
+  private static final List<String> NON_BATTERY_VOLTAGE_HINTS =
+      List.of("rail", "3v3", "5v", "6v", "brownoutvoltage", "setpoint", "applied", "output", "motor");
+
+  /**
+   * Ranks a lower-cased voltage entry name by how likely it is to carry the battery voltage:
+   * 0 = battery voltage, 1 = another battery entry, 2 = input/bus voltage, 3 = any other voltage,
+   * 4 = rail, regulator, or motor output.
+   *
+   * @param lowerName The entry name, already lower-cased
+   * @return The rank (lower is better)
+   */
+  public static int voltageEntryRank(String lowerName) {
+    if (lowerName.contains("batteryvoltage") || lowerName.contains("battery_voltage")) return 0;
+    if (lowerName.contains("battery")) return 1;
+    if (lowerName.contains("inputvoltage") || lowerName.contains("input_voltage")
+        || lowerName.contains("busvoltage") || lowerName.contains("bus_voltage")) return 2;
+    // Rail/regulator/motor hints are judged on the last two path segments only, so an
+    // AdvantageKit "/RealOutputs/PDH/Voltage" is not demoted by the "output" in "RealOutputs".
+    int cut = lowerName.lastIndexOf('/');
+    if (cut > 0) cut = lowerName.lastIndexOf('/', cut - 1);
+    var tail = cut >= 0 ? lowerName.substring(cut + 1) : lowerName;
+    if (NON_BATTERY_VOLTAGE_HINTS.stream().anyMatch(tail::contains)) return 4;
+    return 3;
+  }
+
+  /**
+   * Picks the entry most likely to carry the battery voltage, shared by {@code power_analysis}
+   * and {@code get_ds_timeline} so both tools agree on which signal they analyzed.
+   *
+   * <p>Candidates are scalar numeric entries whose name contains "voltage" (and starts with
+   * {@code prefix} when given), ranked by {@link #voltageEntryRank(String)} with ties broken by
+   * WPILOG entry id (declaration order), so the choice is deterministic. The first candidate that
+   * has at least one finite sample wins; entries with no usable samples are skipped.
+   *
+   * @param log The parsed log
+   * @param prefix Optional entry-name prefix filter, or null
+   * @return The entry name, or empty if no usable voltage entry exists
+   */
+  public static Optional<String> selectVoltageEntry(LogData log, String prefix) {
+    var candidates = log.entries().entrySet().stream()
+        .filter(e -> prefix == null || e.getKey().startsWith(prefix))
+        .filter(e -> e.getKey().toLowerCase().contains("voltage")
+            && isNumericType(e.getValue().type()))
+        .sorted(Comparator
+            .comparingInt((Map.Entry<String, EntryInfo> e) -> voltageEntryRank(e.getKey().toLowerCase()))
+            .thenComparingInt(e -> e.getValue().id()))
+        .map(Map.Entry::getKey)
+        .toList();
+    for (var name : candidates) {
+      if (hasFiniteNumericSample(log.values().get(name))) {
+        return Optional.of(name);
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns true if the list contains at least one finite numeric sample.
+   *
+   * @param values The timestamped values (may be null)
+   * @return true if any value is a finite Number
+   */
+  public static boolean hasFiniteNumericSample(List<TimestampedValue> values) {
+    if (values == null) return false;
+    for (var tv : values) {
+      if (tv.value() instanceof Number n && Double.isFinite(n.doubleValue())) return true;
+    }
+    return false;
+  }
+
+  // ==================== CONSOLE TEXT CLASSIFICATION ====================
+
+  /** Result of classifying a text sample: {@code "ERROR"} or {@code "WARNING"}, and the line that matched. */
+  public record ClassifiedText(String type, String message) {}
+
+  /** Maximum characters of a message line returned to the model; longer lines get "...". */
+  public static final int MESSAGE_LINE_LIMIT = 200;
+
+  /**
+   * Classifies a (possibly multi-line) string sample. A sample is an ERROR if any line contains
+   * "error", "exception", or "fault" ("default" does not count), otherwise a WARNING if any line
+   * contains "warning", "overrun", or "watchdog"; errors dominate regardless of line order. The
+   * returned message is the first matching line of the winning kind, stripped but not truncated
+   * (callers truncate for display with {@link #truncate}). Shared by {@code get_ds_timeline}
+   * (counts and summary) and {@code search_strings} (level filter) so the two always agree.
+   *
+   * @param message The sample text
+   * @return The classification, or null if neither
+   */
+  public static ClassifiedText classifyText(String message) {
+    String firstWarning = null;
+    for (var line : message.split("\\R")) {
+      var lower = line.toLowerCase(java.util.Locale.ROOT);
+      if (lower.contains("error") || lower.contains("exception")
+          || lower.replace("default", "").contains("fault")) {
+        return new ClassifiedText("ERROR", line.strip());
+      }
+      if (firstWarning == null && (lower.contains("warning") || lower.contains("overrun")
+          || lower.contains("watchdog"))) {
+        firstWarning = line.strip();
+      }
+    }
+    return firstWarning == null ? null : new ClassifiedText("WARNING", firstWarning);
+  }
+
+  /**
+   * Truncates text for display, appending "..." when cut.
+   *
+   * @param text The text
+   * @param maxChars Maximum characters to keep
+   * @return The text, or its first {@code maxChars} characters followed by "..."
+   */
+  public static String truncate(String text, int maxChars) {
+    return text.length() > maxChars ? text.substring(0, maxChars) + "..." : text;
+  }
+
+  /**
+   * Normalizes a message for grouping: runs of digits (with optional decimal part) become
+   * {@code #} and whitespace collapses, so "Loop time of 0.023s overrun" and "... 0.031s ..."
+   * are the same message.
+   *
+   * @param message The message text
+   * @return The normalized pattern
+   */
+  public static String normalizeMessage(String message) {
+    return message.replaceAll("\\d+(?:\\.\\d+)?", "#").replaceAll("\\s+", " ").strip();
   }
 
   // ==================== PERCENTILE UTILITY ====================
@@ -420,6 +572,17 @@ public final class ToolUtils {
    */
   public static int getOptInt(com.google.gson.JsonObject args, String key, int defaultValue) {
     return args.has(key) && !args.get(key).isJsonNull() ? args.get(key).getAsInt() : defaultValue;
+  }
+
+  /**
+   * Gets an optional boolean parameter; a missing or null value means false.
+   *
+   * @param args The tool arguments
+   * @param key The parameter name
+   * @return The value, or false if absent
+   */
+  public static boolean getOptBoolean(com.google.gson.JsonObject args, String key) {
+    return args.has(key) && !args.get(key).isJsonNull() && args.get(key).getAsBoolean();
   }
 
   /**

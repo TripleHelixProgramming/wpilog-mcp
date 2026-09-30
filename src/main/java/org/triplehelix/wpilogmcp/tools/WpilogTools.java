@@ -135,5 +135,6 @@ public final class WpilogTools {
     TbaTools.registerAll(registry);
     RevLogTools.registerAll(registry);
     DiscoveryTools.registerAll(registry);
+    registry.setServerInstructions(AnalysisGuidance.SERVER_INSTRUCTIONS);
   }
 }

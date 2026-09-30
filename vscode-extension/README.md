@@ -1,8 +1,18 @@
-# WPILog Analyzer
+<table>
+<tr>
+<td width="180" valign="top" align="center">
+  <img src="images/icon.png" alt="WPILog Analyzer icon" width="140"><br>
+  <h1>WPILog Analyzer</h1>
+</td>
+<td valign="top">
 
 AI-powered FRC robot log analysis for VS Code. Analyzes `.wpilog` telemetry files from the roboRIO to help diagnose brownouts, CAN errors, swerve drive issues, loop timing problems, and more.
 
 This extension registers an [MCP server](https://modelcontextprotocol.io/) that gives AI agents access to semantically described robot log analysis tools, including the ability to extract the raw data for further processing. The server is designed for and tested with Claude. It should work with any AI agent that uses the VS Code MCP server registry (Claude Code, Copilot, etc.).
+
+</td>
+</tr>
+</table>
 
 ## Quick Start
 
@@ -39,7 +49,7 @@ On activation, the extension finds the WPILib JDK and server JAR, then registers
 ## Requirements
 
 - **Java 17+** — The WPILib toolkit includes a compatible JDK (auto-detected)
-- **VS Code 1.100+** with an MCP-compatible AI agent
+- **VS Code 1.101+** with an MCP-compatible AI agent
 
 ## Settings
 

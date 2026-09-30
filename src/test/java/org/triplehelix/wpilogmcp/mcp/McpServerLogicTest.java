@@ -69,6 +69,39 @@ class McpServerLogicTest {
   }
 
   @Test
+  @DisplayName("initialize with the full tool set carries server instructions")
+  void initializeCarriesServerInstructions() throws Exception {
+    var initRequest = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+                    + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":{}}\n";
+
+    System.setIn(new ByteArrayInputStream(initRequest.getBytes()));
+    System.setOut(new PrintStream(outputStream));
+
+    var registry = new ToolRegistry();
+    org.triplehelix.wpilogmcp.tools.WpilogTools.registerAll(registry);
+    var server = new McpServer(registry);
+
+    executor.submit(() -> {
+      try {
+        server.run();
+      } catch (Exception ignored) {}
+    });
+
+    executor.shutdown();
+    executor.awaitTermination(2, TimeUnit.SECONDS);
+
+    var initResponse = outputStream.toString().lines()
+        .filter(line -> line.contains("\"protocolVersion\""))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("No initialize response in output"));
+    var result = com.google.gson.JsonParser.parseString(initResponse)
+        .getAsJsonObject().getAsJsonObject("result");
+    assertEquals(
+        org.triplehelix.wpilogmcp.tools.AnalysisGuidance.SERVER_INSTRUCTIONS,
+        result.get("instructions").getAsString());
+  }
+
+  @Test
   @DisplayName("server handles tools/list request")
   void handlesToolsList() throws Exception {
     var listRequest = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"

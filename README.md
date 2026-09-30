@@ -75,6 +75,7 @@ AI models have a natural tendency to find explanations that fit the data — eve
 - **Data quality scoring** — Each response includes a quality assessment based on sample count, data gaps, and timing regularity. When data quality is poor, the AI is explicitly told to reduce its confidence.
 - **Epistemic guidance** — Tool descriptions and response metadata embed language like "suggests" and "may indicate" rather than "proves" or "confirms." The AI is reminded that a single match is never enough to draw definitive conclusions.
 - **Primitive tool design** — Instead of a single "diagnose my robot" tool that returns a health score, the server provides building blocks (voltage stats, current stats, correlation coefficients). The AI must reason across multiple tool calls, making its logic transparent and auditable.
+- **Server-level reasoning guidance** — On connect, the server sends MCP `instructions` that clients such as Claude Code and VS Code place in the model's system prompt: verify that the event in the question actually happened, never name an entry or quote a number that no tool returned, test a proposed cause against a rival hypothesis, and state observed events plainly while labeling inferred causes as hypotheses. `get_server_guide` returns the full `analysis_principles` — the method, confidence calibration, and a catalogue of confabulation traps — for clients that don't forward instructions.
 
 The goal: when you ask "why did we lose Q68?", you get analysis grounded in what the data actually shows — with appropriate caveats about what it doesn't.
 
@@ -223,6 +224,7 @@ MIT License - see [LICENSE](LICENSE)
 - [STANDALONE.md](doc/STANDALONE.md) - Standalone install, configuration, and Docker
 - [DEVELOPMENT.md](doc/DEVELOPMENT.md) - Building from source, project structure, contributing
 - [TOOLS.md](doc/TOOLS.md) - Complete tool reference
+- [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) - Captured JSON responses for every tool, including the LLM guidance fields
 - [VAALE Event Analysis](doc/VAALE_EVENT_ANALYSIS.md) - Comprehensive event analysis from real robot logs
 - [VACHE Power Analysis](doc/VACHE_POWER_ANALYSIS.md) - In-depth power & voltage analysis showcasing epistemic guardrails
 - [WPILib DataLog Docs](https://docs.wpilib.org/en/stable/docs/software/telemetry/datalog.html)

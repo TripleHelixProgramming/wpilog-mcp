@@ -40,6 +40,7 @@ class HttpTransportTest {
         return result;
       }
     });
+    registry.setServerInstructions("HTTP test instructions");
 
     // Use port 0 to let the OS assign a free port
     transport = new HttpTransport(registry, 0);
@@ -66,6 +67,8 @@ class HttpTransportTest {
     var body = JsonParser.parseString(response.body()).getAsJsonObject();
     assertEquals("2025-03-26",
         body.getAsJsonObject("result").get("protocolVersion").getAsString());
+    assertEquals("HTTP test instructions",
+        body.getAsJsonObject("result").get("instructions").getAsString());
   }
 
   @Test

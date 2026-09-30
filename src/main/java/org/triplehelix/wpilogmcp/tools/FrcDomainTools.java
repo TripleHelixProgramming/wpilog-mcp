@@ -11,6 +11,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
 import org.triplehelix.wpilogmcp.log.LogData;
@@ -122,7 +127,17 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Generate a chronological timeline of critical robot events: enable/disable, "
-          + "match phases, brownouts, joystick disconnects, errors, and warnings."
+          + "match phases, battery-voltage threshold brownouts (BROWNOUT_START/END, basis "
+          + "voltage_threshold), roboRIO brownout flag transitions when a flag such as "
+          + "/SystemStats/BrownedOut is logged (RIO_BROWNOUT_START/END, basis rio_flag), and "
+          + "for errors/warnings found in string entries, exact counts (text_event_counts, per "
+          + "source) and text_event_summary: each distinct message (numbers normalized to #) with "
+          + "its count, first/last time, sources, and how many distinct raw texts it covers. "
+          + "Individual messages are deliberately not listed here; use search_strings (level, "
+          + "regex, time window, offset/limit paging) for the complete list. "
+          + "rio_brownout_flag_logged says whether the roboRIO's own brownout state is available "
+          + "in this log; brownout_voltage_entry names the voltage entry scanned for threshold "
+          + "crossings, and a warning says when there is none."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -154,7 +169,7 @@ public final class FrcDomainTools {
       List<TimestampedValue> enabledValuesForTimeline = null;
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
+        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
           enabledValuesForTimeline = log.values().get(entryName);
           break;
         }
@@ -163,7 +178,7 @@ public final class FrcDomainTools {
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
 
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
+        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
           var values = log.values().get(entryName);
           if (values != null) {
             var lastState = (Boolean) null;
@@ -184,16 +199,26 @@ public final class FrcDomainTools {
           }
         }
 
-        if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))) {
+        if (ToolUtils.isDsEntry(lower) && (lower.contains("autonomous") || lower.contains("auto"))) {
           var values = log.values().get(entryName);
           if (values != null) {
-            var lastState = (Boolean) null;
+            // Seed from the state in force just before the window so a start_time inside
+            // autonomous still sees the auto->teleop transition as a transition.
+            Boolean lastState = startTime != null
+                && ToolUtils.getValueAtTimeZoh(values, startTime) instanceof Boolean held
+                ? held : null;
             boolean pendingAutoStart = false;
             double autoFlagTime = 0;
             String autoSource = entryName;
             for (var tv : values) {
               if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
               if (tv.value() instanceof Boolean isAuto) {
+                if (lastState == null && !isAuto) {
+                  // The initial Autonomous=false sample is the resting state, not a transition;
+                  // treating it as one produced a spurious TELEOP_START at the first enable.
+                  lastState = isAuto;
+                  continue;
+                }
                 if (lastState == null || !lastState.equals(isAuto)) {
                   if (isAuto && !ToolUtils.isEnabledAt(enabledValuesForTimeline, tv.timestamp())) {
                     // Auto flag set but robot not yet enabled — defer the AUTO_START
@@ -294,44 +319,105 @@ public final class FrcDomainTools {
         }
       }
 
-      // Add voltage brownouts
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("batteryvoltage") || lower.contains("battery_voltage") ||
-            (lower.contains("voltage") && lower.contains("input"))) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            boolean inBrownout = false;
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              if (tv.value() instanceof Number num) {
-                double voltage = num.doubleValue();
-                // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
-                // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
-                double hysteresis = 0.2;
-                if (voltage < brownoutThreshold && !inBrownout) {
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", "BROWNOUT_START");
-                  event.addProperty("category", "power");
-                  event.addProperty("voltage", voltage);
-                  event.addProperty("source", entryName);
-                  events.add(event);
-                  inBrownout = true;
-                } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", "BROWNOUT_END");
-                  event.addProperty("category", "power");
-                  event.addProperty("voltage", voltage);
-                  event.addProperty("source", entryName);
-                  events.add(event);
-                  inBrownout = false;
-                }
-              }
+      // Add voltage-threshold brownouts on the battery voltage entry. Uses the same selection as
+      // power_analysis so the two tools agree on which signal was analyzed; the entry is reported
+      // as brownout_voltage_entry, and a warning says when there is none.
+      var voltageEntry = ToolUtils.selectVoltageEntry(log, null);
+      if (voltageEntry.isPresent()) {
+        var entryName = voltageEntry.get();
+        var values = log.values().get(entryName);
+        boolean inBrownout = false;
+        for (var tv : values) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+          if (tv.value() instanceof Number num && Double.isFinite(num.doubleValue())) {
+            double voltage = num.doubleValue();
+            // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
+            // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
+            double hysteresis = 0.2;
+            if (voltage < brownoutThreshold && !inBrownout) {
+              var event = new JsonObject();
+              event.addProperty("timestamp", tv.timestamp());
+              event.addProperty("type", "BROWNOUT_START");
+              event.addProperty("category", "power");
+              event.addProperty("basis", "voltage_threshold");
+              event.addProperty("voltage", voltage);
+              event.addProperty("source", entryName);
+              events.add(event);
+              inBrownout = true;
+            } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
+              var event = new JsonObject();
+              event.addProperty("timestamp", tv.timestamp());
+              event.addProperty("type", "BROWNOUT_END");
+              event.addProperty("category", "power");
+              event.addProperty("basis", "voltage_threshold");
+              event.addProperty("voltage", voltage);
+              event.addProperty("source", entryName);
+              events.add(event);
+              inBrownout = false;
             }
           }
-          break;
+        }
+      }
+
+      // Add roboRIO brownout flag transitions (e.g. AdvantageKit /SystemStats/BrownedOut).
+      // Unlike the voltage-threshold events above, these reflect the roboRIO's own brownout
+      // state: the flag is set only when the RIO actually cut outputs.
+      String rioFlagEntry = log.entries().entrySet().stream()
+          .filter(e -> "boolean".equals(e.getValue().type()))
+          .filter(e -> {
+            var lower = lowerEntryNames.get(e.getKey());
+            return lower.contains("brownedout") || lower.contains("browned_out");
+          })
+          .sorted(Comparator.comparingInt(e -> e.getValue().id()))
+          .map(Map.Entry::getKey)
+          .findFirst()
+          .orElse(null);
+      if (rioFlagEntry != null) {
+        var values = log.values().get(rioFlagEntry);
+        Boolean lastState = null;
+        for (var tv : values) {
+          if (!(tv.value() instanceof Boolean state)) continue;
+          if (lastState != null && lastState.equals(state)) continue;
+          boolean transition = state || lastState != null; // initial false is not an event
+          if (transition && inTimeRange(tv.timestamp(), startTime, endTime)) {
+            var event = new JsonObject();
+            event.addProperty("timestamp", tv.timestamp());
+            event.addProperty("type", state ? "RIO_BROWNOUT_START" : "RIO_BROWNOUT_END");
+            event.addProperty("category", "power");
+            event.addProperty("basis", "rio_flag");
+            event.addProperty("source", rioFlagEntry);
+            events.add(event);
+          }
+          lastState = state;
+        }
+      }
+
+      // Error/warning text: counts and a distinct-message summary only. Individual messages are
+      // not placed on the timeline, because any cap or priority over a chatty console is a
+      // judgment the model cannot see; search_strings lists them completely, with paging.
+      final int maxTextGroups = 200;
+      var textGroups = new LinkedHashMap<String, TextGroup>();
+      var countsBySource = new LinkedHashMap<String, int[]>(); // [error, warning]
+      int errorSamples = 0;
+      int warningSamples = 0;
+      for (var entry : log.entries().entrySet()) {
+        if (!"string".equals(entry.getValue().type())) continue;
+        var values = log.values().get(entry.getKey());
+        if (values == null) continue;
+        for (var tv : values) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+          if (!(tv.value() instanceof String message) || message.isBlank()) continue;
+          var classified = ToolUtils.classifyText(message);
+          if (classified == null) continue;
+          boolean isError = "ERROR".equals(classified.type());
+          if (isError) errorSamples++; else warningSamples++;
+          countsBySource.computeIfAbsent(entry.getKey(), k -> new int[2])[isError ? 0 : 1]++;
+          // The same error usually recurs with varying numbers (loop times, device ids, line
+          // numbers), so group on a normalized pattern and count how many raw texts it covers.
+          var pattern = ToolUtils.normalizeMessage(classified.message());
+          textGroups.computeIfAbsent(classified.type() + "|" + pattern,
+                  k -> new TextGroup(classified.type(), pattern, classified.message()))
+              .add(tv.timestamp(), entry.getKey(), classified.message());
         }
       }
 
@@ -345,8 +431,44 @@ public final class FrcDomainTools {
 
       var builder = success()
           .addProperty("event_count", events.size())
+          .addProperty("rio_brownout_flag_logged", rioFlagEntry != null)
           .addData("summary", GSON.toJsonTree(categoryCounts))
           .addData("events", GSON.toJsonTree(events));
+      if (rioFlagEntry != null) {
+        builder.addProperty("rio_brownout_flag_entry", rioFlagEntry);
+      }
+      var textCounts = new JsonObject();
+      textCounts.addProperty("error", errorSamples);
+      textCounts.addProperty("warning", warningSamples);
+      textCounts.addProperty("total", errorSamples + warningSamples);
+      var bySource = new JsonObject();
+      countsBySource.forEach((source, c) -> {
+        var o = new JsonObject();
+        o.addProperty("error", c[0]);
+        o.addProperty("warning", c[1]);
+        bySource.add(source, o);
+      });
+      textCounts.add("by_source", bySource);
+      builder.addData("text_event_counts", textCounts);
+      if (!textGroups.isEmpty()) {
+        var groups = new ArrayList<>(textGroups.values());
+        groups.sort(Comparator.comparingInt((TextGroup g) -> -g.count)
+            .thenComparingDouble(g -> g.firstTimestamp));
+        var summary = new JsonArray();
+        for (var group : groups.subList(0, Math.min(groups.size(), maxTextGroups))) {
+          summary.add(group.toJson());
+        }
+        builder.addProperty("text_event_groups_total", groups.size());
+        builder.addData("text_event_summary", summary);
+        if (groups.size() > maxTextGroups) {
+          builder.addWarning("text_event_summary shows the " + maxTextGroups + " most frequent of "
+              + groups.size() + " distinct messages; use search_strings for the rest.");
+        }
+      }
+      voltageEntry.ifPresentOrElse(
+          name -> builder.addProperty("brownout_voltage_entry", name),
+          () -> builder.addWarning("No battery voltage entry found; BROWNOUT_START/END events "
+              + "cannot be detected in this log."));
 
       // Add data quality from enabled values if available
       if (enabledValuesForTimeline != null && !enabledValuesForTimeline.isEmpty()) {
@@ -356,6 +478,54 @@ public final class FrcDomainTools {
       }
 
       return builder.build();
+    }
+
+    /** One distinct error/warning message (after normalization) with its occurrence statistics. */
+    private static final class TextGroup {
+      final String type;
+      final String pattern;
+      final String example;
+      int count = 0;
+      double firstTimestamp = Double.NaN;
+      double lastTimestamp = Double.NaN;
+      final Set<String> sources = new LinkedHashSet<>();
+      final Set<String> variants = new HashSet<>();
+      static final int MAX_VARIANTS = 10_000;
+      boolean variantsCapped = false;
+
+      TextGroup(String type, String pattern, String example) {
+        this.type = type;
+        this.pattern = pattern;
+        this.example = example;
+      }
+
+      void add(double timestamp, String source, String rawMessage) {
+        if (count == 0 || timestamp < firstTimestamp) firstTimestamp = timestamp;
+        if (count == 0 || timestamp > lastTimestamp) lastTimestamp = timestamp;
+        count++;
+        sources.add(source);
+        if (variants.size() < MAX_VARIANTS) {
+          variants.add(rawMessage);
+        } else if (!variants.contains(rawMessage)) {
+          variantsCapped = true;
+        }
+      }
+
+      JsonObject toJson() {
+        var obj = new JsonObject();
+        obj.addProperty("type", type);
+        obj.addProperty("message", ToolUtils.truncate(pattern, ToolUtils.MESSAGE_LINE_LIMIT));
+        if (!pattern.equals(example)) {
+          obj.addProperty("example", ToolUtils.truncate(example, ToolUtils.MESSAGE_LINE_LIMIT));
+        }
+        obj.addProperty("count", count);
+        obj.addProperty("variants", variants.size());
+        if (variantsCapped) obj.addProperty("variants_capped", true);
+        obj.addProperty("first_timestamp", firstTimestamp);
+        obj.addProperty("last_timestamp", lastTimestamp);
+        obj.add("sources", GSON.toJsonTree(sources));
+        return obj;
+      }
     }
 
     /**
@@ -837,7 +1007,7 @@ public final class FrcDomainTools {
       List<TimestampedValue> enabledValuesForAuto = null;
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
+        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
           enabledValuesForAuto = log.values().get(entryName);
           break;
         }
@@ -845,7 +1015,7 @@ public final class FrcDomainTools {
 
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))) {
+        if (ToolUtils.isDsEntry(lower) && (lower.contains("autonomous") || lower.contains("auto"))) {
           var values = log.values().get(entryName);
           if (values != null) {
             boolean autoFlagSet = false;
@@ -1668,7 +1838,7 @@ public final class FrcDomainTools {
       List<TimestampedValue> enabledValues = null;
       for (var entryName : log.entries().keySet()) {
         var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
+        if (ToolUtils.isDsEntry(lower) && lower.contains("enabled")) {
           enabledValues = log.values().get(entryName);
           break;
         }

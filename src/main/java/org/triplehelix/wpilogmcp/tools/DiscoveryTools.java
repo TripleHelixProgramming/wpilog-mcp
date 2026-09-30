@@ -428,8 +428,19 @@ public final class DiscoveryTools {
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
           + "Returns a structured overview of all " + TOOL_CATALOG.size() + " tools organized by category, with usage guidance "
-          + "and anti-patterns to avoid. This server has extensive built-in analysis—don't write custom "
+          + "and anti-patterns to avoid, plus analysis_principles: how to reason about results "
+          + "without confabulating (method, confidence calibration, traps, report format). "
+          + "This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
+    }
+
+    @Override
+    public JsonObject meta() {
+      // Claude Code defers MCP tool descriptions until searched for; this hint keeps this one
+      // loaded so the pointer to analysis_principles is in context from the first turn.
+      var meta = new JsonObject();
+      meta.addProperty("anthropic/alwaysLoad", true);
+      return meta;
     }
 
     @Override
@@ -476,6 +487,9 @@ public final class DiscoveryTools {
       guidance.addProperty("match_phases_tip",
           "NEVER manually parse timestamps to find auto/teleop—use get_match_phases.");
       result.add("critical_guidance", guidance);
+
+      // General reasoning guidance (scientific method, calibration, confabulation traps)
+      result.add("analysis_principles", AnalysisGuidance.analysisPrinciples());
 
       // Architecture notes
       var architecture = new JsonObject();

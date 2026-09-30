@@ -8,6 +8,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.nio.file.Path;
+import java.util.Comparator;
+import java.util.Optional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -69,10 +71,10 @@ public final class RobotAnalysisTools {
 
       for (var entryName : log.entries().keySet()) {
         var lower = entryName.toLowerCase();
-        if (lower.contains("driverstation") && lower.contains("enabled") && enabledEntry == null) {
+        if (isDsEntry(lower) && lower.contains("enabled") && enabledEntry == null) {
           enabledEntry = entryName;
         }
-        if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))
+        if (isDsEntry(lower) && (lower.contains("autonomous") || lower.contains("auto"))
             && !lower.contains("command") && autoEntry == null) {
           autoEntry = entryName;
         }
@@ -84,7 +86,7 @@ public final class RobotAnalysisTools {
       if (enabledEntry == null && autoEntry == null) {
         warnings.add("No DriverStation mode entries found in log. "
             + "Cannot determine match phases. Look for entries containing 'DriverStation' "
-            + "and 'Enabled' or 'Autonomous'.");
+            + "(AdvantageKit) or prefixed 'DS:' (WPILib DataLogManager) with 'Enabled' or 'Autonomous'.");
         result.add("warnings", GSON.toJsonTree(warnings));
         result.addProperty("source", "none");
         return result;
@@ -107,6 +109,10 @@ public final class RobotAnalysisTools {
               }
             }
           }
+        }
+        if (firstEnableTime == null) {
+          warnings.add("DriverStation entries found but the robot was never enabled in this log "
+              + "(pit or bench session); no match phases can be reported.");
         }
       }
 
@@ -757,14 +763,24 @@ public final class RobotAnalysisTools {
   }
 
   static class PowerAnalysisTool extends LogRequiringTool {
+    /** Sub-path fragments after "Current/" that indicate a non-amperage quantity. */
+    private static final List<String> NON_CURRENT_HINTS =
+        List.of("angle", "position", "pose", "velocity", "speed", "setpoint", "target", "limit",
+            "mode", "state", "command", "time", "height", "distance", "gear", "level");
+
     @Override
     public String name() { return "power_analysis"; }
 
     @Override
     public String description() {
-      return "Analyze battery and current distribution data. Finds peak currents per channel and brownout risk. "
-          + "Default threshold is 6.8V (roboRIO 1). Set to 6.3V for roboRIO 2. "
-          + "Returns 'no battery data found' if log does not contain battery voltage or current entries."
+      return "Analyze battery and current distribution data. Reports battery voltage statistics "
+          + "(min/max/avg and samples below the brownout threshold; default 6.8V for roboRIO 1, set "
+          + "6.3V for roboRIO 2) and, for every amperage entry, the peak current by magnitude with its "
+          + "timestamp, signed min/max, average, and sample count, sorted by peak. Amperage entries are "
+          + "named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib "
+          + "PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. "
+          + "Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. "
+          + "Warns when no voltage or current entries are found."
           + GUIDANCE_UNIVERSAL + GUIDANCE_POWER;
     }
 
@@ -773,6 +789,7 @@ public final class RobotAnalysisTools {
       return new SchemaBuilder()
           .addProperty("power_prefix", "string", "Entry path prefix (e.g., '/PDP')", false)
           .addNumberProperty("brownout_threshold", "Voltage threshold (default 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
+          .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
           .build();
     }
 
@@ -780,40 +797,108 @@ public final class RobotAnalysisTools {
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var prefix = getOptString(arguments, "power_prefix", null);
       double threshold = getOptDouble(arguments, "brownout_threshold", 6.8);
-
-      var voltageEntry = log.entries().keySet().stream()
-          .filter(n -> (prefix == null || n.startsWith(prefix)) && (n.toLowerCase().contains("voltage")))
-          .findFirst();
+      int channelLimit = Math.max(1, getOptInt(arguments, "channel_limit", 30));
 
       var result = new JsonObject();
       result.addProperty("success", true);
+      var warnings = new ArrayList<String>();
 
+      // Voltage: shared selection with get_ds_timeline; guarantees at least one finite sample.
+      var voltageEntry = selectVoltageEntry(log, prefix);
       voltageEntry.ifPresent(name -> {
         var values = log.values().get(name);
-        if (values != null && !values.isEmpty()) {
-          var stats = values.stream()
-              .filter(tv -> tv.value() instanceof Number)
-              .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-              .summaryStatistics();
-          
-          var vObj = new JsonObject();
-          vObj.addProperty("entry", name);
-          vObj.addProperty("min_voltage", stats.getMin());
-          vObj.addProperty("max_voltage", stats.getMax());
-          vObj.addProperty("avg_voltage", stats.getAverage());
-          
-          long brownouts = values.stream()
-              .filter(tv -> tv.value() instanceof Number && ((Number) tv.value()).doubleValue() < threshold)
-              .count();
-          vObj.addProperty("samples_below_threshold", brownouts);
-          vObj.addProperty("brownout_risk", brownouts > 0 ? "HIGH" : (stats.getMin() < threshold + 1 ? "MODERATE" : "LOW"));
-          result.add("voltage_analysis", vObj);
-        }
+        var stats = values.stream()
+            .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
+            .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
+            .summaryStatistics();
+        long belowThreshold = values.stream()
+            .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue())
+                && n.doubleValue() < threshold)
+            .count();
+        var vObj = new JsonObject();
+        vObj.addProperty("entry", name);
+        vObj.addProperty("min_voltage", stats.getMin());
+        vObj.addProperty("max_voltage", stats.getMax());
+        vObj.addProperty("avg_voltage", stats.getAverage());
+        vObj.addProperty("samples_below_threshold", belowThreshold);
+        vObj.addProperty("brownout_threshold", threshold);
+        vObj.addProperty("brownout_risk",
+            belowThreshold > 0 ? "HIGH" : (stats.getMin() < threshold + 1 ? "MODERATE" : "LOW"));
+        result.add("voltage_analysis", vObj);
       });
 
-      // Add data quality from voltage entry if available
-      if (voltageEntry.isPresent()) {
-        var vals = log.values().get(voltageEntry.get());
+      // Currents: every amperage entry in declaration order; arrays expanded per channel index.
+      var currentEntries = log.entries().entrySet().stream()
+          .filter(e -> prefix == null || e.getKey().startsWith(prefix))
+          .filter(e -> isCurrentEntryName(e.getKey()))
+          .sorted(Comparator.comparingInt(e -> e.getValue().id()))
+          .map(Map.Entry::getKey)
+          .toList();
+      var channels = new ArrayList<JsonObject>();
+      String firstScalarCurrentEntry = null;
+      for (var entryName : currentEntries) {
+        var values = log.values().get(entryName);
+        if (values == null || values.isEmpty()) continue;
+        var sample = values.stream().map(TimestampedValue::value)
+            .filter(v -> v instanceof Number || toDoubleArray(v) != null).findFirst().orElse(null);
+        if (sample instanceof Number) {
+          var acc = new CurrentAccumulator();
+          for (var tv : values) {
+            if (tv.value() instanceof Number n) acc.add(n.doubleValue(), tv.timestamp());
+          }
+          if (acc.count > 0) {
+            if (firstScalarCurrentEntry == null) firstScalarCurrentEntry = entryName;
+            channels.add(acc.toJson(entryName, null, null));
+          }
+        } else if (sample != null) {
+          var accumulators = new ArrayList<CurrentAccumulator>();
+          for (var tv : values) {
+            var arr = toDoubleArray(tv.value());
+            if (arr == null) continue;
+            while (accumulators.size() < arr.length) accumulators.add(new CurrentAccumulator());
+            for (int i = 0; i < arr.length; i++) accumulators.get(i).add(arr[i], tv.timestamp());
+          }
+          for (int i = 0; i < accumulators.size(); i++) {
+            var acc = accumulators.get(i);
+            if (acc.count > 0) channels.add(acc.toJson(entryName + "[" + i + "]", entryName, i));
+          }
+        }
+      }
+
+      channels.sort(Comparator.comparingDouble(
+          (JsonObject c) -> Math.abs(c.get("peak_current_A").getAsDouble())).reversed());
+      result.addProperty("current_entries_analyzed", channels.size());
+      if (!channels.isEmpty()) {
+        var shown = channels.size() > channelLimit ? channels.subList(0, channelLimit) : channels;
+        result.add("channel_analysis", GSON.toJsonTree(shown));
+        if (channels.size() > channelLimit) {
+          warnings.add("Showing the top " + channelLimit + " of " + channels.size()
+              + " current entries/channels by peak current; raise channel_limit to see more.");
+        }
+      }
+
+      if (voltageEntry.isEmpty()) {
+        boolean voltageNamed = log.entries().keySet().stream()
+            .anyMatch(n -> (prefix == null || n.startsWith(prefix)) && n.toLowerCase().contains("voltage"));
+        warnings.add(voltageNamed
+            ? "Voltage entries exist but none is a scalar numeric entry with finite samples; "
+              + "no voltage analysis. Check the entry types with get_entry_info."
+            : "No battery voltage entry found. Look for an entry containing 'BatteryVoltage' "
+              + "(e.g. /SystemStats/BatteryVoltage) or pass power_prefix.");
+      }
+      if (channels.isEmpty()) {
+        warnings.add("No current entries found. Amperage entries are named ...Current, ...Amps, "
+            + "...Current/<sub>, or PowerDistribution[<id>]/Chan<N>; pass power_prefix to narrow, or "
+            + "use read_entry on a specific entry.");
+      }
+      if (!warnings.isEmpty()) {
+        result.add("warnings", GSON.toJsonTree(warnings));
+      }
+
+      // Data quality from the voltage entry, or the first scalar current entry when there is none.
+      var qualitySource = voltageEntry.orElse(firstScalarCurrentEntry);
+      if (qualitySource != null) {
+        var vals = log.values().get(qualitySource);
         if (vals != null && !vals.isEmpty()) {
           var quality = DataQuality.fromValues(vals);
           var directives = AnalysisDirectives.fromQuality(quality)
@@ -825,6 +910,94 @@ public final class RobotAnalysisTools {
 
       return result;
     }
+
+    /**
+     * Decides whether an entry name denotes an electrical current (amps) rather than something
+     * that merely contains the word "current" or ends in "amps" ("Current Angle Degrees",
+     * "CurrentLimit", "OdometryTimestamps", "SlewRamps").
+     *
+     * <p>Accepted: a unit suffix at a token boundary ({@code CurrentAmps}, {@code StatorAmps},
+     * {@code stator_amps}, {@code STATOR_AMPS}); names whose text after the last "current" is
+     * empty or a unit/plural/draw suffix ({@code OutputCurrent}, {@code Current_A},
+     * {@code CurrentDraw}, {@code Currents}, {@code Current(A)}); a sub-path after "Current/"
+     * that is not a non-amperage quantity ({@code Current/Stator} yes, {@code Current/Setpoint}
+     * no); and WPILib PowerDistribution sendable channels ({@code PowerDistribution[1]/Chan3}).
+     * Anything containing "voltage" is rejected.
+     */
+    static boolean isCurrentEntryName(String entryName) {
+      var original = entryName.replace(" ", "");
+      var lower = original.toLowerCase();
+      if (lower.contains("voltage")) return false;
+      if (lower.contains("powerdistribution") && lower.matches(".*/chan\\d+$")) return true;
+      if (original.matches(".*(?:^|[^A-Za-z]|[a-z])(?:Amps|Amperes)$")
+          || original.matches(".*(?:^|[^A-Za-z])(?:amps|AMPS|amperes|AMPERES)$")) {
+        return true;
+      }
+      int idx = lower.lastIndexOf("current");
+      if (idx < 0) return false;
+      var rest = lower.substring(idx + "current".length());
+      if (rest.matches("[_\\-]?(?:a|amps?|amperage|draw|s|\\(a\\))?")) return true;
+      if (rest.startsWith("/")) {
+        return NON_CURRENT_HINTS.stream().noneMatch(rest::contains);
+      }
+      return false;
+    }
+
+    /** Widens any numeric array sample to double[]; returns null for non-array values. */
+    private static double[] toDoubleArray(Object value) {
+      if (value instanceof double[] d) return d;
+      if (value instanceof float[] f) {
+        var out = new double[f.length];
+        for (int i = 0; i < f.length; i++) out[i] = f[i];
+        return out;
+      }
+      if (value instanceof long[] l) {
+        var out = new double[l.length];
+        for (int i = 0; i < l.length; i++) out[i] = l[i];
+        return out;
+      }
+      return null;
+    }
+
+    /**
+     * Running accumulator for one current signal; ignores non-finite samples. Tracks the signed
+     * extremes and the peak by magnitude, because logged currents may be signed (direction or
+     * regenerative braking) and a -150 A stall is still a 150 A event.
+     */
+    private static final class CurrentAccumulator {
+      double max = Double.NEGATIVE_INFINITY;
+      double min = Double.POSITIVE_INFINITY;
+      double peak = 0;
+      double peakTime = Double.NaN;
+      double sum = 0;
+      long count = 0;
+
+      void add(double amps, double timestamp) {
+        if (!Double.isFinite(amps)) return;
+        if (amps > max) max = amps;
+        if (amps < min) min = amps;
+        if (count == 0 || Math.abs(amps) > Math.abs(peak)) {
+          peak = amps;
+          peakTime = timestamp;
+        }
+        sum += amps;
+        count++;
+      }
+
+      JsonObject toJson(String entry, String sourceEntry, Integer channel) {
+        var obj = new JsonObject();
+        obj.addProperty("entry", entry);
+        if (sourceEntry != null) obj.addProperty("source_entry", sourceEntry);
+        if (channel != null) obj.addProperty("channel", channel);
+        obj.addProperty("peak_current_A", peak);
+        obj.addProperty("peak_current_time_sec", peakTime);
+        obj.addProperty("max_current_A", max);
+        obj.addProperty("min_current_A", min);
+        obj.addProperty("avg_current_A", sum / count);
+        obj.addProperty("sample_count", count);
+        return obj;
+      }
+    }
   }
 
   static class CanHealthTool extends LogRequiringTool {
@@ -833,8 +1006,12 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Analyze CAN bus health by looking for timeout errors and communication issues. "
-          + "Returns 'no CAN data found' if log does not contain CAN bus utilization or error entries. "
+      return "Analyze CAN bus health by scanning string entries (console output, alerts) for CAN "
+          + "timeout/error/fault messages and classifying each by the robot's enabled state at that "
+          + "moment (DriverStation entries under either /DriverStation/... or DS:... naming). "
+          + "Health is GOOD with no enabled-state errors, CONCERNING below 50, POOR at 50 or more; "
+          + "without a DriverStation entry all errors are counted. A log with no CAN messages "
+          + "returns total_can_errors 0 and GOOD. "
           + "See also: analyze_can_bus for numeric utilization analysis."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
@@ -950,7 +1127,10 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Compare statistics for an entry across two log files."
+      return "Compare whole-log min/max/mean of one scalar numeric entry across two log files. "
+          + "Reports per log whether the entry was found and its finite sample count; array entries "
+          + "are not compared (use power_analysis or read_entry). For phase-scoped comparisons run "
+          + "get_statistics with start_time/end_time on each log instead."
           + GUIDANCE_UNIVERSAL + GUIDANCE_STATISTICAL;
     }
 
@@ -982,32 +1162,48 @@ public final class RobotAnalysisTools {
       logsByPath.put(path2, log2);
 
       var comparisons = new JsonArray();
+      var warnings = new ArrayList<String>();
       for (var entry : logsByPath.entrySet()) {
         var logPath = entry.getKey();
         var log = entry.getValue();
+        var filename = Path.of(logPath).getFileName().toString();
         var stats = new JsonObject();
-        stats.addProperty("log_filename", Path.of(logPath).getFileName().toString());
+        stats.addProperty("log_path", logPath);
+        stats.addProperty("log_filename", filename);
 
         var vals = log.values().get(name);
-        if (vals != null) {
+        boolean found = vals != null && !vals.isEmpty();
+        stats.addProperty("entry_found", found);
+        if (found) {
           var s = vals.stream()
-              .filter(tv -> tv.value() instanceof Number)
+              .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
               .mapToDouble(tv -> ((Number) tv.value()).doubleValue())
               .summaryStatistics();
+          stats.addProperty("sample_count", s.getCount());
           if (s.getCount() > 0) {
             var sObj = new JsonObject();
             sObj.addProperty("min", s.getMin());
             sObj.addProperty("max", s.getMax());
             sObj.addProperty("mean", s.getAverage());
             stats.add("statistics", sObj);
+          } else {
+            warnings.add("Entry '" + name + "' in " + filename + " has no finite scalar numeric values "
+                + "(array and non-numeric entries are not compared; use read_entry or power_analysis).");
           }
+        } else {
+          warnings.add("Entry '" + name + "' not found in " + filename + ".");
         }
         comparisons.add(stats);
       }
 
       var result = new JsonObject();
       result.addProperty("success", true);
+      result.addProperty("entry", name);
+      result.addProperty("logs_compared", logsByPath.size());
       result.add("comparisons", comparisons);
+      if (!warnings.isEmpty()) {
+        result.add("warnings", GSON.toJsonTree(warnings));
+      }
 
       // Data quality from first log's values for this entry
       var vals1 = log1.values().get(name);

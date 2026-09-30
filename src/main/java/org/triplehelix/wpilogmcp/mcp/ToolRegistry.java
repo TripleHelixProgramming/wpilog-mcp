@@ -22,6 +22,21 @@ public class ToolRegistry {
   private static final Logger logger = LoggerFactory.getLogger(ToolRegistry.class);
 
   private final Map<String, Tool> tools = new ConcurrentHashMap<>();
+  private volatile String serverInstructions;
+
+  /**
+   * Sets the server-level instructions returned to clients in the {@code initialize} response
+   * (the MCP {@code instructions} field). Clients such as Claude Code and VS Code place this text
+   * in the model's system prompt. {@code null} or blank means none.
+   */
+  public void setServerInstructions(String instructions) {
+    this.serverInstructions = instructions;
+  }
+
+  /** Returns the server-level instructions, or {@code null} if none were set. */
+  public String getServerInstructions() {
+    return serverInstructions;
+  }
 
   public void registerTool(Tool tool) {
     logger.debug("Registering tool: {}", tool.name());
@@ -47,6 +62,10 @@ public class ToolRegistry {
           toolObj.addProperty("name", tool.name());
           toolObj.addProperty("description", tool.description());
           toolObj.add("inputSchema", tool.inputSchema());
+          var meta = tool.meta();
+          if (meta != null) {
+            toolObj.add("_meta", meta);
+          }
           return toolObj;
         })
         .collect(JsonArray::new, JsonArray::add, JsonArray::addAll);
@@ -63,6 +82,16 @@ public class ToolRegistry {
     JsonObject inputSchema();
 
     JsonElement execute(JsonObject arguments) throws Exception;
+
+    /**
+     * Optional MCP {@code _meta} object attached to this tool's {@code tools/list} entry, for
+     * client-specific hints such as {@code "anthropic/alwaysLoad": true}.
+     *
+     * @return The metadata object, or {@code null} for none (the default)
+     */
+    default JsonObject meta() {
+      return null;
+    }
   }
 
   /**

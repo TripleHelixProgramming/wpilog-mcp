@@ -98,6 +98,36 @@ class DiscoveryToolsTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("includes analysis_principles for reasoning without confabulation")
+    void containsAnalysisPrinciples() throws Exception {
+      var tool = findTool("get_server_guide");
+      var resultObj = tool.execute(new JsonObject()).getAsJsonObject();
+
+      var principles = resultObj.getAsJsonObject("analysis_principles");
+      assertNotNull(principles);
+      assertTrue(principles.has("method"));
+      assertTrue(principles.has("calibration"));
+      assertTrue(principles.getAsJsonArray("traps").size() > 0);
+      assertEquals(AnalysisGuidance.analysisPrinciples(), principles);
+
+      // Present even when filtering by category: the principles are not category-specific.
+      var args = new JsonObject();
+      args.addProperty("category", "statistics");
+      var filtered = tool.execute(args).getAsJsonObject();
+      assertTrue(filtered.has("analysis_principles"));
+    }
+
+    @Test
+    @DisplayName("is marked always-load so its description survives client tool deferral")
+    void hasAlwaysLoadMeta() {
+      var tool = findTool("get_server_guide");
+      var meta = tool.meta();
+      assertNotNull(meta);
+      assertTrue(meta.get("anthropic/alwaysLoad").getAsBoolean());
+      assertTrue(tool.description().contains("analysis_principles"));
+    }
+
+    @Test
     @DisplayName("critical_guidance contains important anti-patterns")
     void containsCriticalGuidance() throws Exception {
       var tool = findTool("get_server_guide");
