@@ -105,6 +105,13 @@ public final class DiscoveryTools {
         List.of("See which logs are in memory", "Check cache usage"),
         false, List.of("list_entries")));
 
+    tools.add(new ToolInfo("resolve_signals", "core",
+        "Which entry plays each role (enabled, battery, loop time, pose, modules, ...), and why",
+        List.of("resolve", "roles", "signals", "which entry", "mapping", "discover", "ambiguous"),
+        List.of("Check which entries the tools will use before analyzing",
+            "See the candidates when an automatic choice may be wrong"),
+        true, List.of("list_entries", "get_entry_info")));
+
     tools.add(new ToolInfo("list_struct_types", "core",
         "List a log's struct types: schema source, fields, numeric paths, entries",
         List.of("struct", "types", "schema", "wpilib", "fields", "custom", "decode"),

@@ -14,6 +14,7 @@ Complete documentation for all tools available in wpilog-mcp.
   - [get_entry_info](#get_entry_info)
   - [read_entry](#read_entry)
   - [list_struct_types](#list_struct_types)
+  - [resolve_signals](#resolve_signals)
   - [health_check](#health_check)
 - [Query Tools](#query-tools)
   - [search_entries](#search_entries)
@@ -367,6 +368,19 @@ List struct types and how they decode. Struct values are decoded from each log's
 ```
 
 **Use Case:** Before analyzing a team's own structs (vision observations, mechanism states), check that they decode by a logged schema and find the numeric fields to address.
+
+### `resolve_signals`
+Show which entry plays each role in a log — the same choices the tools make — with the basis for each choice and the other candidates.
+
+**Parameters:**
+- `path` (required): Path to the log file
+- `roles` (optional): Only these roles (default: all)
+
+**Roles:** `robot_enabled`, `autonomous` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
+
+**Returns:** `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `basis` (why), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked as well; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry; `warnings` name ambiguous choices.
+
+Each tool's result records the entries it used under `inputs.entries`; tools with an entry parameter (`pose_entry`, `measured_entry`, `entry`, ...) accept an override when a choice is wrong.
 
 ### `health_check`
 Get system health status including JVM memory usage, loaded log count, disk cache status, and TBA availability. Useful for monitoring server performance and resource usage.

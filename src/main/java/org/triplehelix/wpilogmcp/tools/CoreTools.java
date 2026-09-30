@@ -45,6 +45,7 @@ public final class CoreTools {
     registry.registerTool(new ReadEntryTool());
     registry.registerTool(new ListLoadedLogsTool());
     registry.registerTool(new ListStructTypesTool());
+    registry.registerTool(new ResolveSignalsTool());
     registry.registerTool(new HealthCheckTool());
     // GetGameInfoTool is registered in FrcDomainTools to match the discovery catalog category
   }
@@ -412,6 +413,75 @@ public final class CoreTools {
       result.addProperty("has_more", offset + paged.size() < totalInRange);
       ResultContract.addLimitedList(result, "samples", samples, Math.max(0, totalInRange - offset),
           limit);
+      return result;
+    }
+  }
+
+  static class ResolveSignalsTool extends LogRequiringTool {
+    static final int MAX_CANDIDATES = 10;
+
+    @Override
+    public String name() {
+      return "resolve_signals";
+    }
+
+    @Override
+    public String description() {
+      return "Show which entry plays each role in this log: robot_enabled, autonomous, "
+          + "battery_voltage, brownout_flag, brownout_threshold, loop_time_full, loop_time_user, "
+          + "robot_pose, module_states_measured, module_states_setpoint, "
+          + "chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, "
+          + "vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: "
+          + "the entry (or entries, or a value), the basis for the choice, the other candidates "
+          + "best first, ambiguous when another candidate ranked as well (the one declared "
+          + "first wins), and the tools that use it. These are the choices the tools make; each "
+          + "tool's result records the entries it used under inputs.entries, and tools with an "
+          + "entry parameter (pose_entry, measured_entry, entry, ...) accept an override. Check "
+          + "it once per log before trusting automatic choices, especially ambiguous ones.";
+    }
+
+    @Override
+    protected JsonObject toolSchema() {
+      var roleItem = new JsonObject();
+      roleItem.addProperty("type", "string");
+      return new SchemaBuilder()
+          .addArrayProperty("roles", "Only these roles (default: all)", roleItem, false)
+          .build();
+    }
+
+    @Override
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      var roles = new java.util.ArrayList<SignalResolver.Role>();
+      if (arguments.has("roles") && arguments.get("roles").isJsonArray()) {
+        for (var r : arguments.getAsJsonArray("roles")) {
+          roles.add(SignalResolver.Role.fromWire(r.getAsString()));
+        }
+      } else {
+        roles.addAll(java.util.List.of(SignalResolver.Role.values()));
+      }
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("log_path", log.path());
+      var rolesJson = new JsonObject();
+      var unresolved = new JsonArray();
+      var warnings = new JsonArray();
+      for (var role : roles) {
+        var resolution = SignalResolver.resolve(log, role);
+        rolesJson.add(role.wire(), resolution.toJson(MAX_CANDIDATES));
+        if (resolution.entries().isEmpty() && resolution.value() == null) {
+          unresolved.add(role.wire());
+        }
+        if (resolution.ambiguous()) {
+          warnings.add(role.wire() + ": " + (resolution.entries().isEmpty() ? "nothing"
+              : resolution.entries().get(0)) + " was chosen, but "
+              + "another candidate ranked as well (" + String.join(", ",
+                  resolution.candidates().stream().limit(4).toList()) + "); pass the right one "
+              + "explicitly if it is not.");
+        }
+      }
+      result.add("roles", rolesJson);
+      result.add("unresolved", unresolved);
+      if (!warnings.isEmpty()) result.add("warnings", warnings);
       return result;
     }
   }

@@ -490,14 +490,9 @@ public final class FrcDomainTools {
               + log.entries().get(robotPose).type() + ", not struct:Pose2d or struct:Pose3d");
         }
       } else {
-        robotPose = entries.stream()
-            .filter(e -> e.type().equals("struct:Pose2d"))
-            .filter(e -> !e.name().toLowerCase().contains("vision"))
-            .filter(e -> log.sampleCount(e.name()) >= 2)
-            .max(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
-                    log.sampleCount(e.name()))
-                .thenComparingInt(e -> -e.id()))
-            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).orElse(null);
+        // The same choice resolve_signals reports for robot_pose
+        var resolved = SignalResolver.robotPose(log).entries();
+        robotPose = resolved.isEmpty() ? null : resolved.get(0);
       }
 
       // Vision entries (prefix applies only here)

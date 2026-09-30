@@ -152,7 +152,7 @@ wpilog-mcp provides 45 tools organized into categories. All log-requiring tools 
 | Category | Tools |
 |----------|-------|
 | **Discovery** | `get_server_guide`, `suggest_tools` |
-| **Core** | `list_available_logs`, `list_loaded_logs`, `list_entries`, `read_entry`, `get_entry_info`, `list_struct_types`, `health_check` |
+| **Core** | `list_available_logs`, `list_loaded_logs`, `list_entries`, `read_entry`, `get_entry_info`, `list_struct_types`, `resolve_signals`, `health_check` |
 | **Query** | `search_entries`, `get_types`, `find_condition`, `search_strings` |
 | **Statistics** | `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries` |
 | **Robot Analysis** | `get_match_phases`, `analyze_swerve`, `power_analysis`, `can_health`, `compare_matches`, `get_code_metadata`, `moi_regression` |

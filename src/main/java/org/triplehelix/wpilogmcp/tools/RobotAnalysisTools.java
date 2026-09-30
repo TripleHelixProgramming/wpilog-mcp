@@ -777,6 +777,14 @@ public final class RobotAnalysisTools {
 
       if (result.has("skipped")) result.addProperty("status", "partial");
 
+      // The entries used, by role (the same roles resolve_signals reports)
+      var inputs = new JsonObject();
+      var inputEntries = new JsonObject();
+      voltageEntry.ifPresent(v -> inputEntries.addProperty("voltage", v));
+      flag.ifPresent(f -> inputEntries.addProperty("brownout_flag", f));
+      inputs.add("entries", inputEntries);
+      result.add("inputs", inputs);
+
       // Data quality from the voltage entry, or the first scalar current entry when there is none.
       var qualitySource = voltageEntry.orElse(firstScalarCurrentEntry);
       if (qualitySource != null) {
