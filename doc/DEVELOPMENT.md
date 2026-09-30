@@ -48,7 +48,7 @@ Stress tests use `~/riologs` and team 2363 by default. Override by adding a `str
 ./gradlew test                                   # includes the conformance sweep on the fixture corpus
 ./gradlew test -PconformanceUpdate               # rewrite the known-failures list (should stay empty)
 ./gradlew test --tests '*ReviewLogGoldenTest*' -PgoldenLog=/path/to/akit_26-09-30_00-10-26.wpilog
-./gradlew test --tests '*RealLogConformanceTest*' -PconformanceLogDir=/path/to/riologs [-PconformanceMaxLogs=N]
+./gradlew test --tests '*RealLogConformanceTest*' -PconformanceLogDir=/path/to/riologs [-PconformanceMaxLogs=N] [-PconformanceTools=a,b]
 ./gradlew test --tests '*ToolResponsesDoc*' -PtoolResponsesLogDir=/path/to/riologs
 ```
 

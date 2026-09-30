@@ -106,7 +106,13 @@ class RealLogConformanceTest {
       }
     });
     captured.sort(Comparator.comparing(Tool::name));
-    tools = captured.stream().filter(ToolArguments::takesPath).toList();
+    // -PconformanceTools=a,b limits the sweep to those tools
+    var only = System.getProperty("conformance.tools", "");
+    var selected = java.util.Arrays.stream(only.split(",")).map(String::trim)
+        .filter(n -> !n.isEmpty()).collect(java.util.stream.Collectors.toSet());
+    tools = captured.stream().filter(ToolArguments::takesPath)
+        .filter(t -> selected.isEmpty() || selected.contains(t.name())).toList();
+    Assumptions.assumeFalse(tools.isEmpty(), "no log-reading tool named " + only);
     executor = Executors.newSingleThreadExecutor(r -> {
       var t = new Thread(r, "real-log-conformance-call");
       t.setDaemon(true);

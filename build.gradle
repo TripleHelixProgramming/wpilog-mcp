@@ -158,6 +158,10 @@ tasks.named('test') {
     if (project.hasProperty('conformanceMaxLogs')) {
         systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
     }
+    // (-PconformanceTools=a,b limits it to those tools)
+    if (project.hasProperty('conformanceTools')) {
+        systemProperty 'conformance.tools', project.property('conformanceTools')
+    }
     // Regenerate doc/TOOL_RESPONSES.md from real logs (opt-in): -PtoolResponsesLogDir=/path/to/riologs
     if (project.hasProperty('toolResponsesLogDir')) {
         systemProperty 'tool.responses.logdir', project.property('toolResponsesLogDir')
