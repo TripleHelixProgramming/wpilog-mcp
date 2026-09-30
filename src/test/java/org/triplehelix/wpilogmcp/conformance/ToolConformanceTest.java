@@ -169,6 +169,9 @@ class ToolConformanceTest {
     }
 
     writeReport(calls);
+    var promised = DescriptionOutputs.missing(tools, calls.stream()
+        .map(c -> java.util.Map.entry(c.tool(), c.result() == null
+            ? (JsonElement) com.google.gson.JsonNull.INSTANCE : c.result())).toList());
 
     var observed = new TreeSet<String>();
     for (var call : calls) {
@@ -215,6 +218,9 @@ class ToolConformanceTest {
       fail(msg.toString());
     }
     assertFalse(calls.isEmpty());
+    // G4: every output a description names appears in at least one result of that tool
+    assertTrue(promised.isEmpty(), "Descriptions name outputs no fixture result contains "
+        + "(tool | term): " + promised);
   }
 
   Call evaluate(Tool tool, String fixtureId, ToolArguments.Variant variant) throws Exception {
