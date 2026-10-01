@@ -64,7 +64,7 @@ class ToolConformanceTest {
   static List<Tool> tools;
   static Path exportDir;
   static Path savedExportDir;
-  static Path savedLogDir;
+  static java.util.List<Path> savedLogDirs;
   static ExecutorService executor;
 
   @BeforeAll
@@ -79,7 +79,7 @@ class ToolConformanceTest {
     savedExportDir = ExportTools.getExportDirectory();
     ExportTools.setExportDirectory(exportDir.toString());
     // list_available_logs lists the fixture directory
-    savedLogDir = LogDirectory.getInstance().getLogDirectory();
+    savedLogDirs = LogDirectory.getInstance().getLogDirectories();
     LogDirectory.getInstance().setLogDirectory(dir.toString());
 
     var captured = new ArrayList<Tool>();
@@ -103,7 +103,8 @@ class ToolConformanceTest {
   static void tearDown() {
     executor.shutdownNow();
     ExportTools.setExportDirectory(savedExportDir.toString());
-    LogDirectory.getInstance().setLogDirectory(savedLogDir == null ? null : savedLogDir.toString());
+    LogDirectory.getInstance().setLogDirectories(
+        savedLogDirs.stream().map(Path::toString).toList());
     LogManager.getInstance().unloadAllLogs();
   }
 
@@ -128,7 +129,7 @@ class ToolConformanceTest {
     for (var tool : tools) {
       if (!ToolArguments.takesPath(tool)) {
         for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
-          calls.add(evaluate(tool, "-", variant));
+          calls.add(evaluate(tool, "-", variant, false));
         }
         continue;
       }
@@ -149,7 +150,7 @@ class ToolConformanceTest {
         }
         var variants = ToolArguments.variants(tool, fixture, log, fixtures, exportDir);
         for (var variant : variants) {
-          var call = evaluate(tool, fixture.id(), variant);
+          var call = evaluate(tool, fixture.id(), variant, log.truncated());
           calls.add(call);
           if (call.result() == null) continue;
           // Revlog tools depend on the load-time sync, which the reordered view below is not
@@ -242,12 +243,19 @@ class ToolConformanceTest {
         + "contains: " + guidanceMissing);
   }
 
-  Call evaluate(Tool tool, String fixtureId, ToolArguments.Variant variant) throws Exception {
+  Call evaluate(Tool tool, String fixtureId, ToolArguments.Variant variant,
+      boolean logTruncated) throws Exception {
     var result = run(tool, variant.args());
     Integer limit = variant.args().has("limit") ? variant.args().get("limit").getAsInt() : null;
     List<Check> failed = result == null ? List.of(Check.TIMEOUT)
         : ConformanceChecks.check(result, limit, ToolArguments.takesPath(tool), tool.name(),
             variant.args());
+    // A result computed from a log that was not read to its end says so
+    if (logTruncated && result != null && result.isJsonObject()
+        && !ConformanceChecks.reportsTruncation(result.getAsJsonObject())) {
+      failed = new ArrayList<>(failed);
+      failed.add(Check.TRUNCATION_UNREPORTED);
+    }
     return new Call(tool.name(), fixtureId, variant.label(), result, failed);
   }
 

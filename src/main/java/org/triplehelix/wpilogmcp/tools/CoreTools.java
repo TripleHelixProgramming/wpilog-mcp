@@ -59,9 +59,12 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List WPILOG files available in the configured log directory with friendly names, "
+      return "List WPILOG files available in the configured log directories with friendly names, "
           + "newest first, paged: log_count is the number matching the filters, offset/limit "
-          + "select a page (default 50), has_more says whether another page exists. Filters: "
+          + "select a page (default 50), has_more says whether another page exists. "
+          + "log_directories names the directories searched; one that could not be read (a drive "
+          + "not mounted, no permission) is listed in skipped with the reason, and the result is "
+          + "partial: its logs are missing from the list, not absent. Filters: "
           + "name (substring of the file or friendly name), event (event code, e.g. VACHE), "
           + "match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). "
           + "IMPORTANT: When TBA is configured, this tool automatically enriches each listed log "
@@ -112,15 +115,34 @@ public final class CoreTools {
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      if (!logDirectory.isConfigured()) {
+      if (logDirectory.getLogDirectories().isEmpty()) {
         var result = new JsonObject();
         result.addProperty("success", false);
         result.addProperty("error", "Log directory not configured. Start server with -logdir /path/to/logs");
-        result.addProperty("hint", "Configure via: -logdir argument or WPILOG_DIR environment variable");
+        result.addProperty("hint", "Configure via: -logdir (repeat it for several directories), "
+            + "the WPILOG_DIR environment variable (several separated by '"
+            + java.io.File.pathSeparator + "'), or logdir in the server configuration (a path "
+            + "or a list of paths)");
         return result;
       }
 
-      var all = logDirectory.listAvailableLogs();
+      var scan = logDirectory.scanLogs();
+      var directories = new JsonArray();
+      scan.directories().forEach(dir -> directories.add(dir.toString()));
+      if (scan.noneReadable()) {
+        var result = new JsonObject();
+        result.addProperty("success", false);
+        result.addProperty("error", "No configured log directory could be read: "
+            + scan.unavailable().stream()
+                .map(u -> u.directory() + " " + u.reason())
+                .collect(java.util.stream.Collectors.joining("; ")));
+        result.add("log_directories", directories);
+        result.addProperty("hint", "Check that each directory exists and can be read (a "
+            + "removable drive may not be mounted)");
+        return result;
+      }
+
+      var all = scan.logs();
       var nameFilter = getOptString(arguments, "name", null);
       var eventFilter = getOptString(arguments, "event", null);
       var matchTypeArg = getOptString(arguments, "match_type", null);
@@ -185,7 +207,7 @@ public final class CoreTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("log_directory", logDirectory.getLogDirectory().toString());
+      result.add("log_directories", directories);
       result.addProperty("log_count", logs.size());
       result.addProperty("total_logs", all.size());
       result.addProperty("offset", Math.min(offset, logs.size()));
@@ -195,7 +217,8 @@ public final class CoreTools {
       var tbaStatus = new JsonObject();
       if (!tbaAvailable) {
         tbaStatus.addProperty("available", false);
-        tbaStatus.addProperty("reason", "not configured (set TBA_API_KEY, -tba-key, or tba_key)");
+        tbaStatus.addProperty("reason", "not configured. "
+            + org.triplehelix.wpilogmcp.tba.TbaConfig.HOW_TO_SET_KEY);
       } else if (tbaFailure != null) {
         tbaStatus.addProperty("available", false);
         tbaStatus.addProperty("reason", tbaFailure + " The logs on this page carry no tba field "
@@ -212,10 +235,25 @@ public final class CoreTools {
       result.add("metadata_cache", cacheStats);
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);
+      // A directory that could not be read leaves its logs out of the list: said, not silent
+      if (!scan.unavailable().isEmpty()) {
+        var skipped = new JsonArray();
+        for (var u : scan.unavailable()) {
+          var entry = new JsonObject();
+          entry.addProperty("section", "logs");
+          entry.addProperty("directory", u.directory().toString());
+          entry.addProperty("reason", "The directory " + u.reason()
+              + "; its logs are not listed.");
+          skipped.add(entry);
+        }
+        result.add("skipped", skipped);
+      }
       if (logs.isEmpty() && !all.isEmpty()) {
         result.addProperty("status", "no_match");
         result.addProperty("reason", "No log matches the filters (" + all.size()
-            + " logs in the directory).");
+            + " logs in the configured directories).");
+      } else if (!scan.unavailable().isEmpty()) {
+        result.addProperty("status", "partial");
       }
       return result;
     }
@@ -556,14 +594,16 @@ public final class CoreTools {
           + "chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, "
           + "vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: "
           + "the entry (or entries, or a value); match, how it was chosen (explicit, convention: "
-          + "a well-known AdvantageKit/WPILib/CTRE/PathPlanner name, type: the only entry of its "
-          + "type or schema, heuristic, or none); the basis; the other candidates best first; "
-          + "ambiguous when another candidate ranked as well (the one declared first wins); and "
-          + "the tools that use it. The server does not guess: a heuristic role has no entry, "
-          + "needs_confirmation, and candidates that match by name only, and the tools skip it. "
-          + "Establish which candidate is right (get_entry_info, read_entry, or ask the user) "
-          + "and pass it with the tool's parameter (voltage_entry, entry, pose_entry, "
-          + "chooser_entry, ...). needs_confirmation lists those roles. These are the choices "
+          + "a well-known AdvantageKit/WPILib/CTRE/PathPlanner/YAGSL/vision-library name, type: "
+          + "the only entry of its type or schema, heuristic, or none); the basis; the other "
+          + "candidates best first; ambiguous when another candidate ranked as well (the one "
+          + "declared first wins); and the tools that use it. The server does not guess: a "
+          + "heuristic role has no entry, needs_confirmation, and candidates, and the tools "
+          + "skip it. A word in a name is not evidence of what an entry holds. Establish which "
+          + "candidate is right from the robot's source code, where the entry is logged (else "
+          + "get_entry_info, read_entry, or the user), and pass it with the tool's parameter "
+          + "(voltage_entry, entry, pose_entry, chooser_entry, measured_entry, ...). "
+          + "needs_confirmation lists those roles. These are the choices "
           + "the tools make; each tool's result records the entries it used under "
           + "inputs.entries.";
     }
@@ -580,12 +620,24 @@ public final class CoreTools {
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var roles = new java.util.ArrayList<SignalResolver.Role>();
-      if (arguments.has("roles") && arguments.get("roles").isJsonArray()) {
-        for (var r : arguments.getAsJsonArray("roles")) {
+      var rolesArg = arguments.get("roles");
+      if (rolesArg == null || rolesArg.isJsonNull()) {
+        roles.addAll(java.util.List.of(SignalResolver.Role.values()));
+      } else {
+        // Anything but an array used to be read as "all roles"
+        var form = "roles must be an array of role names (for example [\"battery_voltage\", "
+            + "\"robot_pose\"]); omit roles for all of them";
+        if (!rolesArg.isJsonArray()) throw new IllegalArgumentException(form);
+        for (var r : rolesArg.getAsJsonArray()) {
+          if (!r.isJsonPrimitive() || !r.getAsJsonPrimitive().isString()) {
+            throw new IllegalArgumentException(form);
+          }
           roles.add(SignalResolver.Role.fromWire(r.getAsString()));
         }
-      } else {
-        roles.addAll(java.util.List.of(SignalResolver.Role.values()));
+        if (roles.isEmpty()) {
+          throw new IllegalArgumentException("roles is an empty list; omit roles for all of "
+              + "them");
+        }
       }
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -727,12 +779,14 @@ public final class CoreTools {
       names.addAll(usedBy.keySet());
       if (names.isEmpty()) {
         // An empty list is not a listing: the log has no struct types
-        return ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
+        var none = ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
                 + "struct:<Name> type and no /.schema/struct: schema is logged.")
             .hint("list_entries shows the types the log has; list_struct_types without path "
                 + "lists the built-in WPILib struct layouts.")
             .addProperty("log_path", log.path())
             .build();
+        ToolUtils.noteTruncation(none, log);
+        return none;
       }
 
       var types = new JsonArray();
@@ -764,6 +818,7 @@ public final class CoreTools {
       result.addProperty("struct_type_count", types.size());
       result.add("struct_types", types);
       if (!warnings.isEmpty()) result.add("warnings", warnings);
+      ToolUtils.noteTruncation(result, log);
       return result;
     }
   }

@@ -58,7 +58,7 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
 @DisplayName("HTTP Transport Stress Test")
 class HttpStressTest {
 
-  private static Path logDirectory;
+  private static java.util.List<Path> logDirectories;
   private static HttpTransport transport;
   private static HttpClient httpClient;
   private static int port;
@@ -89,18 +89,18 @@ class HttpStressTest {
       } catch (Exception e) {
         String home = System.getProperty("user.home");
         config = new org.triplehelix.wpilogmcp.config.ServerConfig("stresstest",
-            home + "/riologs", 2363, System.getenv("TBA_API_KEY"),
+            java.util.List.of(home + "/riologs"), 2363, System.getenv("TBA_API_KEY"),
             "stdio", null, null, null, null, null, null, null);
       }
       org.triplehelix.wpilogmcp.Main.applyConfig(config);
 
-      String logDirPath = config.logdir();
-      assumeTrue(logDirPath != null && !logDirPath.isEmpty(),
+      var logDirs = config.logdirs();
+      assumeTrue(logDirs != null && !logDirs.isEmpty(),
           "HTTP stress test skipped: no logdir configured");
 
-      logDirectory = Path.of(logDirPath);
-      assumeTrue(Files.isDirectory(logDirectory),
-          "HTTP stress test skipped: directory does not exist: " + logDirPath);
+      logDirectories = logDirs.stream().map(Path::of).toList();
+      assumeTrue(logDirectories.stream().anyMatch(Files::isDirectory),
+          "HTTP stress test skipped: no configured log directory exists: " + logDirs);
     } catch (Exception e) {
       assumeTrue(false, "HTTP stress test skipped: " + e.getMessage());
       return;
@@ -121,7 +121,7 @@ class HttpStressTest {
     System.out.println("HTTP Transport Stress Test");
     System.out.println("========================================");
     System.out.println("Server: http://127.0.0.1:" + port + "/mcp");
-    System.out.println("Log directory: " + logDirectory);
+    System.out.println("Log directories: " + logDirectories);
     System.out.println();
   }
 

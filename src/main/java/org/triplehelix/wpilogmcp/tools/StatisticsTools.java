@@ -417,6 +417,10 @@ public final class StatisticsTools {
       + "signals, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal "
       + "follows the first)";
 
+  static final String CORRELATION_LAG_SCHEMA_MAX = "Also search for the time shift at which the "
+      + "two signals correlate most strongly, positively or negatively, from -max_lag_sec to "
+      + "+max_lag_sec (a positive lag means the second signal follows the first)";
+
   /** " in scope enabled (4 windows, 1052.3 s)" or " between 10 and 20 s", for messages. */
   static String scopeText(TimeScope scope) {
     if (!scope.isAll()) return " in " + scope.describe();
@@ -625,6 +629,11 @@ public final class StatisticsTools {
       var signal = signal(log, arguments, "name", "field", name());
       var name = signal.label();
       var peakType = getOptString(arguments, "type", "both");
+      if (!List.of("max", "min", "both").contains(peakType)) {
+        // Any other value used to behave as "both"
+        throw new IllegalArgumentException("type must be 'max', 'min', or 'both', got '"
+            + peakType + "'");
+      }
       var minHeightDiff = getOptDouble(arguments, "min_height_diff");
       int limit = getOptInt(arguments, "limit", 20);
       validatePositive(limit, "limit");
@@ -852,7 +861,7 @@ public final class StatisticsTools {
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
           .addProperty("angle", "string", NumericSignal.ANGLE_PARAM + " (both signals)", false)
-          .addNumberProperty("max_lag_sec", LAG_SCHEMA_MAX, false, null)
+          .addNumberProperty("max_lag_sec", CORRELATION_LAG_SCHEMA_MAX, false, null)
           .addNumberProperty("lag_step_sec", "Lag search step (default: the first signal's "
               + "median sample interval)", false, null)
           .addNumberProperty("start_time", "Start time", false, null)
@@ -875,33 +884,43 @@ public final class StatisticsTools {
       var v2 = s2.values();
 
       // The first signal's samples in scope, each paired with the second interpolated at its
-      // time (angles unwrapped over the whole log, so both keep a consistent branch)
-      var d1 = scope.filter(s1.unwrap(v1.stream().filter(StatisticsTools::isFinite).toList()));
+      // time from the second's samples on either side (angles unwrapped over the whole log, so
+      // both keep a consistent branch in every window)
+      var d1Windows = scope.split(s1.unwrap(v1.stream().filter(StatisticsTools::isFinite)
+          .toList()));
+      var d1 = d1Windows.stream().flatMap(List::stream).toList();
       var d2Full = s2.unwrap(v2.stream().filter(StatisticsTools::isFinite).toList());
-      var d2 = scope.filter(d2Full);
+      var d2Windows = scope.split(d2Full);
 
-      if (d1.isEmpty() || d2.isEmpty()) {
+      if (d1.isEmpty() || d2Windows.stream().allMatch(List::isEmpty)) {
         throw new IllegalArgumentException("No finite samples" + scopeText(scope) + " for "
             + (d1.isEmpty() ? n1 : n2));
       }
 
       // Estimate sample rates from timestamps to warn about aliasing risk
-      double rate1 = d1.size() > 1
-          ? (d1.size() - 1) / (d1.get(d1.size() - 1).timestamp() - d1.get(0).timestamp())
-          : 0;
-      double rate2 = d2.size() > 1
-          ? (d2.size() - 1) / (d2.get(d2.size() - 1).timestamp() - d2.get(0).timestamp())
-          : 0;
+      double rate1 = sampleRateWithin(d1Windows);
+      double rate2 = sampleRateWithin(d2Windows);
 
-      var x = new ArrayList<Double>();
-      var y = new ArrayList<Double>();
-      for (var tv1 : d1) {
-        var val2 = getValueAtTimeLinear(d2Full, tv1.timestamp());
-        if (val2 != null) {
-          x.add(((Number) tv1.value()).doubleValue());
-          y.add(val2);
+      // Kept per window: neighbors in the pooled series are neighbors in time only inside one
+      var xWindows = new ArrayList<List<Double>>();
+      var yWindows = new ArrayList<List<Double>>();
+      for (var window : d1Windows) {
+        var wx = new ArrayList<Double>();
+        var wy = new ArrayList<Double>();
+        for (var tv1 : window) {
+          var val2 = getValueAtTimeLinear(d2Full, tv1.timestamp());
+          if (val2 != null) {
+            wx.add(((Number) tv1.value()).doubleValue());
+            wy.add(val2);
+          }
+        }
+        if (!wx.isEmpty()) {
+          xWindows.add(wx);
+          yWindows.add(wy);
         }
       }
+      var x = xWindows.stream().flatMap(List::stream).toList();
+      var y = yWindows.stream().flatMap(List::stream).toList();
 
       if (x.size() < 2) {
         throw new IllegalArgumentException("Not enough overlapping data");
@@ -959,8 +978,8 @@ public final class StatisticsTools {
         double corr = Math.max(-1.0, Math.min(1.0, num / Math.sqrt(denX * denY)));
         builder.addProperty("correlation", corr);
         // Consecutive samples of a signal are not independent: test with the effective number
-        double r1x = lag1Autocorrelation(x);
-        double r1y = lag1Autocorrelation(y);
+        double r1x = lag1AutocorrelationWithin(xWindows);
+        double r1y = lag1AutocorrelationWithin(yWindows);
         double nEff = effectiveSampleSize(sampleCount, r1x, r1y);
         var lag1 = new JsonObject();
         lag1.addProperty("entry1", r1x);
@@ -1262,7 +1281,7 @@ public final class StatisticsTools {
       List<org.triplehelix.wpilogmcp.log.TimestampedValue> first,
       List<org.triplehelix.wpilogmcp.log.TimestampedValue> secondFull) {
     var lags = lagGrid(arguments, first);
-    double bestR = Double.NEGATIVE_INFINITY;
+    double bestR = Double.NaN;
     double bestLag = Double.NaN;
     int bestN = 0;
     Double zeroR = null;
@@ -1283,7 +1302,12 @@ public final class StatisticsTools {
       if (vx <= 1e-15 * n || vy <= 1e-15 * n) continue;
       double r = Math.max(-1, Math.min(1, cov / Math.sqrt(vx * vy)));
       if (Math.abs(lag) < 1e-12) zeroR = r;
-      if (r > bestR) {
+      // Best is the strongest relationship in either direction: when the signals move
+      // oppositely every r is negative, and the highest r is the weakest match. Among equally
+      // strong lags, the one nearest zero.
+      double strength = Math.abs(r);
+      if (Double.isNaN(bestLag) || strength > Math.abs(bestR)
+          || (strength == Math.abs(bestR) && Math.abs(lag) < Math.abs(bestLag))) {
         bestR = r;
         bestLag = lag;
         bestN = n;
@@ -1302,9 +1326,14 @@ public final class StatisticsTools {
     o.addProperty("correlation_at_best_lag", bestR);
     o.addProperty("samples_at_best_lag", bestN);
     if (zeroR != null) o.addProperty("correlation_at_zero_lag", zeroR);
-    o.addProperty("note", "Positive lag: the second signal follows the first (the second at "
-        + "t + lag pairs with the first at t). A best lag at the edge of the range may lie "
-        + "beyond it. Shared timing (both follow the match phase) also aligns signals.");
+    o.addProperty("note", "best_lag_sec is the lag with the strongest correlation, positive or "
+        + "negative (correlation_at_best_lag keeps its sign). Positive lag: the second signal "
+        + "follows the first (the second at t + lag pairs with the first at t). A best lag at "
+        + "the edge of the range may lie beyond it. If correlation_at_best_lag and "
+        + "correlation_at_zero_lag have opposite signs, the relationship changes direction "
+        + "with the shift, as oscillating signals do half a period apart: check that before "
+        + "reading the lag as a delay. Shared timing (both follow the match phase) also aligns "
+        + "signals.");
     return o;
   }
 
@@ -1386,17 +1415,50 @@ public final class StatisticsTools {
 
   /** Lag-1 autocorrelation of a series (0 when it has no variance or fewer than 3 values). */
   static double lag1Autocorrelation(List<Double> v) {
-    int n = v.size();
+    return lag1AutocorrelationWithin(List.of(v));
+  }
+
+  /**
+   * Lag-1 autocorrelation of a series given as its time windows: the mean over all values, and
+   * neighbor products only from pairs inside one window. The last sample of a window and the
+   * first of the next are not neighbors in time. The mean product is put on the scale of the
+   * n - 1 pairs of an unbroken series, so one window gives the usual estimate.
+   */
+  static double lag1AutocorrelationWithin(List<? extends List<Double>> windows) {
+    int n = windows.stream().mapToInt(List::size).sum();
     if (n < 3) return 0.0;
-    double mean = v.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+    double mean = windows.stream().flatMap(List::stream).mapToDouble(Double::doubleValue)
+        .average().orElse(0);
     double num = 0;
     double den = 0;
-    for (int i = 0; i < n; i++) {
-      double d = v.get(i) - mean;
-      den += d * d;
-      if (i + 1 < n) num += d * (v.get(i + 1) - mean);
+    int pairs = 0;
+    for (var v : windows) {
+      for (int i = 0; i < v.size(); i++) {
+        double d = v.get(i) - mean;
+        den += d * d;
+        if (i + 1 < v.size()) {
+          num += d * (v.get(i + 1) - mean);
+          pairs++;
+        }
+      }
     }
-    return den > 0 ? num / den : 0.0;
+    return den > 0 && pairs > 0 ? (num / pairs) * (n - 1) / den : 0.0;
+  }
+
+  /**
+   * Samples per second inside the windows: intervals over the time they span, summed over the
+   * windows, so the time between two windows does not count. 0 when no window has two samples.
+   */
+  static double sampleRateWithin(
+      List<? extends List<org.triplehelix.wpilogmcp.log.TimestampedValue>> windows) {
+    int intervals = 0;
+    double span = 0;
+    for (var w : windows) {
+      if (w.size() < 2) continue;
+      intervals += w.size() - 1;
+      span += w.get(w.size() - 1).timestamp() - w.get(0).timestamp();
+    }
+    return span > 0 ? intervals / span : 0;
   }
 
   /**

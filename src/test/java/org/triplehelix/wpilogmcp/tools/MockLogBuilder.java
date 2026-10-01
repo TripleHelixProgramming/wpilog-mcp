@@ -178,43 +178,36 @@ public class MockLogBuilder {
     int samples = 500;
     double period = 0.02;
 
-    for (int mod = 0; mod < 4; mod++) {
-      String prefix = "/Drive/Module" + mod;
-
-      // Setpoint states
-      var setpointTs = new double[samples];
-      var setpointMaps = new ArrayList<Map<String, Object>>();
-
-      // Measured states (module 2 has slip — measured speed trails setpoint)
-      var measuredTs = new double[samples];
-      var measuredMaps = new ArrayList<Map<String, Object>>();
-
-      for (int i = 0; i < samples; i++) {
-        double t = i * period;
-        setpointTs[i] = t;
-        measuredTs[i] = t;
-
-        double speed = 2.0 * Math.sin(t * 0.5);
-        double angle = t * 0.3;
-
+    // The AdvantageKit swerve template's layout: one array of four module states per record.
+    // Module 2 slips (its measured speed trails the setpoint); module 3 is 0.2 rad off.
+    var setpointValues = new ArrayList<TimestampedValue>();
+    var measuredValues = new ArrayList<TimestampedValue>();
+    for (int i = 0; i < samples; i++) {
+      double t = i * period;
+      double speed = 2.0 * Math.sin(t * 0.5);
+      double angle = t * 0.3;
+      var setpoints = new ArrayList<Map<String, Object>>();
+      var measureds = new ArrayList<Map<String, Object>>();
+      for (int mod = 0; mod < 4; mod++) {
         var setpoint = new LinkedHashMap<String, Object>();
         setpoint.put("speed_mps", speed);
         setpoint.put("angle_rad", angle);
-        setpointMaps.add(setpoint);
+        setpoints.add(setpoint);
 
         var measured = new LinkedHashMap<String, Object>();
         // Module 2 has slip: measured speed is 70% of commanded
         double measuredSpeed = (mod == 2) ? speed * 0.7 : speed + 0.05 * noise.nextDouble();
         measured.put("speed_mps", measuredSpeed);
         measured.put("angle_rad", (mod == 3) ? angle + 0.2 : angle + 0.01 * noise.nextDouble());
-        measuredMaps.add(measured);
+        measureds.add(measured);
       }
-
-      builder.addStructEntry(prefix + "/Setpoint", "struct:SwerveModuleState",
-          setpointTs, setpointMaps);
-      builder.addStructEntry(prefix + "/Measured", "struct:SwerveModuleState",
-          measuredTs, measuredMaps);
+      setpointValues.add(new TimestampedValue(t, setpoints));
+      measuredValues.add(new TimestampedValue(t, measureds));
     }
+    builder.addEntry("/RealOutputs/SwerveStates/SetpointsOptimized", "struct:SwerveModuleState[]",
+        setpointValues);
+    builder.addEntry("/RealOutputs/SwerveStates/Measured", "struct:SwerveModuleState[]",
+        measuredValues);
 
     // Also add an odometry pose that drifts and a vision pose that doesn't
     var odomTs = new double[samples];

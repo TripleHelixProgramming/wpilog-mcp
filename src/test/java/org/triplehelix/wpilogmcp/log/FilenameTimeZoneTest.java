@@ -30,7 +30,7 @@ class FilenameTimeZoneTest {
     Files.createFile(dir.resolve("frc_26-03-21_18-50-00_vache_qm5.wpilog"));
     Files.createFile(dir.resolve("frc_26-03-21_18-50-00_vache_qm6_sim.wpilog"));
     var logDir = LogDirectory.getInstance();
-    var saved = logDir.getLogDirectory();
+    var saved = logDir.getLogDirectories();
     logDir.setLogDirectory(dir.toString());
     try {
       var logs = logDir.listAvailableLogs();
@@ -43,7 +43,7 @@ class FilenameTimeZoneTest {
         assertEquals(expected, log.logCreationTime(), log.filename());
       }
     } finally {
-      logDir.setLogDirectory(saved == null ? null : saved.toString());
+      logDir.setLogDirectories(saved.stream().map(Path::toString).toList());
       logDir.clearCache();
     }
   }

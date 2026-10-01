@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.google.gson.JsonObject;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -429,20 +430,17 @@ class CoreToolsLogicTest extends ToolTestBase {
   @DisplayName("list_available_logs Tool")
   class ListAvailableLogsTests {
 
-    private Path savedLogDirectory;
+    private List<Path> savedLogDirectories;
 
     @BeforeEach
     void saveLogDirectoryState() {
-      savedLogDirectory = LogDirectory.getInstance().getLogDirectory();
+      savedLogDirectories = LogDirectory.getInstance().getLogDirectories();
     }
 
     @AfterEach
     void restoreLogDirectoryState() {
-      if (savedLogDirectory != null) {
-        LogDirectory.getInstance().setLogDirectory(savedLogDirectory.toString());
-      } else {
-        LogDirectory.getInstance().setLogDirectory(null);
-      }
+      LogDirectory.getInstance().setLogDirectories(
+          savedLogDirectories.stream().map(Path::toString).toList());
       LogDirectory.getInstance().clearCache();
     }
 
@@ -521,7 +519,7 @@ class CoreToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("includes metadata_cache and log_directory in response")
+    @DisplayName("includes metadata_cache and log_directories in response")
     void includesMetadataInResponse(@TempDir Path tempDir) throws Exception {
       Files.write(tempDir.resolve("data.wpilog"), new byte[]{0});
       LogDirectory.getInstance().setLogDirectory(tempDir.toString());
@@ -531,7 +529,11 @@ class CoreToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("log_directory"), "Should include log_directory");
+      assertEquals("ok", resultObj.get("status").getAsString(), resultObj.toString());
+      var dirs = resultObj.getAsJsonArray("log_directories");
+      assertEquals(1, dirs.size(), resultObj.toString());
+      assertEquals(tempDir.toAbsolutePath().normalize().toString(), dirs.get(0).getAsString());
+      assertFalse(resultObj.has("skipped"), resultObj.toString());
       assertTrue(resultObj.has("metadata_cache"), "Should include metadata_cache");
       var cache = resultObj.getAsJsonObject("metadata_cache");
       assertTrue(cache.has("size"), "Cache should have size stat");
@@ -623,6 +625,89 @@ class CoreToolsLogicTest extends ToolTestBase {
       assertEquals(5, none.get("total_logs").getAsInt());
       var bad = list("since", "yesterday");
       assertTrue(bad.get("error").getAsString().contains("since must be a date"), bad.toString());
+    }
+
+    @Test
+    @DisplayName("lists the logs of several directories together and names the directories")
+    void severalDirectories(@TempDir Path tempDir) throws Exception {
+      var ours = tempDir.resolve("ours");
+      var theirs = tempDir.resolve("theirs");
+      writeLogs(Files.createDirectories(ours.resolve("vache")));
+      Files.createDirectories(theirs);
+      Files.write(theirs.resolve("akit_26-03-21_12-00-00_vache_q11.wpilog"), new byte[] {0});
+      LogDirectory.getInstance().setLogDirectories(
+          List.of(ours.toString(), theirs.toString()));
+
+      var r = list();
+      assertEquals("ok", r.get("status").getAsString(), r.toString());
+      assertEquals(6, r.get("log_count").getAsInt(), r.toString());
+      var dirs = r.getAsJsonArray("log_directories");
+      assertEquals(2, dirs.size());
+      assertEquals(ours.toString(), dirs.get(0).getAsString());
+      assertEquals(theirs.toString(), dirs.get(1).getAsString());
+      assertFalse(r.has("skipped"), r.toString());
+      // Newest first across both directories: theirs' log (03-21 12:00) sits between ours'
+      // (bench 04-10 by mtime, 04-03, 04-02 | 03-21 11:00, 03-20)
+      var names = new java.util.ArrayList<String>();
+      r.getAsJsonArray("logs").forEach(l -> names.add(
+          l.getAsJsonObject().get("filename").getAsString()));
+      assertEquals(3, names.indexOf("akit_26-03-21_12-00-00_vache_q11.wpilog"), names.toString());
+      assertEquals(3, list("event", "vache").get("log_count").getAsInt());
+    }
+
+    @Test
+    @DisplayName("a directory that cannot be read makes the listing partial, with the reason")
+    void unreadableDirectoryIsPartial(@TempDir Path tempDir) throws Exception {
+      var present = tempDir.resolve("present");
+      var missing = tempDir.resolve("usb");
+      writeLogs(Files.createDirectories(present));
+      LogDirectory.getInstance().setLogDirectories(
+          List.of(missing.toString(), present.toString()));
+
+      var r = list();
+      assertTrue(r.get("success").getAsBoolean(), r.toString());
+      assertEquals("partial", r.get("status").getAsString(), r.toString());
+      assertEquals(5, r.get("log_count").getAsInt());
+      assertEquals(2, r.getAsJsonArray("log_directories").size());
+      var skipped = r.getAsJsonArray("skipped");
+      assertEquals(1, skipped.size(), r.toString());
+      var entry = skipped.get(0).getAsJsonObject();
+      assertEquals("logs", entry.get("section").getAsString());
+      assertEquals(missing.toString(), entry.get("directory").getAsString());
+      assertTrue(entry.get("reason").getAsString().contains("does not exist"), entry.toString());
+
+      // Filters that match nothing still say no_match, with the skipped directory alongside
+      var none = list("event", "nope");
+      assertEquals("no_match", none.get("status").getAsString(), none.toString());
+      assertTrue(none.has("skipped"), none.toString());
+    }
+
+    @Test
+    @DisplayName("when no configured directory can be read, the error names each and why")
+    void noDirectoryReadable(@TempDir Path tempDir) throws Exception {
+      var missing = tempDir.resolve("missing");
+      var file = Files.createFile(tempDir.resolve("notes.txt"));
+      LogDirectory.getInstance().setLogDirectories(List.of(missing.toString(), file.toString()));
+
+      var r = list();
+      assertFalse(r.get("success").getAsBoolean(), r.toString());
+      assertEquals("error", r.get("status").getAsString());
+      var error = r.get("error").getAsString();
+      assertTrue(error.contains(missing + " does not exist"), error);
+      assertTrue(error.contains(file + " is not a directory"), error);
+      assertEquals(2, r.getAsJsonArray("log_directories").size());
+      assertTrue(r.has("hint"), r.toString());
+    }
+
+    @Test
+    @DisplayName("the not-configured hint names every way to configure directories")
+    void notConfiguredHint() throws Exception {
+      LogDirectory.getInstance().setLogDirectories(List.of());
+      var hint = list().get("hint").getAsString();
+      assertTrue(hint.contains("-logdir"), hint);
+      assertTrue(hint.contains("WPILOG_DIR"), hint);
+      assertTrue(hint.contains(java.io.File.pathSeparator), hint);
+      assertTrue(hint.contains("logdir in the server configuration"), hint);
     }
   }
 

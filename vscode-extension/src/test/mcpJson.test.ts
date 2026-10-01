@@ -1,24 +1,66 @@
-// Tests for the .mcp.json entry (no VS Code needed): npm test
+// Tests for Claude Code's .mcp.json entry and configuration file (no VS Code needed): npm test
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
   SERVER_NAME,
   TBA_KEY_REFERENCE,
+  addToGitignore,
+  buildServerConfig,
   buildServerEntry,
+  gitAction,
+  hasServerEntry,
   mergeServerEntry,
+  otherWpilogServer,
   scrubTbaKey,
+  shouldWriteEntry,
 } from "../mcpJson";
 
-const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", "/logs", 2363);
+const entry = buildServerEntry("/jdk/bin/java", "/storage/server/wpilog-mcp-all.jar", "4g",
+  "/storage/servers.json");
 
-test("the entry references the TBA key and never contains one", () => {
-  assert.equal(entry.env["TBA_API_KEY"], TBA_KEY_REFERENCE);
-  assert.ok(!entry.args.includes("-tba-key"));
-  assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/ext/server/wpilog-mcp.jar", "-logdir",
-    "/logs", "-team", "2363"]);
-  const bare = buildServerEntry("/java", "/jar", "2g", undefined, 0);
-  assert.deepEqual(bare.args, ["-Xmx2g", "-jar", "/jar"]);
-  assert.deepEqual(bare.env, { TBA_API_KEY: TBA_KEY_REFERENCE });
+test("the entry only starts the server with the configuration file: no settings, no key", () => {
+  assert.equal(entry.command, "/jdk/bin/java");
+  assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/storage/server/wpilog-mcp-all.jar", "start",
+    "default", "--config", "/storage/servers.json"]);
+  assert.equal(entry.env, undefined);
+  assert.ok(!JSON.stringify(entry).includes("tba"));
+});
+
+test("the configuration file holds the settings in the standalone's format", () => {
+  const config = JSON.parse(buildServerConfig({
+    logDirs: ["/logs", "/archive"],
+    teamNumber: 2363,
+    tbaKey: "the-key",
+    cacheDir: "/storage/cache",
+  }));
+  assert.deepEqual(config, {
+    servers: {
+      default: {
+        transport: "stdio",
+        logdir: ["/logs", "/archive"],
+        team: 2363,
+        tba_key: "the-key",
+        diskcachedir: "/storage/cache",
+      },
+    },
+  });
+});
+
+test("the configuration file leaves out what is not set", () => {
+  const config = JSON.parse(buildServerConfig({ logDirs: [], teamNumber: 0 }));
+  assert.deepEqual(config, { servers: { default: { transport: "stdio" } } });
+  const noKey = JSON.parse(buildServerConfig({ logDirs: ["/logs"], teamNumber: 0, tbaKey: "" }));
+  assert.equal(noKey.servers.default.tba_key, undefined);
+});
+
+test("the configuration file is valid JSON ending in a newline, with paths kept exactly", () => {
+  const text = buildServerConfig({
+    logDirs: ["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"],
+    teamNumber: 2363,
+  });
+  assert.ok(text.endsWith("\n"));
+  assert.deepEqual(JSON.parse(text).servers.default.logdir,
+    ["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"]);
 });
 
 test("a missing or blank file gets just this entry", () => {
@@ -95,4 +137,51 @@ test("nothing to remove: no file, no entry, a reference, or unparseable text", (
   assert.ok(again.ok);
   assert.equal(again.changed, false);
   assert.equal(scrubTbaKey("{ broken").ok, false);
+});
+
+test("enabled for Claude Code: written in robot projects and kept wherever one exists", () => {
+  assert.equal(shouldWriteEntry(true, true, false), true);
+  assert.equal(shouldWriteEntry(true, false, true), true, "an earlier version's entry");
+  assert.equal(shouldWriteEntry(true, false, false), false, "another folder, unasked");
+});
+
+test("disabled for Claude Code: nothing is written unless the user asks for a folder", () => {
+  assert.equal(shouldWriteEntry(false, true, true), false);
+  assert.equal(shouldWriteEntry(false, false, false, true), true, "the Add command");
+  assert.equal(shouldWriteEntry(true, false, false, true), true, "the Add command");
+});
+
+test("hasServerEntry finds this server's entry and nothing else", () => {
+  assert.equal(hasServerEntry(undefined), false);
+  assert.equal(hasServerEntry(""), false);
+  assert.equal(hasServerEntry("{ broken"), false);
+  assert.equal(hasServerEntry(JSON.stringify({ mcpServers: { wpilog: { command: "x" } } })), false);
+  assert.equal(hasServerEntry(JSON.stringify({ mcpServers: [] })), false);
+  assert.equal(hasServerEntry(JSON.stringify({ mcpServers: { [SERVER_NAME]: entry } })), true);
+});
+
+test("a .mcp.json the repository shares is never written; one git would pick up is offered to ignore", () => {
+  assert.equal(gitAction("tracked"), "skipShared");
+  assert.equal(gitAction("untracked"), "writeAndOfferIgnore");
+  assert.equal(gitAction("ignored"), "write");
+  assert.equal(gitAction("none"), "write");
+});
+
+test("another entry that runs wpilog-mcp (the standalone install) is found; this server's is not", () => {
+  const standalone = { mcpServers: { wpilog: { command: "/Users/x/.wpilog-mcp/bin/wpilog-mcp" } } };
+  assert.equal(otherWpilogServer(JSON.stringify(standalone)), "wpilog");
+  const jar = { mcpServers: { logs: { command: "java", args: ["-jar", "/opt/wpilog-mcp-0.9.0-all.jar"] } } };
+  assert.equal(otherWpilogServer(JSON.stringify(jar)), "logs");
+  assert.equal(otherWpilogServer(JSON.stringify({ mcpServers: { [SERVER_NAME]: entry } })), undefined);
+  assert.equal(otherWpilogServer(JSON.stringify({ mcpServers: { github: { command: "gh" } } })), undefined);
+  assert.equal(otherWpilogServer(undefined), undefined);
+  assert.equal(otherWpilogServer("{ broken"), undefined);
+});
+
+test("addToGitignore appends .mcp.json with a comment, keeping what is there", () => {
+  const added = "# Claude Code's MCP servers (paths for this computer only)\n.mcp.json\n";
+  assert.equal(addToGitignore(undefined), added);
+  assert.equal(addToGitignore(""), added);
+  assert.equal(addToGitignore("build/\n"), "build/\n\n" + added);
+  assert.equal(addToGitignore("build/"), "build/\n\n" + added);
 });

@@ -20,7 +20,8 @@ import org.triplehelix.wpilogmcp.log.LogData;
  * <p>Eviction is driven by:
  * <ul>
  *   <li><b>Idle time</b> — entries expire after 30 minutes of inactivity (configurable)
- *   <li><b>Heap pressure</b> — when free heap drops below 15% of max, LRU entries are evicted
+ *   <li><b>Heap pressure</b> — when free heap stays below 15% of max after a garbage collection,
+ *       LRU entries are evicted one at a time, with a collection after each, until it recovers
  * </ul>
  *
  * <p>When a log is evicted, its {@link org.triplehelix.wpilogmcp.log.LazyParsedLog} is closed
@@ -40,7 +41,47 @@ public class LogCache {
   /** Default idle expiration: 30 minutes. */
   private static final long DEFAULT_IDLE_MS = 1_800_000;
 
+  /**
+   * What the cache reads from the heap. Tests substitute their own.
+   */
+  interface Heap {
+    /** Bytes in use, which counts garbage until a collection removes it. */
+    long usedBytes();
+
+    long maxBytes();
+
+    /** Collects garbage, so that {@link #usedBytes()} counts what is still referenced. */
+    void collect();
+  }
+
+  /** The JVM's own heap. */
+  private static final Heap JVM_HEAP = new Heap() {
+    @Override
+    public long usedBytes() {
+      var rt = Runtime.getRuntime();
+      return rt.totalMemory() - rt.freeMemory();
+    }
+
+    @Override
+    public long maxBytes() {
+      return Runtime.getRuntime().maxMemory();
+    }
+
+    @Override
+    public void collect() {
+      System.gc();
+    }
+  };
+
   private final Cache<String, LogData> cache;
+  private final Heap heap;
+
+  /**
+   * Held while unloading for heap pressure or to make room, so that checks made at the same
+   * time unload between them only what one would. It is taken by nothing else: reads and puts
+   * never wait for it.
+   */
+  private final Object evictionLock = new Object();
 
   /** Optional callback invoked when a log is evicted, for cleaning up associated resources. */
   private volatile java.util.function.Consumer<String> evictionCallback;
@@ -55,6 +96,12 @@ public class LogCache {
    * @param idleMs Maximum idle time in milliseconds before automatic eviction
    */
   public LogCache(long idleMs) {
+    this(idleMs, JVM_HEAP);
+  }
+
+  /** A cache that judges heap pressure by {@code heap} (for testing). */
+  LogCache(long idleMs, Heap heap) {
+    this.heap = heap;
     this.cache = Caffeine.newBuilder()
         .expireAfterAccess(idleMs, TimeUnit.MILLISECONDS)
         .removalListener(this::onRemoval)
@@ -123,15 +170,24 @@ public class LogCache {
    *
    * <p>First triggers Caffeine's built-in idle expiration cleanup, then evicts LRU entries
    * while JVM free heap is below the pressure threshold.
+   *
+   * <p>The heap's used bytes count garbage, and what an unloaded log held is garbage until it
+   * is collected. So pressure is judged after a collection, and again after each unloaded log:
+   * measuring without one sees no change and goes on to unload every log.
    */
   public void evictIfNeeded() {
     // Trigger pending idle expirations
     cache.cleanUp();
 
-    // Evict LRU entries while under heap pressure
-    while (isUnderHeapPressure() && !cache.asMap().isEmpty()) {
-      if (!evictLeastRecentlyUsed("heap pressure")) {
-        break;
+    // The ordinary case: no pressure, or nothing to unload. No collection is forced.
+    if (!isUnderHeapPressure() || cache.asMap().isEmpty()) return;
+
+    synchronized (evictionLock) {
+      // Another check may have relieved the pressure while this one waited
+      if (!isUnderHeapPressure()) return;
+      heap.collect();
+      while (isUnderHeapPressure() && evictLeastRecentlyUsed("heap pressure")) {
+        heap.collect();
       }
     }
   }
@@ -139,6 +195,31 @@ public class LogCache {
   /** Evicts the least recently used log. Returns true if a log was evicted. */
   public boolean evictOne() {
     return evictLeastRecentlyUsed("making room for large file");
+  }
+
+  /**
+   * Unloads least recently used logs until {@code bytes} of heap are free, or no log is left.
+   * Free heap is judged after a collection, as in {@link #evictIfNeeded()}.
+   *
+   * @return Whether any log was unloaded
+   */
+  public boolean makeRoomFor(long bytes) {
+    if (hasRoomFor(bytes) || cache.asMap().isEmpty()) return false;
+
+    synchronized (evictionLock) {
+      if (hasRoomFor(bytes)) return false;
+      heap.collect();
+      boolean evicted = false;
+      while (!hasRoomFor(bytes) && evictLeastRecentlyUsed("making room for large file")) {
+        evicted = true;
+        heap.collect();
+      }
+      return evicted;
+    }
+  }
+
+  private boolean hasRoomFor(long bytes) {
+    return bytes <= heap.maxBytes() - heap.usedBytes();
   }
 
   /** Returns true if the cache is empty. */
@@ -187,10 +268,7 @@ public class LogCache {
 
   /** Returns true if JVM heap usage exceeds the pressure threshold. */
   private boolean isUnderHeapPressure() {
-    var rt = Runtime.getRuntime();
-    long maxMemory = rt.maxMemory();
-    long usedMemory = rt.totalMemory() - rt.freeMemory();
-    double freeRatio = 1.0 - ((double) usedMemory / maxMemory);
+    double freeRatio = 1.0 - ((double) heap.usedBytes() / heap.maxBytes());
     return freeRatio < HEAP_PRESSURE_THRESHOLD;
   }
 

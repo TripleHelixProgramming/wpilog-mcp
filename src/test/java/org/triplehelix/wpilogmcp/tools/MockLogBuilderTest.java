@@ -53,11 +53,11 @@ class MockLogBuilderTest {
     var log = MockLogBuilder.createSwerveModuleLog();
     assertNotNull(log);
 
-    for (int i = 0; i < 4; i++) {
-      assertNotNull(log.values().get("/Drive/Module" + i + "/Setpoint"),
-          "Module " + i + " should have setpoint");
-      assertNotNull(log.values().get("/Drive/Module" + i + "/Measured"),
-          "Module " + i + " should have measured");
+    for (var name : java.util.List.of("/RealOutputs/SwerveStates/SetpointsOptimized",
+        "/RealOutputs/SwerveStates/Measured")) {
+      var values = log.values().get(name);
+      assertNotNull(values, name);
+      assertEquals(4, ((java.util.List<?>) values.get(0).value()).size(), name + " modules");
     }
 
     assertNotNull(log.values().get("/Odometry/Pose"), "Should have odometry pose");

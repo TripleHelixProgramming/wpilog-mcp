@@ -176,6 +176,11 @@ class AlignEntriesTest extends FixtureToolTestBase {
 
     /** y(t) = x(t - 0.1): the second signal follows the first by 100 ms. */
     void putLagged() {
+      putLagged(1.0);
+    }
+
+    /** y(t) = sign * x(t - 0.1): with sign -1 the second signal mirrors the first. */
+    void putLagged(double sign) {
       int n = 1000;
       var ts = new double[n];
       var x = new double[n];
@@ -184,7 +189,8 @@ class AlignEntriesTest extends FixtureToolTestBase {
         ts[i] = i * 0.01;
         x[i] = Math.sin(2 * Math.PI * 0.7 * ts[i]) + 0.3 * Math.sin(2 * Math.PI * 1.9 * ts[i]);
         double shifted = ts[i] - 0.1;
-        y[i] = Math.sin(2 * Math.PI * 0.7 * shifted) + 0.3 * Math.sin(2 * Math.PI * 1.9 * shifted);
+        y[i] = sign * (Math.sin(2 * Math.PI * 0.7 * shifted)
+            + 0.3 * Math.sin(2 * Math.PI * 1.9 * shifted));
       }
       putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
           .addNumericEntry("/X", ts, x).addNumericEntry("/Y", ts, y).build());
@@ -203,6 +209,63 @@ class AlignEntriesTest extends FixtureToolTestBase {
       assertEquals(1.0, lag.get("correlation_at_best_lag").getAsDouble(), 1e-9);
       assertTrue(lag.get("correlation_at_zero_lag").getAsDouble() < 0.95);
       assertEquals(101, lag.get("lags_evaluated").getAsInt());
+    }
+
+    @Test
+    @DisplayName("time_correlate finds the lag of a signal that moves oppositely")
+    void inverseCorrelationLag() throws Exception {
+      // Every correlation here is negative, as battery voltage against a motor's current is:
+      // the highest one is the weakest match, and the strongest is at the true 100 ms
+      putLagged(-1.0);
+      var args = new JsonObject();
+      args.addProperty("name1", "/X");
+      args.addProperty("name2", "/Y");
+      args.addProperty("max_lag_sec", 0.3);
+      var result = run("time_correlate", args);
+      var lag = result.getAsJsonObject("lag_search");
+      assertEquals(0.1, lag.get("best_lag_sec").getAsDouble(), 1e-9, lag.toString());
+      assertEquals(-1.0, lag.get("correlation_at_best_lag").getAsDouble(), 1e-9,
+          "the sign is kept: " + lag);
+      double zero = lag.get("correlation_at_zero_lag").getAsDouble();
+      assertTrue(zero < 0 && zero > -0.95, "weaker at zero lag: " + lag);
+      assertEquals(zero, result.get("correlation").getAsDouble(), 1e-9);
+      assertTrue(lag.get("note").getAsString().contains("strongest correlation, positive or "
+          + "negative"), lag.toString());
+    }
+
+    @Test
+    @DisplayName("among equally strong lags, time_correlate reports the one nearest zero")
+    void equallyStrongLags() throws Exception {
+      // A signal against itself, repeating every 4 samples on a grid of exact binary
+      // fractions: r is exactly +1 a whole period either side of zero and exactly -1 half a
+      // period away. No shift is needed, so the best lag is zero.
+      int n = 64;
+      var ts = new double[n];
+      var x = new double[n];
+      double[] pattern = {0, 1, 0, -1};
+      for (int i = 0; i < n; i++) {
+        ts[i] = i / 64.0;
+        x[i] = pattern[i % 4];
+      }
+      putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
+          .addNumericEntry("/X", ts, x).addNumericEntry("/Y", ts, x).build());
+      var args = new JsonObject();
+      args.addProperty("name1", "/X");
+      args.addProperty("name2", "/Y");
+      args.addProperty("max_lag_sec", 4 / 64.0);
+      var lag = run("time_correlate", args).getAsJsonObject("lag_search");
+      assertEquals(9, lag.get("lags_evaluated").getAsInt(), lag.toString());
+      assertEquals(0.0, lag.get("best_lag_sec").getAsDouble(), 0.0, lag.toString());
+      assertEquals(1.0, lag.get("correlation_at_best_lag").getAsDouble(), 0.0);
+
+      // The mirror image: exactly -1 at zero and +1 half a period away; still no shift
+      var mirrored = new double[n];
+      for (int i = 0; i < n; i++) mirrored[i] = -x[i];
+      putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
+          .addNumericEntry("/X", ts, x).addNumericEntry("/Y", ts, mirrored).build());
+      var inverse = run("time_correlate", args).getAsJsonObject("lag_search");
+      assertEquals(0.0, inverse.get("best_lag_sec").getAsDouble(), 0.0, inverse.toString());
+      assertEquals(-1.0, inverse.get("correlation_at_best_lag").getAsDouble(), 0.0);
     }
 
     @Test

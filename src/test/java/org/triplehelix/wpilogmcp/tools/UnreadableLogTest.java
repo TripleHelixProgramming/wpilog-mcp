@@ -13,7 +13,10 @@ import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
@@ -69,7 +72,7 @@ class UnreadableLogTest extends ToolTestBase {
   @Test
   @DisplayName("an empty file: the error says it is empty")
   void emptyFile() throws Exception {
-    var file = Files.createFile(dir.resolve("FRC_20250417_165906.wpilog"));
+    var file = Files.createFile(dir.resolve("FRC_20260102_030405.wpilog"));
     var error = errorFor(file);
     assertTrue(error.startsWith("Invalid WPILOG file: "), error);
     assertTrue(error.contains("the file is empty, 0 bytes"), error);
@@ -78,7 +81,7 @@ class UnreadableLogTest extends ToolTestBase {
   @Test
   @DisplayName("a file of zeros: the error says its first bytes are zero and how large it is")
   void zeroFilledFile() throws Exception {
-    var file = dir.resolve("FRC_20240301_215318_PACA_Q49.wpilog");
+    var file = dir.resolve("FRC_20260102_030405_XXYY_Q7.wpilog");
     Files.write(file, new byte[100_000]);
     var error = errorFor(file);
     assertTrue(error.contains("does not start with the WPILOG header"), error);
@@ -112,6 +115,34 @@ class UnreadableLogTest extends ToolTestBase {
     var file = Files.createFile(elsewhere.resolve("FRC_20260101_000000.wpilog"));
     var error = errorFor(file);
     assertTrue(error.startsWith("Access denied: path is outside configured log directories"), error);
+  }
+
+  @Test
+  @DisplayName("a directory given as the log: the error says it is a directory")
+  void directoryAsLog() throws Exception {
+    // It used to be "Internal error: <path> (Is a directory)"
+    var folder = Files.createDirectory(dir.resolve("session_12.wpilog"));
+    var error = errorFor(folder);
+    assertTrue(error.startsWith("Not a log file: "), error);
+    assertTrue(error.contains("is a directory"), error);
+  }
+
+  @Test
+  @DisabledOnOs(OS.WINDOWS)
+  @DisplayName("a file without read permission: the error says it cannot be read")
+  void noReadPermission() throws Exception {
+    // It used to be "Internal error: <path> (Permission denied)"
+    var file = dir.resolve("locked.wpilog");
+    Files.write(file, new byte[] {'W', 'P', 'I', 'L', 'O', 'G', 0x00, 0x01, 0, 0, 0, 0});
+    assertTrue(file.toFile().setReadable(false));
+    try {
+      Assumptions.assumeFalse(Files.isReadable(file), "this user can read any file (root)");
+      var error = errorFor(file);
+      assertTrue(error.startsWith("Log file cannot be read: "), error);
+      assertTrue(error.contains("no read permission"), error);
+    } finally {
+      file.toFile().setReadable(true);
+    }
   }
 
   @Test

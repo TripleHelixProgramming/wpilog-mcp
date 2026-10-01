@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.tools;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +45,12 @@ class ReplayFixtureTest extends FixtureToolTestBase {
     assertEquals("not_applicable", r.get("status").getAsString());
     assertTrue(r.get("reason").getAsString().contains("/ReplayOutputs/"));
     assertTrue(r.get("hint").getAsString().contains("_sim"));
+    // AdvantageKit's replay writes the _sim log; AdvantageScope only views logs
+    var description = tools.get("analyze_replay_drift").description();
+    for (var text : List.of(r.get("hint").getAsString(), description)) {
+      assertFalse(text.contains("AdvantageScope"), text);
+      assertTrue(text.contains("AdvantageKit"), text);
+    }
   }
 
   @Test

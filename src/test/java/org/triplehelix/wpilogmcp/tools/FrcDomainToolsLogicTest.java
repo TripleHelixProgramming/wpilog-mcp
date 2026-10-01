@@ -557,7 +557,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
       args.addProperty("path", log.path());
-      args.addProperty("mechanism_name", "Elevator");
+      args.addProperty("setpoint_entry", "/Elevator/Setpoint");
+      args.addProperty("measurement_entry", "/Elevator/Position");
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -585,7 +586,10 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
       args.addProperty("path", log.path());
-      args.addProperty("mechanism_name", "Elevator");
+      args.addProperty("setpoint_entry", "/Elevator/Setpoint");
+      args.addProperty("measurement_entry", "/Elevator/Position");
+      args.addProperty("velocity_entry", "/Elevator/Velocity");
+      args.addProperty("current_entry", "/Elevator/Current");
       args.addProperty("stall_current_threshold", 30.0);
 
       var result = tool.execute(args);
@@ -609,7 +613,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
 
       var args = new JsonObject();
       args.addProperty("path", log.path());
-      args.addProperty("mechanism_name", "Intake");
+      args.addProperty("velocity_entry", "/Intake/Velocity");
+      args.addProperty("current_entry", "/Intake/Current");
       args.addProperty("stall_current_threshold", 30.0);
       var resultObj = findTool("profile_mechanism").execute(args).getAsJsonObject();
 
@@ -634,7 +639,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
       args.addProperty("path", log.path());
-      args.addProperty("mechanism_name", "Arm");
+      args.addProperty("setpoint_entry", "/Arm/Setpoint");
+      args.addProperty("measurement_entry", "/Arm/Position");
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -670,7 +676,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
       args.addProperty("path", log.path());
-      args.addProperty("mechanism_name", "Shooter");
+      args.addProperty("setpoint_entry", "/Shooter/Setpoint");
+      args.addProperty("measurement_entry", "/Shooter/Position");
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -2368,7 +2375,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("profile_mechanism");
       var args = new JsonObject();
       args.addProperty("path", log.path());
-      args.addProperty("mechanism_name", "Mech");
+      args.addProperty("setpoint_entry", "/Mech/Setpoint");
+      args.addProperty("measurement_entry", "/Mech/Position");
 
       var result = tool.execute(args).getAsJsonObject();
 

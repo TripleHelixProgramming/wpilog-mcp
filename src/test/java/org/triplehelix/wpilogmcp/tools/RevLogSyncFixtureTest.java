@@ -91,6 +91,43 @@ class RevLogSyncFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
+  @DisplayName("with several log directories, REV logs are matched within the one holding the "
+      + "wpilog: another directory's REV log from the same instant is not synchronized")
+  void otherLogDirectoriesNotSearched(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+      throws Exception {
+    // Two robots' logs from the same event, each in its own configured directory. Ours keeps the
+    // REV log in a sibling folder of the wpilog's; theirs holds a REV log named for the same
+    // instant, which would match by time
+    var ours = dir.resolve("ours");
+    var theirs = java.nio.file.Files.createDirectories(dir.resolve("theirs"));
+    var session = java.nio.file.Files.createDirectories(ours.resolve("session_1"));
+    var revFolder = java.nio.file.Files.createDirectories(ours.resolve("rev"));
+    var wpilog = FixtureLogs.writeRevlogPair(session, "2026-two_directories.wpilog",
+        java.time.ZoneOffset.UTC, "systemTime");
+    java.nio.file.Path ownRevlog;
+    try (var files = java.nio.file.Files.list(session)) {
+      ownRevlog = files.filter(p -> p.toString().endsWith(".revlog")).findFirst().orElseThrow();
+    }
+    java.nio.file.Files.move(ownRevlog, revFolder.resolve(ownRevlog.getFileName()));
+    FixtureLogs.writeRevlog(theirs.resolve(ownRevlog.getFileName()));
+
+    var logDirectory = org.triplehelix.wpilogmcp.log.LogDirectory.getInstance();
+    var saved = logDirectory.getLogDirectories();
+    logDirectory.setLogDirectories(java.util.List.of(ours.toString(), theirs.toString()));
+    org.triplehelix.wpilogmcp.log.LogManager.getInstance().addAllowedDirectory(dir);
+    try {
+      var wait = callPath("wait_for_sync", wpilog, "timeout_ms", 30_000);
+      assertTrue(wait.get("completed").getAsBoolean(), wait.toString());
+      var r = callPath("sync_status", wpilog);
+      assertEquals(1, r.get("revlog_count").getAsInt(), r.toString());
+      var path = r.getAsJsonArray("revlogs").get(0).getAsJsonObject().get("path").getAsString();
+      assertTrue(path.contains(java.io.File.separator + "rev" + java.io.File.separator), path);
+    } finally {
+      logDirectory.setLogDirectories(saved.stream().map(java.nio.file.Path::toString).toList());
+    }
+  }
+
+  @Test
   @DisplayName("a REV log named by a desktop's local clock is read in the zone the wpilog shows")
   void desktopZone(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
     // Simulation on a desktop at UTC-05:00: AdvantageKit names the wpilog and REVLib the REV log

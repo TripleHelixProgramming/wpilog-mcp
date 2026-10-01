@@ -27,6 +27,15 @@ public class TbaConfig {
   private String apiKey;
 
   /** Private constructor for singleton pattern. */
+  /**
+   * How a user sets the key, for messages that report it missing or rejected: the VS Code
+   * extension's command (its key reaches Claude Code's server too, with nothing to set), or the
+   * standalone server's configuration.
+   */
+  public static final String HOW_TO_SET_KEY = "In VS Code, run 'WPILog Analyzer: Set The Blue "
+      + "Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml "
+      + "(or pass -tba-key, or set TBA_API_KEY)";
+
   private TbaConfig() {
     refreshFromEnvironment();
   }
@@ -110,7 +119,7 @@ public class TbaConfig {
     if (isConfigured()) {
       return "TBA API: configured";
     } else {
-      return "TBA API: not configured (set TBA_API_KEY or use -tba-key)";
+      return "TBA API: not configured. " + HOW_TO_SET_KEY + ".";
     }
   }
 

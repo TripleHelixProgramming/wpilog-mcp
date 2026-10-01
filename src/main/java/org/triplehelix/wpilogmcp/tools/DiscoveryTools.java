@@ -513,6 +513,12 @@ public final class DiscoveryTools {
           + "the export.");
       guidance.addProperty("match_phases_tip",
           "NEVER manually parse timestamps to find auto/teleop—use get_match_phases.");
+      guidance.addProperty("source_code_tip",
+          "An entry's name does not establish what it measures. When the robot project's source "
+          + "code is available (it is often the workspace you are working in), read where an "
+          + "entry is logged before attributing it to a mechanism: that code says which "
+          + "mechanism, which units, and whether the value is measured or commanded. Without "
+          + "the code, state the mapping as an assumption or ask the user.");
       result.add("critical_guidance", guidance);
 
       // General reasoning guidance (scientific method, calibration, confabulation traps)

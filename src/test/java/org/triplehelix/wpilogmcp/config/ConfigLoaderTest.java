@@ -65,7 +65,7 @@ class ConfigLoaderTest {
       var config = new ConfigLoader().load("dev", file);
 
       assertEquals("dev", config.name());
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
       assertEquals("stdio", config.effectiveTransport());
     }
 
@@ -95,7 +95,7 @@ class ConfigLoaderTest {
       var config = new ConfigLoader().load("comp", file);
 
       assertEquals("comp", config.name());
-      assertEquals("/media/usb", config.logdir());
+      assertEquals(List.of("/media/usb"), config.logdirs());
       assertEquals(2363, config.team());
       assertEquals("test_key", config.tbaKey());
       assertTrue(config.isHttp());
@@ -236,7 +236,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
   }
 
@@ -258,7 +258,7 @@ class ConfigLoaderTest {
       var loaded = new ConfigLoader().loadDetailed("dev", file);
 
       assertEquals(file, loaded.file());
-      assertEquals("/logs", loaded.config().logdir());
+      assertEquals(List.of("/logs"), loaded.config().logdirs());
       assertTrue(loaded.warnings().isEmpty());
     }
 
@@ -314,7 +314,7 @@ class ConfigLoaderTest {
       var config = new ConfigLoader().load("dev", file);
 
       assertEquals("dev", config.name());
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
       assertEquals("stdio", config.effectiveTransport());
     }
 
@@ -339,7 +339,7 @@ class ConfigLoaderTest {
 
       var config = new ConfigLoader().load("comp", file);
 
-      assertEquals("/media/usb", config.logdir());
+      assertEquals(List.of("/media/usb"), config.logdirs());
       assertEquals(2363, config.team());
       assertEquals("test_key", config.tbaKey());
       assertTrue(config.isHttp());
@@ -363,7 +363,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -377,7 +377,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
       assertEquals(2363, config.team());
     }
 
@@ -391,7 +391,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -521,7 +521,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -534,7 +534,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -547,7 +547,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -560,7 +560,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -571,7 +571,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
   }
 
@@ -618,7 +618,7 @@ class ConfigLoaderTest {
       var yamlDev = loader.load("dev", yamlFile);
 
       assertEquals(jsonDev.name(), yamlDev.name());
-      assertEquals(jsonDev.logdir(), yamlDev.logdir());
+      assertEquals(jsonDev.logdirs(), yamlDev.logdirs());
       assertEquals(jsonDev.team(), yamlDev.team());
       assertEquals(jsonDev.tbaKey(), yamlDev.tbaKey());
       assertEquals(jsonDev.effectiveTransport(), yamlDev.effectiveTransport());
@@ -628,7 +628,7 @@ class ConfigLoaderTest {
 
       assertEquals(jsonHttp.effectivePort(), yamlHttp.effectivePort());
       assertEquals(jsonHttp.team(), yamlHttp.team());
-      assertEquals(jsonHttp.logdir(), yamlHttp.logdir());
+      assertEquals(jsonHttp.logdirs(), yamlHttp.logdirs());
     }
 
     @Test
@@ -677,7 +677,7 @@ class ConfigLoaderTest {
 
       var config = new ConfigLoader().load("dev", file);
 
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
       assertEquals(2363, config.team());
       assertEquals("default_key", config.tbaKey());
     }
@@ -714,7 +714,7 @@ class ConfigLoaderTest {
 
       var config = new ConfigLoader().load("dev", file);
 
-      assertEquals("/shared", config.logdir());
+      assertEquals(List.of("/shared"), config.logdirs());
       assertEquals(2363, config.team());
       assertEquals("top_key", config.tbaKey());
     }
@@ -783,7 +783,7 @@ class ConfigLoaderTest {
       var config = new ConfigLoader().load("comp", file);
 
       assertEquals(3000, config.team(), "server wins");
-      assertEquals("/top-level", config.logdir(), "from top-level");
+      assertEquals(List.of("/top-level"), config.logdirs(), "from top-level");
       assertEquals("top_key", config.tbaKey(), "from top-level");
       assertEquals("/default-exports", config.exportdir(), "from explicit defaults");
       assertEquals(8192L, config.diskcachesize(), "from explicit defaults");
@@ -801,7 +801,7 @@ class ConfigLoaderTest {
 
       var config = new ConfigLoader().load("dev", file);
 
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
       assertNull(config.team());
       assertNull(config.tbaKey());
     }
@@ -824,8 +824,8 @@ class ConfigLoaderTest {
       var comp = loader.load("comp", file);
       var dev = loader.load("dev", file);
 
-      assertEquals("/comp", comp.logdir());
-      assertEquals("/dev", dev.logdir());
+      assertEquals(List.of("/comp"), comp.logdirs());
+      assertEquals(List.of("/dev"), dev.logdirs());
       assertEquals(2363, comp.team());
       assertEquals(2363, dev.team());
       assertEquals("shared_key", comp.tbaKey());
@@ -858,7 +858,7 @@ class ConfigLoaderTest {
 
       var config = new ConfigLoader().load("bare", file);
 
-      assertEquals("/default-logs", config.logdir());
+      assertEquals(List.of("/default-logs"), config.logdirs());
       assertEquals(100, config.team());
       assertEquals("dkey", config.tbaKey());
       assertEquals("http", config.effectiveTransport());
@@ -1075,7 +1075,7 @@ class ConfigLoaderTest {
       var config = new ConfigLoader(n -> "LOG_BASE".equals(n) ? "/mnt/data" : null)
           .load("dev", file);
 
-      assertEquals("/mnt/data/frc", config.logdir());
+      assertEquals(List.of("/mnt/data/frc"), config.logdirs());
     }
 
     @Test
@@ -1185,7 +1185,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals(home + "/riologs", config.logdir());
+      assertEquals(List.of(home + "/riologs"), config.logdirs());
     }
 
     @Test
@@ -1221,7 +1221,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals(home + "/default-logs", config.logdir());
+      assertEquals(List.of(home + "/default-logs"), config.logdirs());
     }
 
     @Test
@@ -1234,7 +1234,115 @@ class ConfigLoaderTest {
       var config = new ConfigLoader(n -> "PREFIX".equals(n) ? "~" : null)
           .load("dev", file);
 
-      assertEquals(home + "/logs", config.logdir());
+      assertEquals(List.of(home + "/logs"), config.logdirs());
+    }
+  }
+
+  // ==================== Several Log Directories ====================
+
+  @Nested
+  @DisplayName("logdir as a list")
+  class LogDirectoryListTests {
+
+    private final String home = System.getProperty("user.home");
+
+    @Test
+    @DisplayName("a YAML list gives every directory, in order")
+    void yamlList() throws Exception {
+      var file = writeYaml("""
+          servers:
+            dev:
+              logdir:
+                - /media/usb
+                - /logs/archive
+          """);
+      assertEquals(List.of("/media/usb", "/logs/archive"),
+          new ConfigLoader().load("dev", file).logdirs());
+    }
+
+    @Test
+    @DisplayName("a JSON array gives every directory, in order")
+    void jsonArray() throws Exception {
+      var file = writeJson("""
+          { "servers": { "dev": { "logdir": ["/b", "/a"] } } }
+          """);
+      assertEquals(List.of("/b", "/a"), new ConfigLoader().load("dev", file).logdirs());
+    }
+
+    @Test
+    @DisplayName("each entry is interpolated and tilde-expanded")
+    void entriesExpanded() throws Exception {
+      var file = writeYaml("""
+          servers:
+            dev:
+              logdir: ["~/riologs", "${USB}/logs"]
+          """);
+      var config = new ConfigLoader(n -> "USB".equals(n) ? "/media/usb" : null)
+          .load("dev", file);
+      assertEquals(List.of(home + "/riologs", "/media/usb/logs"), config.logdirs());
+    }
+
+    @Test
+    @DisplayName("an unset variable in an entry is warned about and left as written")
+    void unsetVariableWarned() throws Exception {
+      var file = writeYaml("""
+          servers:
+            dev:
+              logdir: ["/logs", "${NOPE}/logs"]
+          """);
+      var loaded = new ConfigLoader(n -> null).loadDetailed("dev", file);
+      assertEquals(List.of("/logs", "${NOPE}/logs"), loaded.config().logdirs());
+      assertTrue(loaded.warnings().contains("Environment variable NOPE is not set"),
+          loaded.warnings().toString());
+    }
+
+    @Test
+    @DisplayName("an empty list is no directories, overriding the defaults")
+    void emptyList() throws Exception {
+      var file = writeYaml("""
+          logdir: /default-logs
+          servers:
+            dev:
+              logdir: []
+          """);
+      assertEquals(List.of(), new ConfigLoader().load("dev", file).logdirs());
+    }
+
+    @Test
+    @DisplayName("a server's list replaces the defaults' list; it is not combined with it")
+    void serverListReplacesDefaults() throws Exception {
+      var file = writeYaml("""
+          logdir: [/shared, /archive]
+          servers:
+            comp:
+              logdir: [/media/usb]
+            dev: {}
+          """);
+      assertEquals(List.of("/media/usb"), new ConfigLoader().load("comp", file).logdirs());
+      assertEquals(List.of("/shared", "/archive"), new ConfigLoader().load("dev", file).logdirs());
+    }
+
+    @Test
+    @DisplayName("a nested list or a mapping in logdir is a configuration error naming the key")
+    void nonPathEntriesRejected() throws Exception {
+      for (var value : List.of("[[/a, /b]]", "[{path: /a}]", "{path: /a}", "[/a, null]")) {
+        var file = writeYaml("servers:\n  dev:\n    logdir: " + value + "\n");
+        var e = assertThrows(ConfigException.class, () -> new ConfigLoader().load("dev", file),
+            value);
+        assertTrue(e.getMessage().contains("'logdir' expects a path or a list of paths"),
+            e.getMessage());
+      }
+    }
+
+    @Test
+    @DisplayName("the configuration keeps its own copy of the list, which cannot be modified")
+    void listCopied() {
+      var dirs = new ArrayList<>(List.of("/a"));
+      var config = new ServerConfig("s", dirs, null, null, null, null, null, null, null, null,
+          null, null);
+      dirs.add("/b");
+      assertEquals(List.of("/a"), config.logdirs());
+      assertThrows(UnsupportedOperationException.class, () -> config.logdirs().add("/c"));
     }
   }
 
@@ -1388,7 +1496,7 @@ class ConfigLoaderTest {
           """);
 
       var config = new ConfigLoader().load("dev", file);
-      assertEquals("/logs", config.logdir());
+      assertEquals(List.of("/logs"), config.logdirs());
     }
 
     @Test
@@ -1437,8 +1545,8 @@ class ConfigLoaderTest {
       var yamlConfig = new ConfigLoader().load("dev", yamlFile);
       var jsonConfig = new ConfigLoader().load("dev", jsonFile);
 
-      assertEquals("/yaml", yamlConfig.logdir());
-      assertEquals("/json", jsonConfig.logdir());
+      assertEquals(List.of("/yaml"), yamlConfig.logdirs());
+      assertEquals(List.of("/json"), jsonConfig.logdirs());
     }
   }
 
@@ -1788,7 +1896,7 @@ class ConfigLoaderTest {
     @Test
     @DisplayName("mergeWithDefaults returns this when defaults is null")
     void mergeNullDefaults() {
-      var server = new ServerConfig("dev", "/logs", null, null, null,
+      var server = new ServerConfig("dev", List.of("/logs"), null, null, null,
           null, null, null, null, null, null, null);
       assertSame(server, server.mergeWithDefaults(null));
     }
@@ -1807,14 +1915,14 @@ class ConfigLoaderTest {
     @Test
     @DisplayName("mergeWithDefaults: every non-null server field wins")
     void mergeServerFieldsWin() {
-      var defaults = new ServerConfig("_d", "/d-logs", 1, "d-key", "stdio",
+      var defaults = new ServerConfig("_d", List.of("/d-logs"), 1, "d-key", "stdio",
           3000, "/d-cache", 100L, false, false, "/d-export", 1);
-      var server = new ServerConfig("s", "/s-logs", 2, "s-key", "http",
+      var server = new ServerConfig("s", List.of("/s-logs"), 2, "s-key", "http",
           8080, "/s-cache", 200L, true, true, "/s-export", 10);
 
       var merged = server.mergeWithDefaults(defaults);
 
-      assertEquals("/s-logs", merged.logdir());
+      assertEquals(List.of("/s-logs"), merged.logdirs());
       assertEquals(2, merged.team());
       assertEquals("s-key", merged.tbaKey());
       assertEquals("http", merged.transport());
@@ -1830,14 +1938,14 @@ class ConfigLoaderTest {
     @Test
     @DisplayName("mergeWithDefaults: every null server field falls through")
     void mergeNullFieldsFallThrough() {
-      var defaults = new ServerConfig("_d", "/d-logs", 1, "d-key", "stdio",
+      var defaults = new ServerConfig("_d", List.of("/d-logs"), 1, "d-key", "stdio",
           3000, "/d-cache", 100L, false, true, "/d-export", 5);
       var server = new ServerConfig("s", null, null, null, null,
           null, null, null, null, null, null, null);
 
       var merged = server.mergeWithDefaults(defaults);
 
-      assertEquals("/d-logs", merged.logdir());
+      assertEquals(List.of("/d-logs"), merged.logdirs());
       assertEquals(1, merged.team());
       assertEquals("d-key", merged.tbaKey());
       assertEquals("stdio", merged.transport());
@@ -1854,14 +1962,14 @@ class ConfigLoaderTest {
     @DisplayName("mergeWithDefaults: each field independently merges")
     void mergeFieldByField() {
       // Server has only team and port; everything else should come from defaults
-      var defaults = new ServerConfig("_d", "/logs", 1, "key", "stdio",
+      var defaults = new ServerConfig("_d", List.of("/logs"), 1, "key", "stdio",
           3000, "/cache", 100L, false, true, "/export", 5);
       var server = new ServerConfig("s", null, 99, null, null,
           8080, null, null, null, null, null, null);
 
       var merged = server.mergeWithDefaults(defaults);
 
-      assertEquals("/logs", merged.logdir());  // from defaults
+      assertEquals(List.of("/logs"), merged.logdirs());  // from defaults
       assertEquals(99, merged.team());         // from server
       assertEquals("key", merged.tbaKey());    // from defaults
       assertEquals("stdio", merged.transport()); // from defaults
@@ -1872,9 +1980,9 @@ class ConfigLoaderTest {
     @Test
     @DisplayName("record equality works")
     void recordEquality() {
-      var a = new ServerConfig("dev", "/logs", 2363, null, "stdio",
+      var a = new ServerConfig("dev", List.of("/logs"), 2363, null, "stdio",
           null, null, null, null, null, null, null);
-      var b = new ServerConfig("dev", "/logs", 2363, null, "stdio",
+      var b = new ServerConfig("dev", List.of("/logs"), 2363, null, "stdio",
           null, null, null, null, null, null, null);
 
       assertEquals(a, b);
@@ -1884,9 +1992,9 @@ class ConfigLoaderTest {
     @Test
     @DisplayName("record inequality when fields differ")
     void recordInequality() {
-      var a = new ServerConfig("dev", "/logs", 2363, null, null,
+      var a = new ServerConfig("dev", List.of("/logs"), 2363, null, null,
           null, null, null, null, null, null, null);
-      var b = new ServerConfig("dev", "/logs", 9999, null, null,
+      var b = new ServerConfig("dev", List.of("/logs"), 9999, null, null,
           null, null, null, null, null, null, null);
 
       assertNotEquals(a, b);
@@ -1895,7 +2003,7 @@ class ConfigLoaderTest {
     @Test
     @DisplayName("toString includes field values")
     void toStringIncludesFields() {
-      var config = new ServerConfig("dev", "/logs", 2363, null, "stdio",
+      var config = new ServerConfig("dev", List.of("/logs"), 2363, null, "stdio",
           null, null, null, null, null, null, null);
       var str = config.toString();
 
@@ -1986,7 +2094,7 @@ class ConfigLoaderTest {
       var defaultConfig = loader.load("default", file);
       assertEquals("stdio", defaultConfig.effectiveTransport());
       assertEquals(0, defaultConfig.team());
-      assertEquals(home + "/riologs", defaultConfig.logdir());
+      assertEquals(List.of(home + "/riologs"), defaultConfig.logdirs());
 
       // Verify http config
       var httpConfig = loader.load("http", file);

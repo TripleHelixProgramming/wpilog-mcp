@@ -59,7 +59,7 @@ import org.triplehelix.wpilogmcp.tools.TbaTools;
 @DisplayName("MCP Server Stress Test")
 class StressTest {
 
-  private static Path logDirectory;
+  private static java.util.List<Path> logDirectories;
   private static List<Tool> tools;
   private static List<String> availableLogPaths;
   private static List<String> loadedEntryNames;
@@ -94,18 +94,18 @@ class StressTest {
         // No config file or no "stresstest" entry — use defaults
         String home = System.getProperty("user.home");
         config = new ServerConfig("stresstest",
-            home + "/riologs", 2363, System.getenv("TBA_API_KEY"),
+            java.util.List.of(home + "/riologs"), 2363, System.getenv("TBA_API_KEY"),
             "stdio", null, null, null, null, null, null, null);
       }
       Main.applyConfig(config);
 
-      String logDirPath = config.logdir();
-      assumeTrue(logDirPath != null && !logDirPath.isEmpty(),
+      var logDirs = config.logdirs();
+      assumeTrue(logDirs != null && !logDirs.isEmpty(),
           "Stress test skipped: no logdir configured");
 
-      logDirectory = Path.of(logDirPath);
-      assumeTrue(Files.isDirectory(logDirectory),
-          "Stress test skipped: Log directory does not exist: " + logDirPath);
+      logDirectories = logDirs.stream().map(Path::of).toList();
+      assumeTrue(logDirectories.stream().anyMatch(Files::isDirectory),
+          "Stress test skipped: no configured log directory exists: " + logDirs);
     } catch (Exception e) {
       assumeTrue(false, "Stress test skipped: " + e.getMessage());
       return;
@@ -134,7 +134,7 @@ class StressTest {
     System.out.println("\n========================================");
     System.out.println("MCP Server Stress Test");
     System.out.println("========================================");
-    System.out.println("Log directory: " + logDirectory);
+    System.out.println("Log directories: " + logDirectories);
     System.out.println("Registered " + tools.size() + " tools");
     System.out.println("Disk cache enabled: " + LogManager.getInstance().getDiskCache().isEnabled());
     System.out.println("TBA configured: " + TbaConfig.getInstance().isConfigured());
@@ -162,6 +162,11 @@ class StressTest {
 
     int logCount = result.get("log_count").getAsInt();
     System.out.println("Found " + logCount + " log files");
+    assertEquals(logDirectories.size(), result.getAsJsonArray("log_directories").size(),
+        "every configured directory is named: " + result.get("log_directories"));
+    if (result.has("skipped")) {
+      System.out.println("Directories not read: " + result.get("skipped"));
+    }
 
     availableLogPaths = new ArrayList<>();
     var logsArray = result.getAsJsonArray("logs");
@@ -570,17 +575,32 @@ class StressTest {
       System.out.println("  analyze_replay_drift: " + divergent + " divergent entries");
     });
 
-    // profile_mechanism
+    // profile_mechanism: a name lists candidates and analyzes nothing (no_match, so the handler
+    // is not reached; the call is still checked against the robustness rules)
     for (String name : List.of("Arm", "Elevator", "Shooter", "Intake", "Drivetrain", "Swerve")) {
       var mechArgs = new JsonObject();
       mechArgs.addProperty("path", logPath);
       mechArgs.addProperty("mechanism_name", name);
-      testTool("profile_mechanism", mechArgs, result -> {
-        if (result.has("following_error")) {
-          double rmse = result.getAsJsonObject("following_error").get("rmse").getAsDouble();
-          System.out.printf("  profile_mechanism (%s): rmse=%.4f%n", name, rmse);
-        }
-      });
+      testTool("profile_mechanism", mechArgs, result -> { });
+    }
+    // The analysis runs on entries passed explicitly. The caller's part, done here: a velocity
+    // and a current that one table holds under the AdvantageKit template's field names.
+    if (loadedEntryNames != null) {
+      loadedEntryNames.stream()
+          .filter(n -> n.endsWith("/VelocityRadPerSec"))
+          .filter(n -> loadedEntryNames.contains(
+              n.substring(0, n.length() - "/VelocityRadPerSec".length()) + "/CurrentAmps"))
+          .findFirst()
+          .ifPresent(velocity -> {
+            var table = velocity.substring(0, velocity.length() - "/VelocityRadPerSec".length());
+            var mechArgs = new JsonObject();
+            mechArgs.addProperty("path", logPath);
+            mechArgs.addProperty("velocity_entry", velocity);
+            mechArgs.addProperty("current_entry", table + "/CurrentAmps");
+            testTool("profile_mechanism", mechArgs, result ->
+                System.out.println("  profile_mechanism (" + table + "): "
+                    + result.get("stall_count").getAsInt() + " stalls"));
+          });
     }
 
     // analyze_loop_timing (with unit auto-detect)
@@ -638,7 +658,8 @@ class StressTest {
     swerveArgs.addProperty("path", logPath);
     testTool("analyze_swerve", swerveArgs, result -> {
       System.out.println("  analyze_swerve: " + result.get("module_count").getAsInt()
-          + " modules (" + result.get("layout").getAsString() + ")");
+          + " modules (" + result.get("layout").getAsString() + "), measured: "
+          + result.get("measured_basis").getAsString());
     });
 
     // power_analysis

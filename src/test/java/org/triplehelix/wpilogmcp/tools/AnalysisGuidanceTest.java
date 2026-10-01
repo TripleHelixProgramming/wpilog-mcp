@@ -221,12 +221,109 @@ class AnalysisGuidanceTest {
   }
 
   @Test
+  @DisplayName("what an entry measures comes from the robot source code, not from its name")
+  void sourceCodeIsTheEvidenceForWhatAnEntryMeasures() throws Exception {
+    // In the instructions, as its own rule right after the no-invented-data rule: it must
+    // survive a client that truncates, and it comes before any reasoning about the values
+    var text = AnalysisGuidance.SERVER_INSTRUCTIONS;
+    int rule = text.indexOf("2. An entry's name does not prove what it measures");
+    assertTrue(rule > 0, "the rule is missing: " + text);
+    int code = text.indexOf("robot source code", rule);
+    assertTrue(code > rule && code < text.indexOf("\n3. "), "the rule names the source code");
+    var ruleText = text.substring(rule, text.indexOf("\n3. "));
+    for (var part : List.of("mechanism", "units", "measured or commanded", "assumption")) {
+      assertTrue(ruleText.contains(part), part + " missing from: " + ruleText);
+    }
+
+    // In the long form: where to look in the method, a trap with real examples, and the way a
+    // candidate is confirmed
+    var principles = AnalysisGuidance.analysisPrinciples();
+    var observe = principles.getAsJsonObject("method").getAsJsonArray("steps").get(0)
+        .getAsString();
+    assertTrue(observe.contains("source code"), observe);
+    var fix = trapFix(principles, "Taking an entry's name as proof of what it measures");
+    assertNotNull(fix, "the trap is missing");
+    for (var part : List.of("currentHeight", "targetYaw", "units", "assumption", "cite")) {
+      assertTrue(fix.contains(part), part + " missing from: " + fix);
+    }
+    var noGuess = principles.getAsJsonObject("naming").get("the_server_does_not_guess")
+        .getAsString();
+    assertTrue(noGuess.contains("source code"), noGuess);
+    assertTrue(noGuess.indexOf("source code") < noGuess.indexOf("get_entry_info"),
+        "the code comes before the values as evidence: " + noGuess);
+    assertTrue(noGuess.contains("profile_mechanism"), noGuess);
+
+    // Where an agent meets an unresolved role, and in the guide's short list of rules
+    var registry = new ToolRegistry();
+    WpilogTools.registerAll(registry);
+    var guide = registry.getTool("get_server_guide").execute(new com.google.gson.JsonObject())
+        .getAsJsonObject();
+    var tip = guide.getAsJsonObject("critical_guidance").get("source_code_tip").getAsString();
+    assertTrue(tip.contains("source code") && tip.contains("assumption"), tip);
+    assertTrue(SignalResolver.HOW_TO_CONFIRM.startsWith("the robot's source code"),
+        SignalResolver.HOW_TO_CONFIRM);
+    assertTrue(registry.getTool("resolve_signals").description().contains("source code"));
+  }
+
+  @Test
   @DisplayName("registering all tools installs the server instructions")
   void registerAllInstallsInstructions() {
     var registry = new ToolRegistry();
     assertNull(registry.getServerInstructions());
     WpilogTools.registerAll(registry);
     assertEquals(AnalysisGuidance.SERVER_INSTRUCTIONS, registry.getServerInstructions());
+  }
+
+  @Test
+  @DisplayName("the whole-log statistics trap names exactly the tools that take scope and windows")
+  void scopeAndWindowsClaimsMatchSchemas() {
+    var registry = new ToolRegistry();
+    WpilogTools.registerAll(registry);
+    var fix = trapFix(AnalysisGuidance.analysisPrinciples(), "Whole-log statistics");
+    assertNotNull(fix, "the whole-log statistics trap");
+
+    // "Pass scope (...) to <tools>, which also take windows, ... <tools> take scope but not windows."
+    // The list starts after the parenthesis, which names get_match_phases as a source of segments
+    int listStart = fix.indexOf(") to ", fix.indexOf("Pass scope"));
+    int windowsEnd = fix.indexOf("which also take windows");
+    int scopeOnlyEnd = fix.indexOf("take scope but not windows");
+    assertTrue(listStart > 0 && windowsEnd > listStart && scopeOnlyEnd > windowsEnd, fix);
+    var takeWindows = new TreeSet<String>();
+    collectIdentifiers(fix.substring(listStart, windowsEnd), takeWindows);
+    var scopeOnly = new TreeSet<String>();
+    collectIdentifiers(fix.substring(fix.lastIndexOf(". ", scopeOnlyEnd), scopeOnlyEnd), scopeOnly);
+    takeWindows.retainAll(registry.getToolNames());
+    scopeOnly.retainAll(registry.getToolNames());
+
+    var expectWindows = new TreeSet<String>();
+    var expectScopeOnly = new TreeSet<String>();
+    for (var name : registry.getToolNames()) {
+      var properties = registry.getTool(name).inputSchema().getAsJsonObject("properties");
+      if (properties == null || !properties.has("scope")) continue;
+      (properties.has("windows") ? expectWindows : expectScopeOnly).add(name);
+    }
+    assertEquals(expectWindows, takeWindows, "tools named as taking scope and windows");
+    assertEquals(expectScopeOnly, scopeOnly, "tools named as taking scope but not windows");
+  }
+
+  /** The fix text of the trap with this name, anywhere in the principles. */
+  private static String trapFix(JsonElement element, String trap) {
+    if (element.isJsonObject()) {
+      var object = element.getAsJsonObject();
+      if (object.has("trap") && trap.equals(object.get("trap").getAsString())) {
+        return object.get("fix").getAsString();
+      }
+      for (var e : object.entrySet()) {
+        var found = trapFix(e.getValue(), trap);
+        if (found != null) return found;
+      }
+    } else if (element.isJsonArray()) {
+      for (var e : element.getAsJsonArray()) {
+        var found = trapFix(e, trap);
+        if (found != null) return found;
+      }
+    }
+    return null;
   }
 
   /** Collects snake_case identifiers from every string value in a JSON tree (keys excluded). */

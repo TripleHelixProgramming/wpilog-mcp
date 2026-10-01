@@ -8,50 +8,28 @@
 </td>
 <td valign="top">
 
-**Ever wondered why your robot died with 30 seconds left? Or why auto worked in practice but not in competition?**
+Why did the robot die with 30 seconds left? Why did auto work in practice but not at competition? wpilog-mcp lets an AI assistant read your robot's telemetry logs, so you can ask questions like these in plain English and get answers based on the data.
 
-wpilog-mcp lets you ask those questions in plain English. Load your robot's telemetry logs and have a conversation with your data.  Built by [FRC Team 2363 Triple Helix](https://team2363.org) using WPILib's official `DataLogReader` for guaranteed format compatibility.
+It reads WPILib `.wpilog` files with WPILib's own log reader, and REV `.revlog` files recorded alongside them. It was built by [FRC Team 2363 Triple Helix](https://team2363.org).
 
-**See what's possible:** Check out the [example analyses](doc/) generated from real robot logs — in particular, the [VACHE Power Analysis](doc/VACHE_POWER_ANALYSIS.md) is a stellar demonstration of the system's strict insistence against over-interpretation, conducted using the most recent version.
+**Documentation:** [VS Code extension](vscode-extension/README.md) · [Standalone install](doc/STANDALONE.md) · [Tools](doc/TOOLS.md) · [Architecture](doc/ARCHITECTURE.md) · [Development](doc/DEVELOPMENT.md) · [all documents](#documentation)
 
 </td>
 </tr>
 </table>
 
-## Table of Contents
-
-- [Installation](#installation)
-- [AI Semantic Processing](#ai-semantic-processing)
-- [The Blue Alliance Integration](#the-blue-alliance-integration)
-- [REV Log Integration](#rev-log-integration)
-- [Available Tools](#available-tools)
-- [Supported Data Types](#supported-data-types)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## Installation
-
-There are two ways to run wpilog-mcp, depending on which AI client you use. The server is designed for and tested with Claude, but should work with any MCP-capable client.
-
-**[VS Code Extension](vscode-extension/README.md)** — Install the **WPILog Analyzer** extension and it handles everything: Java detection, server startup, and MCP registration. This is the easiest path if you use VS Code with Claude Code, Copilot, or any other MCP-compatible agent. No manual configuration needed. When used with your robot project open, the AI can cross-reference log data with your source code for richer, team-specific analysis.
-
-**[Standalone Install](doc/STANDALONE.md)** — For MCP clients outside VS Code: Claude Desktop, Claude Code CLI, Gemini, or other MCP-compatible tools. You run `./gradlew install`, configure `servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.  The server will add its capabilities to those your tool already possesses.
-
-Both can be installed at the same time. They run as independent server instances with separate configuration — the extension uses VS Code settings while the standalone install uses `~/.wpilog-mcp/servers.yaml`. Changes to one do not affect the other.
-
-### Then Just Ask
+## Example Questions
 
 ```
 Please show me our logs from the Chesapeake District event
 ```
 
 ```
-We lost Q42 — can you look at the log and help us understand what happened?
+We lost Q42. Can you look at the log and help us understand what happened?
 ```
 
 ```
-Please walk me through the power delivery during teleop — were there any brownout concerns?
+Please walk me through the power delivery during teleop. Were there any brownout concerns?
 ```
 
 ```
@@ -66,101 +44,59 @@ What are the scoring rules for this year's game?
 Can you pull our match results from The Blue Alliance and look for trends across the event?
 ```
 
-> **Note:** The depth and quality of analysis depends on the AI model you use. wpilog-mcp provides the tools and data — the model provides the reasoning. More capable models will produce more insightful analysis.
+How much the analysis finds depends on the AI model you use. wpilog-mcp provides the tools and the data; the model does the reasoning.
 
----
+## Installation
 
-## AI Semantic Processing
+There are two ways to run wpilog-mcp. The server is designed for and tested with Claude, but should work with any MCP client.
 
-The **Model Context Protocol (MCP)** is an open standard that enables AI assistants (like Claude) to learn about and use tools that provide access to specialized knowledge.
+**[VS Code extension](vscode-extension/README.md):** install **WPILog Analyzer** from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases/latest) (it is not on the Marketplace). The extension finds Java, starts the server, and registers it with VS Code, where Copilot and other agents find it. For Claude Code, it adds the server to your robot project's `.mcp.json`, and you approve it once. With the robot project open, the agent can also read your code and connect log entries to the subsystems that write them.
 
-This project provides an **MCP Server**, which acts as a Rosetta stone for decoding the meaning of data in WPILOG files.
+**[Standalone install](doc/STANDALONE.md):** for MCP clients outside VS Code, such as Claude Desktop, the Claude Code CLI, or Gemini. Run the one-line installer (or clone the repository and run `./gradlew install`), set your team number and log directory in `~/.wpilog-mcp/servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.
 
-Unlike traditional log viewers (like AdvantageScope) which require you to know exactly what to look for, **wpilog-mcp** allows you to ask high-level engineering and strategic questions. The AI doesn't just "query" data; it **hypothesizes, investigates, and synthesizes**.
+Both take the same settings: where your logs are (one directory or several), your team number, and a Blue Alliance API key if you want match results. The extension takes the first two in VS Code [settings](vscode-extension/README.md#settings) and the key through a [command](vscode-extension/README.md#the-blue-alliance-api-key). The standalone server takes all three in its [configuration file](doc/STANDALONE.md#configuration).
 
-The server provides the tools — the quality of analysis depends on the AI model's ability to use them well. The examples below reflect what's possible with a highly capable model like Claude.
+### Extension or Standalone?
 
-### Honest Analysis, Not Just Answers
+Most people want the extension. The standalone install is for Claude Code or Claude Desktop without VS Code, for the HTTP transport, and for settings the extension doesn't offer: disk cache size, export directory, scan depth, and named server configurations in `servers.yaml`.
 
-AI models have a natural tendency to find explanations that fit the data — even when the data doesn't support a strong conclusion. wpilog-mcp is designed to work against this bias. Every tool returns **accurate, raw data** (statistics, timestamps, sample counts, p-values) rather than pre-digested conclusions. Built-in guardrails steer the AI toward honest, qualified analysis:
+You can install both. Each keeps its own settings and its own disk cache, and the extension leaves alone a project that already runs the standalone server. [Using It Alongside the Standalone Install](vscode-extension/README.md#using-it-alongside-the-standalone-install) has the details, including what to turn off if you registered the standalone server for all your projects.
 
-- **Data quality scoring** — Results that rest on statistics carry a quality assessment (`data_quality`) based on sample count, data gaps, and timing regularity, with a reason for every penalty; when data quality is poor, the AI is explicitly told to reduce its confidence. Tools that report discrete events or counts (`find_condition`, `can_health`, `analyze_can_bus`, `analyze_auto`, ...) carry none — an observed event needs no statistic. [`doc/TOOLS.md`](doc/TOOLS.md#data_quality) lists which tools carry it.
-- **Epistemic guidance** — Tool descriptions and response metadata embed language like "suggests" and "may indicate" rather than "proves" or "confirms." The AI is reminded that a single match is never enough to draw definitive conclusions.
-- **Primitive tool design** — Instead of a single "diagnose my robot" tool that returns a health score, the server provides building blocks (voltage stats, current stats, correlation coefficients). The AI must reason across multiple tool calls, making its logic transparent and auditable.
-- **Server-level reasoning guidance** — On connect, the server sends MCP `instructions` that clients such as Claude Code and VS Code place in the model's system prompt: verify that the event in the question actually happened, never name an entry or quote a number that no tool returned, test a proposed cause against a rival hypothesis, and state observed events plainly while labeling inferred causes as hypotheses. `get_server_guide` returns the full `analysis_principles` — the method, confidence calibration, and a catalogue of confabulation traps — for clients that don't forward instructions.
+## How It Works
 
-The goal: when you ask "why did we lose Q68?", you get analysis grounded in what the data actually shows — with appropriate caveats about what it doesn't.
+The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open standard that lets an AI assistant such as Claude call tools that a server provides. wpilog-mcp is such a server. Its tools read WPILOG files and describe what the data in them means.
 
-### Example Scenarios
+A log viewer such as AdvantageScope shows you the data, but you have to know what to look for. With wpilog-mcp you can ask an engineering or strategy question, and the model finds the relevant entries and tests its explanations against them with further tool calls.
 
-#### 1. The Autonomous "Post-Match Pit Boss"
+### Guardrails
+
+Language models tend to find an explanation that fits the data, even when the data can't support a firm conclusion. The server is built to work against this:
+
+- Tools return measurements, not verdicts: statistics with sample counts, timestamps, and event lists. There is no "diagnose my robot" tool, so the model has to reason across several calls, and each step can be checked. The few tools that add a summary for the pit, such as a battery health score or a brownout risk, state the rule that decided it.
+- The server does not guess. A tool treats a log entry as the battery voltage or the robot pose only when you name it, when it follows a known logging convention, or when it is the only entry of its type. Otherwise the tool lists the candidates and leaves the choice to you and the model. A word in an entry's name is not taken as proof of what it measures. Your robot's source code settles that, and the server tells the model to read it.
+- Results say how far to trust them. Every result has a status, so "found nothing" is never mistaken for "nothing is wrong", and results that rest on statistics carry a data-quality score with a reason for every penalty.
+- On connect, the server gives the model reasoning rules: check that the event in the question actually happened, quote only numbers a tool returned, learn what an entry measures from the code that logs it and not from its name, test a proposed cause against a rival explanation, and label inferred causes as hypotheses. For clients that don't pass these on, `get_server_guide` returns the same guidance.
+
+[ARCHITECTURE.md](doc/ARCHITECTURE.md#design-principles) explains these principles and the reasons for them, and [TOOLS.md](doc/TOOLS.md#response-fields) describes the result fields that carry them.
+
+### An Example
+
 **Prompt:** *"We just finished Q68 and the drivers said the robot 'stuttered' during teleop. Investigate the log and tell the pit crew exactly what to check."*
 
-*   **The AI's Reasoning:** Claude will load the log, scan the `get_ds_timeline` for brownout events, use `power_analysis` to find which motor controller had the highest current spike at that exact timestamp, and check `can_health` for timeouts.
-*   **The Result:** *"I found a BROWNOUT_START at 42.5s. During this time, the 'Intake/Roller' current spiked to 60A while velocity was zero, suggesting a mechanical jam. Check the intake for debris or a bent mounting bracket."*
+Claude checks `get_ds_timeline` for brownout events, looks at motor currents around that moment (`power_analysis` lists each current entry's peak with its time, and `get_statistics` or `read_entry` with `start_time` and `end_time` narrows to the moment), and checks `can_health` for CAN timeouts while enabled.
 
-#### 2. Strategic "Cycle Time" Optimization
-**Prompt:** *"Compare our cycle times in Q74 vs Q68. Why were we slower in the second half of Q68?"*
+A possible answer: *"Battery voltage dropped below the brownout threshold at 42.5 s (BROWNOUT_START). At that moment the 'Intake/Roller' current spiked to 60 A while its velocity was zero, which suggests a mechanical jam. Check the intake for debris or a bent mounting bracket."*
 
-*   **The AI's Reasoning:** Claude will pull match results from TBA to see the scores, use `analyze_cycles` to calculate state-based efficiency, and correlate "dead time" with robot position data.
-*   **The Result:** *"Your scoring cycles in Q74 averaged 8.2s. In Q68, they slowed to 12.5s after the 60-second mark. I noticed that during those slower cycles, the robot was taking a much longer path around the 'Stage' obstacle—check if your autonomous path-finding or driver path was blocked."*
+## What It Reads
 
-#### 3. Control Theory "Tuning Audit"
-**Prompt:** *"Look at our swerve drive performance in the last match. Is our steering PID too aggressive? Look for oscillation."*
+- **WPILOG files** from any logging framework: AdvantageKit, WPILib's DataLogManager, or your own. The server reads the primitive types and their arrays, and decodes struct entries with the schemas the log itself records, so WPILib's geometry types, vendor structs, and a team's own structs all decode. A log cut short (by a power loss, for example) still loads, up to the damage, and every result on it says so. See [Data Types](doc/TOOLS.md#data-types).
+- **REV logs** (`.revlog`), which REVLib 2026 and later writes in robot programs that use SPARK MAX or SPARK Flex controllers. The server finds the REV logs recorded with a wpilog and puts their timestamps on the wpilog's clock by correlating signals that both logs record. Each alignment gets a confidence level. See [RevLog Tools](doc/TOOLS.md#revlog-tools).
+- **Match results from The Blue Alliance**, with a free API key: the team's alliance, the scores, and the match times for each qualification or playoff log. See [TBA Tools](doc/TOOLS.md#tba-tools); the [extension](vscode-extension/README.md#the-blue-alliance-api-key) and [standalone](doc/STANDALONE.md#configuration) pages say where the key goes.
+- **Game rules** for recent seasons, transcribed from each season's final game manual: scoring, match timing, field geometry, and robot limits. See [`get_game_info`](doc/TOOLS.md#get_game_info).
 
-*   **The AI's Reasoning:** Claude will use `analyze_swerve` to identify the modules, call `get_statistics` on the steering error, and run `find_peaks` to look for high-frequency oscillations in the `AppliedVolts`.
-*   **The Result:** *"The Back-Left module is showing a 0.15s oscillation period in steering position while the robot is at a standstill. This suggests your P gain is slightly too high or your D gain is insufficient for the new modules."*
+## Tools
 
-## The Blue Alliance Integration
-
-Get a free API key at [thebluealliance.com/account](https://www.thebluealliance.com/account). In VS Code, run **WPILog Analyzer: Set The Blue Alliance API Key** (the key is kept in VS Code's secret storage); standalone, set `TBA_API_KEY` (see [doc/STANDALONE.md](doc/STANDALONE.md)).
-
-When configured, the server enriches match logs with TBA data:
-- **Match times** - Corrects midnight timestamps from FMS
-- **Scores** - Your alliance's score and opponent's score
-- **Win/Loss** - Whether your team won the match
-- **Alliance** - Which alliance (red/blue) your team was on
-
-Team number is extracted from each log file's metadata (DriverStation/FMS data), with the configured `team` value as a fallback.
-
-This data is automatically added to `list_available_logs` output for logs that have event/match/team metadata.
-
-## REV Log Integration
-
-wpilog-mcp correlates `.revlog` files (written by REVLib 2026 and later in robot programs using REV SPARK MAX/Flex controllers) with your WPILOG data, giving you access to high-resolution motor controller telemetry with synchronized timestamps.
-
-**How it works:**
-1. Revlog files are discovered automatically via time-based matching — they can be in the same directory, sibling directories, or anywhere within the configured log directory tree (up to the configured scan depth (default 5))
-2. Reference the wpilog in any tool call — matching revlogs are discovered and synchronized automatically on first access
-3. Use `sync_status` to verify synchronization confidence before relying on timestamps
-4. Sync results are cached to disk — reloading the same wpilog+revlog pair skips both parsing and correlation
-
-**Synchronization:** Timestamps are aligned using a two-phase approach:
-1. **Coarse alignment** from the wpilog's wall clock (`systemTime` or AdvantageKit's `EpochTimeMicros`) and the revlog's filename time, read in the zone the wpilog's own filename shows (seconds-level, and off by as much as the roboRIO's clock was when the file was named)
-2. **Fine alignment** via Pearson cross-correlation of signals both logs record — a SPARK's applied output, velocity, current, or bus voltage against the robot code's own entries; names only nominate candidate pairs, and correlation chooses among them (millisecond-level)
-
-For long recordings (>15 minutes), linear clock drift between the FPGA clock and the monotonic clock is estimated and compensated automatically.
-
-The system reports confidence levels (HIGH/MEDIUM/LOW/FAILED) based on correlation strength, number of agreeing signal pairs, and inter-pair consistency; a level never claims more agreement than the pairs show (HIGH means two or more pairs within 5 ms), and `sync_status` gives the pairs' offset range.
-
-**If automatic sync fails**, use `set_revlog_offset` to manually provide a known offset.
-
-**Limitations:**
-- REV logs timestamp frames on the recording device's clock while WPILOGs use FPGA time; the offset is measured, never assumed
-- Correlation requires overlapping signal variation (flat/disabled data degrades quality)
-- Short logs or steady-state data may produce lower confidence synchronization
-
-**Available data** (decoded per REV's published SPARK frame specification, firmware 25+):
-- Applied output (duty cycle), bus voltage, output current, motor temperature, limit switches, inversion
-- Each fault and warning, and its sticky version
-- Velocity and position (RPM and rotations unless a conversion factor is configured), and analog, alternate/external, and duty-cycle encoder data when logged
-- Closed-loop setpoint, I accumulator, and MAXMotion setpoints when logged
-
-See [TOOLS.md](doc/TOOLS.md#revlog-tools) for detailed tool documentation and a technical explanation of the synchronization algorithm.
-
-## Available Tools
-
-wpilog-mcp provides 49 tools organized into categories. All log-requiring tools take a `path` parameter — the server auto-loads logs on first reference and auto-evicts idle logs.
+Every tool that reads a log takes a `path` parameter: the server loads a log the first time a tool names it, and unloads logs that sit idle or when memory runs short. The tools, in the categories `get_server_guide` uses:
 
 | Category | Tools |
 |----------|-------|
@@ -174,42 +110,30 @@ wpilog-mcp provides 49 tools organized into categories. All log-requiring tools 
 | **RevLog** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset`, `wait_for_sync` |
 | **Export** | `export_csv`, `generate_report` |
 
-**Start here:** Call `get_server_guide` first to understand what analysis capabilities are available. This prevents writing custom analysis code when a built-in tool already exists.
+`get_server_guide` describes every tool by category, along with the analysis principles. Its description tells the agent to call it first, so that the agent uses a built-in tool rather than writing its own analysis code.
 
-**Bundled game data:** 2024 CRESCENDO, 2025 REEFSCAPE, 2026 REBUILT, transcribed from each season's final game manual. The `get_game_info` tool returns scoring values, ranking-point thresholds by event tier, match timing, field geometry, and robot limits for these seasons, labelled with the manual revision they came from (`manual_version`) and `source: bundled knowledge base, not the log`.
+[TOOLS.md](doc/TOOLS.md) has each tool's parameters and results, and [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) shows real responses from every tool.
 
-## Supported Data Types
+## Documentation
 
-### Primitive Types
-`boolean`, `int64`, `float`, `double`, `string`, `raw`, `json`, and arrays of each
+| Document | What it covers |
+|----------|----------------|
+| [VS Code extension README](vscode-extension/README.md) | Installing and using the extension: settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
+| [STANDALONE.md](doc/STANDALONE.md) | The standalone install: configuration file, command-line flags, MCP client setup, the HTTP transport, Docker, troubleshooting |
+| [TOOLS.md](doc/TOOLS.md) | Every tool's parameters and results, the data types, the result fields, and how REV logs are synchronized |
+| [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) | The JSON every tool returns, captured from real logs |
+| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | The goals and design principles, and how the server reads logs, manages memory, caches results, and handles concurrent clients |
+| [DEVELOPMENT.md](doc/DEVELOPMENT.md) | Building, testing, adding a tool, releasing, and contributing |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| [IDEAS.md](doc/IDEAS.md) | Planned and proposed work |
+| [ROBUSTNESS_REVIEW.md](doc/ROBUSTNESS_REVIEW.md), [ROBUSTNESS_PLAN.md](doc/ROBUSTNESS_PLAN.md) | The review of the server's accuracy on real logs and the plan that answered it, behind most of version 0.9.0 (historical) |
+| [VAALE event analysis](doc/VAALE_EVENT_ANALYSIS.md), [VACHE power analysis](doc/VACHE_POWER_ANALYSIS.md) | Two example analyses of real robot logs, made with earlier versions (March 2026, before v0.3.0, and v0.8.0). They are historical: the current server reports some of the same logs differently |
 
-### Structs
-
-Struct entries (`struct:Name` and `struct:Name[]`) are decoded from the schema each log records for its struct types (`/.schema/struct:Name`), so any struct decodes — WPILib geometry and kinematics, vendor structs, and a team's own, including nested structs, fixed-size arrays, enums, and bit-fields. A team that edits a template struct (adding a field to `PoseObservation`, say) gets its own layout decoded, not the template's.
-
-Decoded values keep the schema's field names and nesting:
-
-| Schema | Decoded value |
-|--------|---------------|
-| `Pose2d` | `{"translation": {"x", "y"}, "rotation": {"value", "_derived": {"degrees"}}}` |
-| `Pose3d` | `{"translation": {"x", "y", "z"}, "rotation": {"q": {"w", "x", "y", "z"}, "_derived": {"roll", "pitch", "yaw", "roll_deg", "pitch_deg", "yaw_deg"}}}` |
-| `SwerveModuleState` | `{"speed", "angle": {"value", "_derived": {"degrees"}}}` |
-| enum field, e.g. `PoseObservation.type` | `{"value": 2, "label": "PHOTONVISION"}` |
-
-Numeric tools (`get_statistics`, `find_condition`, `compare_entries`, and the rest) read struct fields and array elements by path — `/RealOutputs/Drive/Pose.translation.x`, `/PowerDistribution/ChannelCurrent[3]`, `/Vision/Camera0/PoseObservations[0].tagCount` — and unwrap known angles; `get_entry_info` lists an entry's numeric fields.
-
-`_derived` values are computed from WPILib's `Rotation2d` and `Rotation3d` (only when the log's schema for them is WPILib's). When a log records no schema for a struct type, WPILib's own schema is used for WPILib types, and a template layout for AdvantageKit vision's `PoseObservation` and `TargetObservation` and Choreo's `SwerveSample`; `list_struct_types` and `get_entry_info` say which source each type used. A record whose size does not fit its schema is not decoded, and tools that read the entry say how many records failed and why.
-
-## Troubleshooting
-
-- **VS Code extension issues** — See the [extension README](vscode-extension/README.md#troubleshooting)
-- **Standalone install issues** — See [doc/STANDALONE.md](doc/STANDALONE.md#troubleshooting)
-- **Log files show as corrupted** — Truncated logs (from robot power loss) are handled gracefully. The server recovers as much data as possible and marks the log as truncated.
-- **Out of memory with large logs** — Increase heap size. Extension: set `wpilog-mcp.maxHeap` to `8g`. Standalone: set `WPILOG_MAX_HEAP=8g`.
+Elsewhere: the [WPILib DataLog documentation](https://docs.wpilib.org/en/stable/docs/software/telemetry/datalog.html) and the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+MIT License. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
@@ -217,15 +141,3 @@ MIT License - see [LICENSE](LICENSE)
 - [AdvantageKit](https://github.com/Mechanical-Advantage/AdvantageKit) for pioneering FRC replay logging
 - [Anthropic](https://anthropic.com) for MCP and Claude
 - [FRC Team 2363 Triple Helix](https://team2363.org)
-
-## See Also
-
-- [VS Code Extension README](vscode-extension/README.md) - Extension settings, upgrading, uninstalling, troubleshooting
-- [STANDALONE.md](doc/STANDALONE.md) - Standalone install, configuration, and Docker
-- [DEVELOPMENT.md](doc/DEVELOPMENT.md) - Building from source, project structure, contributing
-- [TOOLS.md](doc/TOOLS.md) - Complete tool reference
-- [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) - Captured JSON responses for every tool, including the LLM guidance fields
-- [VAALE Event Analysis](doc/VAALE_EVENT_ANALYSIS.md) - Comprehensive event analysis from real robot logs
-- [VACHE Power Analysis](doc/VACHE_POWER_ANALYSIS.md) - In-depth power & voltage analysis showcasing epistemic guardrails
-- [WPILib DataLog Docs](https://docs.wpilib.org/en/stable/docs/software/telemetry/datalog.html)
-- [MCP Protocol](https://modelcontextprotocol.io/)

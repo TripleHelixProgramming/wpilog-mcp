@@ -1,44 +1,129 @@
 /**
- * The workspace `.mcp.json` entry through which Claude Code finds the server. Pure functions (no
- * VS Code API) so they can be tested on their own.
+ * How Claude Code finds and configures the server. Pure functions (no VS Code API) so they can be
+ * tested on their own.
  *
- * The entry never holds the TBA API key: it passes `${TBA_API_KEY:-}`, which Claude Code expands
- * from its own environment (empty when unset). Only the `wpilog-analyzer` entry is written; every
- * other server and key in the file is kept.
+ * As with the standalone install, configuration lives in one file and each project's `.mcp.json`
+ * entry only starts the server with it: the extension writes its settings into a configuration
+ * file in its global storage (the format of the standalone's `servers.yaml`, as JSON), and the
+ * entry runs `start default --config <that file>`. A settings change rewrites that one file and
+ * reaches every project; entries are the same in every project and change only with the Java
+ * path or heap size. The entry holds this computer's paths, so it belongs in a `.mcp.json` that
+ * git ignores, not in one the repository shares, where it would be no use to others and each
+ * person's extension would rewrite it. It never holds the TBA API key, which is in the
+ * configuration file. Only the `wpilog-analyzer` entry is written; every other server and key in
+ * `.mcp.json` is kept.
  */
 
 /** The server's name under `mcpServers`. */
 export const SERVER_NAME = "wpilog-analyzer";
 
-/** The key as Claude Code should pass it: from its environment, empty when unset. */
+/** A key reference left where an earlier version wrote the key in plaintext (see scrubTbaKey). */
 export const TBA_KEY_REFERENCE = "${TBA_API_KEY:-}";
 
 export interface ServerEntry {
   command: string;
   args: string[];
-  env: Record<string, string>;
+  env?: Record<string, string>;
 }
 
-/** Builds the entry. The key is referenced, never included. */
+/** Builds the entry: the JVM, its heap, the JAR, and the configuration file to start with. */
 export function buildServerEntry(
   javaPath: string,
   jarPath: string,
   maxHeap: string,
-  logDir: string | undefined,
-  teamNumber: number
+  configPath: string
 ): ServerEntry {
-  const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
-  const env: Record<string, string> = {};
-  if (logDir) {
-    args.push("-logdir", logDir);
-    env["WPILOG_DIR"] = logDir;
+  return {
+    command: javaPath,
+    args: [`-Xmx${maxHeap}`, "-jar", jarPath, "start", "default", "--config", configPath],
+  };
+}
+
+/** What a project's configuration file holds. */
+export interface ServerConfigValues {
+  logDirs: string[];
+  teamNumber: number;
+  tbaKey?: string;
+  /** The extension's own disk cache, never the standalone install's (see extensionCacheDir). */
+  cacheDir?: string;
+}
+
+/**
+ * The configuration file's text: one stdio server, `default`, with the log directories, the team
+ * number (when set), the TBA key (when set), and the disk cache directory (when set). The server
+ * reads it as it reads the standalone's `servers.yaml`.
+ */
+export function buildServerConfig(values: ServerConfigValues): string {
+  const server: Record<string, unknown> = { transport: "stdio" };
+  if (values.logDirs.length > 0) server.logdir = values.logDirs;
+  if (values.teamNumber > 0) server.team = values.teamNumber;
+  if (values.tbaKey) server.tba_key = values.tbaKey;
+  if (values.cacheDir) server.diskcachedir = values.cacheDir;
+  return JSON.stringify({ servers: { default: server } }, null, 2) + "\n";
+}
+
+/**
+ * Whether to add or update the entry in a workspace folder. Only with Claude Code enabled (the
+ * `wpilog-mcp.enableForClaudeCode` setting), and then in a WPILib robot project, wherever an entry
+ * already exists (so an entry an earlier version wrote, pointing at its own since-deleted folder,
+ * is brought up to date), or where the user asked for one (the "Add to Claude Code in This
+ * Folder" command, which works even with the setting off).
+ */
+export function shouldWriteEntry(
+  enabled: boolean,
+  robotProject: boolean,
+  hasEntry: boolean,
+  requested = false
+): boolean {
+  return requested || (enabled && (robotProject || hasEntry));
+}
+
+/** Whether the file's text holds this server's entry (a file that is not a JSON object holds none). */
+export function hasServerEntry(existing: string | undefined): boolean {
+  const parsed = parse(existing);
+  return parsed.ok && isObject(parsed.doc.mcpServers) && isObject(parsed.doc.mcpServers[SERVER_NAME]);
+}
+
+/**
+ * The name of another entry in the file that already runs wpilog-mcp (the standalone install's
+ * launcher, or a wpilog-mcp JAR), if any: adding this server beside it would give Claude Code two
+ * copies of every tool.
+ */
+export function otherWpilogServer(existing: string | undefined): string | undefined {
+  const parsed = parse(existing);
+  if (!parsed.ok || !isObject(parsed.doc.mcpServers)) return undefined;
+  for (const [name, server] of Object.entries(parsed.doc.mcpServers)) {
+    if (name === SERVER_NAME || !isObject(server)) continue;
+    const words = [server.command, ...(Array.isArray(server.args) ? server.args : [])];
+    if (words.some((w) => typeof w === "string" && /wpilog-mcp/i.test(w))) return name;
   }
-  if (teamNumber > 0) {
-    args.push("-team", String(teamNumber));
-    env["WPILOG_TEAM"] = String(teamNumber);
+  return undefined;
+}
+
+/** What git makes of a folder's `.mcp.json`; `none` when it is not in a repository or git is unavailable. */
+export type GitStatus = "ignored" | "untracked" | "tracked" | "none";
+
+/**
+ * What to do with `.mcp.json` given git's view of it. The entry holds this computer's paths, so it
+ * is never written into a file the repository shares (`tracked`); a file git would pick up
+ * (`untracked`) is written, with an offer to ignore it.
+ */
+export function gitAction(status: GitStatus): "write" | "writeAndOfferIgnore" | "skipShared" {
+  switch (status) {
+    case "tracked":
+      return "skipShared";
+    case "untracked":
+      return "writeAndOfferIgnore";
+    default:
+      return "write";
   }
-  env["TBA_API_KEY"] = TBA_KEY_REFERENCE;
-  return { command: javaPath, args, env };
+}
+
+/** The `.gitignore` text with `.mcp.json` added at the end, under a comment saying why. */
+export function addToGitignore(existing: string | undefined): string {
+  const text = existing ?? "";
+  const lead = text === "" ? "" : text.endsWith("\n") ? "\n" : "\n\n";
+  return text + lead + "# Claude Code's MCP servers (paths for this computer only)\n.mcp.json\n";
 }
 
 export type Edit = { ok: true; text: string; changed: boolean } | { ok: false; error: string };

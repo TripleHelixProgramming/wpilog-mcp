@@ -23,8 +23,18 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build shadow JAR
-        run: ./gradlew shadowJar
+      # The server JAR and the extension carry one version, build.gradle's: syncExtensionVersion
+      # writes it into the extension's package.json before vsce packages it
+      - name: Build shadow JAR and set the extension's version
+        run: ./gradlew shadowJar syncExtensionVersion
+
+      # A tag that disagrees with build.gradle would publish files under another version
+      - name: Check the tag matches the project version
+        run: |
+          if [ ! -f "build/libs/wpilog-mcp-${GITHUB_REF_NAME#v}-all.jar" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match the version in build.gradle (built: $(ls build/libs/*-all.jar))"
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

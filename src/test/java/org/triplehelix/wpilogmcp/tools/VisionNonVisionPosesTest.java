@@ -72,15 +72,21 @@ class VisionNonVisionPosesTest {
   }
 
   @Test
-  @DisplayName("a Pose2d[] under a vision path is a pose set; a Pose3d[] anywhere is")
+  @DisplayName("the vision template's pose arrays are pose sets; others under a vision path "
+      + "are candidates; a Pose3d[] elsewhere is not vision data")
   void visionPoseArrays() throws Exception {
     var path = dir.resolve("vision_arrays.wpilog");
     try (var w = new FixtureWriter(path, "")) {
       w.schema(WpiStructs.POSE2D, 0.0);
       for (int i = 0; i < 50; i++) {
         double t = i * 0.02;
+        w.structArr("/RealOutputs/Vision/Summary/RobotPoses", WpiStructs.POSE3D, t,
+            WpiStructs.pose3d(1.0, 1.0, 0.0, 0.0));
         w.structArr("NT:/Photon/Accepted", WpiStructs.POSE2D, t, WpiStructs.pose2d(1.0, 1.0, 0.0));
         w.structArr("NT:/Auto/Trajectory", WpiStructs.POSE2D, t, WpiStructs.pose2d(2.0, 2.0, 0.0));
+        // It used to be a vision pose set for being a Pose3d[]
+        w.structArr("/RealOutputs/Mechanism/ComponentPoses", WpiStructs.POSE3D, t,
+            WpiStructs.pose3d(0.1, 0.0, 0.5, 0.0));
       }
     }
 
@@ -88,6 +94,25 @@ class VisionNonVisionPosesTest {
 
     var sets = r.getAsJsonArray("pose_sets");
     assertEquals(1, sets.size(), r.toString());
-    assertEquals("NT:/Photon/Accepted", sets.get(0).getAsJsonObject().get("entry").getAsString());
+    assertEquals("/RealOutputs/Vision/Summary/RobotPoses",
+        sets.get(0).getAsJsonObject().get("entry").getAsString());
+    assertEquals("[\"NT:/Photon/Accepted\"]",
+        r.getAsJsonObject("candidates").get("pose_sets").toString());
+    assertTrue(r.get("needs_confirmation").getAsBoolean());
+    assertFalse(r.toString().contains("ComponentPoses") || r.toString().contains("Trajectory"),
+        r.toString());
+
+    // Passed, the candidate is a pose set
+    LogManager.getInstance().addAllowedDirectory(dir);
+    var registry = new ToolRegistry();
+    FrcDomainTools.registerAll(registry);
+    var args = new JsonObject();
+    args.addProperty("path", path.toString());
+    var passed = new com.google.gson.JsonArray();
+    passed.add("NT:/Photon/Accepted");
+    args.add("vision_entries", passed);
+    var explicit = registry.getTool("analyze_vision").execute(args).getAsJsonObject();
+    assertEquals(2, explicit.getAsJsonArray("pose_sets").size(), explicit.toString());
+    assertFalse(explicit.has("candidates"), explicit.toString());
   }
 }

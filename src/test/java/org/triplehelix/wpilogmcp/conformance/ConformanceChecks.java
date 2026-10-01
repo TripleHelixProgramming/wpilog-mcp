@@ -45,7 +45,9 @@ public final class ConformanceChecks {
     /** The call did not finish in time. */
     TIMEOUT,
     /** A successful result of an analytical tool carries no {@code data_quality} (rule R6). */
-    QUALITY_MISSING;
+    QUALITY_MISSING,
+    /** A result computed from a log that was not read to its end does not say so. */
+    TRUNCATION_UNREPORTED;
 
     public String label() {
       return name().toLowerCase();
@@ -67,7 +69,7 @@ public final class ConformanceChecks {
       "condition", "conditions", "scope", "pattern", "mechanism_name", "expression",
       "brownout_threshold", "threshold", "method", "unit", "type", "can_bus", "season", "year",
       "event_code", "match_type", "match_number", "team_number", "window_sec", "smooth_window",
-      "bus", "chosen_stem", "mechanism", "sampling", "log_directory", "export_directory", "tool",
+      "bus", "chosen_stem", "mechanism", "sampling", "log_directories", "export_directory", "tool",
       "query", "task", "combine", "interpolation", "time_source");
 
   /** Tools whose successful results are statistics over samples and so carry data_quality. */
@@ -111,6 +113,39 @@ public final class ConformanceChecks {
       failed.add(Check.QUALITY_MISSING);
     }
     return failed;
+  }
+
+  /**
+   * Whether a result computed from a truncated log says so: {@code _metadata.log_truncation},
+   * or a {@code log_truncation} on one of its parts where a tool reads several logs
+   * (compare_matches). An error result, which computed nothing from the log, need not.
+   */
+  public static boolean reportsTruncation(JsonObject obj) {
+    var status = obj.get("status");
+    if (status != null && status.isJsonPrimitive() && "error".equals(status.getAsString())) {
+      return true;
+    }
+    var metadata = obj.get("_metadata");
+    if (metadata != null && metadata.isJsonObject()
+        && metadata.getAsJsonObject().has("log_truncation")) {
+      return true;
+    }
+    return hasKey(obj, "log_truncation", 3);
+  }
+
+  private static boolean hasKey(JsonObject obj, String key, int depth) {
+    if (obj.has(key)) return true;
+    if (depth == 0) return false;
+    for (var entry : obj.entrySet()) {
+      var v = entry.getValue();
+      if (v.isJsonObject() && hasKey(v.getAsJsonObject(), key, depth - 1)) return true;
+      if (v.isJsonArray()) {
+        for (var item : v.getAsJsonArray()) {
+          if (item.isJsonObject() && hasKey(item.getAsJsonObject(), key, depth - 1)) return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**

@@ -66,12 +66,20 @@ class SwerveFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
-  @DisplayName("per-module entries: module 2 slips, odometry drifts against vision")
+  @DisplayName("per-module entries: candidates until passed; module 2 slips, odometry drifts")
   void perModule() {
-    var r = call("analyze_swerve", "swerve_per_module", "scope", "enabled");
+    // One entry per module under the team's own names is no published layout: nothing says
+    // which entries are measured, so they are listed, and analyzed once passed
+    var unresolved = call("analyze_swerve", "swerve_per_module", "scope", "enabled");
+    assertEquals("no_match", unresolved.get("status").getAsString(), unresolved.toString());
+    assertTrue(unresolved.get("needs_confirmation").getAsBoolean());
+    assertEquals(8, unresolved.getAsJsonArray("candidates").size());
+
+    var r = call("analyze_swerve", "swerve_per_module", "scope", "enabled",
+        "measured_entry", "/Drive/Module2/Measured", "setpoint_entry", "/Drive/Module2/Setpoint");
     assertEquals("per_module", r.get("layout").getAsString());
     var modules = objects(r.getAsJsonArray("modules"));
-    assertEquals(4, modules.size());
+    assertEquals(1, modules.size());
     var module2 = modules.stream().filter(m -> m.get("module").getAsString().equals("Module2"))
         .findFirst().orElseThrow();
     // measured = 0.7 * setpoint, so the tracking error is 0.3 * |setpoint|
@@ -105,5 +113,50 @@ class SwerveFixtureTest extends FixtureToolTestBase {
         "/RealOutputs/Odometry/Robot");
     assertEquals("error", r.get("status").getAsString());
     assertTrue(r.get("error").getAsString().contains("struct:Pose2d"));
+  }
+
+  @Test
+  @DisplayName("a wrong odometry_entry or vision_entry is an error naming that parameter")
+  void wrongPoseEntryIsError() {
+    // Whoever names an entry wants the drift, so a wrong one is not just a skipped section, as
+    // with measured_entry. The robot pose resolver used to name the parameter pose_entry.
+    for (var param : java.util.List.of("odometry_entry", "vision_entry")) {
+      for (var bad : java.util.List.of("/No/Such/Pose", "/RealOutputs/SwerveStates/Measured")) {
+        var r = call("analyze_swerve", "swerve_per_module", param, bad);
+        assertEquals("error", r.get("status").getAsString(), param + " " + bad + ": " + r);
+        var error = r.get("error").getAsString();
+        assertTrue(error.contains(param + " " + bad), error);
+        assertFalse(error.contains("pose_entry"), error);
+      }
+    }
+  }
+
+  @Test
+  @DisplayName("right odometry_entry and vision_entry give the drift; none found is still a skip")
+  void explicitPoseEntries() {
+    var r = call("analyze_swerve", "swerve_per_module", "odometry_entry", "/Odometry/Robot",
+        "vision_entry", "/Vision/EstimatedPose", "measured_entry", "/Drive/Module0/Measured");
+    var drift = r.getAsJsonObject("odometry_drift");
+    assertEquals("/Odometry/Robot", drift.get("odometry_entry").getAsString(), r.toString());
+    assertEquals("/Vision/EstimatedPose", drift.get("vision_entry").getAsString());
+    // Without them, a log with no usable vision pose skips the drift (driftSkippedWithReason)
+    assertEquals("partial", call("analyze_swerve", "swerve_array").get("status").getAsString());
+  }
+
+  @Test
+  @DisplayName("without module states, looked_for names every published naming and setpoint word")
+  void lookedForNamesWhatIsRecognized() {
+    var r = call("analyze_swerve", "wpilib_dlm");
+    assertEquals("no_match", r.get("status").getAsString(), r.toString());
+    assertFalse(r.has("needs_confirmation"), "nothing to confirm: " + r);
+    var lookedFor = r.get("looked_for").toString();
+    for (var convention : SignalResolver.MODULE_STATE_CONVENTIONS) {
+      assertTrue(lookedFor.contains(convention.measured()), convention + ": " + lookedFor);
+      assertTrue(lookedFor.contains(convention.setpoints().get(0)), convention + ": " + lookedFor);
+    }
+    // The words that keep a lone entry from being taken for the measured states
+    for (var word : RobotAnalysisTools.AnalyzeSwerveTool.SETPOINT_WORD_LIST) {
+      assertTrue(lookedFor.contains(word), word + " missing from " + lookedFor);
+    }
   }
 }

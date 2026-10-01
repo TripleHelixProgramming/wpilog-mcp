@@ -184,6 +184,9 @@ shadowJar {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Read by ExtensionVersionTest: a changed version must rerun the tests
+    inputs.files('vscode-extension/package.json', 'vscode-extension/package-lock.json')
+        .withPropertyName('extensionManifests')
 }
 
 // Convenience task to build the fat JAR
@@ -202,9 +205,9 @@ tasks.register('buildMcp') {
 //   ~/.wpilog-mcp/
 //   ├── jars/wpilog-mcp-{version}.jar    # versioned JARs (multiple versions can coexist)
 //   ├── bin/
-//   │   ├── wpilog-mcp-{version}.sh      # versioned launcher script
-//   │   └── wpilog-mcp -> wpilog-mcp-{version}.sh  # symlink to current version
-//   └── servers.json                      # server configurations (preserved on upgrade)
+//   │   ├── wpilog-mcp-{version}[.bat]   # versioned launcher script
+//   │   └── wpilog-mcp[.bat]             # current version: a symlink (macOS, Linux) or a copy (Windows)
+//   └── servers.yaml                      # server configurations (preserved on upgrade)
 
 tasks.register('install') {
     dependsOn shadowJar
@@ -320,19 +323,25 @@ exec "\${JAVA_EXEC}" -Xmx\${MAX_HEAP} -jar "${jarsDir.absolutePath}/${jarName}" 
         if (!yamlConfig.exists() && !jsonConfig.exists()) {
             yamlConfig.text = """\
 # wpilog-mcp server configuration
-# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp#configuration
+# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
 
 # ---- Defaults ----
 # Top-level settings are inherited by all server configurations below.
 # Individual servers can override any of these.
 
-# Your FRC team number (used for TBA match lookups)
-team: 2363
+# Your FRC team number, for The Blue Alliance match data when a log does not record one.
+# Remove the # and put in your number:
+# team: 1234
 
 # Directory containing .wpilog files downloaded from the roboRIO
 logdir: ~/riologs
+# Or several directories, listed together:
+# logdir:
+#   - ~/riologs
+#   - /Volumes/LOGS/archive
 
-# The Blue Alliance API key (get one at https://www.thebluealliance.com/account)
+# The Blue Alliance API key (get one at https://www.thebluealliance.com/account).
+# Remove the # and put in your key, or set the TBA_API_KEY environment variable instead:
 # tba_key: your-key-here
 
 # ---- Server Configurations ----
@@ -347,10 +356,8 @@ servers:
     transport: http
     port: 2363
 
-  # Stress testing configuration
-  # Set TBA_API_KEY environment variable before running stress tests
-  stresstest:
-    tba_key: \${TBA_API_KEY}
+  # For the project's stress tests (./gradlew stressTest), with the settings above
+  stresstest: {}
 """
             println "Created default config: ${yamlConfig}"
             println "  Edit this file to set your team number and log directory."
@@ -385,12 +392,45 @@ servers:
 }
 
 // ==================== VS Code Extension ====================
+// The extension's version is the project version: syncExtensionVersion writes it into
+// package.json and package-lock.json (only when it differs), and every extension task runs it,
+// as does the release workflow. ExtensionVersionTest fails when the committed files disagree.
+
+tasks.register('syncExtensionVersion') {
+    group = 'application'
+    description = 'Write the project version into the VS Code extension\'s package.json and lock file'
+
+    def extDir = "${projectDir}/vscode-extension"
+    def projectVersion = project.version.toString()
+    doLast {
+        // Textual edits keep the files' formatting; only the extension's own version changes
+        // (in the lock file, the root and packages[""], never a dependency's)
+        def edits = [
+            (file("${extDir}/package.json")): [/(?m)^(  "version": ")[^"]*(")/],
+            (file("${extDir}/package-lock.json")): [/(?m)^(  "version": ")[^"]*(")/,
+                                                     /("packages": \{\s*"": \{[^}]*?"version": ")[^"]*(")/],
+        ]
+        edits.each { f, patterns ->
+            def text = f.text
+            def updated = patterns.inject(text) { t, p ->
+                def m = t =~ p
+                if (!m.find()) throw new GradleException("No version field matching ${p} in ${f}")
+                m.replaceFirst("\$1${java.util.regex.Matcher.quoteReplacement(projectVersion)}\$2")
+            }
+            if (updated != text) {
+                f.text = updated
+                println "Set ${f.name} version to ${projectVersion}"
+            }
+        }
+    }
+}
+
 // Copies the shadow JAR into vscode-extension/server/ for local development.
 // After running this, cd into vscode-extension/ and run: npm install && npm run compile
 // Then press F5 in VS Code to launch an Extension Development Host.
 
 tasks.register('bundleExtension', Copy) {
-    dependsOn shadowJar
+    dependsOn shadowJar, 'syncExtensionVersion'
     group = 'application'
     description = 'Copy shadow JAR into vscode-extension/server/ for local dev'
 
@@ -411,7 +451,8 @@ tasks.register('buildExtension', Exec) {
 
     def extDir = "${projectDir}/vscode-extension"
     def pkg = new groovy.json.JsonSlurper().parse(file("${extDir}/package.json"))
-    def extVersion = pkg.version
+    // The project version, which syncExtensionVersion writes into package.json before packaging
+    def extVersion = project.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
 
     // The extension lives in a subdirectory of the repo. vsce rewrites relative README
@@ -450,8 +491,7 @@ tasks.register('installExtension', Exec) {
     description = 'Build, package, and install the VS Code extension into VS Code'
 
     def extDir = "${projectDir}/vscode-extension"
-    def extVersion = new groovy.json.JsonSlurper()
-            .parse(file("${extDir}/package.json")).version
+    def extVersion = project.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
 
     // Find VS Code CLI — prefer WPILib VS Code, fall back to system 'code'
@@ -485,18 +525,14 @@ tasks.register('installExtension', Exec) {
 }
 
 // ==================== Stress Test Task ====================
-// Stress tests load configuration from the "stresstest" server in a config file
-// (.wpilog-mcp.yaml in the project root, or -Pconfigpath=<file>).
-// The default config includes a stresstest entry. Set your logdir and TBA_API_KEY env var:
+// Stress tests load configuration from the "stresstest" server in a config file:
+// -Pconfigpath=<file>, else the first of .wpilog-mcp.yaml/.json in the project root and
+// ~/.wpilog-mcp/servers.yaml/.json that has one. The installers' default config has a
+// stresstest entry with no settings of its own, so it takes the top-level ones:
 //
-//   {
-//     "logdir": "/path/to/your/logs",
-//     "servers": {
-//       "stresstest": {
-//         "tba_key": "${TBA_API_KEY}"
-//       }
-//     }
-//   }
+//   logdir: /path/to/your/logs
+//   servers:
+//     stresstest: {}
 
 import groovy.json.JsonSlurper
 
@@ -556,7 +592,8 @@ String computeHeapSize(String configFile) {
 tasks.register('stdioStressTest') {
     description = 'Run stdio integration stress test'
     group = 'verification'
-    dependsOn extractTestNatives
+    // The test classes and resources: without them the task ran whatever an earlier build left
+    dependsOn 'testClasses', extractTestNatives
 
     doLast {
         String explicitPath = project.findProperty('configpath') ?: ''
@@ -599,7 +636,7 @@ tasks.register('stdioStressTest') {
         }
 
         if (result.exitValue != 0) {
-            println "\nStdio stress tests completed with failures (exit code: ${result.exitValue})"
+            throw new GradleException("Stdio stress tests failed (exit code: ${result.exitValue})")
         }
     }
 }
@@ -607,7 +644,7 @@ tasks.register('stdioStressTest') {
 tasks.register('httpStressTest') {
     description = 'Run HTTP transport stress test'
     group = 'verification'
-    dependsOn 'compileTestJava', extractTestNatives
+    dependsOn 'testClasses', extractTestNatives
 
     doLast {
         String explicitPath = project.findProperty('configpath') ?: ''
@@ -648,7 +685,7 @@ tasks.register('httpStressTest') {
         }
 
         if (result.exitValue != 0) {
-            println "\nHTTP stress tests completed with failures (exit code: ${result.exitValue})"
+            throw new GradleException("HTTP stress tests failed (exit code: ${result.exitValue})")
         }
     }
 }
@@ -658,25 +695,10 @@ tasks.register('stressTest') {
     group = 'verification'
     dependsOn 'stdioStressTest', 'httpStressTest'
 }
+// One after the other, so that a failure of the first is reported before the second starts
+tasks.named('httpStressTest') { mustRunAfter 'stdioStressTest' }
 
 // Add JUnit Platform Console dependency for stressTest task
 dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-console:1.10.2'
-}
-
-tasks.register('measureMemory') {
-    dependsOn classes
-    doLast {
-        def logPath = project.findProperty('logfile') ?: ''
-        if (!logPath) {
-            throw new GradleException('Usage: ./gradlew measureMemory -Plogfile=/path/to/file.wpilog')
-        }
-        javaexec {
-            classpath = sourceSets.main.runtimeClasspath
-            mainClass = 'org.triplehelix.wpilogmcp.Main'
-            maxHeapSize = '4g'
-            // We'll use a special --measure flag
-            args '--measure-memory', logPath
-        }
-    }
 }

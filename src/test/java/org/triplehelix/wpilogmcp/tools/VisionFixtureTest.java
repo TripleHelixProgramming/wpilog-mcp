@@ -124,15 +124,172 @@ class VisionFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
-  @DisplayName("observation streams report the fraction of records with an observation and logged latency")
+  @DisplayName("what the vision template and libraries publish is analyzed; look-alikes are "
+      + "candidates")
+  void lookalikes() {
+    var r = call("analyze_vision", "vision_lookalikes");
+    assertEquals("partial", r.get("status").getAsString(), r.toString());
+    java.util.function.Function<String, java.util.List<String>> entries = section ->
+        objects(r.getAsJsonArray(section)).stream().map(o -> o.get("entry").getAsString())
+            .toList();
+    assertEquals(java.util.List.of("/Vision/Camera0/PoseObservations"),
+        entries.apply("observation_streams"), "a planned trajectory is not a camera");
+    assertEquals(java.util.List.of("/Vision/Camera0/LatestTargetObservation"),
+        entries.apply("target_streams"), "a gyro's yaw and pitch are not a camera target");
+    assertEquals(java.util.List.of("/RealOutputs/Vision/Summary/RobotPosesAccepted"),
+        entries.apply("pose_sets"));
+    assertEquals(0, r.getAsJsonArray("target_acquisition").size());
+    assertEquals(java.util.List.of("/RealOutputs/Drive/Pose"),
+        strings(r.getAsJsonArray("pose_entries_checked")));
+
+    var candidates = r.getAsJsonObject("candidates");
+    assertEquals("[\"/RealOutputs/Auto/PlannedTrajectory\"]",
+        candidates.get("observation_streams").toString());
+    assertEquals("[\"NT:/Telemetry/imu\"]", candidates.get("target_streams").toString());
+    assertEquals("[\"/RealOutputs/Vision/DebugPoses\"]", candidates.get("pose_sets").toString());
+    assertEquals("[\"/Shooter/HasTargetLock\"]", candidates.get("has_target").toString());
+    assertEquals("[\"/RealOutputs/Vision/Camera0/EstimateA\","
+        + "\"/RealOutputs/Vision/Camera0/EstimateB\"]",
+        candidates.get("pose_estimates").toString());
+    assertTrue(r.get("needs_confirmation").getAsBoolean());
+    assertFalse(r.toString().contains("ComponentPoses"),
+        "a mechanism's component poses are not vision data, and are not named like it either");
+    var skipped = r.getAsJsonArray("skipped").toString();
+    assertTrue(skipped.contains("vision_entries") && skipped.contains("source code"), skipped);
+  }
+
+  @Test
+  @DisplayName("look-alikes are not decoded: a trajectory logged every loop is millions of samples")
+  void lookalikesAreNotDecoded() throws Exception {
+    // On a real 688 MB log the trajectory alone took the call past 3 GB of heap
+    var path = fixturePath("vision_lookalikes").toString();
+    var notToBeRead = java.util.Set.of("/RealOutputs/Auto/PlannedTrajectory", "NT:/Telemetry/imu",
+        "/RealOutputs/Mechanism/ComponentPoses", "/RealOutputs/Vision/DebugPoses",
+        "/Shooter/HasTargetLock");
+    var manager = org.triplehelix.wpilogmcp.log.LogManager.getInstance();
+    manager.unloadLog(path);
+    var inner = new org.triplehelix.wpilogmcp.log.LazyParsedLog(path,
+        new edu.wpi.first.util.datalog.DataLogReader(path), 64L * 1024 * 1024);
+    var read = new java.util.TreeSet<String>();
+    var guarded = new java.util.AbstractMap<String,
+        java.util.List<org.triplehelix.wpilogmcp.log.TimestampedValue>>() {
+      @Override
+      public java.util.List<org.triplehelix.wpilogmcp.log.TimestampedValue> get(Object key) {
+        read.add(String.valueOf(key));
+        return inner.values().get(key);
+      }
+
+      @Override
+      public boolean containsKey(Object key) {
+        return inner.values().containsKey(key);
+      }
+
+      @Override
+      public java.util.Set<Entry<String,
+          java.util.List<org.triplehelix.wpilogmcp.log.TimestampedValue>>> entrySet() {
+        throw new AssertionError("a tool must not walk every entry's values");
+      }
+    };
+    var proxy = (org.triplehelix.wpilogmcp.log.LogData) java.lang.reflect.Proxy.newProxyInstance(
+        getClass().getClassLoader(),
+        new Class<?>[] {org.triplehelix.wpilogmcp.log.LogData.class},
+        (p, method, args) -> {
+          if (method.getName().equals("values")) return guarded;
+          try {
+            return method.invoke(inner, args);
+          } catch (java.lang.reflect.InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
+    manager.testPutLog(path, proxy);
+    try {
+      var r = call("analyze_vision", "vision_lookalikes");
+      assertEquals("partial", r.get("status").getAsString(), r.toString());
+      for (var name : notToBeRead) {
+        assertFalse(read.contains(name), name + " was decoded; read: " + read);
+      }
+      assertTrue(read.contains("/Vision/Camera0/PoseObservations"), read.toString());
+    } finally {
+      manager.unloadLog(path);
+      inner.close();
+    }
+  }
+
+  @Test
+  @DisplayName("entries passed as vision_entries are analyzed by their shape")
+  void explicitVisionEntries() {
+    var passed = new com.google.gson.JsonArray();
+    for (var name : java.util.List.of("/RealOutputs/Vision/DebugPoses", "/Shooter/HasTargetLock",
+        "/RealOutputs/Vision/Camera0/EstimateA", "NT:/Telemetry/imu")) {
+      passed.add(name);
+    }
+    var r = call("analyze_vision", "vision_lookalikes", "vision_entries", passed);
+    java.util.function.Function<String, java.util.List<String>> entries = section ->
+        objects(r.getAsJsonArray(section)).stream().map(o -> o.get("entry").getAsString())
+            .toList();
+    assertTrue(entries.apply("pose_sets").contains("/RealOutputs/Vision/DebugPoses"),
+        r.toString());
+    assertEquals(java.util.List.of("/Shooter/HasTargetLock"),
+        entries.apply("target_acquisition"));
+    assertTrue(entries.apply("target_streams").contains("NT:/Telemetry/imu"), "the caller's "
+        + "decision, once passed: " + r);
+    assertTrue(strings(r.getAsJsonArray("pose_entries_checked"))
+        .contains("/RealOutputs/Vision/Camera0/EstimateA"));
+    // What was passed is no longer a candidate; the rest still are
+    var candidates = r.getAsJsonObject("candidates");
+    assertFalse(candidates.has("has_target") || candidates.has("pose_sets")
+        || candidates.has("target_streams"), candidates.toString());
+    assertEquals("[\"/RealOutputs/Auto/PlannedTrajectory\"]",
+        candidates.get("observation_streams").toString());
+
+    // An entry of a shape the tool does not read, or one not in the log, is an error
+    for (var bad : java.util.List.of("/RealOutputs/Console", "/No/Such/Entry",
+        "/DriverStation/AllianceStation/Nope")) {
+      var wrong = new com.google.gson.JsonArray();
+      wrong.add(bad);
+      var e = call("analyze_vision", "vision_lookalikes", "vision_entries", wrong);
+      assertEquals("error", e.get("status").getAsString(), bad + ": " + e);
+      assertTrue(e.get("error").getAsString().contains("vision_entries"), e.toString());
+    }
+    var notAList = call("analyze_vision", "vision_lookalikes", "vision_entries",
+        "/Shooter/HasTargetLock");
+    assertEquals("error", notAList.get("status").getAsString(), notAList.toString());
+  }
+
+  @Test
+  @DisplayName("resolve_signals reports the same vision entries, and the look-alikes as candidates")
+  void lookalikesInResolveSignals() {
+    var roles = call("resolve_signals", "vision_lookalikes").getAsJsonObject("roles");
+    var streams = roles.getAsJsonObject("vision_pose_observations");
+    assertEquals("/Vision/Camera0/PoseObservations", streams.get("entry").getAsString(),
+        streams.toString());
+    assertEquals("convention", streams.get("match").getAsString());
+    assertTrue(streams.getAsJsonArray("candidates").toString()
+        .contains("/RealOutputs/Auto/PlannedTrajectory"), streams.toString());
+    var targets = roles.getAsJsonObject("vision_targets");
+    assertEquals("/Vision/Camera0/LatestTargetObservation", targets.get("entry").getAsString(),
+        targets.toString());
+    var listed = targets.getAsJsonArray("candidates").toString();
+    assertTrue(listed.contains("NT:/Telemetry/imu") && listed.contains("/Shooter/HasTargetLock"),
+        listed);
+  }
+
+  @Test
+  @DisplayName("observation streams report the fraction of records with an observation; a "
+      + "latency entry beside one is a candidate")
   void streamExtras() {
     var r = call("analyze_vision", "vision_photon_akit");
     for (var stream : objects(r.getAsJsonArray("observation_streams"))) {
       assertEquals(1.0, stream.get("fraction_with_observations").getAsDouble(), 1e-9);
-      var logged = stream.getAsJsonObject("logged_latency");
-      assertTrue(logged.get("entry").getAsString().endsWith("/LatencyMs"), logged.toString());
+      // What LatencyMs times, and in which units, is the robot code's to say: it is listed,
+      // and get_statistics reads it
+      assertFalse(stream.has("logged_latency"), stream.toString());
+      var candidates = strings(stream.getAsJsonArray("latency_candidates"));
+      assertEquals(1, candidates.size(), stream.toString());
+      assertTrue(candidates.get(0).endsWith("/LatencyMs"), candidates.toString());
       double expected = stream.get("camera").getAsString().equals("Camera0") ? 61.0 : 62.0;
-      assertEquals(expected, logged.get("median").getAsDouble(), 1e-9);
+      var stats = call("get_statistics", "vision_photon_akit", "name", candidates.get(0));
+      assertEquals(expected, stats.get("median").getAsDouble(), 1e-9);
     }
   }
 }
