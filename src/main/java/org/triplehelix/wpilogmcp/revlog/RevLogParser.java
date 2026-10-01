@@ -182,6 +182,8 @@ public class RevLogParser {
     logger.info("Parsed revlog: {} devices, {} signals, {} records",
         devices.size(), signalValues.size(), recordCount);
 
+    applyModels(devices, signalValues);
+
     // Convert signal values map to RevLogSignal objects
     Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (var entry : signalValues.entrySet()) {
@@ -226,8 +228,9 @@ public class RevLogParser {
     if (deviceMatcher.find()) {
       int deviceId = Integer.parseInt(deviceMatcher.group(1));
       if (!devices.containsKey(deviceId)) {
-        // Try to determine device type from the data
-        String deviceType = "SPARK MAX"; // Default assumption
+        // The entry name carries the CAN id alone; the status frames that decode below are
+        // the SPARK family's, and status 0 names the model (see applyModels)
+        String deviceType = "SPARK";
         devices.put(deviceId, new RevLogDevice(deviceId, deviceType));
         logger.debug("Discovered device: CAN ID {}, type {}", deviceId, deviceType);
       }
@@ -242,7 +245,7 @@ public class RevLogParser {
 
       // Ensure device is registered
       if (!devices.containsKey(deviceId)) {
-        devices.put(deviceId, new RevLogDevice(deviceId, "SPARK MAX"));
+        devices.put(deviceId, new RevLogDevice(deviceId, "SPARK"));
       }
 
       RevLogDevice device = devices.get(deviceId);
@@ -380,6 +383,8 @@ public class RevLogParser {
       }
     }
 
+    applyModels(devices, signalValues);
+
     // Convert signal values to RevLogSignal objects
     Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (var entry : signalValues.entrySet()) {
@@ -418,7 +423,7 @@ public class RevLogParser {
       int deviceId = canMsgId & 0x3F;
 
       String typeName = switch (deviceType) {
-        case 2 -> "SPARK MAX";
+        case 2 -> "SPARK"; // the family; status 0 names the model (applyModels)
         case 12 -> "Servo Hub";
         case 7 -> "MAXSpline Encoder";
         default -> "Unknown (" + deviceType + ")";
@@ -469,7 +474,7 @@ public class RevLogParser {
       int compositeKey = (deviceType << 6) | deviceId;
       if (!devices.containsKey(compositeKey)) {
         String typeName = switch (deviceType) {
-          case 2 -> "SPARK MAX";
+          case 2 -> "SPARK"; // the family; status 0 names the model (applyModels)
           case 12 -> "Servo Hub";
           case 7 -> "MAXSpline Encoder";
           default -> "Unknown (" + deviceType + ")";
@@ -520,6 +525,48 @@ public class RevLogParser {
   }
 
   /** The unit the DBC gives a signal ("" when it has none, or the signal is unknown). */
+  /** A hash of the DBC text that decodes this parser's signals ("" for one built in code). */
+  public String dbcContentHash() {
+    return decoder.getDatabase().contentHash();
+  }
+
+  /**
+   * The model a SPARK's status 0 SPARK_MODEL field names, by the codes of REVLib's
+   * SparkLowLevel.SparkModel (2026.0.5): 1 = SPARK Flex, 2 = SPARK MAX, 0 = unknown.
+   */
+  static String sparkModelLabel(double code) {
+    if (code == 1) return "SPARK Flex";
+    if (code == 2) return "SPARK MAX";
+    return null;
+  }
+
+  /**
+   * Labels each SPARK by the model its status 0 frames report and re-keys its signals. The CAN
+   * ID says only "SPARK" (device type 2 is the family, MAX and Flex alike); the frame's
+   * SPARK_MODEL field says which, so the label and key become SparkMax_N or SparkFlex_N. A
+   * device whose frames never carried the field keeps the family label (key Spark_N).
+   */
+  static void applyModels(Map<Integer, RevLogDevice> devices,
+      Map<String, List<TimestampedValue>> signalValues) {
+    for (var entry : new ArrayList<>(devices.entrySet())) {
+      var device = entry.getValue();
+      if (!"SPARK".equals(device.deviceType())) continue;
+      var samples = signalValues.get(device.deviceKey() + "/SparkModel");
+      if (samples == null || samples.isEmpty()) continue;
+      var label = sparkModelLabel(((Number) samples.get(0).value()).doubleValue());
+      if (label == null) continue;
+      var relabeled = new RevLogDevice(device.canId(), label, device.firmwareVersion());
+      var oldPrefix = device.deviceKey() + "/";
+      var newPrefix = relabeled.deviceKey() + "/";
+      for (var key : new ArrayList<>(signalValues.keySet())) {
+        if (key.startsWith(oldPrefix)) {
+          signalValues.put(newPrefix + key.substring(oldPrefix.length()), signalValues.remove(key));
+        }
+      }
+      devices.put(entry.getKey(), relabeled);
+    }
+  }
+
   private String getSignalUnit(String signalName) {
     return decoder.getDatabase().messages().values().stream()
         .map(m -> m.getSignal(signalName))

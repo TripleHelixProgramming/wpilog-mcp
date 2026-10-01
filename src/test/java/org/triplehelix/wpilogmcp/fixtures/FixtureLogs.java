@@ -963,11 +963,14 @@ public final class FixtureLogs {
   public static final double REVLOG_PAIR_BUS_VOLTS = 12.3;
   public static final double REVLOG_PAIR_AMPS = 20.0;
   public static final int REVLOG_PAIR_TEMP_C = 31;
+  /** The status 0 SPARK_MODEL code of a SPARK MAX (REVLib's SparkModel: 1 Flex, 2 MAX). */
+  public static final long SPARK_MAX_MODEL_CODE = 2;
 
   /**
    * A SPARK status 0 frame (firmware 25+, REV's spark-frames 2.1.0): applied output int16 in
    * bits 0-15 (1.01/32767 per count), bus voltage uint12 in 16-27 (30/4095 V), current uint12 in
-   * 28-39 (150/4095 A), motor temperature in 40-47 (degC), inverted in bit 52.
+   * 28-39 (150/4095 A), motor temperature in 40-47 (degC), inverted in bit 52, and the model in
+   * bits 54-57 (SPARK_MODEL: 2 = SPARK MAX, the code of REVLib's SparkModel).
    */
   public static byte[] sparkStatus0(double appliedOutput, double busVolts, double amps,
       int tempC, boolean inverted) {
@@ -975,7 +978,7 @@ public final class FixtureLogs {
     long volts = Math.round(busVolts / 0.0073260073260073) & 0xFFF;
     long current = Math.round(amps / 0.0366300366300366) & 0xFFF;
     long bits = applied | volts << 16 | current << 28 | (long) (tempC & 0xFF) << 40
-        | (inverted ? 1L : 0L) << 52;
+        | (inverted ? 1L : 0L) << 52 | SPARK_MAX_MODEL_CODE << 54;
     var frame = new byte[8];
     for (int i = 0; i < 8; i++) frame[i] = (byte) (bits >>> (8 * i));
     return frame;

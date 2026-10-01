@@ -749,9 +749,10 @@ public class LogManager {
         try {
           // Try sync disk cache first. A sync depends on both files' names as well as their
           // contents (the REV name's time sets the coarse offset, the wpilog's name the zone),
-          // so both are part of the key
+          // and the decoded values on the DBC, so all of them are part of the key
           String revlogFp = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
-              revlogInfo.path()) + "|" + revlogInfo.filename();
+              revlogInfo.path()) + "|" + revlogInfo.filename() + "|dbc:"
+              + revLogParser.dbcContentHash();
           String wpilogKey = wpilogFingerprint + "|" + Path.of(wpilogPath).getFileName();
           var cached = syncDiskCache.load(wpilogKey, revlogFp);
 
@@ -761,7 +762,7 @@ public class LogManager {
             var revlog = entry.revlog().at(revlogInfo.path().toString(),
                 revlogInfo.filenameTimestamp());
             if (overlaps(wpilog, revlog, entry.syncResult())) {
-              builder.addRevLog(revlog, entry.syncResult());
+              addRevLog(builder, revlog, entry.syncResult(), revlogInfo);
             }
             continue;
           }
@@ -770,7 +771,7 @@ public class LogManager {
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
-          if (overlaps(wpilog, revlog, result)) builder.addRevLog(revlog, result);
+          if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
 
           // Save to sync cache
           syncDiskCache.save(revlog, result, wpilogKey, revlogFp);
@@ -793,6 +794,19 @@ public class LogManager {
   }
 
   /**
+   * Adds a revlog under the bus its file name carries ({@code REV_..._canivore.revlog}), or
+   * under the inferred name (rio, then can1, can2, ...) when it carries none.
+   */
+  static void addRevLog(SynchronizedLogs.Builder builder, ParsedRevLog revlog, SyncResult result,
+      RevLogFileInfo info) {
+    if (info.canBusName() != null && !info.canBusName().isBlank()) {
+      builder.addRevLog(revlog, result, info.canBusName());
+    } else {
+      builder.addRevLog(revlog, result);
+    }
+  }
+
+  /**
    * Fallback sync path when wpilog fingerprint cannot be computed (skips disk cache).
    */
   private void startSyncWithoutCache(LogData wpilog, List<RevLogFileInfo> matchingRevLogs,
@@ -803,7 +817,7 @@ public class LogManager {
         try {
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
-          if (overlaps(wpilog, revlog, result)) builder.addRevLog(revlog, result);
+          if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
           logger.info("Synced {} (no cache, confidence: {}, offset: {}ms)",
               revlogInfo.path().getFileName(),
               result.confidenceLevel().getLabel(),

@@ -134,7 +134,7 @@ class RevLogParserNativeFormatTest {
 
       var device = result.devices().values().stream()
           .filter(d -> d.canId() == 4).findFirst().orElseThrow();
-      assertEquals("SPARK MAX", device.deviceType());
+      assertEquals("SPARK", device.deviceType(), "the family: no status 0 frame named the model");
       assertEquals("26.1.5", device.firmwareVersion());
     }
 
@@ -161,7 +161,7 @@ class RevLogParserNativeFormatTest {
           "Should have at least 2 devices, got: " + result.devices().size());
 
       boolean foundSparkMax = result.devices().values().stream()
-          .anyMatch(d -> d.canId() == 4 && "SPARK MAX".equals(d.deviceType()));
+          .anyMatch(d -> d.canId() == 4 && "SPARK".equals(d.deviceType()));
       boolean foundServoHub = result.devices().values().stream()
           .anyMatch(d -> d.canId() == 4 && "Servo Hub".equals(d.deviceType()));
 
@@ -211,6 +211,45 @@ class RevLogParserNativeFormatTest {
       assertTrue(result.signals().size() > 0, "Should decode at least one signal");
       assertEquals(1, result.recordCount() > 0 ? 1 : 0, "Should have records");
       assertTrue(result.maxTimestamp() >= 5.0, "Timestamp should be >= 5 seconds");
+    }
+
+    @Test
+    @DisplayName("a SPARK is labeled and keyed by the model its status 0 frames report")
+    void modelFromStatus0() throws IOException {
+      byte[] fwRecord = buildRecord(1, buildFirmwareChunk(SPARK_MAX_FW_CAN_ID, 26, 1, 5));
+      // SPARK_MODEL is bits 54-57 (little-endian): code 2 sets bit 55, code 1 bit 54
+      byte[] max = new byte[8];
+      max[6] = (byte) 0x80;
+      var asMax = parser.parse(writeRevlog("REV_20260322_120000.revlog",
+          concat(fwRecord, buildRecord(2, buildPeriodicChunk(1000, SPARK_STATUS0_DEV4, max)))));
+      var maxDevice = asMax.devices().values().stream().filter(d -> d.canId() == 4)
+          .findFirst().orElseThrow();
+      assertEquals("SPARK MAX", maxDevice.deviceType());
+      assertEquals("SparkMax_4", maxDevice.deviceKey());
+      assertTrue(asMax.signals().containsKey("SparkMax_4/AppliedOutput"),
+          asMax.signals().keySet().toString());
+      assertEquals(2.0, ((Number) asMax.signals().get("SparkMax_4/SparkModel").values().get(0)
+          .value()).doubleValue(), 0.0);
+      assertEquals("26.1.5", maxDevice.firmwareVersion(), "the firmware version is kept");
+
+      byte[] flex = new byte[8];
+      flex[6] = (byte) 0x40;
+      var asFlex = parser.parse(writeRevlog("REV_20260322_120001.revlog",
+          concat(fwRecord, buildRecord(2, buildPeriodicChunk(1000, SPARK_STATUS0_DEV4, flex)))));
+      var flexDevice = asFlex.devices().values().stream().filter(d -> d.canId() == 4)
+          .findFirst().orElseThrow();
+      assertEquals("SPARK Flex", flexDevice.deviceType());
+      assertEquals("SparkFlex_4", flexDevice.deviceKey());
+      assertTrue(asFlex.signals().containsKey("SparkFlex_4/AppliedOutput"));
+      assertFalse(asFlex.signals().containsKey("Spark_4/AppliedOutput"));
+
+      // No model reported (the field reads 0): the family label and key
+      var unknown = parser.parse(writeRevlog("REV_20260322_120002.revlog", concat(fwRecord,
+          buildRecord(2, buildPeriodicChunk(1000, SPARK_STATUS0_DEV4, new byte[8])))));
+      assertEquals("SPARK", unknown.getDevice(4) != null ? unknown.getDevice(4).deviceType()
+          : unknown.devices().values().iterator().next().deviceType());
+      assertTrue(unknown.signals().containsKey("Spark_4/AppliedOutput"),
+          unknown.signals().keySet().toString());
     }
 
     @Test

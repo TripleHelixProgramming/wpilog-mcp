@@ -167,8 +167,8 @@ class LogDirectoryRevLogTest {
     LocalDateTime startTime = LocalDateTime.of(2026, 3, 20, 11, 30, 0);
     LocalDateTime endTime = LocalDateTime.of(2026, 3, 20, 14, 30, 0);
 
-    long startMillis = startTime.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
-    long endMillis = endTime.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+    long startMillis = startTime.atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+    long endMillis = endTime.atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
 
     List<LogDirectory.RevLogFileInfo> matching =
         LogDirectory.getInstance().findRevLogsInTimeRange(startMillis, endMillis, 0);
@@ -185,7 +185,7 @@ class LogDirectoryRevLogTest {
     Files.writeString(tempDir.resolve("REV_20260320_120000.revlog"), ""); // 12:00
 
     LocalDateTime targetTime = LocalDateTime.of(2026, 3, 20, 10, 30, 0);
-    long targetMillis = targetTime.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+    long targetMillis = targetTime.atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
 
     // Without tolerance, should only find 10:00
     List<LogDirectory.RevLogFileInfo> noTolerance =

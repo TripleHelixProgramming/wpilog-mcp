@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.revlog.dbc;
 import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -306,5 +307,17 @@ class DbcParserTest {
 
     DbcDatabase db = parser.parse(content);
     assertEquals(3, db.totalSignalCount());
+  }
+
+  @Test
+  @DisplayName("a content hash names the DBC text a database was parsed from")
+  void contentHash() {
+    var text = "VERSION \"1\"\n\nBO_ 1 M: 8 X\n SG_ S : 0|8@1+ (1,0) [0|255] \"\"\n";
+    var a = parser.parse(text);
+    var b = parser.parse(text.replace("(1,0)", "(2,0)"));
+    assertEquals(16, a.contentHash().length());
+    assertNotEquals(a.contentHash(), b.contentHash(), "a changed scale is another DBC");
+    assertEquals(a.contentHash(), parser.parse(text).contentHash());
+    assertEquals("", DbcDatabase.empty().contentHash());
   }
 }

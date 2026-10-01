@@ -25,6 +25,7 @@ import java.util.Optional;
 public class DbcDatabase {
 
   private final String version;
+  private final String contentHash;
   private final Map<Integer, DbcMessage> messagesById;
   private final Map<String, DbcMessage> messagesByName;
 
@@ -35,7 +36,16 @@ public class DbcDatabase {
    * @param messages The message definitions
    */
   public DbcDatabase(String version, Map<Integer, DbcMessage> messages) {
+    this(version, messages, "");
+  }
+
+  /**
+   * @param contentHash A hash of the DBC text the database was parsed from ("" when built in
+   *     code), so a cache of decoded values can tell which definitions produced them
+   */
+  public DbcDatabase(String version, Map<Integer, DbcMessage> messages, String contentHash) {
     this.version = version;
+    this.contentHash = contentHash == null ? "" : contentHash;
     this.messagesById = Collections.unmodifiableMap(new LinkedHashMap<>(messages));
 
     Map<String, DbcMessage> byName = new LinkedHashMap<>();
@@ -52,6 +62,11 @@ public class DbcDatabase {
    */
   public String version() {
     return version;
+  }
+
+  /** A hash of the DBC text this database was parsed from, or "" when it was built in code. */
+  public String contentHash() {
+    return contentHash;
   }
 
   /**

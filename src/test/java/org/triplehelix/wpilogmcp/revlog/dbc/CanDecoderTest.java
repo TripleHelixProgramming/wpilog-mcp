@@ -232,7 +232,7 @@ class CanDecoderTest {
 
   @Test
   void testGetDeviceTypeName() {
-    assertEquals("SPARK MAX", CanDecoder.getDeviceTypeName(0x02051800));
+    assertEquals("SPARK", CanDecoder.getDeviceTypeName(0x02051800));
   }
 
   @Test

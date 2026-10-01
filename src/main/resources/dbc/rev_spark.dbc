@@ -24,7 +24,9 @@ VERSION "2.1.0"
 // Velocity and position are in RPM and rotations by default; a conversion factor configured on
 // the SPARK changes them (the units say so).
 
-// Status 0 (10 ms): applied output, bus voltage, current, temperature, limits
+// Status 0 (10 ms): applied output, bus voltage, current, temperature, limits, and the model
+// (SPARK_MODEL, bits 54-57: 1 = SPARK Flex, 2 = SPARK MAX, 0 = unknown, the codes of REVLib's
+// SparkLowLevel.SparkModel)
 BO_ 0x0205B800 Status_0: 8 Spark
  SG_ AppliedOutput : 0|16@1- (0.00003082369457075716,0) [-1|1] "duty_cycle"
  SG_ BusVoltage : 16|12@1+ (0.0073260073260073,0) [0|30] "V"
@@ -36,6 +38,7 @@ BO_ 0x0205B800 Status_0: 8 Spark
  SG_ SoftReverseLimitReached : 51|1@1+ (1,0) [0|1] ""
  SG_ IsInverted : 52|1@1+ (1,0) [0|1] ""
  SG_ PrimaryHeartbeatLock : 53|1@1+ (1,0) [0|1] ""
+ SG_ SparkModel : 54|4@1+ (1,0) [0|15] ""
 
 // Status 1 (250 ms): faults, warnings, and their sticky versions; follower
 BO_ 0x0205B840 Status_1: 8 Spark

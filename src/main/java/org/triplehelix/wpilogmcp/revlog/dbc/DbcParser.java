@@ -178,11 +178,24 @@ public class DbcParser {
       messages.put(msg.id(), builder.build());
     }
 
-    DbcDatabase db = new DbcDatabase(version, messages);
+    DbcDatabase db = new DbcDatabase(version, messages, contentHash(content));
     logger.info("Parsed DBC database: {} messages, {} total signals",
         db.messageCount(), db.totalSignalCount());
 
     return db;
+  }
+
+  /** The first 16 hex digits of the SHA-256 of the DBC text: names what decoded a log. */
+  static String contentHash(String content) {
+    try {
+      var digest = java.security.MessageDigest.getInstance("SHA-256")
+          .digest(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      var hex = new StringBuilder();
+      for (int i = 0; i < 8; i++) hex.append(String.format("%02x", digest[i]));
+      return hex.toString();
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   /**

@@ -330,6 +330,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      ToolUtils.validateTimeRange(ToolUtils.getOptDouble(arguments, "start_time"),
+          ToolUtils.getOptDouble(arguments, "end_time"));
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {

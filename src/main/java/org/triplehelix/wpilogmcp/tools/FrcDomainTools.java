@@ -2626,6 +2626,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      ToolUtils.validateTimeRange(ToolUtils.getOptDouble(arguments, "start_time"),
+          ToolUtils.getOptDouble(arguments, "end_time"));
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double nominalVoltage = getOptDouble(arguments, "nominal_voltage", 12.6);
