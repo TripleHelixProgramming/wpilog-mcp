@@ -8,7 +8,7 @@
 </td>
 <td valign="middle">
 
-Why did the robot die with 30 seconds left? Why did auto work in practice but not at competition? wpilog-mcp lets an AI assistant read your robot's telemetry logs, so you can ask questions like these in plain English and get answers based on the data.
+*"Why did the robot die with 30 seconds left?"* *"Why did auto work in practice but not at competition?"* wpilog-mcp lets an AI assistant read your robot's telemetry logs, so you can ask questions like these in plain English and get answers based on the data.
 
 It reads WPILib `.wpilog` files with WPILib's own log reader, and REV `.revlog` files recorded alongside them. It was built by [FRC Team 2363 Triple Helix](https://team2363.org).
 
@@ -20,31 +20,19 @@ It reads WPILib `.wpilog` files with WPILib's own log reader, and REV `.revlog` 
 
 ## Example Questions
 
-```
-Please show me our logs from the Chesapeake District event
-```
+Start broad. The model finds the logs and the entries, and you can get as specific as the data allows:
 
-```
-We lost Q42. Can you look at the log and help us understand what happened?
-```
+- *"Show me our logs from the Chesapeake District event."*
+- *"We lost Q42. Look at the log and help us understand what happened."*
+- *"What are the scoring rules for this year's game?"*
+- *"Pull our match results from The Blue Alliance and look for trends across the event."*
+- *"Walk me through the power delivery during teleop in Q42. Were there any brownout concerns?"*
+- *"How did our four swerve modules compare in that match? Is one of them lagging the others?"*
+- *"Did the vision corrections get larger late in the match? Line up the pose jumps against the time the arm was extended."*
+- *"The intake stalled twice. Find every moment its current was above 40 A while its velocity was zero, and show me the CAN bus health around each one."*
+- *"Using the REV log, align the SPARK MAX currents with the battery voltage and tell me whether the climber or the drivetrain pulled the voltage down."*
 
-```
-Please walk me through the power delivery during teleop. Were there any brownout concerns?
-```
-
-```
-How did our four swerve modules compare in that match?
-```
-
-```
-What are the scoring rules for this year's game?
-```
-
-```
-Can you pull our match results from The Blue Alliance and look for trends across the event?
-```
-
-How much the analysis finds depends on the AI model you use. wpilog-mcp provides the tools and the data; the model does the reasoning.
+> **Note:** The depth and quality of the analysis depend on the AI model you use. wpilog-mcp provides the tools and the data; the model does the reasoning, and a more capable model produces a deeper and more careful analysis. They depend just as much on the context the model can reach beyond the log. A log records names and numbers, not what they mean: with your robot project open, the model can read the code that writes each entry and learn which mechanism it belongs to, what its units are, and whether it is a measurement or a command. Match results from The Blue Alliance and the season's game rules add more. The questions above are what a capable model with that context can answer. Without it, expect the model to ask you to confirm which entries mean what.
 
 ## Installation
 
