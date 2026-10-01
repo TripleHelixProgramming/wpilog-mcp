@@ -5,7 +5,7 @@
   <p align="center"><br><img src="images/icon.png" alt="WPILog Analyzer icon" width="140" align="top"></p>
   <h1 align="center">WPILog Analyzer</h1>
 </td>
-<td valign="top">
+<td valign="middle">
 
 AI-powered FRC robot log analysis for VS Code. It analyzes `.wpilog` telemetry files from the roboRIO to help diagnose brownouts, CAN errors, swerve drive issues, loop timing problems, and more.
 
