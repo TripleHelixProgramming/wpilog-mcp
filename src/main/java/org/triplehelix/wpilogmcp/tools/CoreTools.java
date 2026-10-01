@@ -433,7 +433,7 @@ public final class CoreTools {
     static JsonObject sample(org.triplehelix.wpilogmcp.log.TimestampedValue tv) {
       var sample = new JsonObject();
       sample.addProperty("timestamp_sec", tv.timestamp());
-      var json = GSON.toJsonTree(tv.value());
+      var json = sampleToJson(tv.value());
       if (json.isJsonArray() && json.getAsJsonArray().size() > SAMPLE_ELEMENTS) {
         var full = json.getAsJsonArray();
         var cut = new JsonArray();
@@ -464,7 +464,8 @@ public final class CoreTools {
           + "another page exists, and limits.samples gives total (after offset) and returned. "
           + "Struct values are decoded by the log's own schema: nested objects with the schema's "
           + "field names, enum fields as {value, label}, rotations with a _derived block "
-          + "(degrees; roll, pitch, yaw). Records that could not be decoded are reported in "
+          + "(degrees; roll, pitch, yaw). A NaN or infinite value is returned as the string "
+          + "'NaN', 'Infinity', or '-Infinity'. Records that could not be decoded are reported in "
           + "warnings. One page is not the whole signal: use get_statistics, find_condition, or "
           + "find_peaks for claims about a window.";
     }
@@ -517,7 +518,7 @@ public final class CoreTools {
       for (var tv : paged) {
         var sample = new JsonObject();
         sample.addProperty("timestamp_sec", tv.timestamp());
-        sample.add("value", GSON.toJsonTree(tv.value()));
+        sample.add("value", sampleToJson(tv.value()));
         samples.add(sample);
       }
 

@@ -71,6 +71,7 @@ public final class FixtureLogs {
     all.add(akitMatch(dir));
     all.add(akitPractice(dir));
     all.add(wpilibDataLogManager(dir));
+    all.add(dlmRetained(dir));
     all.add(swervePerModule(dir));
     all.add(swerveArray(dir));
     all.add(visionLimelight(dir));
@@ -415,6 +416,44 @@ public final class FixtureLogs {
     return new Fixture("wpilib_dlm", path,
         "Plain WPILib DataLogManager log (DS:, NT:/ entries, console, messages), 2025 match",
         List.of("B*", "E1", "F1"));
+  }
+
+  /**
+   * A DataLogManager log as real robots write it: several NetworkTables entries carry one record
+   * each with a timestamp before zero (8 to 30 s early), then the session. Logs published by
+   * teams 340, 3602, 3847, and 4003 look like this; a rule that read negative timestamps as
+   * damage emptied those entries and called healthy logs truncated.
+   */
+  static Fixture dlmRetained(Path dir) throws IOException {
+    var path = dir.resolve("2026-dlm_retained.wpilog");
+    double start = 0.5;
+    double end = 60.0;
+    var segments = List.of(new Segment(10.0, 50.0, false));
+    try (var w = new FixtureWriter(path, "")) {
+      w.i64("NT:/photonvision/ledModeState", -30.204473, 1)
+          .str("NT:/CameraPublisher/Front/description", -29.9, "USB camera")
+          .bool("NT:/CameraPublisher/Front/connected", -29.9, true)
+          .strArr("NT:/SmartDashboard/Auto Chooser/options", -12.5, "Do Nothing", "Two Piece")
+          .dbl("NT:/SmartDashboard/Shooter/kP", -8.571203, 0.05)
+          .bool("DS:enabled", start, false)
+          .bool("DS:autonomous", start, false)
+          .i64("systemTime", start, epochMicros("2026-03-15T15:54:22Z", start));
+      for (var s : segments) {
+        w.bool("DS:enabled", s.start(), true).bool("DS:enabled", s.end(), false);
+      }
+      int n = loops(start, end);
+      for (int i = 0; i < n; i++) {
+        double t = loopTime(start, i);
+        if (i % 5 == 0) {
+          w.dbl("NT:/SmartDashboard/Shooter/RPM", t,
+              enabledAt(segments, t) ? 3000.0 + 50.0 * Math.sin(t) : 0.0);
+        }
+      }
+    }
+    return new Fixture("dlm_retained", path,
+        "DataLogManager log whose NetworkTables values from before time zero carry negative "
+            + "timestamps",
+        List.of("B*"));
   }
 
   /** Per-module swerve entries, one SwerveModuleState per module (the older convention). */

@@ -302,7 +302,7 @@ Describe one entry: what it is, how it decodes, and what it looks like.
 ```
 
 ### `read_entry`
-Read values from an entry with time range filtering and pagination.
+Read values from an entry with time range filtering and pagination. A NaN or infinite value is returned as the string `NaN`, `Infinity`, or `-Infinity` (JSON has no such numbers, and `null` would read as missing).
 
 **Parameters:**
 - `path` (required): Path to the log file

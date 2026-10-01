@@ -31,7 +31,44 @@ import java.util.Optional;
 public final class ToolUtils {
 
   /** JSON serializer with null serialization (important for optional fields). */
-  public static final Gson GSON = new GsonBuilder().serializeNulls().create();
+  /**
+   * Builds result trees. It accepts NaN and Infinity rather than throwing Gson's
+   * IllegalArgumentException (which would read as an argument error): the result contract then
+   * replaces a computed non-finite number with null and lists it, and raw samples go through
+   * {@link #sampleToJson}.
+   */
+  public static final Gson GSON = new GsonBuilder().serializeNulls()
+      .serializeSpecialFloatingPointValues().create();
+
+  /**
+   * A logged value as JSON. JSON has no NaN or Infinity, and a raw sample must not be changed
+   * into null (which reads as "missing"), so a non-finite number is returned as the string
+   * "NaN", "Infinity", or "-Infinity", inside arrays and struct fields too, as export_csv writes
+   * it.
+   */
+  public static com.google.gson.JsonElement sampleToJson(Object value) {
+    return nonFiniteAsStrings(GSON.toJsonTree(value));
+  }
+
+  static com.google.gson.JsonElement nonFiniteAsStrings(com.google.gson.JsonElement e) {
+    if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
+      double d = e.getAsDouble();
+      return Double.isFinite(d) ? e : new com.google.gson.JsonPrimitive(String.valueOf(d));
+    }
+    if (e.isJsonArray()) {
+      var out = new com.google.gson.JsonArray();
+      e.getAsJsonArray().forEach(item -> out.add(nonFiniteAsStrings(item)));
+      return out;
+    }
+    if (e.isJsonObject()) {
+      var out = new com.google.gson.JsonObject();
+      for (var entry : e.getAsJsonObject().entrySet()) {
+        out.add(entry.getKey(), nonFiniteAsStrings(entry.getValue()));
+      }
+      return out;
+    }
+    return e;
+  }
 
   // ==================== LLM INTERPRETATION GUIDANCE (§6.1) ====================
   // Appended to tool descriptions to nudge LLMs toward calibrated reasoning.

@@ -35,9 +35,11 @@ import org.slf4j.LoggerFactory;
  *       {@value #MAX_BACKWARD_NEAR_DAMAGE_SEC} s backward or ahead of the log so far belong to
  *       the damage and are dropped. (Elsewhere a backward timestamp can be real: NetworkTables
  *       logging records a value with the time it last changed.)
- *   <li>A record whose timestamp is negative, or jumps more than {@value #MAX_FORWARD_JUMP_SEC} s
- *       past the log so far, is ignored wherever it is: a robot's clock cannot do that within one
- *       log.
+ *   <li>A record whose timestamp jumps more than {@value #MAX_FORWARD_JUMP_SEC} s past the log so
+ *       far is ignored wherever it is: a robot's clock cannot do that within one log.
+ *   <li>A negative timestamp is data, not damage. Logs written by WPILib's DataLogManager on real
+ *       robots routinely hold records tens of seconds before zero (typically one per
+ *       NetworkTables entry), and dropping them empties those entries.
  *   <li>A header whose extra-header length runs past the end of the file is damage too.
  * </ul>
  * The result says what was ignored, with byte offsets, in {@link #truncationMessage()}.
@@ -142,8 +144,9 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
             }
           } else {
             double timestamp = record.getTimestamp() / 1_000_000.0;
-            if (timestamp < 0 || (dataRecords > 0 && timestamp > maxTs + MAX_FORWARD_JUMP_SEC)) {
-              // FPGA time is never negative, and a clock cannot jump a day within one log
+            if (dataRecords > 0 && timestamp > maxTs + MAX_FORWARD_JUMP_SEC) {
+              // A clock cannot jump a day within one log. (A negative timestamp is not such a
+              // sign: DataLogManager logs carry them on healthy robots.)
               jumps++;
               if (firstJump < 0) firstJump = pos;
             } else {
@@ -200,9 +203,9 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
             + ".");
       }
       if (jumps > 0) {
-        parts.add(jumps + " record" + (jumps == 1 ? " whose timestamp is" : "s whose "
-            + "timestamps are") + " negative or more than a day past the rest of the log "
-            + (jumps == 1 ? "was" : "were") + " ignored (the first at byte " + firstJump + ").");
+        parts.add(jumps + " record" + (jumps == 1 ? " whose timestamp jumps" : "s whose "
+            + "timestamps jump") + " more than a day past the rest of the log " + (jumps == 1
+                ? "was" : "were") + " ignored (the first at byte " + firstJump + ").");
       }
       parts.add(String.format("Data from %.2f to %.2f s was recovered.", min, max));
       message = String.join(" ", parts);

@@ -93,8 +93,8 @@ class LogScanTest {
     var scan = LogScan.of(new DataLogReader(path.toString()), path);
     assertTrue(scan.truncationMessage().contains("the 1 record just before it, whose "
         + "timestamps ran backward or jumped ahead, was dropped"), scan.truncationMessage());
-    assertTrue(scan.truncationMessage().contains("1 record whose timestamp is negative or more "
-        + "than a day"), scan.truncationMessage());
+    assertTrue(scan.truncationMessage().contains("1 record whose timestamp jumps more than a "
+        + "day"), scan.truncationMessage());
     assertParsersAgree(path, 1.0, 100.0, 100);
   }
 
@@ -182,8 +182,31 @@ class LogScanTest {
   }
 
   @Test
-  @DisplayName("a negative timestamp is ignored anywhere, and does not shield a jump before it")
-  void negativeTimestampIgnored() throws Exception {
+  @DisplayName("negative timestamps are data: a healthy DataLogManager log keeps them")
+  void negativeTimestampsAreData() throws Exception {
+    // What real robots log (seen in logs published by teams 340, 3602, 3847, and 4003): one
+    // record per NetworkTables entry, tens of seconds before zero, in a log with no damage
+    var path = dir.resolve("retained_values.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      int led = w.start("NT:/photonvision/ledModeState", "int64", "", 0);
+      w.append(led, -30_204_473L, WpilogWriter.encodeInt64(1));
+      w.append(v, -8_571_203L, dbl(12.5));
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertFalse(scan.truncated(), String.valueOf(scan.truncationMessage()));
+    assertNull(scan.truncationMessage());
+    assertEquals(-30.204473, scan.minTimestamp(), 1e-9);
+    assertEquals(12, scan.dataRecords());
+    assertEquals(1, scan.offsets().get("NT:/photonvision/ledModeState").size(),
+        "an entry whose only record is before zero is not empty");
+    assertParsersAgree(path, -30.204473, 10.0, 11);
+  }
+
+  @Test
+  @DisplayName("a garbage negative timestamp just before the damage is rolled back with the rest")
+  void negativeGarbageBeforeDamage() throws Exception {
     var path = dir.resolve("negative_garbage.wpilog");
     try (var w = new WpilogWriter(path, "")) {
       int v = w.start("/Battery/Voltage", "double", "", 0);

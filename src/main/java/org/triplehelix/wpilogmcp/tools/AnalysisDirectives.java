@@ -49,12 +49,18 @@ public class AnalysisDirectives {
   public static AnalysisDirectives fromQuality(DataQuality quality) {
     var d = new AnalysisDirectives();
     d.confidenceLevel = quality.confidenceLevel();
-    d.sampleContext = String.format("Based on %d samples over %.1f seconds",
-        quality.sampleCount(), quality.timeSpanSeconds());
+    // The statistics rest on the finite samples: a signal that is mostly NaN must not be
+    // introduced by its total count
+    int finite = quality.sampleCount() - quality.nanFiltered();
+    d.sampleContext = quality.nanFiltered() > 0
+        ? String.format("Based on %d finite samples of %d (%d NaN or infinite) over %.1f seconds",
+            finite, quality.sampleCount(), quality.nanFiltered(), quality.timeSpanSeconds())
+        : String.format("Based on %d samples over %.1f seconds",
+            quality.sampleCount(), quality.timeSpanSeconds());
 
-    if (quality.sampleCount() < 100) {
+    if (finite < 100) {
       d.interpretationGuidance.add(
-          "Low sample count (" + quality.sampleCount() + "). "
+          "Low sample count (" + finite + (quality.nanFiltered() > 0 ? " finite" : "") + "). "
           + "Statistical measures have high uncertainty.");
     }
     if (quality.sampling() == DataQuality.Sampling.PERIODIC && quality.gapCount() > 0
