@@ -182,6 +182,8 @@ public class RevLogParser {
     logger.info("Parsed revlog: {} devices, {} signals, {} records",
         devices.size(), signalValues.size(), recordCount);
 
+    applyModels(devices, signalValues);
+
     // Convert signal values map to RevLogSignal objects
     Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (var entry : signalValues.entrySet()) {
@@ -226,8 +228,9 @@ public class RevLogParser {
     if (deviceMatcher.find()) {
       int deviceId = Integer.parseInt(deviceMatcher.group(1));
       if (!devices.containsKey(deviceId)) {
-        // Try to determine device type from the data
-        String deviceType = "SPARK MAX"; // Default assumption
+        // The entry name carries the CAN id alone; the status frames that decode below are
+        // the SPARK family's, and status 0 names the model (see applyModels)
+        String deviceType = "SPARK";
         devices.put(deviceId, new RevLogDevice(deviceId, deviceType));
         logger.debug("Discovered device: CAN ID {}, type {}", deviceId, deviceType);
       }
@@ -242,7 +245,7 @@ public class RevLogParser {
 
       // Ensure device is registered
       if (!devices.containsKey(deviceId)) {
-        devices.put(deviceId, new RevLogDevice(deviceId, "SPARK MAX"));
+        devices.put(deviceId, new RevLogDevice(deviceId, "SPARK"));
       }
 
       RevLogDevice device = devices.get(deviceId);
@@ -285,12 +288,9 @@ public class RevLogParser {
    * @return The arbitration ID
    */
   private int buildStatusFrameArbId(int statusFrame, int deviceId) {
-    // Device type = 2 (SPARK MAX)
-    // Manufacturer = 5 (REV)
-    // API Class = 6 (Status frames)
-    // API Index = statusFrame
-    // Device ID = deviceId
-    return CanDecoder.buildArbitrationId(2, 5, 6, statusFrame, deviceId);
+    // Device type = 2 (SPARK), manufacturer = 5 (REV), API class 46 (periodic status on
+    // firmware 25+, which REVLib 2026 and later require), API index = the status frame number
+    return CanDecoder.buildArbitrationId(2, 5, 46, statusFrame, deviceId);
   }
 
   // ==================== REV Native Binary Format ====================
@@ -383,6 +383,8 @@ public class RevLogParser {
       }
     }
 
+    applyModels(devices, signalValues);
+
     // Convert signal values to RevLogSignal objects
     Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (var entry : signalValues.entrySet()) {
@@ -421,7 +423,7 @@ public class RevLogParser {
       int deviceId = canMsgId & 0x3F;
 
       String typeName = switch (deviceType) {
-        case 2 -> "SPARK MAX";
+        case 2 -> "SPARK"; // the family; status 0 names the model (applyModels)
         case 12 -> "Servo Hub";
         case 7 -> "MAXSpline Encoder";
         default -> "Unknown (" + deviceType + ")";
@@ -466,14 +468,13 @@ public class RevLogParser {
       // Extract device info from CAN message ID
       int deviceType = (canMsgId >> 24) & 0x1F;
       int deviceId = canMsgId & 0x3F;
-      int apiIndex = (canMsgId >> 6) & 0xF;
 
       // Key by composite (deviceType << 6 | deviceId) to avoid collisions
       // when different device types share the same CAN ID
       int compositeKey = (deviceType << 6) | deviceId;
       if (!devices.containsKey(compositeKey)) {
         String typeName = switch (deviceType) {
-          case 2 -> "SPARK MAX";
+          case 2 -> "SPARK"; // the family; status 0 names the model (applyModels)
           case 12 -> "Servo Hub";
           case 7 -> "MAXSpline Encoder";
           default -> "Unknown (" + deviceType + ")";
@@ -483,14 +484,11 @@ public class RevLogParser {
 
       String deviceKey = devices.get(compositeKey).deviceKey();
 
-      // The CAN message IDs in native revlog files use a different bit encoding
-      // than the DBC arbitration IDs. Reconstruct the DBC-compatible arb ID
-      // from the extracted fields. Manufacturer (5=REV) and API class (6=periodic status)
-      // are hardcoded because the native CAN frame ID bit layout does not directly
-      // encode these fields in DBC-compatible positions. Device ID is passed as 0
-      // because CanDecoder.decode() falls back to masked lookup (ignoring device ID bits).
-      int dbcArbId = CanDecoder.buildArbitrationId(deviceType, 5, 6, apiIndex, 0);
-      Map<String, Double> decodedSignals = decoder.decode(dbcArbId, canData);
+      // The chunk holds the frame's 29-bit CAN arbitration ID (device type, manufacturer, API
+      // class and index, device number). The decoder looks it up with the device bits masked:
+      // periodic status frames are API class 46 (firmware 25+); the legacy class 6 status 0
+      // that firmware still sends for old followers carries no data and decodes to nothing.
+      Map<String, Double> decodedSignals = decoder.decode(canMsgId & 0x1FFF_FFFF, canData);
 
       for (var signalEntry : decodedSignals.entrySet()) {
         String signalKey = deviceKey + "/" + signalEntry.getKey();
@@ -526,21 +524,55 @@ public class RevLogParser {
         | ((data[offset + 3] & 0xFF) << 24);
   }
 
+  /** The unit the DBC gives a signal ("" when it has none, or the signal is unknown). */
+  /** A hash of the DBC text that decodes this parser's signals ("" for one built in code). */
+  public String dbcContentHash() {
+    return decoder.getDatabase().contentHash();
+  }
+
   /**
-   * Gets the unit for a signal based on its name.
+   * The model a SPARK's status 0 SPARK_MODEL field names, by the codes of REVLib's
+   * SparkLowLevel.SparkModel (2026.0.5): 1 = SPARK Flex, 2 = SPARK MAX, 0 = unknown.
    */
+  static String sparkModelLabel(double code) {
+    if (code == 1) return "SPARK Flex";
+    if (code == 2) return "SPARK MAX";
+    return null;
+  }
+
+  /**
+   * Labels each SPARK by the model its status 0 frames report and re-keys its signals. The CAN
+   * ID says only "SPARK" (device type 2 is the family, MAX and Flex alike); the frame's
+   * SPARK_MODEL field says which, so the label and key become SparkMax_N or SparkFlex_N. A
+   * device whose frames never carried the field keeps the family label (key Spark_N).
+   */
+  static void applyModels(Map<Integer, RevLogDevice> devices,
+      Map<String, List<TimestampedValue>> signalValues) {
+    for (var entry : new ArrayList<>(devices.entrySet())) {
+      var device = entry.getValue();
+      if (!"SPARK".equals(device.deviceType())) continue;
+      var samples = signalValues.get(device.deviceKey() + "/SparkModel");
+      if (samples == null || samples.isEmpty()) continue;
+      var label = sparkModelLabel(((Number) samples.get(0).value()).doubleValue());
+      if (label == null) continue;
+      var relabeled = new RevLogDevice(device.canId(), label, device.firmwareVersion());
+      var oldPrefix = device.deviceKey() + "/";
+      var newPrefix = relabeled.deviceKey() + "/";
+      for (var key : new ArrayList<>(signalValues.keySet())) {
+        if (key.startsWith(oldPrefix)) {
+          signalValues.put(newPrefix + key.substring(oldPrefix.length()), signalValues.remove(key));
+        }
+      }
+      devices.put(entry.getKey(), relabeled);
+    }
+  }
+
   private String getSignalUnit(String signalName) {
-    return switch (signalName.toLowerCase()) {
-      case "appliedoutput" -> "duty_cycle";
-      case "velocity", "altencoderavelocity", "analogvelocity", "dutycyclevelocity" -> "rpm";
-      case "position", "altencodeposition", "analogposition", "dutycycleposition",
-           "dutycycleabsoluteposition" -> "rotations";
-      case "temperature", "motortemperature" -> "degC";
-      case "busvoltage", "analogvoltage" -> "V";
-      case "outputcurrent" -> "A";
-      case "dutycyclefrequency" -> "Hz";
-      default -> "";
-    };
+    return decoder.getDatabase().messages().values().stream()
+        .map(m -> m.getSignal(signalName))
+        .filter(java.util.Objects::nonNull)
+        .map(org.triplehelix.wpilogmcp.revlog.dbc.DbcSignal::unit)
+        .findFirst().orElse("");
   }
 
   /** WPILOG magic header bytes: "WPILOG" in ASCII. */

@@ -307,6 +307,55 @@ class SynchronizedLogsTest {
     assertSame(first, second, "Repeated calls should return cached instance");
   }
 
+  @Test
+  void getRevLogSignalIsSafeUnderConcurrentAccess() throws Exception {
+    // HTTP mode reads one SynchronizedLogs from many request threads: every read must return
+    // the transformed values, and repeated reads of a key the one cached instance
+    int signalCount = 200;
+    Map<Integer, RevLogDevice> devices = new HashMap<>();
+    devices.put(1, new RevLogDevice(1, "SPARK MAX"));
+    Map<String, RevLogSignal> signals = new HashMap<>();
+    for (int i = 0; i < signalCount; i++) {
+      signals.put("SparkMax_1/signal" + i,
+          new RevLogSignal("signal" + i, "SparkMax_1", createValues(50), ""));
+    }
+    ParsedRevLog many = new ParsedRevLog("/many.revlog", "20260320_143052", devices, signals,
+        0, 1, 50 * signalCount);
+    SynchronizedLogs syncLogs = new SynchronizedLogs.Builder()
+        .wpilog(wpilog)
+        .addRevLog(many, syncResult1, "rio")
+        .build();
+
+    int threads = 8;
+    var pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+    var start = new java.util.concurrent.CountDownLatch(1);
+    var failures = new java.util.concurrent.atomic.AtomicInteger();
+    List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      futures.add(pool.submit(() -> {
+        start.await();
+        for (int round = 0; round < 5; round++) {
+          for (int i = 0; i < signalCount; i++) {
+            var values = syncLogs.getRevLogSignal("REV/SparkMax_1/signal" + i);
+            if (values == null || values.size() != 50 || values.get(0).timestamp() != 0.5) {
+              failures.incrementAndGet();
+            }
+          }
+        }
+        return null;
+      }));
+    }
+    start.countDown();
+    for (var f : futures) f.get(30, java.util.concurrent.TimeUnit.SECONDS);
+    pool.shutdown();
+
+    assertEquals(0, failures.get(), "reads that returned wrong or missing values");
+    for (int i = 0; i < signalCount; i++) {
+      var key = "REV/SparkMax_1/signal" + i;
+      assertSame(syncLogs.getRevLogSignal(key), syncLogs.getRevLogSignal(key));
+    }
+  }
+
   // ========== Helper Methods ==========
 
   private List<TimestampedValue> createValues(int count) {

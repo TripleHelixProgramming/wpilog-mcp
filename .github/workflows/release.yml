@@ -35,12 +35,19 @@ jobs:
         run: |
           cp build/libs/wpilog-mcp-*-all.jar vscode-extension/server/wpilog-mcp-all.jar
 
+      # The extension lives in a subdirectory, so vsce must be told where relative
+      # README links/images resolve (it otherwise assumes the repo root). The URLs
+      # are pinned to the release tag so each published version's README keeps
+      # working even if docs move later. Keep in sync with the buildExtension task
+      # in build.gradle (which uses HEAD for local builds).
       - name: Build VS Code extension
         working-directory: vscode-extension
         run: |
           npm ci
           npm run compile
-          npx @vscode/vsce package
+          npx @vscode/vsce package --no-dependencies \
+            --baseContentUrl "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/vscode-extension" \
+            --baseImagesUrl "${{ github.server_url }}/${{ github.repository }}/raw/${{ github.ref_name }}/vscode-extension"
 
       - name: Extract version from tag
         id: version

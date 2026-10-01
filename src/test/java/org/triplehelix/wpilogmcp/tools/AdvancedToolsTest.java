@@ -41,6 +41,8 @@ class AdvancedToolsTest extends ToolTestBase {
               "find_peaks",
               "rate_of_change",
               "time_correlate",
+              "align_entries",
+              "resolve_signals",
               "analyze_swerve",
               "power_analysis",
               "can_health",
@@ -59,11 +61,11 @@ class AdvancedToolsTest extends ToolTestBase {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Core(8) + Query(4) + Statistics(6) + RobotAnalysis(7) + FrcDomain(9) + Export(2) + TBA(2) + RevLog(5) + Discovery(2) = 45 total
+      // Core(9) + Query(4) + Statistics(7) + RobotAnalysis(7) + FrcDomain(9) + Pose(2) + Export(2) + TBA(2) + RevLog(5) + Discovery(2) = 49 total
       // Core tools: list_available_logs, list_entries, get_entry_info, read_entry,
       //   list_loaded_logs, list_struct_types, health_check, get_game_info
       // (load_log, set_active_log, unload_log, unload_all_logs removed in path-per-call refactor)
-      assertEquals(45, tools.size());
+      assertEquals(49, tools.size());
     }
   }
 
@@ -361,13 +363,17 @@ class AdvancedToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("has brownout_threshold parameter with default 6.8")
+    @DisplayName("has an optional brownout_threshold whose default comes from the log")
     void hasBrownoutThresholdParameter() {
       var schema = powerAnalysisTool.inputSchema();
       var properties = schema.getAsJsonObject("properties");
 
       assertTrue(properties.has("brownout_threshold"));
-      assertEquals(6.8, properties.getAsJsonObject("brownout_threshold").get("default").getAsDouble());
+      // No fixed schema default: the log's BrownoutVoltage when logged, else 6.8 V (stated)
+      assertFalse(properties.getAsJsonObject("brownout_threshold").has("default"));
+      var description = properties.getAsJsonObject("brownout_threshold").get("description")
+          .getAsString();
+      assertTrue(description.contains("BrownoutVoltage") && description.contains("6.8"));
     }
 
     @Test
@@ -500,14 +506,16 @@ class AdvancedToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("has required name and output_path parameters")
+    @DisplayName("requires name; output_path is optional (resolved inside the export directory)")
     void hasRequiredParameters() {
       var schema = exportCsvTool.inputSchema();
       var required = schema.getAsJsonArray("required");
 
       assertNotNull(required);
       assertTrue(required.toString().contains("name"));
-      assertTrue(required.toString().contains("output_path"));
+      assertFalse(required.toString().contains("output_path"));
+      assertTrue(schema.getAsJsonObject("properties").has("output_path"));
+      assertTrue(schema.getAsJsonObject("properties").has("inline"));
     }
 
     @Test

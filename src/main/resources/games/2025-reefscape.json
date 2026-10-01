@@ -4,8 +4,8 @@
   "game_name": "REEFSCAPE",
   "full_title": "REEFSCAPE presented by Haas",
   "source": "https://firstfrc.blob.core.windows.net/frc2025/Manual/2025GameManual.pdf",
-  "manual_version": "initial",
-  "generated_at": "2026-03-23T00:00:00Z",
+  "manual_version": "TU21 (final, 2025-04-08; Section 5 ARENA V4, Section 6 Game Details V13, Section 8 ROBOT Construction Rules V11)",
+  "generated_at": "2026-09-30T00:00:00Z",
 
   "match_timing": {
     "auto_duration_sec": 15,
@@ -22,13 +22,15 @@
       "type": "PVC pipe segment",
       "diameter_m": 0.114,
       "diameter_in": 4.5,
+      "length_m": 0.302,
+      "length_in": 11.875,
       "preload_max_per_robot": 1,
       "preload_max_per_alliance": 3
     },
     {
       "name": "Algae",
-      "type": "foam ball",
-      "diameter_m": 0.410,
+      "type": "rubber playground ball",
+      "diameter_m": 0.406,
       "diameter_in": 16.0,
       "preload_max_per_robot": 0,
       "preload_max_per_alliance": 0
@@ -61,51 +63,59 @@
       }
     },
     "ranking_points": {
-      "win": 2,
+      "win": 3,
       "tie": 1,
-      "coop_rp": {
-        "description": "Both alliances score enough Coral",
-        "value": 1,
-        "regional_threshold": null,
-        "district_championship_threshold": null,
-        "championship_threshold": null
+      "auto_rp": {
+        "description": "All non-BYPASSED ROBOTS LEAVE and at least 1 CORAL scored in AUTO (Table 6-2)",
+        "value": 1
       },
-      "reef_rp": {
-        "description": "Fill all 5 Reef levels with Coral on your alliance side",
+      "coral_rp": {
+        "description": "At least the threshold number of CORAL scored on each of the 4 REEF levels (L1-L4); with the Coopertition Bonus, on each of at least 3 levels (Table 6-2; 7 per level at the FIRST Championship per Team Update 21)",
         "value": 1,
-        "regional_threshold": null,
-        "district_championship_threshold": null,
-        "championship_threshold": null
+        "threshold_unit": "CORAL on each level",
+        "levels_required": 4,
+        "levels_required_with_coopertition": 3,
+        "regional_threshold": 5,
+        "district_championship_threshold": 5,
+        "championship_threshold": 7
       },
       "barge_rp": {
-        "description": "Achieve a Barge threshold score",
+        "description": "At least the threshold number of BARGE points (PARK 2, shallow CAGE 6, deep CAGE 12) (Table 6-2; 16 at the FIRST Championship per Team Update 21)",
         "value": 1,
+        "threshold_unit": "BARGE points",
         "regional_threshold": 14,
         "district_championship_threshold": 14,
-        "championship_threshold": 14
+        "championship_threshold": 16
       }
+    },
+    "coopertition_bonus": {
+      "description": "In Qualification MATCHES, at least 2 ALGAE scored in each ALLIANCE'S PROCESSOR: all teams earn 1 Coopertition Point (a ranking tiebreaker, not a ranking point) and the CORAL RP needs only 3 levels (section 6.5.3)",
+      "coopertition_points": 1,
+      "algae_per_processor": 2
     },
     "fouls": {
       "minor_foul": 2,
-      "major_foul": 8
+      "major_foul": 6
     }
   },
 
   "field_geometry": {
-    "field_length_m": 16.54,
-    "field_length_in": 651.25,
-    "field_width_m": 8.02,
-    "field_width_in": 315.5,
+    "field_length_m": 17.548,
+    "field_length_in": 690.875,
+    "field_width_m": 8.052,
+    "field_width_in": 317.0,
     "reef_diameter_m": 1.66,
-    "barge_width_m": 2.42
+    "barge_width_m": 2.42,
+    "barge_zone_depth_m": 1.168,
+    "barge_zone_length_m": 3.721
   },
 
   "robot_constraints": {
     "max_starting_perimeter_in": 120.0,
-    "max_starting_height_in": 48.0,
-    "max_weight_lbs": 125.0,
-    "max_weight_with_bumpers_lbs": null,
-    "note": "Weight excludes bumpers and battery"
+    "max_starting_height_in": 42.0,
+    "max_weight_lbs": 115.0,
+    "max_weight_with_bumpers_lbs": 135.0,
+    "note": "Weight excludes BUMPERS, the battery, and event-provided location tags (R103); with BUMPERS 135 lbs (R408). Perimeter and height (3 ft 6 in) per R104."
   },
 
   "typical_mechanisms": ["intake", "coral_scorer", "algae_scorer", "climber", "elevator"],
@@ -114,8 +124,8 @@
     "endgame_activity": "Cage climbing (shallow or deep) typically occurs in the final 20 seconds.",
     "scoring_context": "Coral is scored on the Reef at 4 levels (L1-L4). Higher levels score more points. Algae can go to the Processor (6 pts) or Net (4 pts).",
     "cycle_time": "Coral cycle = intake from station -> score on Reef. Track time between successive Reef scores. Algae cycle is separate.",
-    "auto_importance": "Auto Coral scores are worth more than teleop. Leaving scores 3 pts.",
-    "reef_context": "Reef RP requires filling all 5 levels on your alliance side. Coordinate with alliance partners for level coverage.",
-    "barge_context": "Barge RP requires 14+ Barge points. Deep cage (12 pts) + park (2 pts) = 14 pts minimum for RP."
+    "auto_importance": "Auto Coral scores are worth more than teleop. Leaving scores 3 pts. The AUTO RP needs every robot to leave and at least 1 Coral scored in auto.",
+    "reef_context": "CORAL RP needs at least 5 Coral on each of the 4 levels (7 at the FIRST Championship); with the Coopertition Bonus only 3 levels are needed. Coordinate with alliance partners for level coverage.",
+    "barge_context": "BARGE RP needs 14+ Barge points (16 at the FIRST Championship): deep cage (12) + park (2), or two shallow cages (6 + 6) + park (2)."
   }
 }

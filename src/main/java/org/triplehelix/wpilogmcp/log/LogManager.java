@@ -21,7 +21,6 @@ import org.triplehelix.wpilogmcp.log.LogDirectory.RevLogFileInfo;
 import org.triplehelix.wpilogmcp.log.subsystems.LogCache;
 import org.triplehelix.wpilogmcp.log.subsystems.LogParser;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
-import org.triplehelix.wpilogmcp.log.subsystems.StructDecoderRegistry;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 import org.triplehelix.wpilogmcp.revlog.RevLogParser;
 import org.triplehelix.wpilogmcp.revlog.dbc.DbcDatabase;
@@ -41,8 +40,10 @@ import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
  *   <li>{@link LogCache} - LRU cache with memory/count-based eviction
  *   <li>{@link LogParser} - WPILOG file parsing with struct decoding
  *   <li>{@link SecurityValidator} - Path validation to prevent traversal attacks
- *   <li>{@link StructDecoderRegistry} - Extensible struct decoder registry
  * </ul>
+ *
+ * <p>Struct values are decoded by each log's own schemas
+ * ({@link org.triplehelix.wpilogmcp.log.struct.StructSchemas}).
  *
  * @since 0.1.0 (refactored in 0.4.0)
  */
@@ -59,7 +60,6 @@ public class LogManager {
   static final int MAX_METADATA_RECORDS = 2000;
 
   // Subsystems (initialized in constructor)
-  private final StructDecoderRegistry decoderRegistry;
   private final SecurityValidator securityValidator;
   private final LogParser logParser;
   private final LogCache logCache;
@@ -83,11 +83,11 @@ public class LogManager {
   private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
 
   /** Private constructor for singleton pattern. */
-  private LogManager() {
+  /** Package-private so tests can use an instance of their own (e.g. to shut one down). */
+  LogManager() {
     // Initialize subsystems
-    this.decoderRegistry = new StructDecoderRegistry();
     this.securityValidator = new SecurityValidator();
-    this.logParser = new LogParser(decoderRegistry);
+    this.logParser = new LogParser();
     this.logCache = new LogCache();
 
     // Initialize disk cache
@@ -163,16 +163,6 @@ public class LogManager {
    */
   public static LogManager getInstance() {
     return INSTANCE;
-  }
-
-  /**
-   * Gets the struct decoder registry for registering custom decoders.
-   *
-   * @return The decoder registry
-   * @since 0.4.0
-   */
-  public StructDecoderRegistry getDecoderRegistry() {
-    return decoderRegistry;
   }
 
   /**
@@ -261,7 +251,7 @@ public class LogManager {
 
         // Check file exists
         if (!Files.exists(filePath)) {
-          throw new IOException("File not found: " + filePath);
+          throw new LogFileException("File not found: " + filePath);
         }
 
         // Evict cached logs to free memory for the new one.
@@ -286,6 +276,13 @@ public class LogManager {
           System.gc(); // Single GC hint after eviction loop, not per-iteration
         }
 
+        // DataLogReader maps the whole file into one int-indexed ByteBuffer, so a file over 2 GB
+        // cannot be read: say so here, before the reader fails and the eager fallback rethrows.
+        if (fileSizeBytes > Integer.MAX_VALUE) {
+          throw new LogFileException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
+              + filePath + " (" + (fileSizeBytes / (1024 * 1024)) + " MB)");
+        }
+
         // Lazy loading: single-pass scan collects entry metadata and stashes
         // lightweight DataLogRecord references (ByteBuffer slices into the memory-mapped
         // file — no data copying, no value decoding). Values are decoded on demand
@@ -294,8 +291,11 @@ public class LogManager {
         try {
           long perLogBudgetBytes = getPerLogCacheBudgetBytes();
           var reader = new edu.wpi.first.util.datalog.DataLogReader(filePath.toString());
-          log = new LazyParsedLog(filePath.toString(), reader,
-              logParser.getDecoderRegistry(), perLogBudgetBytes);
+          log = new LazyParsedLog(filePath.toString(), reader, perLogBudgetBytes);
+        } catch (LogFileException e) {
+          // Not a log at all (empty, zeros, another format): the eager parser would only say
+          // the same
+          throw e;
         } catch (Exception e) {
           // If lazy scan fails (e.g., not a valid WPILOG), fall back to eager parse
           logger.debug("Lazy scan failed for {}, falling back to eager parse: {}",
@@ -311,7 +311,14 @@ public class LogManager {
 
         // Auto-sync matching revlogs asynchronously (doesn't block the MCP response)
         if (autoSyncEnabled) {
-          autoSyncRevLogsAsync(log);
+          try {
+            autoSyncRevLogsAsync(log);
+          } catch (java.util.concurrent.RejectedExecutionException e) {
+            // The sync executor is shut down (the server is stopping): the log still loads
+            logger.warn("RevLog sync skipped for {}: the sync executor is shut down",
+                filePath.getFileName());
+            syncCache.remove(normalizedPath);
+          }
         }
 
         // Evict again after adding the new log in case it pushed us over limits
@@ -641,7 +648,22 @@ public class LogManager {
    * @since 0.5.0
    */
   public void updateSynchronizedLogs(String wpilogPath, SynchronizedLogs syncLogs) {
-    syncCache.put(wpilogPath, syncLogs);
+    syncCache.put(Path.of(wpilogPath).toAbsolutePath().normalize().toString(), syncLogs);
+  }
+
+  /**
+   * Replaces a wpilog's synchronized logs atomically (two set_revlog_offset calls on different
+   * buses must not lose one), when the wpilog has any.
+   *
+   * @param wpilogPath The wpilog path key
+   * @param update The replacement, computed from the current value
+   * @return The new value, or null when the wpilog has no synchronized logs
+   * @since 0.9.0
+   */
+  public SynchronizedLogs updateSynchronizedLogs(String wpilogPath,
+      java.util.function.UnaryOperator<SynchronizedLogs> update) {
+    return syncCache.computeIfPresent(
+        Path.of(wpilogPath).toAbsolutePath().normalize().toString(), (k, v) -> update.apply(v));
   }
 
   /**
@@ -699,7 +721,8 @@ public class LogManager {
     String wpilogPath = wpilog.path();
 
     // Put a placeholder immediately so tools see "sync pending" rather than null
-    syncCache.put(wpilogPath, new SynchronizedLogs(wpilog));
+    var placeholder = new SynchronizedLogs(wpilog);
+    syncCache.put(wpilogPath, placeholder);
 
     List<RevLogFileInfo> matchingRevLogs = findMatchingRevLogs(wpilog);
 
@@ -719,7 +742,7 @@ public class LogManager {
     } catch (IOException e) {
       logger.debug("Cannot fingerprint wpilog for sync cache: {}", e.getMessage());
       // Fall through with null — will skip cache lookup/save
-      startSyncWithoutCache(wpilog, matchingRevLogs, wpilogPath);
+      startSyncWithoutCache(wpilog, matchingRevLogs, wpilogPath, placeholder);
       return;
     }
 
@@ -728,14 +751,21 @@ public class LogManager {
 
       for (RevLogFileInfo revlogInfo : matchingRevLogs) {
         try {
-          // Try sync disk cache first
-          String revlogFp = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
-              revlogInfo.path());
-          var cached = syncDiskCache.load(wpilogFingerprint, revlogFp);
+          // Try sync disk cache first. A sync depends on both files' names as well as their
+          // contents (the REV name's time sets the coarse offset, the wpilog's name the zone),
+          // and the decoded values on the DBC, so all of them are part of the key
+          String revlogFp = revlogCacheKey(revlogInfo, revLogParser.dbcContentHash());
+          String wpilogKey = wpilogFingerprint + "|" + Path.of(wpilogPath).getFileName();
+          var cached = syncDiskCache.load(wpilogKey, revlogFp);
 
           if (cached.isPresent()) {
             var entry = cached.get();
-            builder.addRevLog(entry.revlog(), entry.syncResult());
+            // Keyed by content: an identical file elsewhere reports its own path
+            var revlog = entry.revlog().at(revlogInfo.path().toString(),
+                revlogInfo.filenameTimestamp());
+            if (overlaps(wpilog, revlog, entry.syncResult())) {
+              addRevLog(builder, revlog, entry.syncResult(), revlogInfo);
+            }
             continue;
           }
 
@@ -743,10 +773,10 @@ public class LogManager {
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
-          builder.addRevLog(revlog, result);
+          if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
 
           // Save to sync cache
-          syncDiskCache.save(revlog, result, wpilogFingerprint, revlogFp);
+          syncDiskCache.save(revlog, result, wpilogKey, revlogFp);
 
           logger.info("Synced {} (confidence: {}, offset: {}ms)",
               revlogInfo.path().getFileName(),
@@ -758,10 +788,7 @@ public class LogManager {
         }
       }
 
-      // Atomically replace the placeholder with the final result
-      syncCache.put(wpilogPath, builder.build());
-      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
-
+      completeSync(wpilogPath, placeholder, builder.build());
     }, syncExecutor);
 
     syncInProgress.put(wpilogPath, future);
@@ -769,17 +796,40 @@ public class LogManager {
   }
 
   /**
+   * The revlog half of a sync cache key: the file's content fingerprint, its name (the name's
+   * time sets the coarse offset), and the hash of the DBC that decoded it, so a replaced DBC
+   * does not serve values decoded by the old one.
+   */
+  static String revlogCacheKey(RevLogFileInfo info, String dbcHash) throws IOException {
+    return org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(info.path()) + "|"
+        + info.filename() + "|dbc:" + dbcHash;
+  }
+
+  /**
+   * Adds a revlog under the bus its file name carries ({@code REV_..._canivore.revlog}), or
+   * under the inferred name (rio, then can1, can2, ...) when it carries none.
+   */
+  static void addRevLog(SynchronizedLogs.Builder builder, ParsedRevLog revlog, SyncResult result,
+      RevLogFileInfo info) {
+    if (info.canBusName() != null && !info.canBusName().isBlank()) {
+      builder.addRevLog(revlog, result, info.canBusName());
+    } else {
+      builder.addRevLog(revlog, result);
+    }
+  }
+
+  /**
    * Fallback sync path when wpilog fingerprint cannot be computed (skips disk cache).
    */
   private void startSyncWithoutCache(LogData wpilog, List<RevLogFileInfo> matchingRevLogs,
-      String wpilogPath) {
+      String wpilogPath, SynchronizedLogs placeholder) {
     var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
       SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
       for (RevLogFileInfo revlogInfo : matchingRevLogs) {
         try {
           ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
           SyncResult result = synchronizer.synchronize(wpilog, revlog);
-          builder.addRevLog(revlog, result);
+          if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
           logger.info("Synced {} (no cache, confidence: {}, offset: {}ms)",
               revlogInfo.path().getFileName(),
               result.confidenceLevel().getLabel(),
@@ -788,11 +838,64 @@ public class LogManager {
           logger.warn("Failed to sync revlog {}: {}", revlogInfo.path(), e.getMessage());
         }
       }
-      syncCache.put(wpilogPath, builder.build());
-      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
+      completeSync(wpilogPath, placeholder, builder.build());
     }, syncExecutor);
     syncInProgress.put(wpilogPath, future);
     future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
+  }
+
+  /**
+   * Whether a REV log, placed on the wpilog's clock by its sync, overlaps the wpilog at all. REV
+   * logs are candidates by their name's time with minutes of tolerance, so one recorded just
+   * before or after (another session, or the boot before) is a candidate too: when it neither
+   * correlates nor overlaps, it is not this log's data and is not attached. A failed sync is kept,
+   * to be reported.
+   */
+  static boolean overlaps(LogData wpilog, ParsedRevLog revlog, SyncResult result) {
+    if (!result.isSuccessful()) return true;
+    double start = revlog.minTimestamp() + result.offsetSeconds();
+    double end = revlog.maxTimestamp() + result.offsetSeconds();
+    boolean overlap = end >= wpilog.minTimestamp() && start <= wpilog.maxTimestamp();
+    if (!overlap) {
+      logger.info("{} not attached to {}: placed at {}-{} s, outside the log's {}-{} s",
+          Path.of(revlog.path()).getFileName(), Path.of(wpilog.path()).getFileName(),
+          String.format("%.1f", start), String.format("%.1f", end),
+          String.format("%.1f", wpilog.minTimestamp()), String.format("%.1f", wpilog.maxTimestamp()));
+    }
+    return overlap;
+  }
+
+  /**
+   * Replaces this sync's placeholder with its result, atomically and only if the placeholder is
+   * still there: a log unloaded, evicted, or reloaded while its sync ran is not brought back (the
+   * result holds the parsed REV logs and the wpilog itself, which would never be released).
+   */
+  private void completeSync(String wpilogPath, SynchronizedLogs placeholder,
+      SynchronizedLogs result) {
+    if (syncCache.replace(wpilogPath, placeholder, result)) {
+      logger.info("RevLog sync complete for {}", Path.of(wpilogPath).getFileName());
+    } else {
+      logger.debug("RevLog sync result for {} discarded: the log was unloaded or reloaded "
+          + "while it ran", Path.of(wpilogPath).getFileName());
+    }
+  }
+
+  /**
+   * Waits until every sync submitted so far has finished running (the executor runs one at a
+   * time, in order), including syncs whose log was unloaded. For tests.
+   *
+   * @return false if the wait timed out
+   */
+  boolean awaitSyncExecutorIdle(long timeoutMs) throws InterruptedException {
+    var marker = syncExecutor.submit(() -> { });
+    try {
+      marker.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+      return true;
+    } catch (java.util.concurrent.TimeoutException e) {
+      return false;
+    } catch (java.util.concurrent.ExecutionException e) {
+      return true;
+    }
   }
 
   /** Tolerance for timestamp-based revlog matching (minutes). */
@@ -816,8 +919,17 @@ public class LogManager {
    * and the wpilog's parent directory.
    */
   private List<RevLogFileInfo> findMatchingRevLogs(LogData wpilog) {
-    // Step 1: Determine the wpilog's wall-clock time window
-    long[] wallClockRange = estimateWallClockRange(wpilog);
+    // A wall clock never seen being set may read the roboRIO's default date, which every boot
+    // shares: REV logs named with it would match every such log
+    var unconfirmed = WallClock.unconfirmedReason(wpilog);
+    if (unconfirmed.isPresent()) {
+      logger.info("{}: {}", Path.of(wpilog.path()).getFileName(), unconfirmed.get());
+      return List.of();
+    }
+
+    // Step 1: Determine the wpilog's wall-clock time window, and the zone REV log names are in
+    var zone = WallClock.revlogFilenameZone(wpilog);
+    long[] wallClockRange = estimateWallClockRange(wpilog, zone.offset());
     long wpilogStartMillis = wallClockRange[0];
     long wpilogEndMillis = wallClockRange[1];
     boolean usingMtimeFallback = wallClockRange[2] != 0;
@@ -835,10 +947,11 @@ public class LogManager {
     long rangeStart = wpilogStartMillis - toleranceMillis;
     long rangeEnd = wpilogEndMillis + toleranceMillis;
 
-    logger.debug("Revlog search window: {} to {} (tolerance: {} min, mtime fallback: {})",
+    logger.debug("Revlog search window: {} to {} (tolerance: {} min, mtime fallback: {}); "
+            + "REV log names read as {}",
         java.time.Instant.ofEpochMilli(rangeStart),
         java.time.Instant.ofEpochMilli(rangeEnd),
-        toleranceMinutes, usingMtimeFallback);
+        toleranceMinutes, usingMtimeFallback, zone.basis());
 
     // Step 2: Discover all revlogs (walk the configured scan depth)
     var logDir = LogDirectory.getInstance();
@@ -875,7 +988,8 @@ public class LogManager {
     // Step 3: Filter by time overlap
     List<RevLogFileInfo> matching = new ArrayList<>();
     for (var revlog : allRevLogs) {
-      Long revlogTimestamp = revlog.timestampMillis();
+      Long revlogTimestamp = revlog.parsedTimestamp() == null ? null
+          : revlog.parsedTimestamp().toInstant(zone.offset()).toEpochMilli();
       if (revlogTimestamp != null) {
         // Revlog has a filename timestamp — use it for precise matching
         if (revlogTimestamp >= rangeStart && revlogTimestamp <= rangeEnd) {
@@ -918,45 +1032,36 @@ public class LogManager {
    *
    * <p>Tries three strategies in order:
    * <ol>
-   *   <li>SystemTime entries (FPGA → wall clock mapping from the parsed log)</li>
-   *   <li>Filename timestamp (parsed from standard WPILib naming convention)</li>
+   *   <li>The wall-clock entry (FPGA → wall clock mapping from the parsed log)</li>
+   *   <li>Filename timestamp, read in {@code filenameZone} (the zone REV log names are read in,
+   *       so the two names compare directly)</li>
    *   <li>File modification time (last resort, less accurate)</li>
    * </ol>
    *
    * @param wpilog The parsed wpilog
+   * @param filenameZone The offset REV log filename times are read in
    * @return Array of [startMillis, endMillis, usingMtimeFallback (0 or 1)]
    */
-  private long[] estimateWallClockRange(LogData wpilog) {
+  private long[] estimateWallClockRange(LogData wpilog, java.time.ZoneOffset filenameZone) {
     long durationMillis = (long) (wpilog.duration() * 1000);
 
-    // Strategy 1: Extract wall-clock time from systemTime entries
-    for (String entryName : wpilog.values().keySet()) {
-      if (entryName.toLowerCase().contains("systemtime")) {
-        List<TimestampedValue> values = wpilog.values().get(entryName);
-        if (values != null && !values.isEmpty()) {
-          // Find the first valid systemTime entry to anchor the time range
-          for (var tv : values) {
-            if (tv.value() instanceof Number num) {
-              long wallClockMicros = num.longValue();
-              double fpgaTime = tv.timestamp();
-              // Compute wall-clock time at log start and end
-              long startMillis = (wallClockMicros / 1000)
-                  - (long) ((fpgaTime - wpilog.minTimestamp()) * 1000);
-              long endMillis = startMillis + durationMillis;
-              logger.debug("Wpilog wall-clock range from systemTime: {} to {}",
-                  java.time.Instant.ofEpochMilli(startMillis),
-                  java.time.Instant.ofEpochMilli(endMillis));
-              return new long[]{startMillis, endMillis, 0};
-            }
-          }
-        }
-      }
+    // Strategy 1: the wall-clock entry (WPILib systemTime, AdvantageKit EpochTimeMicros), read
+    // from its first reading after the clock was set (earlier readings are 1970 or a default
+    // date, and extrapolation back to the log's start uses FPGA time)
+    var anchor = WallClock.first(wpilog);
+    if (anchor.isPresent()) {
+      long startMillis = (anchor.get().epochMicros() / 1000)
+          - (long) ((anchor.get().logTime() - wpilog.minTimestamp()) * 1000);
+      long endMillis = startMillis + durationMillis;
+      logger.debug("Wpilog wall-clock range from {}: {} to {}", WallClock.entry(wpilog).orElse("?"),
+          java.time.Instant.ofEpochMilli(startMillis), java.time.Instant.ofEpochMilli(endMillis));
+      return new long[]{startMillis, endMillis, 0};
     }
 
     // Strategy 2: Parse filename timestamp
     Path wpilogPath = Path.of(wpilog.path());
-    Long creationTime = LogDirectory.getInstance().extractCreationTime(
-        wpilogPath.getFileName().toString());
+    Long creationTime = WallClock.filenameTime(wpilogPath.getFileName().toString())
+        .map(t -> t.toInstant(filenameZone).toEpochMilli()).orElse(null);
     if (creationTime != null) {
       long endMillis = creationTime + durationMillis;
       logger.debug("Wpilog wall-clock range from filename: {} to {}",
@@ -1033,11 +1138,6 @@ public class LogManager {
     return logCache;
   }
 
-  /** Test accessor: Gets the decoder registry. */
-  public StructDecoderRegistry testGetDecoderRegistry() {
-    return decoderRegistry;
-  }
-
   /** Test accessor: Triggers eviction check. */
   public void testEvictIfNeeded() {
     logCache.evictIfNeeded();
@@ -1046,121 +1146,5 @@ public class LogManager {
   /** Test accessor: Checks if a log is in cache. */
   public boolean testContainsLog(String path) {
     return testIsLogLoaded(path);
-  }
-
-  /** Test accessor: Reads double from binary data. */
-  public double testReadDouble(byte[] data, int offset) {
-    return new org.triplehelix.wpilogmcp.log.subsystems.BinaryReader().readDouble(data, offset);
-  }
-
-  /** Test accessor: Reads float from binary data. */
-  public float testReadFloat(byte[] data, int offset) {
-    return new org.triplehelix.wpilogmcp.log.subsystems.BinaryReader().readFloat(data, offset);
-  }
-
-  /** Test accessor: Reads int32 from binary data. */
-  public int testReadInt32(byte[] data, int offset) {
-    return new org.triplehelix.wpilogmcp.log.subsystems.BinaryReader().readInt32(data, offset);
-  }
-
-  // Test accessors for struct decoding (delegate to registry)
-  // Note: These methods slice the array from offset to support legacy test interface
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodePose2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Pose2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodePose3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Pose3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTranslation2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Translation2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTranslation3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Translation3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeRotation2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Rotation2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeRotation3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Rotation3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTwist2d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Twist2d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTwist3d(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:Twist3d", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeChassisSpeeds(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:ChassisSpeeds", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeSwerveModuleState(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:SwerveModuleState", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeSwerveModulePosition(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:SwerveModulePosition", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeTargetObservation(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:TargetObservation", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  java.util.List<java.util.Map<String, Object>> testDecodeTargetObservationArray(byte[] data) {
-    return (java.util.List<java.util.Map<String, Object>>) decoderRegistry.decodeStruct("structarray:TargetObservation", data);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodePoseObservation(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:PoseObservation", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  java.util.List<java.util.Map<String, Object>> testDecodePoseObservationArray(byte[] data) {
-    return (java.util.List<java.util.Map<String, Object>>) decoderRegistry.decodeStruct("structarray:PoseObservation", data);
-  }
-
-  @SuppressWarnings("unchecked")
-  public java.util.Map<String, Object> testDecodeSwerveSample(byte[] data, int offset) {
-    byte[] sliced = java.util.Arrays.copyOfRange(data, offset, data.length);
-    return (java.util.Map<String, Object>) decoderRegistry.decodeStruct("struct:SwerveSample", sliced);
-  }
-
-  @SuppressWarnings("unchecked")
-  java.util.List<java.util.Map<String, Object>> testDecodeSwerveSampleArray(byte[] data) {
-    return (java.util.List<java.util.Map<String, Object>>) decoderRegistry.decodeStruct("structarray:SwerveSample", data);
   }
 }

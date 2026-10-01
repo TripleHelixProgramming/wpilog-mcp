@@ -191,7 +191,7 @@ public class CanDecoder {
   public static String getDeviceTypeName(int arbitrationId) {
     int deviceType = extractDeviceType(arbitrationId);
     return switch (deviceType) {
-      case 2 -> "SPARK MAX";
+      case 2 -> "SPARK"; // the family: MAX and Flex share device type 2
       default -> "Unknown REV Device";
     };
   }

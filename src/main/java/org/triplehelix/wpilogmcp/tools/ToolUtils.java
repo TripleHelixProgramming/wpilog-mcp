@@ -12,6 +12,10 @@ import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 import java.util.List;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Shared utilities for all WPILOG tools.
@@ -26,11 +30,45 @@ import java.util.List;
  */
 public final class ToolUtils {
 
-  /** Pre-compiled pattern for extracting 4-digit year from log file paths. */
-  private static final java.util.regex.Pattern YEAR_PATTERN = java.util.regex.Pattern.compile("(20\\d{2})");
-
   /** JSON serializer with null serialization (important for optional fields). */
-  public static final Gson GSON = new GsonBuilder().serializeNulls().create();
+  /**
+   * Builds result trees. It accepts NaN and Infinity rather than throwing Gson's
+   * IllegalArgumentException (which would read as an argument error): the result contract then
+   * replaces a computed non-finite number with null and lists it, and raw samples go through
+   * {@link #sampleToJson}.
+   */
+  public static final Gson GSON = new GsonBuilder().serializeNulls()
+      .serializeSpecialFloatingPointValues().create();
+
+  /**
+   * A logged value as JSON. JSON has no NaN or Infinity, and a raw sample must not be changed
+   * into null (which reads as "missing"), so a non-finite number is returned as the string
+   * "NaN", "Infinity", or "-Infinity", inside arrays and struct fields too, as export_csv writes
+   * it.
+   */
+  public static com.google.gson.JsonElement sampleToJson(Object value) {
+    return nonFiniteAsStrings(GSON.toJsonTree(value));
+  }
+
+  static com.google.gson.JsonElement nonFiniteAsStrings(com.google.gson.JsonElement e) {
+    if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
+      double d = e.getAsDouble();
+      return Double.isFinite(d) ? e : new com.google.gson.JsonPrimitive(String.valueOf(d));
+    }
+    if (e.isJsonArray()) {
+      var out = new com.google.gson.JsonArray();
+      e.getAsJsonArray().forEach(item -> out.add(nonFiniteAsStrings(item)));
+      return out;
+    }
+    if (e.isJsonObject()) {
+      var out = new com.google.gson.JsonObject();
+      for (var entry : e.getAsJsonObject().entrySet()) {
+        out.add(entry.getKey(), nonFiniteAsStrings(entry.getValue()));
+      }
+      return out;
+    }
+    return e;
+  }
 
   // ==================== LLM INTERPRETATION GUIDANCE (§6.1) ====================
   // Appended to tool descriptions to nudge LLMs toward calibrated reasoning.
@@ -82,27 +120,6 @@ public final class ToolUtils {
   }
 
   /**
-   * Estimates the FRC season year from a log's file path.
-   * WPILib log filenames typically contain a date (e.g., "FRC_20260321_123456.wpilog").
-   * Falls back to the current system clock year if no date can be extracted.
-   *
-   * @param log The parsed log
-   * @return The estimated season year
-   */
-  public static int estimateSeasonYear(org.triplehelix.wpilogmcp.log.LogData log) {
-    if (log.path() != null) {
-      var matcher = YEAR_PATTERN.matcher(log.path());
-      if (matcher.find()) {
-        int year = Integer.parseInt(matcher.group(1));
-        if (year >= 2020 && year <= 2099) {
-          return year;
-        }
-      }
-    }
-    return java.time.Year.now().getValue();
-  }
-
-  /**
    * Creates an error result JSON object.
    *
    * @param message The error message
@@ -113,59 +130,6 @@ public final class ToolUtils {
     result.addProperty("success", false);
     result.addProperty("error", message);
     return result;
-  }
-
-  /**
-   * Creates a success result JSON object.
-   *
-   * @return A JSON object with success=true
-   */
-  public static JsonObject successResult() {
-    var result = new JsonObject();
-    result.addProperty("success", true);
-    return result;
-  }
-
-  /**
-   * Creates a ResponseBuilder for building standardized success responses.
-   *
-   * <p>This is the preferred way to create responses in new tools. Use the fluent API
-   * to add properties, warnings, and metadata.
-   *
-   * <p>Example:
-   * <pre>{@code
-   * return successResponse()
-   *     .addProperty("count", 42)
-   *     .addWarning("Data quality may be affected")
-   *     .addMetadata("samples_used", 1000)
-   *     .build();
-   * }</pre>
-   *
-   * @return A new ResponseBuilder for success responses
-   * @since 0.4.0
-   */
-  public static ResponseBuilder successResponse() {
-    return ResponseBuilder.success();
-  }
-
-  /**
-   * Creates a ResponseBuilder for building standardized error responses.
-   *
-   * <p>This is the preferred way to create error responses in new tools.
-   *
-   * <p>Example:
-   * <pre>{@code
-   * return errorResponse("Entry not found")
-   *     .addProperty("attempted_name", name)
-   *     .build();
-   * }</pre>
-   *
-   * @param message The error message
-   * @return A new ResponseBuilder for error responses
-   * @since 0.4.0
-   */
-  public static ResponseBuilder errorResponse(String message) {
-    return ResponseBuilder.error(message);
   }
 
   /**
@@ -182,40 +146,117 @@ public final class ToolUtils {
   // ==================== MATCH PHASE DETECTION UTILITIES ====================
 
   /**
-   * Checks if the robot is enabled at a given timestamp using Zero-Order Hold.
+   * Returns true if a lower-cased entry name is a DriverStation state entry.
    *
-   * <p>The FMS sets mode flags (e.g., Autonomous) before the robot is actually enabled.
-   * Match phases should only start when the robot is both in the correct mode AND enabled.
+   * <p>Two naming conventions are recognized: AdvantageKit-style names containing
+   * {@code driverstation} (e.g. {@code /DriverStation/Enabled}) and WPILib DataLogManager names
+   * with the {@code DS:} prefix (e.g. {@code DS:enabled}, {@code DS:autonomous}).
    *
-   * @param enabledValues The timestamped Enabled boolean values (may be null)
-   * @param timestamp The timestamp to check
-   * @return true if the robot is enabled at that timestamp, or true if no enabled data exists (permissive fallback)
+   * @param lowerName The entry name, already lower-cased
+   * @return true if the entry belongs to the DriverStation state family
    */
-  public static boolean isEnabledAt(List<TimestampedValue> enabledValues, double timestamp) {
-    if (enabledValues == null || enabledValues.isEmpty()) {
-      return true; // No enabled data — fall back to permissive behavior
-    }
-    var value = getValueAtTimeZoh(enabledValues, timestamp);
-    return Boolean.TRUE.equals(value);
+  public static boolean isDsEntry(String lowerName) {
+    return lowerName.contains("driverstation") || lowerName.startsWith("ds:");
+  }
+
+  // ==================== POWER ENTRY SELECTION ====================
+
+  /** Name fragments that mark a voltage entry as a rail, regulator, or motor output, not the battery. */
+  private static final List<String> NON_BATTERY_VOLTAGE_HINTS =
+      List.of("rail", "3v3", "5v", "6v", "brownoutvoltage", "setpoint", "applied", "output", "motor");
+
+  /**
+   * Ranks a lower-cased voltage entry name by how likely it is to carry the battery voltage:
+   * 0 = battery voltage, 1 = another battery entry, 2 = input/bus voltage, 3 = any other voltage,
+   * 4 = rail, regulator, or motor output.
+   *
+   * @param lowerName The entry name, already lower-cased
+   * @return The rank (lower is better)
+   */
+  public static int voltageEntryRank(String lowerName) {
+    if (lowerName.contains("batteryvoltage") || lowerName.contains("battery_voltage")) return 0;
+    if (lowerName.contains("battery")) return 1;
+    if (lowerName.contains("inputvoltage") || lowerName.contains("input_voltage")
+        || lowerName.contains("busvoltage") || lowerName.contains("bus_voltage")) return 2;
+    // Rail/regulator/motor hints are judged on the last two path segments only, so an
+    // AdvantageKit "/RealOutputs/PDH/Voltage" is not demoted by the "output" in "RealOutputs".
+    int cut = lowerName.lastIndexOf('/');
+    if (cut > 0) cut = lowerName.lastIndexOf('/', cut - 1);
+    var tail = cut >= 0 ? lowerName.substring(cut + 1) : lowerName;
+    if (NON_BATTERY_VOLTAGE_HINTS.stream().anyMatch(tail::contains)) return 4;
+    return 3;
   }
 
   /**
-   * Finds a DriverStation entry name in the log matching the given keyword.
+   * Returns true if the list contains at least one finite numeric sample.
    *
-   * @param log The parsed log
-   * @param keyword The keyword to match (e.g., "enabled", "autonomous")
-   * @return The entry name, or null if not found
+   * @param values The timestamped values (may be null)
+   * @return true if any value is a finite Number
    */
-  public static String findDsEntry(LogData log, String keyword) {
-    for (var entryName : log.entries().keySet()) {
-      var lower = entryName.toLowerCase();
-      if (lower.contains("driverstation") && lower.contains(keyword)) {
-        // Exclude "command" entries for auto detection
-        if (keyword.contains("auto") && lower.contains("command")) continue;
-        return entryName;
+  public static boolean hasFiniteNumericSample(List<TimestampedValue> values) {
+    if (values == null) return false;
+    for (var tv : values) {
+      if (tv.value() instanceof Number n && Double.isFinite(n.doubleValue())) return true;
+    }
+    return false;
+  }
+
+  // ==================== CONSOLE TEXT CLASSIFICATION ====================
+
+  /** Result of classifying a text sample: {@code "ERROR"} or {@code "WARNING"}, and the line that matched. */
+  public record ClassifiedText(String type, String message) {}
+
+  /** Maximum characters of a message line returned to the model; longer lines get "...". */
+  public static final int MESSAGE_LINE_LIMIT = 200;
+
+  /**
+   * Classifies a (possibly multi-line) string sample. A sample is an ERROR if any line contains
+   * "error", "exception", or "fault" ("default" does not count), otherwise a WARNING if any line
+   * contains "warning", "overrun", or "watchdog"; errors dominate regardless of line order. The
+   * returned message is the first matching line of the winning kind, stripped but not truncated
+   * (callers truncate for display with {@link #truncate}). Shared by {@code get_ds_timeline}
+   * (counts and summary) and {@code search_strings} (level filter) so the two always agree.
+   *
+   * @param message The sample text
+   * @return The classification, or null if neither
+   */
+  public static ClassifiedText classifyText(String message) {
+    String firstWarning = null;
+    for (var line : message.split("\\R")) {
+      var lower = line.toLowerCase(java.util.Locale.ROOT);
+      if (lower.contains("error") || lower.contains("exception")
+          || lower.replace("default", "").contains("fault")) {
+        return new ClassifiedText("ERROR", line.strip());
+      }
+      if (firstWarning == null && (lower.contains("warning") || lower.contains("overrun")
+          || lower.contains("watchdog"))) {
+        firstWarning = line.strip();
       }
     }
-    return null;
+    return firstWarning == null ? null : new ClassifiedText("WARNING", firstWarning);
+  }
+
+  /**
+   * Truncates text for display, appending "..." when cut.
+   *
+   * @param text The text
+   * @param maxChars Maximum characters to keep
+   * @return The text, or its first {@code maxChars} characters followed by "..."
+   */
+  public static String truncate(String text, int maxChars) {
+    return text.length() > maxChars ? text.substring(0, maxChars) + "..." : text;
+  }
+
+  /**
+   * Normalizes a message for grouping: runs of digits (with optional decimal part) become
+   * {@code #} and whitespace collapses, so "Loop time of 0.023s overrun" and "... 0.031s ..."
+   * are the same message.
+   *
+   * @param message The message text
+   * @return The normalized pattern
+   */
+  public static String normalizeMessage(String message) {
+    return message.replaceAll("\\d+(?:\\.\\d+)?", "#").replaceAll("\\s+", " ").strip();
   }
 
   // ==================== PERCENTILE UTILITY ====================
@@ -347,44 +388,6 @@ public final class ToolUtils {
     return null;
   }
 
-  /**
-   * Calculates RMSE between two aligned time series using linear interpolation.
-   *
-   * @param series1 The first time series (timestamped values)
-   * @param series2 The second time series (timestamped values)
-   * @return The RMSE, or NaN if calculation not possible
-   */
-  public static double calculateRmseLinear(
-      List<TimestampedValue> series1, List<TimestampedValue> series2) {
-    if (series1 == null || series2 == null || series1.isEmpty() || series2.isEmpty()) {
-      return Double.NaN;
-    }
-
-    // Use the timestamps from the denser series
-    var reference = series1.size() >= series2.size() ? series1 : series2;
-    var other = series1.size() >= series2.size() ? series2 : series1;
-
-    double sumSquaredError = 0.0;
-    int count = 0;
-
-    for (var tv : reference) {
-      var refValue = toDouble(tv.value());
-      var otherValue = getValueAtTimeLinear(other, tv.timestamp());
-
-      if (refValue != null && otherValue != null) {
-        double error = refValue - otherValue;
-        sumSquaredError += error * error;
-        count++;
-      }
-    }
-
-    if (count == 0) {
-      return Double.NaN;
-    }
-
-    return Math.sqrt(sumSquaredError / count);
-  }
-
   // ==================== ARGUMENT EXTRACTION UTILITIES ====================
 
   /**
@@ -423,6 +426,17 @@ public final class ToolUtils {
   }
 
   /**
+   * Gets an optional boolean parameter; a missing or null value means false.
+   *
+   * @param args The tool arguments
+   * @param key The parameter name
+   * @return The value, or false if absent
+   */
+  public static boolean getOptBoolean(com.google.gson.JsonObject args, String key) {
+    return args.has(key) && !args.get(key).isJsonNull() && args.get(key).getAsBoolean();
+  }
+
+  /**
    * Gets an optional String parameter from JSON arguments with a default value.
    *
    * @param args The JSON arguments object
@@ -447,6 +461,21 @@ public final class ToolUtils {
       throw new IllegalArgumentException("Missing required parameter: " + key);
     }
     return args.get(key).getAsString();
+  }
+
+  /**
+   * Gets a required integer parameter from JSON arguments.
+   *
+   * @param args The JSON arguments object
+   * @param key The parameter key
+   * @return The int value
+   * @throws IllegalArgumentException if the parameter is missing or null
+   */
+  public static int getRequiredInt(com.google.gson.JsonObject args, String key) {
+    if (!args.has(key) || args.get(key).isJsonNull()) {
+      throw new IllegalArgumentException("Missing required parameter: " + key);
+    }
+    return args.get(key).getAsInt();
   }
 
   /**
@@ -497,6 +526,22 @@ public final class ToolUtils {
     return value;
   }
 
+  /**
+   * Validates a {@code start_time}/{@code end_time} pair: when both are given, the start must not
+   * be after the end (an inverted range would otherwise select nothing and succeed silently).
+   * Either bound may be null (open).
+   *
+   * @param start The start_time argument, or null
+   * @param end The end_time argument, or null
+   * @throws IllegalArgumentException if both are given and start > end
+   */
+  public static void validateTimeRange(Double start, Double end) {
+    if (start != null && end != null && start > end) {
+      throw new IllegalArgumentException("start_time must not be after end_time, got start_time="
+          + start + " and end_time=" + end);
+    }
+  }
+
   // ==================== DATA QUALITY HELPERS ====================
 
   /**
@@ -517,9 +562,7 @@ public final class ToolUtils {
     result.add("server_analysis_directives", directives.toJson());
 
     if (quality.qualityScore() < 0.5) {
-      String warning = "Low data quality (score: "
-          + String.format("%.2f", quality.qualityScore())
-          + "). Results should be treated as preliminary.";
+      String warning = ResponseBuilder.lowQualityWarning(quality);
 
       // Merge with existing warnings
       com.google.gson.JsonArray warnings;

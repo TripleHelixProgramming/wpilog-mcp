@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.revlog.dbc;
 import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -237,6 +238,39 @@ class DbcParserTest {
   }
 
   @Test
+  void floatSignalsAndExtendedFrameIdsAsRevWritesThem() {
+    // REV's spark.public.dbc: decimal IDs with bit 31 (extended frame) set; SIG_VALTYPE_ after
+    // the messages marks IEEE floats
+    String content = """
+        BO_ 2181412992 STATUS_2: 8 Vector__XXX
+         SG_ PRIMARY_ENCODER_VELOCITY : 0|32@1- (1,0) [0|0] "" Vector__XXX
+         SG_ PRIMARY_ENCODER_POSITION : 32|32@1- (1,0) [0|0] "" Vector__XXX
+        BO_ 2181413056 STATUS_3: 8 Vector__XXX
+         SG_ ANALOG_VOLTAGE : 0|10@1+ (0.0048973607038123,0) [0|5] "V" Vector__XXX
+        SIG_VALTYPE_ 2181412992 PRIMARY_ENCODER_VELOCITY : 1;
+        SIG_VALTYPE_ 2181412992 PRIMARY_ENCODER_POSITION : 1;
+        SIG_VALTYPE_ 999 UNKNOWN_SIGNAL : 1;
+        """;
+    DbcDatabase db = parser.parse(content);
+    var status2 = db.getMessage(0x0205B880).orElseThrow();
+    assertEquals(DbcSignal.ValueType.FLOAT32,
+        status2.getSignal("PRIMARY_ENCODER_VELOCITY").valueType());
+    assertEquals(DbcSignal.ValueType.INTEGER,
+        db.getMessage(0x0205B8C0).orElseThrow().getSignal("ANALOG_VOLTAGE").valueType());
+    var frame = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        .putFloat(-1234.5f).putFloat(0.25f).array();
+    var decoded = status2.decodeAll(frame);
+    assertEquals(-1234.5, decoded.get("PRIMARY_ENCODER_VELOCITY"), 0.0);
+    assertEquals(0.25, decoded.get("PRIMARY_ENCODER_POSITION"), 0.0);
+    // A float64 value type
+    var f64 = DbcSignal.builder("D").startBit(0).bitLength(64).signed(true)
+        .valueType(DbcSignal.ValueType.FLOAT64).build();
+    var bytes = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        .putDouble(Math.PI).array();
+    assertEquals(Math.PI, f64.decode(bytes), 0.0);
+  }
+
+  @Test
   void testGetMessageByName() {
     String content = """
         BO_ 0x100 FirstMessage: 8 Node
@@ -273,5 +307,17 @@ class DbcParserTest {
 
     DbcDatabase db = parser.parse(content);
     assertEquals(3, db.totalSignalCount());
+  }
+
+  @Test
+  @DisplayName("a content hash names the DBC text a database was parsed from")
+  void contentHash() {
+    var text = "VERSION \"1\"\n\nBO_ 1 M: 8 X\n SG_ S : 0|8@1+ (1,0) [0|255] \"\"\n";
+    var a = parser.parse(text);
+    var b = parser.parse(text.replace("(1,0)", "(2,0)"));
+    assertEquals(16, a.contentHash().length());
+    assertNotEquals(a.contentHash(), b.contentHash(), "a changed scale is another DBC");
+    assertEquals(a.contentHash(), parser.parse(text).contentHash());
+    assertEquals("", DbcDatabase.empty().contentHash());
   }
 }

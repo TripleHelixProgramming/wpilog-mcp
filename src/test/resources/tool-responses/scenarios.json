@@ -1,0 +1,71 @@
+{
+  "note": "Calls captured into doc/TOOL_RESPONSES.md by ToolResponsesDoc. ${alias} is a log below, relative to the log directory passed as -PtoolResponsesLogDir.",
+  "logs": {
+    "q10": "vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "review": "akit_26-09-30_00-10-26.wpilog",
+    "sim": "vache/session_55/akit_26-03-22_18-15-22_vache_e4_sim.wpilog"
+  },
+  "calls": [
+    {"tool": "get_server_guide", "title": "Overview", "args": {}},
+    {"tool": "suggest_tools", "title": "A diagnosis task", "args": {"task": "why did the robot brown out during teleop", "max_suggestions": 3}},
+
+    {"tool": "list_available_logs", "title": "First page, one event", "args": {"event": "vache", "limit": 3}},
+    {"tool": "list_loaded_logs", "title": "After loading", "args": {}},
+    {"tool": "list_entries", "title": "Filtered by pattern", "args": {"path": "${q10}", "pattern": "SystemStats/Battery"}},
+    {"tool": "get_entry_info", "title": "A struct array: schema, source, leaf paths", "args": {"path": "${review}", "name": "/Vision/Camera3/PoseObservations"}},
+    {"tool": "read_entry", "title": "A schema-decoded PoseObservation", "args": {"path": "${review}", "name": "/Vision/Camera3/PoseObservations", "start_time": 370, "limit": 1}},
+    {"tool": "list_struct_types", "title": "A log's struct types", "args": {"path": "${q10}"}},
+    {"tool": "resolve_signals", "title": "Every role", "args": {"path": "${q10}"}},
+    {"tool": "health_check", "title": "Server status", "args": {}},
+    {"tool": "get_game_info", "title": "2026", "args": {"season": 2026}},
+
+    {"tool": "search_entries", "title": "Voltage entries", "args": {"path": "${q10}", "pattern": "Voltage", "min_samples": 100}},
+    {"tool": "get_types", "title": "Entry types", "args": {"path": "${q10}"}},
+    {"tool": "find_condition", "title": "Battery below 7.5 V while enabled", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "operator": "lt", "threshold": 7.5, "scope": "enabled", "limit": 3}},
+    {"tool": "find_condition", "title": "Disabled and stationary (compound)", "args": {"path": "${review}", "conditions": {"all": [{"name": "/DriverStation/Enabled", "operator": "eq", "threshold": 0}, {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vx", "operator": "abs_lt", "threshold": 0.05}, {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vy", "operator": "abs_lt", "threshold": 0.05}]}}},
+    {"tool": "search_strings", "title": "An alert, as one appearance", "args": {"path": "${review}", "pattern": "camera 3 is disconnected"}},
+    {"tool": "search_strings", "title": "Errors, first page", "args": {"path": "${q10}", "level": "error", "limit": 3}},
+
+    {"tool": "get_statistics", "title": "Battery while enabled", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "scope": "enabled"}},
+    {"tool": "get_statistics", "title": "Heading wander while disabled (field path, angle)", "args": {"path": "${review}", "name": "/RealOutputs/Drive/Pose.rotation._derived.degrees", "start_time": 362, "end_time": 394}},
+    {"tool": "compare_entries", "title": "Pose heading against the gyro (angles)", "args": {"path": "${review}", "name1": "/RealOutputs/Drive/Pose.rotation.value", "name2": "/Drive/Gyro/YawPosition.value", "scope": "enabled"}},
+    {"tool": "detect_anomalies", "title": "Loop time while enabled, by severity", "args": {"path": "${q10}", "name": "/RealOutputs/LoggedRobot/FullCycleMS", "scope": "enabled", "sort": "severity", "limit": 3}},
+    {"tool": "find_peaks", "title": "Voltage dips while enabled", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "type": "min", "min_height_diff": 0.3, "scope": "enabled", "limit": 3}},
+    {"tool": "rate_of_change", "title": "Pose x velocity", "args": {"path": "${review}", "name": "/RealOutputs/Drive/Pose.translation.x", "start_time": 362, "end_time": 363, "limit": 3}},
+    {"tool": "time_correlate", "title": "Voltage against drive current, with lag search", "args": {"path": "${q10}", "name1": "/SystemStats/BatteryVoltage", "name2": "/Drive/Module0/DriveCurrentAmps", "scope": "enabled", "max_lag_sec": 0.2}},
+    {"tool": "align_entries", "title": "Robot pose at each camera observation's own time", "args": {"path": "${review}", "names": ["/RealOutputs/Drive/Pose.translation.x", "/RealOutputs/Drive/Pose.translation.y"], "at": "/Vision/Camera3/PoseObservations", "time_field": "[*].timestamp", "interpolation": "linear", "start_time": 370, "limit": 3}},
+
+    {"tool": "get_match_phases", "title": "Segments and match", "args": {"path": "${q10}"}},
+    {"tool": "analyze_swerve", "title": "While enabled", "args": {"path": "${q10}", "scope": "enabled"}},
+    {"tool": "power_analysis", "title": "Top channels", "args": {"path": "${q10}", "channel_limit": 3}},
+    {"tool": "can_health", "title": "Text and counters", "args": {"path": "${q10}"}},
+    {"tool": "compare_matches", "title": "Loop time while enabled, two logs", "args": {"path": "${review}", "compare_path": "${q10}", "name": "/RealOutputs/LoggedRobot/FullCycleMS", "scope": "enabled"}},
+    {"tool": "get_code_metadata", "title": "Build metadata", "args": {"path": "${q10}"}},
+    {"tool": "moi_regression", "title": "Front-left drive module", "args": {"path": "${q10}", "velocity_entry": "/Drive/Module0/DriveVelocityRadPerSec", "current_entry": "/Drive/Module0/DriveCurrentAmps", "applied_volts_entry": "/Drive/Module0/DriveAppliedVolts", "kt": 0.0194, "gear_ratio": 6.75}},
+
+    {"tool": "get_ds_timeline", "title": "Timeline", "args": {"path": "${q10}"}},
+    {"tool": "analyze_vision", "title": "Streams, targets, pose sets", "args": {"path": "${review}"}},
+    {"tool": "compare_poses", "title": "The turret's pose in the robot's frame", "args": {"path": "${q10}", "pose_entry": "/RealOutputs/Launcher/TurretPose", "reference_entry": "/RealOutputs/Drive/Pose", "frame": "reference", "scope": "enabled"}},
+    {"tool": "pose_corrections", "title": "Pose steps while the robot sat disabled", "args": {"path": "${review}", "scope": "disabled", "limit": 3}},
+    {"tool": "pose_corrections", "title": "Corrections while driving", "args": {"path": "${q10}", "scope": "enabled", "limit": 3}},
+    {"tool": "profile_mechanism", "title": "A drive module", "args": {"path": "${q10}", "mechanism_name": "/Drive/Module0"}},
+    {"tool": "analyze_auto", "title": "Autonomous", "args": {"path": "${q10}"}},
+    {"tool": "analyze_cycles", "title": "Feeder command cycles", "args": {"path": "${q10}", "state_entry": "/RealOutputs/Subsystems/Feeder/Command", "cycle_start_state": "ParallelCommandGroup", "limit": 3}},
+    {"tool": "analyze_replay_drift", "title": "A replay log", "args": {"path": "${sim}", "limit": 3}},
+    {"tool": "analyze_loop_timing", "title": "While enabled", "args": {"path": "${q10}", "scope": "enabled", "threshold_ms": 25}},
+    {"tool": "analyze_can_bus", "title": "All buses", "args": {"path": "${q10}"}},
+    {"tool": "predict_battery_health", "title": "Evidence", "args": {"path": "${q10}"}},
+
+    {"tool": "export_csv", "title": "Inline rows of a struct", "args": {"path": "${q10}", "name": "/RealOutputs/Drive/Pose", "inline": true, "max_rows": 3}},
+    {"tool": "generate_report", "title": "Report", "args": {"path": "${q10}"}},
+
+    {"tool": "get_tba_status", "title": "Configuration", "args": {}},
+    {"tool": "get_tba_match_data", "title": "Without a TBA key", "args": {"year": 2026, "event_code": "2026vache", "match_type": "qm", "match_number": 10}},
+
+    {"tool": "sync_status", "title": "Revlog sync", "args": {"path": "${q10}"}},
+    {"tool": "wait_for_sync", "title": "Wait for sync", "args": {"path": "${q10}", "timeout_ms": 30000}},
+    {"tool": "list_revlog_signals", "title": "Signals", "args": {"path": "${q10}", "signal_filter": "Velocity"}},
+    {"tool": "get_revlog_data", "title": "One signal", "args": {"path": "${q10}", "signal_key": "${first_revlog_signal}", "limit": 3, "include_stats": true}},
+    {"tool": "set_revlog_offset", "title": "Manual offset", "args": {"path": "${q10}", "offset_ms": 0}}
+  ]
+}

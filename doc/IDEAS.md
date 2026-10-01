@@ -64,12 +64,11 @@ Analyze battery energy consumption patterns.
 **Priority:** Medium
 **Complexity:** Medium
 
-Enhanced CAN bus analysis. The current `can_health` tool counts CAN errors but does not distinguish between disabled-state timeouts (normal) and enabled-state errors (problematic).
+Enhanced CAN bus analysis. *Partially completed in the robustness work:* `can_health` splits CAN error lines by the robot's enabled state and reads the bus counters; `analyze_can_bus` reports TEC/REC levels (error-passive excursions) and bus-off and TX-full counts per bus, overall and while enabled.
 
-**Features:**
-- Distinguish disabled-state timeouts from real errors (cross-reference with robot enable state)
+**Remaining:**
 - Identify noisy devices by error rate
-- Detect bus-off events and recovery time
+- Bus-off recovery time
 - Bandwidth utilization by device category
 
 ### 3.5 Mechanism Health Tracking
@@ -137,7 +136,7 @@ Generate AdvantageScope layout files (`.json`) that pre-configure visualizations
 
 **Implementation:**
 - `open_in_advantagescope` tool generates layout JSON based on analysis context
-- Example: after `analyze_power` finds brownouts, generate layout with voltage + current graphs
+- Example: after `power_analysis` finds brownouts, generate layout with voltage + current graphs
 - Write layout to temp file, instruct user to import via `File > Import Layout`
 
 #### 4.2.2 Application Launch
@@ -251,6 +250,10 @@ FRC teams use wildly different naming conventions: `/Robot/Drive/FrontLeft/Veloc
 - Fuzzy search that ranks by edit distance and structural similarity
 - "Did you mean?" suggestions with confidence scores
 
+*Partially covered by `resolve_signals`:* built-in roles (battery voltage, robot pose, module states, gyro yaw, ...) resolve with a basis, ranked candidates, and an ambiguity flag, and tools accept an explicit entry. A team-configurable alias map is still open.
+
+**Caveat (see §6.8):** Fuzzy or heuristic matches should be offered to the LLM as candidates to confirm, never used to pick an entry on the server's own authority.
+
 ### 5.6 Auto-Organize Log Directory
 **Priority:** Medium
 **Complexity:** Medium
@@ -343,7 +346,7 @@ correlate_entries → {correlation: 0.73, p_value: 0.002}
 - Provide building blocks, not conclusions
 - Let the LLM synthesize across multiple tool calls
 
-**Note:** The codebase largely follows this pattern already (`get_statistics`, `rate_of_change`, `time_correlate` are primitives). However, `predict_battery_health` returns a pre-computed health score with a risk level, which is the monolithic anti-pattern. Consider whether the health score belongs in the tool output or whether the tool should return voltage stats, recovery times, and brownout events as raw data. The tension is real: teams want quick answers during competition, but monolithic scores mask uncertainty.
+**Note:** The codebase largely follows this pattern already (`get_statistics`, `rate_of_change`, `time_correlate` are primitives). `predict_battery_health` and `analyze_loop_timing` keep a pre-computed health score by decision (ROBUSTNESS_PLAN.md, Decision 3): a trade-off for quick decisions in the pit, with the facts the score summarizes (voltage statistics, flag-confirmed brownouts, the load line) reported beside it and its basis stated.
 
 ### 6.6 Comparative Framing
 **Priority:** Medium
@@ -397,6 +400,11 @@ For derived calculations, propagate uncertainty through the computation chain.
 - Identifies which inputs most affect accuracy
 - Enables proper "I don't know" responses
 
+### 6.8 Don't Guess What Entries Mean
+*Completed in 0.9.0.* Apart from well-known logging conventions, the server does not infer what an entry represents from its name. Roles resolve only to an explicit entry, a convention (AdvantageKit, WPILib, CTRE, PathPlanner names), or the only entry of the role's type; entries that match by name alone are candidates (`resolve_signals`: `match: heuristic`, `needs_confirmation`), and the tools list them in `skipped` or `no_match` with the parameter to pass (`voltage_entry`, `entry`, `pose_entry`, `chooser_entry`, `path_setpoint_entry`, `path_actual_entry`, `total_current_entry`). The conventions are tabulated in `doc/TOOLS.md` ("The server does not guess").
+
+Revlog sync follows the same rule: names only nominate candidate pairs (by leaf name, for applied output, velocity, current, and bus voltage), correlation chooses among them, and `sync_status`'s `signal_pairs` shows the choice. A team-supplied alias map (§5.5) would count as the team's own conventions.
+
 ---
 
 ## 7. Developer Experience
@@ -408,7 +416,7 @@ For derived calculations, propagate uncertainty through the computation chain.
 Allow teams to add custom analysis tools.
 
 **Plugin types:**
-- Custom struct decoders (already supported)
+- Custom structs: no plugin needed — every struct decodes from the schema the log records
 - Custom analysis tools
 - Custom data sources (e.g., team-specific CAN devices)
 
@@ -421,14 +429,9 @@ Allow teams to add custom analysis tools.
 **Priority:** High
 **Complexity:** Low
 
-Build a library of reference log files for testing.
+Build a library of reference log files for testing. *Mostly completed in the robustness work:* the fixture corpus (`src/test/java/.../fixtures`) generates about 20 logs per run — AdvantageKit match and practice, plain WPILib, swerve arrays and per-module entries, three vision conventions, custom and mismatched structs, brownouts on roboRIO 1 and 2, CANivore counters, alerts, replay with and without divergence, truncated, empty.
 
-**Categories:**
-- Clean match (no issues)
-- Brownout event
-- CAN bus failure
-- Truncated log
-- High-frequency struct data
+**Remaining:**
 - Multi-revlog scenario
 
 ---
@@ -446,19 +449,49 @@ Remaining work:
 - Warn when approaching limits
 - Streaming mode for very large logs
 
+### 8.4 Compressed Log Files
+**Priority:** Medium
+**Complexity:** Medium
+
+Read gzipped and zipped `.wpilog` and `.revlog` files directly. Logs compress well (gzip leaves about 40% of a wpilog and 20% of a REV log), and logs other teams publish often come zipped. Today discovery lists only `.wpilog` and `.revlog` names, and a compressed file passed by path fails as "Invalid WPILOG file".
+
+**Approach:**
+- Detect gzip and zip by magic bytes (both are in the JDK); give an explained error for xz, zstd, bzip2, 7z, and tar.
+- Decompress into the cache directory and memory-map the copy as today, rather than into heap (`DataLogReader` maps the whole file).
+- Address zip members as `archive.zip!/name.wpilog` when an archive holds more than one log; skip macOS `__MACOSX/` and `._*` entries.
+- Read a cut-off gzip as a truncated log. Discover `.revlog` files inside archives too, so REV sync still works.
+- Code that assumes plain `.wpilog`/`.revlog` names or paths: the discovery filters in `LogDirectory` and `LogManager`, the file-name patterns, `LogScan.of` (reads the header length from the path), and `RevLogParser.parse`.
+
+### 8.5 Logs That Change After Loading
+**Priority:** High
+**Complexity:** Medium
+
+A loaded log keeps answering from its first load after the file changes on disk, for example when a live log is copied off the robot and copied again once it has grown. `LogManager.loadLog` never re-checks a cached path. Depending on how the file was replaced:
+- **Renamed into place** (rsync's default): results stay stale.
+- **Overwritten in place** (`cp` keeps the inode): old byte offsets are applied to new bytes, so new records are invisible, or a different log copied over the name decodes as garbage, with no warning.
+- **During an in-place copy**: reading the truncated mapping throws `java.lang.InternalError`, which nothing in the call path catches; in stdio mode it ends the server loop.
+- **On Windows**: the file cannot be replaced or deleted at all while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). CI's Windows run hit this when test classes regenerated fixture logs an earlier class had loaded.
+
+REV logs too: sync runs once at load, so a REV log copied in later is never found.
+
+**Approach:** record each file's size, modification time, and file key at load; re-check on every `getOrLoad` and reload when they differ; re-check after each call and discard a result read while the file changed; catch `InternalError` from mapped reads as an explained error; tell each session once when a log it used was reloaded; re-run REV discovery and sync when REV files change.
+
 ---
 
 ## Implementation Priority Matrix
 
 | ID | Feature | Impact | Effort | Priority |
 |----|---------|--------|--------|----------|
+| 8.5 | Logs that change after loading | High | Medium | **P1** |
 | 4.1 | PathPlanner integration | High | Medium | **P2** |
 | 4.2 | AdvantageScope integration | Medium | Medium | **P2** |
 | 5.1 | Analysis presets | Medium | Low | **P2** |
 | 5.4 | Batch tool execution | Medium | Low | **P2** |
 | 5.5 | Entry name aliasing | Medium | Medium | **P2** |
+| 8.4 | Compressed log files | Medium | Medium | **P2** |
 | 6.3 | MCP guided prompts | Medium | Medium | **P2** |
 | 6.4 | Primitive tool design | Medium | Medium | **P2** |
+| 6.8 | Don't guess entry meaning | High | Medium | **P2** |
 | 3.4 | CAN bus diagnostics | Medium | Medium | **P3** |
 | 3.3 | Energy budget analysis | Medium | Low | **P3** |
 | 3.2 | Autonomous routine library | Medium | Medium | **P3** |

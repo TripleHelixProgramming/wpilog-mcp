@@ -5,7 +5,6 @@
 package org.triplehelix.wpilogmcp.tools;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,8 +20,10 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
  */
 public class MockLogBuilder {
   private String path = "/mock/test.wpilog";
-  private final Map<String, EntryInfo> entries = new HashMap<>();
-  private final Map<String, List<TimestampedValue>> values = new HashMap<>();
+  // LinkedHashMap: entries iterate in declaration order, as in a real log, so tests are
+  // deterministic. Factory methods draw noise from a seeded generator for the same reason.
+  private final Map<String, EntryInfo> entries = new LinkedHashMap<>();
+  private final Map<String, List<TimestampedValue>> values = new LinkedHashMap<>();
   private double minTimestamp = Double.MAX_VALUE;
   private double maxTimestamp = Double.NEGATIVE_INFINITY;
   private int nextId = 1;
@@ -81,7 +82,7 @@ public class MockLogBuilder {
 
   public ParsedLog build() {
     if (entries.isEmpty()) {
-      return new ParsedLog(path, new HashMap<>(), new HashMap<>(), 0.0, 0.0);
+      return new ParsedLog(path, new LinkedHashMap<>(), new LinkedHashMap<>(), 0.0, 0.0);
     }
     return new ParsedLog(path, entries, values, minTimestamp, maxTimestamp);
   }
@@ -112,6 +113,7 @@ public class MockLogBuilder {
    * Includes DS data, battery voltage, and periodic sensor data over 160s.
    */
   public static ParsedLog createCleanMatchLog() {
+    var noise = new java.util.Random(2363);
     var builder = new MockLogBuilder().setPath("/mock/clean_match.wpilog");
 
     // DS state: 20s auto, 2s disabled gap, 138s teleop (REBUILT timing)
@@ -122,7 +124,7 @@ public class MockLogBuilder {
 
     // Battery voltage: healthy, slight sag under load
     builder.addPeriodicEntry("/Robot/BatteryVoltage", 0, 160, 0.02,
-        t -> 12.5 - 0.8 * Math.sin(t * 0.05) * Math.sin(t * 0.05) + 0.1 * Math.random());
+        t -> 12.5 - 0.8 * Math.sin(t * 0.05) * Math.sin(t * 0.05) + 0.1 * noise.nextDouble());
 
     // Drive velocity
     builder.addPeriodicEntry("/Drive/Velocity", 0, 160, 0.02,
@@ -130,7 +132,7 @@ public class MockLogBuilder {
 
     // Loop time (~20ms with occasional spikes)
     builder.addPeriodicEntry("/RobotCode/LoopTime", 0, 160, 0.02,
-        t -> 0.018 + 0.002 * Math.random());
+        t -> 0.018 + 0.002 * noise.nextDouble());
 
     return builder.build();
   }
@@ -140,6 +142,7 @@ public class MockLogBuilder {
    * Voltage drops below 6.8V during heavy current draw periods.
    */
   public static ParsedLog createBrownoutMatchLog() {
+    var noise = new java.util.Random(2363);
     var builder = new MockLogBuilder().setPath("/mock/brownout_match.wpilog");
 
     builder.addBooleanEntry("/DriverStation/Enabled",
@@ -156,8 +159,8 @@ public class MockLogBuilder {
 
     // Correlated high current
     builder.addPeriodicEntry("/PowerDistribution/TotalCurrent", 0, 160, 0.02, t -> {
-      if (t > 58 && t < 62) return 120 + 30 * Math.random();
-      if (t > 118 && t < 121) return 140 + 20 * Math.random();
+      if (t > 58 && t < 62) return 120 + 30 * noise.nextDouble();
+      if (t > 118 && t < 121) return 140 + 20 * noise.nextDouble();
       return 30 + 20 * Math.abs(Math.sin(t * 0.04));
     });
 
@@ -169,6 +172,7 @@ public class MockLogBuilder {
    * Includes one module with intentional slip for testing.
    */
   public static ParsedLog createSwerveModuleLog() {
+    var noise = new java.util.Random(2363);
     var builder = new MockLogBuilder().setPath("/mock/swerve.wpilog");
 
     int samples = 500;
@@ -200,9 +204,9 @@ public class MockLogBuilder {
 
         var measured = new LinkedHashMap<String, Object>();
         // Module 2 has slip: measured speed is 70% of commanded
-        double measuredSpeed = (mod == 2) ? speed * 0.7 : speed + 0.05 * Math.random();
+        double measuredSpeed = (mod == 2) ? speed * 0.7 : speed + 0.05 * noise.nextDouble();
         measured.put("speed_mps", measuredSpeed);
-        measured.put("angle_rad", (mod == 3) ? angle + 0.2 : angle + 0.01 * Math.random());
+        measured.put("angle_rad", (mod == 3) ? angle + 0.2 : angle + 0.01 * noise.nextDouble());
         measuredMaps.add(measured);
       }
 

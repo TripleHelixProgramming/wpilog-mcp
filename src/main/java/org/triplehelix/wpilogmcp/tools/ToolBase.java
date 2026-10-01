@@ -13,6 +13,8 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.tba.TbaClient;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
@@ -55,6 +57,8 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  * @since 0.4.0
  */
 public abstract class ToolBase implements McpServer.Tool {
+  private static final Logger logger = LoggerFactory.getLogger(ToolBase.class);
+
 
   // ===== DEPENDENCY INJECTION =====
 
@@ -138,6 +142,7 @@ public abstract class ToolBase implements McpServer.Tool {
    *
    * <p>This method wraps {@link #executeInternal(JsonObject)} with exception handling.
    * {@link IllegalArgumentException} exceptions are automatically converted to error responses.
+   * The result is then normalized by {@link ResultContract#enforce}.
    *
    * <p>Subclasses should override {@link #executeInternal(JsonObject)} instead of this method.
    *
@@ -147,17 +152,33 @@ public abstract class ToolBase implements McpServer.Tool {
    */
   @Override
   public final JsonElement execute(JsonObject arguments) throws Exception {
+    JsonElement result;
     try {
-      return executeInternal(arguments);
+      result = executeInternal(arguments);
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
-      return errorResult(e.getMessage());
+      result = errorResult(e.getMessage());
+    } catch (org.triplehelix.wpilogmcp.log.LogFileException e) {
+      // The file is missing, empty, not a log, or too large: a fact about the caller's file,
+      // explained, not a server fault
+      result = errorResult(e.getMessage());
     } catch (Exception e) {
       // Unexpected errors - return error response instead of propagating
       // raw exceptions to the MCP layer
       var msg = e.getMessage();
-      return errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
+      result = errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
+    } catch (OutOfMemoryError e) {
+      // One call's allocations (usually decoding a dense entry of a very large log) exceeded the
+      // heap; they are garbage once the call unwinds, so the server can go on serving
+      logger.warn("{} ran out of heap: {}", name(), e.getMessage());
+      result = errorResult("Out of memory: this call needed more heap than the server has ("
+          + Runtime.getRuntime().maxMemory() / (1024L * 1024L) + " MB). The log or the entry "
+          + "is very large; analyze a time window (start_time/end_time or scope), or restart "
+          + "the server with a larger heap (WPILOG_MAX_HEAP, default 4g).");
     }
+    // Every result, however the tool built it, satisfies the result contract: a status,
+    // success consistent with it, and no NaN or infinite numbers.
+    return ResultContract.enforce(result);
   }
 
   /**
@@ -282,38 +303,6 @@ public abstract class ToolBase implements McpServer.Tool {
   }
 
   // ===== ENTRY SEARCH HELPERS =====
-
-  /**
-   * Finds the first entry whose name contains the pattern (case-insensitive).
-   *
-   * <p>This is useful for finding entries with common prefixes or patterns
-   * without requiring exact matches.
-   *
-   * @param log The parsed log
-   * @param pattern The pattern to search for (case-insensitive)
-   * @return The first matching entry name, or null if no match found
-   */
-  protected String findEntryByPattern(LogData log, String pattern) {
-    var lowerPattern = pattern.toLowerCase();
-    return log.entries().keySet().stream()
-        .filter(name -> name.toLowerCase().contains(lowerPattern))
-        .findFirst()
-        .orElse(null);
-  }
-
-  /**
-   * Finds all entries whose names contain the pattern (case-insensitive).
-   *
-   * @param log The parsed log
-   * @param pattern The pattern to search for (case-insensitive)
-   * @return List of matching entry names (may be empty)
-   */
-  protected List<String> findEntriesByPattern(LogData log, String pattern) {
-    var lowerPattern = pattern.toLowerCase();
-    return log.entries().keySet().stream()
-        .filter(name -> name.toLowerCase().contains(lowerPattern))
-        .toList();
-  }
 
   // ===== RESPONSE BUILDING HELPERS =====
 

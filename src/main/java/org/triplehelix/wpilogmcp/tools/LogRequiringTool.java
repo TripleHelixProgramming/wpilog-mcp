@@ -114,8 +114,18 @@ public abstract class LogRequiringTool extends ToolBase {
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
     var path = getRequiredString(arguments, "path");
-    var log = logManager.getOrLoad(path);
-    return executeWithLog(log, arguments);
+    var log = new AccessTrackingLogData(logManager.getOrLoad(path));
+    var result = executeWithLog(log, arguments);
+    if (result != null && result.isJsonObject()) {
+      var object = result.getAsJsonObject();
+      // Never compute silently from partly undecodable entries: say which ones and why
+      log.annotate(object);
+      // Every successful result says what it was computed from (rule R3)
+      if (!object.has("success") || object.get("success").getAsBoolean()) {
+        log.recordInputs(object);
+      }
+    }
+    return result;
   }
 
   /**

@@ -4,27 +4,34 @@
  */
 package org.triplehelix.wpilogmcp.log.subsystems;
 
+import edu.wpi.first.util.datalog.DataLogAccess;
 import edu.wpi.first.util.datalog.DataLogReader;
-import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.log.DecodeProblem;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.LogScan;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
+import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
+import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 
 /**
- * Parses WPILOG files and decodes their contents using extensible struct decoders.
+ * Parses WPILOG files eagerly, decoding every value.
  *
  * <p>This class handles:
  *
  * <ul>
  *   <li>Reading WPILOG files using WPILib's DataLogReader
  *   <li>Extracting entry metadata and timestamped values
- *   <li>Delegating struct decoding to StructDecoderRegistry
+ *   <li>Decoding structs by the log's own schemas, once the whole file has been read (a schema
+ *       entry may follow the data it describes)
  *   <li>Handling truncated log files gracefully
  * </ul>
  *
@@ -35,16 +42,8 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 public class LogParser {
   private static final Logger logger = LoggerFactory.getLogger(LogParser.class);
 
-  private final StructDecoderRegistry decoderRegistry;
-
-  /**
-   * Creates a LogParser with the specified decoder registry.
-   *
-   * @param decoderRegistry The registry for decoding structs
-   */
-  public LogParser(StructDecoderRegistry decoderRegistry) {
-    this.decoderRegistry = decoderRegistry;
-  }
+  /** Creates a LogParser. */
+  public LogParser() {}
 
   /**
    * Parses a WPILOG file and returns its contents.
@@ -56,99 +55,85 @@ public class LogParser {
   public ParsedLog parse(Path path) throws IOException {
     var reader = new DataLogReader(path.toString());
     if (!reader.isValid()) {
-      logger.error("Invalid WPILOG file: {}", path);
-      throw new IOException("Invalid WPILOG file: " + path);
+      logger.debug("Invalid WPILOG file: {}", path);
+      throw org.triplehelix.wpilogmcp.log.LogFileException.invalid(path);
     }
 
-    var entriesById = new HashMap<Integer, EntryInfo>();
-    var entriesByName = new HashMap<String, EntryInfo>();
-    var valuesByEntry = new HashMap<String, java.util.List<TimestampedValue>>();
-
-    double minTimestamp = Double.MAX_VALUE;
-    double maxTimestamp = Double.NEGATIVE_INFINITY;
-    boolean truncated = false;
-    var truncationMessage = (String) null;
-
-    logger.debug("Starting pass through log file records...");
-    int recordCount = 0;
-    try {
-      for (var record : reader) {
-        recordCount++;
-        if (record.isStart()) {
-          var startData = record.getStartData();
-          var info =
-              new EntryInfo(
-                  startData.entry, startData.name, startData.type, startData.metadata);
-          entriesById.put(startData.entry, info);
-          entriesByName.put(startData.name, info);
-          valuesByEntry.put(startData.name, new ArrayList<>());
-          logger.trace(
-              "Found entry [{}]: name={}, type={}",
-              startData.entry,
-              startData.name,
-              startData.type);
-
-        } else if (!record.isFinish() && !record.isSetMetadata()) {
-          // Data record
-          var info = entriesById.get(record.getEntry());
-          if (info == null) continue;
-
-          double timestamp = record.getTimestamp() / 1_000_000.0;
-          minTimestamp = Math.min(minTimestamp, timestamp);
-          maxTimestamp = Math.max(maxTimestamp, timestamp);
-
-          try {
-            var value = decodeValue(record, info.type());
-            var values = valuesByEntry.get(info.name());
-            if (values != null) {
-              values.add(new TimestampedValue(timestamp, value));
-            }
-          } catch (Exception e) {
-            logger.trace(
-                "Malformed record at timestamp {} for entry {}: {}",
-                timestamp,
-                info.name(),
-                e.getMessage());
+    // The same record scan LazyParsedLog uses (a damaged tail is not read), then each entry's
+    // records decoded from their byte offsets
+    var scan = LogScan.of(reader, path);
+    var entriesByName = new java.util.LinkedHashMap<>(scan.entries());
+    var valuesByEntry = new java.util.LinkedHashMap<String, java.util.List<TimestampedValue>>();
+    // Records that could not be decoded are reported, never silently dropped (as the lazy log
+    // reports them), so both implementations agree on sample counts and problems
+    var problems = new LinkedHashMap<String, DecodeProblem>();
+    for (var info : entriesByName.values()) {
+      var values = new ArrayList<TimestampedValue>();
+      var offsets = scan.offsets().get(info.name());
+      int failed = 0;
+      String firstFailure = null;
+      for (int k = 0; k < offsets.size(); k++) {
+        var record = DataLogAccess.getRecord(reader, offsets.get(k));
+        double timestamp = record.getTimestamp() / 1_000_000.0;
+        try {
+          // Structs wait for the schemas: keep their bytes until the pass is done
+          var value = EntryDecoder.isStruct(info.type()) ? record.getRaw()
+              : EntryDecoder.decodeValue(record, info.type(), StructSchemas.fallbackOnly());
+          values.add(new TimestampedValue(timestamp, value));
+        } catch (Exception e) {
+          failed++;
+          if (firstFailure == null) {
+            firstFailure = EntryDecoder.malformedMessage(record, info.type(), e);
           }
+          logger.trace("Malformed record at timestamp {} for entry {}: {}", timestamp,
+              info.name(), e.getMessage());
         }
       }
-    } catch (IllegalArgumentException e) {
-      // WPILib throws IllegalArgumentException with "capacity" for truncated logs.
-      // Include fallback match strings in case the message wording changes.
-      String msg = e.getMessage();
-      if (msg != null && (msg.contains("capacity") || msg.contains("truncat")
-              || msg.contains("incomplete") || msg.contains("buffer"))) {
-        truncated = true;
-        truncationMessage =
-            "Log file is truncated (incomplete write). Data up to "
-                + String.format("%.2f", maxTimestamp)
-                + " seconds was recovered.";
-        logger.warn("Log file '{}' is truncated: {}", path, truncationMessage);
-      } else {
-        logger.error("Error reading record from log file: {}", e.getMessage(), e);
-        throw e;
+      if (failed > 0) {
+        problems.put(info.name(), new DecodeProblem(firstFailure, failed, offsets.size()));
       }
+      valuesByEntry.put(info.name(), values);
     }
-    logger.debug("Pass through complete. Processed {} records.", recordCount);
+    logger.debug("Pass through complete. {} data records.", scan.dataRecords());
+
+    var schemas = StructSchemas.fromLog(entriesByName, name -> {
+      var vals = valuesByEntry.get(name);
+      return vals == null || vals.isEmpty() ? null : vals.get(0).value();
+    });
+    for (var info : entriesByName.values()) {
+      if (!EntryDecoder.isStruct(info.type())) continue;
+      var raw = valuesByEntry.get(info.name());
+      var decoded = new ArrayList<TimestampedValue>(raw.size());
+      int failed = 0;
+      String firstFailure = null;
+      for (var tv : raw) {
+        try {
+          decoded.add(new TimestampedValue(tv.timestamp(),
+              schemas.decode(info.type(), (byte[]) tv.value())));
+        } catch (StructDecodeException e) {
+          failed++;
+          if (firstFailure == null) firstFailure = e.getMessage();
+        }
+      }
+      if (failed > 0) {
+        var earlier = problems.get(info.name());
+        int total = scan.offsets().get(info.name()).size();
+        problems.put(info.name(), earlier == null
+            ? new DecodeProblem(firstFailure, failed, total)
+            : new DecodeProblem(earlier.message(), earlier.failedRecords() + failed, total));
+      }
+      valuesByEntry.put(info.name(), decoded);
+    }
 
     return new ParsedLog(
         path.toString(),
         entriesByName,
         valuesByEntry,
-        minTimestamp == Double.MAX_VALUE ? 0 : minTimestamp,
-        maxTimestamp == Double.NEGATIVE_INFINITY ? 0 : maxTimestamp,
-        truncated,
-        truncationMessage);
-  }
-
-  /**
-   * Gets the struct decoder registry (for use by LazyParsedLog).
-   */
-  public StructDecoderRegistry getDecoderRegistry() {
-    return decoderRegistry;
-  }
-
-  private Object decodeValue(DataLogRecord record, String type) {
-    return EntryDecoder.decodeValue(record, type, decoderRegistry);
+        scan.minTimestamp(),
+        scan.maxTimestamp(),
+        scan.truncated(),
+        scan.truncationMessage(),
+        schemas,
+        java.util.Collections.unmodifiableMap(problems));
   }
 }

@@ -8,10 +8,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
 /**
@@ -85,9 +87,12 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      // Should have a warning about missing data, not assumed phases
-      assertTrue(resultObj.has("warnings"), "Should warn about missing DS data");
+      // Nothing to analyze: no_match (not a success), saying what was searched for
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("DriverStation"));
+      assertTrue(resultObj.getAsJsonArray("looked_for").size() > 0);
+      assertFalse(resultObj.has("phases"), "no phases may be assumed");
       assertEquals("none", resultObj.get("source").getAsString(),
           "Should report source as 'none' when no DS data found");
     }
@@ -178,6 +183,46 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
   @Nested
   @DisplayName("moi_regression Tool")
   class MoiRegressionToolTests {
+
+    @Test
+    @DisplayName("rejects a negative smooth_window and an inverted time range")
+    void rejectsNegativeSmoothWindowAndInvertedRange() throws Exception {
+      int n = 50;
+      double[] ts = new double[n];
+      double[] vel = new double[n];
+      double[] cur = new double[n];
+      for (int i = 0; i < n; i++) {
+        ts[i] = i * 0.02;
+        vel[i] = 10.0 * Math.sin(2 * Math.PI * ts[i]);
+        cur[i] = 5.0 + Math.abs(Math.cos(2 * Math.PI * ts[i]));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/moi_validation.wpilog")
+          .addNumericEntry("/Motor/Velocity", ts, vel)
+          .addNumericEntry("/Motor/Current", ts, cur)
+          .build();
+      putLogInCache(log);
+      var tool = findTool("moi_regression");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("velocity_entry", "/Motor/Velocity");
+      args.addProperty("current_entry", "/Motor/Current");
+      args.addProperty("kt", 0.0194);
+      args.addProperty("gear_ratio", 10.0);
+      args.addProperty("smooth_window", -1);
+      var smooth = tool.execute(args).getAsJsonObject();
+      assertEquals("error", smooth.get("status").getAsString());
+      assertTrue(smooth.get("error").getAsString().contains("smooth_window must be non-negative"),
+          smooth.get("error").getAsString());
+
+      args.addProperty("smooth_window", 2);
+      args.addProperty("start_time", 0.8);
+      args.addProperty("end_time", 0.2);
+      var range = tool.execute(args).getAsJsonObject();
+      assertEquals("error", range.get("status").getAsString());
+      assertTrue(range.get("error").getAsString().contains("start_time must not be after end_time"),
+          range.get("error").getAsString());
+    }
 
     @Test
     @DisplayName("skips samples with missing current instead of inserting zero")
@@ -457,6 +502,86 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("compare_matches reports per-log presence, sample counts, and warnings")
+    void compareMatchesPerLogFields() throws Exception {
+      var log1 = new MockLogBuilder()
+          .setPath("/test/cmp_q10.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage",
+              new double[]{0, 1, 2}, new double[]{12.0, 11.0, Double.NaN})
+          .build();
+      var log2 = new MockLogBuilder()
+          .setPath("/test/cmp_q13.wpilog")
+          .addNumericEntry("/Other", new double[]{0}, new double[]{1})
+          .build();
+      var manager = LogManager.getInstance();
+      manager.testPutLog(log1.path(), log1);
+      manager.testPutLog(log2.path(), log2);
+
+      var tool = findTool("compare_matches");
+      var args = new JsonObject();
+      args.addProperty("path", log1.path());
+      args.addProperty("compare_path", log2.path());
+      args.addProperty("name", "/SystemStats/BatteryVoltage");
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals("/SystemStats/BatteryVoltage", resultObj.get("entry").getAsString());
+      assertEquals(2, resultObj.get("logs_compared").getAsInt());
+      var comparisons = resultObj.getAsJsonArray("comparisons");
+      assertEquals(2, comparisons.size());
+
+      var first = comparisons.get(0).getAsJsonObject();
+      assertEquals("/test/cmp_q10.wpilog", first.get("log_path").getAsString());
+      assertEquals("cmp_q10.wpilog", first.get("log_filename").getAsString());
+      assertTrue(first.get("entry_found").getAsBoolean());
+      assertEquals(2, first.get("sample_count").getAsLong()); // NaN excluded
+      assertEquals(11.0, first.getAsJsonObject("statistics").get("min").getAsDouble(), 1e-9);
+
+      var second = comparisons.get(1).getAsJsonObject();
+      assertFalse(second.get("entry_found").getAsBoolean());
+      assertFalse(second.has("sample_count"));
+      assertFalse(second.has("statistics"));
+      assertTrue(resultObj.getAsJsonArray("warnings").toString()
+          .contains("cmp_q13.wpilog: Entry not found: /SystemStats/BatteryVoltage"));
+      assertEquals("partial", resultObj.get("status").getAsString());
+    }
+
+    @Test
+    @DisplayName("compare_matches reports found-but-not-scalar entries without statistics")
+    void compareMatchesArrayEntry() throws Exception {
+      var arr = new ArrayList<TimestampedValue>();
+      arr.add(new TimestampedValue(0.0, new double[]{1.0, 2.0}));
+      var log1 = new MockLogBuilder()
+          .setPath("/test/cmp_arr1.wpilog")
+          .addEntry("/PowerDistribution/ChannelCurrent", "double[]", arr)
+          .build();
+      var log2 = new MockLogBuilder()
+          .setPath("/test/cmp_arr2.wpilog")
+          .addNumericEntry("/PowerDistribution/ChannelCurrent", new double[]{0, 1}, new double[]{3.0, 4.0})
+          .build();
+      var manager = LogManager.getInstance();
+      manager.testPutLog(log1.path(), log1);
+      manager.testPutLog(log2.path(), log2);
+
+      var args = new JsonObject();
+      args.addProperty("path", log1.path());
+      args.addProperty("compare_path", log2.path());
+      args.addProperty("name", "/PowerDistribution/ChannelCurrent");
+      var resultObj = findTool("compare_matches").execute(args).getAsJsonObject();
+
+      var first = resultObj.getAsJsonArray("comparisons").get(0).getAsJsonObject();
+      assertTrue(first.get("entry_found").getAsBoolean());
+      assertFalse(first.has("statistics"));
+      assertTrue(first.get("reason").getAsString().contains("is double[], one value per element"),
+          first.toString());
+      var second = resultObj.getAsJsonArray("comparisons").get(1).getAsJsonObject();
+      assertEquals(2, second.get("sample_count").getAsLong());
+      assertTrue(second.has("statistics"));
+      assertTrue(resultObj.getAsJsonArray("warnings").toString()
+          .contains("/PowerDistribution/ChannelCurrent[0]"), resultObj.toString());
+    }
+
+    @Test
     @DisplayName("compare_matches returns error when fewer than 2 logs loaded")
     void compareMatchesNeedsTwoLogs() throws Exception {
       // Load one log
@@ -498,6 +623,412 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("get_match_phases and can_health recognize WPILib DataLogManager DS: entries")
+    void plainWpilibDsEntries() throws Exception {
+      var console = new ArrayList<TimestampedValue>();
+      console.add(new TimestampedValue(0.5, "CAN timeout while disabled"));
+      console.add(new TimestampedValue(5.0, "CAN timeout while enabled"));
+      var log = new MockLogBuilder()
+          .setPath("/test/plain_ds.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 1, 16, 18, 153},
+              new boolean[]{false, true, false, true, false})
+          .addBooleanEntry("DS:autonomous", new double[]{0, 16}, new boolean[]{true, false})
+          .addEntry("messages", "string", console)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      var phases = findTool("get_match_phases").execute(args).getAsJsonObject();
+      assertTrue(phases.get("success").getAsBoolean());
+      assertEquals("DriverStation", phases.get("source").getAsString());
+      assertTrue(phases.getAsJsonObject("phases").has("autonomous"), phases.toString());
+      assertTrue(phases.getAsJsonObject("phases").has("teleop"), phases.toString());
+
+      var can = findTool("can_health").execute(args).getAsJsonObject();
+      assertTrue(can.get("success").getAsBoolean());
+      assertEquals(1, can.get("errors_while_enabled").getAsLong());
+      assertEquals(1, can.get("errors_while_disabled").getAsLong());
+    }
+
+    @Test
+    @DisplayName("get_match_phases warns when DS entries exist but the robot was never enabled")
+    void neverEnabledLog() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/never_enabled.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0}, new boolean[]{false})
+          .addBooleanEntry("DS:autonomous", new double[]{0}, new boolean[]{false})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var phases = findTool("get_match_phases").execute(args).getAsJsonObject();
+
+      assertTrue(phases.get("success").getAsBoolean());
+      assertEquals("DriverStation", phases.get("source").getAsString());
+      assertEquals(0, phases.getAsJsonObject("phases").size());
+      assertTrue(phases.getAsJsonArray("warnings").toString().contains("never enabled"),
+          phases.toString());
+    }
+
+    @Test
+    @DisplayName("power_analysis expands per-channel current arrays and ranks by peak")
+    void powerAnalysisChannelArrays() throws Exception {
+      var channelCurrent = new ArrayList<TimestampedValue>();
+      channelCurrent.add(new TimestampedValue(0.0, new double[]{1.0, 50.0, 0.0}));
+      channelCurrent.add(new TimestampedValue(1.0, new double[]{2.0, 60.0, 0.0}));
+      channelCurrent.add(new TimestampedValue(2.0, new double[]{1.0, 40.0, Double.NaN}));
+      var log = new MockLogBuilder()
+          .setPath("/test/power_channels.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage",
+              new double[]{0, 1, 2}, new double[]{12.5, 11.0, 12.4})
+          .addEntry("/PowerDistribution/ChannelCurrent", "double[]", channelCurrent)
+          .addNumericEntry("/PowerDistribution/TotalCurrent",
+              new double[]{0, 1, 2}, new double[]{55.0, 62.0, 41.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("power_analysis");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertEquals("/SystemStats/BatteryVoltage",
+          resultObj.getAsJsonObject("voltage_analysis").get("entry").getAsString());
+      assertEquals(6.8, resultObj.getAsJsonObject("voltage_analysis").get("brownout_threshold").getAsDouble(), 1e-9);
+      assertEquals(4, resultObj.get("current_entries_analyzed").getAsInt());
+
+      var channels = resultObj.getAsJsonArray("channel_analysis");
+      assertEquals(4, channels.size());
+      var top = channels.get(0).getAsJsonObject();
+      assertEquals("/PowerDistribution/TotalCurrent", top.get("entry").getAsString());
+      assertEquals(62.0, top.get("peak_current_A").getAsDouble(), 1e-9);
+      assertEquals(1.0, top.get("peak_current_time_sec").getAsDouble(), 1e-9);
+      assertEquals(62.0, top.get("max_current_A").getAsDouble(), 1e-9);
+      assertEquals(41.0, top.get("min_current_A").getAsDouble(), 1e-9);
+      assertFalse(top.has("channel"));
+
+      var second = channels.get(1).getAsJsonObject();
+      assertEquals("/PowerDistribution/ChannelCurrent[1]", second.get("entry").getAsString());
+      assertEquals("/PowerDistribution/ChannelCurrent", second.get("source_entry").getAsString());
+      assertEquals(1, second.get("channel").getAsInt());
+      assertEquals(60.0, second.get("peak_current_A").getAsDouble(), 1e-9);
+      assertEquals(50.0, second.get("avg_current_A").getAsDouble(), 1e-9);
+      assertEquals(3, second.get("sample_count").getAsLong());
+
+      // NaN sample in channel 2 is ignored: 2 finite samples, both zero
+      var last = channels.get(3).getAsJsonObject();
+      assertEquals("/PowerDistribution/ChannelCurrent[2]", last.get("entry").getAsString());
+      assertEquals(2, last.get("sample_count").getAsLong());
+      assertEquals(0.0, last.get("peak_current_A").getAsDouble(), 1e-9);
+      assertFalse(resultObj.has("warnings"));
+
+      // channel_limit truncates and warns
+      args.addProperty("channel_limit", 2);
+      var limited = tool.execute(args).getAsJsonObject();
+      assertEquals(2, limited.getAsJsonArray("channel_analysis").size());
+      assertEquals(4, limited.get("current_entries_analyzed").getAsInt());
+      assertTrue(limited.getAsJsonArray("warnings").toString().contains("channel_limit"));
+    }
+
+    @Test
+    @DisplayName("power_analysis only treats amperage entries as currents")
+    void powerAnalysisCurrentNameFilter() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_names.wpilog")
+          .addNumericEntry("NT:/SmartDashboard/Algae Wrist/Current Angle Degrees",
+              new double[]{0, 1}, new double[]{98.9, 97.0})
+          .addNumericEntry("/Drive/CurrentLimit", new double[]{0, 1}, new double[]{40.0, 40.0})
+          .addNumericEntry("/Elevator/CurrentState", new double[]{0, 1}, new double[]{2.0, 3.0})
+          .addNumericEntry("/Elevator/StatorAmps", new double[]{0, 1}, new double[]{12.0, 30.0})
+          .addNumericEntry("NT:/SmartDashboard/FrontLeft/OutputCurrent",
+              new double[]{0, 1}, new double[]{5.0, 7.0})
+          .addNumericEntry("/Intake/Current/Stator", new double[]{0, 1}, new double[]{9.0, 11.0})
+          .addNumericEntry("/Intake/Current/Setpoint", new double[]{0, 1}, new double[]{9.0, 11.0})
+          .addEntry("/Drive/Module0/OdometryTimestamps", "double[]",
+              List.of(new TimestampedValue(0.0, new double[]{100.0, 100.02})))
+          .addNumericEntry("/Drive/SlewRamps", new double[]{0, 1}, new double[]{3.0, 3.0})
+          .addNumericEntry("NT:/SmartDashboard/PowerDistribution[1]/Chan3", new double[]{0, 1}, new double[]{4.0, 8.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("power_analysis");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      var names = new ArrayList<String>();
+      for (var c : resultObj.getAsJsonArray("channel_analysis")) {
+        names.add(c.getAsJsonObject().get("entry").getAsString());
+      }
+      assertEquals(
+          java.util.List.of("/Elevator/StatorAmps", "/Intake/Current/Stator",
+              "NT:/SmartDashboard/PowerDistribution[1]/Chan3",
+              "NT:/SmartDashboard/FrontLeft/OutputCurrent"),
+          names);
+      assertEquals(4, resultObj.get("current_entries_analyzed").getAsInt());
+    }
+
+    @Test
+    @DisplayName("power_analysis prefers the battery voltage entry over rails")
+    void powerAnalysisPrefersBatteryVoltage() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_rails.wpilog")
+          .addNumericEntry("/SystemStats/5vRail/Voltage", new double[]{0, 1}, new double[]{5.0, 5.0})
+          .addNumericEntry("/SystemStats/3v3Rail/Voltage", new double[]{0, 1}, new double[]{3.3, 3.3})
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.6, 12.4})
+          .addNumericEntry("/Elevator/AppliedVoltage", new double[]{0, 1}, new double[]{6.0, 6.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("power_analysis");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+      assertEquals("/SystemStats/BatteryVoltage",
+          resultObj.getAsJsonObject("voltage_analysis").get("entry").getAsString());
+
+      // Without a battery entry, a generic voltage beats a rail
+      var log2 = new MockLogBuilder()
+          .setPath("/test/power_rails2.wpilog")
+          .addNumericEntry("/SystemStats/5vRail/Voltage", new double[]{0, 1}, new double[]{5.0, 5.0})
+          .addNumericEntry("NT:/SmartDashboard/PowerDistribution[0]/Voltage",
+              new double[]{0, 1}, new double[]{12.6, 12.4})
+          .build();
+      putLogInCache(log2);
+      args.addProperty("path", log2.path());
+      var resultObj2 = tool.execute(args).getAsJsonObject();
+      assertEquals("NT:/SmartDashboard/PowerDistribution[0]/Voltage",
+          resultObj2.getAsJsonObject("voltage_analysis").get("entry").getAsString());
+    }
+
+    @Test
+    @DisplayName("power_analysis reports peaks by magnitude for signed currents")
+    void powerAnalysisSignedCurrents() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_signed.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1, 2}, new double[]{12, 12, 12})
+          .addNumericEntry("/Climber/TorqueCurrentAmps", new double[]{0, 1, 2}, new double[]{-150.0, -20.0, 5.0})
+          .addNumericEntry("/Intake/CurrentAmps", new double[]{0, 1, 2}, new double[]{10.0, 40.0, 12.0})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var channels = findTool("power_analysis").execute(args).getAsJsonObject().getAsJsonArray("channel_analysis");
+
+      var first = channels.get(0).getAsJsonObject();
+      assertEquals("/Climber/TorqueCurrentAmps", first.get("entry").getAsString());
+      assertEquals(-150.0, first.get("peak_current_A").getAsDouble(), 1e-9);
+      assertEquals(0.0, first.get("peak_current_time_sec").getAsDouble(), 1e-9);
+      assertEquals(5.0, first.get("max_current_A").getAsDouble(), 1e-9);
+      assertEquals(-150.0, first.get("min_current_A").getAsDouble(), 1e-9);
+      assertEquals("/Intake/CurrentAmps", channels.get(1).getAsJsonObject().get("entry").getAsString());
+    }
+
+    @Test
+    @DisplayName("power_analysis handles float arrays, ragged arrays, and non-finite thresholds")
+    void powerAnalysisArrayEdgeCases() throws Exception {
+      var ragged = new ArrayList<TimestampedValue>();
+      ragged.add(new TimestampedValue(0.0, new float[]{1.5f, 20.0f}));
+      ragged.add(new TimestampedValue(1.0, new float[]{2.5f, 30.0f, 7.0f}));
+      var voltage = new ArrayList<TimestampedValue>();
+      voltage.add(new TimestampedValue(0.0, 12.0));
+      voltage.add(new TimestampedValue(1.0, Double.NEGATIVE_INFINITY));
+      voltage.add(new TimestampedValue(2.0, 11.5));
+      var log = new MockLogBuilder()
+          .setPath("/test/power_arrays.wpilog")
+          .addEntry("/SystemStats/BatteryVoltage", "double", voltage)
+          .addEntry("/PDP/ChannelCurrent", "float[]", ragged)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("power_analysis").execute(args).getAsJsonObject();
+
+      // -Infinity is neither in the stats nor counted below threshold
+      var va = resultObj.getAsJsonObject("voltage_analysis");
+      assertEquals(11.5, va.get("min_voltage").getAsDouble(), 1e-9);
+      assertEquals(0, va.get("samples_below_threshold").getAsLong());
+
+      assertEquals(3, resultObj.get("current_entries_analyzed").getAsInt());
+      var channels = resultObj.getAsJsonArray("channel_analysis");
+      var counts = new java.util.HashMap<String, Long>();
+      for (var c : channels) {
+        counts.put(c.getAsJsonObject().get("entry").getAsString(), c.getAsJsonObject().get("sample_count").getAsLong());
+      }
+      assertEquals(2L, counts.get("/PDP/ChannelCurrent[0]"));
+      assertEquals(2L, counts.get("/PDP/ChannelCurrent[1]"));
+      assertEquals(1L, counts.get("/PDP/ChannelCurrent[2]"));
+      assertEquals(30.0, channels.get(0).getAsJsonObject().get("peak_current_A").getAsDouble(), 1e-6);
+    }
+
+    @Test
+    @DisplayName("power_analysis expands int64 arrays and echoes a custom brownout threshold")
+    void powerAnalysisInt64ArraysAndThreshold() throws Exception {
+      var longs = new ArrayList<TimestampedValue>();
+      longs.add(new TimestampedValue(0.0, new long[]{3L, 40L}));
+      longs.add(new TimestampedValue(1.0, new long[]{5L, 20L}));
+      var log = new MockLogBuilder()
+          .setPath("/test/power_int64.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1, 2, 3}, new double[]{12.0, 6.5, 6.2, 12.0})
+          .addEntry("/PDP/ChannelCurrent", "int64[]", longs)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("brownout_threshold", 6.3);
+      var resultObj = findTool("power_analysis").execute(args).getAsJsonObject();
+
+      var va = resultObj.getAsJsonObject("voltage_analysis");
+      assertEquals(6.3, va.get("brownout_threshold").getAsDouble(), 1e-9);
+      assertEquals(1, va.get("samples_below_threshold").getAsLong()); // only 6.2 V is below 6.3
+      assertEquals("HIGH", va.get("brownout_risk").getAsString());
+
+      assertEquals(2, resultObj.get("current_entries_analyzed").getAsInt());
+      var top = resultObj.getAsJsonArray("channel_analysis").get(0).getAsJsonObject();
+      assertEquals("/PDP/ChannelCurrent[1]", top.get("entry").getAsString());
+      assertEquals(40.0, top.get("peak_current_A").getAsDouble(), 1e-9);
+      assertEquals(2, top.get("sample_count").getAsLong());
+    }
+
+    @Test
+    @DisplayName("power_analysis clamps channel_limit and honors power_prefix")
+    void powerAnalysisLimitAndPrefix() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_prefix.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.6, 12.4})
+          .addNumericEntry("/PDH/InputVoltage", new double[]{0, 1}, new double[]{12.5, 12.3})
+          .addNumericEntry("/PDH/TotalCurrent", new double[]{0, 1}, new double[]{30.0, 45.0})
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{0, 1}, new double[]{60.0, 70.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("power_analysis");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("power_prefix", "/PDH");
+      var guessed = tool.execute(args).getAsJsonObject();
+      // InputVoltage is not a battery-voltage convention: listed to confirm, not used
+      assertFalse(guessed.has("voltage_analysis"));
+      assertTrue(guessed.getAsJsonArray("skipped").toString().contains("/PDH/InputVoltage"));
+      args.addProperty("voltage_entry", "/PDH/InputVoltage");
+      var resultObj = tool.execute(args).getAsJsonObject();
+      assertEquals("/PDH/InputVoltage", resultObj.getAsJsonObject("voltage_analysis").get("entry").getAsString());
+      assertEquals(1, resultObj.get("current_entries_analyzed").getAsInt());
+      assertEquals("/PDH/TotalCurrent",
+          resultObj.getAsJsonArray("channel_analysis").get(0).getAsJsonObject().get("entry").getAsString());
+
+      args.remove("power_prefix");
+      args.remove("voltage_entry");
+      args.addProperty("channel_limit", 0);
+      var clamped = tool.execute(args).getAsJsonObject();
+      assertEquals(1, clamped.getAsJsonArray("channel_analysis").size());
+      assertEquals(2, clamped.get("current_entries_analyzed").getAsInt());
+      assertTrue(clamped.getAsJsonArray("warnings").toString().contains("top 1 of 2"));
+    }
+
+    @Test
+    @DisplayName("power_analysis falls back to a current entry for data quality and warns per missing kind")
+    void powerAnalysisFallbacks() throws Exception {
+      var currentOnly = new MockLogBuilder()
+          .setPath("/test/power_current_only.wpilog")
+          .addNumericEntry("/PowerDistribution/TotalCurrent", new double[]{0, 1, 2}, new double[]{30.0, 45.0, 20.0})
+          .build();
+      putLogInCache(currentOnly);
+      var args = new JsonObject();
+      args.addProperty("path", currentOnly.path());
+      var r1 = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertFalse(r1.has("voltage_analysis"));
+      assertTrue(r1.has("data_quality"), "quality should come from the scalar current entry");
+      assertTrue(r1.getAsJsonArray("warnings").toString().contains("No battery voltage entry found"));
+
+      var arrayOnly = new ArrayList<TimestampedValue>();
+      arrayOnly.add(new TimestampedValue(0.0, new double[]{1.0, 2.0}));
+      var arrayLog = new MockLogBuilder()
+          .setPath("/test/power_array_only.wpilog")
+          .addEntry("/PowerDistribution/ChannelCurrent", "double[]", arrayOnly)
+          .build();
+      putLogInCache(arrayLog);
+      args.addProperty("path", arrayLog.path());
+      var r2 = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals(2, r2.get("current_entries_analyzed").getAsInt());
+      assertFalse(r2.has("data_quality"), "no scalar entry to measure quality from");
+
+      var nanVoltage = new ArrayList<TimestampedValue>();
+      nanVoltage.add(new TimestampedValue(0.0, Double.NaN));
+      var nanLog = new MockLogBuilder()
+          .setPath("/test/power_nan_voltage.wpilog")
+          .addEntry("/SystemStats/BatteryVoltage", "double", nanVoltage)
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{0}, new double[]{10.0})
+          .build();
+      putLogInCache(nanLog);
+      args.addProperty("path", nanLog.path());
+      var r3 = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertFalse(r3.has("voltage_analysis"));
+      assertTrue(r3.getAsJsonArray("warnings").toString().contains("with no finite samples: /SystemStats/BatteryVoltage"),
+          r3.toString());
+
+      var voltageOnly = new MockLogBuilder()
+          .setPath("/test/power_voltage_only.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.0, 11.9})
+          .addNumericEntry("NT:/SmartDashboard/Algae Wrist/Current Angle Degrees", new double[]{0}, new double[]{90})
+          .build();
+      putLogInCache(voltageOnly);
+      args.addProperty("path", voltageOnly.path());
+      var r4 = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals(0, r4.get("current_entries_analyzed").getAsInt());
+      assertFalse(r4.has("channel_analysis"));
+      assertTrue(r4.getAsJsonArray("warnings").toString().contains("No current entries found"));
+    }
+
+    @Test
+    @DisplayName("power_analysis warns when no power entries exist")
+    void powerAnalysisNoData() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_none.wpilog")
+          .addNumericEntry("/Drive/Speed", new double[]{0, 1}, new double[]{1.0, 2.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("power_analysis");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      // Nothing to analyze: no_match with what was searched for, not an empty success
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertFalse(resultObj.has("voltage_analysis"));
+      assertFalse(resultObj.has("channel_analysis"));
+      assertEquals(3, resultObj.getAsJsonArray("looked_for").size());
+      assertFalse(resultObj.has("data_quality"));
+    }
+
+    @Test
+    @DisplayName("power_analysis without current entries is partial, naming the skipped section")
+    void powerAnalysisVoltageOnly() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_voltage_only.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.4, 12.1})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("partial", resultObj.get("status").getAsString());
+      assertTrue(resultObj.getAsJsonArray("skipped").toString().contains("channel_analysis"));
+      var v = resultObj.getAsJsonObject("voltage_analysis");
+      assertEquals(6.8, v.get("brownout_threshold").getAsDouble());
+      assertTrue(v.get("brownout_threshold_basis").getAsString().startsWith("default"));
+    }
+
+    @Test
     @DisplayName("power_analysis works with loaded log")
     void powerAnalysisWithLog() throws Exception {
       var log = new MockLogBuilder()
@@ -533,8 +1064,11 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("total_can_errors"));
+      // A log with neither text nor CAN counters gives no health level (absence of evidence
+      // is not GOOD): not_applicable, with what was looked for
+      assertEquals("not_applicable", resultObj.get("status").getAsString(), resultObj.toString());
+      assertFalse(resultObj.has("health_assessment"));
+      assertTrue(resultObj.has("looked_for"));
     }
 
     @Test
@@ -552,8 +1086,10 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("swerve_entries"));
+      // No SwerveModuleState entries: no_match (not an empty success)
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.getAsJsonArray("looked_for").size() > 0);
     }
 
     @Test
@@ -608,10 +1144,22 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("wheel_slip"),
-          "Should detect wheel slip from setpoint/measured pairs");
-      var slip = resultObj.getAsJsonObject("wheel_slip");
-      assertTrue(slip.get("pair_count").getAsInt() > 0);
+      assertEquals("per_module", resultObj.get("layout").getAsString());
+      var modules = resultObj.getAsJsonArray("modules");
+      assertEquals(4, modules.size());
+      // Module 2's measured speed is 70% of its setpoint: the largest tracking error
+      double worst = -1;
+      String worstModule = null;
+      for (var m : modules) {
+        var o = m.getAsJsonObject();
+        assertTrue(o.has("speed_tracking_error"), o.toString());
+        double err = o.getAsJsonObject("speed_tracking_error").get("mean_mps").getAsDouble();
+        if (err > worst) {
+          worst = err;
+          worstModule = o.get("module").getAsString();
+        }
+      }
+      assertEquals("Module2", worstModule);
     }
 
     @Test
@@ -628,12 +1176,13 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertTrue(resultObj.has("module_sync"),
-          "Should analyze module synchronization");
+          "Should analyze steering against setpoints");
       var sync = resultObj.getAsJsonObject("module_sync");
-      assertTrue(sync.get("module_count").getAsInt() >= 2);
+      assertTrue(sync.get("samples_analyzed").getAsInt() > 0);
       // Module 3 has 0.2 rad offset in the test data
       assertTrue(sync.get("max_deviation_rad").getAsDouble() > 0.1,
           "Should detect the intentional angle deviation in module 3");
+      assertEquals("Module3", sync.get("worst_module").getAsString());
     }
 
     @Test
@@ -671,9 +1220,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      // Should succeed without swerve-specific analysis
-      assertFalse(resultObj.has("wheel_slip"));
+      // Nothing to analyze: no_match, never an empty success
+      assertEquals("no_match", resultObj.get("status").getAsString());
       assertFalse(resultObj.has("module_sync"));
       assertFalse(resultObj.has("odometry_drift"));
     }
@@ -777,13 +1325,12 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       args.addProperty("slip_threshold", 100.0); // impossibly high
       var result = tool.execute(args).getAsJsonObject();
 
-      if (result.has("wheel_slip")) {
-        var slip = result.getAsJsonObject("wheel_slip");
-        var modules = slip.getAsJsonArray("modules");
-        for (int i = 0; i < modules.size(); i++) {
-          assertEquals(0, modules.get(i).getAsJsonObject().get("slip_events").getAsInt(),
-              "No slip events should exceed 100 m/s threshold");
-        }
+      var modules = result.getAsJsonArray("modules");
+      assertEquals(4, modules.size());
+      for (int i = 0; i < modules.size(); i++) {
+        var tracking = modules.get(i).getAsJsonObject().getAsJsonObject("speed_tracking_error");
+        assertEquals(0, tracking.get("events_over_threshold").getAsInt(),
+            "No tracking error should exceed a 100 m/s threshold");
       }
     }
 
@@ -800,9 +1347,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       args.addProperty("sync_threshold_rad", 100.0);
       var result = tool.execute(args).getAsJsonObject();
 
-      if (result.has("module_sync")) {
-        assertEquals(0, result.getAsJsonObject("module_sync").get("desync_events").getAsInt());
-      }
+      assertEquals(0, result.getAsJsonObject("module_sync").get("desync_events").getAsInt());
     }
 
     @Test
@@ -1110,6 +1655,28 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
         assertTrue(error.toLowerCase().contains("singular") || error.toLowerCase().contains("insufficient"),
             "If regression fails, it should be due to singularity or insufficient samples");
       }
+    }
+  }
+
+  @Nested
+  @DisplayName("Schemas declare every honored parameter (review 4.3)")
+  class SchemaDeclarations {
+
+    @Test
+    @DisplayName("compare_matches declares angle and windows")
+    void compareMatchesDeclaresAngleAndWindows() {
+      var properties = findTool("compare_matches").inputSchema().getAsJsonObject("properties");
+      assertTrue(properties.has("angle"), properties.keySet().toString());
+      assertTrue(properties.has("windows"), properties.keySet().toString());
+      assertEquals("array", properties.getAsJsonObject("windows").get("type").getAsString());
+    }
+
+    @Test
+    @DisplayName("power_analysis declares the start_time/end_time its scope text promises")
+    void powerAnalysisDeclaresStartEnd() {
+      var properties = findTool("power_analysis").inputSchema().getAsJsonObject("properties");
+      assertTrue(properties.has("start_time"), properties.keySet().toString());
+      assertTrue(properties.has("end_time"), properties.keySet().toString());
     }
   }
 }

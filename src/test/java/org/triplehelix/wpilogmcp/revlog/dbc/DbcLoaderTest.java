@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HexFormat;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -103,17 +104,48 @@ class DbcLoaderTest {
     assertNotNull(db);
     assertTrue(db.messageCount() > 0);
 
-    // Check for expected REV SPARK messages
-    // Periodic_Status_0 base ID is 0x02051800
-    var status0 = db.getMessage(0x02051800);
-    assertTrue(status0.isPresent(), "Expected Periodic_Status_0 message");
-    assertEquals("Periodic_Status_0", status0.get().name());
+    // Firmware 25+ periodic status frames: API class 46, indices 0-9 (REV spark-frames 2.1.0)
+    for (int index = 0; index <= 9; index++) {
+      assertTrue(db.getMessage(0x0205B800 + 0x40 * index).isPresent(), "status " + index);
+    }
+    // The legacy class 6 status 0 (always zero output, every fault set) is not decoded
+    assertTrue(db.getMessage(0x02051800).isEmpty());
 
-    // Check for expected signals
-    var appliedOutput = status0.get().getSignal("AppliedOutput");
-    assertNotNull(appliedOutput, "Expected AppliedOutput signal");
-    assertEquals(0.0001, appliedOutput.scale(), 0.00001);
+    var status0 = db.getMessage(0x0205B800).orElseThrow();
+    var appliedOutput = status0.getSignal("AppliedOutput");
+    assertEquals(1.01 / 32767, appliedOutput.scale(), 1e-18);
     assertTrue(appliedOutput.signed());
+    assertEquals(DbcSignal.ValueType.FLOAT32,
+        db.getMessage(0x0205B880).orElseThrow().getSignal("Velocity").valueType());
+  }
+
+  @Test
+  void embeddedDecodesRealFramesFromA2026RevLog() throws IOException {
+    // Frames from REV_20260321_162932.revlog (SPARK MAX firmware 26.1.5), checked against the
+    // AdvantageKit inputs REVLib read from the same controllers
+    var decoder = new CanDecoder(loader.loadEmbedded());
+    var spindexer = decoder.decode(0x0205B810, HexFormat.of().parseHex("0000b8c500206000"));
+    assertEquals(0.0, spindexer.get("AppliedOutput"), 1e-12);
+    assertEquals(1464 * 30.0 / 4095, spindexer.get("BusVoltage"), 1e-9);
+    assertEquals(12 * 150.0 / 4095, spindexer.get("OutputCurrent"), 1e-9);
+    assertEquals(32.0, spindexer.get("MotorTemperature"));
+    assertEquals(0.0, spindexer.get("IsInverted"));
+    assertEquals(1.0, spindexer.get("PrimaryHeartbeatLock"));
+
+    var turret = decoder.decode(0x0205B80C, HexFormat.of().parseHex("1e014405001db000"));
+    assertEquals(286 * 1.01 / 32767, turret.get("AppliedOutput"), 1e-12);
+    assertEquals(1348 * 30.0 / 4095, turret.get("BusVoltage"), 1e-9);
+    assertEquals(29.0, turret.get("MotorTemperature"));
+    assertEquals(1.0, turret.get("IsInverted"));
+
+    var encoder = decoder.decode(0x0205B890, HexFormat.of().parseHex("91179e4095f00f44"));
+    assertEquals(4.9403767585754395, encoder.get("Velocity"), 1e-12);
+    assertEquals(575.7590942382812, encoder.get("Position"), 1e-9);
+
+    // Full negative output: -32442 counts is -0.99998
+    var reverse = decoder.decode(0x0205B800, new byte[] {0x46, (byte) 0x81, 0, 0, 0, 0, 0, 0});
+    assertEquals(-32442 * 1.01 / 32767, reverse.get("AppliedOutput"), 1e-12);
+    assertTrue(decoder.decode(0x02051810, new byte[8]).isEmpty(), "legacy status 0");
   }
 
   @Test

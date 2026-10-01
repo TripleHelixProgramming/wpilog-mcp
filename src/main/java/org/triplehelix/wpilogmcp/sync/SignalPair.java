@@ -14,7 +14,7 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
  * motor output, velocity, or current) and optionally by device/entry name hints.
  *
  * @param wpilogEntry The wpilog entry name (e.g., "/drive/frontLeft/output")
- * @param revlogSignal The revlog signal key (e.g., "SparkMax_1/appliedOutput")
+ * @param revlogSignal The revlog signal key (e.g., "SparkMax_1/AppliedOutput")
  * @param wpilogValues The timestamped values from wpilog
  * @param revlogValues The timestamped values from revlog
  * @param signalType The type of signal (for debugging/logging)

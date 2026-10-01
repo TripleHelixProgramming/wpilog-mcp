@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.game;
 
 import com.google.gson.JsonObject;
+import java.util.Optional;
 
 /**
  * Parsed game data for a specific FRC season.
@@ -16,10 +17,24 @@ import com.google.gson.JsonObject;
  * @since 0.5.0
  */
 public class GameData {
-  private final JsonObject raw;
+  /** The {@link #origin()} of data loaded from a bundled resource. */
+  public static final String BUNDLED_ORIGIN = "bundled";
 
+  private final JsonObject raw;
+  private final String origin;
+
+  /** Wraps bundled game data. */
   public GameData(JsonObject raw) {
+    this(raw, BUNDLED_ORIGIN);
+  }
+
+  /**
+   * @param raw the parsed game file
+   * @param origin where it came from: {@link #BUNDLED_ORIGIN} or the path of a user-provided file
+   */
+  public GameData(JsonObject raw, String origin) {
     this.raw = raw;
+    this.origin = origin;
   }
 
   /** The full raw JSON object. */
@@ -30,6 +45,25 @@ public class GameData {
 
   /** The game name (e.g., "REBUILT"). */
   public String gameName() { return raw.get("game_name").getAsString(); }
+
+  // ==================== Provenance ====================
+
+  /** Where the data came from: {@link #BUNDLED_ORIGIN} or the path of a user-provided file. */
+  public String origin() { return origin; }
+
+  /** Whether the data is a bundled resource rather than a user-provided file. */
+  public boolean isBundled() { return BUNDLED_ORIGIN.equals(origin); }
+
+  /** The manual revision the file was transcribed from ({@code manual_version}), if it records one. */
+  public Optional<String> manualVersion() { return stringField("manual_version"); }
+
+  /** The URL of the manual the file was transcribed from ({@code source}), if it records one. */
+  public Optional<String> manualUrl() { return stringField("source"); }
+
+  private Optional<String> stringField(String name) {
+    var value = raw.get(name);
+    return value != null && value.isJsonPrimitive() ? Optional.of(value.getAsString()) : Optional.empty();
+  }
 
   // ==================== Match Timing ====================
 

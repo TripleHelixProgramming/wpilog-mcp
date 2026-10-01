@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -105,10 +106,16 @@ public class LogDirectory {
       if (value == null || value.isEmpty()) return null;
       var lower = value.toLowerCase().trim();
       if (lower.contains("practice") || lower.equals("p")) return PRACTICE;
-      if (lower.contains("qualification") || lower.contains("qual") || lower.equals("q")) return QUALIFICATION;
+      if (lower.contains("qualification") || lower.contains("qual") || lower.equals("q")
+          || lower.equals("qm")) {
+        return QUALIFICATION;
+      }
       if (lower.contains("elimination") || lower.contains("elim") || lower.equals("e")) return ELIMINATION;
       if (lower.contains("semifinal") || lower.contains("semi") || lower.equals("sf")) return SEMIFINAL;
-      if (lower.contains("final") && !lower.contains("semi") && !lower.contains("quarter")) return FINAL;
+      if ((lower.contains("final") && !lower.contains("semi") && !lower.contains("quarter"))
+          || lower.equals("f")) {
+        return FINAL;
+      }
       if (lower.contains("quarterfinal") || lower.contains("quarter") || lower.equals("qf")) return QUARTERFINAL;
       return null;
     }
@@ -195,8 +202,9 @@ public class LogDirectory {
           .filter(Files::isRegularFile)
           .filter(p -> p.toString().endsWith(".wpilog"))
           .map(this::getOrExtractLogInfo)
-          .sorted(Comparator.comparing(LogFileInfo::getBestTimestamp, 
-              Comparator.nullsLast(Comparator.reverseOrder())))
+          .sorted(Comparator.comparing(LogFileInfo::getBestTimestamp,
+                  Comparator.nullsLast(Comparator.<Long>reverseOrder()))
+              .thenComparing(LogFileInfo::path))
           .toList();
 
       logger.info("Found {} log files. Cache hits: {}, misses: {}",
@@ -361,7 +369,8 @@ public class LogDirectory {
 
     var logCreationTime = parseFilenameTimestamp(
         matcher.group(1), matcher.group(2), matcher.group(3),
-        matcher.group(4), matcher.group(5), matcher.group(6));
+        matcher.group(4), matcher.group(5), matcher.group(6),
+        filename.toLowerCase().endsWith("_sim.wpilog"));
 
     var eventName = matcher.group(7).toUpperCase();
     var typeCode = matcher.group(8);
@@ -382,11 +391,18 @@ public class LogDirectory {
     return new LogFileInfo(path.toString(), filename, eventName, matchType, matchNumber, null, lastModified, fileSize, logCreationTime);
   }
 
-  private Long parseFilenameTimestamp(String yy, String mm, String dd, String hh, String min, String ss) {
+  /**
+   * The file-name time as epoch milliseconds. The roboRIO names files in its own zone, UTC
+   * unless a team changed it (see {@link WallClock}); a desktop running simulation names them in
+   * its local zone.
+   */
+  private Long parseFilenameTimestamp(String yy, String mm, String dd, String hh, String min,
+      String ss, boolean simulation) {
     try {
       var ldt = LocalDateTime.of(2000 + Integer.parseInt(yy), Integer.parseInt(mm), Integer.parseInt(dd), 
                                  Integer.parseInt(hh), Integer.parseInt(min), Integer.parseInt(ss));
-      return ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+      ZoneId zone = simulation ? ZoneId.systemDefault() : ZoneOffset.UTC;
+      return ldt.atZone(zone).toInstant().toEpochMilli();
     } catch (Exception e) { return null; }
   }
 
@@ -464,13 +480,15 @@ public class LogDirectory {
     }
 
     /**
-     * Gets the timestamp as epoch milliseconds, or null if not available.
+     * The file-name time as epoch milliseconds, read as UTC, the roboRIO's default zone (REVLib
+     * names the file by the roboRIO clock), or null when the name carries no time. The revlog
+     * matching in {@code LogManager} applies the wpilog's own zone offset instead when it has one.
      *
      * @return Epoch milliseconds, or null
      */
     public Long timestampMillis() {
       if (parsedTimestamp == null) return null;
-      return parsedTimestamp.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+      return parsedTimestamp.toInstant(ZoneOffset.UTC).toEpochMilli();
     }
   }
 

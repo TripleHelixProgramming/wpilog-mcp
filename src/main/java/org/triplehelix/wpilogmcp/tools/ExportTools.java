@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.FileWriter;
@@ -13,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -70,6 +72,9 @@ public final class ExportTools {
   }
 
   static class ExportCsvTool extends LogRequiringTool {
+    static final int DEFAULT_INLINE_ROWS = 500;
+    static final int MAX_INLINE_ROWS = 5000;
+
     @Override
     public String name() {
       return "export_csv";
@@ -77,129 +82,130 @@ public final class ExportTools {
 
     @Override
     public String description() {
-      return "Export entry data to a CSV file for external analysis in Excel, Python, or MATLAB.";
+      return "Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return the "
+          + "rows inline. Every value is flattened into columns: a struct becomes one column per "
+          + "numeric or text field (nested fields as dot paths, e.g. translation.x, arrays as "
+          + "field[i]), a struct array or primitive array becomes one row per element with an "
+          + "index column. Files are written inside the server's export directory "
+          + "(export_directory in every file result): pass a bare or relative output_path, which is "
+          + "resolved inside it, or omit it for a generated name; an absolute path must lie inside "
+          + "it. The result gives the absolute path written. With inline=true no file is written "
+          + "and the rows come back in the response (max_rows, default 500), for agents that "
+          + "cannot read the export directory. Returns no_match, and writes nothing, when the "
+          + "window holds no samples. Cite the export when you compute from it.";
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
           .addProperty("name", "string", "Entry name to export", true)
-          .addProperty("output_path", "string", "Path for output CSV file", true)
+          .addProperty("output_path", "string",
+              "CSV file name or path inside the export directory (default: generated from the log and entry names)", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
+          .addProperty("inline", "boolean", "Return the rows in the response instead of writing a file (default false)", false)
+          .addIntegerProperty("max_rows", "Rows to return inline (default 500, max 5000)", false, DEFAULT_INLINE_ROWS)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var name = getRequiredString(arguments, "name");
-      var outputPath = getRequiredString(arguments, "output_path");
-      var startTime = arguments.has("start_time") && !arguments.get("start_time").isJsonNull()
-          ? arguments.get("start_time").getAsDouble()
-          : null;
-      var endTime = arguments.has("end_time") && !arguments.get("end_time").isJsonNull()
-          ? arguments.get("end_time").getAsDouble()
-          : null;
-
-      var outputFilePath = Path.of(outputPath).toAbsolutePath().normalize();
-      if (!isPathAllowed(outputFilePath, log)) {
-        return errorResult(
-            "Output path not allowed. CSV files can only be written to the configured log "
-                + "directory or system temp directory. Path: " + outputFilePath);
-      }
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      boolean inline = getOptBoolean(arguments, "inline");
+      int maxRows = validateRange(getOptInt(arguments, "max_rows", DEFAULT_INLINE_ROWS), 1,
+          MAX_INLINE_ROWS, "max_rows");
 
       var values = log.values().get(name);
       if (values == null) {
         return errorResult("Entry not found: " + name);
       }
-
       var entry = log.entries().get(name);
       var type = entry != null ? entry.type() : "unknown";
-      boolean isArray = type.startsWith("structarray:") || type.contains("[]");
+
+      // Flatten: one row per sample, or per element of an array value
+      var rows = new ArrayList<Row>();
+      boolean indexed = false;
+      for (var tv : values) {
+        double t = tv.timestamp();
+        if ((startTime != null && t < startTime) || (endTime != null && t > endTime)) continue;
+        var elements = elementsOf(tv.value());
+        if (elements != null) {
+          indexed = true;
+          for (int i = 0; i < elements.size(); i++) {
+            rows.add(new Row(t, i, flatten(elements.get(i))));
+          }
+        } else {
+          rows.add(new Row(t, -1, flatten(tv.value())));
+        }
+      }
+      if (rows.isEmpty()) {
+        // Nothing to export: no header-only file, no empty success
+        return ResponseBuilder.noMatch("No samples of " + name
+                + (startTime != null || endTime != null ? " between "
+                    + (startTime != null ? startTime : "start") + " and "
+                    + (endTime != null ? endTime : "end") + " s" : "")
+                + " (" + values.size() + " in the log); nothing was written.")
+            .hint("Widen start_time/end_time, or omit them to export every sample.")
+            .build();
+      }
+      var columnSet = new java.util.TreeSet<String>();
+      rows.forEach(r -> columnSet.addAll(r.fields().keySet()));
+      var columns = new ArrayList<String>();
+      columns.add("timestamp_sec");
+      if (indexed) columns.add("index");
+      columns.addAll(columnSet);
+
+      if (inline) {
+        var array = new JsonArray();
+        for (var row : rows.subList(0, Math.min(maxRows, rows.size()))) {
+          var cells = new JsonArray();
+          cells.add(row.timestamp());
+          if (indexed) cells.add(row.index());
+          for (var c : columnSet) {
+            var v = row.fields().get(c);
+            if (v == null) cells.add(com.google.gson.JsonNull.INSTANCE);
+            else if (v instanceof Number n && Double.isFinite(n.doubleValue())) cells.add(n);
+            else cells.add(String.valueOf(v));
+          }
+          array.add(cells);
+        }
+        var result = new JsonObject();
+        result.addProperty("success", true);
+        result.addProperty("entry", name);
+        result.addProperty("type", type);
+        result.add("columns", GSON.toJsonTree(columns));
+        ResultContract.addLimitedList(result, "rows", array, rows.size(), maxRows);
+        result.addProperty("rows_exported", array.size());
+        return result;
+      }
+
+      var exportDir = exportDirectory;
+      Path outputFilePath;
+      try {
+        outputFilePath = resolveOutputPath(getOptString(arguments, "output_path", null), log, name,
+            exportDir);
+      } catch (IllegalArgumentException e) {
+        return errorResult(e.getMessage());
+      }
 
       int rowCount = 0;
       try (var writer = new PrintWriter(new FileWriter(outputFilePath.toFile()))) {
-        if (isArray && type.contains("SwerveModuleState")) {
-          writer.println("timestamp_sec,module_index,speed_mps,angle_rad,angle_deg");
-        } else if (type.contains("Pose2d")) {
-          writer.println("timestamp_sec,x,y,rotation_rad,rotation_deg");
-        } else if (type.contains("Pose3d")) {
-          writer.println("timestamp_sec,x,y,z,qw,qx,qy,qz");
-        } else if (type.contains("SwerveModuleState")) {
-          writer.println("timestamp_sec,speed_mps,angle_rad,angle_deg");
-        } else if (isArray) {
-          writer.println("timestamp_sec,index,value");
-        } else {
-          // For Map-typed values (generic structs), discover keys from first value
-          // to write a correct header with one column per field.
-          if (!values.isEmpty() && values.get(0).value() instanceof Map<?, ?> firstRawMap) {
-            @SuppressWarnings("unchecked")
-            var firstMap = (Map<String, Object>) firstRawMap;
-            var sortedKeys = new java.util.TreeSet<>(firstMap.keySet());
-            writer.println("timestamp_sec," + String.join(",", sortedKeys));
-          } else {
-            writer.println("timestamp_sec,value");
+        writer.println(String.join(",", columns));
+        for (var row : rows) {
+          var sb = new StringBuilder();
+          sb.append(row.timestamp());
+          if (indexed) sb.append(',').append(row.index());
+          for (var c : columnSet) {
+            var v = row.fields().get(c);
+            sb.append(',');
+            if (v != null) sb.append(csvEscape(String.valueOf(v)));
           }
-        }
-
-        for (var tv : values) {
-          double t = tv.timestamp();
-          if ((startTime != null && t < startTime) || (endTime != null && t > endTime)) {
-            continue;
-          }
-
-          if (tv.value() instanceof List<?> list) {
-            for (int i = 0; i < list.size(); i++) {
-              var element = list.get(i);
-              if (element instanceof Map<?, ?> rawMap) {
-                @SuppressWarnings("unchecked")
-                var map = (Map<String, Object>) rawMap;
-                var sb = new StringBuilder();
-                sb.append(t).append(",").append(i);
-                writeStructFields(sb, map, type);
-                writer.println(sb);
-              } else {
-                writer.println(t + "," + i + "," + csvEscape(String.valueOf(element)));
-              }
-              rowCount++;
-            }
-          } else if (tv.value() instanceof double[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof long[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof float[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof boolean[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + arr[i]);
-              rowCount++;
-            }
-          } else if (tv.value() instanceof String[] arr) {
-            for (int i = 0; i < arr.length; i++) {
-              writer.println(t + "," + i + "," + csvEscape(arr[i]));
-              rowCount++;
-            }
-          } else if (tv.value() instanceof Map<?, ?> rawMap) {
-            @SuppressWarnings("unchecked")
-            var map = (Map<String, Object>) rawMap;
-            var sb = new StringBuilder();
-            sb.append(t);
-            writeStructFields(sb, map, type);
-            writer.println(sb);
-            rowCount++;
-          } else {
-            writer.println(t + "," + csvEscape(String.valueOf(tv.value())));
-            rowCount++;
-          }
+          writer.println(sb);
+          rowCount++;
         }
       }
 
@@ -207,39 +213,102 @@ public final class ExportTools {
       result.addProperty("success", true);
       result.addProperty("entry", name);
       result.addProperty("output_path", outputFilePath.toString());
+      result.addProperty("export_directory", exportDir.toRealPath().toString());
       result.addProperty("rows_exported", rowCount);
       result.addProperty("type", type);
-
+      result.add("columns", GSON.toJsonTree(columns));
       return result;
     }
 
-    /**
-     * Writes struct fields to the StringBuilder in the correct order for the entry type.
-     * Known struct types use explicit field ordering matching their CSV headers.
-     * Unknown struct types use alphabetically sorted keys for deterministic output.
-     */
-    private static void writeStructFields(StringBuilder sb, Map<String, Object> map, String type) {
-      if (type.contains("SwerveModuleState")) {
-        sb.append(",").append(map.get("speed_mps"));
-        sb.append(",").append(map.get("angle_rad"));
-        sb.append(",").append(map.get("angle_deg"));
-      } else if (type.contains("Pose2d")) {
-        sb.append(",").append(map.get("x"));
-        sb.append(",").append(map.get("y"));
-        sb.append(",").append(map.get("rotation_rad"));
-        sb.append(",").append(map.get("rotation_deg"));
-      } else if (type.contains("Pose3d")) {
-        sb.append(",").append(map.get("x"));
-        sb.append(",").append(map.get("y"));
-        sb.append(",").append(map.get("z"));
-        sb.append(",").append(map.get("qw"));
-        sb.append(",").append(map.get("qx"));
-        sb.append(",").append(map.get("qy"));
-        sb.append(",").append(map.get("qz"));
+    record Row(double timestamp, int index, Map<String, Object> fields) {}
+
+    /** The elements of an array value (struct array or primitive array), or null for a scalar. */
+    static List<?> elementsOf(Object value) {
+      if (value instanceof List<?> list) return list;
+      if (value != null && value.getClass().isArray() && !(value instanceof byte[])) {
+        int n = java.lang.reflect.Array.getLength(value);
+        var out = new ArrayList<Object>(n);
+        for (int i = 0; i < n; i++) out.add(java.lang.reflect.Array.get(value, i));
+        return out;
+      }
+      return null;
+    }
+
+    /** A value as columns: "value" for a scalar; dot paths for a struct; field[i] for arrays. */
+    static Map<String, Object> flatten(Object value) {
+      var out = new LinkedHashMap<String, Object>();
+      if (value instanceof Map<?, ?> map) {
+        flattenInto("", map, out);
       } else {
-        // Generic struct: alphabetically sorted keys for deterministic column order
-        var sortedKeys = new java.util.TreeSet<>(map.keySet());
-        sortedKeys.forEach(key -> sb.append(",").append(csvEscape(String.valueOf(map.get(key)))));
+        out.put("value", value instanceof byte[] b ? BinaryHex.of(b) : value);
+      }
+      return out;
+    }
+
+    private static void flattenInto(String prefix, Object value, Map<String, Object> out) {
+      if (value instanceof Map<?, ?> map) {
+        for (var e : map.entrySet()) {
+          flattenInto(prefix.isEmpty() ? String.valueOf(e.getKey())
+              : prefix + "." + e.getKey(), e.getValue(), out);
+        }
+      } else if (value instanceof List<?> || (value != null && value.getClass().isArray()
+          && !(value instanceof byte[]))) {
+        var elements = elementsOf(value);
+        for (int i = 0; i < elements.size(); i++) {
+          flattenInto(prefix + "[" + i + "]", elements.get(i), out);
+        }
+      } else if (value instanceof org.triplehelix.wpilogmcp.log.struct.EnumValue e) {
+        // the number in the field's own column, its schema label beside it
+        out.put(prefix, e.value());
+        out.put(prefix + ".label", e.label());
+      } else {
+        out.put(prefix, value);
+      }
+    }
+
+    /**
+     * Where to write: a bare or relative name inside the export directory, a generated name when
+     * none is given, or an absolute path that lies inside it. Symlinks cannot escape it.
+     */
+    static Path resolveOutputPath(String requested, LogData log, String entryName, Path exportDir)
+        throws IOException {
+      if (!Files.isDirectory(exportDir)) Files.createDirectories(exportDir);
+      var realExportDir = exportDir.toRealPath();
+      Path candidate;
+      if (requested == null || requested.isBlank()) {
+        var logStem = Path.of(log.path()).getFileName().toString().replaceAll("\\.wpilog$", "");
+        var entryStem = entryName.replaceAll("[^A-Za-z0-9_.-]+", "_").replaceAll("^_+|_+$", "");
+        candidate = realExportDir.resolve(logStem + "__" + entryStem + ".csv");
+      } else {
+        var p = Path.of(requested);
+        candidate = (p.isAbsolute() ? p : realExportDir.resolve(p)).toAbsolutePath().normalize();
+      }
+      var notAllowed = "Output path not allowed: " + candidate + ". CSV files are written only "
+          + "inside the export directory " + realExportDir + "; pass a bare file name (e.g. "
+          + "\"pose.csv\") or a path relative to it, or omit output_path.";
+      if (!candidate.startsWith(realExportDir) && !candidate.startsWith(exportDir.toAbsolutePath().normalize())) {
+        throw new IllegalArgumentException(notAllowed);
+      }
+      if (Files.isSymbolicLink(candidate)) throw new IllegalArgumentException(notAllowed);
+      var parent = candidate.getParent();
+      if (parent == null) throw new IllegalArgumentException(notAllowed);
+      // Only create subdirectories that stay inside the export directory
+      if (!Files.exists(parent)) {
+        if (!parent.normalize().startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
+        Files.createDirectories(parent);
+      }
+      var resolved = Files.exists(candidate) ? candidate.toRealPath()
+          : parent.toRealPath().resolve(candidate.getFileName());
+      if (!resolved.startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
+      return resolved;
+    }
+
+    /** Hex text for raw bytes. */
+    static final class BinaryHex {
+      static String of(byte[] bytes) {
+        var sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
       }
     }
 
@@ -255,37 +324,7 @@ public final class ExportTools {
       return value;
     }
 
-    private boolean isPathAllowed(Path path, LogData log) {
-      // Exports are restricted to the configured export directory only.
-      // Resolve symlinks to prevent symlink-based path escape:
-      // - If the file already exists, resolve the FULL path (catches symlinks in filename)
-      // - If it doesn't exist, resolve the parent and reject if the filename is a symlink
-      try {
-        var absPath = path.toAbsolutePath().normalize();
 
-        // Auto-create export directory if it doesn't exist
-        var exportDir = exportDirectory;
-        if (!Files.isDirectory(exportDir)) {
-          Files.createDirectories(exportDir);
-        }
-        var resolvedExportDir = exportDir.toRealPath();
-
-        if (Files.exists(absPath)) {
-          // File exists — resolve entire path to follow all symlinks
-          var resolvedPath = absPath.toRealPath();
-          return resolvedPath.startsWith(resolvedExportDir);
-        } else {
-          // File doesn't exist — resolve parent, reject symlink filenames
-          var parent = absPath.getParent();
-          if (parent == null) return false;
-          if (Files.isSymbolicLink(absPath)) return false;
-          var resolvedPath = parent.toRealPath().resolve(absPath.getFileName());
-          return resolvedPath.startsWith(resolvedExportDir);
-        }
-      } catch (IOException e) {
-        return false; // Cannot resolve — deny by default
-      }
-    }
   }
 
   static class GenerateReportTool extends LogRequiringTool {
@@ -296,18 +335,31 @@ public final class ExportTools {
 
     @Override
     public String description() {
-      return "Generate a comprehensive match summary report including duration, errors found, "
-          + "peak currents, minimum voltage, and other key metrics.";
+      return "Generate a one-call summary of a log: duration and truncation; the DriverStation "
+          + "timeline (enabled segments, enabled time, FMS matches, as in get_match_phases); "
+          + "battery voltage over enabled time when the log records it (min with time, max, "
+          + "average, threshold crossings; entry chosen as power_analysis does, or "
+          + "voltage_entry) with brownout_risk and its basis as power_analysis gives them, "
+          + "brownouts from the roboRIO flag when logged, and the brownout threshold with its "
+          + "basis; the three largest current peaks in the same scope (power_analysis channel_analysis, each channel of an array separately); error and "
+          + "warning counts from console and message text (each text sample classified once by "
+          + "its most severe line, an alert once per appearance, as in get_ds_timeline and "
+          + "search_strings) with the most frequent messages; code metadata "
+          + "(get_code_metadata); and the most common data types. Each section names its source "
+          + "entries; use the individual tools for detail."
+          + GUIDANCE_UNIVERSAL;
     }
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder().build();
+      return new SchemaBuilder()
+          .addProperty("voltage_entry", "string", "Battery voltage entry (default: "
+              + "BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)", false)
+          .build();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
       var report = new JsonObject();
       report.addProperty("success", true);
       report.addProperty("log_path", log.path());
@@ -323,110 +375,199 @@ public final class ExportTools {
         basics.addProperty("truncation_message", log.truncationMessage());
       }
       report.add("basic_info", basics);
+      var skipped = new JsonArray();
 
-      // Battery voltage
-      for (var entryName : log.entries().keySet()) {
-        if (entryName.toLowerCase().contains("batteryvoltage") || entryName.toLowerCase().contains("battery_voltage")) {
-          var values = log.values().get(entryName);
-          if (values != null && !values.isEmpty()) {
-            double minV = Double.MAX_VALUE, maxV = Double.NEGATIVE_INFINITY;
-            for (var tv : values) {
-              if (tv.value() instanceof Number num) {
-                double v = num.doubleValue();
-                minV = Math.min(minV, v);
-                maxV = Math.max(maxV, v);
-              }
-            }
-            if (minV < Double.MAX_VALUE) {
-              var battery = new JsonObject();
-              battery.addProperty("entry", entryName);
-              battery.addProperty("min_voltage", minV);
-              battery.addProperty("max_voltage", maxV);
-              // Brownout threshold: 6.8V for roboRIO 1 (roboRIO 2 uses 6.3V)
-              battery.addProperty("brownout_risk", minV < 6.8 ? "HIGH" : (minV < 9.0 ? "MODERATE" : "LOW"));
-              report.add("battery", battery);
-            }
-            break;
-          }
-        }
+      // DriverStation timeline
+      var timeline = MatchTimeline.of(log);
+      if (timeline.hasEnabledData()) {
+        var t = new JsonObject();
+        var enabled = timeline.enabledSegments();
+        t.addProperty("enabled_segments", enabled.size());
+        t.addProperty("enabled_time_sec",
+            enabled.stream().mapToDouble(MatchTimeline.Segment::duration).sum());
+        t.addProperty("matches", timeline.matches().size());
+        t.addProperty("season", timeline.season().year());
+        t.addProperty("source", timeline.sources().enabled() != null
+            ? timeline.sources().enabled() : timeline.sources().controlWord());
+        report.add("timeline", t);
+      } else {
+        skipped.add(skippedSection("timeline", "no DriverStation state entries"));
       }
 
-      // Error count — only scan string entries likely to contain errors to avoid
-      // decoding all string entries (which defeats lazy loading on large logs).
-      int errorCount = 0;
-      var errorSamples = new ArrayList<String>();
-      for (var e : log.entries().entrySet()) {
-        if ("string".equals(e.getValue().type()) && log.sampleCount(e.getKey()) > 0) {
-          var values = log.values().get(e.getKey());
-          if (values != null) {
-            for (var tv : values) {
-              if (tv.value() instanceof String str) {
-                var lower = str.toLowerCase();
-                if (lower.contains("error") || lower.contains("exception") || lower.contains("fault")) {
-                  errorCount++;
-                  if (errorSamples.size() < 5) {
-                    errorSamples.add(str.length() > 100 ? str.substring(0, 100) + "..." : str);
-                  }
-                }
-              }
-            }
-          }
-        }
+      // Battery: the same entry choice and threshold as power_analysis
+      var batteryRole = SignalResolver.batteryVoltage(log, null,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = batteryRole.chosen();
+      var threshold = PowerFacts.threshold(log, null);
+      var scope = TimeScope.resolve(log, timeline, timeline.hasEnabledData() ? "enabled" : "all",
+          null, null);
+      var flag = PowerFacts.flagEntry(log);
+      var flagged = flag.map(f -> PowerFacts.brownouts(log, f, null, null).stream()
+          .filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
+      var voltageFacts = voltageEntry.flatMap(name ->
+          PowerFacts.voltage(log.values().get(name), scope, threshold.volts()));
+      if (voltageFacts.isPresent()) {
+        var v = voltageFacts.get();
+        var battery = new JsonObject();
+        battery.addProperty("entry", voltageEntry.get());
+        battery.add("scope", scope.toJson());
+        v.addTo(battery);
+        threshold.addTo(battery);
+        flag.ifPresent(f -> battery.add("rio_brownouts", PowerFacts.brownoutsJson(f, flagged)));
+        PowerFacts.risk(v, threshold, flag.orElse(null), flagged).addTo(battery);
+        report.add("battery", battery);
+      } else if (voltageEntry.isPresent()) {
+        skipped.add(skippedSection("battery", "No finite samples of " + voltageEntry.get()
+            + " in scope '" + scope.name() + "'."));
+      } else {
+        skipped.add(skippedSection("battery",
+            SignalResolver.unresolvedReason(batteryRole, "voltage_entry")));
       }
 
+      // Peak currents: power_analysis's channel_analysis over the same scope
+      var peaks = peakCurrents(log, scope, 3);
+      if (!peaks.isEmpty()) {
+        report.add("peak_currents", peaks);
+      } else {
+        skipped.add(skippedSection("peak_currents", "no amperage entries"));
+      }
+
+      // Errors and warnings: one classification per sample, as get_ds_timeline counts them
+      int errorSamples = 0;
+      int warningSamples = 0;
+      var groups = new java.util.LinkedHashMap<String, int[]>(); // pattern -> [count]
+      var firstSeen = new HashMap<String, Double>();
+      var examples = new HashMap<String, String>();
+      var firstErrors = new JsonArray();
+      for (var event : TextEvents.all(log)) {
+        var level = TextEvents.level(event);
+        if (!"error".equals(level) && !"warning".equals(level)) continue;
+        boolean error = "error".equals(level);
+        if (error) errorSamples++; else warningSamples++;
+        if (!error) continue;
+        var classified = ToolUtils.classifyText(event.text());
+        var message = event.source() == TextEvents.Source.ALERT || classified == null
+            ? event.text().strip() : classified.message();
+        var pattern = ToolUtils.normalizeMessage(message);
+        groups.computeIfAbsent(pattern, k -> new int[1])[0]++;
+        firstSeen.putIfAbsent(pattern, event.timestamp());
+        examples.putIfAbsent(pattern, message);
+        if (firstErrors.size() < 5) {
+          var o = new JsonObject();
+          o.addProperty("timestamp_sec", event.timestamp());
+          o.addProperty("entry", event.entry());
+          o.addProperty("line", ToolUtils.truncate(message, ToolUtils.MESSAGE_LINE_LIMIT));
+          firstErrors.add(o);
+        }
+      }
       var errors = new JsonObject();
-      errors.addProperty("total_errors", errorCount);
-      errors.add("samples", GSON.toJsonTree(errorSamples));
+      errors.addProperty("total_errors", errorSamples);
+      errors.addProperty("total_warnings", warningSamples);
+      errors.addProperty("distinct_error_messages", groups.size());
+      var top = new JsonArray();
+      groups.entrySet().stream()
+          .sorted(java.util.Comparator.comparingInt((java.util.Map.Entry<String, int[]> g) ->
+                  -g.getValue()[0])
+              .thenComparingDouble(g -> firstSeen.get(g.getKey())))
+          .limit(5)
+          .forEach(g -> {
+            var o = new JsonObject();
+            o.addProperty("message", ToolUtils.truncate(g.getKey(), ToolUtils.MESSAGE_LINE_LIMIT));
+            o.addProperty("example", ToolUtils.truncate(examples.get(g.getKey()),
+                ToolUtils.MESSAGE_LINE_LIMIT));
+            o.addProperty("count", g.getValue()[0]);
+            o.addProperty("first_timestamp", firstSeen.get(g.getKey()));
+            top.add(o);
+          });
+      ResultContract.addLimitedList(errors, "top_messages", top, groups.size(), 5);
+      ResultContract.addLimitedList(errors, "samples", firstErrors, errorSamples, 5);
+      errors.addProperty("note", "Counts are text samples classified ERROR or WARNING (a "
+          + "multi-line sample counts once, by its most severe line; an alert once per "
+          + "appearance, by its entry's level); search_strings lists every message.");
       report.add("errors", errors);
 
-      // Code metadata
+      // Code metadata: the same entries and choice as get_code_metadata
       var codeInfo = new JsonObject();
-      for (var entryName : log.entries().keySet()) {
-        if (entryName.contains("GitSHA")) {
-          var values = log.values().get(entryName);
-          if (values != null && !values.isEmpty()) {
-            codeInfo.addProperty("git_sha", String.valueOf(values.get(0).value()));
-          }
-        } else if (entryName.contains("GitBranch")) {
-          var values = log.values().get(entryName);
-          if (values != null && !values.isEmpty()) {
-            codeInfo.addProperty("git_branch", String.valueOf(values.get(0).value()));
-          }
+      for (var e : log.entries().values().stream()
+          .sorted(java.util.Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .toList()) {
+        if (!"string".equals(e.type())) continue;
+        var key = RobotAnalysisTools.GetCodeMetadataTool.key(e.name());
+        if (key == null) continue;
+        var outKey = switch (key) {
+          case "GitSHA" -> "git_sha";
+          case "GitBranch" -> "git_branch";
+          case "GitDirty" -> "git_dirty";
+          case "GitDate" -> "git_date";
+          case "BuildDate" -> "build_date";
+          case "ProjectName" -> "project_name";
+          default -> "version";
+        };
+        if (codeInfo.has(outKey)) continue;
+        var values = log.values().get(e.name());
+        if (values != null && !values.isEmpty()) {
+          codeInfo.addProperty(outKey, String.valueOf(values.get(0).value()));
         }
       }
       if (codeInfo.size() > 0) {
         report.add("code_info", codeInfo);
+      } else {
+        skipped.add(skippedSection("code_info", "no code metadata entries"));
       }
 
-      // Data type summary
+      // Data type summary (ties by type name, so the order is stable)
       var typeCounts = new HashMap<String, Integer>();
       for (var entry : log.entries().values()) {
         typeCounts.merge(entry.type(), 1, Integer::sum);
       }
       var types = new JsonObject();
       typeCounts.entrySet().stream()
-          .sorted((a, b) -> b.getValue() - a.getValue())
+          .sorted(java.util.Map.Entry.<String, Integer>comparingByValue().reversed()
+              .thenComparing(java.util.Map.Entry.comparingByKey()))
           .limit(10)
           .forEach(e -> types.addProperty(e.getKey(), e.getValue()));
       report.add("top_data_types", types);
+      report.addProperty("type_count", typeCounts.size());
 
-      // Add data quality from battery voltage values if available
-      for (var entryName : log.entries().keySet()) {
-        if (entryName.toLowerCase().contains("batteryvoltage") || entryName.toLowerCase().contains("battery_voltage")) {
-          var qualityValues = log.values().get(entryName);
-          if (qualityValues != null && !qualityValues.isEmpty()) {
-            var quality = DataQuality.fromValues(qualityValues);
-            report.add("data_quality", quality.toJson());
-            var directives = AnalysisDirectives.fromQuality(quality)
-                .addSingleMatchCaveat()
-                .addGuidance("Report is a summary — use individual tools for detailed analysis");
-            report.add("server_analysis_directives", directives.toJson());
-            break;
-          }
-        }
+      if (!skipped.isEmpty()) {
+        report.add("skipped", skipped);
+        report.addProperty("status", log.entryCount() == 0 ? "no_match" : "partial");
+        if (log.entryCount() == 0) report.addProperty("reason", "The log has no entries.");
       }
 
+      voltageEntry.ifPresent(name -> {
+        var quality = DataQuality.fromSegments(scope.split(log.values().get(name)));
+        report.add("data_quality", quality.toJson());
+        var directives = AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat()
+            .addGuidance("Report is a summary — use individual tools for detailed analysis");
+        report.add("server_analysis_directives", directives.toJson());
+      });
       return report;
+    }
+
+    static JsonObject skippedSection(String section, String reason) {
+      var o = new JsonObject();
+      o.addProperty("section", section);
+      o.addProperty("reason", reason);
+      return o;
+    }
+
+    /**
+     * The largest current peaks: power_analysis's channel_analysis over the same scope (each
+     * channel of an array separately), with the fields power_analysis reports for them.
+     */
+    static JsonArray peakCurrents(LogData log, TimeScope scope, int limit) {
+      var out = new JsonArray();
+      RobotAnalysisTools.PowerAnalysisTool.channelAnalysis(log, null, scope).channels().stream()
+          .limit(limit).forEach(c -> {
+            var o = new JsonObject();
+            o.addProperty("entry", c.get("entry").getAsString());
+            o.addProperty("peak_current_A", c.get("peak_current_A").getAsDouble());
+            o.addProperty("peak_current_time_sec", c.get("peak_current_time_sec").getAsDouble());
+            out.add(o);
+          });
+      return out;
     }
   }
 }

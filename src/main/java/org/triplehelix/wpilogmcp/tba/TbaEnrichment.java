@@ -105,10 +105,12 @@ public class TbaEnrichment {
       }
     }
 
-    long modTime = logInfo.lastModified();
-    if (modTime > 0) {
-      var date = Instant.ofEpochMilli(modTime).atZone(ZoneId.systemDefault()).toLocalDate();
-      return date.getYear();
+    // The log's own time: its filename time when it has one (a copied file's modification time
+    // is the copy's, and a 2025 log copied in 2026 would ask about the 2026 event); in UTC, since
+    // no event straddles New Year's Eve
+    var best = logInfo.getBestTimestamp();
+    if (best != null && best > 0) {
+      return Instant.ofEpochMilli(best).atZone(java.time.ZoneOffset.UTC).getYear();
     }
 
     return LocalDate.now().getYear();
@@ -153,6 +155,39 @@ public class TbaEnrichment {
    * Enriches a log with TBA match data.
    */
   public Optional<JsonObject> enrichLog(LogFileInfo logInfo) {
+    try {
+      return enrichLogUnchecked(logInfo);
+    } catch (TbaUnavailableException e) {
+      logger.debug("No TBA enrichment for {}: {}", logInfo.filename(), e.getMessage());
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * As {@link #enrichLog}, but an outage or a rejected key propagates as
+   * {@link TbaUnavailableException}, so a caller can tell it from "TBA has no data".
+   */
+  public Optional<JsonObject> enrichLogOrThrow(LogFileInfo logInfo) {
+    return enrichLogUnchecked(logInfo);
+  }
+
+  /** Why the enrichment names the match it does, for the lookups that are not a direct key. */
+  static String lookupBasis(String method, int matchNumber) {
+    return switch (method) {
+      case TbaClient.LOOKUP_BRACKET -> "Elimination " + matchNumber
+          + " read as double-elimination bracket match " + matchNumber + " (TBA key sf"
+          + matchNumber + "m1): since 2023 the Driver Station numbers playoff matches by bracket";
+      case TbaClient.LOOKUP_NEAREST_TIME -> "the team's playoff match nearest the log's time "
+          + "(Elimination " + matchNumber + " names no bracket match: the finals carry no bracket "
+          + "number)";
+      case TbaClient.LOOKUP_PLAY_ORDER -> "Elimination " + matchNumber
+          + " read as playoff match number " + matchNumber + " in the order the team played, a "
+          + "heuristic for seasons before 2023";
+      default -> null;
+    };
+  }
+
+  private Optional<JsonObject> enrichLogUnchecked(LogFileInfo logInfo) {
     if (!client.isAvailable()) {
       return Optional.empty();
     }
@@ -192,10 +227,17 @@ public class TbaEnrichment {
 
     var tba = new JsonObject();
     tba.addProperty("team_number", teamNumber);
+    if (result.matchKey() != null) tba.addProperty("match_key", result.matchKey());
+    tba.addProperty("lookup_method", result.lookupMethod());
+    var basis = lookupBasis(result.lookupMethod(), matchNumber);
+    if (basis != null) tba.addProperty("lookup_basis", basis);
     tba.addProperty("alliance", result.alliance());
     tba.addProperty("score", result.score());
     if (result.won() != null) {
       tba.addProperty("won", result.won());
+    }
+    if (result.opponentScore() != null) {
+      tba.addProperty("opponent_score", result.opponentScore());
     }
     if (result.actualTimeSeconds() != null) {
       tba.addProperty("actual_time", result.actualTimeSeconds());
@@ -212,19 +254,6 @@ public class TbaEnrichment {
       }
     }
 
-    var matchOpt = client.getMatch(year, eventCode, matchType, matchNumber);
-    if (matchOpt.isPresent()) {
-      var match = matchOpt.get();
-      var opponentAlliance = "red".equals(result.alliance()) ? "blue" : "red";
-      var alliances = match.getAsJsonObject("alliances");
-      if (alliances != null) {
-        var opponent = alliances.getAsJsonObject(opponentAlliance);
-        if (opponent != null && opponent.has("score")) {
-          tba.addProperty("opponent_score", opponent.get("score").getAsInt());
-        }
-      }
-    }
-
     return Optional.of(tba);
   }
 
@@ -232,6 +261,15 @@ public class TbaEnrichment {
    * Gets the corrected match start time from TBA.
    */
   public Optional<Long> getMatchStartTime(LogFileInfo logInfo) {
+    try {
+      return getMatchStartTimeUnchecked(logInfo);
+    } catch (TbaUnavailableException e) {
+      logger.debug("No TBA match time for {}: {}", logInfo.filename(), e.getMessage());
+      return Optional.empty();
+    }
+  }
+
+  private Optional<Long> getMatchStartTimeUnchecked(LogFileInfo logInfo) {
     if (!client.isAvailable() || !isEligibleForEnrichment(logInfo)) {
       return Optional.empty();
     }

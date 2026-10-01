@@ -91,7 +91,7 @@ public class GameKnowledgeBase {
     try {
       String json = Files.readString(file, StandardCharsets.UTF_8);
       JsonObject obj = GSON.fromJson(json, JsonObject.class);
-      var data = new GameData(obj);
+      var data = new GameData(obj, file.toAbsolutePath().toString());
       data.validate();
       cache.put(data.season(), data);
       logger.info("Loaded game data from file: {} (season {})", file, data.season());

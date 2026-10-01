@@ -206,7 +206,7 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("returns empty list when no revlogs synchronized")
+    @DisplayName("is not applicable when no revlogs are synchronized")
     void noRevLogs() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -217,10 +217,7 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0, resultObj.get("signal_count").getAsInt());
-      assertEquals(0, resultObj.get("revlog_count").getAsInt());
-      assertTrue(resultObj.has("warnings"));
+      assertNoRevlogs(resultObj);
     }
 
     @Test
@@ -241,7 +238,9 @@ class RevLogToolsTest extends ToolTestBase {
       assertTrue(resultObj.has("warnings"));
       var warnings = resultObj.getAsJsonArray("warnings");
       assertTrue(warnings.size() > 0);
-      assertTrue(warnings.get(0).getAsString().contains("low"));
+      // A wall-clock-only alignment is named as such, not as a "low confidence correlation"
+      assertTrue(warnings.get(0).getAsString().contains("wall-clock estimate only"),
+          warnings.toString());
     }
 
     @Test
@@ -309,6 +308,20 @@ class RevLogToolsTest extends ToolTestBase {
   @Nested
   @DisplayName("get_revlog_data Tool")
   class GetRevLogDataTests {
+
+    @Test
+    @DisplayName("rejects a non-positive limit")
+    void rejectsNonPositiveLimit() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), createGoodSyncResult());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
+      args.addProperty("limit", 0);
+      var result = findTool("get_revlog_data").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("limit must be positive"),
+          result.get("error").getAsString());
+    }
 
     @Test
     @DisplayName("returns signal data with timestamps")
@@ -523,7 +536,7 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("reports not synchronized when no revlogs")
+    @DisplayName("is not applicable when no revlogs")
     void reportsNotSynchronized() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -534,9 +547,7 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertFalse(resultObj.get("synchronized").getAsBoolean());
-      assertEquals(0, resultObj.get("revlog_count").getAsInt());
+      assertNoRevlogs(resultObj);
     }
 
     @Test
@@ -770,8 +781,8 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("defaults offset_ms to 0.0 when not provided")
-    void defaultsOffsetToZero() throws Exception {
+    @DisplayName("a missing offset_ms is an error, not an offset of zero")
+    void missingOffsetIsAnError() throws Exception {
       var wpilog = createMockWpilog();
       var revlog = createMockRevLog();
       var syncResult = createGoodSyncResult();
@@ -780,14 +791,16 @@ class RevLogToolsTest extends ToolTestBase {
       var tool = findTool("set_revlog_offset");
       var args = new JsonObject();
       args.addProperty("path", "/test.wpilog");
-      // offset_ms is required per schema, but getOptDouble defaults to 0.0
 
-      var result = tool.execute(args);
-      var resultObj = result.getAsJsonObject();
+      var resultObj = tool.execute(args).getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0.0, resultObj.get("offset_ms").getAsDouble(), 0.001);
-      assertEquals(0L, resultObj.get("offset_us").getAsLong());
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.get("error").getAsString().contains("offset_ms"));
+      // The synchronization was not touched
+      var status = findTool("sync_status").execute(args).getAsJsonObject();
+      var sync = status.getAsJsonArray("revlogs").get(0).getAsJsonObject().getAsJsonObject("sync");
+      assertEquals("CROSS_CORRELATION", sync.get("method").getAsString());
+      assertEquals(500_000L, sync.get("offset_microseconds").getAsLong());
     }
 
     @Test
@@ -899,7 +912,7 @@ class RevLogToolsTest extends ToolTestBase {
   class WaitForSyncToolTests {
 
     @Test
-    @DisplayName("returns immediately when no sync in progress")
+    @DisplayName("returns immediately, not applicable, when the wpilog has no revlogs")
     void returnsImmediatelyWhenNoSync() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -907,12 +920,12 @@ class RevLogToolsTest extends ToolTestBase {
       var tool = findTool("wait_for_sync");
       var args = new JsonObject();
       args.addProperty("path", "/test.wpilog");
+      long start = System.nanoTime();
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("completed").getAsBoolean());
-      assertFalse(resultObj.get("was_in_progress").getAsBoolean());
+      assertTrue(System.nanoTime() - start < 5_000_000_000L);
+      assertNoRevlogs(resultObj);
     }
 
     @Test
@@ -966,8 +979,24 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
+      assertNoRevlogs(resultObj);
+    }
+
+    @Test
+    @DisplayName("caps timeout_ms and states the cap in its description")
+    void capsTimeout() throws Exception {
+      var wpilog = createMockWpilog();
+      var revlog = createMockRevLog();
+      putLogWithRevLog(wpilog, revlog, createGoodSyncResult());
+
+      var tool = findTool("wait_for_sync");
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("timeout_ms", Integer.MAX_VALUE);
+      var resultObj = tool.execute(args).getAsJsonObject();
+
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("completed").getAsBoolean());
+      assertTrue(tool.description().contains(String.valueOf(RevLogTools.MAX_WAIT_MS)));
     }
   }
 
@@ -996,7 +1025,7 @@ class RevLogToolsTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("reports sync_in_progress=false when no revlogs")
+    @DisplayName("is not applicable (not in progress) when no revlogs")
     void reportsFalseWhenNoRevlogs() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -1007,8 +1036,7 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertFalse(resultObj.get("sync_in_progress").getAsBoolean());
+      assertNoRevlogs(resultObj);
     }
   }
 
@@ -1019,7 +1047,7 @@ class RevLogToolsTest extends ToolTestBase {
   class ListSignalsInProgressTests {
 
     @Test
-    @DisplayName("reports sync_in_progress=false and normal warning when no revlogs")
+    @DisplayName("gives the standard not-applicable reason when no revlogs")
     void normalWarningWhenNoRevlogs() throws Exception {
       var wpilog = createMockWpilog();
       putLogNoRevLog(wpilog);
@@ -1030,19 +1058,8 @@ class RevLogToolsTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertFalse(resultObj.get("sync_in_progress").getAsBoolean());
-      assertEquals(0, resultObj.get("signal_count").getAsInt());
-      // Should have the standard "no revlogs" warning
-      assertTrue(resultObj.has("warnings"));
-      var warnings = resultObj.getAsJsonArray("warnings");
-      boolean hasNoRevlogWarning = false;
-      for (int i = 0; i < warnings.size(); i++) {
-        if (warnings.get(i).getAsString().contains("No REV log files")) {
-          hasNoRevlogWarning = true;
-        }
-      }
-      assertTrue(hasNoRevlogWarning, "Should have 'no revlog files' warning");
+      assertNoRevlogs(resultObj);
+      assertTrue(resultObj.get("hint").getAsString().contains("recording time"));
     }
 
     @Test
@@ -1195,6 +1212,154 @@ class RevLogToolsTest extends ToolTestBase {
       } catch (Exception e) {
         throw new RuntimeException("Failed to set syncInProgress", e);
       }
+    }
+  }
+
+  /** A revlog tool's result for a wpilog with no synchronized revlog. */
+  static void assertNoRevlogs(JsonObject resultObj) {
+    assertFalse(resultObj.get("success").getAsBoolean());
+    assertEquals("not_applicable", resultObj.get("status").getAsString());
+    assertTrue(resultObj.get("reason").getAsString().contains("No REV log"),
+        resultObj.get("reason").getAsString());
+  }
+
+  @Nested
+  @DisplayName("alignment provenance (review 6 sections 4.1, 4.2)")
+  class AlignmentProvenance {
+    @Test
+    @DisplayName("a failed sync is not_applicable, not data on the wrong clock")
+    void failedSyncIsNotApplicable() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(),
+          SyncResult.failed("No signal pairs correlated and no wall clock."));
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
+      var data = findTool("get_revlog_data").execute(args).getAsJsonObject();
+      assertEquals("not_applicable", data.get("status").getAsString(), data.toString());
+      assertTrue(data.get("reason").getAsString().contains("was not synchronized"));
+      assertTrue(data.get("hint").getAsString().contains("set_revlog_offset"));
+      assertFalse(data.has("data"));
+      assertEquals("FAILED", data.get("sync_method").getAsString());
+
+      var list = findTool("list_revlog_signals").execute(args).getAsJsonObject();
+      assertEquals("not_applicable", list.get("status").getAsString(), list.toString());
+      assertEquals("rio", list.getAsJsonArray("revlogs").get(0).getAsJsonObject()
+          .get("can_bus").getAsString());
+    }
+
+    @Test
+    @DisplayName("results say how the timestamps were aligned")
+    void methodAndOffsetAreReported() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), createGoodSyncResult());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
+      var data = findTool("get_revlog_data").execute(args).getAsJsonObject();
+      assertEquals("CROSS_CORRELATION", data.get("sync_method").getAsString());
+      assertEquals(0.5, data.get("offset_seconds").getAsDouble(), 1e-9);
+      assertTrue(data.get("timestamps_aligned").getAsBoolean());
+      assertEquals("rio", data.get("can_bus").getAsString());
+      assertEquals("1-5", data.getAsJsonObject("_metadata").get("timing_accuracy_ms").getAsString());
+      assertFalse(data.has("warnings"), "a high-confidence correlation needs no caveat");
+
+      var list = findTool("list_revlog_signals").execute(args).getAsJsonObject();
+      var first = list.getAsJsonArray("signals").get(0).getAsJsonObject();
+      assertEquals("CROSS_CORRELATION", first.get("sync_method").getAsString());
+      assertTrue(first.get("timestamps_aligned").getAsBoolean());
+      assertEquals(0.5, first.get("offset_seconds").getAsDouble(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("a user offset has unknown accuracy and says so")
+    void userOffsetAccuracyIsUnknown() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), SyncResult.fromUserOffset(250_000L));
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
+      var data = findTool("get_revlog_data").execute(args).getAsJsonObject();
+      assertEquals("USER_PROVIDED", data.get("sync_method").getAsString());
+      assertEquals("unknown", data.getAsJsonObject("_metadata").get("timing_accuracy_ms").getAsString());
+      assertTrue(data.get("warnings").toString().contains("user-provided offset of 250.0 ms"),
+          data.toString());
+      var list = findTool("list_revlog_signals").execute(args).getAsJsonObject();
+      assertEquals("unknown", list.getAsJsonObject("_metadata").get("timing_accuracy_ms").getAsString());
+    }
+
+    @Test
+    @DisplayName("a wall-clock-only alignment is named as such")
+    void wallClockOnlyIsNamed() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), createLowConfidenceSyncResult());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("signal_key", "REV/SparkMax_1/appliedOutput");
+      var data = findTool("get_revlog_data").execute(args).getAsJsonObject();
+      assertEquals("SYSTEM_TIME_ONLY", data.get("sync_method").getAsString());
+      var warnings = data.get("warnings").toString();
+      assertTrue(warnings.contains("wall-clock estimate only"), warnings);
+      assertFalse(warnings.contains("via correlation"), warnings);
+    }
+
+    @Test
+    @DisplayName("filters that match no signal are no_match")
+    void filtersMatchingNothingAreNoMatch() throws Exception {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), createGoodSyncResult());
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("device_filter", "NoSuchDevice");
+      var list = findTool("list_revlog_signals").execute(args).getAsJsonObject();
+      assertEquals("no_match", list.get("status").getAsString(), list.toString());
+      assertTrue(list.get("reason").getAsString().contains("NoSuchDevice"));
+    }
+  }
+
+  @Nested
+  @DisplayName("set_revlog_offset under concurrency (review 6 sections 2.4, 4.1)")
+  class ConcurrentOffsets {
+    @Test
+    @DisplayName("offsets set on two buses at the same time are both kept")
+    void twoBusesAtOnce() throws Exception {
+      var wpilog = createMockWpilog();
+      logManager.testPutLog(wpilog.path(), wpilog);
+      var rio = createMockRevLog();
+      var canivore = rio.at("/test/REV_second_canivore.revlog", rio.filenameTimestamp());
+      setSynchronizedLogs(wpilog.path(), new SynchronizedLogs.Builder().wpilog(wpilog)
+          .addRevLog(rio, createGoodSyncResult(), "rio")
+          .addRevLog(canivore, createGoodSyncResult(), "canivore").build());
+      var tool = findTool("set_revlog_offset");
+      var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+      try {
+        for (int round = 1; round <= 30; round++) {
+          double rioMs = 100.0 + round;
+          double canMs = 200.0 + round;
+          var a = pool.submit(() -> tool.execute(offsetArgs("rio", rioMs)));
+          var b = pool.submit(() -> tool.execute(offsetArgs("canivore", canMs)));
+          assertTrue(a.get().getAsJsonObject().get("success").getAsBoolean(), a.get().toString());
+          assertTrue(b.get().getAsJsonObject().get("success").getAsBoolean(), b.get().toString());
+        }
+      } finally {
+        pool.shutdownNow();
+      }
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var status = findTool("sync_status").execute(args).getAsJsonObject();
+      var offsets = new java.util.HashMap<String, Long>();
+      for (var r : status.getAsJsonArray("revlogs")) {
+        var o = r.getAsJsonObject();
+        var sync = o.getAsJsonObject("sync");
+        assertEquals("USER_PROVIDED", sync.get("method").getAsString(), o.toString());
+        offsets.put(o.get("can_bus").getAsString(), sync.get("offset_microseconds").getAsLong());
+      }
+      // A lost update would leave one bus at an earlier round's offset, or at the correlation's
+      assertEquals(130_000L, offsets.get("rio"), offsets.toString());
+      assertEquals(230_000L, offsets.get("canivore"), offsets.toString());
+    }
+
+    JsonObject offsetArgs(String bus, double offsetMs) {
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("can_bus", bus);
+      args.addProperty("offset_ms", offsetMs);
+      return args;
     }
   }
 }

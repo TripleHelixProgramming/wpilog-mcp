@@ -5,3 +5,4 @@ tsconfig.json
 **/*.ts
 **/*.map
 server/.gitkeep
+out/test/**

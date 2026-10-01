@@ -431,90 +431,6 @@ class ToolUtilsTest {
     }
   }
 
-  // ==================== isEnabledAt ====================
-
-  @Nested
-  @DisplayName("isEnabledAt")
-  class IsEnabledAtTests {
-
-    @Test
-    @DisplayName("returns true for null list (permissive fallback)")
-    void nullList() {
-      assertTrue(ToolUtils.isEnabledAt(null, 1.0));
-    }
-
-    @Test
-    @DisplayName("returns true for empty list (permissive fallback)")
-    void emptyList() {
-      assertTrue(ToolUtils.isEnabledAt(List.of(), 1.0));
-    }
-
-    @Test
-    @DisplayName("returns true when enabled at timestamp")
-    void enabledAtTimestamp() {
-      var values = List.of(
-          new TimestampedValue(0.0, true),
-          new TimestampedValue(5.0, false));
-      assertTrue(ToolUtils.isEnabledAt(values, 3.0));
-    }
-
-    @Test
-    @DisplayName("returns false when disabled at timestamp")
-    void disabledAtTimestamp() {
-      var values = List.of(
-          new TimestampedValue(0.0, true),
-          new TimestampedValue(5.0, false));
-      assertFalse(ToolUtils.isEnabledAt(values, 6.0));
-    }
-
-    @Test
-    @DisplayName("returns false for timestamp before first value")
-    void beforeFirstValue() {
-      var values = List.of(new TimestampedValue(5.0, true));
-      // ZOH returns null before first value, Boolean.TRUE.equals(null) = false
-      assertFalse(ToolUtils.isEnabledAt(values, 1.0));
-    }
-  }
-
-  // ==================== estimateSeasonYear ====================
-
-  @Nested
-  @DisplayName("estimateSeasonYear")
-  class EstimateSeasonYearTests {
-
-    @Test
-    @DisplayName("extracts year from typical WPILib filename")
-    void typicalFilename() {
-      var log = new MockLogBuilder()
-          .setPath("/logs/FRC_20260321_123456.wpilog")
-          .addNumericEntry("/dummy", new double[]{0}, new double[]{0})
-          .build();
-      assertEquals(2026, ToolUtils.estimateSeasonYear(log));
-    }
-
-    @Test
-    @DisplayName("extracts year from path containing 2024")
-    void year2024() {
-      var log = new MockLogBuilder()
-          .setPath("/2024/match1.wpilog")
-          .addNumericEntry("/dummy", new double[]{0}, new double[]{0})
-          .build();
-      assertEquals(2024, ToolUtils.estimateSeasonYear(log));
-    }
-
-    @Test
-    @DisplayName("falls back to current year when no year in path")
-    void noYearInPath() {
-      var log = new MockLogBuilder()
-          .setPath("/logs/match.wpilog")
-          .addNumericEntry("/dummy", new double[]{0}, new double[]{0})
-          .build();
-      int year = ToolUtils.estimateSeasonYear(log);
-      int currentYear = java.time.Year.now().getValue();
-      assertEquals(currentYear, year);
-    }
-  }
-
   // ==================== Validation methods ====================
 
   @Nested
@@ -666,6 +582,55 @@ class ToolUtilsTest {
     void throwsWhenMissing() {
       assertThrows(IllegalArgumentException.class,
           () -> ToolUtils.getRequiredString(args(), "missing"));
+    }
+  }
+
+  @Nested
+  @DisplayName("getRequiredInt")
+  class GetRequiredIntTests {
+
+    @Test
+    @DisplayName("returns value when present")
+    void returnsValue() {
+      var args = new JsonObject();
+      args.addProperty("year", 2026);
+      assertEquals(2026, ToolUtils.getRequiredInt(args, "year"));
+    }
+
+    @Test
+    @DisplayName("names the missing parameter instead of a NullPointerException")
+    void throwsWhenMissing() {
+      var e = assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.getRequiredInt(args(), "year"));
+      assertEquals("Missing required parameter: year", e.getMessage());
+      var explicitNull = new JsonObject();
+      explicitNull.add("year", com.google.gson.JsonNull.INSTANCE);
+      assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.getRequiredInt(explicitNull, "year"));
+    }
+  }
+
+  @Nested
+  @DisplayName("validateTimeRange")
+  class ValidateTimeRangeTests {
+
+    @Test
+    @DisplayName("accepts open, ordered, and point ranges")
+    void accepts() {
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(null, null));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(5.0, null));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(null, 5.0));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(1.0, 5.0));
+      assertDoesNotThrow(() -> ToolUtils.validateTimeRange(5.0, 5.0));
+    }
+
+    @Test
+    @DisplayName("rejects start_time after end_time, naming both")
+    void rejectsInverted() {
+      var e = assertThrows(IllegalArgumentException.class,
+          () -> ToolUtils.validateTimeRange(10.0, 5.0));
+      assertTrue(e.getMessage().contains("start_time=10.0"), e.getMessage());
+      assertTrue(e.getMessage().contains("end_time=5.0"), e.getMessage());
     }
   }
 

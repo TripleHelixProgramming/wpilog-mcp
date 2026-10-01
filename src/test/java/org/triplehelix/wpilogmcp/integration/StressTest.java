@@ -33,6 +33,7 @@ import org.triplehelix.wpilogmcp.tools.CoreTools;
 import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.FrcDomainTools;
+import org.triplehelix.wpilogmcp.tools.PoseTools;
 import org.triplehelix.wpilogmcp.tools.QueryTools;
 import org.triplehelix.wpilogmcp.tools.RevLogTools;
 import org.triplehelix.wpilogmcp.tools.RobotAnalysisTools;
@@ -42,16 +43,17 @@ import org.triplehelix.wpilogmcp.tools.TbaTools;
 /**
  * Integration stress test that exercises all MCP server functionality with real log files.
  *
- * <p>Configuration is loaded from {@code .mcp.json} in the project root directory, which
- * is the same file used to configure the MCP server for Claude/Cursor. This ensures
- * the stress test runs against the same log files and with the same settings as production.
- *
- * <p>Alternatively, provide the log directory via system property or environment variable:
+ * <p>Runs only through {@code ./gradlew stressTest}. The configuration is the {@code stresstest}
+ * server in the config file given by {@code -Pconfigpath=<file>} (the same format the server
+ * reads); without one, it uses {@code ~/riologs} and team 2363, with the TBA key from
+ * {@code TBA_API_KEY}:
  * <pre>
- * ./gradlew stressTest
- * ./gradlew test -Dstress.logdir=/path/to/logs --tests "*StressTest*"
- * STRESS_LOGDIR=/path/to/logs ./gradlew test --tests "*StressTest*"
+ * ./gradlew stressTest -Pconfigpath=stress-config.json
  * </pre>
+ *
+ * <p>This test exercises loading, caching, concurrency, and each tool family on real logs. The
+ * per-result robustness rules for every tool on every log are checked by
+ * {@code RealLogConformanceTest}.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DisplayName("MCP Server Stress Test")
@@ -68,6 +70,8 @@ class StressTest {
   private static final AtomicInteger successfulOperations = new AtomicInteger(0);
   private static final AtomicInteger failedOperations = new AtomicInteger(0);
   private static long totalTimeMs = 0;
+  private static final List<String> violations =
+      java.util.Collections.synchronizedList(new ArrayList<>());
 
   @BeforeAll
   static void setup() {
@@ -120,6 +124,7 @@ class StressTest {
     QueryTools.registerAll(capturingRegistry);
     StatisticsTools.registerAll(capturingRegistry);
     FrcDomainTools.registerAll(capturingRegistry);
+    PoseTools.registerAll(capturingRegistry);
     RobotAnalysisTools.registerAll(capturingRegistry);
     ExportTools.registerAll(capturingRegistry);
     TbaTools.registerAll(capturingRegistry);
@@ -148,7 +153,9 @@ class StressTest {
   @DisplayName("1. List available logs")
   void listAvailableLogs() throws Exception {
     var tool = findTool("list_available_logs");
-    var result = executeTool(tool, new JsonObject());
+    var listArgs = new JsonObject();
+    listArgs.addProperty("limit", 500); // every log, not the default first page
+    var result = executeTool(tool, listArgs);
 
     assertTrue(result.has("success") && result.get("success").getAsBoolean(),
         "list_available_logs failed: " + result);
@@ -260,12 +267,11 @@ class StressTest {
       System.out.println("  list_loaded_logs: " + loaded + " loaded");
     });
 
-    testTool("list_struct_types", new JsonObject(), result -> {
-      int total = 0;
-      for (String cat : List.of("geometry", "kinematics", "vision", "autonomous")) {
-        if (result.has(cat)) total += result.getAsJsonArray(cat).size();
-      }
-      System.out.println("  list_struct_types: " + total + " struct types");
+    var structArgs = new JsonObject();
+    structArgs.addProperty("path", logPath);
+    testTool("list_struct_types", structArgs, result -> {
+      int total = result.has("struct_types") ? result.getAsJsonArray("struct_types").size() : 0;
+      System.out.println("  list_struct_types: " + total + " struct types in this log");
     });
 
     testTool("health_check", new JsonObject(), result -> {
@@ -536,6 +542,26 @@ class StressTest {
       }
     });
 
+    // pose_corrections and compare_poses (the robot pose against itself when no other pose
+    // is named: the exercise is the reading and interpolation)
+    var correctionsArgs = new JsonObject();
+    correctionsArgs.addProperty("path", logPath);
+    correctionsArgs.addProperty("scope", "enabled");
+    testTool("pose_corrections", correctionsArgs, result -> {
+      if (result.has("residual_translation_m")) {
+        System.out.printf("  pose_corrections: %d corrections, median residual %.4f m%n",
+            result.get("correction_count").getAsInt(),
+            result.getAsJsonObject("residual_translation_m").get("median").getAsDouble());
+      }
+    });
+    if (loadedEntryNames != null && loadedEntryNames.contains("/RealOutputs/Drive/Pose")) {
+      var compareArgs = new JsonObject();
+      compareArgs.addProperty("path", logPath);
+      compareArgs.addProperty("reference_entry", "/RealOutputs/Drive/Pose");
+      testTool("compare_poses", compareArgs, result -> System.out.printf(
+          "  compare_poses: %d samples%n", result.get("count").getAsInt()));
+    }
+
     // analyze_replay_drift (AdvantageKit)
     var replayArgs = new JsonObject();
     replayArgs.addProperty("path", logPath);
@@ -611,11 +637,8 @@ class StressTest {
     var swerveArgs = new JsonObject();
     swerveArgs.addProperty("path", logPath);
     testTool("analyze_swerve", swerveArgs, result -> {
-      if (result.has("swerve_entries")) {
-        System.out.println("  analyze_swerve: swerve entries found");
-      } else {
-        System.out.println("  analyze_swerve: no swerve data");
-      }
+      System.out.println("  analyze_swerve: " + result.get("module_count").getAsInt()
+          + " modules (" + result.get("layout").getAsString() + ")");
     });
 
     // power_analysis
@@ -650,18 +673,33 @@ class StressTest {
       }
     });
 
-    // moi_regression (requires angular velocity and current entries — try common names)
-    for (String prefix : List.of("/Drive", "/Arm", "/Shooter")) {
-      var moiArgs = new JsonObject();
-      moiArgs.addProperty("path", logPath);
-      moiArgs.addProperty("angular_velocity_entry", prefix + "/Velocity");
-      moiArgs.addProperty("current_entry", prefix + "/Current");
-      testTool("moi_regression", moiArgs, result -> {
-        if (result.has("J")) {
-          System.out.printf("  moi_regression (%s): J=%.6f, B=%.6f%n",
-              prefix, result.get("J").getAsDouble(), result.get("B").getAsDouble());
-        }
-      });
+    // moi_regression: a velocity and a current entry of the same mechanism (same parent path)
+    if (loadedEntryNames != null) {
+      var moiLog = LogManager.getInstance().getOrLoad(logPath);
+      java.util.function.Predicate<String> numeric = n -> {
+        var info = moiLog.entries().get(n);
+        return info != null && List.of("double", "float", "int64").contains(info.type());
+      };
+      java.util.function.Function<String, String> parent =
+          n -> n.substring(0, Math.max(0, n.lastIndexOf('/')));
+      loadedEntryNames.stream()
+          .filter(v -> v.contains("Velocity") && numeric.test(v))
+          .flatMap(v -> loadedEntryNames.stream()
+              .filter(c -> c.contains("Current") && numeric.test(c)
+                  && parent.apply(c).equals(parent.apply(v)))
+              .limit(1).map(c -> List.of(v, c)))
+          .findFirst()
+          .ifPresent(pair -> {
+            var moiArgs = new JsonObject();
+            moiArgs.addProperty("path", logPath);
+            moiArgs.addProperty("velocity_entry", pair.get(0));
+            moiArgs.addProperty("current_entry", pair.get(1));
+            moiArgs.addProperty("kt", 0.0194);
+            moiArgs.addProperty("gear_ratio", 6.75);
+            testTool("moi_regression", moiArgs, result ->
+                System.out.println("  moi_regression (" + pair.get(0) + "): "
+                    + (result.has("status") ? result.get("status").getAsString() : "?")));
+          });
     }
 
     // analyze_cycles
@@ -671,10 +709,15 @@ class StressTest {
                           name.toLowerCase().contains("intake") ||
                           name.toLowerCase().contains("shooter"))
           .findFirst();
-      if (stateEntry.isPresent()) {
+      var cycleLog = LogManager.getInstance().getOrLoad(logPath);
+      var startState = stateEntry.flatMap(e -> java.util.Optional
+          .ofNullable(cycleLog.values().get(e)).flatMap(values -> values.stream()
+              .map(v -> String.valueOf(v.value())).distinct().skip(1).findFirst()));
+      if (stateEntry.isPresent() && startState.isPresent()) {
         var cycleArgs = new JsonObject();
         cycleArgs.addProperty("path", logPath);
         cycleArgs.addProperty("state_entry", stateEntry.get());
+        cycleArgs.addProperty("cycle_start_state", startState.get());
         testTool("analyze_cycles", cycleArgs, result -> {
           int samples = result.has("sample_count") ? result.get("sample_count").getAsInt() : 0;
           System.out.println("  analyze_cycles: " + samples + " samples");
@@ -731,9 +774,10 @@ class StressTest {
     // get_tba_match_data (needs event key + match; try a reasonable default)
     if (TbaConfig.getInstance().isConfigured()) {
       var tbaArgs = new JsonObject();
-      tbaArgs.addProperty("event_key", "2026miket");
+      tbaArgs.addProperty("year", 2026);
+      tbaArgs.addProperty("event_code", "vache");
       tbaArgs.addProperty("match_type", "qm");
-      tbaArgs.addProperty("match_number", 1);
+      tbaArgs.addProperty("match_number", 10);
       testTool("get_tba_match_data", tbaArgs, result -> {
         boolean hasData = result.has("match_key");
         System.out.println("  get_tba_match_data: " + (hasData ? "data found" : "no data"));
@@ -993,6 +1037,12 @@ class StressTest {
       var result = tool.execute(args);
       long duration = System.currentTimeMillis() - start;
       totalTimeMs += duration;
+      // The robustness rules hold on real logs too (see ToolConformanceTest)
+      Integer limit = args.has("limit") ? args.get("limit").getAsInt() : null;
+      for (var check : org.triplehelix.wpilogmcp.conformance.ConformanceChecks.check(result,
+          limit, args.has("path"))) {
+        violations.add(tool.name() + " | " + check.label());
+      }
       if (result.isJsonObject()) {
         var obj = result.getAsJsonObject();
         if (obj.has("success") && obj.get("success").getAsBoolean()) {
@@ -1022,6 +1072,98 @@ class StressTest {
       failedOperations.incrementAndGet();
       throw new AssertionError("Failed to load log: " + path, e);
     }
+  }
+
+  // ==================== Robustness features ====================
+
+  @Test
+  @Order(100)
+  @DisplayName("100. Field paths, scopes, alignment, compound conditions, roles")
+  void exerciseRobustnessFeatures() throws Exception {
+    assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
+    String logPath = availableLogPaths.get(0);
+    loadLog(logPath);
+    System.out.println("\nExercising robustness features:");
+
+    testTool("resolve_signals", withPath(logPath), result ->
+        System.out.println("  resolve_signals: " + result.getAsJsonArray("unresolved").size()
+            + " unresolved roles"));
+    var structArgs = withPath(logPath);
+    testTool("list_struct_types", structArgs, result ->
+        System.out.println("  list_struct_types: " + result.get("struct_type_count").getAsInt()
+            + " struct types"));
+    var logsArgs = new JsonObject();
+    logsArgs.addProperty("limit", 5);
+    testTool("list_available_logs", logsArgs, result ->
+        System.out.println("  list_available_logs: " + result.get("log_count").getAsInt()
+            + " logs, has_more=" + result.get("has_more").getAsBoolean()));
+
+    var numericEntries = findNumericEntries(2);
+    if (numericEntries.size() >= 2) {
+      var alignArgs = withPath(logPath);
+      var names = new com.google.gson.JsonArray();
+      names.add(numericEntries.get(0));
+      names.add(numericEntries.get(1));
+      alignArgs.add("names", names);
+      alignArgs.addProperty("difference", true);
+      alignArgs.addProperty("limit", 5);
+      testTool("align_entries", alignArgs, result ->
+          System.out.println("  align_entries: " + result.get("total_rows").getAsInt()
+              + " rows"));
+      var lagArgs = withPath(logPath);
+      lagArgs.addProperty("name1", numericEntries.get(0));
+      lagArgs.addProperty("name2", numericEntries.get(1));
+      lagArgs.addProperty("max_lag_sec", 0.5);
+      testTool("time_correlate", lagArgs, result -> {
+        if (result.has("lag_search") && result.getAsJsonObject("lag_search").has("best_lag_sec")) {
+          System.out.println("  time_correlate lag: " + result.getAsJsonObject("lag_search")
+              .get("best_lag_sec").getAsDouble() + " s");
+        }
+      });
+    }
+
+    // A struct field over enabled time, and a compound condition
+    String pose = loadedEntryNames == null ? null : loadedEntryNames.stream()
+        .filter(n -> n.endsWith("/Pose")).findFirst().orElse(null);
+    if (pose != null) {
+      var poseArgs = withPath(logPath);
+      poseArgs.addProperty("name", pose + ".translation.x");
+      poseArgs.addProperty("scope", "enabled");
+      testTool("get_statistics", poseArgs, result ->
+          System.out.printf("  get_statistics %s.translation.x (enabled): range %.3f%n", pose,
+              result.get("max").getAsDouble() - result.get("min").getAsDouble()));
+      var condArgs = withPath(logPath);
+      condArgs.add("conditions", com.google.gson.JsonParser.parseString(
+          "{\"all\": [{\"name\": \"/DriverStation/Enabled\", \"operator\": \"eq\", "
+              + "\"threshold\": 0}, {\"name\": \"" + pose + ".translation.x\", "
+              + "\"operator\": \"gt\", \"threshold\": -1000}]}"));
+      testTool("find_condition", condArgs, result ->
+          System.out.println("  find_condition (compound): " + result.get("interval_count")
+              .getAsInt() + " intervals"));
+    }
+    var alertArgs = withPath(logPath);
+    alertArgs.addProperty("level", "warning");
+    alertArgs.addProperty("limit", 5);
+    testTool("search_strings", alertArgs, result ->
+        System.out.println("  search_strings (warnings, incl. alerts): "
+            + result.get("total_matches").getAsInt()));
+  }
+
+  @Test
+  @Order(101)
+  @DisplayName("101. Every result met the robustness rules")
+  void noConformanceViolations() {
+    assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
+    System.out.println("\nConformance violations on real logs: " + violations.size());
+    violations.stream().distinct().forEach(v -> System.out.println("  " + v));
+    assertTrue(violations.isEmpty(), "Conformance violations on real logs: "
+        + violations.stream().distinct().toList());
+  }
+
+  private static JsonObject withPath(String path) {
+    var args = new JsonObject();
+    args.addProperty("path", path);
+    return args;
   }
 
   private void testTool(String toolName, JsonObject args, ToolResultHandler handler) {

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -84,6 +85,377 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertEquals(3, events.size());
       assertEquals("ENABLED", events.get(1).getAsJsonObject().get("type").getAsString());
       assertEquals("DISABLED", events.get(2).getAsJsonObject().get("type").getAsString());
+      assertFalse(resultObj.get("rio_brownout_flag_logged").getAsBoolean());
+      // No string entries: counts are present (zero) and the summary is absent
+      var counts = resultObj.getAsJsonObject("text_event_counts");
+      assertEquals(0, counts.get("total").getAsInt());
+      assertEquals(0, counts.getAsJsonObject("by_source").size());
+      assertFalse(resultObj.has("text_event_summary"));
+      assertFalse(resultObj.has("text_event_groups_total"));
+    }
+
+    @Test
+    @DisplayName("recognizes WPILib DataLogManager DS: entries")
+    void detectsPlainWpilibDsEntries() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_plain.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 1, 5}, new boolean[]{false, true, false})
+          .addBooleanEntry("DS:autonomous", new double[]{0, 3}, new boolean[]{true, false})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      var types = new java.util.ArrayList<String>();
+      for (var e : resultObj.getAsJsonArray("events")) {
+        types.add(e.getAsJsonObject().get("type").getAsString());
+      }
+      assertTrue(types.contains("ENABLED"), types.toString());
+      assertTrue(types.contains("DISABLED"), types.toString());
+      assertTrue(types.contains("AUTO_START"), types.toString());
+      assertTrue(types.contains("TELEOP_START"), types.toString());
+      // A timeline of directly observed events carries no statistic-style quality block
+      assertFalse(resultObj.has("data_quality"), "events are not a statistic");
+      assertFalse(resultObj.has("server_analysis_directives"));
+    }
+
+    @Test
+    @DisplayName("voltage brownout events carry basis=voltage_threshold")
+    void voltageBrownoutEventsCarryBasis() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_voltage.wpilog")
+          .addNumericEntry("/SystemStats/BatteryVoltage",
+              new double[]{0, 1, 2, 3}, new double[]{12.0, 6.5, 6.9, 12.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      var events = resultObj.getAsJsonArray("events");
+      assertEquals(2, events.size());
+      var start = events.get(0).getAsJsonObject();
+      assertEquals("BROWNOUT_START", start.get("type").getAsString());
+      assertEquals("voltage_threshold", start.get("basis").getAsString());
+      assertEquals(1.0, start.get("timestamp").getAsDouble(), 1e-9);
+      var end = events.get(1).getAsJsonObject();
+      assertEquals("BROWNOUT_END", end.get("type").getAsString());
+      assertEquals(3.0, end.get("timestamp").getAsDouble(), 1e-9); // 6.9 V is inside hysteresis
+      assertFalse(resultObj.get("rio_brownout_flag_logged").getAsBoolean());
+      assertFalse(resultObj.has("rio_brownout_flag_entry"));
+    }
+
+    @Test
+    @DisplayName("emits RIO_BROWNOUT events from a logged brownout flag")
+    void emitsRioBrownoutFlagEvents() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_rioflag.wpilog")
+          .addBooleanEntry("/SystemStats/BrownedOut",
+              new double[]{0, 10, 10.5, 20, 20.2}, new boolean[]{false, true, false, true, false})
+          .addNumericEntry("/SystemStats/BatteryVoltage",
+              new double[]{0, 10, 20}, new double[]{12.0, 12.0, 12.0})
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("rio_brownout_flag_logged").getAsBoolean());
+      assertEquals("/SystemStats/BrownedOut", resultObj.get("rio_brownout_flag_entry").getAsString());
+      var events = resultObj.getAsJsonArray("events");
+      assertEquals(4, events.size(), events.toString()); // initial false is not an event
+      var first = events.get(0).getAsJsonObject();
+      assertEquals("RIO_BROWNOUT_START", first.get("type").getAsString());
+      assertEquals("rio_flag", first.get("basis").getAsString());
+      assertEquals("power", first.get("category").getAsString());
+      assertEquals(10.0, first.get("timestamp").getAsDouble(), 1e-9);
+      assertEquals("RIO_BROWNOUT_END", events.get(1).getAsJsonObject().get("type").getAsString());
+      assertEquals(10.5, events.get(1).getAsJsonObject().get("timestamp").getAsDouble(), 1e-9);
+      // No voltage-threshold events: voltage never dropped
+      for (var e : events) {
+        assertTrue(e.getAsJsonObject().get("type").getAsString().startsWith("RIO_BROWNOUT"));
+      }
+      assertEquals(4, resultObj.getAsJsonObject("summary").get("power").getAsInt());
+
+      // Time range filtering applies to the flag events too
+      args.addProperty("start_time", 15.0);
+      var filtered = tool.execute(args).getAsJsonObject();
+      assertEquals(2, filtered.getAsJsonArray("events").size());
+      assertEquals(20.0,
+          filtered.getAsJsonArray("events").get(0).getAsJsonObject().get("timestamp").getAsDouble(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("counts and summarizes error/warning text without listing individual messages")
+    void countsAndSummarizesTextEvents() throws Exception {
+      var console = new ArrayList<TimestampedValue>();
+      console.add(new TimestampedValue(0.0, "Robot program starting"));
+      console.add(new TimestampedValue(2.0, "CAN timeout error on device 5"));
+      console.add(new TimestampedValue(3.0, "Shuffleboard.update(): 0.000074s\n\tLoop time of 0.02s overrun\n\tdisabledPeriodic(): 0.6s"));
+      console.add(new TimestampedValue(4.0, "Retract and stop"));
+      console.add(new TimestampedValue(5.0, "CAN timeout error on device 7"));
+      var alerts = new ArrayList<TimestampedValue>();
+      alerts.add(new TimestampedValue(6.0, "Loop time of 0.031s overrun"));
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_console.wpilog")
+          .addEntry("/RealOutputs/Console", "string", console)
+          .addEntry("/RealOutputs/Alerts", "string", alerts)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      // No text events on the timeline itself
+      assertEquals(0, resultObj.getAsJsonArray("events").size(), resultObj.toString());
+      assertFalse(resultObj.getAsJsonObject("summary").has("error"));
+      assertFalse(resultObj.getAsJsonObject("summary").has("warning"));
+
+      var counts = resultObj.getAsJsonObject("text_event_counts");
+      assertEquals(2, counts.get("error").getAsInt());
+      assertEquals(2, counts.get("warning").getAsInt());
+      assertEquals(4, counts.get("total").getAsInt());
+      var bySource = counts.getAsJsonObject("by_source");
+      assertEquals(2, bySource.getAsJsonObject("/RealOutputs/Console").get("error").getAsInt());
+      assertEquals(1, bySource.getAsJsonObject("/RealOutputs/Console").get("warning").getAsInt());
+      assertEquals(1, bySource.getAsJsonObject("/RealOutputs/Alerts").get("warning").getAsInt());
+
+      var summary = resultObj.getAsJsonArray("text_event_summary");
+      assertEquals(2, summary.size(), summary.toString());
+      assertEquals(2, resultObj.get("text_event_groups_total").getAsInt());
+      var can = summary.get(0).getAsJsonObject();
+      assertEquals("ERROR", can.get("type").getAsString());
+      assertEquals("CAN timeout error on device #", can.get("message").getAsString());
+      assertEquals("CAN timeout error on device 5", can.get("example").getAsString());
+      assertEquals(2, can.get("count").getAsInt());
+      assertEquals(2, can.get("variants").getAsInt()); // two different devices behind one pattern
+      assertEquals(2.0, can.get("first_timestamp").getAsDouble(), 1e-9);
+      assertEquals(5.0, can.get("last_timestamp").getAsDouble(), 1e-9);
+      var overrun = summary.get(1).getAsJsonObject();
+      assertEquals("WARNING", overrun.get("type").getAsString());
+      assertEquals("Loop time of #s overrun", overrun.get("message").getAsString()); // matching line, not the blob
+      assertEquals(2, overrun.get("count").getAsInt());
+      assertEquals(2, overrun.getAsJsonArray("sources").size());
+
+      // No voltage entry in this log: the timeline says so instead of staying silent
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("No battery voltage entry found"),
+          resultObj.toString());
+      assertFalse(resultObj.has("brownout_voltage_entry"));
+    }
+
+    @Test
+    @DisplayName("text counts are exact, windowed, and never capped; the summary cap is explicit")
+    void textCountsAreExact() throws Exception {
+      var console = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 350; i++) {
+        console.add(new TimestampedValue(i * 0.1, "error " + i)); // 350 samples, one pattern
+      }
+      var alerts = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 250; i++) {
+        alerts.add(new TimestampedValue(100 + i, "Fault code " + (char) ('A' + i % 26) + i)); // 250 patterns? no: letters vary
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_console_many.wpilog")
+          .addEntry("/RealOutputs/Console", "string", console)
+          .addEntry("/RealOutputs/Alerts", "string", alerts)
+          .build();
+      putLogInCache(log);
+
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = tool.execute(args).getAsJsonObject();
+
+      var counts = resultObj.getAsJsonObject("text_event_counts");
+      assertEquals(600, counts.get("error").getAsInt());
+      assertEquals(0, counts.get("warning").getAsInt());
+      assertEquals(0, resultObj.getAsJsonArray("events").size());
+      // "Fault code A0".."Fault code Z25" normalize to 26 letter patterns + "error #" = 27 groups
+      assertEquals(27, resultObj.get("text_event_groups_total").getAsInt());
+      assertEquals(27, resultObj.getAsJsonArray("text_event_summary").size());
+      var top = resultObj.getAsJsonArray("text_event_summary").get(0).getAsJsonObject();
+      assertEquals("error #", top.get("message").getAsString());
+      assertEquals(350, top.get("count").getAsInt());
+      assertEquals(350, top.get("variants").getAsInt());
+      assertFalse(resultObj.getAsJsonArray("warnings").toString().contains("text_event_summary shows"));
+
+      // Windowed counts
+      args.addProperty("start_time", 30.0);
+      var windowed = tool.execute(args).getAsJsonObject();
+      assertEquals(50 + 250, windowed.getAsJsonObject("text_event_counts").get("error").getAsInt());
+    }
+
+    @Test
+    @DisplayName("the summary cap is visible when a log has more than 200 distinct messages")
+    void summaryCapIsExplicit() throws Exception {
+      var console = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 260; i++) {
+        var word = new StringBuilder();
+        int n = i;
+        do { word.append((char) ('a' + n % 26)); n /= 26; } while (n > 0);
+        console.add(new TimestampedValue(i, "error " + word)); // 260 distinct patterns (no digits)
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_console_distinct.wpilog")
+          .addEntry("/RealOutputs/Console", "string", console)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("get_ds_timeline").execute(args).getAsJsonObject();
+
+      assertEquals(260, resultObj.get("text_event_groups_total").getAsInt());
+      assertEquals(200, resultObj.getAsJsonArray("text_event_summary").size());
+      assertEquals(260, resultObj.getAsJsonObject("text_event_counts").get("error").getAsInt());
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("200 most frequent of 260"));
+      // Digit-free messages: pattern equals text, so no separate example field
+      var first = resultObj.getAsJsonArray("text_event_summary").get(0).getAsJsonObject();
+      assertFalse(first.has("example"), first.toString());
+      assertFalse(first.has("variants_capped"));
+    }
+
+    @Test
+    @DisplayName("groups and variants are judged on the full line, not the truncated display text")
+    void variantsUseFullLine() throws Exception {
+      var prefix = "error " + "x".repeat(250);
+      var console = new ArrayList<TimestampedValue>();
+      console.add(new TimestampedValue(1.0, prefix + " alpha"));
+      console.add(new TimestampedValue(2.0, prefix + " beta"));
+      console.add(new TimestampedValue(3.0, prefix + " alpha"));
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_long_lines.wpilog")
+          .addEntry("/RealOutputs/Console", "string", console)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("get_ds_timeline").execute(args).getAsJsonObject();
+
+      var summary = resultObj.getAsJsonArray("text_event_summary");
+      assertEquals(2, summary.size(), summary.toString()); // "... alpha" and "... beta" differ past 200 chars
+      var alpha = summary.get(0).getAsJsonObject();
+      assertEquals(2, alpha.get("count").getAsInt());
+      assertEquals(1, alpha.get("variants").getAsInt());
+      assertEquals(203, alpha.get("message").getAsString().length()); // truncated for display only
+      assertTrue(alpha.get("message").getAsString().endsWith("..."));
+    }
+
+    @Test
+    @DisplayName("does not emit TELEOP_START for the initial Autonomous=false sample")
+    void noSpuriousTeleopStart() throws Exception {
+      // Never-enabled pit log: only the resting state
+      var pit = new MockLogBuilder()
+          .setPath("/test/ds_pit.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0}, new boolean[]{false})
+          .addBooleanEntry("DS:autonomous", new double[]{0}, new boolean[]{false})
+          .build();
+      putLogInCache(pit);
+      var tool = findTool("get_ds_timeline");
+      var args = new JsonObject();
+      args.addProperty("path", pit.path());
+      var r1 = tool.execute(args).getAsJsonObject();
+      assertFalse(r1.getAsJsonObject("summary").has("match_phase"), r1.toString());
+
+      // AdvantageKit-shaped match: auto flag starts false, exactly one TELEOP_START
+      var match = new MockLogBuilder()
+          .setPath("/test/ds_match_shape.wpilog")
+          .addBooleanEntry("/DriverStation/Enabled", new double[]{0, 111, 126, 128, 263},
+              new boolean[]{false, true, false, true, false})
+          .addBooleanEntry("/DriverStation/Autonomous", new double[]{0, 27, 126},
+              new boolean[]{false, true, false})
+          .build();
+      putLogInCache(match);
+      args.addProperty("path", match.path());
+      var r2 = tool.execute(args).getAsJsonObject();
+      var teleopStarts = new ArrayList<Double>();
+      var autoStarts = new ArrayList<Double>();
+      for (var e : r2.getAsJsonArray("events")) {
+        var o = e.getAsJsonObject();
+        if (o.get("type").getAsString().equals("TELEOP_START")) teleopStarts.add(o.get("timestamp").getAsDouble());
+        if (o.get("type").getAsString().equals("AUTO_START")) autoStarts.add(o.get("timestamp").getAsDouble());
+      }
+      assertEquals(List.of(128.0), teleopStarts);
+      assertEquals(List.of(111.0), autoStarts);
+
+      // A window that starts inside autonomous still sees the auto->teleop transition
+      args.addProperty("start_time", 115.0);
+      var windowed = tool.execute(args).getAsJsonObject();
+      var windowedTeleop = new ArrayList<Double>();
+      for (var e : windowed.getAsJsonArray("events")) {
+        var o = e.getAsJsonObject();
+        if (o.get("type").getAsString().equals("TELEOP_START")) windowedTeleop.add(o.get("timestamp").getAsDouble());
+        assertNotEquals("AUTO_START", o.get("type").getAsString(), "AUTO_START is before the window");
+      }
+      assertEquals(List.of(128.0), windowedTeleop, windowed.toString());
+    }
+
+    @Test
+    @DisplayName("reports the voltage entry it scanned, including WPILib NT PowerDistribution voltage")
+    void reportsBrownoutVoltageEntry() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_nt_voltage.wpilog")
+          .addNumericEntry("NT:/SmartDashboard/PowerDistribution[1]/Voltage",
+              new double[]{0, 1, 2}, new double[]{12.1, 6.5, 12.0})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("get_ds_timeline").execute(args).getAsJsonObject();
+
+      assertEquals("NT:/SmartDashboard/PowerDistribution[1]/Voltage",
+          resultObj.get("brownout_voltage_entry").getAsString());
+      assertEquals(2, resultObj.getAsJsonObject("summary").get("power").getAsInt());
+      // The only warning is that this log has no DriverStation state (so no enable events)
+      var warnings = resultObj.getAsJsonArray("warnings");
+      assertEquals(1, warnings.size(), warnings.toString());
+      assertTrue(warnings.get(0).getAsString().contains("No DriverStation enabled entry"));
+    }
+
+    @Test
+    @DisplayName("RIO flag: initial true emits START; non-boolean flag entries are ignored")
+    void rioFlagEdgeCases() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/ds_rioflag_edge.wpilog")
+          .addNumericEntry("/SystemStats/BrownedOutCount", new double[]{0, 1}, new double[]{0, 1})
+          .addBooleanEntry("/SystemStats/BrownedOut", new double[]{5.0, 5.2}, new boolean[]{true, false})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("get_ds_timeline").execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("rio_brownout_flag_logged").getAsBoolean());
+      assertEquals("/SystemStats/BrownedOut", resultObj.get("rio_brownout_flag_entry").getAsString());
+      var events = resultObj.getAsJsonArray("events");
+      assertEquals(2, events.size(), events.toString());
+      assertEquals("RIO_BROWNOUT_START", events.get(0).getAsJsonObject().get("type").getAsString());
+      assertEquals(5.0, events.get(0).getAsJsonObject().get("timestamp").getAsDouble(), 1e-9);
+
+      var numericOnly = new MockLogBuilder()
+          .setPath("/test/ds_rioflag_numeric.wpilog")
+          .addNumericEntry("/SystemStats/BrownedOutCount", new double[]{0, 1}, new double[]{0, 1})
+          .build();
+      putLogInCache(numericOnly);
+      args.addProperty("path", numericOnly.path());
+      var r2 = findTool("get_ds_timeline").execute(args).getAsJsonObject();
+      // A numeric "BrownedOutCount" is not a flag, and with no DriverStation, voltage, or text
+      // entries either there is nothing to build a timeline from
+      assertEquals("not_applicable", r2.get("status").getAsString(), r2.toString());
+      assertFalse(r2.has("rio_brownout_flag_entry"));
     }
   }
 
@@ -226,6 +598,27 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a stall with negative current (motor driven in reverse) is a stall")
+    void detectsNegativeCurrentStall() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/stall_negative.wpilog")
+          .addNumericEntry("/Intake/Velocity", new double[]{0, 1, 2, 3, 4}, new double[]{-2, 0, 0, 0, -2})
+          .addNumericEntry("/Intake/Current", new double[]{0, 1, 2, 3, 4}, new double[]{-5, -38, -45, -40, -5})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("mechanism_name", "Intake");
+      args.addProperty("stall_current_threshold", 30.0);
+      var resultObj = findTool("profile_mechanism").execute(args).getAsJsonObject();
+
+      var stalls = resultObj.getAsJsonArray("stall_events");
+      assertEquals(1, stalls.size(), resultObj.toString());
+      assertEquals(-45.0, stalls.get(0).getAsJsonObject().get("max_current").getAsDouble(), 1e-9);
+    }
+
+    @Test
     @DisplayName("calculates settling time for step response")
     void calculatesSettlingTime() throws Exception {
       // Simulate a step response: setpoint changes, mechanism settles
@@ -358,8 +751,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
           .setPath("/test/auto_path.wpilog")
           .addEntry("/DriverStation/Enabled", "boolean", enabledValues)
           .addEntry("/DriverStation/Autonomous", "boolean", autoValues)
-          .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
-          .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
+          .addEntry("/PathPlanner/targetPose", "struct:Pose2d", desiredPoses)
+          .addEntry("/PathPlanner/currentPose", "struct:Pose2d", actualPoses)
           .build();
       putLogInCache(log);
 
@@ -379,11 +772,125 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertTrue(rmse >= 0, "RMSE should be non-negative");
       assertTrue(rmse < 1.0, "RMSE should be small for near-matching paths");
     }
+
+    @Test
+    @DisplayName("path poses named only like a setpoint are candidates, used when passed")
+    void pathPosesByNameAreNotGuessed() throws Exception {
+      var desiredPoses = new ArrayList<TimestampedValue>();
+      var actualPoses = new ArrayList<TimestampedValue>();
+      for (int i = 0; i <= 5; i++) {
+        desiredPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i, 0)));
+        actualPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i + 0.1, 0.1)));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/auto_path_names.wpilog")
+          .addBooleanEntry("/DriverStation/Enabled", new double[]{0, 5}, new boolean[]{true, false})
+          .addBooleanEntry("/DriverStation/Autonomous", new double[]{0, 5},
+              new boolean[]{true, false})
+          .addEntry("/Auto/DesiredPose", "struct:Pose2d", desiredPoses)
+          .addEntry("/Auto/ActualPose", "struct:Pose2d", actualPoses)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var guessed = findTool("analyze_auto").execute(args).getAsJsonObject();
+      assertEquals("partial", guessed.get("status").getAsString());
+      assertFalse(guessed.has("path_following_error"));
+      var skipped = guessed.getAsJsonArray("skipped").toString();
+      assertTrue(skipped.contains("/Auto/DesiredPose") && skipped.contains("path_setpoint_entry"),
+          skipped);
+
+      args.addProperty("path_setpoint_entry", "/Auto/DesiredPose");
+      args.addProperty("path_actual_entry", "/Auto/ActualPose");
+      var named = findTool("analyze_auto").execute(args).getAsJsonObject();
+      assertTrue(named.has("path_following_error"), named.toString());
+      var inputs = named.getAsJsonObject("inputs").getAsJsonObject("entries");
+      assertEquals("/Auto/DesiredPose", inputs.get("path_setpoint").getAsString());
+    }
+
+    @Test
+    @DisplayName("detects the auto period from WPILib DataLogManager DS: entries")
+    void detectsAutoFromDsEntries() throws Exception {
+      var desiredPoses = new ArrayList<TimestampedValue>();
+      var actualPoses = new ArrayList<TimestampedValue>();
+      for (int i = 0; i <= 5; i++) {
+        desiredPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i, 0)));
+        actualPoses.add(new TimestampedValue(i, MockLogBuilder.makePose2d(i + 0.1, 0.1)));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/auto_path_ds.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 5}, new boolean[]{true, false})
+          .addBooleanEntry("DS:autonomous", new double[]{0, 5}, new boolean[]{true, false})
+          .addEntry("NT:/PathPlanner/targetPose", "struct:Pose2d", desiredPoses)
+          .addEntry("NT:/PathPlanner/currentPose", "struct:Pose2d", actualPoses)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("analyze_auto").execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertTrue(resultObj.has("path_following_error"), resultObj.toString());
+    }
+  }
+
+  @Nested
+  @DisplayName("analyze_loop_timing does not guess")
+  class LoopTimingNoGuessTests {
+    @Test
+    @DisplayName("a name like LoopTime is a candidate in no_match, not the loop time")
+    void loopTimeByNameIsACandidate() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/loop_by_name.wpilog")
+          .addNumericEntry("/RobotCode/LoopTime", new double[]{0, 1, 2}, new double[]{20, 21, 19})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var r = findTool("analyze_loop_timing").execute(args).getAsJsonObject();
+      assertEquals("no_match", r.get("status").getAsString());
+      assertEquals("/RobotCode/LoopTime", r.getAsJsonArray("candidates").get(0).getAsString());
+      assertTrue(r.get("hint").getAsString().contains("pass it as entry"), r.toString());
+    }
   }
 
   @Nested
   @DisplayName("analyze_cycles Tool")
   class AnalyzeCyclesToolTests {
+    @Test
+    @DisplayName("rejects a non-positive limit and an inverted time range")
+    void rejectsBadLimitAndRange() throws Exception {
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "Idle"));
+      stateValues.add(new TimestampedValue(1.0, "Intake"));
+      stateValues.add(new TimestampedValue(3.0, "Idle"));
+      var log = new MockLogBuilder()
+          .setPath("/test/cycles_validation.wpilog")
+          .addEntry("/Superstructure/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+      var tool = findTool("analyze_cycles");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/Superstructure/State");
+      args.addProperty("cycle_start_state", "Intake");
+      args.addProperty("limit", 0);
+      var limit = tool.execute(args).getAsJsonObject();
+      assertEquals("error", limit.get("status").getAsString());
+      assertTrue(limit.get("error").getAsString().contains("limit must be positive"),
+          limit.get("error").getAsString());
+
+      args.addProperty("limit", 10);
+      args.addProperty("start_time", 5.0);
+      args.addProperty("end_time", 2.0);
+      var range = tool.execute(args).getAsJsonObject();
+      assertEquals("error", range.get("status").getAsString());
+      assertTrue(range.get("error").getAsString().contains("start_time must not be after end_time"),
+          range.get("error").getAsString());
+    }
+
     @Test
     @DisplayName("calculates cycle times and dead time")
     void calculatesCycleTimesAndDeadTime() throws Exception {
@@ -556,7 +1063,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var stateValues = new ArrayList<TimestampedValue>();
       stateValues.add(new TimestampedValue(0.0, "idle"));
       stateValues.add(new TimestampedValue(1.0, "INTAKE"));
+      stateValues.add(new TimestampedValue(1.5, "idle"));
       stateValues.add(new TimestampedValue(2.0, "Intake"));  // Different case
+      stateValues.add(new TimestampedValue(2.5, "idle"));
       stateValues.add(new TimestampedValue(3.0, "intAKE"));  // Different case
 
       var log = new MockLogBuilder()
@@ -589,9 +1098,13 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       // Test data: Cycles at different times
       var stateValues = new ArrayList<TimestampedValue>();
       stateValues.add(new TimestampedValue(0.0, "INTAKE"));  // Before start_time
+      stateValues.add(new TimestampedValue(2.0, "IDLE"));
       stateValues.add(new TimestampedValue(5.0, "INTAKE"));  // Before start_time
+      stateValues.add(new TimestampedValue(7.0, "IDLE"));
       stateValues.add(new TimestampedValue(10.0, "INTAKE")); // In range
+      stateValues.add(new TimestampedValue(12.0, "IDLE"));
       stateValues.add(new TimestampedValue(15.0, "INTAKE")); // In range
+      stateValues.add(new TimestampedValue(17.0, "IDLE"));
       stateValues.add(new TimestampedValue(25.0, "INTAKE")); // After end_time
 
       var log = new MockLogBuilder()
@@ -705,12 +1218,64 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a state repeated every loop is one state, not a cycle per sample")
+    void repeatedStateSamplesAreOneState() throws Exception {
+      // Periodic logging (e.g. StringLogEntry.append every loop) repeats the current state
+      var stateValues = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 300; i++) {
+        double t = i * 0.02;
+        String state = (int) (t / 2.0) % 2 == 0 ? "INTAKE" : "IDLE"; // 2 s intake, 2 s idle
+        stateValues.add(new TimestampedValue(t, state));
+      }
+      var log = new MockLogBuilder()
+          .setPath("/test/periodic_state.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_start_state", "INTAKE");
+      var resultObj = findTool("analyze_cycles").execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      var cycleTimes = resultObj.getAsJsonObject("cycle_times");
+      assertEquals(1, cycleTimes.get("count").getAsInt()); // starts at 0 s and 4 s
+      assertEquals(4.0, cycleTimes.get("avg_sec").getAsDouble(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("returns no_match with the states seen when the start state never occurs")
+    void startStateNeverOccurs() throws Exception {
+      var stateValues = new ArrayList<TimestampedValue>();
+      stateValues.add(new TimestampedValue(0.0, "IDLE"));
+      stateValues.add(new TimestampedValue(1.0, "SCORING"));
+      var log = new MockLogBuilder()
+          .setPath("/test/no_start_state.wpilog")
+          .addEntry("/State", "string", stateValues)
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("state_entry", "/State");
+      args.addProperty("cycle_start_state", "INTAKE");
+      var resultObj = findTool("analyze_cycles").execute(args).getAsJsonObject();
+
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("hint").getAsString().contains("IDLE, SCORING"));
+    }
+
+    @Test
     @DisplayName("configurable output limit")
     void configurableOutputLimit() throws Exception {
       // Test data: Many cycles
       var stateValues = new ArrayList<TimestampedValue>();
       for (int i = 0; i < 20; i++) {
         stateValues.add(new TimestampedValue(i * 1.0, "INTAKE"));
+        stateValues.add(new TimestampedValue(i * 1.0 + 0.5, "IDLE"));
       }
 
       var log = new MockLogBuilder()
@@ -737,8 +1302,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertEquals(5, cycles.size());
 
       // Should indicate truncation
-      assertTrue(resultObj.get("cycles_truncated").getAsBoolean());
-      assertTrue(resultObj.get("total_cycles").getAsInt() > 5);
+      var cycleLimits = resultObj.getAsJsonObject("limits").getAsJsonObject("cycles");
+      assertEquals(5, cycleLimits.get("returned").getAsInt());
+      assertEquals(20, cycleLimits.get("total").getAsInt()); // 19 complete + 1 incomplete
     }
 
     @Test
@@ -813,6 +1379,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
 
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
@@ -843,6 +1410,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -873,6 +1441,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -904,6 +1473,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -936,8 +1506,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("loop time"),
-          "Error message should mention loop time entry not found");
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().toLowerCase().contains("loop time"),
+          resultObj.toString());
     }
   }
 
@@ -973,6 +1544,25 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
         assertTrue(firstUtil.has("avg_percent"), "Should have avg_percent");
         assertTrue(firstUtil.has("max_percent"), "Should have max_percent");
       }
+    }
+
+    @Test
+    @DisplayName("splits CAN errors by enabled state using DS: entries")
+    void splitsErrorsByDsEnabled() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/can_errors_ds.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 2}, new boolean[]{false, true})
+          .addNumericEntry("/CANBus/Error/Tx", new double[]{0, 1, 2, 3}, new double[]{0, 5, 5, 9})
+          .build();
+      putLogInCache(log);
+
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var resultObj = findTool("analyze_can_bus").execute(args).getAsJsonObject();
+
+      assertTrue(resultObj.get("success").getAsBoolean());
+      assertFalse(resultObj.has("ds_enabled_warning"), resultObj.toString());
+      assertTrue(resultObj.has("enabled_error_total"), resultObj.toString());
     }
 
     @Test
@@ -1030,6 +1620,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1054,6 +1645,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1078,6 +1670,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
@@ -1242,8 +1835,9 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertFalse(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.get("error").getAsString().contains("voltage"),
-          "Error message should mention voltage");
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("voltage"),
+          "Reason should mention voltage");
     }
 
     @Test
@@ -1457,9 +2051,14 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      int divergentCount = resultObj.get("divergent_count").getAsInt();
-      assertTrue(divergentCount > 0, "Should detect divergences");
-      assertTrue(resultObj.has("divergences"));
+      assertEquals(1, resultObj.get("divergent_count").getAsInt());
+      assertEquals(1, resultObj.get("pairs_compared").getAsInt());
+      var d = resultObj.getAsJsonArray("divergences").get(0).getAsJsonObject();
+      assertEquals("/RealOutputs/Drive/Speed", d.get("entry").getAsString());
+      assertEquals(0.1, d.get("first_divergence_time").getAsDouble(), 1e-9); // i = 5
+      assertEquals(5, d.get("divergent_samples").getAsInt());
+      assertEquals(10, d.get("compared_samples").getAsInt());
+      assertEquals(10.0, d.get("max_abs_difference").getAsDouble(), 1e-9);
     }
 
     @Test
@@ -1486,6 +2085,8 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals(0, resultObj.get("divergent_count").getAsInt());
+      assertEquals(1, resultObj.get("pairs_compared").getAsInt());
+      assertEquals(10, resultObj.get("samples_compared").getAsInt());
     }
 
     @Test
@@ -1504,8 +2105,10 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0, resultObj.get("divergent_count").getAsInt());
+      // Not a replay log: not_applicable, never "0 divergences"
+      assertFalse(resultObj.get("success").getAsBoolean());
+      assertEquals("not_applicable", resultObj.get("status").getAsString());
+      assertFalse(resultObj.has("divergent_count"));
     }
 
     @Test
@@ -1530,14 +2133,59 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals(0, resultObj.get("divergent_count").getAsInt(),
-          "Unmatched entries should not count as divergences");
+      // A real-robot log (no /ReplayOutputs/ at all) is not a replay log
+      assertEquals("not_applicable", resultObj.get("status").getAsString());
+      assertTrue(resultObj.get("reason").getAsString().contains("1 /RealOutputs/"));
     }
 
     @Test
-    @DisplayName("includes data quality metadata")
-    void includesDataQuality() throws Exception {
+    @DisplayName("counts entries present on only one side")
+    void countsOneSidedEntries() throws Exception {
+      var values = new ArrayList<TimestampedValue>();
+      for (int i = 0; i < 5; i++) values.add(new TimestampedValue(i * 0.02, (double) i));
+      var log = new MockLogBuilder()
+          .setPath("/test/replay_one_sided.wpilog")
+          .addEntry("/RealOutputs/Drive/Speed", "double", values)
+          .addEntry("/ReplayOutputs/Drive/Speed", "double", values)
+          .addEntry("/RealOutputs/Only/Real", "double", values)
+          .addEntry("/ReplayOutputs/Only/Replay", "double", values)
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var r = findTool("analyze_replay_drift").execute(args).getAsJsonObject();
+      assertEquals(1, r.get("pairs_compared").getAsInt());
+      assertEquals(1, r.get("real_only_count").getAsInt());
+      assertEquals(1, r.get("replay_only_count").getAsInt());
+      assertEquals("/RealOutputs/Only/Real", r.getAsJsonArray("real_only_entries").get(0).getAsString());
+      assertTrue(r.getAsJsonArray("warnings").toString().contains("no replay counterpart"));
+    }
+
+    @Test
+    @DisplayName("arrays and structs are compared element by element, numbers with tolerance")
+    void deepComparison() {
+      double[] maxDiff = {0};
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new double[] {1, 2, 3}, new double[] {1, 2, 3}, 1e-9, maxDiff), "equal arrays");
+      assertFalse(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new double[] {1, 2, 3}, new double[] {1, 2, 3.5}, 1e-9, maxDiff));
+      assertEquals(0.5, maxDiff[0], 1e-12);
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          5.0, 5.0 + 1e-12, 1e-9, new double[1]), "within relative tolerance");
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          Double.NaN, Double.NaN, 1e-9, new double[1]), "NaN equals NaN in replay");
+      assertTrue(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          java.util.List.of(java.util.Map.of("x", 1.0)), java.util.List.of(java.util.Map.of("x", 1.0)),
+          1e-9, new double[1]), "struct arrays");
+      assertFalse(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new String[] {"a"}, new String[] {"b"}, 1e-9, new double[1]));
+      assertFalse(FrcDomainTools.AnalyzeReplayDriftTool.valuesEqual(
+          new long[] {1}, new long[] {1, 2}, 1e-9, new double[1]), "length differs");
+    }
+
+    @Test
+    @DisplayName("reports how many samples were compared")
+    void reportsSamplesCompared() throws Exception {
       var realValues = new ArrayList<TimestampedValue>();
       var replayValues = new ArrayList<TimestampedValue>();
       for (int i = 0; i < 20; i++) {
@@ -1560,8 +2208,10 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.has("data_quality"), "Should include data quality");
-      assertTrue(resultObj.has("server_analysis_directives"), "Should include analysis directives");
+      // Replay comparison is exact, sample by sample: no statistical quality block
+      assertEquals("ok", resultObj.get("status").getAsString());
+      assertEquals(20, resultObj.get("samples_compared").getAsInt());
+      assertFalse(resultObj.has("data_quality"));
     }
   }
 
@@ -1634,6 +2284,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("analyze_loop_timing");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("entry", "/RobotCode/LoopTime");
 
       var result = tool.execute(args).getAsJsonObject();
 

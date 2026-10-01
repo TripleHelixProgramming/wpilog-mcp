@@ -4,8 +4,8 @@
   "game_name": "CRESCENDO",
   "full_title": "CRESCENDO presented by Haas",
   "source": "https://firstfrc.blob.core.windows.net/frc2024/Manual/2024GameManual.pdf",
-  "manual_version": "initial",
-  "generated_at": "2026-03-23T00:00:00Z",
+  "manual_version": "TU21 (final, 2024-04-09; Section 5 ARENA V8, Section 6 Game Details V10, Section 8 ROBOT Construction Rules V8)",
+  "generated_at": "2026-09-30T00:00:00Z",
 
   "match_timing": {
     "auto_duration_sec": 15,
@@ -22,6 +22,8 @@
       "type": "foam ring",
       "diameter_m": 0.356,
       "diameter_in": 14.0,
+      "inner_diameter_in": 10.0,
+      "thickness_in": 2.0,
       "preload_max_per_robot": 1,
       "preload_max_per_alliance": 3
     }
@@ -51,19 +53,30 @@
       "win": 2,
       "tie": 1,
       "melody_rp": {
-        "description": "Score a threshold number of Notes",
+        "description": "At least the threshold number of AMP and SPEAKER NOTES scored (AUTO and TELEOP); the Coopertition Bonus lowers the threshold by 3 (Table 6-2)",
         "value": 1,
+        "threshold_unit": "AMP and SPEAKER NOTES",
         "regional_threshold": 18,
-        "district_championship_threshold": 18,
-        "championship_threshold": 18
+        "regional_threshold_with_coopertition": 15,
+        "district_championship_threshold": 21,
+        "district_championship_threshold_with_coopertition": 18,
+        "championship_threshold": 25,
+        "championship_threshold_with_coopertition": 21
       },
       "ensemble_rp": {
-        "description": "Achieve a stage threshold plus minimum score",
+        "description": "At least 10 STAGE points and at least 2 ONSTAGE ROBOTS (Table 6-2; the same at every event tier)",
         "value": 1,
+        "threshold_unit": "STAGE points",
+        "min_onstage_robots": 2,
         "regional_threshold": 10,
         "district_championship_threshold": 10,
         "championship_threshold": 10
       }
+    },
+    "coopertition_bonus": {
+      "description": "Both ALLIANCES use a NOTE scored in their AMP to press the Coopertition button within the first 45 seconds of TELEOP (match time above 1:30): all teams earn 1 Coopertition Point (a ranking tiebreaker, not a ranking point) and the MELODY threshold drops by 3 NOTES. Unused in Playoff MATCHES (section 6.5.5)",
+      "coopertition_points": 1,
+      "teleop_window_sec": 45
     },
     "fouls": {
       "minor_foul": 2,
@@ -72,10 +85,10 @@
   },
 
   "field_geometry": {
-    "field_length_m": 16.54,
+    "field_length_m": 16.542,
     "field_length_in": 651.25,
-    "field_width_m": 8.02,
-    "field_width_in": 315.5,
+    "field_width_m": 8.211,
+    "field_width_in": 323.25,
     "speaker_opening_width_m": 1.05,
     "amp_width_m": 0.61,
     "stage_width_m": 3.35
@@ -84,18 +97,18 @@
   "robot_constraints": {
     "max_starting_perimeter_in": 120.0,
     "max_starting_height_in": 48.0,
-    "max_weight_lbs": 125.0,
+    "max_weight_lbs": 125.5,
     "max_weight_with_bumpers_lbs": null,
-    "note": "Weight excludes bumpers and battery"
+    "note": "Weight excludes BUMPERS, the battery, and event-provided location tags (R103; 125 lbs until Team Update 21 raised it to 125.5 lbs for the VH-109 radio). Perimeter and height per R104."
   },
 
   "typical_mechanisms": ["shooter", "intake", "climber", "amp_scorer", "trap_scorer"],
 
   "analysis_hints": {
     "endgame_activity": "Climbing attempts (onstage) and trap scoring typically occur in the final 20 seconds.",
-    "scoring_context": "Notes can be scored in Speaker (2 pts unamplified, 5 pts amplified) or Amp (1 pt). Amplification lasts 10 seconds after scoring 2 Notes in Amp.",
+    "scoring_context": "Notes can be scored in Speaker (2 pts unamplified, 5 pts amplified) or Amp (1 pt). Amplification lasts 10 seconds, or until 4 Notes are scored in the Speaker, after 2 Notes are scored in the Amp.",
     "cycle_time": "Note cycle = intake from field/source -> score in Speaker or Amp. Track time between successive scores.",
     "auto_importance": "Auto Notes score 5 pts each in Speaker. Leaving the starting zone scores 2 pts.",
-    "stage_context": "Ensemble RP requires stage points plus minimum match score. Harmony bonus for multiple robots on same chain."
+    "stage_context": "ENSEMBLE RP needs at least 10 STAGE points and at least 2 ONSTAGE robots; HARMONY (2 pts) is awarded per additional robot on the same chain."
   }
 }

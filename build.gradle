@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.triplehelix'
-version = '0.8.2'
+version = '0.9.0-dev'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -86,7 +86,6 @@ configurations {
 dependencies {
     // WPILib utilities for DataLog reading
     implementation 'edu.wpi.first.wpiutil:wpiutil-java:2026.2.2'
-    implementation 'edu.wpi.first.wpimath:wpimath-java:2026.2.2'
 
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
@@ -136,6 +135,37 @@ tasks.register('extractTestNatives', Copy) {
 tasks.named('test') {
     dependsOn extractTestNatives
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
+    // A private disk cache, emptied before each run: tests never reuse sync results computed by
+    // other code, and never write to the user's cache
+    def testDiskCache = file("$buildDir/test-disk-cache")
+    environment 'WPILOG_DISK_CACHE_DIR', testDiskCache.absolutePath
+    doFirst { delete testDiskCache }
+    // ToolConformanceTest: -PconformanceUpdate rewrites the known-failures list from current results
+    if (project.hasProperty('conformanceUpdate')) {
+        systemProperty 'conformance.update', 'true'
+    }
+    // Golden tests against a real log (opt-in): -PgoldenLog=/path/to/log.wpilog
+    if (project.hasProperty('goldenLog')) {
+        systemProperty 'golden.log', project.property('goldenLog')
+    }
+    // Conformance rules on every real log in a directory (opt-in): -PconformanceLogDir=/path/to/logs
+    // (-PconformanceMaxLogs=N limits it to the first N)
+    if (project.hasProperty('conformanceLogDir')) {
+        systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
+        maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+    }
+    if (project.hasProperty('conformanceMaxLogs')) {
+        systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
+    }
+    // (-PconformanceTools=a,b limits it to those tools)
+    if (project.hasProperty('conformanceTools')) {
+        systemProperty 'conformance.tools', project.property('conformanceTools')
+    }
+    // Regenerate doc/TOOL_RESPONSES.md from real logs (opt-in): -PtoolResponsesLogDir=/path/to/riologs
+    if (project.hasProperty('toolResponsesLogDir')) {
+        systemProperty 'tool.responses.logdir', project.property('toolResponsesLogDir')
+    }
 }
 
 application {
@@ -380,16 +410,26 @@ tasks.register('buildExtension', Exec) {
     description = 'Build and package the VS Code extension as a .vsix'
 
     def extDir = "${projectDir}/vscode-extension"
-    def extVersion = new groovy.json.JsonSlurper()
-            .parse(file("${extDir}/package.json")).version
+    def pkg = new groovy.json.JsonSlurper().parse(file("${extDir}/package.json"))
+    def extVersion = pkg.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
+
+    // The extension lives in a subdirectory of the repo. vsce rewrites relative README
+    // links/images to absolute URLs derived from package.json's repository.url, which
+    // points at the repo root, so images/icon.png would become .../raw/HEAD/images/icon.png
+    // (404). Point vsce at the subdirectory explicitly. release.yml passes the same
+    // flags pinned to the release tag instead of HEAD.
+    def repoUrl = (pkg.repository.url as String).replaceAll(/\.git$/, '')
+    def vsceFlags = "--no-dependencies" +
+            " --baseContentUrl ${repoUrl}/blob/HEAD/vscode-extension" +
+            " --baseImagesUrl ${repoUrl}/raw/HEAD/vscode-extension"
 
     workingDir extDir
     def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
     if (isWindows) {
-        commandLine 'cmd', '/c', "npm install --silent && npm run compile && npx @vscode/vsce package --no-dependencies -o ${vsixFile}"
+        commandLine 'cmd', '/c', "npm install --silent && npm run compile && npx @vscode/vsce package ${vsceFlags} -o ${vsixFile}"
     } else {
-        commandLine 'bash', '-c', "npm install --silent && npm run compile && npx @vscode/vsce package --no-dependencies -o '${vsixFile}'"
+        commandLine 'bash', '-c', "npm install --silent && npm run compile && npx @vscode/vsce package ${vsceFlags} -o '${vsixFile}'"
     }
 
     doFirst {
@@ -445,7 +485,8 @@ tasks.register('installExtension', Exec) {
 }
 
 // ==================== Stress Test Task ====================
-// Stress tests load configuration from the "stresstest" named config in servers.json.
+// Stress tests load configuration from the "stresstest" server in a config file
+// (.wpilog-mcp.yaml in the project root, or -Pconfigpath=<file>).
 // The default config includes a stresstest entry. Set your logdir and TBA_API_KEY env var:
 //
 //   {
@@ -459,10 +500,6 @@ tasks.register('installExtension', Exec) {
 
 import groovy.json.JsonSlurper
 
-/**
- * Checks if a "stresstest" configuration exists in any config file (YAML or JSON).
- * Returns the config file path if found, or null if not configured.
- */
 /**
  * Finds a config file with a "stresstest" server entry, or returns null.
  * When null, the Java stress test code synthesizes defaults (~/riologs, team 2363, TBA from env).

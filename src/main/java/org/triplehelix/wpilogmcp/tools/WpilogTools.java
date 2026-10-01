@@ -19,10 +19,10 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code list_entries} - List all entries in a log
  *   <li>{@code get_entry_info} - Get detailed info about a specific entry
  *   <li>{@code read_entry} - Read values from an entry with pagination
- *   <li>{@code list_loaded_logs} - List all loaded logs and cache status
- *   <li>{@code list_struct_types} - List supported WPILib struct types
+ *   <li>{@code list_loaded_logs} - List the loaded logs and the cache status
+ *   <li>{@code list_struct_types} - List a log's struct types and how they decode
+ *   <li>{@code resolve_signals} - Show which entry plays each role, and how it was chosen
  *   <li>{@code health_check} - Check server health and version
- *   <li>{@code get_game_info} - Get FRC game data for a season
  * </ul>
  *
  * <h2>Query Tools ({@link QueryTools})</h2>
@@ -43,6 +43,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code find_peaks} - Find local maxima/minima
  *   <li>{@code rate_of_change} - Compute derivatives
  *   <li>{@code time_correlate} - Compute correlation between entries
+ *   <li>{@code align_entries} - Sample several signals at common times
  * </ul>
  *
  * <h2>Robot Analysis Tools ({@link RobotAnalysisTools})</h2>
@@ -69,6 +70,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code analyze_loop_timing} - Robot loop timing analysis
  *   <li>{@code analyze_can_bus} - CAN bus utilization and error analysis
  *   <li>{@code predict_battery_health} - Battery health prediction and scoring
+ *   <li>{@code get_game_info} - Get FRC game data for a season
  * </ul>
  *
  * <h2>Export Tools ({@link ExportTools})</h2>
@@ -131,9 +133,11 @@ public final class WpilogTools {
     StatisticsTools.registerAll(registry);
     RobotAnalysisTools.registerAll(registry);
     FrcDomainTools.registerAll(registry);
+    PoseTools.registerAll(registry);
     ExportTools.registerAll(registry);
     TbaTools.registerAll(registry);
     RevLogTools.registerAll(registry);
     DiscoveryTools.registerAll(registry);
+    registry.setServerInstructions(AnalysisGuidance.SERVER_INSTRUCTIONS);
   }
 }

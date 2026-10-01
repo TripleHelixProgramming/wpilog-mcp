@@ -113,6 +113,24 @@ class ToolBaseTest {
       assertFalse(obj.get("success").getAsBoolean());
       assertEquals("Test error message", obj.get("error").getAsString());
     }
+
+    @Test
+    @DisplayName("OutOfMemoryError in one call becomes an error naming the heap and the remedies")
+    void outOfMemoryConvertedToError() throws Exception {
+      var tool = new NoLogTool() {
+        @Override
+        protected JsonElement executeInternal(JsonObject arguments) {
+          throw new OutOfMemoryError("Java heap space");
+        }
+      };
+      var obj = tool.execute(new JsonObject()).getAsJsonObject();
+
+      assertFalse(obj.get("success").getAsBoolean());
+      assertEquals("error", obj.get("status").getAsString());
+      var error = obj.get("error").getAsString();
+      assertTrue(error.startsWith("Out of memory"), error);
+      assertTrue(error.contains("WPILOG_MAX_HEAP") && error.contains("start_time"), error);
+    }
   }
 
   // ===== ENTRY RETRIEVAL TESTS =====
@@ -354,75 +372,6 @@ class ToolBaseTest {
       assertEquals(20.5, data[1]);
       assertEquals(30.0, data[2]);
       assertEquals(40.0, data[3], 0.001);
-    }
-  }
-
-  // ===== ENTRY SEARCH TESTS =====
-
-  @Nested
-  @DisplayName("Entry Search")
-  class EntrySearchTests {
-
-    private ParsedLog testLog;
-
-    @BeforeEach
-    void setUpLog() throws Exception {
-      testLog = mockLogBuilder
-          .setPath("/test/log.wpilog")
-          .addNumericEntry("/Robot/Speed", new double[]{0}, new double[]{1.0})
-          .addNumericEntry("/Robot/Voltage", new double[]{0}, new double[]{12.0})
-          .addNumericEntry("/Drive/LeftSpeed", new double[]{0}, new double[]{0.5})
-          .addNumericEntry("/Drive/RightSpeed", new double[]{0}, new double[]{0.5})
-          .addNumericEntry("/Sensors/Temperature", new double[]{0}, new double[]{25.0})
-          .build();
-    }
-
-    @Test
-    @DisplayName("findEntryByPattern finds first match case-insensitive")
-    void findEntryByPatternFindsCaseInsensitive() {
-      var tool = new NoLogTool();
-      var entry = tool.findEntryByPattern(testLog, "speed");
-
-      assertNotNull(entry);
-      assertTrue(entry.toLowerCase().contains("speed"));
-    }
-
-    @Test
-    @DisplayName("findEntryByPattern returns null when no match")
-    void findEntryByPatternReturnsNullWhenNoMatch() {
-      var tool = new NoLogTool();
-      var entry = tool.findEntryByPattern(testLog, "nonexistent");
-
-      assertNull(entry);
-    }
-
-    @Test
-    @DisplayName("findEntriesByPattern finds all matches")
-    void findEntriesByPatternFindsAllMatches() {
-      var tool = new NoLogTool();
-      var entries = tool.findEntriesByPattern(testLog, "speed");
-
-      // Should find /Robot/Speed, /Drive/LeftSpeed, /Drive/RightSpeed
-      assertEquals(3, entries.size());
-    }
-
-    @Test
-    @DisplayName("findEntriesByPattern is case-insensitive")
-    void findEntriesByPatternIsCaseInsensitive() {
-      var tool = new NoLogTool();
-      var entries = tool.findEntriesByPattern(testLog, "ROBOT");
-
-      // Should find /Robot/Speed and /Robot/Voltage
-      assertTrue(entries.size() >= 2);
-    }
-
-    @Test
-    @DisplayName("findEntriesByPattern returns empty list when no match")
-    void findEntriesByPatternReturnsEmptyWhenNoMatch() {
-      var tool = new NoLogTool();
-      var entries = tool.findEntriesByPattern(testLog, "nonexistent");
-
-      assertTrue(entries.isEmpty());
     }
   }
 

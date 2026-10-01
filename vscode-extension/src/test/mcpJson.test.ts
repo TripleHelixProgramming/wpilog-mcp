@@ -1,0 +1,98 @@
+// Tests for the .mcp.json entry (no VS Code needed): npm test
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import {
+  SERVER_NAME,
+  TBA_KEY_REFERENCE,
+  buildServerEntry,
+  mergeServerEntry,
+  scrubTbaKey,
+} from "../mcpJson";
+
+const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", "/logs", 2363);
+
+test("the entry references the TBA key and never contains one", () => {
+  assert.equal(entry.env["TBA_API_KEY"], TBA_KEY_REFERENCE);
+  assert.ok(!entry.args.includes("-tba-key"));
+  assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/ext/server/wpilog-mcp.jar", "-logdir",
+    "/logs", "-team", "2363"]);
+  const bare = buildServerEntry("/java", "/jar", "2g", undefined, 0);
+  assert.deepEqual(bare.args, ["-Xmx2g", "-jar", "/jar"]);
+  assert.deepEqual(bare.env, { TBA_API_KEY: TBA_KEY_REFERENCE });
+});
+
+test("a missing or blank file gets just this entry", () => {
+  for (const existing of [undefined, "", "  \n"]) {
+    const edit = mergeServerEntry(existing, entry);
+    assert.ok(edit.ok);
+    assert.deepEqual(JSON.parse(edit.text), { mcpServers: { [SERVER_NAME]: entry } });
+    assert.ok(edit.changed);
+  }
+});
+
+test("other servers and top-level keys are kept; only this entry is replaced", () => {
+  const existing = JSON.stringify({
+    mcpServers: {
+      github: { command: "gh-mcp", args: [] },
+      [SERVER_NAME]: { command: "old-java", args: ["-tba-key", "SECRET"], env: {} },
+    },
+    somethingElse: { keep: true },
+  });
+  const edit = mergeServerEntry(existing, entry);
+  assert.ok(edit.ok);
+  const doc = JSON.parse(edit.text);
+  assert.deepEqual(doc.mcpServers.github, { command: "gh-mcp", args: [] });
+  assert.deepEqual(doc.mcpServers[SERVER_NAME], entry);
+  assert.deepEqual(doc.somethingElse, { keep: true });
+  assert.ok(!edit.text.includes("SECRET"));
+});
+
+test("an unchanged entry is not rewritten", () => {
+  const first = mergeServerEntry(undefined, entry);
+  assert.ok(first.ok);
+  const second = mergeServerEntry(first.text, entry);
+  assert.ok(second.ok);
+  assert.equal(second.changed, false);
+});
+
+test("a file that is not a JSON object is refused, not overwritten", () => {
+  for (const existing of ["{ not json", "[1, 2]", "\"text\"", "{\"mcpServers\": [1]}"]) {
+    const edit = mergeServerEntry(existing, entry);
+    assert.equal(edit.ok, false, existing);
+  }
+});
+
+test("a plaintext key written by an earlier version is removed from this entry only", () => {
+  const existing = JSON.stringify({
+    mcpServers: {
+      [SERVER_NAME]: {
+        command: "/java",
+        args: ["-Xmx4g", "-jar", "/jar", "-tba-key", "SECRET", "-team", "2363"],
+        env: { WPILOG_TEAM: "2363", TBA_API_KEY: "SECRET" },
+      },
+      other: { command: "x", env: { TBA_API_KEY: "OTHER-SECRET" } },
+    },
+  });
+  const edit = scrubTbaKey(existing);
+  assert.ok(edit.ok);
+  assert.ok(edit.changed);
+  const doc = JSON.parse(edit.text);
+  assert.deepEqual(doc.mcpServers[SERVER_NAME].args, ["-Xmx4g", "-jar", "/jar", "-team", "2363"]);
+  assert.equal(doc.mcpServers[SERVER_NAME].env.TBA_API_KEY, TBA_KEY_REFERENCE);
+  assert.equal(doc.mcpServers[SERVER_NAME].env.WPILOG_TEAM, "2363");
+  // Another server's configuration is not ours to change
+  assert.equal(doc.mcpServers.other.env.TBA_API_KEY, "OTHER-SECRET");
+  assert.ok(!JSON.stringify(doc.mcpServers[SERVER_NAME]).includes("SECRET"));
+});
+
+test("nothing to remove: no file, no entry, a reference, or unparseable text", () => {
+  assert.deepEqual(scrubTbaKey(undefined), { ok: true, text: "", changed: false });
+  const noEntry = JSON.stringify({ mcpServers: { other: {} } });
+  assert.deepEqual(scrubTbaKey(noEntry), { ok: true, text: noEntry, changed: false });
+  const clean = mergeServerEntry(undefined, entry);
+  assert.ok(clean.ok);
+  const again = scrubTbaKey(clean.text);
+  assert.ok(again.ok);
+  assert.equal(again.changed, false);
+  assert.equal(scrubTbaKey("{ broken").ok, false);
+});

@@ -11,6 +11,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -23,6 +24,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +46,9 @@ public class HttpTransport {
   private static final Duration SESSION_IDLE_TIMEOUT = Duration.ofHours(1);
   private static final long CLEANUP_INTERVAL_MINUTES = 5;
   private static final AtomicInteger SSE_THREAD_COUNTER = new AtomicInteger(0);
+  /** How long {@link #stop} lets requests in flight finish before closing their connections. */
+  private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(5);
+  private static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(20);
 
   private final Gson gson;
   private final McpMessageHandler handler;
@@ -56,6 +61,9 @@ public class HttpTransport {
   private java.util.concurrent.ExecutorService httpExecutor;
   private ScheduledExecutorService scheduler;
   private java.util.concurrent.ExecutorService sseExecutor;
+  /** Handlers running right now. An SSE stream is not one: its handler returns at once. */
+  private final AtomicInteger inFlightRequests = new AtomicInteger();
+  private final AtomicBoolean stopped = new AtomicBoolean();
 
   public HttpTransport(ToolRegistry toolRegistry, int port) {
     this(toolRegistry, port, "127.0.0.1", null, null);
@@ -75,8 +83,8 @@ public class HttpTransport {
 
   public void start() throws IOException {
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
-    server.createContext(this.mcpPath, this::handleRequest);
-    server.createContext("/health", this::handleHealthCheck);
+    server.createContext(this.mcpPath, counted(this::handleRequest));
+    server.createContext("/health", counted(this::handleHealthCheck));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
@@ -108,14 +116,35 @@ public class HttpTransport {
     return server != null ? server.getAddress().getPort() : port;
   }
 
+  /**
+   * Stops the server: SSE streams are ended first, requests in flight get up to
+   * {@link #DRAIN_TIMEOUT} to finish, then the listening socket and every connection are closed.
+   *
+   * <p>{@code HttpServer.stop(delay)} is not used for the drain: it waits its whole delay unless
+   * an exchange ends after it was called, so with an SSE stream open (or nothing in flight at
+   * all) it would block for the full delay. Idempotent.
+   */
   public void stop() {
-    // 1. Stop accepting new connections
+    if (!stopped.compareAndSet(false, true)) {
+      return;
+    }
+    // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
+    //    which closes the exchange. They would otherwise stay open until the client went away.
+    if (sseExecutor != null) {
+      sseExecutor.shutdownNow();
+      try {
+        sseExecutor.awaitTermination(1, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    // 2. Let requests in flight finish, then close the listening socket and all connections
     if (server != null) {
-      // Give in-flight requests up to 5 seconds to complete
-      server.stop(5);
+      awaitInFlightRequests();
+      server.stop(0);
       logger.info("MCP HTTP server stopped");
     }
-    // 2. Drain the main request executor (requests are already completing via server.stop delay)
+    // 3. Shut down the executors; a handler cut off by the close finishes promptly
     if (httpExecutor != null) {
       httpExecutor.shutdown();
       try {
@@ -127,12 +156,37 @@ public class HttpTransport {
         Thread.currentThread().interrupt();
       }
     }
-    // 3. Shut down SSE streams and scheduler (safe to tear down after requests drain)
-    if (sseExecutor != null) {
-      sseExecutor.shutdownNow();
-    }
     if (scheduler != null) {
       scheduler.shutdownNow();
+    }
+  }
+
+  /** Wraps a handler so that {@link #stop} can wait for the requests being handled. */
+  private HttpHandler counted(HttpHandler handler) {
+    return exchange -> {
+      inFlightRequests.incrementAndGet();
+      try {
+        handler.handle(exchange);
+      } finally {
+        inFlightRequests.decrementAndGet();
+      }
+    };
+  }
+
+  private void awaitInFlightRequests() {
+    long deadline = System.nanoTime() + DRAIN_TIMEOUT.toNanos();
+    while (inFlightRequests.get() > 0 && System.nanoTime() < deadline) {
+      try {
+        Thread.sleep(DRAIN_POLL_INTERVAL.toMillis());
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+    int remaining = inFlightRequests.get();
+    if (remaining > 0) {
+      logger.warn("{} request(s) still in flight after {} s; closing their connections",
+          remaining, DRAIN_TIMEOUT.toSeconds());
     }
   }
 
@@ -187,9 +241,9 @@ public class HttpTransport {
   }
 
   private void handleSinglePost(HttpExchange exchange, JsonObject message) throws IOException {
-    // Determine if this is an initialize request (no session required)
-    var methodName = message.has("method") ? message.get("method").getAsString() : null;
-    boolean isInitialize = "initialize".equals(methodName);
+    // Determine if this is an initialize request (no session required). A non-string method is
+    // not a crash: the handler answers it with an invalid-request error.
+    boolean isInitialize = "initialize".equals(McpMessageHandler.methodName(message));
 
     // Resolve session
     McpSession session = null;
@@ -243,7 +297,7 @@ public class HttpTransport {
       for (var element : batch) {
         if (element.isJsonObject()) {
           var msg = element.getAsJsonObject();
-          if (msg.has("method") && "initialize".equals(msg.get("method").getAsString())) {
+          if ("initialize".equals(McpMessageHandler.methodName(msg))) {
             hasInitialize = true;
             break;
           }

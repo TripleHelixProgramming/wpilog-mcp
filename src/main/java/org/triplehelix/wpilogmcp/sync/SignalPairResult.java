@@ -8,7 +8,7 @@ package org.triplehelix.wpilogmcp.sync;
  * Result of cross-correlating a pair of signals from wpilog and revlog.
  *
  * <p>Each signal pair represents a potential correspondence between a wpilog entry
- * (e.g., "/drive/frontLeft/output") and a revlog signal (e.g., "SparkMax_1/appliedOutput").
+ * (e.g., "/drive/frontLeft/output") and a revlog signal (e.g., "SparkMax_1/AppliedOutput").
  * The correlation score indicates how well the signals match when aligned.
  *
  * @param wpilogEntry The wpilog entry name that was correlated

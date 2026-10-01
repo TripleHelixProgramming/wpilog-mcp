@@ -250,4 +250,118 @@ class DataQualityTest {
       assertFalse(json.has("nan_filtered"), "Should omit nan_filtered when zero");
     }
   }
+
+  @Nested
+  @DisplayName("Sampling classification and reasons (G1)")
+  class Calibration {
+
+    static List<TimestampedValue> periodic(int n, double dt, java.util.function.IntFunction<Double> v) {
+      var out = new java.util.ArrayList<TimestampedValue>();
+      for (int i = 0; i < n; i++) out.add(new TimestampedValue(i * dt, v.apply(i)));
+      return out;
+    }
+
+    @Test
+    @DisplayName("a value logged every loop with repeats is periodic and scores high")
+    void periodicHigh() {
+      var q = DataQuality.fromValues(periodic(3000, 0.02, i -> (double) (i / 10)));
+      assertEquals(DataQuality.Sampling.PERIODIC, q.sampling());
+      assertEquals("high", q.confidenceLevel());
+      assertEquals(List.of(), q.reasons());
+    }
+
+    @Test
+    @DisplayName("values logged only on change, at irregular times, are change_only")
+    void changeOnly() {
+      var values = new java.util.ArrayList<TimestampedValue>();
+      double t = 0;
+      var random = new java.util.Random(7);
+      for (int i = 0; i < 2000; i++) {
+        t += 0.02 * (1 + random.nextInt(3)); // 20, 40, or 60 ms: unchanged values not logged
+        values.add(new TimestampedValue(t, (double) i));
+      }
+      var q = DataQuality.fromValues(values);
+      assertEquals(DataQuality.Sampling.CHANGE_ONLY, q.sampling());
+      assertEquals("high", q.confidenceLevel(), q.reasons().toString());
+      assertEquals("change_only", q.toJson().get("sampling").getAsString());
+    }
+
+    @Test
+    @DisplayName("gaps count by the time they cover, not their number")
+    void gapsByDuration() {
+      // 50,000 samples at 50 Hz with 400 one-cycle stalls of 120 ms: many gaps, little time
+      var values = new java.util.ArrayList<TimestampedValue>();
+      double t = 0;
+      for (int i = 0; i < 50_000; i++) {
+        t += i % 125 == 0 ? 0.12 : 0.02;
+        values.add(new TimestampedValue(t, (double) (i % 7)));
+      }
+      var q = DataQuality.fromValues(values);
+      assertEquals(399, q.gapCount()); // the first stall precedes the first sample
+      assertTrue(q.qualityScore() > 0.8, "score " + q.qualityScore() + " " + q.reasons());
+      assertEquals("high", q.confidenceLevel());
+      assertTrue(q.reasons().get(0).contains("gaps longer than 5x the median interval"),
+          q.reasons().toString());
+    }
+
+    @Test
+    @DisplayName("jitter is the median absolute deviation: one long gap does not max it out")
+    void robustJitter() {
+      var values = periodic(1000, 0.02, i -> (double) (i % 3));
+      var shifted = new java.util.ArrayList<TimestampedValue>(values.subList(0, 500));
+      for (var tv : values.subList(500, 1000)) {
+        shifted.add(new TimestampedValue(tv.timestamp() + 30.0, tv.value()));
+      }
+      var q = DataQuality.fromValues(shifted);
+      assertEquals(0.0, q.jitterRatio(), 1e-9);
+      assertEquals(1, q.gapCount());
+    }
+
+    @Test
+    @DisplayName("long holds lower confidence for statistics, and say why")
+    void longHolds() {
+      // 1000 samples over 20 s, then a 60 s hold
+      var values = periodic(1000, 0.02, i -> (double) i);
+      values.add(new TimestampedValue(80.0, 1000.0));
+      var q = DataQuality.fromValues(values);
+      assertEquals("medium", q.confidenceLevel());
+      assertTrue(q.reasons().get(0).startsWith("75.0% of the time span"), q.reasons().toString());
+    }
+
+    @Test
+    @DisplayName("sample size counts finite values; all non-finite is no data")
+    void finiteSamples() {
+      var some = periodic(600, 0.02, i -> i < 200 ? Double.NaN : (double) (i % 4));
+      var q = DataQuality.fromValues(some);
+      assertTrue(q.reasons().stream().anyMatch(r -> r.contains("only 400 finite samples")),
+          q.reasons().toString());
+      var none = DataQuality.fromValues(periodic(50, 0.02, i -> Double.NaN));
+      assertEquals(0.0, none.qualityScore());
+      assertTrue(none.reasons().contains("no finite values"));
+      assertEquals("insufficient", none.confidenceLevel());
+    }
+
+    @Test
+    @DisplayName("sparse irregular values are events, without gap penalties")
+    void events() {
+      var values = List.of(new TimestampedValue(0, true), new TimestampedValue(5, true),
+          new TimestampedValue(90, false), new TimestampedValue(91, false));
+      var q = DataQuality.fromValues(values);
+      assertEquals(DataQuality.Sampling.EVENT, q.sampling());
+      assertEquals(1, q.reasons().size(), q.reasons().toString()); // only the sample count
+    }
+
+    @Test
+    @DisplayName("values sharing a timestamp (pooled elements) carry no timing")
+    void sharedTimestamps() {
+      var values = new java.util.ArrayList<TimestampedValue>();
+      for (int i = 0; i < 600; i++) {
+        values.add(new TimestampedValue(i * 0.02, 1.0 * i));
+        values.add(new TimestampedValue(i * 0.02, 2.0 * i));
+      }
+      var q = DataQuality.fromValues(values);
+      assertEquals(50.0, q.effectiveSampleRateHz(), 1e-6);
+      assertEquals(0, q.gapCount());
+    }
+  }
 }

@@ -14,7 +14,6 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,8 +56,14 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 public class DiskCacheSerializer {
   private static final Logger logger = LoggerFactory.getLogger(DiskCacheSerializer.class);
 
-  /** Current cache format version. Increment on any serialization change. */
-  public static final int CURRENT_FORMAT_VERSION = 3;
+  /**
+   * Current cache format version. Increment on any serialization change. Version 4: struct values
+   * decoded by the log's own schemas (nested, schema field names).
+   */
+  public static final int CURRENT_FORMAT_VERSION = 4;
+
+  /** MessagePack extension type of an enum struct field ({@code EnumValue}). */
+  static final byte ENUM_VALUE_EXT = 69;
 
   /**
    * Writes a ParsedLog to a cache file.
@@ -220,8 +225,8 @@ public class DiskCacheSerializer {
 
     // Entries
     int entryCount = unpacker.unpackInt();
-    var entries = new HashMap<String, EntryInfo>(entryCount);
-    var values = new HashMap<String, List<TimestampedValue>>(entryCount);
+    var entries = new LinkedHashMap<String, EntryInfo>(entryCount);
+    var values = new LinkedHashMap<String, List<TimestampedValue>>(entryCount);
 
     for (int e = 0; e < entryCount; e++) {
       int id = unpacker.unpackInt();
@@ -303,6 +308,15 @@ public class DiskCacheSerializer {
     } else if (value instanceof byte[] bytes) {
       packer.packBinaryHeader(bytes.length);
       packer.writePayload(bytes);
+    } else if (value instanceof org.triplehelix.wpilogmcp.log.struct.EnumValue e) {
+      // an extension type, so it reads back as an EnumValue rather than a two-field struct
+      try (var inner = MessagePack.newDefaultBufferPacker()) {
+        inner.packLong(e.value());
+        if (e.label() == null) inner.packNil(); else inner.packString(e.label());
+        byte[] payload = inner.toByteArray();
+        packer.packExtensionTypeHeader(ENUM_VALUE_EXT, payload.length);
+        packer.writePayload(payload);
+      }
     } else if (value instanceof Map<?, ?> map) {
       packMap(packer, map);
     } else if (value instanceof List<?> list) {
@@ -456,6 +470,18 @@ public class DiskCacheSerializer {
           map.put(key, val);
         }
         yield map;
+      }
+      case EXTENSION -> {
+        var header = unpacker.unpackExtensionTypeHeader();
+        byte[] payload = unpacker.readPayload(header.getLength());
+        if (header.getType() != ENUM_VALUE_EXT) yield null;
+        try (var inner = MessagePack.newDefaultUnpacker(payload)) {
+          long enumValue = inner.unpackLong();
+          String label = null;
+          if (inner.getNextFormat().getValueType() == ValueType.NIL) inner.unpackNil();
+          else label = inner.unpackString();
+          yield new org.triplehelix.wpilogmcp.log.struct.EnumValue(enumValue, label);
+        }
       }
       default -> {
         // Skip unknown types

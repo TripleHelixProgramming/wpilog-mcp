@@ -84,6 +84,40 @@ class CoreToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a huge limit is capped at 10000 samples per page, and limits says so")
+    void capsLimit() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/core_cap.wpilog")
+          .addNumericEntry("/Test/Data", new double[]{0, 1}, new double[]{10, 20})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", "/test/core_cap.wpilog");
+      args.addProperty("name", "/Test/Data");
+      args.addProperty("limit", 5_000_000);
+      var r = findTool("read_entry").execute(args).getAsJsonObject();
+      assertEquals(10_000, r.getAsJsonObject("limits").getAsJsonObject("samples").get("limit")
+          .getAsInt());
+      assertEquals(2, r.getAsJsonArray("samples").size());
+    }
+
+    @Test
+    @DisplayName("get_entry_info suggests entries whatever the case of the name asked for")
+    void caseInsensitiveSuggestions() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/core_suggest.wpilog")
+          .addNumericEntry("/Drive/Velocity", new double[]{0}, new double[]{1})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", "/test/core_suggest.wpilog");
+      args.addProperty("name", "/drive/velocity");
+      var r = findTool("get_entry_info").execute(args).getAsJsonObject();
+      assertFalse(r.get("success").getAsBoolean());
+      assertTrue(r.toString().contains("/Drive/Velocity"), r.toString());
+    }
+
+    @Test
     @DisplayName("returns error for negative offset")
     void returnsErrorForNegativeOffset() throws Exception {
       var log = new MockLogBuilder()
@@ -176,46 +210,58 @@ class CoreToolsLogicTest extends ToolTestBase {
   @DisplayName("list_struct_types Tool")
   class ListStructTypesToolTests {
     @Test
-    @DisplayName("returns all struct type categories")
-    void returnsStructTypeCategories() throws Exception {
-      var tool = findTool("list_struct_types");
-      var result = tool.execute(new JsonObject());
-      var resultObj = result.getAsJsonObject();
-
-      assertTrue(resultObj.get("success").getAsBoolean());
-      assertTrue(resultObj.has("struct_types"), "Should have struct_types field");
-
-      var structTypes = resultObj.getAsJsonObject("struct_types");
-      assertTrue(structTypes.has("geometry"), "Should have geometry types");
-      assertTrue(structTypes.has("kinematics"), "Should have kinematics types");
-      assertTrue(structTypes.has("vision"), "Should have vision types");
-
-      // Check that geometry includes expected types
-      var geometry = structTypes.getAsJsonArray("geometry");
-      assertTrue(geometry.size() > 0, "Geometry should have struct types");
-
-      // Check that kinematics includes expected types
-      var kinematics = structTypes.getAsJsonArray("kinematics");
-      assertTrue(kinematics.size() > 0, "Kinematics should have struct types");
+    @DisplayName("without a path: the fallback schemas, each with its source and fields")
+    void fallbackSchemas() throws Exception {
+      var result = findTool("list_struct_types").execute(new JsonObject()).getAsJsonObject();
+      assertTrue(result.get("success").getAsBoolean());
+      assertTrue(result.get("note").getAsString().contains("each log's own schemas"));
+      var bySource = new java.util.HashMap<String, String>();
+      for (var t : result.getAsJsonArray("struct_types")) {
+        var o = t.getAsJsonObject();
+        bySource.put(o.get("name").getAsString(), o.get("source").getAsString());
+        assertTrue(o.get("valid").getAsBoolean(), o.toString());
+        assertTrue(o.has("fields") && o.has("numeric_leaf_paths") && o.has("size_bytes"));
+      }
+      assertEquals("wpilib", bySource.get("Pose2d"));
+      assertEquals("wpilib", bySource.get("SwerveModuleState"));
+      assertEquals("assumed", bySource.get("PoseObservation"));
+      assertEquals("assumed", bySource.get("SwerveSample"));
     }
 
     @Test
-    @DisplayName("includes standard WPILib struct types")
-    void includesStandardWpilibStructs() throws Exception {
-      var tool = findTool("list_struct_types");
-      var result = tool.execute(new JsonObject());
-      var resultObj = result.getAsJsonObject();
-
-      var structTypes = resultObj.getAsJsonObject("struct_types");
-      var geometry = structTypes.getAsJsonArray("geometry");
-      boolean hasPose2d = false;
-      for (var element : geometry) {
-        if (element.getAsString().equals("Pose2d")) {
-          hasPose2d = true;
-          break;
-        }
-      }
-      assertTrue(hasPose2d, "Should include Pose2d in geometry types");
+    @DisplayName("with a path: the log's struct types, including ones it logs no schema for")
+    void perLog() throws Exception {
+      var pose = new java.util.LinkedHashMap<String, Object>();
+      pose.put("translation", java.util.Map.of("x", 1.0, "y", 2.0));
+      pose.put("rotation", java.util.Map.of("value", 0.0));
+      var log = new MockLogBuilder()
+          .setPath("/test/structs.wpilog")
+          .addEntry("/.schema/struct:Widget", "structschema", java.util.List.of(
+              new org.triplehelix.wpilogmcp.log.TimestampedValue(0, "double a;int16 b[3]")))
+          .addEntry("/Drive/Pose", "struct:Pose2d", java.util.List.of(
+              new org.triplehelix.wpilogmcp.log.TimestampedValue(0, pose)))
+          .addEntry("/Thing/Gadget", "struct:Gadget", java.util.List.of())
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", "/test/structs.wpilog");
+      var result = findTool("list_struct_types").execute(args).getAsJsonObject();
+      assertTrue(result.get("success").getAsBoolean(), result.toString());
+      var types = result.getAsJsonArray("struct_types");
+      assertEquals(3, types.size(), types.toString());
+      var widget = types.get(0).getAsJsonObject();
+      assertEquals("Widget", widget.get("name").getAsString());
+      assertEquals("logged", widget.get("source").getAsString());
+      assertEquals(14, widget.get("size_bytes").getAsInt());
+      assertEquals(0, widget.get("entry_count").getAsInt());
+      var poseType = types.get(1).getAsJsonObject();
+      assertEquals("wpilib", poseType.get("source").getAsString());
+      assertEquals("/Drive/Pose", poseType.getAsJsonArray("entries").get(0).getAsString());
+      var gadget = types.get(2).getAsJsonObject();
+      assertEquals("missing", gadget.get("source").getAsString());
+      assertFalse(gadget.get("valid").getAsBoolean());
+      assertTrue(result.getAsJsonArray("warnings").get(0).getAsString()
+          .contains("struct Gadget cannot be decoded"), result.toString());
     }
   }
 
@@ -230,7 +276,7 @@ class CoreToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals("OK", resultObj.get("status").getAsString());
+      assertEquals("ok", resultObj.get("status").getAsString());
       assertTrue(resultObj.has("server_version"), "Should report server version");
       assertEquals(org.triplehelix.wpilogmcp.Version.VERSION,
           resultObj.get("server_version").getAsString());
@@ -261,13 +307,23 @@ class CoreToolsLogicTest extends ToolTestBase {
       var result = tool.execute(new JsonObject());
       var resultObj = result.getAsJsonObject();
 
-      assertTrue(resultObj.has("disk_cache"), "Should include disk cache info");
-      var diskCache = resultObj.getAsJsonObject("disk_cache");
-      assertTrue(diskCache.has("enabled"), "Should report enabled status");
-      assertTrue(diskCache.has("format_version"), "Should report format version");
-      assertTrue(diskCache.has("directory"), "Should report cache directory");
+      assertTrue(resultObj.has("sync_disk_cache"), "Should include the revlog sync disk cache");
+      var syncCache = resultObj.getAsJsonObject("sync_disk_cache");
+      assertTrue(syncCache.has("enabled"), "Should report the sync cache's enabled status");
+      assertTrue(syncCache.has("directory"), "Should report the cache directory");
+
+      assertTrue(resultObj.has("parsed_log_disk_cache"),
+          "Should include the parsed-log disk cache under a label that says it is unused");
+      var parsedLogCache = resultObj.getAsJsonObject("parsed_log_disk_cache");
+      assertFalse(parsedLogCache.get("used_by_load_path").getAsBoolean(),
+          "The parsed-log cache has not been on the load path since 0.8.0");
+      assertTrue(parsedLogCache.has("enabled"), "Should report enabled status");
+      assertTrue(parsedLogCache.has("format_version"), "Should report format version");
+      assertTrue(parsedLogCache.has("directory"), "Should report cache directory");
       assertEquals(org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION,
-          diskCache.get("format_version").getAsInt());
+          parsedLogCache.get("format_version").getAsInt());
+      assertFalse(resultObj.has("disk_cache"),
+          "The block that reported the unused cache as the disk cache is gone");
     }
 
     @Test
@@ -501,6 +557,73 @@ class CoreToolsLogicTest extends ToolTestBase {
       var logs = resultObj.getAsJsonArray("logs");
       assertEquals("valid.wpilog", logs.get(0).getAsJsonObject().get("filename").getAsString());
     }
+
+    /** Five logs: two from each of two events, one without an event; distinct mtimes. */
+    void writeLogs(Path dir) throws Exception {
+      String[] names = {"akit_26-03-20_10-00-00_vache_q10.wpilog",
+          "akit_26-03-21_11-00-00_vache_sf2.wpilog", "akit_26-04-02_09-00-00_dcmp_q5.wpilog",
+          "akit_26-04-03_09-30-00_dcmp_f1.wpilog", "bench_test.wpilog"};
+      long base = java.time.Instant.parse("2026-03-01T00:00:00Z").toEpochMilli();
+      for (int i = 0; i < names.length; i++) {
+        var file = dir.resolve(names[i]);
+        Files.write(file, new byte[] {0});
+        Files.setLastModifiedTime(file,
+            java.nio.file.attribute.FileTime.fromMillis(base + i * 86_400_000L * 10));
+      }
+      LogDirectory.getInstance().setLogDirectory(dir.toString());
+    }
+
+    JsonObject list(Object... kv) throws Exception {
+      var args = new JsonObject();
+      for (int i = 0; i < kv.length; i += 2) {
+        if (kv[i + 1] instanceof Number n) args.addProperty((String) kv[i], n);
+        else args.addProperty((String) kv[i], kv[i + 1].toString());
+      }
+      return findTool("list_available_logs").execute(args).getAsJsonObject();
+    }
+
+    @Test
+    @DisplayName("pages with true totals, newest first, stable order")
+    void paging(@TempDir Path tempDir) throws Exception {
+      writeLogs(tempDir);
+      var first = list("limit", 2);
+      assertEquals(5, first.get("log_count").getAsInt());
+      assertEquals(2, first.get("returned").getAsInt());
+      assertTrue(first.get("has_more").getAsBoolean());
+      assertEquals(5, first.getAsJsonObject("limits").getAsJsonObject("logs").get("total")
+          .getAsInt());
+      var last = list("limit", 2, "offset", 4);
+      assertEquals(1, last.get("returned").getAsInt());
+      assertFalse(last.get("has_more").getAsBoolean());
+      var again = list("limit", 2);
+      assertEquals(first.getAsJsonArray("logs"), again.getAsJsonArray("logs"));
+    }
+
+    @Test
+    @DisplayName("filters by name, event, match type, and date")
+    void filters(@TempDir Path tempDir) throws Exception {
+      writeLogs(tempDir);
+      assertEquals(1, list("name", "BENCH").get("log_count").getAsInt());
+      assertEquals(2, list("event", "vache").get("log_count").getAsInt());
+      var qual = list("match_type", "qm");
+      assertEquals(2, qual.get("log_count").getAsInt(), qual.toString());
+      for (var l : qual.getAsJsonArray("logs")) {
+        assertTrue(l.getAsJsonObject().get("filename").getAsString().contains("_q"), qual.toString());
+      }
+      assertEquals(1, list("match_type", "sf").get("log_count").getAsInt());
+      assertTrue(list("match_type", "zz").get("error").getAsString().contains("Unknown match_type"));
+      var recent = list("since", "2026-04-01");
+      assertTrue(recent.get("log_count").getAsInt() >= 2, recent.toString());
+      for (var l : recent.getAsJsonArray("logs")) {
+        assertFalse(l.getAsJsonObject().get("filename").getAsString().contains("26-03-2"),
+            recent.toString());
+      }
+      var none = list("event", "nope");
+      assertEquals("no_match", none.get("status").getAsString());
+      assertEquals(5, none.get("total_logs").getAsInt());
+      var bad = list("since", "yesterday");
+      assertTrue(bad.get("error").getAsString().contains("since must be a date"), bad.toString());
+    }
   }
 
   @Nested
@@ -580,6 +703,30 @@ class CoreToolsLogicTest extends ToolTestBase {
       var samples = resultObj.getAsJsonArray("sample_values");
       assertEquals(3, samples.size(),
           "100 value entry should have exactly 3 samples (first, middle, last)");
+    }
+  }
+
+  @Nested
+  @DisplayName("read_entry argument validation (review 4.3)")
+  class ReadEntryValidation {
+
+    @Test
+    @DisplayName("read_entry rejects start_time after end_time")
+    void invertedRange() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/read_range.wpilog")
+          .addNumericEntry("/Test/Values", new double[]{0, 1, 2}, new double[]{1, 2, 3})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Test/Values");
+      args.addProperty("start_time", 2.0);
+      args.addProperty("end_time", 1.0);
+      var result = findTool("read_entry").execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      assertTrue(result.get("error").getAsString().contains("start_time must not be after end_time"),
+          result.get("error").getAsString());
     }
   }
 }

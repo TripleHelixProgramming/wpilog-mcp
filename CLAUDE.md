@@ -72,9 +72,14 @@ Generate analysis directives with:
 Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Include sample size considerations, correlation vs causation caveats, single-match limitations, and appropriate uncertainty language.
 
 ### Confidence Calibration
-- Don't claim "high confidence" with < 100 samples or > 10% data gaps
+- Classify the sampling first (periodic, change-only, event): AdvantageKit and NetworkTables log values when they change, so a long interval is usually a hold, not missing data
+- Don't claim "high confidence" with < 100 finite samples or > 10% of the time span in long intervals
 - Edge cases (single data points, high jitter, many NaNs) require reduced confidence
+- Every penalty comes with a reason the agent can read (`data_quality.reasons`)
 - Always warn that single-match analysis may not generalize
+
+### Server-Level Guidance
+General reasoning guidance (scientific method, confabulation traps) lives in one class and is delivered two ways: as the MCP `instructions` field on `initialize` (system-prompt placement in Claude Code/VS Code; must stay under 2 KB, most important rules first, ASCII only) and as `analysis_principles` in the `get_server_guide` result (reaches every client). Keep rules concrete and checkable, scope heavy rules to causal questions so they don't fire on lookups, and never phrase `confidence_level` as a blanket ceiling — it is driven by sample counts, holds, and timing (with `data_quality.reasons`), and reads "low" on sparse change-only signals whose events are perfectly clear, so it bounds statistics, not directly observed events. A test verifies every tool name the guidance mentions exists.
 
 ## Tool Architecture
 

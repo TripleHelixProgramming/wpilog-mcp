@@ -51,6 +51,7 @@ public class ResponseBuilder {
   private final JsonObject response;
   private final List<String> warnings;
   private JsonObject metadata;
+  private ResultContract.Status status;
 
   private ResponseBuilder(boolean success) {
     this.response = new JsonObject();
@@ -78,6 +79,184 @@ public class ResponseBuilder {
     var builder = new ResponseBuilder(false);
     builder.response.addProperty("error", message);
     return builder;
+  }
+
+  /**
+   * Creates a builder for a result that does not apply to this log (for example, autonomous
+   * analysis on a log with no autonomous period). Not a success: the tool ran correctly, but there
+   * was nothing for it to analyze, and {@code reason} says why.
+   *
+   * @param reason What made the tool inapplicable, in terms of the log's own data
+   * @return A new ResponseBuilder with {@code status: not_applicable}
+   * @since 0.9.0
+   */
+  public static ResponseBuilder notApplicable(String reason) {
+    var builder = new ResponseBuilder(false);
+    builder.status = ResultContract.Status.NOT_APPLICABLE;
+    builder.response.addProperty("reason", reason);
+    return builder;
+  }
+
+  /**
+   * Creates a builder for a result where the tool found no entries of the kind it analyzes. Pair
+   * it with {@link #lookedFor} (what was searched) and {@link #hint} (how to point the tool at the
+   * right data), so the result cannot be mistaken for "no problem found".
+   *
+   * @param reason What was missing
+   * @return A new ResponseBuilder with {@code status: no_match}
+   * @since 0.9.0
+   */
+  public static ResponseBuilder noMatch(String reason) {
+    var builder = new ResponseBuilder(false);
+    builder.status = ResultContract.Status.NO_MATCH;
+    builder.response.addProperty("reason", reason);
+    return builder;
+  }
+
+  /**
+   * Sets the result status explicitly (for example {@code PARTIAL} when some sections were
+   * skipped). {@code success} is derived from it when the result is enforced.
+   *
+   * @param status The status
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder status(ResultContract.Status status) {
+    this.status = status;
+    return this;
+  }
+
+  /**
+   * Records what the tool searched for (name patterns, types, schemas), for {@code no_match} and
+   * {@code not_applicable} results.
+   *
+   * @param descriptions One description per rule searched
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder lookedFor(java.util.Collection<String> descriptions) {
+    var array = new JsonArray();
+    descriptions.forEach(array::add);
+    response.add("looked_for", array);
+    return this;
+  }
+
+  /**
+   * Adds a hint telling the caller how to point the tool at the right data (usually a
+   * parameter to pass).
+   *
+   * @param hint The hint
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder hint(String hint) {
+    response.addProperty("hint", hint);
+    return this;
+  }
+
+  /**
+   * Records an input entry the result was computed from, under {@code inputs.entries}.
+   *
+   * @param role What the entry was used as (e.g. "voltage", "enabled")
+   * @param entry The entry name (null is ignored)
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder addInput(String role, String entry) {
+    if (entry == null) return this;
+    inputs().getAsJsonObject("entries").addProperty(role, entry);
+    return this;
+  }
+
+  /**
+   * Records a numeric signal under {@code inputs}: its entry under {@code inputs.entries} and,
+   * when it reads a field, the field path under {@code inputs.fields}, both by role.
+   *
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  ResponseBuilder addInputSignal(String role, NumericSignal signal) {
+    addInput(role, signal.entry());
+    if (!signal.path().isRoot()) {
+      var inputs = inputs();
+      if (!inputs.has("fields")) inputs.add("fields", new JsonObject());
+      inputs.getAsJsonObject("fields").addProperty(role, signal.path().toString());
+    }
+    return this;
+  }
+
+  /**
+   * Records the time window the result covers, under {@code inputs.window}. Either bound may be
+   * null (unbounded).
+   *
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder addInputWindow(Double start, Double end) {
+    var window = new JsonObject();
+    if (start != null) window.addProperty("start", start);
+    if (end != null) window.addProperty("end", end);
+    inputs().add("window", window);
+    return this;
+  }
+
+  /**
+   * Records the time a result covers: {@code inputs.scope} for a named scope or explicit windows,
+   * {@code inputs.window} for plain start_time/end_time bounds, nothing for the whole log.
+   *
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder addInputScope(TimeScope scope) {
+    if (!scope.isAll()) {
+      inputs().add("scope", scope.toJson());
+    } else if (scope.requestedStart() != null || scope.requestedEnd() != null) {
+      addInputWindow(scope.requestedStart(), scope.requestedEnd());
+    }
+    return this;
+  }
+
+  private JsonObject inputs() {
+    if (!response.has("inputs")) {
+      var inputs = new JsonObject();
+      inputs.add("entries", new JsonObject());
+      response.add("inputs", inputs);
+    }
+    return response.getAsJsonObject("inputs");
+  }
+
+  /**
+   * Records a section of the result that could not be produced, and why. A result with skipped
+   * sections has status {@code partial} unless a status was set explicitly.
+   *
+   * @param section The section's key in a full result
+   * @param reason Why it was not produced
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder addSkipped(String section, String reason) {
+    if (!response.has("skipped")) response.add("skipped", new JsonArray());
+    var entry = new JsonObject();
+    entry.addProperty("section", section);
+    entry.addProperty("reason", reason);
+    response.getAsJsonArray("skipped").add(entry);
+    return this;
+  }
+
+  /**
+   * Adds a list that may have been cut short by a limit, recording {@code total},
+   * {@code returned}, and {@code limit} under {@code limits.<key>}.
+   *
+   * @param key The list's key
+   * @param items The items returned
+   * @param total How many items exist in total
+   * @param limit The limit applied
+   * @return This builder for chaining
+   * @since 0.9.0
+   */
+  public ResponseBuilder addLimitedList(String key, JsonArray items, long total, int limit) {
+    ResultContract.addLimitedList(response, key, items, total, limit);
+    return this;
   }
 
   /**
@@ -189,10 +368,20 @@ public class ResponseBuilder {
   public ResponseBuilder addDataQuality(DataQuality quality) {
     response.add("data_quality", quality.toJson());
     if (quality.qualityScore() < 0.5) {
-      addWarning("Low data quality (score: " + String.format("%.2f", quality.qualityScore())
-          + "). Results should be treated as preliminary.");
+      addWarning(lowQualityWarning(quality));
     }
     return this;
+  }
+
+  /**
+   * The warning attached below a quality score of 0.5. It bounds statistics only: a logged
+   * flag, a threshold crossing, or an error line in the same result is an observation and is
+   * not made preliminary by sparse or irregular sampling.
+   */
+  static String lowQualityWarning(DataQuality quality) {
+    return "Low data quality (score: " + String.format("%.2f", quality.qualityScore())
+        + "): statistics in this result should be treated as preliminary; directly observed "
+        + "events (a logged flag, a threshold crossing, an error line) are not affected.";
   }
 
   /**
@@ -210,6 +399,16 @@ public class ResponseBuilder {
   }
 
   public JsonObject build() {
+    // Status: explicit, else partial when sections were skipped from a successful result
+    var effective = status;
+    if (effective == null && response.get("success").getAsBoolean() && response.has("skipped")) {
+      effective = ResultContract.Status.PARTIAL;
+    }
+    if (effective != null) {
+      response.addProperty("success", effective.isSuccess());
+      response.addProperty("status", effective.wire());
+    }
+
     // Add warnings array if any warnings were added
     if (!warnings.isEmpty()) {
       var warningsArray = new JsonArray();

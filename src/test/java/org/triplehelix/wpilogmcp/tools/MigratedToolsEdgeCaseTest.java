@@ -240,7 +240,7 @@ class MigratedToolsEdgeCaseTest {
       var obj = result.getAsJsonObject();
 
       assertTrue(obj.get("success").getAsBoolean());
-      assertTrue(Double.isNaN(obj.get("correlation").getAsDouble()));
+      assertTrue(obj.get("correlation").isJsonNull());
       assertTrue(obj.has("warnings"));
       assertTrue(obj.get("warnings").getAsJsonArray().size() > 0);
     }
@@ -265,9 +265,9 @@ class MigratedToolsEdgeCaseTest {
       var result = tool.execute(args);
       var obj = result.getAsJsonObject();
 
-      assertTrue(obj.get("success").getAsBoolean());
-      assertEquals(0, obj.get("match_count").getAsInt());
-      assertEquals(0, obj.get("matches").getAsJsonArray().size());
+      assertFalse(obj.get("success").getAsBoolean());
+      assertEquals("no_match", obj.get("status").getAsString());
+      assertEquals("The log has no entries.", obj.get("reason").getAsString());
     }
 
     @Test
@@ -290,8 +290,11 @@ class MigratedToolsEdgeCaseTest {
       var result = tool.execute(args);
       var obj = result.getAsJsonObject();
 
-      assertTrue(obj.get("success").getAsBoolean());
-      assertEquals(0, obj.get("match_count").getAsInt());
+      assertFalse(obj.get("success").getAsBoolean());
+      assertEquals("no_match", obj.get("status").getAsString());
+      var reason = obj.get("reason").getAsString();
+      assertTrue(reason.contains("'UltraRareType'") && reason.contains("'nonexistent'")
+          && reason.contains("1000000 samples"), reason);
     }
 
     @Test

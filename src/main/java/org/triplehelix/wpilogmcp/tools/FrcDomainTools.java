@@ -11,6 +11,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
 import org.triplehelix.wpilogmcp.log.LogData;
@@ -64,19 +69,17 @@ public final class FrcDomainTools {
 
   // ==================== SHARED HELPER METHODS ====================
 
-  /** Delegate to shared percentile implementation in ToolUtils. */
-  private static double interpolatedPercentile(double[] sortedData, double p) {
-    return ToolUtils.percentile(sortedData, p);
-  }
-
   /**
    * Calculate the Euclidean distance between two poses (works for Pose2d and Pose3d).
+   *
+   * @return The distance, or NaN when either pose's translation cannot be read (callers count
+   *     such samples as unreadable; they must never be treated as "no movement")
    */
-  private static double calculatePoseDistance(java.util.Map<String, Object> pose1, java.util.Map<String, Object> pose2) {
+  static double calculatePoseDistance(java.util.Map<String, Object> pose1, java.util.Map<String, Object> pose2) {
     var trans1 = extractTranslation(pose1);
     var trans2 = extractTranslation(pose2);
 
-    if (trans1 == null || trans2 == null) return 0.0;
+    if (trans1 == null || trans2 == null) return Double.NaN;
 
     double dx = trans1[0] - trans2[0];
     double dy = trans1[1] - trans2[1];
@@ -103,7 +106,7 @@ public final class FrcDomainTools {
         return z != null ? new double[]{x, y, z} : new double[]{x, y};
       }
     }
-    // Fall back to flat layout (from struct decoder: Pose2dDecoder/Pose3dDecoder)
+    // Fall back to a flat {x, y[, z]} map (hand-built values, as test mocks make)
     var x = toDouble(pose.get("x"));
     var y = toDouble(pose.get("y"));
     var z = toDouble(pose.get("z"));
@@ -122,7 +125,23 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Generate a chronological timeline of critical robot events: enable/disable, "
-          + "match phases, brownouts, joystick disconnects, errors, and warnings."
+          + "match phases, battery-voltage threshold brownouts (BROWNOUT_START/END, basis "
+          + "voltage_threshold), roboRIO brownout flag transitions when a flag such as "
+          + "/SystemStats/BrownedOut is logged (RIO_BROWNOUT_START/END, basis rio_flag), alerts "
+          + "(ALERT_RAISED, category alert: each message of a string[] alert entry such as "
+          + "/RealOutputs/Alerts/warnings when it appears, with cleared_at and duration_sec), and "
+          + "for errors/warnings found in text (string lines, alerts, json strings), exact counts "
+          + "(text_event_counts, per source) and text_event_summary: each distinct message "
+          + "(numbers normalized to #) with its count, first/last time, sources, and how many "
+          + "distinct raw texts it covers. Individual console messages are deliberately not "
+          + "listed here; use search_strings (level, regex, time window, offset/limit paging) for "
+          + "the complete list. "
+          + "rio_brownout_flag_logged says whether the roboRIO's own brownout state is available "
+          + "in this log; brownout_voltage_entry names the voltage entry scanned for threshold "
+          + "crossings (BatteryVoltage, or Voltage under PowerDistribution, PDH, PDP, or Battery; "
+          + "voltage_entry names another), and a warning says when there is none, listing any "
+          + "voltage entries to confirm: the server does not guess which one is the battery. "
+          + "Returns not_applicable when the log has none of these inputs at all."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -131,211 +150,169 @@ public final class FrcDomainTools {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addNumberProperty("brownout_threshold", "Voltage threshold for brownout detection (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
+          .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
+          .addProperty("voltage_entry", "string", "Battery voltage entry for BROWNOUT_START/END "
+              + "(default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)",
+              false)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
 
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
-      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 6.8);
+      var threshold = PowerFacts.threshold(log, getOptDouble(arguments, "brownout_threshold"));
+      double brownoutThreshold = threshold.volts();
 
       var events = new ArrayList<JsonObject>();
 
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      // Enable/disable and mode transitions, from the same timeline get_match_phases uses: one
+      // DriverStation entry per role (AdvantageKit first), values held until the next sample.
+      var timeline = MatchTimeline.of(log);
+      for (var event : timeline.events(startTime, endTime)) {
+        events.add(event.toJson());
       }
+      var dsSources = timeline.sources();
 
-      // First pass: find the Enabled values for cross-referencing with auto mode
-      List<TimestampedValue> enabledValuesForTimeline = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
-          enabledValuesForTimeline = log.values().get(entryName);
-          break;
-        }
-      }
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            var lastState = (Boolean) null;
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              if (tv.value() instanceof Boolean state) {
-                if (lastState == null || !lastState.equals(state)) {
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", state ? "ENABLED" : "DISABLED");
-                  event.addProperty("category", "robot_state");
-                  event.addProperty("source", entryName);
-                  events.add(event);
-                  lastState = state;
-                }
-              }
-            }
-          }
-        }
-
-        if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            var lastState = (Boolean) null;
-            boolean pendingAutoStart = false;
-            double autoFlagTime = 0;
-            String autoSource = entryName;
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              if (tv.value() instanceof Boolean isAuto) {
-                if (lastState == null || !lastState.equals(isAuto)) {
-                  if (isAuto && !ToolUtils.isEnabledAt(enabledValuesForTimeline, tv.timestamp())) {
-                    // Auto flag set but robot not yet enabled — defer the AUTO_START
-                    pendingAutoStart = true;
-                    autoFlagTime = tv.timestamp();
-                    lastState = isAuto;
-                    continue;
-                  }
-                  // If transitioning out of auto and we have a pending deferred AUTO_START,
-                  // resolve it now: find when the robot was first enabled during auto
-                  if (!isAuto && pendingAutoStart && enabledValuesForTimeline != null) {
-                    for (var ev : enabledValuesForTimeline) {
-                      if (ev.timestamp() > autoFlagTime && ev.timestamp() < tv.timestamp()
-                          && ev.value() instanceof Boolean en && en) {
-                        var autoEvent = new JsonObject();
-                        autoEvent.addProperty("timestamp", ev.timestamp());
-                        autoEvent.addProperty("type", "AUTO_START");
-                        autoEvent.addProperty("category", "match_phase");
-                        autoEvent.addProperty("source", autoSource);
-                        events.add(autoEvent);
-                        break;
-                      }
-                    }
-                    pendingAutoStart = false;
-                  }
-                  if (isAuto) {
-                    var event = new JsonObject();
-                    event.addProperty("timestamp", tv.timestamp());
-                    event.addProperty("type", "AUTO_START");
-                    event.addProperty("category", "match_phase");
-                    event.addProperty("source", autoSource);
-                    events.add(event);
-                  } else {
-                    // Auto flag cleared — defer TELEOP_START until next Enabled=true,
-                    // matching get_match_phases behavior (FMS disabled gap between auto/teleop)
-                    if (enabledValuesForTimeline != null) {
-                      boolean emitted = false;
-                      // Start scan from the auto-end timestamp rather than the beginning
-                      // to avoid matching enable events from earlier auto/teleop cycles.
-                      int startIdx = findFirstIndexAtOrAfter(enabledValuesForTimeline, tv.timestamp());
-                      for (int idx = startIdx; idx < enabledValuesForTimeline.size(); idx++) {
-                        var ev = enabledValuesForTimeline.get(idx);
-                        if (ev.value() instanceof Boolean en && en) {
-                          var teleopEvent = new JsonObject();
-                          teleopEvent.addProperty("timestamp", ev.timestamp());
-                          teleopEvent.addProperty("type", "TELEOP_START");
-                          teleopEvent.addProperty("category", "match_phase");
-                          teleopEvent.addProperty("source", autoSource);
-                          events.add(teleopEvent);
-                          emitted = true;
-                          break;
-                        }
-                      }
-                      // Fallback: if no enabled transition found (practice mode / no FMS),
-                      // emit at the auto-end timestamp
-                      if (!emitted) {
-                        var teleopEvent = new JsonObject();
-                        teleopEvent.addProperty("timestamp", tv.timestamp());
-                        teleopEvent.addProperty("type", "TELEOP_START");
-                        teleopEvent.addProperty("category", "match_phase");
-                        teleopEvent.addProperty("source", autoSource);
-                        events.add(teleopEvent);
-                      }
-                    } else {
-                      // No enabled data available — emit immediately as fallback
-                      var teleopEvent = new JsonObject();
-                      teleopEvent.addProperty("timestamp", tv.timestamp());
-                      teleopEvent.addProperty("type", "TELEOP_START");
-                      teleopEvent.addProperty("category", "match_phase");
-                      teleopEvent.addProperty("source", autoSource);
-                      events.add(teleopEvent);
-                    }
-                  }
-                  lastState = isAuto;
-                }
-              }
-            }
-            // If auto flag was set and robot never transitioned out of auto,
-            // check if robot got enabled while still in auto
-            if (pendingAutoStart && enabledValuesForTimeline != null) {
-              for (var ev : enabledValuesForTimeline) {
-                if (ev.timestamp() > autoFlagTime && inTimeRange(ev.timestamp(), startTime, endTime)
-                    && ev.value() instanceof Boolean en && en) {
-                  var autoState = ToolUtils.getValueAtTimeZoh(values, ev.timestamp());
-                  if (Boolean.TRUE.equals(autoState)) {
-                    var event = new JsonObject();
-                    event.addProperty("timestamp", ev.timestamp());
-                    event.addProperty("type", "AUTO_START");
-                    event.addProperty("category", "match_phase");
-                    event.addProperty("source", autoSource);
-                    events.add(event);
-                  }
-                  break;
-                }
-              }
+      // Add voltage-threshold brownouts on the battery voltage entry: the battery_voltage role,
+      // shared with power_analysis, so the tools agree on which signal was analyzed; the entry
+      // is reported as brownout_voltage_entry, and a warning says when there is none.
+      var battery = SignalResolver.batteryVoltage(log, null,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = battery.chosen();
+      if (voltageEntry.isPresent()) {
+        var entryName = voltageEntry.get();
+        var values = log.values().get(entryName);
+        boolean inBrownout = false;
+        for (var tv : values) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+          if (tv.value() instanceof Number num && Double.isFinite(num.doubleValue())) {
+            double voltage = num.doubleValue();
+            // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
+            // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
+            double hysteresis = 0.2;
+            if (voltage < brownoutThreshold && !inBrownout) {
+              var event = new JsonObject();
+              event.addProperty("timestamp", tv.timestamp());
+              event.addProperty("type", "BROWNOUT_START");
+              event.addProperty("category", "power");
+              event.addProperty("basis", "voltage_threshold");
+              event.addProperty("voltage", voltage);
+              event.addProperty("source", entryName);
+              events.add(event);
+              inBrownout = true;
+            } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
+              var event = new JsonObject();
+              event.addProperty("timestamp", tv.timestamp());
+              event.addProperty("type", "BROWNOUT_END");
+              event.addProperty("category", "power");
+              event.addProperty("basis", "voltage_threshold");
+              event.addProperty("voltage", voltage);
+              event.addProperty("source", entryName);
+              events.add(event);
+              inBrownout = false;
             }
           }
         }
       }
 
-      // Add voltage brownouts
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("batteryvoltage") || lower.contains("battery_voltage") ||
-            (lower.contains("voltage") && lower.contains("input"))) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            boolean inBrownout = false;
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              if (tv.value() instanceof Number num) {
-                double voltage = num.doubleValue();
-                // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
-                // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
-                double hysteresis = 0.2;
-                if (voltage < brownoutThreshold && !inBrownout) {
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", "BROWNOUT_START");
-                  event.addProperty("category", "power");
-                  event.addProperty("voltage", voltage);
-                  event.addProperty("source", entryName);
-                  events.add(event);
-                  inBrownout = true;
-                } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
-                  var event = new JsonObject();
-                  event.addProperty("timestamp", tv.timestamp());
-                  event.addProperty("type", "BROWNOUT_END");
-                  event.addProperty("category", "power");
-                  event.addProperty("voltage", voltage);
-                  event.addProperty("source", entryName);
-                  events.add(event);
-                  inBrownout = false;
-                }
+      // Add roboRIO brownout flag transitions (e.g. AdvantageKit /SystemStats/BrownedOut).
+      // Unlike the voltage-threshold events above, these reflect the roboRIO's own brownout
+      // state: the flag is set only when the RIO actually cut outputs.
+      String rioFlagEntry = PowerFacts.flagEntry(log).orElse(null);
+      if (rioFlagEntry != null) {
+        var values = log.values().get(rioFlagEntry);
+        Boolean lastState = null;
+        for (var tv : values) {
+          if (!(tv.value() instanceof Boolean state)) continue;
+          if (lastState != null && lastState.equals(state)) continue;
+          boolean transition = state || lastState != null; // initial false is not an event
+          if (transition && inTimeRange(tv.timestamp(), startTime, endTime)) {
+            var event = new JsonObject();
+            event.addProperty("timestamp", tv.timestamp());
+            event.addProperty("type", state ? "RIO_BROWNOUT_START" : "RIO_BROWNOUT_END");
+            event.addProperty("category", "power");
+            event.addProperty("basis", "rio_flag");
+            event.addProperty("source", rioFlagEntry);
+            events.add(event);
+          }
+          lastState = state;
+        }
+      }
+
+      // Error/warning text: counts and a distinct-message summary only. Individual messages are
+      // not placed on the timeline, because any cap or priority over a chatty console is a
+      // judgment the model cannot see; search_strings lists them completely, with paging.
+      final int maxTextGroups = 200;
+      var textGroups = new LinkedHashMap<String, TextGroup>();
+      var countsBySource = new LinkedHashMap<String, int[]>(); // [error, warning]
+      int errorSamples = 0;
+      int warningSamples = 0;
+      final int maxAlertEvents = 100;
+      int alertEvents = 0;
+      for (var info : TextEvents.textEntries(log)) {
+        for (var event : TextEvents.of(log, info)) {
+          if (!event.overlaps(startTime, endTime)) continue;
+          var level = TextEvents.level(event);
+          if (event.source() == TextEvents.Source.ALERT) {
+            // An alert is state: one timeline event per appearance, with when it cleared
+            if (alertEvents++ < maxAlertEvents) {
+              var alert = new JsonObject();
+              alert.addProperty("timestamp", event.timestamp());
+              alert.addProperty("type", "ALERT_RAISED");
+              alert.addProperty("category", "alert");
+              alert.addProperty("entry", event.entry());
+              if (level != null) alert.addProperty("level", level);
+              alert.addProperty("message", ToolUtils.truncate(event.text(),
+                  ToolUtils.MESSAGE_LINE_LIMIT));
+              if (event.end() != null) {
+                alert.addProperty("cleared_at", event.end());
+                alert.addProperty("duration_sec", event.duration());
+              } else {
+                alert.addProperty("active_at_log_end", true);
               }
+              events.add(alert);
             }
           }
-          break;
+          if (!"error".equals(level) && !"warning".equals(level)) continue;
+          boolean isError = "error".equals(level);
+          // The matching line: an alert's whole text, or the first line of the winning kind
+          var classified = ToolUtils.classifyText(event.text());
+          var message = event.source() == TextEvents.Source.ALERT || classified == null
+              ? event.text().strip() : classified.message();
+          var type = isError ? "ERROR" : "WARNING";
+          if (isError) errorSamples++; else warningSamples++;
+          countsBySource.computeIfAbsent(event.entry(), k -> new int[2])[isError ? 0 : 1]++;
+          // The same error usually recurs with varying numbers (loop times, device ids, line
+          // numbers), so group on a normalized pattern and count how many raw texts it covers.
+          var pattern = ToolUtils.normalizeMessage(message);
+          textGroups.computeIfAbsent(type + "|" + pattern,
+                  k -> new TextGroup(type, pattern, message))
+              .add(event.timestamp(), event.entry(), message);
         }
       }
 
       events.sort(Comparator.comparingDouble(a -> a.get("timestamp").getAsDouble()));
+
+      if (events.isEmpty() && !timeline.hasEnabledData() && dsSources.autonomous() == null
+          && voltageEntry.isEmpty() && rioFlagEntry == null
+          && TextEvents.textEntries(log).isEmpty()) {
+        // Nothing a timeline is built from: not an empty timeline, but no timeline at all
+        return ResponseBuilder.notApplicable("This log has none of the entries a timeline is "
+                + "built from: no DriverStation state, no battery voltage entry, no roboRIO "
+                + "brownout flag, and no text entries.")
+            .lookedFor(List.of("boolean Enabled/Autonomous/Test/FMSAttached under "
+                + "/DriverStation/ or DS:, or int64 FMSInfo/FMSControlData",
+                "a battery voltage entry (BatteryVoltage, or Voltage under "
+                    + "PowerDistribution/PDH/PDP/Battery; voltage_entry names another)",
+                "a boolean BrownedOut flag", "string, string[], or json entries"))
+            .hint("list_entries shows what the log holds; get_match_phases and power_analysis "
+                + "report their own inputs.")
+            .build();
+      }
 
       var categoryCounts = new HashMap<String, Integer>();
       for (var event : events) {
@@ -345,34 +322,120 @@ public final class FrcDomainTools {
 
       var builder = success()
           .addProperty("event_count", events.size())
+          .addProperty("brownout_threshold", threshold.volts())
+          .addProperty("brownout_threshold_basis", threshold.basis())
+          .addProperty("rio_brownout_flag_logged", rioFlagEntry != null)
           .addData("summary", GSON.toJsonTree(categoryCounts))
           .addData("events", GSON.toJsonTree(events));
+      if (rioFlagEntry != null) {
+        builder.addProperty("rio_brownout_flag_entry", rioFlagEntry);
+      }
+      if (alertEvents > maxAlertEvents) {
+        builder.addWarning("The timeline lists the first " + maxAlertEvents + " of " + alertEvents
+            + " alert appearances; search_strings lists every one.");
+      }
+      var textCounts = new JsonObject();
+      textCounts.addProperty("error", errorSamples);
+      textCounts.addProperty("warning", warningSamples);
+      textCounts.addProperty("total", errorSamples + warningSamples);
+      var bySource = new JsonObject();
+      countsBySource.forEach((source, c) -> {
+        var o = new JsonObject();
+        o.addProperty("error", c[0]);
+        o.addProperty("warning", c[1]);
+        bySource.add(source, o);
+      });
+      textCounts.add("by_source", bySource);
+      builder.addData("text_event_counts", textCounts);
+      if (!textGroups.isEmpty()) {
+        var groups = new ArrayList<>(textGroups.values());
+        groups.sort(Comparator.comparingInt((TextGroup g) -> -g.count)
+            .thenComparingDouble(g -> g.firstTimestamp));
+        var summary = new JsonArray();
+        for (var group : groups.subList(0, Math.min(groups.size(), maxTextGroups))) {
+          summary.add(group.toJson());
+        }
+        builder.addProperty("text_event_groups_total", groups.size());
+        builder.addData("text_event_summary", summary);
+        if (groups.size() > maxTextGroups) {
+          builder.addWarning("text_event_summary shows the " + maxTextGroups + " most frequent of "
+              + groups.size() + " distinct messages; use search_strings for the rest.");
+        }
+      }
+      voltageEntry.ifPresentOrElse(
+          name -> builder.addProperty("brownout_voltage_entry", name),
+          () -> builder.addWarning("BROWNOUT_START/END (voltage threshold) events were not "
+              + "detected: " + SignalResolver.unresolvedReason(battery, "voltage_entry")));
 
-      // Add data quality from enabled values if available
-      if (enabledValuesForTimeline != null && !enabledValuesForTimeline.isEmpty()) {
-        var quality = DataQuality.fromValues(enabledValuesForTimeline);
-        builder.addDataQuality(quality)
-            .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
+      builder.addInput("enabled", dsSources.enabled())
+          .addInput("autonomous", dsSources.autonomous())
+          .addInput("control_word", dsSources.controlWord())
+          .addInput("voltage", voltageEntry.orElse(null))
+          .addInput("rio_brownout_flag", rioFlagEntry);
+      if (!dsSources.ignored().isEmpty()) {
+        builder.addWarning("Also found " + String.join(", ", dsSources.ignored())
+            + "; enable and mode events come from " + dsSources.enabled() + " only.");
+      }
+      if (!timeline.hasEnabledData()) {
+        builder.addWarning("No DriverStation enabled entry found; there are no ENABLED/DISABLED "
+            + "or match phase events in this timeline.");
       }
 
+      // No data_quality block: every field here is a directly observed event or an exact
+      // count, not a statistic, and the DriverStation entries it comes from are change-only
+      // booleans with a handful of samples, whose sampling says nothing about the events.
+      // get_match_phases carries none for the same reason.
       return builder.build();
     }
 
-    /**
-     * Binary search for the first index in a sorted timestamped list at or after the given time.
-     */
-    private static int findFirstIndexAtOrAfter(List<TimestampedValue> values, double time) {
-      int lo = 0, hi = values.size();
-      while (lo < hi) {
-        int mid = (lo + hi) >>> 1;
-        if (values.get(mid).timestamp() < time) {
-          lo = mid + 1;
-        } else {
-          hi = mid;
+    /** One distinct error/warning message (after normalization) with its occurrence statistics. */
+    private static final class TextGroup {
+      final String type;
+      final String pattern;
+      final String example;
+      int count = 0;
+      double firstTimestamp = Double.NaN;
+      double lastTimestamp = Double.NaN;
+      final Set<String> sources = new LinkedHashSet<>();
+      final Set<String> variants = new HashSet<>();
+      static final int MAX_VARIANTS = 10_000;
+      boolean variantsCapped = false;
+
+      TextGroup(String type, String pattern, String example) {
+        this.type = type;
+        this.pattern = pattern;
+        this.example = example;
+      }
+
+      void add(double timestamp, String source, String rawMessage) {
+        if (count == 0 || timestamp < firstTimestamp) firstTimestamp = timestamp;
+        if (count == 0 || timestamp > lastTimestamp) lastTimestamp = timestamp;
+        count++;
+        sources.add(source);
+        if (variants.size() < MAX_VARIANTS) {
+          variants.add(rawMessage);
+        } else if (!variants.contains(rawMessage)) {
+          variantsCapped = true;
         }
       }
-      return lo;
+
+      JsonObject toJson() {
+        var obj = new JsonObject();
+        obj.addProperty("type", type);
+        obj.addProperty("message", ToolUtils.truncate(pattern, ToolUtils.MESSAGE_LINE_LIMIT));
+        if (!pattern.equals(example)) {
+          obj.addProperty("example", ToolUtils.truncate(example, ToolUtils.MESSAGE_LINE_LIMIT));
+        }
+        obj.addProperty("count", count);
+        obj.addProperty("variants", variants.size());
+        if (variantsCapped) obj.addProperty("variants_capped", true);
+        obj.addProperty("first_timestamp", firstTimestamp);
+        obj.addProperty("last_timestamp", lastTimestamp);
+        obj.add("sources", GSON.toJsonTree(sources));
+        return obj;
+      }
     }
+
   }
 
   static class AnalyzeVisionTool extends LogRequiringTool {
@@ -381,15 +444,40 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze vision system reliability: target acquisition rate, flicker detection, "
-          + "pose discrepancy between vision and odometry, and sudden pose jumps."
+      return "Analyze vision data, found by type and content. observation_streams: struct "
+          + "arrays of pose observations (for example the AdvantageKit vision template's "
+          + "/Vision/Camera<N>/PoseObservations from PhotonVision or Limelight: each record holds "
+          + "a timestamp and a pose), one stream per camera, with record and observation counts, "
+          + "the fraction of records with an observation, observation rate, tag-count and "
+          + "ambiguity distributions, latency (log time minus the observation's own timestamp, "
+          + "and a sibling Latency entry when logged), and the residual between each observation "
+          + "and the robot pose at the observation's timestamp (robot_pose_entry, chosen or "
+          + "passed as pose_entry). target_streams: structs with yaw and pitch fields (such as "
+          + "TargetObservation), with yaw, pitch, area, and confidence distributions and the "
+          + "object ids seen. pose_sets: Pose3d[] entries, and Pose2d[] entries under a vision, "
+          + "camera, PhotonVision, or Limelight path (e.g. accepted or rejected robot poses per "
+          + "loop), with how often they are non-empty and poses per record; other Pose2d[] "
+          + "entries, such as a planned path, are not vision data. "
+          + "target_acquisition: Limelight-style has-target entries (tv, hasTarget, targetValid) "
+          + "with acquisition rate and flicker. pose_jumps: steps larger than jump_threshold in "
+          + "scalar pose entries; a jump within 0.5 s of the robot being enabled has "
+          + "near_enable_sec (odometry is often reset there, e.g. at the start of autonomous), so "
+          + "it is not by itself evidence of a vision correction. vision_prefix limits the vision entries only "
+          + "(case-insensitive); the robot pose may live elsewhere. Returns no_match with what "
+          + "was searched when none of these exist."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("vision_prefix", "string", "Entry path prefix for vision data", false)
+          .addProperty("vision_prefix", "string",
+              "Only vision entries under this prefix (case-insensitive), e.g. '/Vision'", false)
+          .addProperty("pose_entry", "string",
+              "Robot pose entry (struct:Pose2d or Pose3d) for residuals and jump detection; "
+                  + "default: a conventional name (DriveState/Pose, Odometry/Robot, Drive/Pose, "
+                  + "EstimatedPose, RobotPose) or the only Pose2d outside vision entries; several "
+                  + "others are listed to confirm, not guessed", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("jump_threshold", "Distance threshold for jump detection (meters)", false, 0.5)
@@ -397,391 +485,864 @@ public final class FrcDomainTools {
           .build();
     }
 
+    /** Path words of vision libraries and cameras, for Pose2d[] entries only. */
+    static final java.util.regex.Pattern VISION_PATH =
+        java.util.regex.Pattern.compile("(?i)(vision|camera|photon|limelight)");
+
+    /** Seconds after an enable within which a pose jump is flagged as near_enable_sec. */
+    static final double NEAR_ENABLE_SEC = 0.5;
+
+    static boolean underPrefix(String name, String prefix) {
+      return prefix == null || name.toLowerCase().startsWith(prefix.toLowerCase());
+    }
+
+    static boolean isScalarPose(org.triplehelix.wpilogmcp.log.EntryInfo e) {
+      return e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d");
+    }
+
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var visionPrefix = getOptString(arguments, "vision_prefix", null);
+      var poseArg = getOptString(arguments, "pose_entry", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double jumpThreshold = getOptDouble(arguments, "jump_threshold", 0.5);
       double flickerWindow = getOptDouble(arguments, "flicker_window", 0.5);
+      var entries = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id)).toList();
 
-      var targetValidEntries = new ArrayList<String>();
-      var poseEntries = new ArrayList<String>();
+      // Robot pose: the robot_pose role (explicit, a conventional name, or the only Pose2d);
+      // several unconventional Pose2d entries are candidates to confirm, not a guess
+      var poseRole = SignalResolver.robotPose(log, poseArg);
+      String robotPose = poseRole.chosen().orElse(null);
 
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      // Vision entries (prefix applies only here)
+      var targetEntries = new ArrayList<String>();
+      var streams = new ArrayList<String>();
+      var targetStreams = new ArrayList<String>();
+      var poseSets = new ArrayList<String>();
+      for (var e : entries) {
+        if (!underPrefix(e.name(), visionPrefix)) continue;
+        var lower = e.name().toLowerCase();
+        if (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
+            || lower.contains("targetvalid")) {
+          targetEntries.add(e.name());
+        } else if (e.type().equals("struct:Pose3d[]")
+            || (e.type().equals("struct:Pose2d[]") && VISION_PATH.matcher(e.name()).find())) {
+          // A Pose2d[] elsewhere is usually a path or trajectory, not vision data
+          poseSets.add(e.name());
+        } else if (isObservationStream(log, e)) {
+          streams.add(e.name());
+        } else if (isTargetStream(log, e)) {
+          targetStreams.add(e.name());
+        }
+      }
+      // Jumps: the robot pose plus scalar vision pose estimates
+      var jumpEntries = new ArrayList<String>();
+      if (robotPose != null) jumpEntries.add(robotPose);
+      for (var e : entries) {
+        if (!isScalarPose(e) || e.name().equals(robotPose) || log.sampleCount(e.name()) < 2) continue;
+        var lower = e.name().toLowerCase();
+        if (lower.contains("vision") && underPrefix(e.name(), visionPrefix)) jumpEntries.add(e.name());
       }
 
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        boolean matchesPrefix = visionPrefix == null || entryName.startsWith(visionPrefix);
+      if (targetEntries.isEmpty() && streams.isEmpty() && jumpEntries.isEmpty()
+          && targetStreams.isEmpty() && poseSets.isEmpty()) {
+        return ResponseBuilder.noMatch("No vision data or pose entries found"
+                + (visionPrefix != null ? " (vision entries under " + visionPrefix + ")" : "") + ".")
+            .lookedFor(List.of(
+                "struct arrays whose records hold a timestamp and a pose (pose observations)",
+                "structs with yaw and pitch fields (target observations)",
+                "struct:Pose3d[] and struct:Pose2d[] entries (pose sets)",
+                "has-target entries: names containing hasTarget or targetValid, or ending in /tv",
+                "scalar struct:Pose2d/Pose3d entries (robot pose; vision pose estimates)"))
+            .hint("Use search_entries with pattern 'vision' or 'camera', then pass vision_prefix "
+                + "or pose_entry.")
+            .build();
+      }
 
-        if (matchesPrefix && (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv") || lower.contains("targetvalid"))) {
-          targetValidEntries.add(entryName);
-        }
+      var builder = success();
+      if (robotPose != null) builder.addInput("robot_pose", robotPose);
+      if (robotPose == null && poseRole.needsConfirmation()) {
+        builder.addSkipped("robot_pose", "Residuals against the robot pose and jumps in it were "
+            + "not computed: " + SignalResolver.unresolvedReason(poseRole, "pose_entry"));
+      }
+      if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
 
-        if (matchesPrefix && lower.contains("pose") && !lower.contains("target")) {
-          var entry = log.entries().get(entryName);
-          if (entry != null && (entry.type().contains("Pose2d") || entry.type().contains("Pose3d"))) {
-            poseEntries.add(entryName);
+      var targetAnalysis = new JsonArray();
+      for (var name : targetEntries) {
+        var a = targetAcquisition(log.values().get(name), startTime, endTime, flickerWindow);
+        a.addProperty("entry", name);
+        targetAnalysis.add(a);
+      }
+      builder.addData("target_acquisition", targetAnalysis);
+
+      var streamsJson = new JsonArray();
+      var robotPoseValues = robotPose != null ? log.values().get(robotPose) : null;
+      for (var name : streams) {
+        var o = observationStream(name, log.values().get(name), startTime, endTime,
+            robotPose, robotPoseValues);
+        var latencyEntry = siblingLatency(log, name);
+        if (latencyEntry != null) {
+          var latencies = new ArrayList<Double>();
+          for (var tv : log.values().get(latencyEntry)) {
+            if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+            var v = toDouble(tv.value());
+            if (v != null && Double.isFinite(v)) latencies.add(v);
+          }
+          if (!latencies.isEmpty()) {
+            var l = distribution(latencies, "");
+            l.addProperty("entry", latencyEntry);
+            l.addProperty("basis", "as logged by the robot program (units per the entry name)");
+            o.add("logged_latency", l);
           }
         }
+        streamsJson.add(o);
+      }
+      builder.addData("observation_streams", streamsJson);
+      var targetStreamsJson = new JsonArray();
+      for (var name : targetStreams) {
+        targetStreamsJson.add(targetStream(name, log.values().get(name), startTime, endTime));
+      }
+      builder.addData("target_streams", targetStreamsJson);
+      var poseSetsJson = new JsonArray();
+      for (var name : poseSets) {
+        poseSetsJson.add(poseSet(name, log.values().get(name), startTime, endTime));
+      }
+      builder.addData("pose_sets", poseSetsJson);
+      if (streams.isEmpty() && targetEntries.isEmpty() && targetStreams.isEmpty()
+          && poseSets.isEmpty()) {
+        builder.addSkipped("observation_streams", "No pose observation streams or has-target "
+            + "entries" + (visionPrefix != null ? " under " + visionPrefix : "")
+            + "; only pose jumps were checked.");
       }
 
-      var targetAnalysis = targetValidEntries.stream()
-          .map(name -> {
-            var values = log.values().get(name);
-            if (values == null || values.isEmpty()) return null;
-
-            int totalSamples = 0;
-            int validSamples = 0;
-            int flickerCount = 0;
-            var lastTransition = (Double) null;
-            var lastState = (Boolean) null;
-
-            for (var tv : values) {
-              if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-              totalSamples++;
-
-              boolean hasTarget = false;
-              if (tv.value() instanceof Boolean b) hasTarget = b;
-              else if (tv.value() instanceof Number n) hasTarget = n.doubleValue() > 0.5;
-
-              if (hasTarget) validSamples++;
-
-              if (lastState != null && !lastState.equals(hasTarget)) {
-                if (lastTransition != null && (tv.timestamp() - lastTransition) < flickerWindow) {
-                  flickerCount++;
-                }
-                lastTransition = tv.timestamp();
-              }
-              lastState = hasTarget;
-            }
-
-            var analysis = new JsonObject();
-            analysis.addProperty("entry", name);
-            analysis.addProperty("total_samples", totalSamples);
-            analysis.addProperty("valid_samples", validSamples);
-            analysis.addProperty("acquisition_rate", totalSamples > 0 ? (double) validSamples / totalSamples : 0);
-            analysis.addProperty("flicker_events", flickerCount);
-            return analysis;
-          })
-          .filter(Objects::nonNull)
-          .toList();
-
-      // Detect pose jumps
-      var poseJumps = new ArrayList<JsonObject>();
-      for (var poseName : poseEntries) {
-        var values = log.values().get(poseName);
-        if (values == null || values.size() < 2) continue;
-
-        java.util.Map<String, Object> lastPose = null;
-        for (TimestampedValue tv : values) {
+      var enables = MatchTimeline.of(log).enabledSegments().stream()
+          .map(MatchTimeline.Segment::start).toList();
+      var jumps = new ArrayList<JsonObject>();
+      int unreadable = 0;
+      for (var name : jumpEntries) {
+        Object last = null;
+        for (var tv : log.values().get(name)) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-
-          if (tv.value() instanceof java.util.Map) {
-            @SuppressWarnings("unchecked")
-            var currentPose = (java.util.Map<String, Object>) tv.value();
-
-            if (lastPose != null) {
-              double distance = calculatePoseDistance(lastPose, currentPose);
-              if (distance > jumpThreshold) {
-                var jump = new JsonObject();
-                jump.addProperty("timestamp", tv.timestamp());
-                jump.addProperty("entry", poseName);
-                jump.addProperty("distance", distance);
-                poseJumps.add(jump);
-              }
+          if (last != null) {
+            var distance = StructFields.planarDistance(last, tv.value());
+            if (distance == null) {
+              unreadable++;
+            } else if (distance > jumpThreshold) {
+              var jump = new JsonObject();
+              jump.addProperty("timestamp", tv.timestamp());
+              jump.addProperty("entry", name);
+              jump.addProperty("distance", distance);
+              double t = tv.timestamp();
+              enables.stream().filter(e -> Math.abs(t - e) <= NEAR_ENABLE_SEC)
+                  .findFirst().ifPresent(e -> jump.addProperty("near_enable_sec", t - e));
+              jumps.add(jump);
             }
-            lastPose = currentPose;
           }
+          last = tv.value();
         }
       }
+      var jumpList = new JsonArray();
+      jumps.stream().limit(100).forEach(jumpList::add);
+      builder.addLimitedList("pose_jumps", jumpList, jumps.size(), 100);
+      builder.addProperty("jump_count", jumps.size());
+      builder.addData("pose_entries_checked", GSON.toJsonTree(jumpEntries));
+      if (unreadable > 0) builder.addProperty("unreadable_pose_samples", unreadable);
 
-      var builder = success()
-          .addData("target_acquisition", GSON.toJsonTree(targetAnalysis));
-
-      if (!poseJumps.isEmpty()) {
-        builder.addData("pose_jumps", GSON.toJsonTree(poseJumps));
-        builder.addProperty("jump_count", poseJumps.size());
-      }
-
-      // Data quality from first target entry, or first pose entry as fallback
-      List<TimestampedValue> qualitySource = null;
-      if (!targetValidEntries.isEmpty()) {
-        qualitySource = log.values().get(targetValidEntries.get(0));
-      } else if (!poseEntries.isEmpty()) {
-        qualitySource = log.values().get(poseEntries.get(0));
-      }
+      List<TimestampedValue> qualitySource = !streams.isEmpty() ? log.values().get(streams.get(0))
+          : !targetEntries.isEmpty() ? log.values().get(targetEntries.get(0))
+          : !jumpEntries.isEmpty() ? log.values().get(jumpEntries.get(0)) : null;
       if (qualitySource != null) {
         var quality = DataQuality.fromValues(qualitySource);
         builder.addDataQuality(quality)
             .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
       }
-
       return builder.build();
+    }
+
+    /**
+     * A struct array of pose observations: its schema has a numeric {@code timestamp} field and a
+     * Pose2d/Pose3d field. Decided from the schema without decoding; a struct with no known schema
+     * is judged by its first non-empty record.
+     */
+    static boolean isObservationStream(LogData log, org.triplehelix.wpilogmcp.log.EntryInfo e) {
+      if (!e.type().startsWith("struct:") || !e.type().endsWith("[]")) return false;
+      var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(e.type());
+      var info = log.structSchemas().info(struct);
+      if (info.isEmpty()) return isObservationStream(log.values().get(e.name()));
+      var fields = info.get().fields();
+      return fields.stream().anyMatch(f -> f.name().equalsIgnoreCase("timestamp")
+              && f.structType() == null && !f.type().equals("char"))
+          && fields.stream().anyMatch(f -> "Pose3d".equals(f.structType())
+              || "Pose2d".equals(f.structType()));
+    }
+
+    /**
+     * A struct (or struct array) of target observations: its schema has {@code yaw} and
+     * {@code pitch} fields. A struct with no known schema is judged by its first record.
+     */
+    static boolean isTargetStream(LogData log, org.triplehelix.wpilogmcp.log.EntryInfo e) {
+      if (!e.type().startsWith("struct:") || e.type().startsWith("struct:Pose")) return false;
+      var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(e.type());
+      var info = log.structSchemas().info(struct);
+      if (info.isEmpty()) return isTargetStream(log.values().get(e.name()));
+      var names = info.get().fields().stream().map(f -> f.name().toLowerCase()).toList();
+      return names.contains("yaw") && names.contains("pitch");
+    }
+
+    /** A struct array whose non-empty records hold a timestamp and a readable pose. */
+    static boolean isObservationStream(List<TimestampedValue> values) {
+      if (values == null) return false;
+      for (var tv : values) {
+        var elements = StructFields.elements(tv.value());
+        if (elements.isEmpty()) continue;
+        var first = elements.get(0);
+        return StructFields.number(first, "timestamp") != null
+            && StructFields.number(first, "pose.translation.x", "pose_x") != null;
+      }
+      return false;
+    }
+
+    /** A struct (or struct array) whose records have yaw and pitch fields: target observations. */
+    static boolean isTargetStream(List<TimestampedValue> values) {
+      if (values == null) return false;
+      for (var tv : values) {
+        var elements = StructFields.elements(tv.value());
+        if (elements.isEmpty()) continue;
+        var first = elements.get(0);
+        return StructFields.number(first, "yaw.value", "yaw") != null
+            && StructFields.number(first, "pitch.value", "pitch") != null;
+      }
+      return false;
+    }
+
+    /** A numeric entry beside a stream (same parent) whose name mentions latency, or null. */
+    static String siblingLatency(LogData log, String stream) {
+      var parent = stream.substring(0, Math.max(0, stream.lastIndexOf('/') + 1));
+      return log.entries().values().stream()
+          .filter(e -> e.name().startsWith(parent) && e.name().indexOf('/', parent.length()) < 0)
+          .filter(e -> e.name().substring(parent.length()).toLowerCase().contains("latency"))
+          .filter(e -> isNumericType(e.type()))
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
+    }
+
+    static String camera(String name) {
+      var parent = name.substring(0, Math.max(0, name.lastIndexOf('/')));
+      return parent.substring(parent.lastIndexOf('/') + 1);
+    }
+
+    static JsonObject targetStream(String name, List<TimestampedValue> values, Double start,
+        Double end) {
+      int records = 0;
+      int observations = 0;
+      var yaw = new ArrayList<Double>();
+      var pitch = new ArrayList<Double>();
+      var area = new ArrayList<Double>();
+      var confidence = new ArrayList<Double>();
+      var ids = new java.util.TreeMap<Long, Integer>();
+      boolean degrees = false;
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        records++;
+        for (var obs : StructFields.elements(tv.value())) {
+          observations++;
+          var y = StructFields.number(obs, "yaw._derived.degrees");
+          var p = StructFields.number(obs, "pitch._derived.degrees");
+          if (y != null) degrees = true;
+          if (y == null) y = StructFields.number(obs, "yaw.value", "yaw");
+          if (p == null) p = StructFields.number(obs, "pitch.value", "pitch");
+          if (y != null) yaw.add(y);
+          if (p != null) pitch.add(p);
+          var a = StructFields.number(obs, "area");
+          if (a != null) area.add(a);
+          var c = StructFields.number(obs, "confidence");
+          if (c != null) confidence.add(c);
+          var id = StructFields.number(obs, "objectID", "objectId", "fiducialId", "id");
+          if (id != null) ids.merge(id.longValue(), 1, Integer::sum);
+        }
+      }
+      var o = new JsonObject();
+      o.addProperty("entry", name);
+      o.addProperty("camera", camera(name));
+      o.addProperty("records", records);
+      o.addProperty("observation_count", observations);
+      var unit = degrees ? "_deg" : "";
+      if (!yaw.isEmpty()) o.add("yaw", distribution(yaw, unit));
+      if (!pitch.isEmpty()) o.add("pitch", distribution(pitch, unit));
+      if (!area.isEmpty()) o.add("area", distribution(area, ""));
+      if (!confidence.isEmpty()) o.add("confidence", distribution(confidence, ""));
+      if (!ids.isEmpty()) {
+        var idCounts = new JsonObject();
+        ids.forEach((k, v) -> idCounts.addProperty(String.valueOf(k), v));
+        o.add("object_ids", idCounts);
+      }
+      return o;
+    }
+
+    static JsonObject poseSet(String name, List<TimestampedValue> values, Double start,
+        Double end) {
+      int records = 0;
+      int nonEmpty = 0;
+      int poses = 0;
+      int maxPerRecord = 0;
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        records++;
+        int n = StructFields.elements(tv.value()).size();
+        if (n > 0) nonEmpty++;
+        poses += n;
+        maxPerRecord = Math.max(maxPerRecord, n);
+      }
+      var o = new JsonObject();
+      o.addProperty("entry", name);
+      o.addProperty("records", records);
+      o.addProperty("records_non_empty", nonEmpty);
+      if (records > 0) o.addProperty("fraction_non_empty", (double) nonEmpty / records);
+      o.addProperty("pose_count", poses);
+      if (nonEmpty > 0) o.addProperty("mean_poses_per_non_empty_record", (double) poses / nonEmpty);
+      o.addProperty("max_poses_per_record", maxPerRecord);
+      return o;
+    }
+
+    static JsonObject targetAcquisition(List<TimestampedValue> values, Double start, Double end,
+        double flickerWindow) {
+      int totalSamples = 0;
+      int validSamples = 0;
+      int flickerCount = 0;
+      Double lastTransition = null;
+      Boolean lastState = null;
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        totalSamples++;
+        boolean hasTarget = tv.value() instanceof Boolean b ? b
+            : tv.value() instanceof Number n && n.doubleValue() > 0.5;
+        if (hasTarget) validSamples++;
+        if (lastState != null && !lastState.equals(hasTarget)) {
+          if (lastTransition != null && (tv.timestamp() - lastTransition) < flickerWindow) {
+            flickerCount++;
+          }
+          lastTransition = tv.timestamp();
+        }
+        lastState = hasTarget;
+      }
+      var analysis = new JsonObject();
+      analysis.addProperty("total_samples", totalSamples);
+      analysis.addProperty("valid_samples", validSamples);
+      analysis.addProperty("acquisition_rate", totalSamples > 0 ? (double) validSamples / totalSamples : 0);
+      analysis.addProperty("flicker_events", flickerCount);
+      return analysis;
+    }
+
+    static JsonObject observationStream(String name, List<TimestampedValue> values, Double start,
+        Double end, String robotPose, List<TimestampedValue> robotPoseValues) {
+      int records = 0;
+      int withObservations = 0;
+      int observations = 0;
+      double first = Double.NaN;
+      double last = Double.NaN;
+      var tagCounts = new java.util.TreeMap<Integer, Integer>();
+      var latencies = new ArrayList<Double>();
+      var ambiguities = new ArrayList<Double>();
+      var residuals = new ArrayList<Double>();
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
+        }
+        records++;
+        if (Double.isNaN(first)) first = tv.timestamp();
+        last = tv.timestamp();
+        var elements = StructFields.elements(tv.value());
+        if (!elements.isEmpty()) withObservations++;
+        for (var obs : elements) {
+          observations++;
+          var tags = StructFields.number(obs, "tagCount");
+          if (tags != null) tagCounts.merge(tags.intValue(), 1, Integer::sum);
+          var ambiguity = StructFields.number(obs, "ambiguity");
+          if (ambiguity != null) ambiguities.add(ambiguity);
+          var obsTime = StructFields.number(obs, "timestamp");
+          if (obsTime == null) continue;
+          latencies.add((tv.timestamp() - obsTime) * 1000.0);
+          if (robotPoseValues != null) {
+            var ox = StructFields.number(obs, "pose.translation.x", "pose_x");
+            var oy = StructFields.number(obs, "pose.translation.y", "pose_y");
+            var rx = interpolate(robotPoseValues, obsTime, true);
+            var ry = interpolate(robotPoseValues, obsTime, false);
+            if (ox != null && oy != null && rx != null && ry != null) {
+              residuals.add(Math.hypot(ox - rx, oy - ry));
+            }
+          }
+        }
+      }
+      var o = new JsonObject();
+      o.addProperty("entry", name);
+      var parent = name.substring(0, Math.max(0, name.lastIndexOf('/')));
+      o.addProperty("camera", parent.substring(parent.lastIndexOf('/') + 1));
+      o.addProperty("records", records);
+      o.addProperty("records_with_observations", withObservations);
+      if (records > 0) {
+        o.addProperty("fraction_with_observations", (double) withObservations / records);
+      }
+      o.addProperty("observation_count", observations);
+      double span = last - first;
+      if (span > 0) o.addProperty("observations_per_second", observations / span);
+      if (!tagCounts.isEmpty()) {
+        var t = new JsonObject();
+        tagCounts.forEach((k, v) -> t.addProperty(String.valueOf(k), v));
+        o.add("tag_count_distribution", t);
+      }
+      if (!ambiguities.isEmpty()) o.add("ambiguity", distribution(ambiguities, ""));
+      if (!latencies.isEmpty()) {
+        var l = distribution(latencies, "_ms");
+        l.addProperty("basis", "log timestamp minus the observation's own timestamp");
+        o.add("latency", l);
+      }
+      if (!residuals.isEmpty()) {
+        var r = distribution(residuals, "_m");
+        r.addProperty("robot_pose_entry", robotPose);
+        r.addProperty("basis", "planar distance to the robot pose interpolated at the "
+            + "observation's timestamp; the robot pose may itself include vision corrections");
+        o.add("residual_vs_robot_pose", r);
+      }
+      return o;
+    }
+
+    static JsonObject distribution(List<Double> values, String unit) {
+      var sorted = values.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+      var o = new JsonObject();
+      o.addProperty("n", sorted.length);
+      o.addProperty("median" + unit, percentile(sorted, 0.5));
+      o.addProperty("p95" + unit, percentile(sorted, 0.95));
+      o.addProperty("max" + unit, sorted[sorted.length - 1]);
+      return o;
+    }
+
+    /** Robot pose x (or y) linearly interpolated at t; null outside the logged range. */
+    static Double interpolate(List<TimestampedValue> poses, double t, boolean x) {
+      int n = poses.size();
+      if (n == 0 || t < poses.get(0).timestamp() || t > poses.get(n - 1).timestamp()) return null;
+      int lo = 0;
+      int hi = n - 1;
+      while (lo < hi) {
+        int mid = (lo + hi + 1) >>> 1;
+        if (poses.get(mid).timestamp() <= t) lo = mid; else hi = mid - 1;
+      }
+      var a = poses.get(lo);
+      var va = x ? StructFields.poseX(a.value()) : StructFields.poseY(a.value());
+      if (lo == n - 1 || a.timestamp() == t) return va;
+      var b = poses.get(lo + 1);
+      var vb = x ? StructFields.poseX(b.value()) : StructFields.poseY(b.value());
+      if (va == null || vb == null) return null;
+      double f = (t - a.timestamp()) / (b.timestamp() - a.timestamp());
+      return va + f * (vb - va);
     }
   }
 
   static class ProfileMechanismTool extends LogRequiringTool {
+    /** Mechanism roles, resolved from entry names or passed explicitly. */
+    enum Role {
+      SETPOINT("setpoint_entry", "(setpoint|goal|target|reference|desired|commanded)"),
+      MEASUREMENT("measurement_entry", "(position|actual|measured|angle|height|distance|rotations)"),
+      VELOCITY("velocity_entry", "(velocity|speed|rpm|rps)"),
+      CURRENT("current_entry", "(current|amps)"),
+      TEMPERATURE("temperature_entry", "(temp|temperature|celsius)");
+
+      final String param;
+      final java.util.regex.Pattern pattern;
+
+      Role(String param, String regex) {
+        this.param = param;
+        this.pattern = java.util.regex.Pattern.compile("(?i)" + regex);
+      }
+
+      String key() {
+        return name().toLowerCase(java.util.Locale.ROOT);
+      }
+    }
+
+    static final java.util.regex.Pattern NOT_MEASUREMENT = java.util.regex.Pattern.compile(
+        "(?i)(setpoint|goal|target|reference|desired|commanded|velocity|speed|current|amps|volt|"
+            + "temp|celsius|applied|output)");
+
     @Override
     public String name() { return "profile_mechanism"; }
 
     @Override
     public String description() {
-      return "Analyze closed-loop mechanism performance: following error (RMSE), settling time, "
-          + "stall detection, and motor temperature profiling."
+      return "Profile one closed-loop mechanism from its numeric entries: following error "
+          + "(measurement minus the setpoint in force, as RMSE, bias, and maximum), step response "
+          + "for each setpoint step (settling time into a 5% band of the step, percent overshoot "
+          + "of the step), stall events (|current| above stall_current_threshold while |velocity| "
+          + "is below stall_velocity_threshold, each with its signed peak current by magnitude), and "
+          + "motor temperature (maximum and final). "
+          + "Entries are found among names containing mechanism_name (case-insensitive substring "
+          + "anywhere in the name) by role — setpoint (setpoint/goal/target/reference), "
+          + "measurement (position/angle/height/...), velocity, current, temperature — and "
+          + "grouped by the stem before the role word, so /Drive/ModuleFrontLeft/DriveVelocity and "
+          + "TurnVelocity are different stems. When the name matches exactly one stem its entries "
+          + "are used; when it matches several, the server does not choose among them: the "
+          + "result is no_match with needs_confirmation and the stems' entries, unless the roles "
+          + "are passed explicitly (then only those entries are used and other_stems lists the "
+          + "stems). roles names every entry used; any role can be passed explicitly "
+          + "(setpoint_entry, measurement_entry, velocity_entry, current_entry, "
+          + "temperature_entry). Sections without their entries are listed in skipped. Returns "
+          + "no_match when nothing matches."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder()
-          .addProperty("mechanism_name", "string", "Mechanism name or prefix", true)
+      var b = new SchemaBuilder()
+          .addProperty("mechanism_name", "string",
+              "Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' or 'ModuleFrontLeft/Drive'", false)
           .addNumberProperty("start_time", "Start timestamp", false, null)
           .addNumberProperty("end_time", "End timestamp", false, null)
           .addNumberProperty("stall_current_threshold", "Current threshold for stall (default: 30A)", false, 30.0)
-          .build();
+          .addNumberProperty("stall_velocity_threshold",
+              "|velocity| below this counts as stopped, in the velocity entry's units (default: 0.01)", false, 0.01);
+      for (var role : Role.values()) {
+        b.addProperty(role.param, "string", "Explicit " + role.key() + " entry", false);
+      }
+      return b.build();
+    }
+
+    /** The name's leaf up to its role word ("DriveVelocityRadPerSec" -> "drive"). */
+    static String stem(String name) {
+      var leaf = name.substring(name.lastIndexOf('/') + 1);
+      int cut = leaf.length();
+      for (var role : Role.values()) {
+        var m = role.pattern.matcher(leaf);
+        if (m.find()) cut = Math.min(cut, m.start());
+      }
+      var vm = java.util.regex.Pattern.compile("(?i)(volt|applied|output)").matcher(leaf);
+      if (vm.find()) cut = Math.min(cut, vm.start());
+      return leaf.substring(0, cut).toLowerCase(java.util.Locale.ROOT);
+    }
+
+    static Role roleOf(String name) {
+      var leaf = name.substring(name.lastIndexOf('/') + 1);
+      if (Role.SETPOINT.pattern.matcher(leaf).find()) return Role.SETPOINT;
+      if (Role.TEMPERATURE.pattern.matcher(leaf).find()) return Role.TEMPERATURE;
+      if (RobotAnalysisTools.PowerAnalysisTool.isCurrentEntryName(name)) return Role.CURRENT;
+      if (Role.VELOCITY.pattern.matcher(leaf).find()) return Role.VELOCITY;
+      if (Role.MEASUREMENT.pattern.matcher(leaf).find() && !NOT_MEASUREMENT.matcher(leaf).find()) {
+        return Role.MEASUREMENT;
+      }
+      return null;
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
-      var mechanismName = getRequiredString(arguments, "mechanism_name");
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
+      var mechanismName = getOptString(arguments, "mechanism_name", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double stallCurrentThreshold = getOptDouble(arguments, "stall_current_threshold", 30.0);
+      double stallVelocityThreshold = getOptDouble(arguments, "stall_velocity_threshold", 0.01);
 
-      var lowerName = mechanismName.toLowerCase();
-      var setpointEntry = (String) null;
-      var measurementEntry = (String) null;
-      var velocityEntry = (String) null;
-      var currentEntry = (String) null;
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = entryName.toLowerCase();
-        if (!lower.contains(lowerName)) continue;
-
-        if (setpointEntry == null && (lower.contains("setpoint") || lower.contains("goal"))) {
-          setpointEntry = entryName;
+      var explicit = new java.util.EnumMap<Role, String>(Role.class);
+      for (var role : Role.values()) {
+        var name = getOptString(arguments, role.param, null);
+        if (name == null) continue;
+        requireEntry(log, name);
+        if (!isNumericType(log.entries().get(name).type())) {
+          throw new IllegalArgumentException(role.param + " " + name + " is "
+              + log.entries().get(name).type() + "; profile_mechanism needs scalar numeric entries");
         }
-        if (measurementEntry == null && (lower.contains("position") || lower.contains("actual"))) {
-          if (!lower.contains("setpoint")) measurementEntry = entryName;
-        }
-        if (velocityEntry == null && lower.contains("velocity")) {
-          velocityEntry = entryName;
-        }
-        if (currentEntry == null && (lower.contains("current") || lower.contains("supplycurrent"))) {
-          currentEntry = entryName;
-        }
+        explicit.put(role, name);
+      }
+      if (mechanismName == null && explicit.isEmpty()) {
+        throw new IllegalArgumentException("Pass mechanism_name, or the role entries "
+            + "(setpoint_entry, measurement_entry, velocity_entry, current_entry, "
+            + "temperature_entry)");
       }
 
-      var builder = success()
-          .addProperty("mechanism", mechanismName);
+      // Candidates by stem: stem -> role -> entry (lowest id first)
+      var byStem = new LinkedHashMap<String, java.util.EnumMap<Role, String>>();
+      if (mechanismName != null) {
+        var lowerName = mechanismName.toLowerCase(java.util.Locale.ROOT);
+        log.entries().values().stream()
+            .filter(e -> isNumericType(e.type()))
+            .filter(e -> e.name().toLowerCase(java.util.Locale.ROOT).contains(lowerName))
+            .filter(e -> log.sampleCount(e.name()) > 0)
+            .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+            .forEach(e -> {
+              var role = roleOf(e.name());
+              if (role == null) return;
+              byStem.computeIfAbsent(stem(e.name()), k -> new java.util.EnumMap<>(Role.class))
+                  .putIfAbsent(role, e.name());
+            });
+      }
+      java.util.function.Function<String, String> stemLabel = k -> k.isEmpty() ? "(none)" : k;
+      if (byStem.size() > 1 && explicit.isEmpty()) {
+        // Several mechanisms match the name: the server does not choose among them
+        var stems = new JsonObject();
+        byStem.forEach((stem, found) -> {
+          var o = new JsonObject();
+          found.forEach((role, entry) -> o.addProperty(role.key(), entry));
+          stems.add(stemLabel.apply(stem), o);
+        });
+        var named = byStem.keySet().stream().filter(k -> !k.isEmpty()).findFirst();
+        return ResponseBuilder.noMatch("'" + mechanismName + "' matches " + byStem.size()
+                + " mechanisms by stem (" + String.join(", ", byStem.keySet().stream()
+                    .map(stemLabel).toList()) + "); the server does not guess which is meant.")
+            .hint("Pass a more specific mechanism_name" + named.map(s -> " (e.g. '"
+                + mechanismName + "/" + s + "', matched case-insensitively)").orElse("")
+                + ", or the entries themselves (setpoint_entry, measurement_entry, "
+                + "velocity_entry, current_entry, temperature_entry).")
+            .addData("stems", stems)
+            .addProperty("needs_confirmation", true)
+            .build();
+      }
+      String chosenStem = byStem.size() == 1 ? byStem.keySet().iterator().next() : null;
+      var roles = new java.util.EnumMap<Role, String>(Role.class);
+      if (chosenStem != null) roles.putAll(byStem.get(chosenStem));
+      roles.putAll(explicit);
 
-      if (setpointEntry != null && measurementEntry != null) {
-        var setpointVals = log.values().get(setpointEntry);
-        var measurementVals = log.values().get(measurementEntry);
-
-        double rmse = calculateRmseLinear(setpointVals, measurementVals);
-        if (!Double.isNaN(rmse)) {
-          var errorAnalysis = new JsonObject();
-          errorAnalysis.addProperty("rmse", rmse);
-
-          // Calculate settling time and overshoot
-          var settlingData = calculateSettlingTime(setpointVals, measurementVals, startTime, endTime);
-          if (settlingData != null) {
-            errorAnalysis.add("settling_time_sec", settlingData);
-          }
-
-          var overshoot = calculateOvershoot(setpointVals, measurementVals, startTime, endTime);
-          if (!Double.isNaN(overshoot)) {
-            errorAnalysis.addProperty("overshoot_percent", overshoot);
-          }
-
-          builder.addData("following_error", errorAnalysis);
-        }
+      if (roles.isEmpty()) {
+        return ResponseBuilder.noMatch("No numeric entries containing '" + mechanismName
+                + "' with a recognizable role.")
+            .lookedFor(List.of("scalar numeric entries whose name contains the mechanism name, "
+                + "with a leaf naming a setpoint/goal/target, position/angle/height, "
+                + "velocity/speed, current/amps, or temperature"))
+            .hint("Use search_entries with the mechanism name, then pass the entries "
+                + "explicitly (setpoint_entry, measurement_entry, ...).")
+            .build();
       }
 
-      // Detect stalls
-      if (velocityEntry != null && currentEntry != null) {
-        var stallEvents = detectStalls(
-            log.values().get(velocityEntry),
-            log.values().get(currentEntry),
-            stallCurrentThreshold,
-            startTime,
-            endTime
-        );
-        if (!stallEvents.isEmpty()) {
-          builder.addData("stall_events", GSON.toJsonTree(stallEvents));
-          builder.addProperty("stall_count", stallEvents.size());
+      var builder = success();
+      if (mechanismName != null) builder.addProperty("mechanism", mechanismName);
+      var rolesJson = new JsonObject();
+      for (var role : Role.values()) {
+        rolesJson.addProperty(role.key(), roles.get(role));
+      }
+      builder.addData("roles", rolesJson);
+      if (chosenStem != null) builder.addProperty("stem", chosenStem);
+      var otherStems = byStem.keySet().stream().filter(k -> !k.equals(chosenStem)).toList();
+      if (!otherStems.isEmpty()) {
+        // Several stems and explicit entries: only the explicit entries were used
+        builder.addData("other_stems", GSON.toJsonTree(otherStems.stream().map(stemLabel).toList()));
+        builder.addWarning("'" + mechanismName + "' matches several mechanisms by stem ("
+            + String.join(", ", otherStems.stream().map(stemLabel).toList())
+            + "); only the explicitly passed entries were used.");
+      }
+      roles.forEach((role, entry) -> builder.addInput(role.key(), entry));
+      if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
+
+      var setpoint = roles.get(Role.SETPOINT);
+      var measurement = roles.get(Role.MEASUREMENT);
+      if (setpoint != null && measurement != null) {
+        var fe = followingError(window(log.values().get(setpoint), startTime, endTime),
+            window(log.values().get(measurement), startTime, endTime));
+        if (fe != null) {
+          fe.addProperty("setpoint_entry", setpoint);
+          fe.addProperty("measurement_entry", measurement);
+          builder.addData("following_error", fe);
+        } else {
+          builder.addSkipped("following_error", "No measurement samples with a setpoint in "
+              + "force inside the window.");
         }
+      } else {
+        builder.addSkipped("following_error", "Needs both a setpoint and a measurement entry; "
+            + "missing " + (setpoint == null ? "setpoint" : "measurement") + ".");
       }
 
-      // Data quality from measurement entry if available
-      var qualityEntry = measurementEntry != null ? measurementEntry
-          : (velocityEntry != null ? velocityEntry : null);
+      var velocity = roles.get(Role.VELOCITY);
+      var current = roles.get(Role.CURRENT);
+      if (velocity != null && current != null) {
+        var stalls = detectStalls(window(log.values().get(velocity), startTime, endTime),
+            log.values().get(current), stallCurrentThreshold, stallVelocityThreshold);
+        var list = new JsonArray();
+        stalls.stream().limit(50).forEach(list::add);
+        builder.addLimitedList("stall_events", list, stalls.size(), 50);
+        builder.addProperty("stall_count", stalls.size());
+      } else {
+        builder.addSkipped("stall_events", "Needs a velocity and a current entry; missing "
+            + (velocity == null ? "velocity" : "current") + ".");
+      }
+
+      var temperature = roles.get(Role.TEMPERATURE);
+      if (temperature != null) {
+        var values = window(log.values().get(temperature), startTime, endTime);
+        if (!values.isEmpty()) {
+          var max = values.stream().max(Comparator.comparingDouble(
+              tv -> ((Number) tv.value()).doubleValue())).orElseThrow();
+          var t = new JsonObject();
+          t.addProperty("entry", temperature);
+          t.addProperty("max", ((Number) max.value()).doubleValue());
+          t.addProperty("max_time_sec", max.timestamp());
+          t.addProperty("first", ((Number) values.get(0).value()).doubleValue());
+          t.addProperty("last", ((Number) values.get(values.size() - 1).value()).doubleValue());
+          builder.addData("temperature", t);
+        }
+      } else {
+        builder.addSkipped("temperature", "No temperature entry for this mechanism.");
+      }
+
+      var qualityEntry = measurement != null ? measurement : velocity;
       if (qualityEntry != null) {
-        var qVals = log.values().get(qualityEntry);
-        if (qVals != null) {
-          var quality = DataQuality.fromValues(qVals);
-          builder.addDataQuality(quality)
-              .addDirectives(AnalysisDirectives.fromQuality(quality)
-                  .addSingleMatchCaveat()
-                  .addFollowup("Use moi_regression for mechanism inertia estimation"));
-        }
+        var quality = DataQuality.fromValues(log.values().get(qualityEntry).stream()
+            .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).toList());
+        builder.addDataQuality(quality)
+            .addDirectives(AnalysisDirectives.fromQuality(quality)
+                .addSingleMatchCaveat()
+                .addFollowup("Use moi_regression for mechanism inertia estimation"));
       }
-
       return builder.build();
     }
 
-    private JsonElement calculateSettlingTime(
-        java.util.List<TimestampedValue> setpoints,
-        java.util.List<TimestampedValue> measurements,
-        Double startTime,
-        Double endTime
-    ) {
-      if (setpoints == null || measurements == null || setpoints.isEmpty() || measurements.isEmpty()) {
-        return null;
-      }
-
-      var settlingTimes = new ArrayList<Double>();
-
-      Double lastSetpoint = null;
-      Double setpointChangeTime = null;
-
-      // Use setpoints as reference, interpolate measurements
-      for (TimestampedValue spTv : setpoints) {
-        if (startTime != null && spTv.timestamp() < startTime) continue;
-        if (endTime != null && spTv.timestamp() > endTime) break;
-
-        var spVal = toDouble(spTv.value());
-        var measVal = getValueAtTimeLinear(measurements, spTv.timestamp());
-
-        if (spVal == null || measVal == null) continue;
-
-        // Detect setpoint change (more than 5% change, with absolute minimum threshold)
-        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.max(Math.abs(lastSetpoint * 0.05), 0.01)) {
-          lastSetpoint = spVal;
-          setpointChangeTime = spTv.timestamp();
+    /** Finite numeric samples inside [start, end]. */
+    static List<TimestampedValue> window(List<TimestampedValue> values, Double start, Double end) {
+      var out = new ArrayList<TimestampedValue>();
+      for (var tv : values) {
+        if ((start != null && tv.timestamp() < start) || (end != null && tv.timestamp() > end)) {
+          continue;
         }
-
-        // Check if settled (within 5% of setpoint, with absolute minimum threshold)
-        if (setpointChangeTime != null && Math.abs(measVal - spVal) <= Math.max(Math.abs(spVal * 0.05), 0.01)) {
-          double settlingTime = spTv.timestamp() - setpointChangeTime;
-          if (settlingTime > 0.01) { // Ignore very quick "settling" (likely noise)
-            settlingTimes.add(settlingTime);
-            setpointChangeTime = null; // Reset to avoid counting same settling multiple times
-          }
-        }
+        if (tv.value() instanceof Number n && Double.isFinite(n.doubleValue())) out.add(tv);
       }
-
-      if (settlingTimes.isEmpty()) return null;
-
-      var stats = new JsonObject();
-      stats.addProperty("avg", settlingTimes.stream().mapToDouble(d -> d).average().orElse(0));
-      stats.addProperty("max", settlingTimes.stream().mapToDouble(d -> d).max().orElse(0));
-      stats.addProperty("min", settlingTimes.stream().mapToDouble(d -> d).min().orElse(0));
-      return stats;
+      return out;
     }
 
-    private double calculateOvershoot(
-        java.util.List<TimestampedValue> setpoints,
-        java.util.List<TimestampedValue> measurements,
-        Double startTime,
-        Double endTime
-    ) {
-      if (setpoints == null || measurements == null || setpoints.isEmpty() || measurements.isEmpty()) {
-        return Double.NaN;
+    /**
+     * Error of each measurement against the setpoint in force (held until the next setpoint
+     * sample), and the response to each setpoint step.
+     */
+    static JsonObject followingError(List<TimestampedValue> setpoints,
+        List<TimestampedValue> measurements) {
+      if (setpoints.isEmpty() || measurements.isEmpty()) return null;
+      double sumSq = 0;
+      double sum = 0;
+      double maxAbs = 0;
+      int n = 0;
+      for (var m : measurements) {
+        var sp = ToolUtils.getValueAtTimeZoh(setpoints, m.timestamp());
+        if (!(sp instanceof Number s)) continue;
+        double err = ((Number) m.value()).doubleValue() - s.doubleValue();
+        sumSq += err * err;
+        sum += err;
+        maxAbs = Math.max(maxAbs, Math.abs(err));
+        n++;
       }
+      if (n == 0) return null;
+      var o = new JsonObject();
+      o.addProperty("rmse", Math.sqrt(sumSq / n));
+      o.addProperty("mean_error", sum / n);
+      o.addProperty("max_abs_error", maxAbs);
+      o.addProperty("samples", n);
 
+      // Steps: a setpoint change larger than 5% of the previous value (at least 0.01)
+      var stepTimes = new ArrayList<double[]>(); // {time, from, to}
+      double previous = ((Number) setpoints.get(0).value()).doubleValue();
+      for (var sp : setpoints) {
+        double v = ((Number) sp.value()).doubleValue();
+        if (Math.abs(v - previous) > Math.max(Math.abs(previous) * 0.05, 0.01)) {
+          stepTimes.add(new double[] {sp.timestamp(), previous, v});
+        }
+        previous = v;
+      }
+      var settling = new ArrayList<Double>();
       var overshoots = new ArrayList<Double>();
-
-      Double lastSetpoint = null;
-      Double maxOvershoot = null;
-
-      // Use setpoints as reference, interpolate measurements
-      for (TimestampedValue spTv : setpoints) {
-        if (startTime != null && spTv.timestamp() < startTime) continue;
-        if (endTime != null && spTv.timestamp() > endTime) break;
-
-        var spVal = toDouble(spTv.value());
-        var measVal = getValueAtTimeLinear(measurements, spTv.timestamp());
-
-        if (spVal == null || measVal == null) continue;
-
-        // Detect setpoint change
-        if (lastSetpoint == null || Math.abs(spVal - lastSetpoint) > Math.max(Math.abs(lastSetpoint * 0.05), 0.01)) {
-          if (maxOvershoot != null && lastSetpoint != null && Math.abs(lastSetpoint) > 0.001) {
-            overshoots.add(maxOvershoot * 100.0 / Math.abs(lastSetpoint));
+      var details = new JsonArray();
+      for (int k = 0; k < stepTimes.size(); k++) {
+        double t0 = stepTimes.get(k)[0];
+        double from = stepTimes.get(k)[1];
+        double to = stepTimes.get(k)[2];
+        double tEnd = k + 1 < stepTimes.size() ? stepTimes.get(k + 1)[0] : Double.MAX_VALUE;
+        double step = to - from;
+        double band = Math.max(Math.abs(step) * 0.05, 1e-9);
+        double worstOvershoot = 0;
+        Double settledAt = null;
+        for (var m : measurements) {
+          double t = m.timestamp();
+          if (t < t0 || t >= tEnd) continue;
+          double v = ((Number) m.value()).doubleValue();
+          worstOvershoot = Math.max(worstOvershoot, (v - to) * Math.signum(step));
+          if (Math.abs(v - to) <= band) {
+            if (settledAt == null) settledAt = t;
+          } else {
+            settledAt = null; // left the band: not settled yet
           }
-          lastSetpoint = spVal;
-          maxOvershoot = 0.0;
         }
-
-        // Track maximum overshoot
-        if (lastSetpoint != null) {
-          double error = measVal - lastSetpoint;
-          if (Math.abs(error) > Math.abs(maxOvershoot)) {
-            maxOvershoot = error;
-          }
+        double overshootPct = worstOvershoot / Math.abs(step) * 100.0;
+        overshoots.add(overshootPct);
+        if (settledAt != null) settling.add(settledAt - t0);
+        if (details.size() < 20) {
+          var d = new JsonObject();
+          d.addProperty("time", t0);
+          d.addProperty("from", from);
+          d.addProperty("to", to);
+          d.addProperty("overshoot_percent", overshootPct);
+          if (settledAt != null) d.addProperty("settling_time_sec", settledAt - t0);
+          else d.addProperty("settled", false);
+          details.add(d);
         }
       }
-
-      if (overshoots.isEmpty()) return Double.NaN;
-      return overshoots.stream().mapToDouble(d -> d).average().orElse(Double.NaN);
+      o.addProperty("steps", stepTimes.size());
+      o.addProperty("settled_steps", settling.size());
+      if (!settling.isEmpty()) {
+        var st = new JsonObject();
+        st.addProperty("avg", settling.stream().mapToDouble(d -> d).average().orElse(0));
+        st.addProperty("max", settling.stream().mapToDouble(d -> d).max().orElse(0));
+        st.addProperty("min", settling.stream().mapToDouble(d -> d).min().orElse(0));
+        o.add("settling_time_sec", st);
+      }
+      if (!overshoots.isEmpty()) {
+        o.addProperty("overshoot_percent", overshoots.stream().mapToDouble(d -> d).average()
+            .orElse(0));
+        o.addProperty("max_overshoot_percent", overshoots.stream().mapToDouble(d -> d).max()
+            .orElse(0));
+        ResultContract.addLimitedList(o, "step_details", details, stepTimes.size(), 20);
+      }
+      return o;
     }
 
-    private java.util.List<JsonObject> detectStalls(
-        java.util.List<TimestampedValue> velocities,
-        java.util.List<TimestampedValue> currents,
-        double stallCurrentThreshold,
-        Double startTime,
-        Double endTime
-    ) {
+    static List<JsonObject> detectStalls(List<TimestampedValue> velocities,
+        List<TimestampedValue> currents, double currentThreshold, double velocityThreshold) {
       var stallEvents = new ArrayList<JsonObject>();
-      if (velocities == null || currents == null) return stallEvents;
-
       boolean inStall = false;
-      double stallStartTime = 0;
+      double stallStart = 0;
       double stallMaxCurrent = 0;
-
-      // Use velocities as reference, interpolate currents
-      for (TimestampedValue velTv : velocities) {
-        if (startTime != null && velTv.timestamp() < startTime) continue;
-        if (endTime != null && velTv.timestamp() > endTime) break;
-
-        var velVal = toDouble(velTv.value());
-        var currVal = getValueAtTimeLinear(currents, velTv.timestamp());
-
-        if (velVal == null || currVal == null) continue;
-
-        boolean isStalled = Math.abs(velVal) < 0.01 && currVal > stallCurrentThreshold;
-
-        if (isStalled && !inStall) {
-          // Stall started
+      double lastTime = 0;
+      for (var velTv : velocities) {
+        double vel = ((Number) velTv.value()).doubleValue();
+        var cur = getValueAtTimeLinear(currents, velTv.timestamp());
+        if (cur == null) continue;
+        lastTime = velTv.timestamp();
+        // Current may be signed (a motor driven in reverse): a -40 A stall is a 40 A stall
+        boolean stalled = Math.abs(vel) < velocityThreshold && Math.abs(cur) > currentThreshold;
+        if (stalled && !inStall) {
           inStall = true;
-          stallStartTime = velTv.timestamp();
-          stallMaxCurrent = currVal;
-        } else if (isStalled && inStall) {
-          // Stall continuing
-          stallMaxCurrent = Math.max(stallMaxCurrent, currVal);
-        } else if (!isStalled && inStall) {
-          // Stall ended
-          var event = new JsonObject();
-          event.addProperty("start_time", stallStartTime);
-          event.addProperty("end_time", velTv.timestamp());
-          event.addProperty("duration", velTv.timestamp() - stallStartTime);
-          event.addProperty("max_current", stallMaxCurrent);
-          stallEvents.add(event);
+          stallStart = velTv.timestamp();
+          stallMaxCurrent = cur;
+        } else if (stalled) {
+          if (Math.abs(cur) > Math.abs(stallMaxCurrent)) stallMaxCurrent = cur;
+        } else if (inStall) {
+          stallEvents.add(stall(stallStart, velTv.timestamp(), stallMaxCurrent, false));
           inStall = false;
         }
       }
-
+      if (inStall) stallEvents.add(stall(stallStart, lastTime, stallMaxCurrent, true));
       return stallEvents;
+    }
+
+    static JsonObject stall(double start, double end, double maxCurrent, boolean open) {
+      var event = new JsonObject();
+      event.addProperty("start_time", start);
+      event.addProperty("end_time", end);
+      event.addProperty("duration", end - start);
+      event.addProperty("max_current", maxCurrent);
+      if (open) event.addProperty("open_at_end", true);
+      return event;
     }
   }
 
@@ -791,217 +1352,207 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze autonomous routine: identify selected routine, path following error, "
-          + "completion time, and phase breakdown. "
-          + "Returns 'no auto period detected' if log does not contain autonomous phase data."
+      return "Analyze autonomous periods: every enabled autonomous segment (from the same "
+          + "DriverStation timeline as get_match_phases) with its start, end, duration, and "
+          + "end_reason; the selected routine at each start (from a WPILib SendableChooser's "
+          + "active entry, or AdvantageKit's /NetworkInputs/SmartDashboard/<key>, when exactly one "
+          + "chooser's key contains 'auto'; other choosers are listed to confirm; chooser_entry "
+          + "names another); and path following error (RMSE and max, meters) between a setpoint "
+          + "pose (PathPlanner/targetPose or Odometry/TrajectorySetpoint; path_setpoint_entry) "
+          + "and the actual pose (PathPlanner/currentPose, else the robot pose; "
+          + "path_actual_entry). Other entries named like these are not guessed at: skipped "
+          + "lists them as candidates to confirm. Returns status not_applicable with the reason when the log "
+          + "has no autonomous period (for example a practice session where Autonomous was "
+          + "never true)."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("auto_prefix", "string", "Entry path prefix for auto data", false)
+          .addProperty("auto_prefix", "string",
+              "Entry name prefix to search for the path setpoint and actual pose entries", false)
+          .addProperty("chooser_entry", "string", "String entry holding the selected auto "
+              + "routine (default: a SendableChooser's active entry, see description)", false)
+          .addProperty("path_setpoint_entry", "string", "Pose2d/Pose3d path-following setpoint "
+              + "(default: PathPlanner/targetPose or Odometry/TrajectorySetpoint)", false)
+          .addProperty("path_actual_entry", "string", "Pose2d/Pose3d actual pose for path "
+              + "following (default: PathPlanner/currentPose, else the robot pose)", false)
           .build();
     }
 
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var autoPrefix = getOptString(arguments, "auto_prefix", null);
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      var autoPrefix = getOptString(arguments, "auto_prefix", null);
+      var timeline = MatchTimeline.of(log);
+      var sources = timeline.sources();
+      var chooserRole = SignalResolver.autoChooser(log,
+          getOptString(arguments, "chooser_entry", null));
+      var chooser = chooserRole.chosen();
+      var setpointRole = SignalResolver.pathPose(log, SignalResolver.Role.PATH_SETPOINT,
+          autoPrefix, getOptString(arguments, "path_setpoint_entry", null));
+      var actualRole = SignalResolver.pathPose(log, SignalResolver.Role.PATH_ACTUAL, autoPrefix,
+          getOptString(arguments, "path_actual_entry", null));
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-
-      // Find selected routine
-      log.entries().keySet().stream()
-          .filter(n -> n.toLowerCase().contains("chooser"))
-          .findFirst()
-          .ifPresent(n -> {
-            var vals = log.values().get(n);
-            if (vals != null && !vals.isEmpty()) {
-              result.addProperty("selected_routine", vals.get(0).value().toString());
-            }
-          });
-
-      // Find auto period (first 15 seconds or until teleop)
-      // IMPORTANT: Auto doesn't truly start until the robot is both in autonomous
-      // mode AND enabled. The FMS sets the Autonomous flag before the countdown ends.
-      Double autoStartTime = null;
-      Double autoEndTime = null;
-
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      if (!timeline.hasEnabledData() && sources.autonomous() == null) {
+        return ResponseBuilder.noMatch("No DriverStation state entries found, so autonomous "
+                + "periods cannot be identified.")
+            .lookedFor(List.of("boolean Enabled and Autonomous entries under /DriverStation/ "
+                + "or DS:", "int64 FMSInfo/FMSControlData"))
+            .hint("Use get_match_phases to see what the server can determine about this log.")
+            .build();
       }
 
-      // Find enabled values for cross-referencing
-      List<TimestampedValue> enabledValuesForAuto = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
-          enabledValuesForAuto = log.values().get(entryName);
-          break;
+      var periods = timeline.enabledSegments().stream()
+          .filter(seg -> seg.mode() == MatchTimeline.Mode.AUTO).toList();
+      if (periods.isEmpty()) {
+        String reason;
+        if (sources.autonomous() == null && sources.controlWord() == null) {
+          reason = "The log has no Autonomous entry, so autonomous periods cannot be identified.";
+        } else if (!timeline.autonomousEverTrue()) {
+          reason = "No autonomous period: " + sources.autonomous() + " has "
+              + timeline.autonomousSampleCount() + " sample(s), all false (DriverStation values "
+              + "are logged on change and hold until the next sample).";
+        } else {
+          reason = "Autonomous mode was set, but the robot was never enabled while in it.";
+        }
+        var na = ResponseBuilder.notApplicable(reason)
+            .addInput("enabled", sources.enabled())
+            .addInput("autonomous", sources.autonomous());
+        chooser.ifPresent(c -> na.addInput("selected_routine", c));
+        return na.build();
+      }
+
+      var game = timeline.game();
+      var builder = success()
+          .addInput("enabled", sources.enabled())
+          .addInput("autonomous", sources.autonomous());
+      chooser.ifPresent(c -> builder.addInput("selected_routine", c));
+
+      var pathEntries = setpointRole.chosen().isPresent() && actualRole.chosen().isPresent()
+          ? new String[] {setpointRole.chosen().get(), actualRole.chosen().get()} : null;
+      var periodsJson = new JsonArray();
+      for (var period : periods) {
+        var p = new JsonObject();
+        p.addProperty("start", period.start());
+        p.addProperty("end", period.end());
+        p.addProperty("duration", period.duration());
+        p.addProperty("end_reason", period.endReason().name().toLowerCase());
+        chooser.ifPresent(c -> {
+          var value = ToolUtils.getValueAtTimeZoh(log.values().get(c), period.start());
+          if (value instanceof String routine) p.addProperty("selected_routine", routine);
+        });
+        if (pathEntries != null) {
+          var error = calculatePathFollowingError(log, pathEntries[0], pathEntries[1],
+              period.start(), period.end());
+          if (error != null) p.add("path_following_error", error);
+        }
+        periodsJson.add(p);
+      }
+      builder.addData("auto_periods", periodsJson);
+
+      // Compatibility fields describe the first autonomous period
+      var first = periodsJson.get(0).getAsJsonObject();
+      builder.addProperty("auto_start_time", first.get("start").getAsDouble())
+          .addProperty("auto_end_time", first.get("end").getAsDouble())
+          .addProperty("auto_duration", first.get("duration").getAsDouble());
+      if (first.has("selected_routine")) {
+        builder.addProperty("selected_routine", first.get("selected_routine").getAsString());
+      }
+      if (first.has("path_following_error")) {
+        builder.addData("path_following_error", first.get("path_following_error"));
+      }
+      game.ifPresent(g -> builder.addProperty("expected_auto_sec", g.autoDurationSec()));
+
+      if (chooser.isEmpty()) {
+        builder.addSkipped("selected_routine",
+            SignalResolver.unresolvedReason(chooserRole, "chooser_entry"));
+      }
+      if (pathEntries == null) {
+        var reasons = new ArrayList<String>();
+        if (setpointRole.chosen().isEmpty()) {
+          reasons.add(SignalResolver.unresolvedReason(setpointRole, "path_setpoint_entry"));
+        }
+        if (actualRole.chosen().isEmpty()) {
+          reasons.add(SignalResolver.unresolvedReason(actualRole, "path_actual_entry"));
+        }
+        builder.addSkipped("path_following_error", String.join(" ", reasons));
+      } else {
+        builder.addInput("path_setpoint", pathEntries[0]).addInput("path_actual", pathEntries[1]);
+        if (objectsWithout(periodsJson, "path_following_error") == periodsJson.size()) {
+          builder.addSkipped("path_following_error", "No setpoint samples with a readable "
+              + "actual pose fell inside an autonomous period.");
         }
       }
-
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && (lower.contains("autonomous") || lower.contains("auto"))) {
-          var values = log.values().get(entryName);
-          if (values != null) {
-            boolean autoFlagSet = false;
-            for (TimestampedValue tv : values) {
-              if (tv.value() instanceof Boolean isAuto) {
-                if (isAuto && autoStartTime == null) {
-                  if (ToolUtils.isEnabledAt(enabledValuesForAuto, tv.timestamp())) {
-                    autoStartTime = tv.timestamp();
-                  } else {
-                    autoFlagSet = true; // Auto mode set but not yet enabled
-                  }
-                } else if (!isAuto && autoStartTime != null && autoEndTime == null) {
-                  autoEndTime = tv.timestamp();
-                  break;
-                } else if (!isAuto && autoFlagSet) {
-                  // Auto mode ended without ever being enabled — no auto period
-                  autoFlagSet = false;
-                }
-              }
-            }
-            // If auto flag was set but we haven't found the enable yet, scan enabled values
-            if (autoFlagSet && autoStartTime == null && enabledValuesForAuto != null) {
-              // Find the first enable that happens while in auto mode
-              double autoFlagTime = -1;
-              double autoFlagEndTime = Double.MAX_VALUE;
-              for (var tv2 : values) {
-                if (tv2.value() instanceof Boolean isAuto) {
-                  if (isAuto && autoFlagTime < 0) autoFlagTime = tv2.timestamp();
-                  else if (!isAuto && autoFlagTime >= 0) { autoFlagEndTime = tv2.timestamp(); break; }
-                }
-              }
-              for (var ev : enabledValuesForAuto) {
-                if (ev.timestamp() >= autoFlagTime && ev.timestamp() < autoFlagEndTime
-                    && ev.value() instanceof Boolean en && en) {
-                  autoStartTime = ev.timestamp();
-                  autoEndTime = autoFlagEndTime < Double.MAX_VALUE ? autoFlagEndTime : null;
-                  break;
-                }
-              }
-            }
-          }
-          break;
-        }
+      if (periods.size() > 1) {
+        builder.addWarning(periods.size() + " autonomous periods found; the top-level auto_* "
+            + "fields describe the first, auto_periods lists all.");
       }
-
-      if (autoStartTime != null) {
-        if (autoEndTime == null) {
-          // If we didn't find auto end, use game knowledge base or 15s default
-          double autoDuration = 15.0;
-          try {
-            int seasonYear = ToolUtils.estimateSeasonYear(log);
-            var gameData = GameKnowledgeBase.getInstance().getGame(seasonYear);
-            if (gameData != null) {
-              autoDuration = gameData.autoDurationSec();
-            }
-          } catch (Exception e) {
-            // use default
-          }
-          autoEndTime = autoStartTime + autoDuration;
-        }
-        var autoDuration = autoEndTime - autoStartTime;
-        result.addProperty("auto_start_time", autoStartTime);
-        result.addProperty("auto_end_time", autoEndTime);
-        result.addProperty("auto_duration", autoDuration);
-
-        // Calculate path following error
-        var pathFollowingError = calculatePathFollowingError(log, autoPrefix, autoStartTime, autoEndTime);
-        if (pathFollowingError != null) {
-          result.add("path_following_error", pathFollowingError);
-        }
-      }
-
-      // Add data quality from enabled values if available
-      if (enabledValuesForAuto != null && !enabledValuesForAuto.isEmpty()) {
-        var quality = DataQuality.fromValues(enabledValuesForAuto);
-        var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
-        result.add("data_quality", quality.toJson());
-        result.add("server_analysis_directives", directives.toJson());
-      }
-
-      return result;
+      return builder.build();
     }
 
-    private JsonObject calculatePathFollowingError(
-        LogData log,
-        String prefix,
-        double startTime,
-        double endTime
-    ) {
-      // Look for pose setpoint and actual pose entries
-      String setpointEntry = null;
-      String actualEntry = null;
+    private static int objectsWithout(JsonArray array, String key) {
+      int n = 0;
+      for (var e : array) if (!e.getAsJsonObject().has(key)) n++;
+      return n;
+    }
 
-      // Cache toLowerCase results for performance
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+    /**
+     * Ranks a lower-cased string entry name as the chooser holding the selected autonomous
+     * routine (used by {@link SignalResolver}): 0 for a chooser's {@code /active} entry, 1 for
+     * names with "auto" and "selected"/"mode"/"routine"/"choice", 2 for any name containing
+     * "chooser", {@code Integer.MAX_VALUE} for none.
+     */
+    static int chooserRank(String lower) {
+      var leaf = lower.substring(lower.lastIndexOf('/') + 1);
+      if (leaf.startsWith(".") || leaf.equals("default") || leaf.equals("options")) {
+        return Integer.MAX_VALUE;
       }
+      boolean chooser = lower.contains("chooser");
+      boolean auto = lower.contains("auto");
+      if (leaf.equals("active") && (chooser || auto)) return 0;
+      if (auto && (lower.contains("selected") || lower.contains("routine")
+          || lower.contains("choice") || lower.contains("mode"))) return 1;
+      if (chooser) return 2;
+      return Integer.MAX_VALUE;
+    }
 
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        boolean matchesPrefix = prefix == null || entryName.startsWith(prefix);
-
-        if (matchesPrefix) {
-          var entry = log.entries().get(entryName);
-          boolean isPose = entry != null && (entry.type().contains("Pose2d") || entry.type().contains("Pose3d"));
-
-          if (isPose && (lower.contains("setpoint") || lower.contains("target") || lower.contains("desired"))) {
-            setpointEntry = entryName;
-          } else if (isPose && (lower.contains("actual") || lower.contains("estimated") || lower.contains("odometry"))) {
-            actualEntry = entryName;
-          }
-        }
-      }
-
-      if (setpointEntry == null || actualEntry == null) {
-        return null;
-      }
-
+    private JsonObject calculatePathFollowingError(LogData log, String setpointEntry,
+        String actualEntry, double startTime, double endTime) {
       var setpointValues = log.values().get(setpointEntry);
       var actualValues = log.values().get(actualEntry);
+      if (setpointValues == null || actualValues == null) return null;
 
-      if (setpointValues == null || actualValues == null) {
-        return null;
-      }
-
-      // Calculate RMSE for the auto period
       double sumSquaredError = 0.0;
       int count = 0;
+      int unreadable = 0;
       double maxError = 0.0;
-
       for (TimestampedValue spTv : setpointValues) {
         if (spTv.timestamp() < startTime || spTv.timestamp() > endTime) continue;
-
-        if (spTv.value() instanceof java.util.Map) {
-          @SuppressWarnings("unchecked")
-          var setpointPose = (java.util.Map<String, Object>) spTv.value();
-
-          var actualPose = getActualPoseAtTime(actualValues, spTv.timestamp());
-          if (actualPose != null) {
-            double error = calculatePoseDistance(setpointPose, actualPose);
-            sumSquaredError += error * error;
-            maxError = Math.max(maxError, error);
-            count++;
-          }
+        if (!(spTv.value() instanceof java.util.Map)) {
+          unreadable++;
+          continue;
         }
+        @SuppressWarnings("unchecked")
+        var setpointPose = (java.util.Map<String, Object>) spTv.value();
+        var actualPose = getActualPoseAtTime(actualValues, spTv.timestamp());
+        if (actualPose == null) continue;
+        double error = calculatePoseDistance(setpointPose, actualPose);
+        if (!Double.isFinite(error)) {
+          unreadable++;
+          continue;
+        }
+        sumSquaredError += error * error;
+        maxError = Math.max(maxError, error);
+        count++;
       }
-
-      if (count == 0) {
-        return null;
-      }
+      if (count == 0) return null;
 
       var errorAnalysis = new JsonObject();
       errorAnalysis.addProperty("rmse_meters", Math.sqrt(sumSquaredError / count));
       errorAnalysis.addProperty("max_error_meters", maxError);
       errorAnalysis.addProperty("samples", count);
+      if (unreadable > 0) errorAnalysis.addProperty("unreadable_samples", unreadable);
       return errorAnalysis;
     }
 
@@ -1027,7 +1578,11 @@ public final class FrcDomainTools {
     public String description() {
       return "Analyze game piece handling cycle times with configurable cycle detection modes "
           + "(start-to-start or start-to-end), dead time tracking, and data quality warnings. "
-          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection."
+          + "Supports time filtering, case-sensitive/insensitive matching, and incomplete cycle detection. "
+          + "The state entry is read as a state: a cycle starts when it changes to "
+          + "cycle_start_state (required in the default start_to_start mode), so a state repeated "
+          + "every loop is one state, not a new cycle per sample. Returns no_match, with the "
+          + "states seen, when cycle_start_state never occurs."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
@@ -1048,6 +1603,8 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {// Parse parameters
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
       var stateEntry = getRequiredString(arguments, "state_entry");
       var cycleMode = getOptString(arguments, "cycle_mode", "start_to_start");
       var cycleStartState = getOptString(arguments, "cycle_start_state", null);
@@ -1059,6 +1616,7 @@ public final class FrcDomainTools {
           ? arguments.get("case_sensitive").getAsBoolean()
           : true; // Default: true
       int limit = getOptInt(arguments, "limit", 10);
+      validatePositive(limit, "limit");
 
       // Validate cycle mode
       if (!cycleMode.equals("start_to_start") && !cycleMode.equals("start_to_end")) {
@@ -1087,13 +1645,19 @@ public final class FrcDomainTools {
       if (cycleMode.equals("start_to_start")) {
         Double cycleStartTime = null;
         boolean cycleIncomplete = false;
+        String lastState = null;
 
         for (TimestampedValue tv : vals) {
           if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
           String currentState = tv.value().toString();
+          // A cycle starts on a change into the start state, so an entry that repeats its value
+          // every loop is not read as a new cycle per sample
+          boolean entering = statesEqual(currentState, cycleStartState, caseSensitive)
+              && !statesEqual(lastState, cycleStartState, caseSensitive);
+          lastState = currentState;
 
-          if (statesEqual(currentState, cycleStartState, caseSensitive)) {
+          if (entering) {
             if (cycleStartTime != null) {
               // Complete previous cycle
               double cycleTime = tv.timestamp() - cycleStartTime;
@@ -1173,6 +1737,19 @@ public final class FrcDomainTools {
         }
       }
 
+      if (cycleDetails.isEmpty()) {
+        var seen = vals.stream().filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime))
+            .map(tv -> tv.value().toString()).distinct().limit(10).toList();
+        return ResponseBuilder.noMatch("'" + cycleStartState + "' never occurs in " + stateEntry
+                + (startTime != null || endTime != null ? " within the time range" : "")
+                + ", so no cycle starts.")
+            .hint(seen.isEmpty() ? "The entry has no samples in the time range."
+                : "States seen (up to 10): " + String.join(", ", seen)
+                    + (caseSensitive ? ". Matching is case-sensitive (case_sensitive: false "
+                        + "relaxes it)." : "."))
+            .build();
+      }
+
       // Detect idle/dead time
       if (idleState != null) {
         String lastState = null;
@@ -1206,13 +1783,15 @@ public final class FrcDomainTools {
           lastState = currentState;
         }
 
-        // Handle incomplete idle period
+        // Handle incomplete idle period (bounded by the window, like incomplete cycles)
         if (idleStartTime != null) {
-          double incompleteDuration = vals.get(vals.size() - 1).timestamp() - idleStartTime;
+          double lastTimestamp = vals.get(vals.size() - 1).timestamp();
+          double boundedEnd = endTime != null ? Math.min(lastTimestamp, endTime) : lastTimestamp;
+          double incompleteDuration = boundedEnd - idleStartTime;
 
           var deadPeriod = new JsonObject();
           deadPeriod.addProperty("start_time", idleStartTime);
-          deadPeriod.addProperty("end_time", vals.get(vals.size() - 1).timestamp());
+          deadPeriod.addProperty("end_time", boundedEnd);
           deadPeriod.addProperty("duration", incompleteDuration);
           deadPeriod.addProperty("incomplete", true);
           deadTimePeriods.add(deadPeriod);
@@ -1222,7 +1801,9 @@ public final class FrcDomainTools {
       // Build result
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("sample_count", vals.size());
+      // Samples inside the window (the whole entry when no window is given)
+      result.addProperty("sample_count",
+          vals.stream().filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).count());
       result.addProperty("cycle_mode", cycleMode);
 
       // Add data quality warnings
@@ -1252,12 +1833,9 @@ public final class FrcDomainTools {
 
       // Add cycle details (includes both complete and incomplete cycles)
       if (!cycleDetails.isEmpty()) {
-        result.add("cycles", GSON.toJsonTree(cycleDetails.stream().limit(limit).toList()));
-
-        if (cycleDetails.size() > limit) {
-          result.addProperty("cycles_truncated", true);
-          result.addProperty("total_cycles", cycleDetails.size());
-        }
+        ResultContract.addLimitedList(result, "cycles",
+            GSON.toJsonTree(cycleDetails.stream().limit(limit).toList()).getAsJsonArray(),
+            cycleDetails.size(), limit);
       }
 
       // Add dead time analysis
@@ -1272,12 +1850,9 @@ public final class FrcDomainTools {
         result.add("dead_time", deadTimeStats);
 
         // Apply configurable limit
-        result.add("dead_time_periods", GSON.toJsonTree(deadTimePeriods.stream().limit(limit).toList()));
-
-        if (deadTimePeriods.size() > limit) {
-          result.addProperty("dead_time_periods_truncated", true);
-          result.addProperty("total_dead_time_periods", deadTimePeriods.size());
-        }
+        ResultContract.addLimitedList(result, "dead_time_periods",
+            GSON.toJsonTree(deadTimePeriods.stream().limit(limit).toList()).getAsJsonArray(),
+            deadTimePeriods.size(), limit);
       }
 
       // Add data quality and analysis directives
@@ -1358,81 +1933,203 @@ public final class FrcDomainTools {
   }
 
   static class AnalyzeReplayDriftTool extends LogRequiringTool {
+    static final double TIME_TOLERANCE_SEC = 0.001;
+    static final double DEFAULT_RELATIVE_TOLERANCE = 1e-9;
+    static final double ABSOLUTE_TOLERANCE = 1e-12;
+
     @Override
     public String name() { return "analyze_replay_drift"; }
 
     @Override
     public String description() {
-      return "Validate AdvantageKit deterministic replay by comparing RealOutputs vs ReplayOutputs. "
-          + "Small drift may be acceptable due to non-deterministic inputs (vision, joystick timing). "
-          + "Focus on large or systematic divergences rather than isolated small differences."
+      return "Validate AdvantageKit deterministic replay: in a replay output log (the _sim log "
+          + "AdvantageScope writes), compare every /RealOutputs/X entry with /ReplayOutputs/X "
+          + "sample by sample (timestamps matched within 1 ms). Numbers are equal within "
+          + "relative_tolerance (default 1e-9); arrays and structs are compared element by "
+          + "element. Returns pairs_compared, the entries present on only one side, and for each "
+          + "divergent entry the first divergence time, divergent/compared sample counts, the "
+          + "largest numeric difference, and the values at the first divergence. Returns "
+          + "not_applicable on a log without /ReplayOutputs/ entries (a real-robot log). Small "
+          + "drift may come from non-deterministic inputs; look for large or systematic "
+          + "divergence."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
-      return new SchemaBuilder().build();
+      return new SchemaBuilder()
+          .addNumberProperty("relative_tolerance",
+              "Numbers within this fraction of their magnitude are equal (default 1e-9)", false,
+              DEFAULT_RELATIVE_TOLERANCE)
+          .addIntegerProperty("limit", "Maximum divergent entries to list (default 20)", false, 20)
+          .build();
     }
 
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var realEntries = log.entries().keySet().stream()
-          .filter(n -> n.contains("/RealOutputs/"))
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      double relTol = getOptDouble(arguments, "relative_tolerance", DEFAULT_RELATIVE_TOLERANCE);
+      if (!(relTol >= 0) || !Double.isFinite(relTol)) {
+        throw new IllegalArgumentException("relative_tolerance must be a finite number >= 0");
+      }
+      int limit = getOptInt(arguments, "limit", 20);
+      validatePositive(limit, "limit");
+
+      var names = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).toList();
+      var real = names.stream().filter(n -> n.startsWith("/RealOutputs/")).toList();
+      var replay = names.stream().filter(n -> n.startsWith("/ReplayOutputs/")).toList();
+      if (replay.isEmpty()) {
+        return ResponseBuilder.notApplicable("This log has no /ReplayOutputs/ entries, so it is "
+                + "not an AdvantageKit replay output log (" + real.size() + " /RealOutputs/ "
+                + "entries, nothing to compare them with).")
+            .hint("Run AdvantageKit replay on this log (AdvantageScope writes a _sim log) and "
+                + "call this tool on the _sim log.")
+            .build();
+      }
+      var replaySet = new java.util.HashSet<>(replay);
+      var realSet = new java.util.HashSet<>(real);
+      var pairs = real.stream()
+          .filter(n -> replaySet.contains(n.replaceFirst("^/RealOutputs/", "/ReplayOutputs/")))
           .toList();
-
-      var divergent = realEntries.stream()
-          .map(real -> {
-            var replay = real.replace("/RealOutputs/", "/ReplayOutputs/");
-            if (!log.entries().containsKey(replay)) return null;
-
-            var realVals = log.values().get(real);
-            var replayVals = log.values().get(replay);
-            if (realVals == null || replayVals == null) return null;
-
-            // Compare by matching timestamps (within 1ms tolerance) rather than
-            // by array index, since Real and Replay entries may have different
-            // sample counts or logging rates.
-            int replayIdx = 0;
-            double tolerance = 0.001; // 1ms
-            for (var realTv : realVals) {
-              // Advance replay index to find matching timestamp
-              while (replayIdx < replayVals.size()
-                  && replayVals.get(replayIdx).timestamp() < realTv.timestamp() - tolerance) {
-                replayIdx++;
-              }
-              if (replayIdx >= replayVals.size()) break;
-
-              var replayTv = replayVals.get(replayIdx);
-              if (Math.abs(replayTv.timestamp() - realTv.timestamp()) <= tolerance) {
-                if (!Objects.equals(realTv.value(), replayTv.value())) {
-                  var div = new JsonObject();
-                  div.addProperty("entry", real);
-                  div.addProperty("timestamp", realTv.timestamp());
-                  return div;
-                }
-              }
-            }
-            return null;
-          })
-          .filter(Objects::nonNull)
+      var realOnly = real.stream()
+          .filter(n -> !replaySet.contains(n.replaceFirst("^/RealOutputs/", "/ReplayOutputs/")))
           .toList();
-
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("divergent_count", divergent.size());
-      result.add("divergences", GSON.toJsonTree(divergent.stream().limit(10).toList()));
-
-      // Add data quality from first real entry if available
-      if (!realEntries.isEmpty()) {
-        var firstVals = log.values().get(realEntries.get(0));
-        if (firstVals != null && !firstVals.isEmpty()) {
-          var quality = DataQuality.fromValues(firstVals);
-          var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
-          result.add("data_quality", quality.toJson());
-          result.add("server_analysis_directives", directives.toJson());
-        }
+      var replayOnly = replay.stream()
+          .filter(n -> !realSet.contains(n.replaceFirst("^/ReplayOutputs/", "/RealOutputs/")))
+          .toList();
+      if (pairs.isEmpty()) {
+        return ResponseBuilder.noMatch("No /RealOutputs/X entry has a /ReplayOutputs/X "
+                + "counterpart (" + real.size() + " real, " + replay.size() + " replay entries).")
+            .lookedFor(List.of("entry pairs /RealOutputs/<name> and /ReplayOutputs/<name>"))
+            .build();
       }
 
-      return result;
+      var divergent = new ArrayList<JsonObject>();
+      long comparedSamples = 0;
+      long unmatchedSamples = 0;
+      for (var realName : pairs) {
+        var replayName = realName.replaceFirst("^/RealOutputs/", "/ReplayOutputs/");
+        var realVals = log.values().get(realName);
+        var replayVals = log.values().get(replayName);
+        int j = 0;
+        int compared = 0;
+        int diverged = 0;
+        double maxDiff = 0;
+        JsonObject firstDivergence = null;
+        for (var realTv : realVals) {
+          while (j < replayVals.size()
+              && replayVals.get(j).timestamp() < realTv.timestamp() - TIME_TOLERANCE_SEC) {
+            j++;
+          }
+          if (j >= replayVals.size()
+              || Math.abs(replayVals.get(j).timestamp() - realTv.timestamp()) > TIME_TOLERANCE_SEC) {
+            unmatchedSamples++;
+            continue;
+          }
+          var replayTv = replayVals.get(j);
+          compared++;
+          double[] diff = {0};
+          if (!valuesEqual(realTv.value(), replayTv.value(), relTol, diff)) {
+            diverged++;
+            maxDiff = Math.max(maxDiff, diff[0]);
+            if (firstDivergence == null) {
+              firstDivergence = new JsonObject();
+              firstDivergence.addProperty("timestamp", realTv.timestamp());
+              firstDivergence.addProperty("real", preview(realTv.value()));
+              firstDivergence.addProperty("replay", preview(replayTv.value()));
+            }
+          }
+        }
+        comparedSamples += compared;
+        if (diverged > 0) {
+          var d = new JsonObject();
+          d.addProperty("entry", realName);
+          d.addProperty("type", log.entries().get(realName).type());
+          d.addProperty("first_divergence_time", firstDivergence.get("timestamp").getAsDouble());
+          d.addProperty("divergent_samples", diverged);
+          d.addProperty("compared_samples", compared);
+          if (maxDiff > 0) d.addProperty("max_abs_difference", maxDiff);
+          d.add("first_divergence", firstDivergence);
+          divergent.add(d);
+        }
+      }
+      divergent.sort(Comparator.comparingDouble(d -> d.get("first_divergence_time").getAsDouble()));
+
+      var list = new JsonArray();
+      divergent.stream().limit(limit).forEach(list::add);
+      var builder = success()
+          .addProperty("pairs_compared", pairs.size())
+          .addProperty("samples_compared", comparedSamples)
+          .addProperty("divergent_count", divergent.size())
+          .addProperty("relative_tolerance", relTol)
+          .addLimitedList("divergences", list, divergent.size(), limit);
+      if (unmatchedSamples > 0) builder.addProperty("samples_without_counterpart", unmatchedSamples);
+      builder.addLimitedList("real_only_entries",
+              GSON.toJsonTree(realOnly.stream().limit(50).toList()).getAsJsonArray(),
+              realOnly.size(), 50)
+          .addProperty("real_only_count", realOnly.size())
+          .addLimitedList("replay_only_entries",
+              GSON.toJsonTree(replayOnly.stream().limit(50).toList()).getAsJsonArray(),
+              replayOnly.size(), 50)
+          .addProperty("replay_only_count", replayOnly.size());
+      if (!realOnly.isEmpty()) {
+        builder.addWarning(realOnly.size() + " /RealOutputs/ entries have no replay counterpart "
+            + "and were not compared.");
+      }
+      return builder.build();
+    }
+
+    /** Deep equality with a relative numeric tolerance; records the largest numeric difference. */
+    static boolean valuesEqual(Object a, Object b, double relTol, double[] maxDiff) {
+      if (a instanceof Number x && b instanceof Number y) {
+        double dx = x.doubleValue();
+        double dy = y.doubleValue();
+        if (Double.isNaN(dx) || Double.isNaN(dy)) return Double.isNaN(dx) && Double.isNaN(dy);
+        if (dx == dy) return true; // includes equal infinities
+        double diff = Math.abs(dx - dy);
+        if (Double.isFinite(diff)) maxDiff[0] = Math.max(maxDiff[0], diff);
+        return diff <= Math.max(ABSOLUTE_TOLERANCE, relTol * Math.max(Math.abs(dx), Math.abs(dy)));
+      }
+      if (a instanceof java.util.Map<?, ?> ma && b instanceof java.util.Map<?, ?> mb) {
+        if (!ma.keySet().equals(mb.keySet())) return false;
+        boolean equal = true;
+        for (var key : ma.keySet()) equal &= valuesEqual(ma.get(key), mb.get(key), relTol, maxDiff);
+        return equal;
+      }
+      if (a instanceof List<?> la && b instanceof List<?> lb) {
+        if (la.size() != lb.size()) return false;
+        boolean equal = true;
+        for (int i = 0; i < la.size(); i++) equal &= valuesEqual(la.get(i), lb.get(i), relTol, maxDiff);
+        return equal;
+      }
+      if (a != null && b != null && a.getClass().isArray() && b.getClass().isArray()) {
+        int n = java.lang.reflect.Array.getLength(a);
+        if (n != java.lang.reflect.Array.getLength(b)) return false;
+        boolean equal = true;
+        for (int i = 0; i < n; i++) {
+          equal &= valuesEqual(java.lang.reflect.Array.get(a, i), java.lang.reflect.Array.get(b, i),
+              relTol, maxDiff);
+        }
+        return equal;
+      }
+      return Objects.equals(a, b);
+    }
+
+    static String preview(Object value) {
+      String text;
+      if (value != null && value.getClass().isArray()) {
+        int n = java.lang.reflect.Array.getLength(value);
+        var sb = new StringBuilder("[");
+        for (int i = 0; i < n; i++) {
+          if (i > 0) sb.append(", ");
+          sb.append(java.lang.reflect.Array.get(value, i));
+        }
+        text = sb.append(']').toString();
+      } else {
+        text = String.valueOf(value);
+      }
+      return text.length() > 200 ? text.substring(0, 200) + "..." : text;
     }
   }
 
@@ -1442,144 +2139,249 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Detect when robot code exceeded loop period threshold (default 20ms). "
-          + "Returns violations, statistics, and a health score. "
-          + "Auto-detects units (ms vs s) via median heuristic; assumes standard FRC loop rates."
+      return "Loop timing: how often robot code exceeded the loop period (threshold_ms, default "
+          + "20 ms) and the distribution of loop times (mean, median, p90, p95, p99, max with its "
+          + "time), over a scope (e.g. 'enabled') or window. The entry is found in this order: "
+          + "the entry argument; AdvantageKit's LoggedRobot/FullCycleMS (whole cycle, including "
+          + "logging), reported with LoggedRobot/UserCodeMS alongside; loop periods derived from "
+          + "consecutive AdvantageKit /Timestamp values; UserCodeMS alone. Other entries named "
+          + "like a loop time (looptime, cycletime) are not guessed at: no_match lists them as "
+          + "candidates to confirm and pass as entry. The unit comes from the argument, the "
+          + "name (...MS, ...Ms, _ms), "
+          + "or the median (basis reported). A first sample more than 10x the median (the slow "
+          + "boot cycle) is excluded and reported. health_score (0-100) is 100 minus the percent "
+          + "of loops over the threshold. Returns no_match when the log has no loop timing, "
+          + "with the count of WPILib loop-overrun console messages if any."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
+          .addProperty("entry", "string", "Loop time entry (default: discovered, see description)", false)
           .addNumberProperty("threshold_ms", "Loop time threshold in milliseconds (default: 20)", false, 20.0)
+          .addProperty("unit", "string", "Unit of the entry's values: 'ms', 's', 'us', or 'auto' "
+              + "(default: from the name, else the median)", false)
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addProperty("unit", "string", "Unit of loop time values: 'ms', 's', or 'auto' (default: 'auto'). "
-              + "Auto-detect uses median value: if median < 1.0, assumes seconds and converts to ms.", false)
           .build();
     }
 
+    static int rank(String name) {
+      var leaf = name.substring(name.lastIndexOf('/') + 1).toLowerCase(java.util.Locale.ROOT);
+      var lower = name.toLowerCase(java.util.Locale.ROOT);
+      if (leaf.equals("fullcyclems")) return 0;
+      if (leaf.equals("usercodems")) return 1;
+      if (lower.contains("looptime") || lower.contains("loop_time") || lower.contains("cycletime")
+          || lower.contains("cycle_time")) return 2;
+      return Integer.MAX_VALUE;
+    }
+
+    /** Unit scale to milliseconds, and the basis for it. */
+    record Unit(double toMs, String name, String basis) {}
+
+    static Unit unitFor(String entry, String unitArg, double[] rawSorted) {
+      if (unitArg != null && !unitArg.equalsIgnoreCase("auto")) {
+        return switch (unitArg.toLowerCase(java.util.Locale.ROOT)) {
+          case "ms" -> new Unit(1.0, "ms", "argument");
+          case "s" -> new Unit(1000.0, "s", "argument");
+          case "us" -> new Unit(0.001, "us", "argument");
+          default -> throw new IllegalArgumentException("unit must be 'ms', 's', 'us', or 'auto'");
+        };
+      }
+      if (entry != null) {
+        var leaf = entry.substring(entry.lastIndexOf('/') + 1);
+        if (leaf.endsWith("MS") || leaf.endsWith("Ms") || leaf.toLowerCase().endsWith("_ms")
+            || leaf.toLowerCase().endsWith("millis")) {
+          return new Unit(1.0, "ms", "name (" + leaf + ")");
+        }
+        if (leaf.endsWith("US") || leaf.endsWith("Us") || leaf.toLowerCase().endsWith("_us")
+            || leaf.toLowerCase().endsWith("micros")) {
+          return new Unit(0.001, "us", "name (" + leaf + ")");
+        }
+        if (leaf.toLowerCase().endsWith("sec") || leaf.toLowerCase().endsWith("seconds")
+            || leaf.toLowerCase().endsWith("_s")) {
+          return new Unit(1000.0, "s", "name (" + leaf + ")");
+        }
+      }
+      double median = percentile(rawSorted, 0.5);
+      if (median >= 0.001 && median < 1.0) {
+        return new Unit(1000.0, "s", String.format("median %.4g: looks like seconds", median));
+      }
+      if (median > 500) {
+        return new Unit(0.001, "us", String.format("median %.4g: looks like microseconds", median));
+      }
+      return new Unit(1.0, "ms", String.format("median %.4g: looks like milliseconds", median));
+    }
+
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
-      var startTime = getOptDouble(arguments, "start_time");
-      var endTime = getOptDouble(arguments, "end_time");
-      var unit = getOptString(arguments, "unit", "auto");
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      double thresholdMs = getOptDouble(arguments, "threshold_ms", 20.0);
+      var entryArg = getOptString(arguments, "entry", null);
+      var unitArg = getOptString(arguments, "unit", null);
+      var scope = TimeScope.resolve(log, null, getOptString(arguments, "scope", null),
+          getOptDouble(arguments, "start_time"), getOptDouble(arguments, "end_time"));
 
-      // Find loop time entry
-      String loopTimeEntry = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = entryName.toLowerCase();
-        if (lower.contains("looptime") || (lower.contains("loop") && lower.contains("time"))) {
-          loopTimeEntry = entryName;
-          break;
+      // The loop_time roles (resolve_signals): AdvantageKit's FullCycleMS, else periods derived
+      // from its /Timestamp, else UserCodeMS; names like looptime are candidates only
+      var full = SignalResolver.loopTime(log, SignalResolver.Role.LOOP_TIME_FULL, entryArg);
+      var user = SignalResolver.loopTime(log, SignalResolver.Role.LOOP_TIME_USER, null);
+      String entry = full.chosen().or(user::chosen).orElse(null);
+      String secondary = user.chosen().filter(u -> !u.equals(entry)).orElse(null);
+
+      // Samples in scope, as {time, raw value}
+      var raw = new ArrayList<double[]>();
+      String basisOverride = null;
+      if ("/Timestamp".equals(entry)) {
+        basisOverride = "derived: differences between consecutive /Timestamp values "
+            + "(AdvantageKit's per-cycle FPGA time, microseconds)";
+        TimestampedValue previous = null;
+        for (var tv : log.values().get("/Timestamp")) {
+          if (previous != null && scope.contains(tv.timestamp())
+              && tv.value() instanceof Number n && previous.value() instanceof Number p) {
+            raw.add(new double[] {tv.timestamp(), (n.doubleValue() - p.doubleValue()) / 1000.0});
+          }
+          previous = tv;
+        }
+      } else if (entry != null) {
+        for (var tv : log.values().get(entry)) {
+          var v = toDouble(tv.value());
+          if (v != null && Double.isFinite(v) && scope.contains(tv.timestamp())) {
+            raw.add(new double[] {tv.timestamp(), v});
+          }
         }
       }
-
-      if (loopTimeEntry == null) {
-        return errorResult("No loop time entry found. Look for entries containing 'LoopTime' or 'loop time'");
+      if (entry == null) {
+        long overrunMessages = 0;
+        for (var e : log.entries().values()) {
+          if (!"string".equals(e.type())) continue;
+          for (var tv : log.values().get(e.name())) {
+            if (tv.value() instanceof String text && text.toLowerCase().contains("overrun")) {
+              overrunMessages++;
+            }
+          }
+        }
+        var nm = ResponseBuilder.noMatch(full.needsConfirmation()
+                ? "No entry follows a known loop-time convention." : "No loop time entry found.")
+            .lookedFor(List.of("LoggedRobot/FullCycleMS and LoggedRobot/UserCodeMS (AdvantageKit)",
+                "/Timestamp (AdvantageKit per-cycle time, to derive loop periods)"))
+            .hint((full.needsConfirmation() ? SignalResolver.unresolvedReason(full, "entry")
+                    : "Pass entry to name the robot's loop time entry.")
+                + (overrunMessages > 0 ? " search_strings with pattern 'overrun' lists the "
+                    + overrunMessages + " loop overrun console messages in this log." : ""));
+        if (full.needsConfirmation()) {
+          var candidates = new JsonArray();
+          full.candidates().stream().limit(10).forEach(candidates::add);
+          nm.addData("candidates", candidates);
+        }
+        if (overrunMessages > 0) nm.addProperty("overrun_messages", overrunMessages);
+        return nm.build();
+      }
+      if (raw.isEmpty()) {
+        return ResponseBuilder.noMatch("No samples of " + entry + " in scope '" + scope.name()
+                + "'.")
+            .addData("scope", scope.toJson())
+            .build();
       }
 
-      var values = log.values().get(loopTimeEntry);
-      if (values == null || values.isEmpty()) {
-        return errorResult("Loop time entry found but has no data");
+      var rawSorted = raw.stream().mapToDouble(r -> r[1]).sorted().toArray();
+      var unit = basisOverride != null ? new Unit(1.0, "ms", basisOverride)
+          : unitFor(entry, unitArg, rawSorted);
+      var ms = new ArrayList<double[]>(raw.size());
+      raw.forEach(r -> ms.add(new double[] {r[0], r[1] * unit.toMs()}));
+
+      // The first cycle after boot can take seconds; it is not a loop overrun
+      JsonObject excludedBoot = null;
+      var allOfEntry = basisOverride == null ? log.values().get(entry) : null;
+      double medianMs = percentile(ms.stream().mapToDouble(r -> r[1]).sorted().toArray(), 0.5);
+      if (allOfEntry != null && !allOfEntry.isEmpty()
+          && ms.get(0)[0] == allOfEntry.get(0).timestamp() && ms.size() > 1
+          && ms.get(0)[1] > 10 * medianMs) {
+        excludedBoot = new JsonObject();
+        excludedBoot.addProperty("timestamp", ms.get(0)[0]);
+        excludedBoot.addProperty("loop_time_ms", ms.get(0)[1]);
+        ms.remove(0);
       }
 
+      var loopMs = ms.stream().mapToDouble(r -> r[1]).toArray();
+      var sorted = loopMs.clone();
+      java.util.Arrays.sort(sorted);
       var violations = new ArrayList<JsonObject>();
-      var loopTimes = new ArrayList<Double>();
-
-      // Determine conversion factor based on unit parameter
-      // For "auto", collect raw values first, then detect unit from median
-      boolean needsAutoDetect = "auto".equalsIgnoreCase(unit);
-      double conversionFactor = 1.0; // default: assume ms
-      if ("s".equalsIgnoreCase(unit)) {
-        conversionFactor = 1000.0;
-      }
-
-      // First pass: collect raw values with timestamps for auto-detection
-      record RawSample(double timestamp, double value) {}
-      var rawSamples = new ArrayList<RawSample>();
-      for (TimestampedValue tv : values) {
-        if (startTime != null && tv.timestamp() < startTime) continue;
-        if (endTime != null && tv.timestamp() > endTime) break;
-        if (tv.value() instanceof Number num) {
-          rawSamples.add(new RawSample(tv.timestamp(), num.doubleValue()));
-        }
-      }
-
-      if (rawSamples.isEmpty()) {
-        return errorResult("No numeric loop time data found");
-      }
-
-      boolean detectedMicroseconds = false;
-      if (needsAutoDetect) {
-        // Use median to determine unit (robust to outliers)
-        var sortedRaw = rawSamples.stream().mapToDouble(RawSample::value).sorted().toArray();
-        double median = sortedRaw.length % 2 == 1
-            ? sortedRaw[sortedRaw.length / 2]
-            : (sortedRaw[sortedRaw.length / 2 - 1] + sortedRaw[sortedRaw.length / 2]) / 2.0;
-        // Values in 0.001–1.0 range look like seconds (typical: 0.02 for 20ms loop)
-        // Below 0.001 could be fractional ms or corrupt data — leave as-is
-        if (median >= 0.001 && median < 1.0) {
-          conversionFactor = 1000.0; // Values look like seconds, convert to ms
-        } else if (median > 500) {
-          // Values > 500 look like microseconds (typical: 20000 for 20ms loop)
-          conversionFactor = 1.0 / 1000.0; // Convert microseconds to ms
-          detectedMicroseconds = true;
-        }
-      }
-
-      for (var sample : rawSamples) {
-        double loopTimeMs = sample.value() * conversionFactor;
-        loopTimes.add(loopTimeMs);
-
-        if (loopTimeMs > thresholdMs) {
+      double[] max = ms.get(0);
+      for (var r : ms) {
+        if (r[1] > max[1]) max = r;
+        if (r[1] > thresholdMs) {
           var violation = new JsonObject();
-          violation.addProperty("timestamp", sample.timestamp());
-          violation.addProperty("loop_time_ms", loopTimeMs);
-          violation.addProperty("overage_ms", loopTimeMs - thresholdMs);
+          violation.addProperty("timestamp", r[0]);
+          violation.addProperty("loop_time_ms", r[1]);
+          violation.addProperty("overage_ms", r[1] - thresholdMs);
           violations.add(violation);
         }
       }
-
-      // Calculate statistics
-      var stats = loopTimes.stream().mapToDouble(d -> d).summaryStatistics();
-      var sorted = loopTimes.stream().mapToDouble(d -> d).sorted().toArray();
-
       var statistics = new JsonObject();
-      statistics.addProperty("avg_ms", stats.getAverage());
-      statistics.addProperty("max_ms", stats.getMax());
-      statistics.addProperty("min_ms", stats.getMin());
-      statistics.addProperty("p95_ms", interpolatedPercentile(sorted, 0.95));
-      statistics.addProperty("p99_ms", interpolatedPercentile(sorted, 0.99));
+      statistics.addProperty("avg_ms", java.util.Arrays.stream(loopMs).average().orElse(0));
+      statistics.addProperty("median_ms", percentile(sorted, 0.5));
+      statistics.addProperty("p90_ms", percentile(sorted, 0.90));
+      statistics.addProperty("p95_ms", percentile(sorted, 0.95));
+      statistics.addProperty("p99_ms", percentile(sorted, 0.99));
+      statistics.addProperty("max_ms", max[1]);
+      statistics.addProperty("max_time_sec", max[0]);
+      statistics.addProperty("min_ms", sorted[0]);
 
-      // Calculate health score (0-100)
-      double violationRate = (double) violations.size() / loopTimes.size();
-      // Linear mapping: 0% violations = 100, 100% violations = 0
+      double violationRate = (double) violations.size() / loopMs.length;
       int healthScore = (int) Math.max(0, Math.min(100, 100 - (violationRate * 100)));
+      var list = new JsonArray();
+      violations.stream().limit(50).forEach(list::add);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-      result.addProperty("loop_time_entry", loopTimeEntry);
-      result.addProperty("threshold_ms", thresholdMs);
-      result.addProperty("violation_count", violations.size());
-      result.addProperty("total_samples", loopTimes.size());
-      result.addProperty("violation_rate", violationRate);
-      result.addProperty("health_score", healthScore);
-      result.add("statistics", statistics);
-      result.add("violations", GSON.toJsonTree(violations.stream().limit(50).toList()));
-      if (detectedMicroseconds) {
-        result.addProperty("units_note", "Raw values were detected as microseconds and converted to milliseconds");
+      var unitJson = new JsonObject();
+      unitJson.addProperty("value", unit.name());
+      unitJson.addProperty("basis", unit.basis());
+      var builder = success()
+          .addProperty("loop_time_entry", entry)
+          .addData("unit", unitJson)
+          .addData("scope", scope.toJson())
+          .addProperty("threshold_ms", thresholdMs)
+          .addProperty("violation_count", violations.size())
+          .addProperty("total_samples", loopMs.length)
+          .addProperty("violation_rate", violationRate)
+          .addProperty("percent_over_threshold", violationRate * 100)
+          .addProperty("health_score", healthScore)
+          .addProperty("health_score_basis", String.format(java.util.Locale.ROOT, "heuristic: "
+              + "100 minus the percent of loops in scope over threshold_ms (%.1f ms); the "
+              + "statistics and violations beside it are the measurements", thresholdMs))
+          .addData("statistics", statistics)
+          .addLimitedList("violations", list, violations.size(), 50)
+          .addInput("loop_time", entry);
+      if ("us".equals(unit.name()) && !"argument".equals(unit.basis())) {
+        builder.addProperty("units_note", "Raw values were detected as microseconds and "
+            + "converted to milliseconds");
       }
-
-      // Add data quality and analysis directives
-      var quality = DataQuality.fromValues(values);
-      var directives = AnalysisDirectives.fromQuality(quality)
+      if (excludedBoot != null) builder.addData("excluded_boot_cycle", excludedBoot);
+      if (secondary != null) {
+        var sec = new ArrayList<Double>();
+        for (var tv : log.values().get(secondary)) {
+          var v = toDouble(tv.value());
+          if (v != null && Double.isFinite(v) && scope.contains(tv.timestamp())) sec.add(v);
+        }
+        if (!sec.isEmpty()) {
+          var s = sec.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+          var o = new JsonObject();
+          o.addProperty("entry", secondary);
+          o.addProperty("basis", "robot code only; the full cycle adds logging and other overhead");
+          o.addProperty("median_ms", percentile(s, 0.5));
+          o.addProperty("p95_ms", percentile(s, 0.95));
+          o.addProperty("percent_over_threshold",
+              100.0 * java.util.Arrays.stream(s).filter(v -> v > thresholdMs).count() / s.length);
+          builder.addData("user_code", o);
+        }
+      }
+      var quality = DataQuality.fromSegments(scope.split(basisOverride == null
+          ? log.values().get(entry) : log.values().get("/Timestamp")));
+      builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
-          .addGuidance("Health score is a heuristic based on violation rate — consider context of violations");
-      result.add("data_quality", quality.toJson());
-      result.add("server_analysis_directives", directives.toJson());
-
-      return result;
+          .addGuidance("Health score is a heuristic based on violation rate — consider context of violations"));
+      return builder.build();
     }
   }
 
@@ -1589,175 +2391,192 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze CAN bus health: detect bus-off events, high utilization, and noisy devices. "
-          + "Returns 'no CAN bus data found' if log does not contain CAN utilization or error entries. "
-          + "See also: can_health for string-based error detection."
+      return "Analyze CAN bus health from the counters the log records, per bus: utilization "
+          + "(percent; 0-1 fractions are detected and converted), transmit/receive error "
+          + "counters TEC and REC (maximum, when, excursions to the error-passive threshold "
+          + "of 128 or above, time spent at or above it; bus-off is TEC above 255), and bus-off and "
+          + "TX-full count increases, each overall and while enabled. Buses are found by the "
+          + "standard field names (WPILib CANStatus as AdvantageKit logs it under "
+          + "/SystemStats/CANBus, named 'rio'; CTRE CANivore status such as "
+          + "<prefix>/CANHD/{Utilization,TEC,REC,BusOffCount,TxFullCount}, named by the last "
+          + "path segment); bus_name selects one. Other numeric/boolean entries named with CAN "
+          + "and error/fault/timeout are reported under errors by how much they increased. "
+          + "Returns no_match when the log has no CAN counters. See also can_health (console "
+          + "messages plus these counters)."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
-          .addProperty("bus_name", "string", "CAN bus name (default: 'rio')", false)
+          .addProperty("bus_name", "string",
+              "Bus to analyze: 'rio', a CANivore name such as 'CANHD', or a path prefix "
+                  + "(default: every bus found)", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .build();
     }
 
+    /**
+     * Other entries named with CAN (as a word, or CANbus/CANivore/CANcoder, never Canandgyro or
+     * scan) and error/fault/timeout, e.g. {@code /CAN/TimeoutCount} or {@code /CANBus/Error/Tx}.
+     */
+    static boolean isOtherCanErrorEntry(String name) {
+      var lower = name.toLowerCase(java.util.Locale.ROOT).replace("default", "");
+      boolean canToken = lower.matches(".*(^|[^a-z])can([^a-z]|bus|ivore|coder|$).*");
+      boolean failure = lower.matches(".*(error|fault|timeout).*");
+      return canToken && failure;
+    }
+
     @Override
-    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {var busName = getOptString(arguments, "bus_name", "rio");
+    protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      validateTimeRange(getOptDouble(arguments, "start_time"),
+          getOptDouble(arguments, "end_time"));
+      var busName = getOptString(arguments, "bus_name", null);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
+      var timeline = MatchTimeline.of(log);
 
-      // Find CAN-related entries
-      var canUtilEntries = new ArrayList<String>();
-      var canErrorEntries = new ArrayList<String>();
+      var allBuses = CanBusAnalysis.discoverBuses(log);
+      var buses = busName == null ? allBuses
+          : allBuses.stream().filter(b -> b.matches(busName)).toList();
+      var busEntries = new java.util.HashSet<String>();
+      allBuses.forEach(b -> busEntries.addAll(b.entries().values()));
+      var otherErrorEntries = log.entries().values().stream()
+          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
+          .filter(e -> CanBusAnalysis.numeric(e.type()) || "boolean".equals(e.type()))
+          .filter(e -> !busEntries.contains(e.name()))
+          .filter(e -> isOtherCanErrorEntry(e.name()))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
+          .toList();
 
-      // Cache toLowerCase
-      var lowerEntryNames = new HashMap<String, String>();
-      for (var entryName : log.entries().keySet()) {
-        lowerEntryNames.put(entryName, entryName.toLowerCase());
+      var lookedFor = List.of(
+          "numeric entries named Utilization, BusUtilization, BusOffCount, OffCount, "
+              + "TxFullCount, REC, ReceiveErrorCount, TEC, or TransmitErrorCount under a path "
+              + "containing 'can' (e.g. /SystemStats/CANBus/..., .../CANBus/CANHD/...)",
+          "numeric or boolean entries named with CAN and error, fault, or timeout");
+      if (busName != null && buses.isEmpty()) {
+        var available = new JsonArray();
+        allBuses.forEach(b -> available.add(b.name()));
+        return ResponseBuilder.noMatch("No CAN bus named '" + busName + "' in this log.")
+            .lookedFor(lookedFor)
+            .addData("available_buses", available)
+            .hint(allBuses.isEmpty() ? "This log records no CAN bus counters."
+                : "Pass one of available_buses as bus_name, or omit bus_name for all.")
+            .build();
+      }
+      if (buses.isEmpty() && otherErrorEntries.isEmpty()) {
+        return ResponseBuilder.noMatch("This log records no CAN bus counters or CAN error "
+                + "entries.")
+            .lookedFor(lookedFor)
+            .hint("CAN problems may still appear as console messages: use can_health or "
+                + "search_strings with pattern 'CAN'.")
+            .build();
       }
 
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("can")) {
-          if (lower.contains("util") || lower.contains("bandwidth") || lower.contains("busoff")) {
-            canUtilEntries.add(entryName);
-          }
-          if (lower.contains("error") || lower.contains("fault") || lower.contains("timeout")) {
-            canErrorEntries.add(entryName);
-          }
-        }
+      var builder = success();
+      builder.addData("buses", CanBusAnalysis.busesJson(log, buses, timeline, startTime,
+          endTime));
+      if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
+      builder.addInput("enabled", timeline.sources().enabled());
+
+      // Compatibility: one utilization row per bus, in percent
+      var utilization = new JsonArray();
+      for (var bus : buses) {
+        var name = bus.entries().get(CanBusAnalysis.Field.UTILIZATION);
+        if (name == null) continue;
+        var u = CanBusAnalysis.utilization(
+            CanBusAnalysis.window(log.values().get(name), startTime, endTime), timeline);
+        if (!u.has("mean_percent")) continue;
+        var row = new JsonObject();
+        row.addProperty("entry", name);
+        row.addProperty("bus", bus.name());
+        row.addProperty("avg_percent", u.get("mean_percent").getAsDouble());
+        row.addProperty("max_percent", u.get("max_percent").getAsDouble());
+        row.addProperty("sample_count", u.get("samples").getAsInt());
+        row.addProperty("unit_detected", u.get("unit_detected").getAsString());
+        utilization.add(row);
       }
+      builder.addData("utilization", utilization);
 
-      var result = new JsonObject();
-      result.addProperty("success", true);
-
-      // Analyze utilization
-      if (!canUtilEntries.isEmpty()) {
-        var utilAnalysis = new ArrayList<JsonObject>();
-        for (var entryName : canUtilEntries) {
-          var values = log.values().get(entryName);
-          if (values == null) continue;
-
-          var utilData = new ArrayList<Double>();
-          for (TimestampedValue tv : values) {
-            if (startTime != null && tv.timestamp() < startTime) continue;
-            if (endTime != null && tv.timestamp() > endTime) continue;
-
-            if (tv.value() instanceof Number num) {
-              utilData.add(num.doubleValue());
-            }
-          }
-
-          if (!utilData.isEmpty()) {
-            var stats = utilData.stream().mapToDouble(d -> d).summaryStatistics();
-            var analysis = new JsonObject();
-            analysis.addProperty("entry", entryName);
-            analysis.addProperty("avg_percent", stats.getAverage());
-            analysis.addProperty("max_percent", stats.getMax());
-            analysis.addProperty("sample_count", stats.getCount());
-            utilAnalysis.add(analysis);
-          }
-        }
-        result.add("utilization", GSON.toJsonTree(utilAnalysis));
-      }
-
-      // Find DriverStation Enabled entry for cross-referencing
-      List<TimestampedValue> enabledValues = null;
-      for (var entryName : log.entries().keySet()) {
-        var lower = lowerEntryNames.get(entryName);
-        if (lower.contains("driverstation") && lower.contains("enabled")) {
-          enabledValues = log.values().get(entryName);
-          break;
-        }
-      }
-
-      // Analyze errors, distinguishing enabled vs disabled state
-      if (!canErrorEntries.isEmpty()) {
-        var errorAnalysis = new ArrayList<JsonObject>();
-        boolean hasDsData = enabledValues != null && !enabledValues.isEmpty();
-
-        if (!hasDsData) {
-          result.addProperty("ds_enabled_warning",
-              "No DriverStation Enabled entry found — cannot distinguish enabled vs disabled CAN errors. All errors counted.");
-        }
-
-        for (var entryName : canErrorEntries) {
-          var values = log.values().get(entryName);
-          if (values == null) continue;
-
-          int errorsWhileEnabled = 0;
-          int errorsWhileDisabled = 0;
-          for (TimestampedValue tv : values) {
-            if (startTime != null && tv.timestamp() < startTime) continue;
-            if (endTime != null && tv.timestamp() > endTime) continue;
-
-            // Count non-zero errors or true boolean errors
-            boolean isError = false;
-            if (tv.value() instanceof Boolean b && b) {
-              isError = true;
-            } else if (tv.value() instanceof Number num && num.doubleValue() > 0) {
-              isError = true;
-            }
-
-            if (isError) {
-              if (hasDsData) {
-                if (ToolUtils.isEnabledAt(enabledValues, tv.timestamp())) {
-                  errorsWhileEnabled++;
-                } else {
-                  errorsWhileDisabled++;
-                }
-              } else {
-                errorsWhileEnabled++; // Count all as enabled when no DS data
-              }
-            }
-          }
-
-          int totalErrors = errorsWhileEnabled + errorsWhileDisabled;
-          if (totalErrors > 0) {
-            var analysis = new JsonObject();
-            analysis.addProperty("entry", entryName);
-            analysis.addProperty("error_count", totalErrors);
-            analysis.addProperty("errors_while_enabled", errorsWhileEnabled);
-            analysis.addProperty("errors_while_disabled", errorsWhileDisabled);
-            errorAnalysis.add(analysis);
+      // Other CAN error entries: how much each increased, and how much of that while enabled
+      var errors = new JsonArray();
+      double enabledErrorTotal = 0;
+      for (var name : otherErrorEntries) {
+        var values = log.values().get(name);
+        double increase = 0;
+        double increaseEnabled = 0;
+        double increaseUnknown = 0;
+        Double previous = null;
+        for (var tv : values) {
+          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
+          Double v = tv.value() instanceof Boolean b ? (b ? 1.0 : 0.0)
+              : tv.value() instanceof Number n && Double.isFinite(n.doubleValue())
+                  ? n.doubleValue() : null;
+          if (v == null) continue;
+          // A boolean counts each false->true; a number counts each increase
+          double delta = previous == null ? (v > 0 ? v : 0) : v - previous;
+          previous = v;
+          if (delta <= 0) continue;
+          increase += delta;
+          switch (timeline.stateAt(tv.timestamp())) {
+            case ENABLED -> increaseEnabled += delta;
+            case UNKNOWN -> increaseUnknown += delta;
+            default -> { }
           }
         }
-        result.add("errors", GSON.toJsonTree(errorAnalysis));
-
-        // Base health assessment on enabled-state errors only
-        int totalEnabledErrors = errorAnalysis.stream()
-            .mapToInt(a -> a.get("errors_while_enabled").getAsInt()).sum();
-        result.addProperty("enabled_error_total", totalEnabledErrors);
-        if (totalEnabledErrors == 0 && !errorAnalysis.isEmpty()) {
-          result.addProperty("assessment", "CAN errors only during disabled state — likely normal timeout behavior");
-        } else if (totalEnabledErrors > 0) {
-          result.addProperty("assessment", "CAN errors detected while robot was enabled — investigate device connections");
+        var row = new JsonObject();
+        row.addProperty("entry", name);
+        row.addProperty("type", log.entries().get(name).type());
+        row.addProperty("error_count", increase);
+        row.addProperty("errors_while_enabled", increaseEnabled);
+        if (timeline.hasEnabledData()) {
+          row.addProperty("errors_while_disabled", increase - increaseEnabled - increaseUnknown);
+        }
+        if (increaseUnknown > 0) row.addProperty("errors_state_unknown", increaseUnknown);
+        errors.add(row);
+        enabledErrorTotal += increaseEnabled;
+      }
+      for (var bus : buses) {
+        for (var f : List.of(CanBusAnalysis.Field.BUS_OFF, CanBusAnalysis.Field.TX_FULL)) {
+          var name = bus.entries().get(f);
+          if (name == null) continue;
+          var c = CanBusAnalysis.counter(
+              CanBusAnalysis.window(log.values().get(name), startTime, endTime), timeline);
+          if (c.has("increase_while_enabled")) {
+            enabledErrorTotal += c.get("increase_while_enabled").getAsDouble();
+          }
         }
       }
-
-      if (canUtilEntries.isEmpty() && canErrorEntries.isEmpty()) {
-        result.addProperty("warning", "No CAN-related entries found in log");
+      builder.addData("errors", errors);
+      builder.addProperty("enabled_error_total", enabledErrorTotal);
+      if (!timeline.hasEnabledData()) {
+        builder.addWarning("No DriverStation enabled entry: while_enabled figures are absent and "
+            + "errors cannot be split by robot state.");
       }
-
-      // Add data quality from first CAN utilization or error entry
-      var canQualityEntry = !canUtilEntries.isEmpty() ? canUtilEntries.get(0)
-          : (!canErrorEntries.isEmpty() ? canErrorEntries.get(0) : null);
-      if (canQualityEntry != null) {
-        var qVals = log.values().get(canQualityEntry);
-        if (qVals != null && !qVals.isEmpty()) {
-          var quality = DataQuality.fromValues(qVals);
-          var directives = AnalysisDirectives.fromQuality(quality)
-              .addSingleMatchCaveat()
-              .addGuidance("Disabled-state CAN timeouts are normal — focus on enabled-state errors");
-          result.add("data_quality", quality.toJson());
-          result.add("server_analysis_directives", directives.toJson());
+      // Data quality of the first bus's first counter entry (utilization first) in the window
+      String qualityEntry = null;
+      for (var bus : buses) {
+        for (var field : CanBusAnalysis.Field.values()) {
+          if (bus.entries().containsKey(field)) {
+            qualityEntry = bus.entries().get(field);
+            break;
+          }
         }
+        if (qualityEntry != null) break;
       }
-
-      return result;
+      if (qualityEntry == null && !otherErrorEntries.isEmpty()) qualityEntry = otherErrorEntries.get(0);
+      if (qualityEntry != null) {
+        var inWindow = log.values().get(qualityEntry).stream()
+            .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).toList();
+        var quality = DataQuality.fromValues(inWindow);
+        builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
+            .addSingleMatchCaveat()
+            .addGuidance("data_quality describes " + qualityEntry + "; CAN status entries are "
+                + "often logged at a low rate, which bounds the utilization statistics, not the "
+                + "counter maxima and increases."));
+      }
+      return builder.build();
     }
   }
 
@@ -1769,180 +2588,283 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze battery voltage and current draw to predict brownout risk and estimate "
-          + "battery health. Returns health score (0-100), brownout risk level (MINIMAL/LOW/"
-          + "MODERATE/HIGH/CRITICAL), voltage statistics, and actionable recommendations."
+      return "Battery and power-delivery evidence with a heuristic health score (0-100) and risk "
+          + "level (MINIMAL/LOW/MODERATE/HIGH/CRITICAL). Facts first: voltage statistics over the "
+          + "scope (default: enabled time when the log records it); brownouts from the roboRIO's "
+          + "logged flag (e.g. /SystemStats/BrownedOut, with start and duration) or, when no flag "
+          + "is logged, threshold crossings (basis stated); the brownout threshold from the log's "
+          + "BrownoutVoltage entry when logged, else 6.8 V (roboRIO 1, stated); dips below "
+          + "warning_threshold; and, when a total-current entry exists, the load line: battery "
+          + "voltage regressed on total current, giving the effective source resistance (battery "
+          + "internal resistance plus wiring and connectors) and open-circuit voltage. "
+          + "observations state what the evidence is consistent with and what would distinguish "
+          + "the causes; one log cannot tell a weak battery from high current draw or a bad "
+          + "connection, so no replacement advice is given. The voltage entry is BatteryVoltage "
+          + "or Voltage under PowerDistribution/PDH/PDP/Battery, the current entry TotalCurrent; "
+          + "the server does not guess among other names: it lists them to confirm, and "
+          + "voltage_entry / total_current_entry name the ones to use."
           + GUIDANCE_UNIVERSAL + GUIDANCE_POWER;
     }
 
     @Override
     protected JsonObject toolSchema() {
       return new SchemaBuilder()
+          .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION
+              + " Default: 'enabled' when the log records enabled state, else 'all'.", false)
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("nominal_voltage", "Expected full battery voltage (default: 12.6V)", false, 12.6)
-          .addNumberProperty("brownout_threshold", "Brownout voltage threshold (default: 6.8V for roboRIO 1, use 6.3V for roboRIO 2)", false, 6.8)
-          .addNumberProperty("warning_threshold", "Warning voltage threshold (default: 9.0V)", false, 9.0)
+          .addNumberProperty("brownout_threshold", "Brownout threshold in volts (default: the log's "
+              + "BrownoutVoltage entry when logged, else 6.8 V for roboRIO 1; roboRIO 2 is 6.3 V)", false, null)
+          .addNumberProperty("warning_threshold", "Voltage below which a dip is reported (default: 9.0V)", false, 9.0)
+          .addProperty("voltage_entry", "string", "Battery voltage entry (default: "
+              + "BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)", false)
+          .addProperty("total_current_entry", "string", "Total robot current entry for the load "
+              + "line (default: TotalCurrent)", false)
           .build();
     }
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
-
+      ToolUtils.validateTimeRange(ToolUtils.getOptDouble(arguments, "start_time"),
+          ToolUtils.getOptDouble(arguments, "end_time"));
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       double nominalVoltage = getOptDouble(arguments, "nominal_voltage", 12.6);
-      double brownoutThreshold = getOptDouble(arguments, "brownout_threshold", 6.8);
       double warningThreshold = getOptDouble(arguments, "warning_threshold", 9.0);
+      var threshold = PowerFacts.threshold(log, getOptDouble(arguments, "brownout_threshold"));
+      var timeline = MatchTimeline.of(log);
+      var scopeArg = getOptString(arguments, "scope", null);
+      if (scopeArg == null) scopeArg = timeline.hasEnabledData() ? "enabled" : "all";
+      var scope = TimeScope.resolve(log, timeline, scopeArg, startTime, endTime);
 
-      // Find voltage and current entries
-      var voltageEntry = findVoltageEntry(log);
-      var currentEntry = findCurrentEntry(log);
-
-      if (voltageEntry == null) {
-        throw new IllegalArgumentException(
-            "No battery voltage entry found. Look for entries containing 'BatteryVoltage', "
-            + "'battery_voltage', or 'voltage'");
+      var battery = SignalResolver.batteryVoltage(log, null,
+          getOptString(arguments, "voltage_entry", null));
+      var voltageEntry = battery.chosen();
+      if (voltageEntry.isEmpty()) {
+        return ResponseBuilder.noMatch(battery.needsConfirmation()
+                ? "No entry follows a known battery-voltage convention." : "No battery voltage "
+                + "entry with finite samples found.")
+            .lookedFor(List.of("BatteryVoltage (e.g. /SystemStats/BatteryVoltage), or Voltage "
+                + "under PowerDistribution, PDH, PDP, or Battery (the same choice power_analysis "
+                + "and get_ds_timeline make)"))
+            .hint(SignalResolver.unresolvedReason(battery, "voltage_entry"))
+            .build();
       }
-
-      var voltageValues = requireEntry(log, voltageEntry);
-      var currentValues = currentEntry != null ? log.values().get(currentEntry) : null;
-
-      // Filter by time range
-      voltageValues = filterTimeRange(voltageValues, startTime, endTime);
-      if (currentValues != null) {
-        currentValues = filterTimeRange(currentValues, startTime, endTime);
-      }
-
-      // Analyze battery characteristics
-      return analyzeBatteryCharacteristics(
-          voltageValues,
-          currentValues,
-          nominalVoltage,
-          brownoutThreshold,
-          warningThreshold);
-    }
-
-    private String findVoltageEntry(LogData log) {
-      // Try common voltage entry patterns
-      var patterns = java.util.List.of(
-          "batteryvoltage",
-          "battery_voltage",
-          "inputvoltage",
-          "pdp/voltage",
-          "pdh/voltage"
-      );
-
-      for (var pattern : patterns) {
-        var entry = findEntryByPattern(log, pattern);
-        if (entry != null) return entry;
-      }
-      return null;
-    }
-
-    private String findCurrentEntry(LogData log) {
-      var patterns = java.util.List.of(
-          "totalcurrent",
-          "total_current",
-          "pdp/totalcurrent",
-          "pdh/totalcurrent"
-      );
-
-      for (var pattern : patterns) {
-        var entry = findEntryByPattern(log, pattern);
-        if (entry != null) return entry;
-      }
-      return null;
-    }
-
-    private JsonElement analyzeBatteryCharacteristics(
-        java.util.List<TimestampedValue> voltageValues,
-        java.util.List<TimestampedValue> currentValues,
-        double nominalVoltage,
-        double brownoutThreshold,
-        double warningThreshold) {
-
-      // Extract voltage data
-      var voltageData = voltageValues.stream()
-          .map(tv -> toDouble(tv.value()))
-          .filter(v -> v != null)
-          .filter(Double::isFinite)
+      var voltageWindows = scope.split(log.values().get(voltageEntry.get()));
+      var voltageValues = voltageWindows.stream().flatMap(List::stream)
+          .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
           .toList();
-
-      if (voltageData.isEmpty()) {
-        throw new IllegalArgumentException("No numeric voltage data found");
+      if (voltageValues.isEmpty()) {
+        return ResponseBuilder.noMatch("No samples of " + voltageEntry.get() + " fall inside "
+                + "the scope '" + scope.name() + "'.")
+            .addData("scope", scope.toJson())
+            .build();
       }
+      var current = SignalResolver.totalCurrent(log,
+          getOptString(arguments, "total_current_entry", null));
+      var currentEntry = current.chosen();
 
-      // 1. Calculate voltage statistics
-      double minVoltage = voltageData.stream().mapToDouble(d -> d).min().orElse(0);
-      double maxVoltage = voltageData.stream().mapToDouble(d -> d).max().orElse(0);
-      double avgVoltage = voltageData.stream().mapToDouble(d -> d).average().orElse(0);
+      double minVoltage = Double.MAX_VALUE;
+      double maxVoltage = -Double.MAX_VALUE;
+      double sum = 0;
+      double minTime = 0;
+      for (var tv : voltageValues) {
+        double v = ((Number) tv.value()).doubleValue();
+        sum += v;
+        if (v < minVoltage) {
+          minVoltage = v;
+          minTime = tv.timestamp();
+        }
+        maxVoltage = Math.max(maxVoltage, v);
+      }
+      double avgVoltage = sum / voltageValues.size();
       double voltageSag = nominalVoltage - minVoltage;
 
-      // 2. Detect brownout events
-      var brownoutEvents = detectVoltageEvents(voltageValues, brownoutThreshold);
+      // Brownouts: the roboRIO's own flag when logged, else threshold crossings
+      var flag = PowerFacts.flagEntry(log);
+      List<PowerFacts.Brownout> rioBrownouts = flag.map(f -> PowerFacts.brownouts(log, f, null,
+          null).stream().filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
+      // Crossings and recoveries are found within each window of the scope, never across the
+      // time between two (a dip at the end of one enabled segment does not last until the next)
+      var crossings = new ArrayList<JsonObject>();
+      var dips = new ArrayList<JsonObject>();
+      var recoveryTimes = new ArrayList<Double>();
+      for (var window : voltageWindows) {
+        var finite = window.stream()
+            .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
+            .toList();
+        crossings.addAll(detectVoltageEvents(finite, threshold.volts()));
+        dips.addAll(detectVoltageEvents(finite, warningThreshold));
+        recoveryTimes.addAll(voltageRecoveryTimes(finite));
+      }
+      int brownoutCount = flag.isPresent() ? rioBrownouts.size() : crossings.size();
 
-      // 3. Detect voltage sag events (warning level)
-      var sagEvents = detectVoltageEvents(voltageValues, warningThreshold);
+      var loadLine = currentEntry.map(c -> loadLine(log, voltageValues, c)).orElse(null);
+      var recoveryAnalysis = summarizeRecovery(recoveryTimes);
 
-      // 4. Analyze voltage recovery (internal resistance indicator)
-      var recoveryAnalysis = analyzeVoltageRecovery(voltageValues, currentValues);
+      int healthScore = calculateHealthScore(avgVoltage, nominalVoltage, minVoltage,
+          brownoutCount, dips.size(), recoveryAnalysis);
+      // CRITICAL only when the roboRIO's flag confirms it disabled outputs; crossings without a
+      // flag are HIGH (whether outputs were disabled is unknown)
+      String riskLevel = flag.isPresent() && brownoutCount > 0 ? "CRITICAL"
+          : brownoutCount > 0 || minVoltage < warningThreshold || healthScore < 30 ? "HIGH"
+          : healthScore < 60 ? "MODERATE" : healthScore < 80 ? "LOW" : "MINIMAL";
 
-      // 5. Calculate health score (0-100)
-      int healthScore = calculateHealthScore(
-          avgVoltage, nominalVoltage, minVoltage,
-          brownoutEvents.size(), sagEvents.size(),
-          recoveryAnalysis);
-
-      // 6. Determine brownout risk level
-      String riskLevel = determineRiskLevel(healthScore, minVoltage, brownoutThreshold, warningThreshold);
-
-      // 7. Generate recommendations
-      var recommendations = generateRecommendations(
-          healthScore, riskLevel, minVoltage, avgVoltage,
-          brownoutEvents.size(), voltageSag);
-
-      // Build response using ResponseBuilder
       var response = success();
+      response.addData("scope", scope.toJson());
+      response.addInput("voltage", voltageEntry.get());
+      currentEntry.ifPresent(c -> response.addInput("total_current", c));
+      flag.ifPresent(f -> response.addInput("rio_brownout_flag", f));
       response.addProperty("health_score", healthScore);
+      response.addProperty("health_score_basis", "heuristic: 100, minus 20 per brownout, 5 per "
+          + "dip below warning_threshold, and penalties for a low average (below 88% of "
+          + "nominal), a minimum below 10 V, and slow recovery; compare batteries across logs "
+          + "rather than reading the number alone");
       response.addProperty("risk_level", riskLevel);
+      response.addProperty("risk_level_basis", "CRITICAL when the roboRIO's logged brownout flag "
+          + "was set in scope; HIGH for a threshold crossing without a flag, a minimum below "
+          + "warning_threshold, or a health score below 30; MODERATE below 60; LOW below 80; "
+          + "MINIMAL otherwise");
 
       var voltageStats = new JsonObject();
       voltageStats.addProperty("min_volts", minVoltage);
+      voltageStats.addProperty("min_time_sec", minTime);
       voltageStats.addProperty("max_volts", maxVoltage);
       voltageStats.addProperty("avg_volts", avgVoltage);
       voltageStats.addProperty("voltage_sag", voltageSag);
+      voltageStats.addProperty("samples", voltageValues.size());
       response.addData("voltage_stats", voltageStats);
 
-      response.addProperty("brownout_events", brownoutEvents.size());
-      response.addProperty("warning_events", sagEvents.size());
-
-      if (!brownoutEvents.isEmpty()) {
-        response.addData("brownout_details", GSON.toJsonTree(brownoutEvents.stream().limit(10).toList()));
+      var thresholdJson = new JsonObject();
+      threshold.addTo(thresholdJson);
+      thresholdJson.entrySet().forEach(e -> response.addData(e.getKey(), e.getValue()));
+      response.addProperty("brownout_events", brownoutCount);
+      response.addProperty("brownout_basis", flag.isPresent()
+          ? "rio_flag: intervals where " + flag.get() + " was true (the roboRIO disabled outputs)"
+          : "voltage_threshold: crossings below " + threshold.volts() + " V (no roboRIO brownout "
+              + "flag is logged, so whether outputs were disabled cannot be determined)");
+      if (flag.isPresent()) {
+        response.addData("rio_brownouts", PowerFacts.brownoutsJson(flag.get(), rioBrownouts));
+      }
+      response.addProperty("threshold_crossings", crossings.size());
+      if (!crossings.isEmpty()) {
+        response.addLimitedList("brownout_details",
+            GSON.toJsonTree(crossings.stream().limit(10).toList()).getAsJsonArray(),
+            crossings.size(), 10);
+      }
+      response.addProperty("warning_events", dips.size());
+      if (recoveryAnalysis != null) response.addData("recovery_analysis", recoveryAnalysis);
+      if (loadLine != null) {
+        response.addData("load_line", loadLine);
+      } else {
+        response.addSkipped("load_line", currentEntry.isEmpty()
+            ? SignalResolver.unresolvedReason(current, "total_current_entry")
+            : "Too few samples or too little current variation in scope to fit voltage against "
+                + currentEntry.get() + ".");
       }
 
-      if (recoveryAnalysis != null) {
-        response.addData("recovery_analysis", recoveryAnalysis);
-      }
+      var observations = observations(brownoutCount, flag.isPresent(), rioBrownouts, crossings,
+          minVoltage, minTime, avgVoltage, warningThreshold, voltageSag, loadLine, scope);
+      response.addData("observations", GSON.toJsonTree(observations));
+      // Compatibility: "recommendations" carries the same evidence-based statements
+      response.addData("recommendations", GSON.toJsonTree(observations));
 
-      response.addData("recommendations", GSON.toJsonTree(recommendations));
-
-      // Add warnings for severe conditions
-      if (brownoutEvents.size() > 0) {
-        response.addWarning(brownoutEvents.size() + " brownout event(s) detected - "
-            + "immediate battery replacement recommended");
-      }
-      if (healthScore < 50) {
-        response.addWarning("Battery health is poor - replace before next match");
-      }
-
-      var quality = DataQuality.fromValues(voltageValues);
-      var directives = AnalysisDirectives.fromQuality(quality)
+      var quality = DataQuality.fromSegments(voltageWindows);
+      response.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
-          .addGuidance("Battery health score is a heuristic — consider battery age and connector condition");
-      response.addDataQuality(quality).addDirectives(directives);
-
+          .addGuidance("The health score is a heuristic; battery age, charge, connector "
+              + "condition, and current draw all move it. Compare the same battery across logs."));
       return response.build();
+    }
+
+    static List<String> observations(int brownoutCount, boolean flagLogged,
+        List<PowerFacts.Brownout> rioBrownouts, List<JsonObject> crossings, double minVoltage,
+        double minTime, double avgVoltage, double warningThreshold, double voltageSag,
+        JsonObject loadLine, TimeScope scope) {
+      var out = new ArrayList<String>();
+      if (flagLogged && brownoutCount > 0) {
+        var parts = new ArrayList<String>();
+        for (var b : rioBrownouts.stream().limit(5).toList()) {
+          parts.add(String.format("%.2f s for %.3f s", b.start(), b.duration()));
+        }
+        out.add(brownoutCount + " roboRIO brownout(s) (" + String.join("; ", parts)
+            + (brownoutCount > 5 ? "; ..." : "") + "). Candidate causes: high current draw at "
+            + "those moments (check power_analysis channel peaks in the same windows), a "
+            + "weak or undercharged battery, or high-resistance connections. One log cannot "
+            + "distinguish them: compare this battery across logs and inspect connectors.");
+      } else if (!flagLogged && brownoutCount > 0) {
+        out.add(brownoutCount + " crossing(s) below the brownout threshold (first at "
+            + String.format("%.2f", crossings.get(0).get("start_time").getAsDouble()) + " s). "
+            + "The log has no roboRIO brownout flag, so whether outputs were disabled cannot be "
+            + "determined. Same candidate causes: high current draw, a weak battery, or "
+            + "connections.");
+      }
+      if (minVoltage < warningThreshold) {
+        out.add(String.format("Minimum voltage %.2f V at %.2f s, below the %.1f V warning "
+            + "threshold.", minVoltage, minTime, warningThreshold));
+      }
+      if (avgVoltage < 11.5) {
+        out.add(String.format("Average voltage over the scope (%s) was %.2f V. This is "
+            + "consistent with a partly discharged battery or sustained high load; the charge "
+            + "at the start of the log and other logs with this battery would tell them apart.",
+            scope.name(), avgVoltage));
+      }
+      if (loadLine != null) {
+        double r = loadLine.get("resistance_ohm").getAsDouble();
+        out.add(String.format("Load line: voltage falls %.1f mV per amp of total current (effective "
+            + "source resistance %.4f ohm, r^2 %.2f, n %d). This combines battery internal "
+            + "resistance, wiring, and connectors; compare it across batteries and logs.",
+            r * 1000, r, loadLine.get("r_squared").getAsDouble(),
+            loadLine.get("samples").getAsInt()));
+      }
+      if (out.isEmpty()) {
+        out.add(String.format("No brownouts and no dips below %.1f V in the scope; voltage sag "
+            + "%.2f V below nominal.", warningThreshold, voltageSag));
+      }
+      return out;
+    }
+
+    /**
+     * Least-squares fit of battery voltage against total current (the current held at each
+     * voltage sample): V = V0 - R * I. Needs 30 aligned samples and a 10 A current range.
+     */
+    static JsonObject loadLine(LogData log, List<TimestampedValue> voltage, String currentEntry) {
+      var current = log.values().get(currentEntry);
+      if (current == null || current.isEmpty()) return null;
+      var xs = new ArrayList<Double>();
+      var ys = new ArrayList<Double>();
+      for (var tv : voltage) {
+        var i = ToolUtils.getValueAtTimeZoh(current, tv.timestamp());
+        if (!(i instanceof Number n) || !Double.isFinite(n.doubleValue())) continue;
+        xs.add(n.doubleValue());
+        ys.add(((Number) tv.value()).doubleValue());
+      }
+      int n = xs.size();
+      if (n < 30) return null;
+      double minI = xs.stream().mapToDouble(Double::doubleValue).min().orElse(0);
+      double maxI = xs.stream().mapToDouble(Double::doubleValue).max().orElse(0);
+      if (maxI - minI < 10) return null;
+      double mx = xs.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+      double my = ys.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+      double sxx = 0, sxy = 0, syy = 0;
+      for (int k = 0; k < n; k++) {
+        double dx = xs.get(k) - mx;
+        double dy = ys.get(k) - my;
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+      }
+      if (sxx <= 0 || syy <= 0) return null;
+      double slope = sxy / sxx;
+      var o = new JsonObject();
+      o.addProperty("current_entry", currentEntry);
+      o.addProperty("resistance_ohm", -slope);
+      o.addProperty("open_circuit_voltage", my - slope * mx);
+      o.addProperty("r_squared", (sxy * sxy) / (sxx * syy));
+      o.addProperty("samples", n);
+      o.addProperty("current_range_a", maxI - minI);
+      return o;
     }
 
     private java.util.List<JsonObject> detectVoltageEvents(
@@ -1960,15 +2882,12 @@ public final class FrcDomainTools {
         // Hysteresis: enter below threshold, exit only above threshold + 0.2V
         double hysteresis = 0.2;
         if (voltage < threshold && !inEvent) {
-          // Event started
           inEvent = true;
           eventStartTime = tv.timestamp();
           eventMinVoltage = voltage;
         } else if (voltage < threshold && inEvent) {
-          // Event continuing
           eventMinVoltage = Math.min(eventMinVoltage, voltage);
         } else if (voltage >= threshold + hysteresis && inEvent) {
-          // Event ended
           var event = new JsonObject();
           event.addProperty("start_time", eventStartTime);
           event.addProperty("end_time", tv.timestamp());
@@ -1979,7 +2898,7 @@ public final class FrcDomainTools {
         }
       }
 
-      // Emit open-ended event if voltage was still below threshold at end of log
+      // Emit open-ended event if voltage was still below threshold at end of the data
       if (inEvent && !voltageValues.isEmpty()) {
         double lastTime = voltageValues.get(voltageValues.size() - 1).timestamp();
         var event = new JsonObject();
@@ -1987,40 +2906,26 @@ public final class FrcDomainTools {
         event.addProperty("end_time", lastTime);
         event.addProperty("duration", lastTime - eventStartTime);
         event.addProperty("min_voltage", eventMinVoltage);
+        event.addProperty("open_at_end", true);
         events.add(event);
       }
-
       return events;
     }
 
-    private JsonObject analyzeVoltageRecovery(
-        java.util.List<TimestampedValue> voltageValues,
-        java.util.List<TimestampedValue> currentValues) {
-
-      if (currentValues == null || currentValues.isEmpty()) {
-        return null; // Cannot analyze without current data
-      }
-
-      // Find load changes (significant voltage drops)
+    /** How long the voltage takes to recover 90% of a drop of more than 0.5 V (up to 2 s). */
+    private List<Double> voltageRecoveryTimes(java.util.List<TimestampedValue> voltageValues) {
       var recoveryTimes = new ArrayList<Double>();
-
-      // Scan all voltage samples (no arbitrary limit — supports any logging rate)
       for (int i = 1; i < voltageValues.size() - 1; i++) {
         var voltageBefore = toDouble(voltageValues.get(i - 1).value());
         var voltageAtLoad = toDouble(voltageValues.get(i).value());
-
         if (voltageBefore == null || voltageAtLoad == null) continue;
-
-        // Detect voltage drop (potential load application)
         double voltageDrop = voltageBefore - voltageAtLoad;
-        if (voltageDrop > 0.5) {  // Significant drop
-          // Measure recovery time
+        if (voltageDrop > 0.5) {
           double dropTime = voltageValues.get(i).timestamp();
-          double recoveryTarget = voltageAtLoad + (voltageDrop * 0.9);  // 90% recovery
-
+          double recoveryTarget = voltageAtLoad + (voltageDrop * 0.9);
           for (int j = i + 1; j < voltageValues.size(); j++) {
             double elapsed = voltageValues.get(j).timestamp() - dropTime;
-            if (elapsed > 2.0) break; // 2-second recovery window
+            if (elapsed > 2.0) break;
             var recoveredVoltage = toDouble(voltageValues.get(j).value());
             if (recoveredVoltage != null && recoveredVoltage >= recoveryTarget) {
               recoveryTimes.add(elapsed);
@@ -2029,125 +2934,40 @@ public final class FrcDomainTools {
           }
         }
       }
+      return recoveryTimes;
+    }
 
-      if (recoveryTimes.isEmpty()) {
-        return null;
-      }
-
+    /** Average and maximum recovery time, or null when no drop recovered. */
+    private JsonObject summarizeRecovery(List<Double> recoveryTimes) {
+      if (recoveryTimes.isEmpty()) return null;
       var analysis = new JsonObject();
       analysis.addProperty("avg_recovery_sec",
           recoveryTimes.stream().mapToDouble(d -> d).average().orElse(0));
       analysis.addProperty("max_recovery_sec",
           recoveryTimes.stream().mapToDouble(d -> d).max().orElse(0));
       analysis.addProperty("sample_count", recoveryTimes.size());
-
       return analysis;
     }
 
     /**
-     * Calculates a battery health score (0-100) from voltage characteristics.
-     *
-     * <p>Scoring formula (empirical, not derived from battery specs):
-     * <ul>
-     *   <li>Start at 100</li>
-     *   <li>Avg voltage below 88% of nominal (≈11.1V on 12.6V): −(deficit × 150)</li>
-     *   <li>Each brownout event: −20</li>
-     *   <li>Each warning-level sag event: −5</li>
-     *   <li>Slow recovery (>0.5s avg): −(excess × 20)</li>
-     *   <li>Min voltage below 10V: −(deficit × 10)</li>
-     * </ul>
-     *
-     * <p>Note: This score provides useful relative ranking between batteries but
-     * absolute values should not be the sole basis for replacement decisions.
-     * Factors like battery age, connector condition, and wire gauge also matter.
+     * Heuristic battery health score (0-100), kept by design (a deliberate trade-off for decisions in the pit at competition, with the facts it summarizes reported beside it):
+     * start at 100; average below 88% of nominal: −(deficit × 150); each brownout: −20; each dip
+     * below the warning threshold that is not a brownout: −5; slow recovery (> 0.5 s average):
+     * −(excess × 20); minimum below 10 V: −(deficit × 10).
      */
-    private int calculateHealthScore(
-        double avgVoltage,
-        double nominalVoltage,
-        double minVoltage,
-        int brownoutEvents,
-        int sagEvents,
-        JsonObject recoveryAnalysis) {
-
+    private int calculateHealthScore(double avgVoltage, double nominalVoltage, double minVoltage,
+        int brownoutEvents, int sagEvents, JsonObject recoveryAnalysis) {
       int score = 100;
-
-      // Avg voltage penalty: 88% threshold (≈11.1V on 12.6V nominal).
-      // Healthy FRC batteries routinely sag to 11.0–11.5V under match load.
       double voltageRatio = nominalVoltage > 0 ? avgVoltage / nominalVoltage : 1.0;
-      if (voltageRatio < 0.88) {
-        score -= (int) ((0.88 - voltageRatio) * 150);
-      }
-
-      // Brownout penalty: 20 pts each — indicates serious power delivery issues
+      if (voltageRatio < 0.88) score -= (int) ((0.88 - voltageRatio) * 150);
       score -= brownoutEvents * 20;
-
-      // Warning-level sag penalty: 5 pts each — exclude brownouts to avoid double-counting
       score -= Math.max(0, sagEvents - brownoutEvents) * 5;
-
-      // Deduct for poor recovery time (high internal resistance)
       if (recoveryAnalysis != null) {
         double avgRecovery = recoveryAnalysis.get("avg_recovery_sec").getAsDouble();
-        if (avgRecovery > 0.5) {  // Slow recovery indicates aging
-          score -= (int) ((avgRecovery - 0.5) * 20);
-        }
+        if (avgRecovery > 0.5) score -= (int) ((avgRecovery - 0.5) * 20);
       }
-
-      // Deduct for low minimum voltage
-      if (minVoltage < 10.0) {
-        score -= (int) ((10.0 - minVoltage) * 10);
-      }
-
+      if (minVoltage < 10.0) score -= (int) ((10.0 - minVoltage) * 10);
       return Math.max(0, Math.min(100, score));
-    }
-
-    private String determineRiskLevel(
-        int healthScore,
-        double minVoltage,
-        double brownoutThreshold,
-        double warningThreshold) {
-
-      if (minVoltage < brownoutThreshold) return "CRITICAL";
-      if (minVoltage < warningThreshold || healthScore < 30) return "HIGH";
-      if (healthScore < 60) return "MODERATE";
-      if (healthScore < 80) return "LOW";
-      return "MINIMAL";
-    }
-
-    private java.util.List<String> generateRecommendations(
-        int healthScore,
-        String riskLevel,
-        double minVoltage,
-        double avgVoltage,
-        int brownoutEvents,
-        double voltageSag) {
-
-      var recommendations = new ArrayList<String>();
-
-      if (brownoutEvents > 0) {
-        recommendations.add("URGENT: Replace battery immediately - brownouts detected");
-      } else if (healthScore < 50) {
-        recommendations.add("Replace battery before next match");
-      } else if (healthScore < 70) {
-        recommendations.add("Consider battery replacement - health declining");
-      }
-
-      if (voltageSag > 3.0) {
-        recommendations.add("High voltage sag detected - check connections and wire gauge");
-      }
-
-      if (avgVoltage < 11.5) {
-        recommendations.add("Average voltage low - battery may be undercharged");
-      }
-
-      if (minVoltage < 9.0 && brownoutEvents == 0) {
-        recommendations.add("Close to brownout threshold - reduce current draw or replace battery");
-      }
-
-      if (recommendations.isEmpty()) {
-        recommendations.add("Battery health good - continue monitoring");
-      }
-
-      return recommendations;
     }
   }
 
@@ -2162,10 +2982,15 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Get year-specific FRC game information (match timing, scoring values, field geometry, "
-          + "game pieces, and analysis hints). Use this to understand the context of a log file: "
-          + "what the match phases are, what scoring actions look like, and what mechanisms to expect. "
-          + "Defaults to the current season if no year is specified.";
+      return "Get year-specific FRC game information (match timing, scoring values and ranking-point "
+          + "thresholds by event tier, field geometry, game pieces, robot_constraints, and analysis "
+          + "hints). Use this to understand the context of a log file: what the match phases are, "
+          + "what scoring actions look like, and what mechanisms to expect. Defaults to the current "
+          + "season if no year is specified. The values are a bundled knowledge base transcribed "
+          + "from the season's game manual, not anything read from a log: the result's source, "
+          + "manual_version, and basis say so. Quote them as 'per the bundled game data', and check "
+          + "the current manual before relying on a threshold, since Team Updates change thresholds "
+          + "during a season.";
     }
 
     @Override
@@ -2201,9 +3026,23 @@ public final class FrcDomainTools {
       result.addProperty("success", true);
       result.addProperty("season", game.season());
       result.addProperty("game_name", game.gameName());
+      // Provenance (review 6 sections 3.2 and 9.4): a knowledge base, not a measurement.
+      result.addProperty("source", game.isBundled()
+          ? "bundled knowledge base, not the log; verify against the current manual"
+          : "user-provided game file " + game.origin()
+              + ", not the log; verify against the current manual");
+      result.addProperty("manual_version", game.manualVersion().orElse("unknown"));
+      game.manualUrl().ifPresent(url -> result.addProperty("manual_url", url));
+      result.addProperty("basis", "match_timing, scoring, field_geometry, game_pieces, and "
+          + "robot_constraints are transcribed from the " + game.season() + " game manual "
+          + "(manual_version) into the game file this result was read from; nothing here is "
+          + "measured from a log");
       result.add("match_timing", game.raw().getAsJsonObject("match_timing"));
       result.add("scoring", game.scoring());
       result.add("field_geometry", game.raw().getAsJsonObject("field_geometry"));
+      if (game.raw().has("robot_constraints")) {
+        result.add("robot_constraints", game.raw().getAsJsonObject("robot_constraints"));
+      }
       result.add("game_pieces", game.gamePieces());
       if (game.analysisHints() != null) {
         result.add("analysis_hints", game.analysisHints());

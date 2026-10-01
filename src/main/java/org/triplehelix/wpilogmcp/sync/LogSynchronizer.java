@@ -58,6 +58,26 @@ public class LogSynchronizer {
   /** Default minimum correlation for high-quality match. */
   static final double DEFAULT_HIGH_CORRELATION_THRESHOLD = 0.7;
 
+  /**
+   * The least overlapping data a correlation may rest on: a few seconds of a mechanism's output
+   * correlates with some stretch of another log at almost any lag (a 3.7 s REV log from the
+   * next boot "synchronized" at +110 s in a real log).
+   */
+  static final double MIN_OVERLAP_SEC = 10.0;
+
+  /** Pairs cross-correlated at full resolution, after ranking every candidate coarsely. */
+  static final int MAX_REFINED_PAIRS = 5;
+
+  /**
+   * The largest clock drift an estimate may claim, in ns/s (1000 ppm). Crystal oscillators
+   * drift by tens of ppm; a larger estimate means the two halves correlated at wrong offsets,
+   * and applying it would skew every revlog timestamp.
+   */
+  static final double MAX_PLAUSIBLE_DRIFT_NS_PER_SEC = 1_000_000.0;
+
+  /** The coarse ranking's sample rate, as a fraction of the full rate. */
+  private static final int COARSE_DECIMATION = 10;
+
   private final SignalMatcher signalMatcher;
   private final int searchWindowSamples;
   private final double sampleRateHz;
@@ -92,8 +112,7 @@ public class LogSynchronizer {
       int maxResampleSamples, double flatSignalThreshold,
       double minUsefulCorrelation, double highCorrelationThreshold) {
     this(searchWindowSamples, sampleRateHz, maxResampleSamples,
-         flatSignalThreshold, minUsefulCorrelation, highCorrelationThreshold,
-         ZoneId.systemDefault());
+         flatSignalThreshold, minUsefulCorrelation, highCorrelationThreshold, null);
   }
 
   /**
@@ -105,10 +124,11 @@ public class LogSynchronizer {
    * @param flatSignalThreshold Minimum std dev for a signal to be non-flat
    * @param minUsefulCorrelation Minimum correlation to consider a pair useful
    * @param highCorrelationThreshold Minimum correlation for high-quality match
-   * @param filenameTimezone Timezone for interpreting revlog filename timestamps.
-   *     REV Hardware Client writes filenames using the local time of the PC that
-   *     captured the log. If the MCP server runs in a different timezone, set this
-   *     to the timezone where the log was captured. Defaults to system timezone.
+   * @param filenameTimezone Timezone for interpreting revlog filename timestamps, or null to
+   *     use the zone the wpilog shows ({@link
+   *     org.triplehelix.wpilogmcp.log.WallClock#revlogFilenameZone}): REVLib in robot code
+   *     names its files by the roboRIO's clock, which also named the wpilog. Set it for REV
+   *     logs named by another clock (the REV Hardware Client uses the PC's local time).
    */
   public LogSynchronizer(int searchWindowSamples, double sampleRateHz,
       int maxResampleSamples, double flatSignalThreshold,
@@ -168,8 +188,8 @@ public class LogSynchronizer {
       long coarseOffset = coarseOffsetOpt.getAsLong();
       logger.warn("No signal pairs found for cross-correlation, using coarse offset only");
       return SyncResult.fromSystemTimeOnly(coarseOffset,
-          "No matching signals found for fine alignment. " +
-          "Using system time estimate only (accuracy: ~seconds).");
+          "No matching signals found for fine alignment. Using the wall-clock estimate only: "
+              + "the REV log's filename time against the wpilog's wall clock, off by as much as the roboRIO's clock was when the file was named (seconds or more).");
     }
 
     long coarseOffset;
@@ -183,9 +203,12 @@ public class LogSynchronizer {
           searchWindowSamples / sampleRateHz);
     }
 
-    // Phase 3: Cross-correlate each pair
+    // Phase 3: Names only nominate pairs; the data choose them. Rank every candidate by a
+    // coarse correlation (1/10 the sample rate, the same search range), then cross-correlate
+    // the best few at full resolution.
+    List<SignalPair> ranked = rankByCoarseCorrelation(candidates, coarseOffset);
     List<SignalPairResult> results = new ArrayList<>();
-    for (SignalPair pair : candidates) {
+    for (SignalPair pair : ranked) {
       SignalPairResult result = crossCorrelate(pair, coarseOffset);
       results.add(result);
 
@@ -194,14 +217,13 @@ public class LogSynchronizer {
           String.format("%.3f", result.correlation()),
           result.estimatedOffsetMillis());
 
-      // Limit to first 5 pairs to avoid excessive computation
-      if (results.size() >= 5) {
+      if (results.size() >= MAX_REFINED_PAIRS) {
         break;
       }
     }
 
     // Phase 4: Compute consensus offset and confidence
-    SyncResult baseResult = computeConsensus(results, coarseOffset);
+    SyncResult baseResult = computeConsensus(results, coarseOffset, coarseOffsetOpt.isPresent());
 
     // Phase 5: Estimate clock drift for long recordings (>15 minutes)
     if (baseResult.isSuccessful() && baseResult.method() == SyncMethod.CROSS_CORRELATION) {
@@ -231,6 +253,7 @@ public class LogSynchronizer {
       ParsedRevLog revlog) {
 
     double midTime = (revlog.minTimestamp() + revlog.maxTimestamp()) / 2.0;
+    String rejected = null;
 
     // Try to get offset from a pair that spans the full recording
     // by cross-correlating just the first half and just the second half
@@ -294,6 +317,15 @@ public class LogSynchronizer {
       long offsetDelta = secondResult.estimatedOffsetMicros() - firstResult.estimatedOffsetMicros();
       double driftNanosPerSec = (offsetDelta * 1000.0) / timeDelta;
 
+      if (!plausibleDrift(driftNanosPerSec)) {
+        logger.warn("Rejecting implausible clock drift estimate of {} ns/s from {} <-> {}",
+            String.format("%.0f", driftNanosPerSec), pair.wpilogEntry(), pair.revlogSignal());
+        rejected = String.format(" A clock-drift estimate of %.0f ns/s was rejected as "
+            + "implausible (crystals drift by tens of ppm); no drift compensation is applied.",
+            driftNanosPerSec);
+        continue;
+      }
+
       // Only report drift if it's significant (>1 ns/s = ~0.1ms per 100s)
       if (Math.abs(driftNanosPerSec) < 1.0) {
         logger.debug("Clock drift negligible ({} ns/s), ignoring", driftNanosPerSec);
@@ -319,7 +351,18 @@ public class LogSynchronizer {
     }
 
     // Could not estimate drift
+    if (rejected != null) {
+      return new SyncResult(baseResult.offsetMicros(), baseResult.confidence(),
+          baseResult.confidenceLevel(), baseResult.signalPairs(), baseResult.method(),
+          baseResult.explanation() + rejected);
+    }
     return baseResult;
+  }
+
+  /** Whether a drift estimate is within {@link #MAX_PLAUSIBLE_DRIFT_NS_PER_SEC}. */
+  static boolean plausibleDrift(double driftNanosPerSec) {
+    return Double.isFinite(driftNanosPerSec)
+        && Math.abs(driftNanosPerSec) <= MAX_PLAUSIBLE_DRIFT_NS_PER_SEC;
   }
 
   /**
@@ -342,14 +385,13 @@ public class LogSynchronizer {
       return OptionalLong.empty();
     }
 
-    // Convert revlog start time to epoch microseconds.
-    // REV Hardware Client generates filenames with local time, and systemTime
-    // entries from the roboRIO use epoch microseconds (timezone-independent).
-    // Use the configured timezone (defaults to system timezone) for the filename
-    // timestamp. If the MCP server runs in a different timezone than the PC that
-    // captured the log, the timezone must be configured explicitly.
+    // Convert revlog start time to epoch microseconds. The wall-clock entries are epoch
+    // microseconds (zone-independent); the filename is in the zone of the clock that named it,
+    // which the wpilog's own filename shows unless a zone was configured.
+    ZoneId zone = filenameTimezone != null ? filenameTimezone
+        : org.triplehelix.wpilogmcp.log.WallClock.revlogFilenameZone(wpilog).offset();
     long revlogStartEpochMicros = revlogStartTime
-        .atZone(filenameTimezone)
+        .atZone(zone)
         .toEpochSecond() * 1_000_000L;
 
     // Interpolate FPGA time at revlog start
@@ -369,21 +411,12 @@ public class LogSynchronizer {
   private List<SystemTimeEntry> extractSystemTimeEntries(LogData wpilog) {
     List<SystemTimeEntry> entries = new ArrayList<>();
 
-    // Look for systemTime entry
-    for (String entryName : wpilog.values().keySet()) {
-      if (entryName.toLowerCase().contains("systemtime")) {
-        List<TimestampedValue> values = wpilog.values().get(entryName);
-        for (TimestampedValue tv : values) {
-          if (tv.value() instanceof Number num) {
-            long fpgaMicros = (long) (tv.timestamp() * 1_000_000);
-            long wallClockMicros = num.longValue();
-            entries.add(new SystemTimeEntry(fpgaMicros, wallClockMicros));
-          }
-        }
-        break;
-      }
+    // WPILib's systemTime, else AdvantageKit's /SystemStats/EpochTimeMicros (exact names), from
+    // after the clock was set (before, it reads 1970 or a default date)
+    for (var reading : org.triplehelix.wpilogmcp.log.WallClock.validReadings(wpilog)) {
+      entries.add(new SystemTimeEntry((long) (reading.logTime() * 1_000_000),
+          reading.epochMicros()));
     }
-
     return entries;
   }
 
@@ -404,9 +437,11 @@ public class LogSynchronizer {
   }
 
   /**
-   * Interpolates FPGA time at a given wall clock time using systemTime entries.
+   * Interpolates FPGA time at a given wall clock time using systemTime entries. Outside the
+   * entries' span it extrapolates at one to one (both clocks count real time): a REV log named
+   * before the wpilog's clock was first read starts before that reading, not at it.
    */
-  private long interpolateFpgaTime(List<SystemTimeEntry> systemTimes, long wallClockMicros) {
+  static long interpolateFpgaTime(List<SystemTimeEntry> systemTimes, long wallClockMicros) {
     if (systemTimes.isEmpty()) {
       return 0;
     }
@@ -429,10 +464,14 @@ public class LogSynchronizer {
     }
 
     if (before == null) {
-      return after.fpgaMicros;
+      return after.fpgaMicros - (after.wallClockMicros - wallClockMicros);
     }
 
-    if (after == null || before == after) {
+    if (after == null) {
+      return before.fpgaMicros + (wallClockMicros - before.wallClockMicros);
+    }
+
+    if (before == after) {
       return before.fpgaMicros;
     }
 
@@ -454,6 +493,33 @@ public class LogSynchronizer {
    * then parabolic interpolation refines to sub-sample accuracy.
    */
   private SignalPairResult crossCorrelate(SignalPair pair, long centerOffsetMicros) {
+    return crossCorrelate(pair, centerOffsetMicros, sampleRateHz, searchWindowSamples,
+        maxResampleSamples);
+  }
+
+  /**
+   * Orders candidate pairs by their best correlation at 1/{@value #COARSE_DECIMATION} of the
+   * sample rate over the same search range (the same data window, so the same pairs win),
+   * highest first. Pairs that cannot be correlated sort last.
+   */
+  private List<SignalPair> rankByCoarseCorrelation(List<SignalPair> candidates,
+      long centerOffsetMicros) {
+    if (candidates.size() <= MAX_REFINED_PAIRS) return candidates;
+    double rate = sampleRateHz / COARSE_DECIMATION;
+    int window = Math.max(1, searchWindowSamples / COARSE_DECIMATION);
+    int maxSamples = Math.max(10, maxResampleSamples / COARSE_DECIMATION);
+    var scores = new java.util.IdentityHashMap<SignalPair, Double>();
+    for (SignalPair pair : candidates) {
+      scores.put(pair, crossCorrelate(pair, centerOffsetMicros, rate, window, maxSamples)
+          .correlation());
+    }
+    return candidates.stream()
+        .sorted(java.util.Comparator.comparingDouble((SignalPair p) -> -scores.get(p)))
+        .toList();
+  }
+
+  private SignalPairResult crossCorrelate(SignalPair pair, long centerOffsetMicros,
+      double sampleRateHz, int searchWindowSamples, int maxResampleSamples) {
     List<TimestampedValue> wpiValues = pair.wpilogValues();
     List<TimestampedValue> revValues = pair.revlogValues();
 
@@ -461,20 +527,28 @@ public class LogSynchronizer {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
     }
 
-    // Track original start times (these are in different time domains)
-    double wpiStartTime = wpiValues.get(0).timestamp();
-    double revStartTime = revValues.get(0).timestamp();
+    // A signal longer than the resample budget is trimmed to its highest-variance window. The
+    // resampled arrays start at each window's first sample, so the lag is converted back to an
+    // offset with the windows' start times: the untrimmed signals' start times would be off by
+    // the difference of the two trims (up to a window step, tens of seconds on a long log).
+    double maxDurationSec = maxResampleSamples / sampleRateHz;
+    List<TimestampedValue> wpiWindow = findHighVarianceWindow(wpiValues, maxDurationSec);
+    List<TimestampedValue> revWindow = findHighVarianceWindow(revValues, maxDurationSec);
+    double wpiStartTime = wpiWindow.get(0).timestamp();
+    double revStartTime = revWindow.get(0).timestamp();
 
-    // Resample both signals to uniform rate (0-indexed arrays)
-    double[] wpilogSamples = resample(wpiValues, sampleRateHz);
-    double[] revlogSamples = resample(revValues, sampleRateHz);
+    // Resample both windows to a uniform rate (0-indexed arrays)
+    double[] wpilogSamples = resample(wpiWindow, sampleRateHz, maxResampleSamples);
+    double[] revlogSamples = resample(revWindow, sampleRateHz, maxResampleSamples);
 
     if (wpilogSamples.length < 10 || revlogSamples.length < 10) {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
     }
 
-    // Check for flat signals before wasting computation
-    if (isFlat(wpilogSamples) || isFlat(revlogSamples)) {
+    // Too little data to establish an offset, or flat signals
+    int minOverlapSamples = (int) Math.ceil(MIN_OVERLAP_SEC * sampleRateHz);
+    if (wpilogSamples.length < minOverlapSamples || revlogSamples.length < minOverlapSamples
+        || isFlat(wpilogSamples) || isFlat(revlogSamples)) {
       return SignalPairResult.failed(pair.wpilogEntry(), pair.revlogSignal());
     }
 
@@ -505,7 +579,7 @@ public class LogSynchronizer {
     for (int lag = centerLag - searchWindowSamples;
          lag <= centerLag + searchWindowSamples;
          lag++) {
-      double corr = computeCorrelation(wpilogSamples, revlogSamples, lag);
+      double corr = computeCorrelation(wpilogSamples, revlogSamples, lag, minOverlapSamples);
       if (corr > bestCorr) {
         bestCorr = corr;
         bestLag = lag;
@@ -526,13 +600,14 @@ public class LogSynchronizer {
     double refinedLag = bestLag;
     if (bestLag > centerLag - searchWindowSamples
         && bestLag < centerLag + searchWindowSamples) {
-      double corrMinus = computeCorrelation(wpilogSamples, revlogSamples, bestLag - 1);
-      double corrPlus = computeCorrelation(wpilogSamples, revlogSamples, bestLag + 1);
-      double denom = 2 * (2 * bestCorr - corrMinus - corrPlus);
-      if (Math.abs(denom) > 1e-10) {
+      double corrMinus = computeCorrelation(wpilogSamples, revlogSamples, bestLag - 1,
+          minOverlapSamples);
+      double corrPlus = computeCorrelation(wpilogSamples, revlogSamples, bestLag + 1,
+          minOverlapSamples);
+      double delta = parabolicPeakOffset(corrMinus, bestCorr, corrPlus);
+      if (Double.isFinite(delta)) {
         // Clamp refinement to ±1 sample to prevent wild jumps when
         // the correlation landscape is flat near the peak
-        double delta = (corrMinus - corrPlus) / denom;
         refinedLag = bestLag + Math.max(-1.0, Math.min(1.0, delta));
       }
     }
@@ -629,18 +704,26 @@ public class LogSynchronizer {
   }
 
   /**
-   * Resamples timestamped values to a uniform sample rate.
-   * If the signal is longer than the max resample window, the highest-variance
-   * region is selected to maximize correlation quality.
+   * The sub-sample position of the peak of the parabola through three equally spaced
+   * correlation values: {@code left} at -1, {@code center} at 0, {@code right} at +1. Positive
+   * means the true peak lies toward {@code right}. NaN when the three values are collinear.
    */
-  private double[] resample(List<TimestampedValue> values, double sampleRateHz) {
-    if (values.isEmpty()) {
+  static double parabolicPeakOffset(double left, double center, double right) {
+    double denom = 2 * (left + right - 2 * center);
+    if (Math.abs(denom) < 1e-10) return Double.NaN;
+    return (left - right) / denom;
+  }
+
+  /**
+   * Resamples timestamped values to a uniform sample rate, starting at the first value. The
+   * caller passes a window no longer than the resample budget (see
+   * {@link #findHighVarianceWindow}); a longer list is cut at the budget.
+   */
+  private double[] resample(List<TimestampedValue> window, double sampleRateHz,
+      int maxResampleSamples) {
+    if (window.isEmpty()) {
       return new double[0];
     }
-
-    // If signal is too long, find the most active window
-    double maxDuration = maxResampleSamples / sampleRateHz;
-    List<TimestampedValue> window = findHighVarianceWindow(values, maxDuration);
 
     double startTime = window.get(0).timestamp();
     double endTime = window.get(window.size() - 1).timestamp();
@@ -711,7 +794,8 @@ public class LogSynchronizer {
    * <p>Uses the full Pearson formula on the overlapping window, computing
    * local mean and variance rather than assuming pre-normalized data.
    */
-  private double computeCorrelation(double[] wpilog, double[] revlog, int lag) {
+  private double computeCorrelation(double[] wpilog, double[] revlog, int lag,
+      int minOverlapSamples) {
     // Find overlapping region
     int wpiStart = Math.max(0, lag);
     int revStart = Math.max(0, -lag);
@@ -719,7 +803,7 @@ public class LogSynchronizer {
     int minLength = Math.min(wpilog.length, revlog.length);
 
     // Require at least 30% overlap for reliable correlation
-    int minOverlap = Math.max(30, (int) (minLength * 0.3));
+    int minOverlap = Math.max(minOverlapSamples, (int) (minLength * 0.3));
     if (overlapLength < minOverlap) {
       return -1; // Not enough overlap
     }
@@ -773,7 +857,8 @@ public class LogSynchronizer {
   /**
    * Computes consensus offset and confidence from signal pair results.
    */
-  private SyncResult computeConsensus(List<SignalPairResult> results, long coarseOffset) {
+  private SyncResult computeConsensus(List<SignalPairResult> results, long coarseOffset,
+      boolean coarseEstimated) {
     // Filter to high-correlation pairs
     List<SignalPairResult> goodPairs = results.stream()
         .filter(r -> r.correlation() > highCorrelationThreshold)
@@ -785,6 +870,13 @@ public class LogSynchronizer {
           .filter(r -> r.correlation() > minUsefulCorrelation)
           .toList();
 
+      if (goodPairs.isEmpty() && !coarseEstimated) {
+        // No estimate at all: an offset of 0 would be a guess
+        return new SyncResult(0L, 0.0, ConfidenceLevel.FAILED, results, SyncMethod.FAILED,
+            "No signal pairs correlated, and the wpilog has no wall clock to estimate the "
+                + "offset from. A REV log written by robot code on the same roboRIO is usually "
+                + "on its FPGA clock (offset near 0): set_revlog_offset sets a known offset.");
+      }
       if (goodPairs.isEmpty()) {
         return new SyncResult(
             coarseOffset,
@@ -792,19 +884,36 @@ public class LogSynchronizer {
             ConfidenceLevel.LOW,
             results,
             SyncMethod.SYSTEM_TIME_ONLY,
-            "No signal pairs achieved strong correlation. " +
-            "Using system time estimate only.");
+            "No signal pairs achieved strong correlation. Using the wall-clock estimate only: "
+                + "the REV log's filename time against the wpilog's wall clock, off by as much as the roboRIO's clock was when the file was named (seconds or more).");
       }
     }
+
+    // Pairs that disagree are not averaged: use the group of pairs that agree with each other
+    // (within AGREEMENT_MICROS) with the most correlation behind it
+    List<SignalPairResult> agreeing = largestAgreeingGroup(goodPairs);
+    int setAside = goodPairs.size() - agreeing.size();
+    goodPairs = agreeing;
 
     // Use median offset (robust to outliers)
     long medianOffset = computeMedianOffset(goodPairs);
 
-    // Compute confidence
+    // Compute confidence; the level claims no more agreement than the pairs show
     double confidence = computeConfidence(goodPairs, medianOffset);
-    ConfidenceLevel level = ConfidenceLevel.fromScore(confidence);
+    double spreadMicros = computeOffsetStdDev(goodPairs, medianOffset);
+    ConfidenceLevel level = capByAgreement(ConfidenceLevel.fromScore(confidence),
+        goodPairs.size(), spreadMicros);
+    if (level == ConfidenceLevel.MEDIUM) {
+      confidence = Math.min(confidence, ConfidenceLevel.HIGH.getThreshold() - 0.01);
+    } else if (level == ConfidenceLevel.LOW) {
+      confidence = Math.min(confidence, ConfidenceLevel.MEDIUM.getThreshold() - 0.01);
+    }
 
-    String explanation = generateExplanation(goodPairs, medianOffset, confidence);
+    String explanation = generateExplanation(goodPairs, medianOffset, level, spreadMicros);
+    if (setAside > 0) {
+      explanation += String.format(" %d other correlated pair(s) disagreed by more than %.0f ms "
+          + "and were set aside (see signal_pairs).", setAside, AGREEMENT_MICROS / 1000.0);
+    }
 
     return new SyncResult(
         medianOffset,
@@ -814,6 +923,32 @@ public class LogSynchronizer {
         SyncMethod.CROSS_CORRELATION,
         explanation
     );
+  }
+
+  /** Offsets within this of each other agree. */
+  static final long AGREEMENT_MICROS = 50_000L;
+
+  /**
+   * The pairs whose offsets agree (within {@link #AGREEMENT_MICROS} of one pair's offset) with
+   * the largest total correlation. A pair can correlate well at a wrong offset (two unrelated
+   * signals that rise and fall together, or a mis-paired mechanism), so contradictory offsets
+   * are not averaged.
+   */
+  static List<SignalPairResult> largestAgreeingGroup(List<SignalPairResult> pairs) {
+    List<SignalPairResult> best = pairs;
+    double bestWeight = -1;
+    for (SignalPairResult anchor : pairs) {
+      var group = pairs.stream()
+          .filter(p -> Math.abs(p.estimatedOffsetMicros() - anchor.estimatedOffsetMicros())
+              <= AGREEMENT_MICROS)
+          .toList();
+      double weight = group.stream().mapToDouble(SignalPairResult::correlation).sum();
+      if (weight > bestWeight) {
+        bestWeight = weight;
+        best = group;
+      }
+    }
+    return best;
   }
 
   /**
@@ -880,22 +1015,41 @@ public class LogSynchronizer {
   }
 
   /**
+   * The most a level may claim given how well the pairs agree: each level's description names
+   * an agreement ("within 5ms" for high, "minor disagreement" for medium), so one pair, or
+   * pairs whose offsets spread more than that, cannot be rated above it.
+   */
+  static ConfidenceLevel capByAgreement(ConfidenceLevel level, int pairCount,
+      double spreadMicros) {
+    ConfidenceLevel cap = spreadMicros > 50_000 ? ConfidenceLevel.LOW
+        : spreadMicros > 5_000 || pairCount < 2 ? ConfidenceLevel.MEDIUM
+        : ConfidenceLevel.HIGH;
+    return level.ordinal() < cap.ordinal() ? cap : level;
+  }
+
+  /**
    * Generates a human-readable explanation of the sync result.
    */
-  private String generateExplanation(List<SignalPairResult> pairs,
-                                     long offset, double confidence) {
+  private String generateExplanation(List<SignalPairResult> pairs, long offset,
+      ConfidenceLevel level, double spreadMicros) {
     StringBuilder sb = new StringBuilder();
 
     sb.append(String.format("Synchronized using %d signal pair(s). ", pairs.size()));
     sb.append(String.format("Offset: %.1fms. ", offset / 1000.0));
-
-    if (confidence >= 0.85) {
-      sb.append("High confidence - multiple signals agree closely.");
-    } else if (confidence >= 0.6) {
-      sb.append("Medium confidence - reasonable signal agreement.");
-    } else {
-      sb.append("Low confidence - limited signal correlation.");
+    if (pairs.size() > 1) {
+      long lo = pairs.stream().mapToLong(SignalPairResult::estimatedOffsetMicros).min().orElse(0);
+      long hi = pairs.stream().mapToLong(SignalPairResult::estimatedOffsetMicros).max().orElse(0);
+      sb.append(String.format("The pairs' offsets range from %.1f to %.1f ms (standard "
+          + "deviation %.1f ms). ", lo / 1000.0, hi / 1000.0, spreadMicros / 1000.0));
     }
+
+    sb.append(switch (level) {
+      case HIGH -> "High confidence - multiple signals agree closely.";
+      case MEDIUM -> pairs.size() < 2
+          ? "Medium confidence - a single signal pair, with nothing to check it against."
+          : "Medium confidence - reasonable signal agreement.";
+      default -> "Low confidence - limited signal correlation or agreement.";
+    });
 
     return sb.toString();
   }
@@ -903,5 +1057,5 @@ public class LogSynchronizer {
   /**
    * Internal record for systemTime entry data.
    */
-  private record SystemTimeEntry(long fpgaMicros, long wallClockMicros) {}
+  record SystemTimeEntry(long fpgaMicros, long wallClockMicros) {}
 }

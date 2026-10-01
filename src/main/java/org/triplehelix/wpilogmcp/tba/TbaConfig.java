@@ -9,6 +9,10 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Configuration for The Blue Alliance API integration.
+ *
+ * <p>The API key comes from the {@code -tba-key} flag or the {@code tba_key} config field when
+ * one is given, else from the {@value #ENV_TBA_API_KEY} environment variable: an explicit key is
+ * never overwritten by the environment.
  */
 public class TbaConfig {
   private static final Logger logger = LoggerFactory.getLogger(TbaConfig.class);
@@ -40,9 +44,15 @@ public class TbaConfig {
   }
 
   /**
-   * Refreshes the configuration from environment variables.
+   * Fills the API key from the {@value #ENV_TBA_API_KEY} environment variable when none has been
+   * set. A key given explicitly ({@link #setApiKey}: the {@code -tba-key} flag or a config file)
+   * is kept, so the flag wins over the environment as the usage text says.
    */
   public void refreshFromEnvironment() {
+    if (isConfigured()) {
+      logger.debug("TBA API key already set; {} not consulted", ENV_TBA_API_KEY);
+      return;
+    }
     String envKey = System.getenv(ENV_TBA_API_KEY);
     if (envKey != null && !envKey.isEmpty()) {
       this.apiKey = envKey;

@@ -10,6 +10,7 @@ import com.google.gson.JsonObject;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -66,6 +67,39 @@ class McpServerLogicTest {
     assertTrue(output.contains("protocolVersion"));
     assertTrue(output.contains("capabilities"));
     assertTrue(output.contains("serverInfo"));
+  }
+
+  @Test
+  @DisplayName("initialize with the full tool set carries server instructions")
+  void initializeCarriesServerInstructions() throws Exception {
+    var initRequest = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+                    + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":{}}\n";
+
+    System.setIn(new ByteArrayInputStream(initRequest.getBytes()));
+    System.setOut(new PrintStream(outputStream));
+
+    var registry = new ToolRegistry();
+    org.triplehelix.wpilogmcp.tools.WpilogTools.registerAll(registry);
+    var server = new McpServer(registry);
+
+    executor.submit(() -> {
+      try {
+        server.run();
+      } catch (Exception ignored) {}
+    });
+
+    executor.shutdown();
+    executor.awaitTermination(2, TimeUnit.SECONDS);
+
+    var initResponse = outputStream.toString().lines()
+        .filter(line -> line.contains("\"protocolVersion\""))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("No initialize response in output"));
+    var result = com.google.gson.JsonParser.parseString(initResponse)
+        .getAsJsonObject().getAsJsonObject("result");
+    assertEquals(
+        org.triplehelix.wpilogmcp.tools.AnalysisGuidance.SERVER_INSTRUCTIONS,
+        result.get("instructions").getAsString());
   }
 
   @Test
@@ -238,6 +272,44 @@ class McpServerLogicTest {
     // Per JSON-RPC 2.0 §4.2, parse errors must return id:null error with code -32700
     assertTrue(output.contains("-32700") || output.contains("Parse error"),
         "Should emit JSON-RPC parse error (-32700) for malformed JSON. Output: " + output);
+  }
+
+  @Test
+  @DisplayName("stdio carries UTF-8 in both directions, whatever the platform charset")
+  void stdioIsUtf8() throws Exception {
+    var text = "Ærø – 日本語 – 🤖";
+    var callRequest = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        + "\"params\":{\"name\":\"echo\",\"arguments\":{\"text\":\"" + text + "\"}}}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}\n";
+
+    System.setIn(new ByteArrayInputStream(callRequest.getBytes(StandardCharsets.UTF_8)));
+    System.setOut(new PrintStream(outputStream));
+
+    var server = new McpServer();
+    server.registerTool(new McpServer.Tool() {
+      @Override public String name() { return "echo"; }
+      @Override public String description() { return "Echoes its text argument"; }
+      @Override public JsonObject inputSchema() { return new JsonObject(); }
+      @Override public com.google.gson.JsonElement execute(JsonObject args) {
+        var result = new JsonObject();
+        result.addProperty("echoed", args.get("text").getAsString());
+        return result;
+      }
+    });
+
+    executor.submit(() -> {
+      try {
+        server.run();
+      } catch (Exception ignored) {}
+    });
+
+    executor.shutdown();
+    executor.awaitTermination(2, TimeUnit.SECONDS);
+
+    var output = new String(outputStream.toByteArray(), StandardCharsets.UTF_8);
+    assertTrue(output.contains("\"id\":1"), "Expected the tool response. Output: " + output);
+    assertTrue(output.contains(text),
+        "The text must come back intact when the output is read as UTF-8. Output: " + output);
   }
 
   @Test

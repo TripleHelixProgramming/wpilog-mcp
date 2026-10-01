@@ -40,8 +40,8 @@ class LogSynchronizerTest {
     // so to convert revlog_time to wpilog_time: wpilog_time = revlog_time - 0.5
     double timeShift = 0.5;
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", -timeShift, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", -timeShift, 600);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -57,13 +57,13 @@ class LogSynchronizerTest {
     // Create logs with no matching signal types and no systemTime data
     // → should fail since there's no coarse offset and no signal pairs
     ParsedLog wpilog = createMockWpilog(Map.of(
-        "/sensors/gyro", createNumericValues(100, 0)
+        "/sensors/gyro", createNumericValues(600, 0)
     ));
 
     ParsedRevLog revlog = createMockRevlog(Map.of(
         1, new RevLogDevice(1, "SPARK MAX")
     ), Map.of(
-        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 100, 0)
+        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 600, 0)
     ));
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
@@ -76,7 +76,7 @@ class LogSynchronizerTest {
   @Test
   void testSynchronizeEmptyRevlog() {
     ParsedLog wpilog = createMockWpilog(Map.of(
-        "/drive/output", createNumericValues(100, 0)
+        "/drive/output", createNumericValues(600, 0)
     ));
 
     ParsedRevLog revlog = createMockRevlog(Map.of(), Map.of());
@@ -90,15 +90,15 @@ class LogSynchronizerTest {
   @Test
   void testSynchronizeWithCanIdHints() {
     ParsedLog wpilog = createMockWpilog(Map.of(
-        "/drive/frontLeft/output", createNumericValues(100, 0),
-        "/drive/frontRight/output", createNumericValues(100, 0.1) // Different phase
+        "/drive/frontLeft/output", createNumericValues(600, 0),
+        "/drive/frontRight/output", createNumericValues(600, 0.1) // Different phase
     ));
 
     // Create revlog signal that matches frontLeft's phase
     ParsedRevLog revlog = createMockRevlog(Map.of(
         1, new RevLogDevice(1, "SPARK MAX")
     ), Map.of(
-        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 100, 0)
+        "SparkMax_1/appliedOutput", createRevLogSignal("appliedOutput", "SparkMax_1", 600, 0)
     ));
 
     Map<Integer, String> hints = Map.of(1, "frontLeft");
@@ -110,8 +110,8 @@ class LogSynchronizerTest {
 
   @Test
   void testSynchronizeReturnsSignalPairResults() {
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -128,8 +128,8 @@ class LogSynchronizerTest {
   void testSignalPairResultWarningNullForNormalPeak() {
     // A normal successful sync with well-correlated signals should have
     // null warnings on all signal pair results (no boundary peak issue).
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -146,8 +146,8 @@ class LogSynchronizerTest {
   @Test
   void testSynchronizeConfidenceLevels() {
     // Test with highly correlated signals
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -158,8 +158,8 @@ class LogSynchronizerTest {
 
   @Test
   void testSynchronizeExplanationGenerated() {
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -192,8 +192,8 @@ class LogSynchronizerTest {
     double revStartTime = 50.0;
     double trueOffsetSec = wpiStartTime - revStartTime; // -45.0
 
-    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStartTime, 200);
-    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStartTime, 200);
+    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStartTime, 1200);
+    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStartTime, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -210,8 +210,8 @@ class LogSynchronizerTest {
     double revStart = 0.1; // 100ms later in revlog time domain
     double trueOffset = wpiStart - revStart; // -0.1
 
-    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 200);
-    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 200);
+    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 1200);
+    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -227,8 +227,8 @@ class LogSynchronizerTest {
     double revStart = 40.0;
     double trueOffset = wpiStart - revStart; // -30.0
 
-    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 300);
-    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 300);
+    ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", wpiStart, 1800);
+    ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", revStart, 1800);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -251,7 +251,7 @@ class LogSynchronizerTest {
     values.put("/drive/output", flatValues);
     ParsedLog wpilog = new ParsedLog("/test.wpilog", entries, values, 0, 4);
 
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
@@ -444,8 +444,8 @@ class LogSynchronizerTest {
         0.8     // higher quality threshold
     );
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 200);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 200);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 1200);
 
     SyncResult result = customSync.synchronize(wpilog, revlog);
     assertNotNull(result);
@@ -465,8 +465,8 @@ class LogSynchronizerTest {
         ZoneId.of("UTC")
     );
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     // Should not throw and should produce a valid result
     SyncResult result = utcSync.synchronize(wpilog, revlog);
@@ -487,14 +487,79 @@ class LogSynchronizerTest {
         LogSynchronizer.DEFAULT_HIGH_CORRELATION_THRESHOLD
     );
 
-    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 100);
-    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 100);
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 600);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 600);
 
     SyncResult r1 = defaultSync.synchronize(wpilog, revlog);
     SyncResult r2 = explicitSync.synchronize(wpilog, revlog);
 
     assertEquals(r1.offsetMicros(), r2.offsetMicros());
     assertEquals(r1.confidence(), r2.confidence(), 0.001);
+  }
+
+  @Test
+  void fpgaTimeInterpolatesWithinAndExtrapolatesOutsideTheWallClock() {
+    // Clock read at FPGA 11.9 s and 21.9 s (wall 1000 s and 1010 s)
+    var readings = List.of(
+        new LogSynchronizer.SystemTimeEntry(11_900_000L, 1_000_000_000L),
+        new LogSynchronizer.SystemTimeEntry(21_900_000L, 1_010_000_000L));
+    assertEquals(16_900_000L, LogSynchronizer.interpolateFpgaTime(readings, 1_005_000_000L));
+    // A REV log named 17 s before the first reading started 17 s before it, not at it
+    assertEquals(-5_100_000L, LogSynchronizer.interpolateFpgaTime(readings, 983_000_000L));
+    assertEquals(31_900_000L, LogSynchronizer.interpolateFpgaTime(readings, 1_020_000_000L));
+    var single = List.of(new LogSynchronizer.SystemTimeEntry(11_900_000L, 1_000_000_000L));
+    assertEquals(11_900_000L, LogSynchronizer.interpolateFpgaTime(single, 1_000_000_000L));
+    assertEquals(9_900_000L, LogSynchronizer.interpolateFpgaTime(single, 998_000_000L));
+    assertEquals(0L, LogSynchronizer.interpolateFpgaTime(List.of(), 998_000_000L));
+  }
+
+  @Test
+  void consensusUsesTheLargestAgreeingGroupNotTheMedianOfContradictions() {
+    // Two applied-output pairs agree near 15 ms; three pairs correlate well at wild offsets
+    var pairs = List.of(
+        new SignalPairResult("/Turret/AppliedVolts", "SparkMax_12/AppliedOutput", 15_000L, 0.93,
+            1000, null),
+        new SignalPairResult("/Kicker/AppliedVolts", "SparkMax_17/AppliedOutput", 13_000L, 0.87,
+            1000, null),
+        new SignalPairResult("/Flywheel/Velocity", "SparkMax_17/Velocity", -10_932_000L, 0.79,
+            1000, null),
+        new SignalPairResult("/Flywheel/Velocity", "SparkMax_13/Velocity", -29_809_000L, 0.79,
+            1000, null),
+        new SignalPairResult("/Flywheel/Velocity", "SparkMax_12/Velocity", -29_811_000L, 0.79,
+            1000, null));
+    var group = LogSynchronizer.largestAgreeingGroup(pairs);
+    // 0.93 + 0.87 = 1.80 outweighs 0.79 + 0.79 = 1.58
+    assertEquals(2, group.size());
+    assertTrue(group.stream().allMatch(p -> p.revlogSignal().endsWith("AppliedOutput")));
+    assertEquals(List.of(), LogSynchronizer.largestAgreeingGroup(List.of()));
+    var single = List.of(pairs.get(2));
+    assertEquals(single, LogSynchronizer.largestAgreeingGroup(single));
+  }
+
+  @Test
+  void confidenceLevelClaimsNoMoreAgreementThanThePairsShow() {
+    var high = ConfidenceLevel.HIGH;
+    assertEquals(ConfidenceLevel.HIGH, LogSynchronizer.capByAgreement(high, 3, 4_000));
+    // q10: five pairs spread 17 ms is "minor disagreement", not "within 5ms"
+    assertEquals(ConfidenceLevel.MEDIUM, LogSynchronizer.capByAgreement(high, 5, 17_000));
+    assertEquals(ConfidenceLevel.LOW, LogSynchronizer.capByAgreement(high, 5, 80_000));
+    // One pair has nothing to agree with
+    assertEquals(ConfidenceLevel.MEDIUM, LogSynchronizer.capByAgreement(high, 1, 0));
+    // A cap never raises a level
+    assertEquals(ConfidenceLevel.LOW,
+        LogSynchronizer.capByAgreement(ConfidenceLevel.LOW, 3, 0));
+    assertEquals(ConfidenceLevel.FAILED,
+        LogSynchronizer.capByAgreement(ConfidenceLevel.FAILED, 3, 0));
+  }
+
+  @Test
+  void aFewSecondsOfDataDoNotEstablishAnOffset() {
+    // 3.7 s of REV data (as a real log from the next boot) against 24 s of wpilog: a peak in
+    // so short a stretch is not evidence
+    ParsedLog wpilog = createWpilogWithSignal("/drive/output", 0.0, 1200);
+    ParsedRevLog revlog = createRevlogWithSignal("appliedOutput", 0.0, 185);
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+    assertNotEquals(SyncMethod.CROSS_CORRELATION, result.method(), result.explanation());
   }
 
   // ========== Drift estimation tests ==========
@@ -598,6 +663,88 @@ class LogSynchronizerTest {
     assertTrue(Math.abs(result.driftRateNanosPerSec()) < 10.0,
         "Negligible drift should produce near-zero drift rate, got: "
             + result.driftRateNanosPerSec());
+  }
+
+  @Test
+  void longSignalsSyncAtTheTrueOffsetAfterTrimming() {
+    // Both signals are longer than the resample budget (600 s at 100 Hz), so each is trimmed to
+    // its highest-variance window. A burst in the middle of a 700 s wpilog makes the wpilog
+    // window start just after the burst begins (about 252 s, stepping by 14 s), while the
+    // revlog, recorded 20 s later on its own clock and stepping by 13.6 s, trims about 231 s:
+    // the lag must be converted back with the windows' start times, not the signals' first
+    // timestamps, or the offset is off by the difference of the trims (about 21 s here).
+    double trueOffset = 20.0; // FPGA time - revlog time
+    double burstStart = 250.0; // FPGA time
+    double burstDuration = 200.0;
+    double dt = 0.02;
+    int wpiSamples = 35_000; // 700 s
+    int revSamples = 34_000; // 680 s
+
+    Map<String, EntryInfo> entries = new HashMap<>();
+    entries.put("/drive/output", new EntryInfo(1, "/drive/output", "double", ""));
+    List<TimestampedValue> wpiVals = new ArrayList<>();
+    for (int i = 0; i < wpiSamples; i++) {
+      double t = i * dt;
+      wpiVals.add(new TimestampedValue(t, burst(t, burstStart, burstDuration)));
+    }
+    Map<String, List<TimestampedValue>> values = new HashMap<>();
+    values.put("/drive/output", wpiVals);
+    ParsedLog wpilog = new ParsedLog("/test.wpilog", entries, values, 0, wpiSamples * dt);
+
+    List<TimestampedValue> revVals = new ArrayList<>();
+    for (int i = 0; i < revSamples; i++) {
+      double r = i * dt; // the revlog's own clock
+      revVals.add(new TimestampedValue(r, burst(r + trueOffset, burstStart, burstDuration)));
+    }
+    Map<Integer, RevLogDevice> devices = new HashMap<>();
+    devices.put(1, new RevLogDevice(1, "SPARK MAX"));
+    Map<String, RevLogSignal> signals = new HashMap<>();
+    signals.put("SparkMax_1/appliedOutput",
+        new RevLogSignal("appliedOutput", "SparkMax_1", revVals, ""));
+    ParsedRevLog revlog = new ParsedRevLog("/test.revlog", "20260320_143052", devices, signals,
+        0, revSamples * dt, revSamples);
+
+    SyncResult result = synchronizer.synchronize(wpilog, revlog);
+
+    assertEquals(SyncMethod.CROSS_CORRELATION, result.method(), result.explanation());
+    assertEquals(trueOffset, result.offsetSeconds(), 0.05, result.explanation());
+  }
+
+  /** A long chirp between {@code start} and {@code start + duration}, zero elsewhere. */
+  private double burst(double t, double start, double duration) {
+    if (t < start || t > start + duration) return 0.0;
+    return longChirpValue(t - start);
+  }
+
+  @Test
+  void parabolicPeakOffsetPointsTowardTheHigherNeighbor() {
+    // The parabola through (-1, a), (0, b), (1, c) peaks at (a - c) / (2 (a + c - 2b))
+    assertEquals(1.0 / 6.0, LogSynchronizer.parabolicPeakOffset(0.8, 1.0, 0.9), 1e-12);
+    assertEquals(-1.0 / 6.0, LogSynchronizer.parabolicPeakOffset(0.9, 1.0, 0.8), 1e-12);
+    assertEquals(0.0, LogSynchronizer.parabolicPeakOffset(0.9, 1.0, 0.9), 1e-12);
+    assertTrue(Double.isNaN(LogSynchronizer.parabolicPeakOffset(1.0, 1.0, 1.0)));
+  }
+
+  @Test
+  void subSampleOffsetsRefineTowardTheTrueOffset() {
+    // A 4 ms shift is 0.4 samples at the 100 Hz resample rate: the integer lag search lands on
+    // zero and the parabolic refinement must move toward the true offset, not away from it
+    for (double shift : new double[] {0.004, -0.004}) {
+      ParsedLog wpilog = createWpilogWithSignalAtTime("/drive/output", 1.0, 2000);
+      ParsedRevLog revlog = createRevlogWithSignalAtTime("appliedOutput", 1.0 - shift, 2000);
+      SyncResult result = synchronizer.synchronize(wpilog, revlog);
+      assertEquals(SyncMethod.CROSS_CORRELATION, result.method(), result.explanation());
+      assertEquals(shift, result.offsetSeconds(), 0.0025,
+          "shift " + shift + ": " + result.explanation());
+    }
+  }
+
+  @Test
+  void driftEstimatesBeyondAThousandPpmAreRejected() {
+    assertTrue(LogSynchronizer.plausibleDrift(100_000.0)); // 100 ppm
+    assertTrue(LogSynchronizer.plausibleDrift(-999_999.0));
+    assertFalse(LogSynchronizer.plausibleDrift(4e7));
+    assertFalse(LogSynchronizer.plausibleDrift(Double.NaN));
   }
 
   // ========== Helper Methods ==========

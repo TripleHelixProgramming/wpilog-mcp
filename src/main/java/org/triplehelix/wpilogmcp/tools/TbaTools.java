@@ -48,7 +48,9 @@ public final class TbaTools {
 
     @Override
     public String description() {
-      return "Check if The Blue Alliance API is configured and available. "
+      return "Check whether The Blue Alliance API is configured and the key works: the key is "
+          + "sent to TBA's status endpoint, and key_check says whether it was accepted "
+          + "(available is false for a rejected key or an unreachable TBA). "
           + "When TBA is configured, you can: (1) Use list_available_logs to see match scores "
           + "and win/loss results for each log, or (2) Use get_tba_match_data to query specific "
           + "match details including autonomous points. TBA data is the authoritative source for "
@@ -66,10 +68,25 @@ public final class TbaTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("available", client.isAvailable());
-
       if (client.isAvailable()) {
-        result.addProperty("status", "configured");
+        // A configured key is not a working one: ask The Blue Alliance (/status)
+        var check = client.checkKey();
+        result.addProperty("available", check.valid());
+        result.addProperty("configuration", "configured");
+        var keyCheck = new JsonObject();
+        keyCheck.addProperty("valid", check.valid());
+        keyCheck.addProperty("detail", check.detail());
+        if (check.status() != null) {
+          var status = check.status();
+          if (status.has("current_season")) {
+            keyCheck.add("current_season", status.get("current_season"));
+          }
+          if (status.has("max_season")) keyCheck.add("max_season", status.get("max_season"));
+          if (status.has("is_datafeed_down")) {
+            keyCheck.add("datafeed_down", status.get("is_datafeed_down"));
+          }
+        }
+        result.add("key_check", keyCheck);
 
         var cache = new JsonObject();
         for (var entry : client.getCacheStats().entrySet()) {
@@ -77,10 +94,14 @@ public final class TbaTools {
         }
         result.add("cache", cache);
 
-        result.addProperty("hint",
-            "TBA data will be included in list_available_logs for logs with team number in metadata");
+        result.addProperty("hint", check.valid()
+            ? "TBA data will be included in list_available_logs for logs with team number in "
+                + "metadata"
+            : "list_available_logs reports tba_enrichment.available false with this reason until "
+                + "the key works: check TBA_API_KEY, -tba-key, or tba_key in servers.yaml");
       } else {
-        result.addProperty("status", "not_configured");
+        result.addProperty("available", false);
+        result.addProperty("configuration", "not_configured");
         result.addProperty("hint",
             "Set TBA_API_KEY environment variable or use -tba-key argument. "
                 + "Get a free API key at https://www.thebluealliance.com/account");
@@ -114,6 +135,12 @@ public final class TbaTools {
           + "'How many autonomous points did we score?', or 'What were the match results?'. "
           + "Returns alliance scores, win/loss status, and detailed score breakdown including "
           + "autonomous points when available. "
+          + "match_type 'Elimination' N, as the Driver Station names playoff matches, is read as "
+          + "double-elimination bracket match N (TBA's sfNm1) for 2023 and later; the finals carry "
+          + "no bracket number, so query them as match_type 'f' with the finals match number. "
+          + "Before 2023, with team_number, Elimination N is read as playoff match number N in the "
+          + "order the team played (a heuristic). The result's lookup_method (direct, "
+          + "double_elimination_bracket, play_order) and match_key say what was looked up. "
           + "IMPORTANT: This is the primary tool for getting match outcome data—don't guess or infer "
           + "match results from telemetry when you can query TBA directly.";
     }
@@ -127,7 +154,8 @@ public final class TbaTools {
               + "Find the correct code at thebluealliance.com/events/{year}. "
               + "Examples: 'caph' (Poway), 'cmptx' (Houston Championship)", true)
           .addProperty("match_type", "string",
-              "Match type: 'Qualification', 'Quarterfinal', 'Semifinal', 'Final', or 'Elimination'", true)
+              "Match type: 'Qualification', 'Quarterfinal', 'Semifinal', 'Final', or "
+                  + "'Elimination', or TBA's codes 'qm' (or 'q'), 'qf', 'sf', 'f'", true)
           .addIntegerProperty("match_number", "Match number within the type", true, null)
           .addIntegerProperty("team_number",
               "Optional: Your team number to highlight your alliance's data", false, null)
@@ -143,14 +171,25 @@ public final class TbaTools {
             + "Get a free API key at https://www.thebluealliance.com/account");
       }
 
-      int year = arguments.get("year").getAsInt();
+      int year = getRequiredInt(arguments, "year");
       String eventCode = getRequiredString(arguments, "event_code");
       String matchType = getRequiredString(arguments, "match_type");
-      int matchNumber = arguments.get("match_number").getAsInt();
+      int matchNumber = getRequiredInt(arguments, "match_number");
       Integer teamNumber = arguments.has("team_number") && !arguments.get("team_number").isJsonNull()
           ? arguments.get("team_number").getAsInt()
           : null;
 
+      try {
+        return lookup(client, year, eventCode, matchType, matchNumber, teamNumber);
+      } catch (org.triplehelix.wpilogmcp.tba.TbaUnavailableException e) {
+        return errorResult(e.getMessage() + " Try again, or check the API key with "
+            + "get_tba_status.");
+      }
+    }
+
+    private JsonElement lookup(org.triplehelix.wpilogmcp.tba.TbaClient client, int year,
+        String eventCode, String matchType,
+        int matchNumber, Integer teamNumber) {
       // Try to get match data
       var matchOpt = client.getMatch(year, eventCode, matchType, matchNumber);
 
@@ -163,21 +202,31 @@ public final class TbaTools {
           var result = new JsonObject();
           result.addProperty("success", true);
           result.addProperty("match_found", true);
-          result.addProperty("lookup_method", "smart_elimination_match");
+          result.addProperty("lookup_method", teamResult.lookupMethod());
+          if (teamResult.matchKey() != null) {
+            result.addProperty("match_key", teamResult.matchKey());
+          }
 
           var yourAlliance = new JsonObject();
           yourAlliance.addProperty("color", teamResult.alliance());
           yourAlliance.addProperty("score", teamResult.score());
           yourAlliance.addProperty("won", teamResult.won());
+          if (teamResult.opponentScore() != null) {
+            yourAlliance.addProperty("opponent_score", teamResult.opponentScore());
+          }
           result.add("your_alliance", yourAlliance);
 
           if (teamResult.getMatchTime() != null) {
             result.addProperty("match_time", formatTime(teamResult.getMatchTimeSeconds()));
           }
 
-          result.addProperty("note",
-              "Match found via elimination match search. For full details, use specific match type "
-              + "(Quarterfinal, Semifinal, Final) instead of generic 'Elimination'.");
+          result.addProperty("note", org.triplehelix.wpilogmcp.tba.TbaClient.LOOKUP_PLAY_ORDER
+              .equals(teamResult.lookupMethod())
+              ? "Before 2023, Elimination N is read as playoff match number N in the order the "
+                  + "team played: a heuristic. For the match itself, use match_type qf, sf, or f "
+                  + "with the series number from match_key."
+              : "The team's playoff match nearest the log's time. For full details, query "
+                  + "match_key's type and number.");
 
           return result;
         }
@@ -185,14 +234,15 @@ public final class TbaTools {
 
       if (matchOpt.isEmpty()) {
         var result = new JsonObject();
-        result.addProperty("success", true);
+        result.addProperty("success", false);
+        result.addProperty("status", "no_match");
         result.addProperty("match_found", false);
 
         // Validate the event code to provide a helpful error
         var eventOpt = client.getEvent(year, eventCode);
         if (eventOpt.isEmpty()) {
           // Event doesn't exist — this is likely the wrong event code
-          result.addProperty("message",
+          result.addProperty("reason",
               "Event '" + eventCode + "' not found on TBA for " + year + ". "
               + "The event_code must be a TBA event code (e.g., 'caph'), not an abbreviation from log filenames.");
 
@@ -209,9 +259,9 @@ public final class TbaTools {
           }
         } else {
           // Event exists but match wasn't found
-          result.addProperty("message",
-              "Event '" + eventCode + "' exists but match " + matchType + " " + matchNumber
-              + " was not found. Check match_type and match_number.");
+          result.addProperty("reason", eliminationReason(year, matchType, matchNumber, teamNumber)
+              .orElse("Event '" + eventCode + "' exists but match " + matchType + " "
+                  + matchNumber + " was not found. Check match_type and match_number."));
 
           var suggestions = new JsonArray();
           suggestions.add("For elimination matches, try 'Semifinal' or 'Final' instead of 'Elimination'");
@@ -227,6 +277,16 @@ public final class TbaTools {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("match_found", true);
+      boolean bracket = isGenericElimination(matchType);
+      result.addProperty("lookup_method", bracket
+          ? org.triplehelix.wpilogmcp.tba.TbaClient.LOOKUP_BRACKET
+          : org.triplehelix.wpilogmcp.tba.TbaClient.LOOKUP_DIRECT);
+      if (bracket) {
+        result.addProperty("lookup_basis", "Elimination " + matchNumber
+            + " read as double-elimination bracket match " + matchNumber + " (TBA key sf"
+            + matchNumber + "m1): since 2023 the Driver Station numbers playoff matches by "
+            + "bracket");
+      }
 
       // Basic match info
       if (match.has("key")) {
@@ -273,12 +333,13 @@ public final class TbaTools {
           if (teamKeys != null) {
             var teams = new JsonArray();
             for (var tk : teamKeys) {
-              // Convert "frc1234" to just "1234"
+              // "frc1234" to 1234; a B team ("frc1234B") stays a string, "1234B"
               var teamKey = tk.getAsString();
-              if (teamKey.startsWith("frc")) {
-                teams.add(Integer.parseInt(teamKey.substring(3)));
+              var number = teamKey.startsWith("frc") ? teamKey.substring(3) : teamKey;
+              if (number.matches("\\d+")) {
+                teams.add(Integer.parseInt(number));
               } else {
-                teams.add(teamKey);
+                teams.add(number);
               }
             }
             allianceResult.add("teams", teams);
@@ -311,28 +372,15 @@ public final class TbaTools {
 
           var colorResult = new JsonObject();
 
-          // Extract common scoring elements (these vary by year/game)
-          // Try to find autonomous-related fields
-          extractIfPresent(colorBreakdown, colorResult, "autoPoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopPoints");
-          extractIfPresent(colorBreakdown, colorResult, "endgamePoints");
-          extractIfPresent(colorBreakdown, colorResult, "foulPoints");
-          extractIfPresent(colorBreakdown, colorResult, "totalPoints");
-
-          // 2024 Crescendo specific
-          extractIfPresent(colorBreakdown, colorResult, "autoLeavePoints");
-          extractIfPresent(colorBreakdown, colorResult, "autoAmpNotePoints");
-          extractIfPresent(colorBreakdown, colorResult, "autoSpeakerNotePoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopAmpNotePoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopSpeakerNotePoints");
-
-          // 2025 Reefscape specific
-          extractIfPresent(colorBreakdown, colorResult, "autoCoralPoints");
-          extractIfPresent(colorBreakdown, colorResult, "autoAlgaePoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopCoralPoints");
-          extractIfPresent(colorBreakdown, colorResult, "teleopAlgaePoints");
-          extractIfPresent(colorBreakdown, colorResult, "netAlgaePoints");
-          extractIfPresent(colorBreakdown, colorResult, "bargePoints");
+          // Every points subtotal: TBA names them ...Points in every season's breakdown
+          // (autoPoints, teleopPoints, foulPoints, totalPoints, and the game's own), so each
+          // year's game is covered without a per-game list
+          for (var field : colorBreakdown.entrySet()) {
+            if (field.getKey().endsWith("Points") && field.getValue().isJsonPrimitive()
+                && field.getValue().getAsJsonPrimitive().isNumber()) {
+              colorResult.add(field.getKey(), field.getValue());
+            }
+          }
 
           // Only add if we found something
           if (colorResult.size() > 0) {
@@ -346,6 +394,35 @@ public final class TbaTools {
       }
 
       return result;
+    }
+
+    /** Why a generic "Elimination N" could not be looked up, when that is the reason. */
+    private static java.util.Optional<String> eliminationReason(int year, String matchType,
+        int matchNumber, Integer teamNumber) {
+      if (!org.triplehelix.wpilogmcp.tba.TbaClient.isGenericElimination(matchType)) {
+        return java.util.Optional.empty();
+      }
+      if (org.triplehelix.wpilogmcp.tba.TbaClient.isBracketMatch(year, matchNumber)) {
+        return java.util.Optional.of("Elimination " + matchNumber
+            + " was read as double-elimination bracket match " + matchNumber + " (TBA key sf"
+            + matchNumber + "m1), which this event does not have. Check match_number, or use "
+            + "match_type qf, sf, or f with the series number.");
+      }
+      if (year >= org.triplehelix.wpilogmcp.tba.TbaClient.DOUBLE_ELIMINATION_FIRST_YEAR) {
+        return java.util.Optional.of("'Elimination " + matchNumber + "' does not identify a TBA "
+            + "match by itself: since 2023 the Driver Station numbers playoff matches by bracket, "
+            + "matches 1-13 are TBA's sf1m1-sf13m1, and the finals carry no bracket number. Use "
+            + "match_type f with the finals match number (1-3); list_available_logs finds a "
+            + "log's finals match by the log's time.");
+      }
+      return java.util.Optional.of("'Elimination " + matchNumber + "' does not identify a TBA "
+          + "match by itself before 2023" + (teamNumber == null
+              ? ": pass team_number to read it as playoff match number " + matchNumber
+                  + " in the order the team played (a heuristic, reported as lookup_method "
+                  + "play_order), or use match_type qf, sf, or f with the series number."
+              : "; the team played fewer than " + matchNumber + " playoff matches at this "
+                  + "event, so the play-order reading (a heuristic) finds nothing. Use "
+                  + "match_type qf, sf, or f with the series number."));
     }
 
     private boolean isGenericElimination(String matchType) {

@@ -179,7 +179,9 @@ class HttpStressTest {
     System.out.println("\nDiscover and load via HTTP:");
 
     // list_available_logs
-    var result = toolCall(sessionId, "list_available_logs", new JsonObject());
+    var listLogsArgs = new JsonObject();
+    listLogsArgs.addProperty("limit", 500); // every log, not the default first page
+    var result = toolCall(sessionId, "list_available_logs", listLogsArgs);
     int logCount = result.get("log_count").getAsInt();
     System.out.println("  Found " + logCount + " logs");
 
@@ -492,15 +494,19 @@ class HttpStressTest {
     delete(sessionId);
   }
 
-  // ==================== 8. Full Tool Coverage ====================
+  // ==================== 8. Tool Coverage ====================
 
+  /**
+   * A representative set of tools through the HTTP transport (the transport is tool-agnostic).
+   * Every tool on every log is checked against the robustness rules by RealLogConformanceTest.
+   */
   @Test
   @Order(8)
-  @DisplayName("8. Full tool coverage via HTTP")
+  @DisplayName("8. Tool coverage via HTTP")
   void fullToolCoverage() throws Exception {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
 
-    System.out.println("\nFull tool coverage via HTTP:");
+    System.out.println("\nTool coverage via HTTP:");
 
     var sessionId = initialize();
     String logPath = availableLogPaths.get(0);
@@ -529,6 +535,8 @@ class HttpStressTest {
     // Core tools (not log-requiring)
     exerciseTool(sessionId, "health_check", new JsonObject(), "core");
     exerciseTool(sessionId, "list_struct_types", new JsonObject(), "core");
+    exerciseTool(sessionId, "list_struct_types", withPath(logPath), "core");
+    exerciseTool(sessionId, "resolve_signals", withPath(logPath), "core");
     exerciseTool(sessionId, "list_loaded_logs", new JsonObject(), "core");
 
     // Query tools (log-requiring)
@@ -556,6 +564,20 @@ class HttpStressTest {
       rateArgs.addProperty("name", numericEntry);
       rateArgs.addProperty("limit", 5);
       exerciseTool(sessionId, "rate_of_change", rateArgs, "statistics");
+
+      var scopedArgs = new JsonObject();
+      scopedArgs.addProperty("path", logPath);
+      scopedArgs.addProperty("name", numericEntry);
+      scopedArgs.addProperty("scope", "enabled");
+      exerciseTool(sessionId, "get_statistics", scopedArgs, "statistics");
+
+      var alignArgs = new JsonObject();
+      alignArgs.addProperty("path", logPath);
+      var names = new com.google.gson.JsonArray();
+      names.add(numericEntry);
+      alignArgs.add("names", names);
+      alignArgs.addProperty("limit", 5);
+      exerciseTool(sessionId, "align_entries", alignArgs, "statistics");
     }
 
     // FRC domain tools (log-requiring)
@@ -563,6 +585,10 @@ class HttpStressTest {
     exerciseTool(sessionId, "analyze_auto", withPath(logPath), "frc");
     exerciseTool(sessionId, "get_ds_timeline", withPath(logPath), "frc");
     exerciseTool(sessionId, "analyze_vision", withPath(logPath), "frc");
+    exerciseTool(sessionId, "pose_corrections", withPath(logPath), "frc");
+    var poseArgs = withPath(logPath);
+    poseArgs.addProperty("reference_entry", "/RealOutputs/Drive/Pose");
+    exerciseTool(sessionId, "compare_poses", poseArgs, "frc");
     exerciseTool(sessionId, "analyze_replay_drift", withPath(logPath), "frc");
     exerciseTool(sessionId, "analyze_loop_timing", withPath(logPath), "frc");
     exerciseTool(sessionId, "analyze_can_bus", withPath(logPath), "frc");
@@ -669,7 +695,12 @@ class HttpStressTest {
     try {
       var result = toolCall(sessionId, toolName, args);
       boolean success = result.has("success") && result.get("success").getAsBoolean();
-      System.out.printf("  [%s] %-25s %s%n", category, toolName, success ? "OK" : "no data");
+      Integer limit = args.has("limit") ? args.get("limit").getAsInt() : null;
+      var failed = org.triplehelix.wpilogmcp.conformance.ConformanceChecks.check(result, limit,
+          args.has("path"));
+      System.out.printf("  [%s] %-25s %s%s%n", category, toolName, success ? "OK" : "no data",
+          failed.isEmpty() ? "" : " CONFORMANCE: " + failed);
+      assertTrue(failed.isEmpty(), toolName + " violates " + failed + ": " + result);
     } catch (Exception e) {
       System.out.printf("  [%s] %-25s ERROR: %s%n", category, toolName, e.getMessage());
     }

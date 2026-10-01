@@ -1,0 +1,302 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.log;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import edu.wpi.first.util.datalog.DataLogReader;
+import java.nio.file.Path;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
+import org.triplehelix.wpilogmcp.log.subsystems.LogParser;
+
+/**
+ * The record scan both parsers share, on logs damaged the ways real ones are: a write cut off
+ * mid-file leaves records for undeclared entry ids and timestamps far outside the log (three of
+ * 88 real logs reported time ranges of 1e7 to 6e10 s this way).
+ */
+@DisplayName("LogScan")
+class LogScanTest {
+
+  @TempDir Path dir;
+
+  static final long SEC = 1_000_000L;
+
+  static byte[] dbl(double v) {
+    return WpilogWriter.encodeDouble(v);
+  }
+
+  /** Both parsers read the file the same way. */
+  void assertParsersAgree(Path path, double min, double max, int voltageSamples)
+      throws Exception {
+    try (var lazy = new LazyParsedLog(path.toString(), new DataLogReader(path.toString()),
+        64L * 1024 * 1024)) {
+      assertEquals(min, lazy.minTimestamp(), 1e-9, "lazy min");
+      assertEquals(max, lazy.maxTimestamp(), 1e-9, "lazy max");
+      assertEquals(voltageSamples, lazy.values().get("/Battery/Voltage").size(), "lazy count");
+    }
+    var eager = new LogParser().parse(path);
+    assertEquals(min, eager.minTimestamp(), 1e-9, "eager min");
+    assertEquals(max, eager.maxTimestamp(), 1e-9, "eager max");
+    assertEquals(voltageSamples, eager.values().get("/Battery/Voltage").size(), "eager count");
+  }
+
+  @Test
+  @DisplayName("a clean log: its whole time range, not truncated")
+  void clean() throws Exception {
+    var path = dir.resolve("clean.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertFalse(scan.truncated());
+    assertNull(scan.truncationMessage());
+    assertEquals(10, scan.dataRecords());
+    assertParsersAgree(path, 1.0, 10.0, 10);
+  }
+
+  @Test
+  @DisplayName("a record for an undeclared entry ends the scan; later records are not read")
+  void undeclaredEntryTail() throws Exception {
+    var path = dir.resolve("undeclared.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(1007427528, 2_384_800_000_000_000L, new byte[151]); // garbage
+      w.append(v, 98_538_759L * SEC, dbl(3.0)); // parses as a real entry, but is garbage
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncated());
+    assertTrue(scan.truncationMessage().contains("entry id 1007427528, which the log never "
+        + "declared"), scan.truncationMessage());
+    assertTrue(scan.truncationMessage().contains("Data from 1.00 to 10.00 s was recovered"),
+        scan.truncationMessage());
+    assertParsersAgree(path, 1.0, 10.0, 10);
+  }
+
+  @Test
+  @DisplayName("records whose time runs backward just before the damage belong to it")
+  void backwardRecordsBeforeDamage() throws Exception {
+    var path = dir.resolve("backward_tail.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 100; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(v, 172L, dbl(0.0)); // 0.000172 s: garbage
+      w.append(v, 63_456_800L * SEC, dbl(0.0)); // 6.3e7 s forward: garbage, skipped
+      w.append(30912, 253L, new byte[4]); // undeclared: the damage
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncationMessage().contains("the 1 record just before it, whose "
+        + "timestamps ran backward or jumped ahead, was dropped"), scan.truncationMessage());
+    assertTrue(scan.truncationMessage().contains("1 record whose timestamp jumps more than a "
+        + "day"), scan.truncationMessage());
+    assertParsersAgree(path, 1.0, 100.0, 100);
+  }
+
+  @Test
+  @DisplayName("a forward jump of more than a day is ignored anywhere; the rest is read")
+  void forwardJumpMidLog() throws Exception {
+    var path = dir.resolve("jump.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(v, 1_000_000_000L * SEC, dbl(12.0));
+      for (int i = 11; i <= 20; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncated());
+    assertFalse(scan.truncationMessage().contains("rest of the file"), scan.truncationMessage());
+    assertParsersAgree(path, 1.0, 20.0, 20);
+  }
+
+  @Test
+  @DisplayName("an older timestamp mid-log (NetworkTables logs a value's last change) is kept")
+  void backwardMidLogIsKept() throws Exception {
+    var path = dir.resolve("nt_initial.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 100; i <= 200; i++) w.append(v, i * SEC, dbl(12.0));
+      int nt = w.start("NT:/SmartDashboard/Mode", "string", "", 200 * SEC);
+      w.append(nt, 5 * SEC, WpilogWriter.encodeString("Idle")); // last changed at 5 s
+      for (int i = 201; i <= 210; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertFalse(scan.truncated(), scan.truncationMessage());
+    assertParsersAgree(path, 5.0, 210.0, 111);
+  }
+
+  @Test
+  @DisplayName("an entry restarted with another type is ignored, not read as damage")
+  void restartedWithAnotherType() throws Exception {
+    var path = dir.resolve("restart.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 5; i++) w.append(v, i * SEC, dbl(12.0));
+      int other = w.start("/Battery/Voltage", "string", "", 6 * SEC);
+      w.append(other, 6 * SEC, WpilogWriter.encodeString("12 V"));
+      for (int i = 7; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertFalse(scan.truncated(), scan.truncationMessage());
+    assertParsersAgree(path, 1.0, 10.0, 9);
+  }
+
+  @Test
+  @DisplayName("a file cut off inside a record: what came before is read")
+  void cutOffInsideRecord() throws Exception {
+    var path = dir.resolve("cut.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var bytes = java.nio.file.Files.readAllBytes(path);
+    java.nio.file.Files.write(path, java.util.Arrays.copyOf(bytes, bytes.length - 3));
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncated());
+    assertTrue(scan.truncationMessage().startsWith("Log file is truncated or damaged: the file "
+        + "ends inside a record"), scan.truncationMessage());
+    assertParsersAgree(path, 1.0, 9.0, 9);
+  }
+
+  @Test
+  @DisplayName("a sub-day forward garbage timestamp just before the damage is dropped (review 6)")
+  void subDayForwardGarbageBeforeDamage() throws Exception {
+    var path = dir.resolve("forward_garbage.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 100; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(v, 3000 * SEC, dbl(12.0)); // garbage: 2900 s ahead, less than a day
+      w.append(v + 40, 101 * SEC, dbl(1.0)); // undeclared entry: the damage
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncated());
+    assertEquals(100.0, scan.maxTimestamp(), 1e-9, scan.truncationMessage());
+    assertEquals(100, scan.dataRecords());
+    assertTrue(scan.truncationMessage().contains("jumped ahead"), scan.truncationMessage());
+    assertParsersAgree(path, 1.0, 100.0, 100);
+  }
+
+  @Test
+  @DisplayName("negative timestamps are data: a healthy DataLogManager log keeps them")
+  void negativeTimestampsAreData() throws Exception {
+    // What real robots log: one record per NetworkTables entry, tens of seconds before zero,
+    // in a log with no damage (the values here are made up)
+    var path = dir.resolve("retained_values.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      int led = w.start("NT:/photonvision/ledModeState", "int64", "", 0);
+      w.append(led, -30_250_000L, WpilogWriter.encodeInt64(1));
+      w.append(v, -8_500_000L, dbl(12.5));
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertFalse(scan.truncated(), String.valueOf(scan.truncationMessage()));
+    assertNull(scan.truncationMessage());
+    assertEquals(-30.25, scan.minTimestamp(), 1e-9);
+    assertEquals(12, scan.dataRecords());
+    assertEquals(1, scan.offsets().get("NT:/photonvision/ledModeState").size(),
+        "an entry whose only record is before zero is not empty");
+    assertParsersAgree(path, -30.25, 10.0, 11);
+  }
+
+  @Test
+  @DisplayName("a garbage negative timestamp just before the damage is rolled back with the rest")
+  void negativeGarbageBeforeDamage() throws Exception {
+    var path = dir.resolve("negative_garbage.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 100; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(v, -5 * SEC, dbl(12.0)); // garbage
+      w.append(v, 3000 * SEC, dbl(12.0)); // garbage
+      w.append(v + 40, 101 * SEC, dbl(1.0)); // the damage
+    }
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertEquals(1.0, scan.minTimestamp(), 1e-9, scan.truncationMessage());
+    assertEquals(100.0, scan.maxTimestamp(), 1e-9, scan.truncationMessage());
+    assertEquals(100, scan.dataRecords());
+    assertParsersAgree(path, 1.0, 100.0, 100);
+  }
+
+  @Test
+  @DisplayName("a Start record with a garbage string length is damage, not a crash")
+  void negativeStringLengthIsDamage() throws Exception {
+    var path = dir.resolve("bad_start.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    // A control (entry 0) Start record whose name length is 0xFFFFFFFF: header byte 0 (1-byte
+    // id, size, and timestamp), id 0, size 17, timestamp 1, then the payload
+    var payload = new byte[17];
+    payload[0] = 0; // Start
+    payload[1] = 5; // entry id 5
+    payload[5] = (byte) 0xFF;
+    payload[6] = (byte) 0xFF;
+    payload[7] = (byte) 0xFF;
+    payload[8] = (byte) 0xFF;
+    var record = new byte[4 + payload.length];
+    record[0] = 0;
+    record[1] = 0;
+    record[2] = (byte) payload.length;
+    record[3] = 1;
+    System.arraycopy(payload, 0, record, 4, payload.length);
+    java.nio.file.Files.write(path, record, java.nio.file.StandardOpenOption.APPEND);
+
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncated());
+    assertTrue(scan.truncationMessage().contains("cannot be read"), scan.truncationMessage());
+    assertEquals(10, scan.dataRecords());
+    assertParsersAgree(path, 1.0, 10.0, 10);
+  }
+
+  @Test
+  @DisplayName("a header whose extra length runs past the end of the file is damage")
+  void headerPastEndIsDamage() throws Exception {
+    var path = dir.resolve("bad_header.wpilog");
+    var header = java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+    header.put("WPILOG".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+    header.putShort((short) 0x0100);
+    header.putInt(100_000); // extra header length, far past the 12-byte file
+    java.nio.file.Files.write(path, header.array());
+    var scan = LogScan.of(new DataLogReader(path.toString()), path);
+    assertTrue(scan.truncated());
+    assertTrue(scan.truncationMessage().contains("extra-header"), scan.truncationMessage());
+    assertEquals(0, scan.dataRecords());
+  }
+
+  @Test
+  @DisplayName("the eager parser reports a malformed primitive record instead of dropping it")
+  void eagerParserReportsMalformedRecords() throws Exception {
+    var path = dir.resolve("malformed.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int x = w.start("/x", "double", "", 0);
+      int n = w.start("/n", "int64", "", 0);
+      for (int i = 1; i <= 3; i++) w.append(x, i * SEC, dbl(1.0));
+      w.append(x, 4 * SEC, new byte[] {1, 2, 3, 4}); // 4 bytes are not a double
+      w.append(n, 1 * SEC, new byte[] {1, 2}); // 2 bytes are not an int64
+    }
+    var eager = new LogParser().parse(path);
+    assertEquals(3, eager.values().get("/x").size());
+    assertEquals(4, eager.sampleCount("/x"), "records, including the one that failed");
+    var problem = eager.decodeProblem("/x").orElseThrow();
+    assertEquals(1, problem.failedRecords());
+    assertEquals(4, problem.totalRecords());
+    assertTrue(problem.message().contains("4 bytes"), problem.message());
+    assertFalse(problem.message().contains("null"), problem.message());
+    assertEquals(0, eager.values().get("/n").size());
+    assertEquals(1, eager.decodeProblem("/n").orElseThrow().failedRecords());
+    // The lazy log agrees
+    try (var lazy = new LazyParsedLog(path.toString(), new DataLogReader(path.toString()),
+        64L * 1024 * 1024)) {
+      assertEquals(4, lazy.sampleCount("/x"));
+      var lazyProblem = lazy.decodeProblem("/x").orElseThrow();
+      assertEquals(1, lazyProblem.failedRecords());
+      assertFalse(lazyProblem.message().contains("null"), lazyProblem.message());
+    }
+  }
+}
