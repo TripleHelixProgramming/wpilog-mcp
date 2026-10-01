@@ -1,8 +1,9 @@
 <table>
 <tr>
 <td width="180" valign="top" align="center">
-  <img src="images/icon.png" alt="WPILog Analyzer icon" width="140"><br>
-  <h1>WPILog Analyzer</h1>
+  <!-- The leading <br> balances the h1's top margin, so the icon sits midway between the cell's top edge and the title. -->
+  <p align="center"><br><img src="images/icon.png" alt="WPILog Analyzer icon" width="140" align="top"></p>
+  <h1 align="center">WPILog Analyzer</h1>
 </td>
 <td valign="top">
 
