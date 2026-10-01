@@ -37,7 +37,7 @@ There are two ways to run wpilog-mcp, depending on which AI client you use. The 
 
 **[Standalone Install](doc/STANDALONE.md)** — For MCP clients outside VS Code: Claude Desktop, Claude Code CLI, Gemini, or other MCP-compatible tools. You run `./gradlew install`, configure `servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.  The server will add its capabilities to those your tool already possesses.
 
-Both can be installed at the same time. They run as independent server instances with separate configuration — the extension uses VS Code settings while the standalone install uses `~/.wpilog-mcp/servers.yaml`. For Claude Code, use one of them per project: the extension adds itself to a robot project's `.mcp.json` unless that file already runs wpilog-mcp (see [Using It with Claude Code](vscode-extension/README.md#using-it-with-claude-code)). `.mcp.json` holds paths on your computer, so never commit or share it.
+Both can be installed at the same time. They run as independent server instances with separate configuration — the extension uses VS Code settings while the standalone install uses `~/.wpilog-mcp/servers.yaml`. For Claude Code, use one of them per project: the extension adds itself to a robot project's `.mcp.json` unless that file already runs wpilog-mcp (see [Using It with Claude Code](vscode-extension/README.md#using-it-with-claude-code)). The extension's `.mcp.json` entry holds paths specific to your computer, so committing it would do teammates no good.
 
 ### Then Just Ask
 

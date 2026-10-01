@@ -468,8 +468,8 @@ async function offerToIgnore(
   const choice = await showOnce(context, `wpilog-mcp.gitignoreOffered:${folder.uri}`, () =>
     vscode.window.showInformationMessage(
       `WPILog Analyzer added its server to ${folder.name}/.mcp.json so Claude Code can use it. ` +
-        "The entry holds paths for this computer only, and git does not ignore .mcp.json in " +
-        "this repository, so it could be committed and shared.",
+        "The entry holds paths for this computer only, so it would be no use to teammates if " +
+        "committed, and git does not ignore .mcp.json in this repository.",
       add,
       "Not now"
     )
@@ -559,9 +559,10 @@ async function updateMcpJsonFiles(
       outputChannel.appendLine(`Left ${uri.fsPath} alone: git tracks it (the repository shares it).`);
       const message =
         `WPILog Analyzer did not add its server to ${folder.name}/.mcp.json for Claude Code: ` +
-        "git tracks that file, so the repository shares it, and the entry holds paths for " +
-        "this computer only. To use WPILog Analyzer from Claude Code here, stop tracking the " +
-        "file (git rm --cached .mcp.json), add .mcp.json to .gitignore, and reload the window.";
+        "git tracks that file, and the entry holds paths for this computer only, so adding it " +
+        "would change the shared file for everyone (and each teammate's extension would change " +
+        "it again). To use WPILog Analyzer from Claude Code here, stop tracking the file " +
+        "(git rm --cached .mcp.json), add .mcp.json to .gitignore, and reload the window.";
       if (asked) {
         vscode.window.showWarningMessage(message);
       } else {

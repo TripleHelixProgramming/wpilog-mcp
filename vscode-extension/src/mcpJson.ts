@@ -2,8 +2,9 @@
  * The workspace `.mcp.json` entry through which Claude Code finds the server. Pure functions (no
  * VS Code API) so they can be tested on their own.
  *
- * The entry holds this computer's paths, so it belongs in a `.mcp.json` that git ignores, never in
- * one the repository shares. It never holds the TBA API key: the key reaches the server through a
+ * The entry holds this computer's paths, so it belongs in a `.mcp.json` that git ignores, not in
+ * one the repository shares, where it would be no use to others and each person's extension would
+ * rewrite it. It never holds the TBA API key: the key reaches the server through a
  * file only this user can read (`-tba-key-file`), or `${TBA_API_KEY:-}` from Claude Code's own
  * environment. Only the `wpilog-analyzer` entry is written; every other server and key in the file
  * is kept.
