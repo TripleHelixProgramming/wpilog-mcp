@@ -111,12 +111,13 @@ class ClaimChecksTest {
     return source.replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("(?m)(^|\\s)//[^\\n]*", "$1");
   }
 
+  /** Tool sources by class name, with LF line endings (a Windows checkout has CRLF). */
   static Map<String, String> sources() throws IOException {
     var map = new HashMap<String, String>();
     try (Stream<Path> files = Files.list(TOOLS_SRC)) {
       for (var f : files.filter(p -> p.toString().endsWith(".java")).toList()) {
         map.put(f.getFileName().toString().replace(".java", ""),
-            stripComments(Files.readString(f)));
+            stripComments(Files.readString(f).replace("\r\n", "\n")));
       }
     }
     return map;

@@ -470,6 +470,7 @@ A loaded log keeps answering from its first load after the file changes on disk,
 - **Renamed into place** (rsync's default): results stay stale.
 - **Overwritten in place** (`cp` keeps the inode): old byte offsets are applied to new bytes, so new records are invisible, or a different log copied over the name decodes as garbage, with no warning.
 - **During an in-place copy**: reading the truncated mapping throws `java.lang.InternalError`, which nothing in the call path catches; in stdio mode it ends the server loop.
+- **On Windows**: the file cannot be replaced or deleted at all while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). CI's Windows run hit this when test classes regenerated fixture logs an earlier class had loaded.
 
 REV logs too: sync runs once at load, so a REV log copied in later is never found.
 

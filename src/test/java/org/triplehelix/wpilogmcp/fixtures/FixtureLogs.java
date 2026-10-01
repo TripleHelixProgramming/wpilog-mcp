@@ -26,7 +26,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The fixture corpus: small, real {@code .wpilog} files, one per logging convention a tool must
@@ -59,13 +61,30 @@ public final class FixtureLogs {
     return Path.of("build", "test-fixtures").toAbsolutePath();
   }
 
+  /** Directories this JVM has generated into, and what it generated there. */
+  private static final Map<Path, List<Fixture>> generated = new HashMap<>();
+
   /**
-   * Generates every fixture into {@code dir}, replacing existing files.
+   * Generates every fixture into {@code dir}, replacing existing files, once per directory per JVM.
+   *
+   * <p>Test classes share {@link #defaultDirectory()}, and an earlier class's logs stay memory-mapped
+   * until the mappings are garbage collected. Windows refuses to replace a mapped file, so a second
+   * generation into the same directory fails there; generation is deterministic, so the files already
+   * written are what it would write. A directory whose files are gone is generated again.
    *
    * @param dir Target directory (created if missing)
    * @return The fixtures, in a stable order
    */
-  public static List<Fixture> generateAll(Path dir) throws IOException {
+  public static synchronized List<Fixture> generateAll(Path dir) throws IOException {
+    var key = dir.toAbsolutePath().normalize();
+    var done = generated.get(key);
+    if (done != null && done.stream().allMatch(f -> Files.exists(f.path()))) return done;
+    var all = generate(dir);
+    generated.put(key, all);
+    return all;
+  }
+
+  private static List<Fixture> generate(Path dir) throws IOException {
     Files.createDirectories(dir);
     var all = new ArrayList<Fixture>();
     all.add(akitMatch(dir));
