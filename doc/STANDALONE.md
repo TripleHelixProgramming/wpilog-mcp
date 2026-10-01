@@ -15,7 +15,7 @@ The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME` (macOS and Li
 
 ## Install
 
-To install the latest release, run the installer for your system.
+To install the latest release, run the installer for your system. The installers skip pre-releases; to try one from the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases), build the code instead (below), which is what a pre-release is made from.
 
 macOS and Linux:
 ```bash

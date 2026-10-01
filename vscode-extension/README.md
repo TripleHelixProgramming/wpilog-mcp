@@ -30,7 +30,7 @@ How deep the analysis goes depends on the AI model you use. The server provides 
 
 ## Install
 
-The extension is not on the Visual Studio Marketplace. Download `wpilog-analyzer-{version}.vsix` from the [latest release](https://github.com/TripleHelixProgramming/wpilog-mcp/releases/latest), then:
+The extension is not on the Visual Studio Marketplace. Download `wpilog-analyzer-{version}.vsix` from the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases) (a pre-release is a test build of the next version), then:
 
 1. Open the Extensions sidebar (`Ctrl+Shift+X`, or `Cmd+Shift+X` on macOS), click `...` at its top right, choose **Install from VSIX...**, and select the downloaded file.
 2. Restart VS Code.

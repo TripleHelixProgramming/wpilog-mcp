@@ -38,7 +38,7 @@ Start broad. The model finds the logs and the entries, and you can get as specif
 
 There are two ways to run wpilog-mcp. The server is designed for and tested with Claude, but should work with any MCP client.
 
-**[VS Code extension](vscode-extension/README.md):** install **WPILog Analyzer** from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases/latest) (it is not on the Marketplace). The extension finds Java, starts the server, and registers it with VS Code, where Copilot and other agents find it. For Claude Code, it adds the server to your robot project's `.mcp.json`, and you approve it once. With the robot project open, the agent can also read your code and connect log entries to the subsystems that write them.
+**[VS Code extension](vscode-extension/README.md):** install **WPILog Analyzer** from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases), where pre-releases are listed too (it is not on the Marketplace). The extension finds Java, starts the server, and registers it with VS Code, where Copilot and other agents find it. For Claude Code, it adds the server to your robot project's `.mcp.json`, and you approve it once. With the robot project open, the agent can also read your code and connect log entries to the subsystems that write them.
 
 **[Standalone install](doc/STANDALONE.md):** for MCP clients outside VS Code, such as Claude Desktop, the Claude Code CLI, or Gemini. Run the one-line installer (or clone the repository and run `./gradlew install`), set your team number and log directory in `~/.wpilog-mcp/servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.
 
