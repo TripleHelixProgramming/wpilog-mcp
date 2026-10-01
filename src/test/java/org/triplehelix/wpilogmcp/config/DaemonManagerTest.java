@@ -357,10 +357,12 @@ class DaemonManagerTest {
     @Test
     @DisplayName("the command always sets the heap before -jar and passes the config")
     void commandShape() {
+      // The config path is passed as the platform renders it (backslashes on Windows)
+      var config = Path.of("/c/servers.yaml");
       var command = DaemonManager.daemonCommand("java", "4g", null, "/x/wpilog-mcp.jar",
-          "team", Path.of("/c/servers.yaml"));
+          "team", config);
       assertEquals(List.of("java", "-Xmx4g", "-jar", "/x/wpilog-mcp.jar", "--internal-daemon",
-          "team", "--config", "/c/servers.yaml"), command);
+          "team", "--config", config.toString()), command);
       var withLevel = DaemonManager.daemonCommand("java", "2g", "debug", "a.jar", "n", null);
       assertEquals(List.of("java", "-Xmx2g",
           "-Dorg.slf4j.simpleLogger.defaultLogLevel=debug", "-jar", "a.jar",
