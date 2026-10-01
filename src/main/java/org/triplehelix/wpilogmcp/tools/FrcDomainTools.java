@@ -444,23 +444,32 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Analyze vision data, found by type and content. observation_streams: struct "
-          + "arrays of pose observations (for example the AdvantageKit vision template's "
+      return "Analyze vision data: what the AdvantageKit vision template and the vision "
+          + "libraries publish under their own names, and the entries passed as vision_entries. "
+          + "Entries that only look like vision data are listed in candidates by kind, with "
+          + "needs_confirmation, and are neither analyzed nor decoded: a planned trajectory is "
+          + "also a struct array of timestamps and poses, a gyro's struct also has yaw and "
+          + "pitch, and a robot's own HasTargetLock need not be a camera's. The robot's source "
+          + "code says what each is; pass the confirmed ones as vision_entries. "
+          + "observation_streams: struct:PoseObservation[] entries (the vision template's "
           + "/Vision/Camera<N>/PoseObservations from PhotonVision or Limelight: each record holds "
           + "a timestamp and a pose), one stream per camera, with record and observation counts, "
           + "the fraction of records with an observation, observation rate, tag-count and "
-          + "ambiguity distributions, latency (log time minus the observation's own timestamp, "
-          + "and a sibling Latency entry when logged), and the residual between each observation "
+          + "ambiguity distributions, latency (log time minus the observation's own timestamp; "
+          + "an entry beside the stream whose name mentions latency is listed in "
+          + "latency_candidates and not analyzed, since its name does not say what it times or "
+          + "in which units: get_statistics reads it), and the residual between each observation "
           + "and the robot pose at the observation's timestamp (robot_pose_entry, chosen or "
-          + "passed as pose_entry). target_streams: structs with yaw and pitch fields (such as "
-          + "TargetObservation), with yaw, pitch, area, and confidence distributions and the "
-          + "object ids seen. pose_sets: Pose3d[] entries, and Pose2d[] entries under a vision, "
-          + "camera, PhotonVision, or Limelight path (e.g. accepted or rejected robot poses per "
-          + "loop), with how often they are non-empty and poses per record; other Pose2d[] "
-          + "entries, such as a planned path, are not vision data. "
-          + "target_acquisition: Limelight-style has-target entries (tv, hasTarget, targetValid) "
-          + "with acquisition rate and flicker. pose_jumps: steps larger than jump_threshold in "
-          + "scalar pose entries; a jump within 0.5 s of the robot being enabled has "
+          + "passed as pose_entry). target_streams: struct:TargetObservation entries with yaw "
+          + "and pitch fields, with yaw, pitch, area, and confidence distributions and the "
+          + "object ids seen. pose_sets: the template's pose arrays (Vision/Summary/ and "
+          + "Vision/Camera<N>/ TagPoses, RobotPoses, RobotPosesAccepted, RobotPosesRejected), "
+          + "with how often they are non-empty and poses per record. "
+          + "target_acquisition: has-target entries with acquisition rate and flicker: "
+          + "Limelight's <table>/tv and PhotonVision's photonvision/<camera>/hasTarget. "
+          + "pose_jumps: steps larger than jump_threshold in the robot pose and in a vision "
+          + "pose estimate (the only scalar pose under a vision path, or those passed); a jump "
+          + "within 0.5 s of the robot being enabled has "
           + "near_enable_sec (odometry is often reset there, e.g. at the start of autonomous), so "
           + "it is not by itself evidence of a vision correction. vision_prefix limits the vision entries only "
           + "(case-insensitive); the robot pose may live elsewhere. Returns no_match with what "
@@ -470,9 +479,16 @@ public final class FrcDomainTools {
 
     @Override
     protected JsonObject toolSchema() {
+      var entryItem = new JsonObject();
+      entryItem.addProperty("type", "string");
       return new SchemaBuilder()
           .addProperty("vision_prefix", "string",
               "Only vision entries under this prefix (case-insensitive), e.g. '/Vision'", false)
+          .addArrayProperty("vision_entries", "Entries to analyze besides the conventional "
+              + "ones, each by its shape: a has-target flag (boolean, or a number where above "
+              + "0.5 means a target), a pose array, a scalar pose (checked for jumps), a struct "
+              + "array holding a timestamp and a pose, or a struct with yaw and pitch",
+              entryItem, false)
           .addProperty("pose_entry", "string",
               "Robot pose entry (struct:Pose2d or Pose3d) for residuals and jump detection; "
                   + "default: a conventional name (DriveState/Pose, Odometry/Robot, Drive/Pose, "
@@ -492,6 +508,9 @@ public final class FrcDomainTools {
     /** Seconds after an enable within which a pose jump is flagged as near_enable_sec. */
     static final double NEAR_ENABLE_SEC = 0.5;
 
+    /** Candidates listed per kind. */
+    static final int CANDIDATE_LIMIT = 20;
+
     static boolean underPrefix(String name, String prefix) {
       return prefix == null || name.toLowerCase().startsWith(prefix.toLowerCase());
     }
@@ -510,57 +529,79 @@ public final class FrcDomainTools {
       var endTime = getOptDouble(arguments, "end_time");
       double jumpThreshold = getOptDouble(arguments, "jump_threshold", 0.5);
       double flickerWindow = getOptDouble(arguments, "flicker_window", 0.5);
-      var entries = log.entries().values().stream()
-          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id)).toList();
+      List<String> visionArg = null;
+      var passed = arguments.get("vision_entries");
+      if (passed != null && !passed.isJsonNull()) {
+        var form = "vision_entries must be an array of entry names";
+        if (!passed.isJsonArray()) throw new IllegalArgumentException(form);
+        visionArg = new ArrayList<>();
+        for (var e : passed.getAsJsonArray()) {
+          if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString()) {
+            throw new IllegalArgumentException(form);
+          }
+          visionArg.add(e.getAsString());
+        }
+        if (visionArg.isEmpty()) {
+          throw new IllegalArgumentException("vision_entries is an empty list; omit it to "
+              + "analyze the conventional entries");
+        }
+      }
 
       // Robot pose: the robot_pose role (explicit, a conventional name, or the only Pose2d);
       // several unconventional Pose2d entries are candidates to confirm, not a guess
       var poseRole = SignalResolver.robotPose(log, poseArg);
       String robotPose = poseRole.chosen().orElse(null);
 
-      // Vision entries (prefix applies only here)
-      var targetEntries = new ArrayList<String>();
-      var streams = new ArrayList<String>();
-      var targetStreams = new ArrayList<String>();
-      var poseSets = new ArrayList<String>();
-      for (var e : entries) {
-        if (!underPrefix(e.name(), visionPrefix)) continue;
-        var lower = e.name().toLowerCase();
-        if (lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
-            || lower.contains("targetvalid")) {
-          targetEntries.add(e.name());
-        } else if (e.type().equals("struct:Pose3d[]")
-            || (e.type().equals("struct:Pose2d[]") && VISION_PATH.matcher(e.name()).find())) {
-          // A Pose2d[] elsewhere is usually a path or trajectory, not vision data
-          poseSets.add(e.name());
-        } else if (isObservationStream(log, e)) {
-          streams.add(e.name());
-        } else if (isTargetStream(log, e)) {
-          targetStreams.add(e.name());
-        }
-      }
-      // Jumps: the robot pose plus scalar vision pose estimates
+      // Vision entries: what the vision template and libraries publish under their own names,
+      // and what the caller passes. What only looks like vision data is a candidate, found
+      // from its type and schema and never decoded (an entry passed that is missing or of a
+      // shape the tool does not read is an error).
+      var vision = SignalResolver.visionEntries(log, visionPrefix, visionArg);
+      var targetEntries = vision.analyzed(SignalResolver.VisionKind.HAS_TARGET);
+      var streams = vision.analyzed(SignalResolver.VisionKind.OBSERVATION_STREAM);
+      var targetStreams = vision.analyzed(SignalResolver.VisionKind.TARGET_STREAM);
+      var poseSets = vision.analyzed(SignalResolver.VisionKind.POSE_SET);
+      // Jumps: the robot pose plus the vision pose estimates
       var jumpEntries = new ArrayList<String>();
       if (robotPose != null) jumpEntries.add(robotPose);
-      for (var e : entries) {
-        if (!isScalarPose(e) || e.name().equals(robotPose) || log.sampleCount(e.name()) < 2) continue;
-        var lower = e.name().toLowerCase();
-        if (lower.contains("vision") && underPrefix(e.name(), visionPrefix)) jumpEntries.add(e.name());
-      }
+      vision.analyzed(SignalResolver.VisionKind.POSE_ESTIMATE).stream()
+          .filter(name -> !name.equals(robotPose)).forEach(jumpEntries::add);
 
+      // Candidates by kind, at most CANDIDATE_LIMIT listed of each (the robot pose in use is
+      // not a candidate for a vision pose)
+      var candidatesJson = new JsonObject();
+      var candidateCounts = new JsonObject();
+      for (var kind : SignalResolver.VisionKind.values()) {
+        var names = vision.candidates(kind).stream().filter(n -> !n.equals(robotPose)).toList();
+        if (names.isEmpty()) continue;
+        candidatesJson.add(kind.key,
+            GSON.toJsonTree(names.stream().limit(CANDIDATE_LIMIT).toList()));
+        if (names.size() > CANDIDATE_LIMIT) candidateCounts.addProperty(kind.key, names.size());
+      }
+      boolean hasCandidates = candidatesJson.size() > 0;
+      var unconfirmed = "candidates lists entries that have the content or the name of vision "
+          + "data, by kind; they were not analyzed. Confirm which are vision data ("
+          + SignalResolver.HOW_TO_CONFIRM + ") and pass them as vision_entries; the server does "
+          + "not guess.";
       if (targetEntries.isEmpty() && streams.isEmpty() && jumpEntries.isEmpty()
           && targetStreams.isEmpty() && poseSets.isEmpty()) {
-        return ResponseBuilder.noMatch("No vision data or pose entries found"
+        var nm = ResponseBuilder.noMatch("No vision data or pose entries found"
                 + (visionPrefix != null ? " (vision entries under " + visionPrefix + ")" : "") + ".")
             .lookedFor(List.of(
-                "struct arrays whose records hold a timestamp and a pose (pose observations)",
-                "structs with yaw and pitch fields (target observations)",
-                "struct:Pose3d[] and struct:Pose2d[] entries (pose sets)",
-                "has-target entries: names containing hasTarget or targetValid, or ending in /tv",
-                "scalar struct:Pose2d/Pose3d entries (robot pose; vision pose estimates)"))
-            .hint("Use search_entries with pattern 'vision' or 'camera', then pass vision_prefix "
-                + "or pose_entry.")
-            .build();
+                "struct:PoseObservation[] entries whose records hold a timestamp and a pose "
+                    + "(the AdvantageKit vision template's pose observations)",
+                "struct:TargetObservation entries with yaw and pitch fields",
+                "the vision template's pose arrays: " + SignalResolver.POSE_SET_CONVENTION,
+                "has-target entries: " + SignalResolver.HAS_TARGET_CONVENTIONS,
+                "scalar struct:Pose2d/Pose3d entries (robot pose; a vision pose estimate)"))
+            .hint((hasCandidates ? unconfirmed + " " : "")
+                + "Use search_entries with pattern 'vision' or 'camera', then pass vision_prefix, "
+                + "vision_entries, or pose_entry.");
+        if (hasCandidates) {
+          nm.addData("candidates", candidatesJson).addProperty("needs_confirmation", true);
+          if (candidateCounts.size() > 0) nm.addData("candidate_counts", candidateCounts);
+        }
+        return nm.build();
       }
 
       var builder = success();
@@ -570,6 +611,28 @@ public final class FrcDomainTools {
             + "not computed: " + SignalResolver.unresolvedReason(poseRole, "pose_entry"));
       }
       if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
+      if (hasCandidates) {
+        builder.addData("candidates", candidatesJson);
+        if (candidateCounts.size() > 0) builder.addData("candidate_counts", candidateCounts);
+        builder.addProperty("needs_confirmation", true);
+        builder.addProperty("candidates_note", unconfirmed);
+        // A kind with candidates and nothing analyzed is a section that may be missing
+        var sections = java.util.Map.of(
+            SignalResolver.VisionKind.OBSERVATION_STREAM, "observation_streams",
+            SignalResolver.VisionKind.TARGET_STREAM, "target_streams",
+            SignalResolver.VisionKind.POSE_SET, "pose_sets",
+            SignalResolver.VisionKind.HAS_TARGET, "target_acquisition",
+            SignalResolver.VisionKind.POSE_ESTIMATE, "vision_pose_jumps");
+        for (var kind : SignalResolver.VisionKind.values()) {
+          var names = vision.candidates(kind).stream().filter(n -> !n.equals(robotPose)).toList();
+          if (names.isEmpty() || !vision.analyzed(kind).isEmpty()) continue;
+          builder.addSkipped(sections.get(kind), "No entry of this kind by convention. "
+              + "Candidates, not analyzed: " + String.join(", ", names.stream().limit(5).toList())
+              + (names.size() > 5 ? ", ..." : "") + ". Confirm which are vision data ("
+              + SignalResolver.HOW_TO_CONFIRM + ") and pass them as vision_entries; the server "
+              + "does not guess.");
+        }
+      }
 
       var targetAnalysis = new JsonArray();
       for (var name : targetEntries) {
@@ -584,21 +647,11 @@ public final class FrcDomainTools {
       for (var name : streams) {
         var o = observationStream(name, log.values().get(name), startTime, endTime,
             robotPose, robotPoseValues);
-        var latencyEntry = siblingLatency(log, name);
-        if (latencyEntry != null) {
-          var latencies = new ArrayList<Double>();
-          for (var tv : log.values().get(latencyEntry)) {
-            if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-            var v = toDouble(tv.value());
-            if (v != null && Double.isFinite(v)) latencies.add(v);
-          }
-          if (!latencies.isEmpty()) {
-            var l = distribution(latencies, "");
-            l.addProperty("entry", latencyEntry);
-            l.addProperty("basis", "as logged by the robot program (units per the entry name)");
-            o.add("logged_latency", l);
-          }
-        }
+        // An entry beside the stream named latency: listed, not reported as the stream's
+        // latency. Its name does not say what it times or in which units; get_statistics
+        // reads it once the caller knows.
+        var latencyNames = siblingLatency(log, name);
+        if (!latencyNames.isEmpty()) o.add("latency_candidates", GSON.toJsonTree(latencyNames));
         streamsJson.add(o);
       }
       builder.addData("observation_streams", streamsJson);
@@ -656,7 +709,9 @@ public final class FrcDomainTools {
           : !targetEntries.isEmpty() ? log.values().get(targetEntries.get(0))
           : !jumpEntries.isEmpty() ? log.values().get(jumpEntries.get(0)) : null;
       if (qualitySource != null) {
-        var quality = DataQuality.fromValues(qualitySource);
+        // The samples analyzed: the entry within start_time..end_time, not the whole entry
+        var quality = DataQuality.fromValues(qualitySource.stream()
+            .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).toList());
         builder.addDataQuality(quality)
             .addDirectives(AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat());
       }
@@ -719,15 +774,15 @@ public final class FrcDomainTools {
       return false;
     }
 
-    /** A numeric entry beside a stream (same parent) whose name mentions latency, or null. */
-    static String siblingLatency(LogData log, String stream) {
+    /** The numeric entries beside a stream (same parent) whose name mentions latency. */
+    static List<String> siblingLatency(LogData log, String stream) {
       var parent = stream.substring(0, Math.max(0, stream.lastIndexOf('/') + 1));
       return log.entries().values().stream()
           .filter(e -> e.name().startsWith(parent) && e.name().indexOf('/', parent.length()) < 0)
           .filter(e -> e.name().substring(parent.length()).toLowerCase().contains("latency"))
           .filter(e -> isNumericType(e.type()))
           .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).toList();
     }
 
     static String camera(String name) {
@@ -948,7 +1003,10 @@ public final class FrcDomainTools {
   }
 
   static class ProfileMechanismTool extends LogRequiringTool {
-    /** Mechanism roles, resolved from entry names or passed explicitly. */
+    /**
+     * Mechanism roles. Each is analyzed only from an entry passed explicitly; the patterns find
+     * the entries whose names suggest a role, which are listed as candidates.
+     */
     enum Role {
       SETPOINT("setpoint_entry", "(setpoint|goal|target|reference|desired|commanded)"),
       MEASUREMENT("measurement_entry", "(position|actual|measured|angle|height|distance|rotations)"),
@@ -978,24 +1036,24 @@ public final class FrcDomainTools {
 
     @Override
     public String description() {
-      return "Profile one closed-loop mechanism from its numeric entries: following error "
-          + "(measurement minus the setpoint in force, as RMSE, bias, and maximum), step response "
-          + "for each setpoint step (settling time into a 5% band of the step, percent overshoot "
-          + "of the step), stall events (|current| above stall_current_threshold while |velocity| "
-          + "is below stall_velocity_threshold, each with its signed peak current by magnitude), and "
-          + "motor temperature (maximum and final). "
-          + "Entries are found among names containing mechanism_name (case-insensitive substring "
-          + "anywhere in the name) by role — setpoint (setpoint/goal/target/reference), "
-          + "measurement (position/angle/height/...), velocity, current, temperature — and "
-          + "grouped by the stem before the role word, so /Drive/ModuleFrontLeft/DriveVelocity and "
-          + "TurnVelocity are different stems. When the name matches exactly one stem its entries "
-          + "are used; when it matches several, the server does not choose among them: the "
-          + "result is no_match with needs_confirmation and the stems' entries, unless the roles "
-          + "are passed explicitly (then only those entries are used and other_stems lists the "
-          + "stems). roles names every entry used; any role can be passed explicitly "
-          + "(setpoint_entry, measurement_entry, velocity_entry, current_entry, "
-          + "temperature_entry). Sections without their entries are listed in skipped. Returns "
-          + "no_match when nothing matches."
+      return "Profile one closed-loop mechanism from the numeric entries passed for its roles: "
+          + "following error (measurement_entry minus the setpoint_entry in force, as RMSE, bias, "
+          + "and maximum; the two must be in the same units), step response for each setpoint "
+          + "step (settling time into a 5% band of the step, percent overshoot of the step), "
+          + "stall events (|current_entry| above stall_current_threshold while |velocity_entry| "
+          + "is below stall_velocity_threshold, each with its signed peak current by magnitude), "
+          + "and motor temperature (temperature_entry: maximum and final). "
+          + "Only entries passed explicitly are analyzed: a name does not establish that an "
+          + "entry is this mechanism's setpoint or measurement, or its units (a "
+          + "'currentHeight' is the present height, and PhotonVision's 'targetYaw' is a camera "
+          + "reading, not a setpoint). "
+          + "mechanism_name (a case-insensitive substring of the entry names) finds the "
+          + "candidates: candidates lists, per role, the entries whose leaf name suggests it. "
+          + "With mechanism_name alone the result is no_match with needs_confirmation and the "
+          + "candidates; confirm each from the robot's source code (where the entry is logged), "
+          + "or its values, and pass it. roles names every entry used. Sections without their "
+          + "entries are listed in skipped with the candidates. Returns no_match when nothing "
+          + "matches."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
 
@@ -1003,31 +1061,25 @@ public final class FrcDomainTools {
     protected JsonObject toolSchema() {
       var b = new SchemaBuilder()
           .addProperty("mechanism_name", "string",
-              "Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' or 'ModuleFrontLeft/Drive'", false)
+              "Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' "
+                  + "or 'ModuleFrontLeft/Drive': lists candidate entries per role; none is used "
+                  + "until passed", false)
           .addNumberProperty("start_time", "Start timestamp", false, null)
           .addNumberProperty("end_time", "End timestamp", false, null)
           .addNumberProperty("stall_current_threshold", "Current threshold for stall (default: 30A)", false, 30.0)
           .addNumberProperty("stall_velocity_threshold",
               "|velocity| below this counts as stopped, in the velocity entry's units (default: 0.01)", false, 0.01);
       for (var role : Role.values()) {
-        b.addProperty(role.param, "string", "Explicit " + role.key() + " entry", false);
+        b.addProperty(role.param, "string", "The mechanism's " + role.key() + " entry (a scalar "
+            + "number)", false);
       }
       return b.build();
     }
 
-    /** The name's leaf up to its role word ("DriveVelocityRadPerSec" -> "drive"). */
-    static String stem(String name) {
-      var leaf = name.substring(name.lastIndexOf('/') + 1);
-      int cut = leaf.length();
-      for (var role : Role.values()) {
-        var m = role.pattern.matcher(leaf);
-        if (m.find()) cut = Math.min(cut, m.start());
-      }
-      var vm = java.util.regex.Pattern.compile("(?i)(volt|applied|output)").matcher(leaf);
-      if (vm.find()) cut = Math.min(cut, vm.start());
-      return leaf.substring(0, cut).toLowerCase(java.util.Locale.ROOT);
-    }
+    /** Candidates listed per role. */
+    static final int CANDIDATE_LIMIT = 10;
 
+    /** The role an entry's leaf name suggests, or null: a candidate, never a choice. */
     static Role roleOf(String name) {
       var leaf = name.substring(name.lastIndexOf('/') + 1);
       if (Role.SETPOINT.pattern.matcher(leaf).find()) return Role.SETPOINT;
@@ -1067,8 +1119,9 @@ public final class FrcDomainTools {
             + "temperature_entry)");
       }
 
-      // Candidates by stem: stem -> role -> entry (lowest id first)
-      var byStem = new LinkedHashMap<String, java.util.EnumMap<Role, String>>();
+      // Entries containing the name, by the role their leaf suggests: candidates for the roles
+      // not passed, to confirm and pass. None is analyzed.
+      var candidates = new java.util.EnumMap<Role, List<String>>(Role.class);
       if (mechanismName != null) {
         var lowerName = mechanismName.toLowerCase(java.util.Locale.ROOT);
         log.entries().values().stream()
@@ -1078,47 +1131,47 @@ public final class FrcDomainTools {
             .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
             .forEach(e -> {
               var role = roleOf(e.name());
-              if (role == null) return;
-              byStem.computeIfAbsent(stem(e.name()), k -> new java.util.EnumMap<>(Role.class))
-                  .putIfAbsent(role, e.name());
+              if (role == null || explicit.containsKey(role)) return;
+              candidates.computeIfAbsent(role, k -> new ArrayList<>()).add(e.name());
             });
       }
-      java.util.function.Function<String, String> stemLabel = k -> k.isEmpty() ? "(none)" : k;
-      if (byStem.size() > 1 && explicit.isEmpty()) {
-        // Several mechanisms match the name: the server does not choose among them
-        var stems = new JsonObject();
-        byStem.forEach((stem, found) -> {
-          var o = new JsonObject();
-          found.forEach((role, entry) -> o.addProperty(role.key(), entry));
-          stems.add(stemLabel.apply(stem), o);
-        });
-        var named = byStem.keySet().stream().filter(k -> !k.isEmpty()).findFirst();
-        return ResponseBuilder.noMatch("'" + mechanismName + "' matches " + byStem.size()
-                + " mechanisms by stem (" + String.join(", ", byStem.keySet().stream()
-                    .map(stemLabel).toList()) + "); the server does not guess which is meant.")
-            .hint("Pass a more specific mechanism_name" + named.map(s -> " (e.g. '"
-                + mechanismName + "/" + s + "', matched case-insensitively)").orElse("")
-                + ", or the entries themselves (setpoint_entry, measurement_entry, "
-                + "velocity_entry, current_entry, temperature_entry).")
-            .addData("stems", stems)
-            .addProperty("needs_confirmation", true)
-            .build();
-      }
-      String chosenStem = byStem.size() == 1 ? byStem.keySet().iterator().next() : null;
-      var roles = new java.util.EnumMap<Role, String>(Role.class);
-      if (chosenStem != null) roles.putAll(byStem.get(chosenStem));
-      roles.putAll(explicit);
+      var candidatesJson = new JsonObject();
+      var candidateCounts = new JsonObject();
+      candidates.forEach((role, names) -> {
+        var listed = new JsonArray();
+        names.stream().limit(CANDIDATE_LIMIT).forEach(listed::add);
+        candidatesJson.add(role.key(), listed);
+        if (names.size() > CANDIDATE_LIMIT) candidateCounts.addProperty(role.key(), names.size());
+      });
+      var params = String.join(", ", java.util.Arrays.stream(Role.values())
+          .map(r -> r.param).toList());
 
-      if (roles.isEmpty()) {
-        return ResponseBuilder.noMatch("No numeric entries containing '" + mechanismName
-                + "' with a recognizable role.")
-            .lookedFor(List.of("scalar numeric entries whose name contains the mechanism name, "
-                + "with a leaf naming a setpoint/goal/target, position/angle/height, "
-                + "velocity/speed, current/amps, or temperature"))
-            .hint("Use search_entries with the mechanism name, then pass the entries "
-                + "explicitly (setpoint_entry, measurement_entry, ...).")
-            .build();
+      if (explicit.isEmpty()) {
+        if (candidates.isEmpty()) {
+          return ResponseBuilder.noMatch("No numeric entries containing '" + mechanismName
+                  + "' with a leaf naming a role.")
+              .lookedFor(List.of("scalar numeric entries whose name contains the mechanism name, "
+                  + "with a leaf naming a setpoint/goal/target, position/angle/height, "
+                  + "velocity/speed, current/amps, or temperature"))
+              .hint("Use search_entries with the mechanism name, then pass the entries "
+                  + "explicitly (" + params + ").")
+              .build();
+        }
+        var nm = ResponseBuilder.noMatch("No role entries were passed. profile_mechanism analyzes "
+                + "only entries passed explicitly: a name does not establish that an entry is "
+                + "this mechanism's setpoint, measurement, velocity, current, or temperature, or "
+                + "its units.")
+            .hint("candidates lists the entries containing '" + mechanismName + "' whose leaf "
+                + "name suggests each role. Confirm each one (" + SignalResolver.HOW_TO_CONFIRM
+                + ") and pass it: " + params + ". The setpoint and the measurement must be in "
+                + "the same units; the server does not guess.")
+            .addProperty("mechanism", mechanismName)
+            .addData("candidates", candidatesJson)
+            .addProperty("needs_confirmation", true);
+        if (candidateCounts.size() > 0) nm.addData("candidate_counts", candidateCounts);
+        return nm.build();
       }
+      var roles = explicit;
 
       var builder = success();
       if (mechanismName != null) builder.addProperty("mechanism", mechanismName);
@@ -1127,15 +1180,23 @@ public final class FrcDomainTools {
         rolesJson.addProperty(role.key(), roles.get(role));
       }
       builder.addData("roles", rolesJson);
-      if (chosenStem != null) builder.addProperty("stem", chosenStem);
-      var otherStems = byStem.keySet().stream().filter(k -> !k.equals(chosenStem)).toList();
-      if (!otherStems.isEmpty()) {
-        // Several stems and explicit entries: only the explicit entries were used
-        builder.addData("other_stems", GSON.toJsonTree(otherStems.stream().map(stemLabel).toList()));
-        builder.addWarning("'" + mechanismName + "' matches several mechanisms by stem ("
-            + String.join(", ", otherStems.stream().map(stemLabel).toList())
-            + "); only the explicitly passed entries were used.");
+      if (!candidates.isEmpty()) {
+        builder.addData("candidates", candidatesJson);
+        if (candidateCounts.size() > 0) builder.addData("candidate_counts", candidateCounts);
+        builder.addProperty("needs_confirmation", true);
       }
+      // What a skipped section says about the roles it lacks: their candidates and parameters
+      java.util.function.Function<List<Role>, String> missing = needed -> {
+        var parts = new ArrayList<String>();
+        for (var role : needed) {
+          if (roles.containsKey(role)) continue;
+          var names = candidates.get(role);
+          parts.add(role.param + " was not passed" + (names == null ? ""
+              : " (candidates by name, not used: " + String.join(", ",
+                  names.stream().limit(5).toList()) + (names.size() > 5 ? ", ..." : "") + ")"));
+        }
+        return String.join("; ", parts) + ".";
+      };
       roles.forEach((role, entry) -> builder.addInput(role.key(), entry));
       if (startTime != null || endTime != null) builder.addInputWindow(startTime, endTime);
 
@@ -1153,8 +1214,8 @@ public final class FrcDomainTools {
               + "force inside the window.");
         }
       } else {
-        builder.addSkipped("following_error", "Needs both a setpoint and a measurement entry; "
-            + "missing " + (setpoint == null ? "setpoint" : "measurement") + ".");
+        builder.addSkipped("following_error", "Needs a setpoint and a measurement entry: "
+            + missing.apply(List.of(Role.SETPOINT, Role.MEASUREMENT)));
       }
 
       var velocity = roles.get(Role.VELOCITY);
@@ -1167,8 +1228,8 @@ public final class FrcDomainTools {
         builder.addLimitedList("stall_events", list, stalls.size(), 50);
         builder.addProperty("stall_count", stalls.size());
       } else {
-        builder.addSkipped("stall_events", "Needs a velocity and a current entry; missing "
-            + (velocity == null ? "velocity" : "current") + ".");
+        builder.addSkipped("stall_events", "Needs a velocity and a current entry: "
+            + missing.apply(List.of(Role.VELOCITY, Role.CURRENT)));
       }
 
       var temperature = roles.get(Role.TEMPERATURE);
@@ -1186,7 +1247,8 @@ public final class FrcDomainTools {
           builder.addData("temperature", t);
         }
       } else {
-        builder.addSkipped("temperature", "No temperature entry for this mechanism.");
+        builder.addSkipped("temperature", "Needs a temperature entry: "
+            + missing.apply(List.of(Role.TEMPERATURE)));
       }
 
       var qualityEntry = measurement != null ? measurement : velocity;
@@ -1855,8 +1917,9 @@ public final class FrcDomainTools {
             deadTimePeriods.size(), limit);
       }
 
-      // Add data quality and analysis directives
-      var quality = DataQuality.fromValues(vals);
+      // Data quality of the samples analyzed: the entry within start_time..end_time
+      var quality = DataQuality.fromValues(vals.stream()
+          .filter(tv -> inTimeRange(tv.timestamp(), startTime, endTime)).toList());
       var directives = AnalysisDirectives.fromQuality(quality).addSingleMatchCaveat();
       result.add("data_quality", quality.toJson());
       result.add("server_analysis_directives", directives.toJson());

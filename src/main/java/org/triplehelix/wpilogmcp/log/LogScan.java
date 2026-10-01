@@ -50,12 +50,14 @@ import org.slf4j.LoggerFactory;
  * @param maxTimestamp Latest timestamp of an accepted record (seconds), 0 if none
  * @param dataRecords The number of accepted data records
  * @param truncated Whether part of the file could not be read as a valid log
+ * @param damaged Whether more was lost than a final record cut off mid-write: garbage or
+ *     unreadable records, or records set aside for their timestamps
  * @param truncationMessage What was not read, and why, or null
  * @since 0.9.0
  */
 public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offsets,
     double minTimestamp, double maxTimestamp, int dataRecords, boolean truncated,
-    String truncationMessage) {
+    boolean damaged, String truncationMessage) {
 
   private static final Logger logger = LoggerFactory.getLogger(LogScan.class);
 
@@ -93,6 +95,8 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
     int jumps = 0;
     int firstJump = -1;
     String damage = null;
+    // The ordinary end of a robot's log: power went off inside the last record
+    boolean cutInsideRecord = false;
     var recent = new ArrayDeque<Accepted>();
 
     // Walk records by their own bounds (DataLogAccess.recordEnd), not WPILib's iterator, whose
@@ -108,6 +112,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
         int next = DataLogAccess.recordEnd(reader, pos);
         if (next < 0) {
           damage = "the file ends inside a record at byte " + pos;
+          cutInsideRecord = true;
           break;
         }
         var record = DataLogAccess.getRecord(reader, pos);
@@ -212,7 +217,8 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
       logger.warn("Log file '{}': {}", path.getFileName(), message);
     }
 
+    boolean damaged = (damage != null && !cutInsideRecord) || rolledBack > 0 || jumps > 0;
     return new LogScan(Collections.unmodifiableMap(entriesByName), offsets, min, max,
-        dataRecords, message != null, message);
+        dataRecords, message != null, damaged, message);
   }
 }

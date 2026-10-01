@@ -221,6 +221,51 @@ class AnalysisGuidanceTest {
   }
 
   @Test
+  @DisplayName("what an entry measures comes from the robot source code, not from its name")
+  void sourceCodeIsTheEvidenceForWhatAnEntryMeasures() throws Exception {
+    // In the instructions, as its own rule right after the no-invented-data rule: it must
+    // survive a client that truncates, and it comes before any reasoning about the values
+    var text = AnalysisGuidance.SERVER_INSTRUCTIONS;
+    int rule = text.indexOf("2. An entry's name does not prove what it measures");
+    assertTrue(rule > 0, "the rule is missing: " + text);
+    int code = text.indexOf("robot source code", rule);
+    assertTrue(code > rule && code < text.indexOf("\n3. "), "the rule names the source code");
+    var ruleText = text.substring(rule, text.indexOf("\n3. "));
+    for (var part : List.of("mechanism", "units", "measured or commanded", "assumption")) {
+      assertTrue(ruleText.contains(part), part + " missing from: " + ruleText);
+    }
+
+    // In the long form: where to look in the method, a trap with real examples, and the way a
+    // candidate is confirmed
+    var principles = AnalysisGuidance.analysisPrinciples();
+    var observe = principles.getAsJsonObject("method").getAsJsonArray("steps").get(0)
+        .getAsString();
+    assertTrue(observe.contains("source code"), observe);
+    var fix = trapFix(principles, "Taking an entry's name as proof of what it measures");
+    assertNotNull(fix, "the trap is missing");
+    for (var part : List.of("currentHeight", "targetYaw", "units", "assumption", "cite")) {
+      assertTrue(fix.contains(part), part + " missing from: " + fix);
+    }
+    var noGuess = principles.getAsJsonObject("naming").get("the_server_does_not_guess")
+        .getAsString();
+    assertTrue(noGuess.contains("source code"), noGuess);
+    assertTrue(noGuess.indexOf("source code") < noGuess.indexOf("get_entry_info"),
+        "the code comes before the values as evidence: " + noGuess);
+    assertTrue(noGuess.contains("profile_mechanism"), noGuess);
+
+    // Where an agent meets an unresolved role, and in the guide's short list of rules
+    var registry = new ToolRegistry();
+    WpilogTools.registerAll(registry);
+    var guide = registry.getTool("get_server_guide").execute(new com.google.gson.JsonObject())
+        .getAsJsonObject();
+    var tip = guide.getAsJsonObject("critical_guidance").get("source_code_tip").getAsString();
+    assertTrue(tip.contains("source code") && tip.contains("assumption"), tip);
+    assertTrue(SignalResolver.HOW_TO_CONFIRM.startsWith("the robot's source code"),
+        SignalResolver.HOW_TO_CONFIRM);
+    assertTrue(registry.getTool("resolve_signals").description().contains("source code"));
+  }
+
+  @Test
   @DisplayName("registering all tools installs the server instructions")
   void registerAllInstallsInstructions() {
     var registry = new ToolRegistry();

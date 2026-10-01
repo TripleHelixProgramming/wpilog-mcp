@@ -575,4 +575,28 @@ public final class ToolUtils {
       result.add("warnings", warnings);
     }
   }
+
+  /**
+   * Says in a result that its log was not read to the end: {@code _metadata.log_truncation}
+   * carries what was not read and the time range recovered. Most robot logs end inside their
+   * last record (the robot is switched off while logging), so that alone raises no warning; a
+   * warning on nearly every result would teach an agent to ignore warnings. A log that lost
+   * more than its cut-off final record ({@link org.triplehelix.wpilogmcp.log.LogData#damaged})
+   * gets the warning as well.
+   */
+  public static void noteTruncation(com.google.gson.JsonObject result,
+      org.triplehelix.wpilogmcp.log.LogData log) {
+    var message = log.truncationMessage();
+    if (!log.truncated() || message == null) return;
+    var metadata = result.has("_metadata") && result.get("_metadata").isJsonObject()
+        ? result.getAsJsonObject("_metadata") : new com.google.gson.JsonObject();
+    metadata.addProperty("log_truncation", message);
+    result.add("_metadata", metadata);
+    if (!log.damaged()) return;
+    var warnings = result.has("warnings") && result.get("warnings").isJsonArray()
+        ? result.getAsJsonArray("warnings") : new com.google.gson.JsonArray();
+    var warning = new com.google.gson.JsonPrimitive(message);
+    if (!warnings.contains(warning)) warnings.add(warning);
+    result.add("warnings", warnings);
+  }
 }

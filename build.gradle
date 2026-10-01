@@ -592,7 +592,8 @@ String computeHeapSize(String configFile) {
 tasks.register('stdioStressTest') {
     description = 'Run stdio integration stress test'
     group = 'verification'
-    dependsOn extractTestNatives
+    // The test classes and resources: without them the task ran whatever an earlier build left
+    dependsOn 'testClasses', extractTestNatives
 
     doLast {
         String explicitPath = project.findProperty('configpath') ?: ''
@@ -635,7 +636,7 @@ tasks.register('stdioStressTest') {
         }
 
         if (result.exitValue != 0) {
-            println "\nStdio stress tests completed with failures (exit code: ${result.exitValue})"
+            throw new GradleException("Stdio stress tests failed (exit code: ${result.exitValue})")
         }
     }
 }
@@ -643,7 +644,7 @@ tasks.register('stdioStressTest') {
 tasks.register('httpStressTest') {
     description = 'Run HTTP transport stress test'
     group = 'verification'
-    dependsOn 'compileTestJava', extractTestNatives
+    dependsOn 'testClasses', extractTestNatives
 
     doLast {
         String explicitPath = project.findProperty('configpath') ?: ''
@@ -684,7 +685,7 @@ tasks.register('httpStressTest') {
         }
 
         if (result.exitValue != 0) {
-            println "\nHTTP stress tests completed with failures (exit code: ${result.exitValue})"
+            throw new GradleException("HTTP stress tests failed (exit code: ${result.exitValue})")
         }
     }
 }
@@ -694,6 +695,8 @@ tasks.register('stressTest') {
     group = 'verification'
     dependsOn 'stdioStressTest', 'httpStressTest'
 }
+// One after the other, so that a failure of the first is reported before the second starts
+tasks.named('httpStressTest') { mustRunAfter 'stdioStressTest' }
 
 // Add JUnit Platform Console dependency for stressTest task
 dependencies {

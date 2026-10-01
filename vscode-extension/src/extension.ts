@@ -19,11 +19,11 @@ import {
   buildServerEntry,
   gitAction,
   hasServerEntry,
-  mergeServerEntry,
   otherWpilogServer,
   scrubTbaKey,
   shouldWriteEntry,
 } from "./mcpJson";
+import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
 
@@ -175,8 +175,13 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("wpilog-mcp.clearTbaApiKey", async () => {
       await context.secrets.delete(TBA_SECRET);
-      // Out of Claude Code's configuration files too, even with Claude Code turned off
+      // Out of Claude Code's configuration files too, even with Claude Code turned off: the
+      // remembered projects' are rewritten, and any other file there is cleaned as well
       await refreshKnownProjects(context, new Set());
+      const cleaned = await removeTbaKeyFromConfigs(projectsDir(context), new Set());
+      for (const file of [...cleaned.scrubbed, ...cleaned.removed]) {
+        outputChannel.appendLine(`Removed the TBA API key from ${file}`);
+      }
       vscode.window.showInformationMessage(
         "WPILog Analyzer: TBA API key removed. The server restarts without it."
       );
@@ -459,9 +464,14 @@ function projectSettings(folder: vscode.WorkspaceFolder): LogSettings {
   };
 }
 
+/** Where the projects' configuration files are, in the extension's storage. */
+function projectsDir(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "projects");
+}
+
 /** A project's configuration file, in the extension's storage. */
 function projectConfigPath(context: vscode.ExtensionContext, folderPath: string): string {
-  return path.join(context.globalStorageUri.fsPath, "projects", projectConfigName(folderPath));
+  return path.join(projectsDir(context), projectConfigName(folderPath));
 }
 
 /**
@@ -493,14 +503,7 @@ async function writeProjectConfig(
     cacheDir: extensionCacheDir(context),
   });
   const file = projectConfigPath(context, folderPath);
-  const current = await fs.promises.readFile(file, "utf8").catch(() => undefined);
-  if (current !== text) {
-    await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(temp, text, { mode: 0o600 });
-    await fs.promises.rename(temp, file);
-  }
-  await fs.promises.chmod(file, 0o600);
+  await writeConfigFile(file, text);
   return file;
 }
 
@@ -541,6 +544,12 @@ async function refreshKnownProjects(context: vscode.ExtensionContext, skip: Set<
   if (forgotten) {
     await context.globalState.update(PROJECTS_KEY, known);
   }
+  // A configuration file of no remembered project never holds the key: nothing refreshes it
+  // when the key changes or is cleared
+  const remembered = new Set(
+    [...Object.keys(known), ...skip].map((folderPath) => projectConfigPath(context, folderPath))
+  );
+  await removeTbaKeyFromConfigs(projectsDir(context), remembered);
 }
 
 /** Shows a message once per workspace (remembered under `key`); returns the button chosen. */
@@ -686,32 +695,47 @@ async function writeEntries(
       continue;
     }
 
-    // This project's settings: the user's, with the project's own on top
+    // This project's settings: the user's, with the project's own on top. Its configuration
+    // file holds the TBA key, so it is written only once .mcp.json can take the entry, and
+    // does not outlive an entry that could not be written.
     const own = projectSettings(folder);
-    const configPath = await writeProjectConfig(
-      context,
-      folder.uri.fsPath,
-      overlaySettings(user, own)
+    const configPath = projectConfigPath(context, folder.uri.fsPath);
+    const outcome = await writeEntry(
+      text,
+      buildServerEntry(javaPath, jar, maxHeap, configPath),
+      {
+        writeConfig: async () => {
+          await writeProjectConfig(context, folder.uri.fsPath, overlaySettings(user, own));
+        },
+        removeConfig: () => fs.promises.rm(configPath, { force: true }),
+        writeMcpJson: async (updated) => {
+          await vscode.workspace.fs.writeFile(uri, Buffer.from(updated));
+        },
+      }
     );
-    const edit = mergeServerEntry(text, buildServerEntry(javaPath, jar, maxHeap, configPath));
-    if (!edit.ok) {
-      outputChannel.appendLine(`Did not update ${uri.fsPath}: ${edit.error}`);
-      vscode.window.showWarningMessage(
-        `WPILog Analyzer: ${edit.error}, so it was not updated for Claude Code. Fix the file, or turn off wpilog-mcp.enableForClaudeCode.`
-      );
+    if (!outcome.ok) {
+      if (outcome.refused) {
+        outputChannel.appendLine(`Did not update ${uri.fsPath}: ${outcome.error}`);
+        vscode.window.showWarningMessage(
+          `WPILog Analyzer: ${outcome.error}, so it was not updated for Claude Code. Fix the file, or turn off wpilog-mcp.enableForClaudeCode.`
+        );
+      } else {
+        outputChannel.appendLine(`Failed to write ${uri.fsPath}: ${outcome.error}`);
+        if (asked) {
+          vscode.window.showErrorMessage(
+            `WPILog Analyzer: could not write ${uri.fsPath}: ${outcome.error}`
+          );
+        }
+      }
+      if (outcome.entryExists) {
+        // Its earlier entry still starts the server with the configuration file just written
+        await rememberProject(context, folder.uri.fsPath, own);
+        written.add(folder.uri.fsPath);
+      }
       continue;
     }
-    if (edit.changed) {
-      try {
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(edit.text));
-        outputChannel.appendLine(`Updated the wpilog-analyzer entry in ${uri.fsPath}`);
-      } catch (e) {
-        outputChannel.appendLine(`Failed to write ${uri.fsPath}: ${e}`);
-        if (asked) {
-          vscode.window.showErrorMessage(`WPILog Analyzer: could not write ${uri.fsPath}: ${e}`);
-        }
-        continue;
-      }
+    if (outcome.changed) {
+      outputChannel.appendLine(`Updated the wpilog-analyzer entry in ${uri.fsPath}`);
     }
     await rememberProject(context, folder.uri.fsPath, own);
     written.add(folder.uri.fsPath);

@@ -96,6 +96,7 @@ public final class FixtureLogs {
     all.add(visionLimelight(dir));
     all.add(visionPhotonAkit(dir));
     all.add(visionPose3dSingle(dir));
+    all.add(visionLookalikes(dir));
     all.add(structLayoutMismatch(dir));
     all.add(structCustom(dir));
     all.add(brownoutRio2(dir));
@@ -638,6 +639,79 @@ public final class FixtureLogs {
     return new Fixture("vision_photon_akit", path,
         "PhotonVision via the AdvantageKit vision template: PoseObservation[] for 2 cameras",
         List.of("B4", "A1", "C1"));
+  }
+
+  /**
+   * The schema of a planned trajectory's samples, as the Choreo library publishes it: a
+   * timestamp and a pose, like a camera's pose observation.
+   */
+  public static final String SWERVE_SAMPLE_SCHEMA = "double timestamp;Pose2d pose;double vx;"
+      + "double vy;double omega;double ax;double ay;double alpha;double moduleForcesX[4];"
+      + "double moduleForcesY[4];";
+
+  /** A gyro's reading as some vendor libraries log it: yaw and pitch, like a camera target. */
+  public static final String GYRO_READING_SCHEMA = "double yaw;double pitch;double roll;";
+
+  /**
+   * Entries that look like vision data by content or by name, beside real ones. Real logs hold
+   * each kind: a planned trajectory is a struct array of timestamps and poses, a gyro's struct
+   * has yaw and pitch, a mechanism's component poses are a Pose3d[], and a robot's own
+   * "HasTargetLock" is named like a camera's flag.
+   */
+  static Fixture visionLookalikes(Path dir) throws IOException {
+    var path = dir.resolve("2026-vision_lookalikes.wpilog");
+    double start = 1.0;
+    double end = 30.0;
+    var segments = List.of(new Segment(5.0, 25.0, false));
+    try (var w = new FixtureWriter(path, AKIT_METADATA)) {
+      akitDriverStation(w, start, end, segments, false, "");
+      w.schema("PoseObservation", POSE_OBSERVATION_SCHEMA, start)
+          .schema("TargetObservation", TARGET_OBSERVATION_SCHEMA, start)
+          .schema("SwerveSample", SWERVE_SAMPLE_SCHEMA, start)
+          .schema("GyroReading", GYRO_READING_SCHEMA, start)
+          .schema(POSE2D, start)
+          .schema(POSE3D, start);
+      // The planned trajectory: 40 samples, logged again whenever the selection is refreshed
+      var samples = new byte[40][];
+      for (int k = 0; k < samples.length; k++) {
+        var sample = FixtureWriter.le(144).putDouble(0.1 * k).put(pose2d(1.0 + 0.1 * k, 2.0, 0.0));
+        for (int d = 0; d < 14; d++) sample.putDouble(0.0);
+        samples[k] = sample.array();
+      }
+      int n = loops(start, end);
+      for (int i = 0; i < n; i++) {
+        double t = loopTime(start, i);
+        double x = 3.0 + 0.5 * Math.sin(0.1 * t);
+        double y = 4.5 + 0.3 * Math.cos(0.1 * t);
+        w.struct("/RealOutputs/Drive/Pose", POSE2D, t, pose2d(x, y, 0.0));
+        w.raw("NT:/Telemetry/imu", "struct:GyroReading", t,
+            FixtureWriter.le(24).putDouble(0.01 * i).putDouble(0.0).putDouble(0.0).array());
+        w.structArr("/RealOutputs/Mechanism/ComponentPoses", POSE3D, t,
+            pose3d(0.1, 0.0, 0.5, 0.0), pose3d(0.2, 0.0, 0.9, 0.0));
+        if (i % 50 == 0) {
+          w.raw("/RealOutputs/Auto/PlannedTrajectory", "struct:SwerveSample[]", t,
+              WpiStructs.concat(samples));
+          w.bool("/Shooter/HasTargetLock", t, (i / 50) % 2 == 0);
+        }
+        if (i % 2 != 0) continue; // camera inputs every other loop
+        w.raw("/Vision/Camera0/PoseObservations", "struct:PoseObservation[]", t,
+            poseObservation(t - 0.06, x + 0.02, y, 0.0, 0.0, 0.05, 1, 2.8, 2));
+        w.raw("/Vision/Camera0/LatestTargetObservation", "struct:TargetObservation", t,
+            FixtureWriter.le(40).putDouble(0.1).putDouble(0.05).putDouble(0.0).putDouble(0.9)
+                .putFloat(0.95f).putInt(7).array());
+        w.structArr("/RealOutputs/Vision/Summary/RobotPosesAccepted", POSE3D, t,
+            pose3d(x, y, 0.0, 0.0));
+        w.structArr("/RealOutputs/Vision/DebugPoses", POSE3D, t, pose3d(x, y, 0.0, 0.0));
+        // Two scalar estimates under a vision path: which one (if either) is the vision pose
+        // is not something their names settle
+        w.struct("/RealOutputs/Vision/Camera0/EstimateA", POSE2D, t, pose2d(x, y, 0.0));
+        w.struct("/RealOutputs/Vision/Camera0/EstimateB", POSE2D, t, pose2d(x + 0.1, y, 0.0));
+      }
+    }
+    return new Fixture("vision_lookalikes", path,
+        "Vision data beside look-alikes: a planned trajectory, a gyro struct, component poses, "
+            + "a team's own has-target flag",
+        List.of("C1"));
   }
 
   /** A single Pose3d vision estimate entry (not an array). */

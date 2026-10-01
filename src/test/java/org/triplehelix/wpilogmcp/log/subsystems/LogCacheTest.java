@@ -316,4 +316,162 @@ class LogCacheTest {
   void removeReturnsNullForMissingEntry() {
     assertNull(cache.remove("/nonexistent.wpilog"));
   }
+
+  // ==================== Heap pressure ====================
+
+  static final long MB = 1024L * 1024L;
+
+  /**
+   * A 1000 MB heap in which every cached log holds {@code perLog} bytes. What an unloaded log
+   * held stays counted as used until a collection, as on the real heap. That is what made the
+   * eviction loops unload every log: they measured again without collecting, saw no change, and
+   * went on to the next log.
+   */
+  static final class FakeHeap implements LogCache.Heap {
+    final java.util.concurrent.atomic.AtomicLong garbage = new java.util.concurrent.atomic.AtomicLong();
+    final java.util.concurrent.atomic.AtomicInteger collections =
+        new java.util.concurrent.atomic.AtomicInteger();
+    volatile long other; // live bytes that belong to no cached log
+    volatile long perLog = 90 * MB;
+    volatile LogCache cache;
+
+    @Override
+    public long usedBytes() {
+      return other + garbage.get() + perLog * cache.getAllEntries().size();
+    }
+
+    @Override
+    public long maxBytes() {
+      return 1000 * MB;
+    }
+
+    @Override
+    public void collect() {
+      collections.incrementAndGet();
+      garbage.set(0);
+    }
+  }
+
+  /** A cache of {@code logs} logs (/log0.wpilog is the least recently used) on a fake heap. */
+  private FakeHeap heapWith(int logs, long perLog) {
+    var heap = new FakeHeap();
+    heap.perLog = perLog;
+    var c = new LogCache(1_800_000, heap);
+    heap.cache = c;
+    c.setEvictionCallback(p -> heap.garbage.addAndGet(heap.perLog));
+    for (int i = 0; i < logs; i++) {
+      c.put("/log" + i + ".wpilog", createMockLog("/log" + i + ".wpilog", 1));
+    }
+    return heap;
+  }
+
+  @Test
+  void heapPressureUnloadsOnlyWhatIsNeeded() {
+    // 900 of 1000 MB in use: 10% free, under the 15% threshold. Unloading one log is enough.
+    var heap = heapWith(10, 90 * MB);
+
+    heap.cache.evictIfNeeded();
+
+    var left = heap.cache.getAllEntries().keySet();
+    assertEquals(9, left.size(), "one log relieves the pressure; it unloaded " + (10 - left.size()));
+    assertFalse(left.contains("/log0.wpilog"), "the least recently used log is the one to go");
+  }
+
+  @Test
+  void garbageAloneUnloadsNothing() {
+    // 270 MB held by logs and 600 MB of garbage: it reads as 13% free until a collection
+    var heap = heapWith(3, 90 * MB);
+    heap.garbage.set(600 * MB);
+
+    heap.cache.evictIfNeeded();
+
+    assertEquals(3, heap.cache.getAllEntries().size(),
+        "a heap full of garbage is not a reason to unload logs");
+    assertEquals(1, heap.collections.get());
+  }
+
+  @Test
+  void pressureThatUnloadingCannotRelieveEndsWithAnEmptyCache() {
+    // 880 MB is held by something other than the logs
+    var heap = heapWith(3, 10 * MB);
+    heap.other = 880 * MB;
+
+    heap.cache.evictIfNeeded();
+
+    assertTrue(heap.cache.isEmpty());
+    assertTrue(heap.collections.get() <= 4, "one collection before, one per unloaded log: "
+        + heap.collections.get());
+    // and with nothing left to unload, later checks do not collect at all
+    heap.cache.evictIfNeeded();
+    assertTrue(heap.collections.get() <= 4, "collected with nothing to unload");
+  }
+
+  @Test
+  void noPressureMeansNoCollection() {
+    var heap = heapWith(5, 90 * MB); // 55% free
+
+    heap.cache.evictIfNeeded();
+    assertFalse(heap.cache.makeRoomFor(100 * MB));
+
+    assertEquals(5, heap.cache.getAllEntries().size());
+    assertEquals(0, heap.collections.get(), "the ordinary case must not force a collection");
+  }
+
+  @Test
+  void makingRoomUnloadsOnlyWhatIsNeeded() {
+    // 100 MB free; 250 MB wanted: two logs of 90 MB make it 280 MB
+    var heap = heapWith(10, 90 * MB);
+
+    assertTrue(heap.cache.makeRoomFor(250 * MB));
+
+    var left = heap.cache.getAllEntries().keySet();
+    assertEquals(8, left.size(), "two logs make the room; it unloaded " + (10 - left.size()));
+    assertFalse(left.contains("/log0.wpilog"));
+    assertFalse(left.contains("/log1.wpilog"));
+  }
+
+  @Test
+  void makingRoomCollectsGarbageBeforeUnloadingLogs() {
+    var heap = heapWith(3, 90 * MB);
+    heap.garbage.set(600 * MB); // 130 MB free until collected, 730 MB after
+
+    assertFalse(heap.cache.makeRoomFor(250 * MB));
+
+    assertEquals(3, heap.cache.getAllEntries().size());
+  }
+
+  @Test
+  void makingRoomForMoreThanTheHeapUnloadsEverythingAndStops() {
+    var heap = heapWith(3, 90 * MB);
+
+    assertTrue(heap.cache.makeRoomFor(5000 * MB));
+
+    assertTrue(heap.cache.isEmpty());
+    assertFalse(heap.cache.makeRoomFor(5000 * MB), "nothing left to unload");
+  }
+
+  @Test
+  void concurrentChecksTogetherUnloadOnlyWhatIsNeeded() throws Exception {
+    for (int round = 0; round < 20; round++) {
+      var heap = heapWith(10, 90 * MB);
+      var start = new java.util.concurrent.CountDownLatch(1);
+      var pool = java.util.concurrent.Executors.newFixedThreadPool(8);
+      try {
+        var done = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+        for (int t = 0; t < 8; t++) {
+          done.add(pool.submit(() -> {
+            start.await();
+            heap.cache.evictIfNeeded();
+            return null;
+          }));
+        }
+        start.countDown();
+        for (var f : done) f.get(10, java.util.concurrent.TimeUnit.SECONDS);
+      } finally {
+        pool.shutdownNow();
+      }
+      assertEquals(9, heap.cache.getAllEntries().size(),
+          "round " + round + ": eight checks at once still unload one log");
+    }
+  }
 }

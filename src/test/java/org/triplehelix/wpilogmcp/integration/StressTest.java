@@ -575,17 +575,32 @@ class StressTest {
       System.out.println("  analyze_replay_drift: " + divergent + " divergent entries");
     });
 
-    // profile_mechanism
+    // profile_mechanism: a name lists candidates and analyzes nothing (no_match, so the handler
+    // is not reached; the call is still checked against the robustness rules)
     for (String name : List.of("Arm", "Elevator", "Shooter", "Intake", "Drivetrain", "Swerve")) {
       var mechArgs = new JsonObject();
       mechArgs.addProperty("path", logPath);
       mechArgs.addProperty("mechanism_name", name);
-      testTool("profile_mechanism", mechArgs, result -> {
-        if (result.has("following_error")) {
-          double rmse = result.getAsJsonObject("following_error").get("rmse").getAsDouble();
-          System.out.printf("  profile_mechanism (%s): rmse=%.4f%n", name, rmse);
-        }
-      });
+      testTool("profile_mechanism", mechArgs, result -> { });
+    }
+    // The analysis runs on entries passed explicitly. The caller's part, done here: a velocity
+    // and a current that one table holds under the AdvantageKit template's field names.
+    if (loadedEntryNames != null) {
+      loadedEntryNames.stream()
+          .filter(n -> n.endsWith("/VelocityRadPerSec"))
+          .filter(n -> loadedEntryNames.contains(
+              n.substring(0, n.length() - "/VelocityRadPerSec".length()) + "/CurrentAmps"))
+          .findFirst()
+          .ifPresent(velocity -> {
+            var table = velocity.substring(0, velocity.length() - "/VelocityRadPerSec".length());
+            var mechArgs = new JsonObject();
+            mechArgs.addProperty("path", logPath);
+            mechArgs.addProperty("velocity_entry", velocity);
+            mechArgs.addProperty("current_entry", table + "/CurrentAmps");
+            testTool("profile_mechanism", mechArgs, result ->
+                System.out.println("  profile_mechanism (" + table + "): "
+                    + result.get("stall_count").getAsInt() + " stalls"));
+          });
     }
 
     // analyze_loop_timing (with unit auto-detect)
@@ -643,7 +658,8 @@ class StressTest {
     swerveArgs.addProperty("path", logPath);
     testTool("analyze_swerve", swerveArgs, result -> {
       System.out.println("  analyze_swerve: " + result.get("module_count").getAsInt()
-          + " modules (" + result.get("layout").getAsString() + ")");
+          + " modules (" + result.get("layout").getAsString() + "), measured: "
+          + result.get("measured_basis").getAsString());
     });
 
     // power_analysis

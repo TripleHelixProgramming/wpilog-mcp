@@ -206,22 +206,26 @@ public final class RobotAnalysisTools {
     public String description() {
       return "Analyze swerve modules from SwerveModuleState entries: per module, mean and maximum "
           + "|speed| (magnitude; measured speeds are signed and negative about half the time), "
-          + "and, when a setpoint entry exists, speed tracking error (| |measured| - |setpoint| |, "
-          + "m/s, events above slip_threshold) and steer error (angle difference modulo 180 deg, "
-          + "while the setpoint speed is above 0.05 m/s, events above sync_threshold_rad). "
-          + "AdvantageKit's struct:SwerveModuleState[] arrays count as one module per index "
-          + "(module[0..N-1]; the FL, FR, BL, BR labels are the AdvantageKit template's order, an "
-          + "assumption); one entry per module also works. Setpoints are paired by index, "
-          + "preferring an optimized setpoint entry. Odometry drift compares the robot pose "
-          + "(a conventional name, or the only Pose2d outside vision paths, as resolve_signals "
-          + "reports it) with a vision pose (the only scalar pose under a vision, camera, "
-          + "PhotonVision, or Limelight path); other candidates are listed in skipped to "
-          + "confirm, never guessed. "
-          + "Sections that cannot be produced are listed in skipped "
-          + "with the reason; use measured_entry/setpoint_entry/odometry_entry/vision_entry to "
-          + "point the tool at the right data (an entry named there that is missing or of the "
-          + "wrong type is an error), and scope (e.g. 'enabled') to exclude disabled time. "
-          + "Returns no_match when the log has no SwerveModuleState entries."
+          + "and, with setpoints, speed tracking error (| |measured| - |setpoint| |, m/s, events "
+          + "above slip_threshold) and steer error (angle difference modulo 180 deg, while the "
+          + "setpoint speed is above 0.05 m/s, events above sync_threshold_rad). A "
+          + "struct:SwerveModuleState[] array is one module per index (module[0..N-1]; the FL, "
+          + "FR, BL, BR labels are the AdvantageKit template's order, an assumption). The "
+          + "measured and setpoint entries are taken from a published naming, paired within one "
+          + "table: AdvantageKit SwerveStates/Measured with SetpointsOptimized or Setpoints, "
+          + "CTRE DriveState/ModuleStates with ModuleTargets, YAGSL currentStates with "
+          + "desiredStates. Otherwise the only SwerveModuleState entry is used (the log does not "
+          + "say whether it is measured or commanded: a warning says so). Entries under other "
+          + "names are not interpreted: the result is no_match with needs_confirmation and "
+          + "candidates, or the tracking sections are skipped with the candidates; pass "
+          + "measured_entry and setpoint_entry (one module's entries when each module has its "
+          + "own). Which entry is which is in the robot's source code, not in its name. "
+          + "measured_basis and setpoint_basis say how each was chosen. Odometry drift compares "
+          + "the robot pose with a vision pose (as resolve_signals reports them; candidates are "
+          + "listed in skipped, never guessed; pass odometry_entry/vision_entry). An entry "
+          + "passed that is missing or of the wrong type is an error. Use scope (e.g. 'enabled') "
+          + "to exclude disabled time. Returns no_match when the log has no SwerveModuleState "
+          + "entries."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
 
@@ -233,7 +237,7 @@ public final class RobotAnalysisTools {
           .addProperty("measured_entry", "string",
               "Measured module states: a SwerveModuleState[] entry, or one module's SwerveModuleState entry", false)
           .addProperty("setpoint_entry", "string",
-              "Setpoint module states, paired with measured_entry by index", false)
+              "Setpoint module states of the same shape as the measured entry, paired by index", false)
           .addNumberProperty("slip_threshold", "Speed tracking error, in m/s, counted as an event (default: 0.5)", false, 0.5)
           .addNumberProperty("sync_threshold_rad", "Steer error, in radians, counted as an event (default: 0.1)", false, 0.1)
           .addProperty("odometry_entry", "string", "Explicit odometry pose entry (struct:Pose2d or Pose3d)", false)
@@ -248,13 +252,14 @@ public final class RobotAnalysisTools {
     record Module(String label, String measuredEntry, int measuredIndex, String setpointEntry,
         int setpointIndex) {}
 
-    /** Leaf-name words that mark a module state as a setpoint; anything else is measured. */
+    /**
+     * Leaf-name words that keep the only module-state entry of a log from being taken for the
+     * measured states. No entry is taken for a setpoint, or for measured, because of a word.
+     */
     static final List<String> SETPOINT_WORD_LIST =
         List.of("setpoint", "desired", "target", "commanded", "goal", "reference");
     static final java.util.regex.Pattern SETPOINT_WORDS =
         java.util.regex.Pattern.compile("(?i)" + String.join("|", SETPOINT_WORD_LIST));
-    static final java.util.regex.Pattern MEASURED_WORDS =
-        java.util.regex.Pattern.compile("(?i)measured|actual|real|current|state");
 
     static String leaf(String name) {
       return name.substring(name.lastIndexOf('/') + 1);
@@ -277,42 +282,57 @@ public final class RobotAnalysisTools {
           getOptDouble(arguments, "start_time"), getOptDouble(arguments, "end_time"));
 
       for (var explicit : java.util.Arrays.asList(measuredArg, setpointArg)) {
-        if (explicit == null) continue;
-        requireEntry(log, explicit); // throws with suggestions when missing
-        var info = log.entries().get(explicit);
-        if (!info.type().startsWith("struct:SwerveModuleState")) {
-          throw new IllegalArgumentException("Entry " + explicit + " is " + info.type()
-              + ", not struct:SwerveModuleState or struct:SwerveModuleState[]");
-        }
+        if (explicit != null) requireEntry(log, explicit); // throws with suggestions when missing
       }
+      // Module states: explicit, a published naming, or the only entry of the type; an entry
+      // named here that is not module states is an error
+      var states = SignalResolver.moduleStates(log, prefix, measuredArg, setpointArg);
       // The poses for the drift: an entry named here that is missing or not a pose is an error
       // (whoever names one wants the drift), as above; one the tool cannot find is a skip
       var odomRole = SignalResolver.robotPose(log, odomArg, "odometry_entry");
       var visionRole = SignalResolver.visionPose(log, visionArg);
 
-      var stateEntries = log.entries().values().stream()
-          .filter(e -> e.type().equals("struct:SwerveModuleState")
-              || e.type().equals("struct:SwerveModuleState[]"))
-          .filter(e -> prefix == null || e.name().startsWith(prefix))
-          .filter(e -> log.sampleCount(e.name()) > 0)
-          .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-          .toList();
-      var modules = discoverModules(log, stateEntries, measuredArg, setpointArg);
+      if (states.measured().chosen().isEmpty()) {
+        var conventions = new ArrayList<String>(SignalResolver.MODULE_STATE_CONVENTIONS.stream()
+            .map(SignalResolver.ModuleStateConvention::describe).toList());
+        conventions.add("or the only struct:SwerveModuleState entry, when it is not named like "
+            + "a setpoint (" + String.join(", ", SETPOINT_WORD_LIST) + ")");
+        if (!states.measured().needsConfirmation()) {
+          return ResponseBuilder.noMatch("No SwerveModuleState entries"
+                  + (prefix != null ? " under " + prefix : "") + " in this log.")
+              .lookedFor(conventions)
+              .hint("search_entries with type 'SwerveModuleState' lists module states; pass "
+                  + "measured_entry (and setpoint_entry) to choose the entries.")
+              .build();
+        }
+        var candidates = new JsonArray();
+        states.measured().candidates().stream().limit(20).forEach(candidates::add);
+        return ResponseBuilder.noMatch("The SwerveModuleState entries in this log are not "
+                + "under a published name (" + states.measured().basis() + "), and their names "
+                + "do not establish which holds the measured states and which the setpoints.")
+            .lookedFor(conventions)
+            .hint("Confirm which entry holds the measured states and which the setpoints ("
+                + SignalResolver.HOW_TO_CONFIRM + ") and pass them as measured_entry and "
+                + "setpoint_entry (one module's entries when each module has its own); the "
+                + "server does not guess.")
+            .addData("candidates", candidates)
+            .addProperty("needs_confirmation", true)
+            .build();
+      }
+      var measuredEntry = states.measured().chosen().get();
+      var setpointEntry = states.setpoint().chosen().orElse(null);
+      var measuredType = log.entries().get(measuredEntry).type();
+      if (setpointEntry != null && !log.entries().get(setpointEntry).type().equals(measuredType)) {
+        throw new IllegalArgumentException("setpoint_entry " + setpointEntry + " is "
+            + log.entries().get(setpointEntry).type() + "; with the measured entry "
+            + measuredEntry + " it must be " + measuredType + " too (the two are paired by "
+            + "index).");
+      }
+      var modules = modulesOf(log, measuredEntry, setpointEntry);
       if (modules.isEmpty()) {
-        var setpointOnly = stateEntries.stream().map(org.triplehelix.wpilogmcp.log.EntryInfo::name)
-            .toList();
-        var nm = ResponseBuilder.noMatch(setpointOnly.isEmpty()
-                ? "No SwerveModuleState entries" + (prefix != null ? " under " + prefix : "")
-                    + " in this log."
-                : "Only setpoint module states found (" + String.join(", ", setpointOnly)
-                    + "); no measured module states to analyze.")
-            .lookedFor(List.of("struct:SwerveModuleState[] entries (one module per index)",
-                "struct:SwerveModuleState entries (one per module, grouped by parent path)",
-                "measured vs setpoint by leaf name: " + String.join("/", SETPOINT_WORD_LIST)
-                    + " are setpoints; anything else is measured"))
-            .hint("Pass measured_entry (and setpoint_entry) to choose the entries, or use "
-                + "search_entries with type 'SwerveModuleState'.");
-        return nm.build();
+        return ResponseBuilder.noMatch("No module states in " + measuredEntry + ": every record "
+                + "is an empty array.")
+            .build();
       }
 
       var builder = success();
@@ -320,6 +340,25 @@ public final class RobotAnalysisTools {
       var first = modules.get(0);
       builder.addInput("measured", first.measuredEntry());
       if (first.setpointEntry() != null) builder.addInput("setpoint", first.setpointEntry());
+      builder.addProperty("measured_basis", states.measured().basis());
+      if (first.setpointEntry() != null) {
+        builder.addProperty("setpoint_basis", states.setpoint().basis());
+      }
+      if (states.measured().tier() == SignalResolver.Tier.TYPE) {
+        builder.addWarning(measuredEntry + " is the only SwerveModuleState entry in this log; "
+            + "the log does not say whether it holds measured or commanded states. The robot's "
+            + "source code, where the entry is logged, does; pass measured_entry once confirmed.");
+      }
+      if (states.measured().ambiguous()) {
+        var same = states.measured().candidates().stream()
+            .filter(c -> SignalResolver.MODULE_STATE_CONVENTIONS.stream()
+                .anyMatch(k -> k.tableOf(c) != null))
+            .toList();
+        builder.addWarning("Several entries follow a module-state convention ("
+            + String.join(", ", same) + "); " + measuredEntry + ", declared first, was used "
+            + "with the setpoints of its own table. Pass module_prefix or measured_entry to "
+            + "choose another.");
+      }
       boolean arrayLayout = first.measuredIndex() >= 0;
       builder.addProperty("layout", arrayLayout ? "array" : "per_module");
       builder.addProperty("module_count", modules.size());
@@ -416,8 +455,9 @@ public final class RobotAnalysisTools {
       builder.addData("modules", modulesJson);
 
       if (first.setpointEntry() == null) {
-        builder.addSkipped("speed_tracking_error", "No setpoint module states found to pair "
-            + "with " + first.measuredEntry() + " (pass setpoint_entry).");
+        builder.addSkipped("speed_tracking_error", "No setpoint module states to pair with "
+            + first.measuredEntry() + ". "
+            + SignalResolver.unresolvedReason(states.setpoint(), "setpoint_entry"));
         builder.addSkipped("steer_error", "No setpoint module states.");
       } else if (!anySetpoint) {
         builder.addSkipped("speed_tracking_error", "No setpoint sample within "
@@ -482,60 +522,22 @@ public final class RobotAnalysisTools {
     }
 
     /**
-     * Modules from array entries (one module per index) when a measured array exists, else from
-     * per-module entries grouped by parent path. Measured entries rank "measured" names first;
-     * setpoints rank "optimized" names first; ties by entry id.
+     * The modules of a measured entry: one per index of an array (the largest record decides how
+     * many), or the one module of a single-state entry. The setpoint entry, when there is one,
+     * has the same shape and is paired by index.
      */
-    static List<Module> discoverModules(LogData log,
-        List<org.triplehelix.wpilogmcp.log.EntryInfo> entries, String measuredArg,
-        String setpointArg) {
-      var arrays = entries.stream().filter(e -> e.type().endsWith("[]")).toList();
-      var singles = entries.stream().filter(e -> !e.type().endsWith("[]")).toList();
-      String measured = measuredArg;
-      if (measured == null) {
-        measured = arrays.stream().filter(e -> !isSetpointName(e.name()))
-            .min(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
-                leaf(e.name()).toLowerCase().contains("measured") ? 0 : 1)
-                .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).orElse(null);
-      }
+    static List<Module> modulesOf(LogData log, String measured, String setpoint) {
       var modules = new ArrayList<Module>();
-      if (measured != null && log.entries().get(measured).type().endsWith("[]")) {
-        String setpoint = setpointArg;
-        if (setpoint == null) {
-          setpoint = arrays.stream().filter(e -> isSetpointName(e.name()))
-              .min(Comparator.comparingInt((org.triplehelix.wpilogmcp.log.EntryInfo e) ->
-                  leaf(e.name()).toLowerCase().contains("optimized") ? 0 : 1)
-                  .thenComparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
-              .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).orElse(null);
-        }
-        int count = 0;
-        for (var tv : log.values().get(measured)) {
-          count = Math.max(count, StructFields.elements(tv.value()).size());
-        }
-        for (int i = 0; i < count; i++) {
-          modules.add(new Module("module[" + i + "]", measured, i, setpoint, i));
-        }
+      if (!log.entries().get(measured).type().endsWith("[]")) {
+        modules.add(new Module(parentName(measured), measured, -1, setpoint, -1));
         return modules;
       }
-      if (measured != null) {
-        // Explicit single-module entry
-        modules.add(new Module(parentName(measured), measured, -1, setpointArg, -1));
-        return modules;
+      int count = 0;
+      for (var tv : log.values().get(measured)) {
+        count = Math.max(count, StructFields.elements(tv.value()).size());
       }
-      // Per-module entries: group by parent path
-      var groups = new LinkedHashMap<String, List<org.triplehelix.wpilogmcp.log.EntryInfo>>();
-      for (var e : singles) {
-        var parent = e.name().substring(0, Math.max(0, e.name().lastIndexOf('/')));
-        groups.computeIfAbsent(parent, k -> new ArrayList<>()).add(e);
-      }
-      for (var group : groups.values()) {
-        var m = group.stream().filter(e -> !isSetpointName(e.name()))
-            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
-        if (m == null) continue;
-        var sp = group.stream().filter(e -> isSetpointName(e.name()))
-            .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).findFirst().orElse(null);
-        modules.add(new Module(parentName(m), m, -1, sp, -1));
+      for (int i = 0; i < count; i++) {
+        modules.add(new Module("module[" + i + "]", measured, i, setpoint, i));
       }
       return modules;
     }
@@ -1162,6 +1164,12 @@ public final class RobotAnalysisTools {
         var stats = new JsonObject();
         stats.addProperty("log_path", logPath);
         stats.addProperty("log_filename", filename);
+        if (log.truncated() && log.truncationMessage() != null) {
+          // This log was not read to its end; a warning only when more than a cut-off final
+          // record was lost (see ToolUtils.noteTruncation)
+          stats.addProperty("log_truncation", log.truncationMessage());
+          if (log.damaged()) warnings.add(filename + ": " + log.truncationMessage());
+        }
         NumericSignal signal;
         try {
           signal = StatisticsTools.signal(log, arguments, "name", "field", null);

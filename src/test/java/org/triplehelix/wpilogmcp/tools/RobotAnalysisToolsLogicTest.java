@@ -1144,7 +1144,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
-      assertEquals("per_module", resultObj.get("layout").getAsString());
+      assertEquals("array", resultObj.get("layout").getAsString());
       var modules = resultObj.getAsJsonArray("modules");
       assertEquals(4, modules.size());
       // Module 2's measured speed is 70% of its setpoint: the largest tracking error
@@ -1159,7 +1159,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           worstModule = o.get("module").getAsString();
         }
       }
-      assertEquals("Module2", worstModule);
+      assertEquals("module[2]", worstModule);
     }
 
     @Test
@@ -1182,7 +1182,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       // Module 3 has 0.2 rad offset in the test data
       assertTrue(sync.get("max_deviation_rad").getAsDouble() > 0.1,
           "Should detect the intentional angle deviation in module 3");
-      assertEquals("Module3", sync.get("worst_module").getAsString());
+      assertEquals("module[3]", sync.get("worst_module").getAsString());
     }
 
     @Test

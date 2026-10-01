@@ -192,6 +192,27 @@ final class ToolArguments {
             log.entries().keySet().stream().anyMatch(n -> n.contains("Elevator"))
                 ? "Elevator" : "Drive");
         variants.add(new Variant("mechanism", args));
+        // A name only lists candidates. The analysis runs on entries passed explicitly: here a
+        // velocity and a current that one table holds under the AdvantageKit template's field
+        // names (the sweep plays the caller who has confirmed them), and the fixture elevator's
+        // goal and position
+        var explicit = base.deepCopy();
+        for (var velocityLeaf : List.of("/VelocityRadPerSec", "/VelocityMetersPerSec")) {
+          var velocity = pick(log, Kind.NUMERIC, n -> n.endsWith(velocityLeaf)
+              && log.entries().containsKey(
+                  n.substring(0, n.length() - velocityLeaf.length()) + "/CurrentAmps"), 0);
+          if (velocity.isEmpty() || explicit.has("velocity_entry")) continue;
+          var table = velocity.get().substring(0, velocity.get().length() - velocityLeaf.length());
+          if (!Kind.NUMERIC.type.test(log.entries().get(table + "/CurrentAmps").type())) continue;
+          explicit.addProperty("velocity_entry", velocity.get());
+          explicit.addProperty("current_entry", table + "/CurrentAmps");
+        }
+        if (log.entries().containsKey("/RealOutputs/Elevator/GoalMeters")
+            && log.entries().containsKey("/Elevator/PositionMeters")) {
+          explicit.addProperty("setpoint_entry", "/RealOutputs/Elevator/GoalMeters");
+          explicit.addProperty("measurement_entry", "/Elevator/PositionMeters");
+        }
+        if (explicit.size() > base.size()) variants.add(new Variant("explicit-roles", explicit));
         return variants;
       }
       case "analyze_cycles" -> {

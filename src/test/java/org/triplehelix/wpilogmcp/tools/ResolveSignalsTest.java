@@ -72,15 +72,25 @@ class ResolveSignalsTest extends FixtureToolTestBase {
   }
 
   @Test
-  @DisplayName("the module-state basis names every leaf word analyze_swerve treats as a setpoint")
-  void moduleStateBasisNamesEverySetpointWord() {
+  @DisplayName("the module-state roles are analyze_swerve's entries, with the convention named")
+  void moduleStatesAreTheToolsChoice() {
     var r = call("resolve_signals", "swerve_array");
-    for (var name : List.of("module_states_measured", "module_states_setpoint")) {
-      var basis = role(r, name).get("basis").getAsString();
-      for (var word : RobotAnalysisTools.AnalyzeSwerveTool.SETPOINT_WORD_LIST) {
-        assertTrue(basis.contains(word), name + " basis lacks " + word + ": " + basis);
-      }
+    var swerve = call("analyze_swerve", "swerve_array")
+        .getAsJsonObject("inputs").getAsJsonObject("entries");
+    var measured = role(r, "module_states_measured");
+    var setpoint = role(r, "module_states_setpoint");
+    assertEquals(swerve.get("measured").getAsString(), measured.get("entry").getAsString());
+    assertEquals(swerve.get("setpoint").getAsString(), setpoint.get("entry").getAsString());
+    assertEquals("/RealOutputs/SwerveStates/SetpointsOptimized",
+        setpoint.get("entry").getAsString());
+    for (var role : List.of(measured, setpoint)) {
+      assertEquals("convention", role.get("match").getAsString(), role.toString());
+      assertTrue(role.get("basis").getAsString().contains("AdvantageKit"), role.toString());
     }
+    // A layout no library publishes: one entry per module, named by the team
+    var perModule = role(call("resolve_signals", "swerve_per_module"), "module_states_measured");
+    assertEquals("heuristic", perModule.get("match").getAsString(), perModule.toString());
+    assertTrue(perModule.get("needs_confirmation").getAsBoolean());
   }
 
   @Test

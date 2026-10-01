@@ -247,9 +247,18 @@ public class LogManager {
           return cachedLog;
         }
 
-        // Check file exists
+        // Check file exists, and is a file this process can read: each is a fact about the
+        // caller's file, so each gets an explained error, not an internal one
         if (!Files.exists(filePath)) {
           throw new LogFileException("File not found: " + filePath);
+        }
+        if (Files.isDirectory(filePath)) {
+          throw new LogFileException("Not a log file: " + filePath + " is a directory. Pass the "
+              + "path of a .wpilog file (list_available_logs lists them).");
+        }
+        if (!Files.isReadable(filePath)) {
+          throw new LogFileException("Log file cannot be read: " + filePath
+              + " (no read permission for the user the server runs as)");
         }
 
         // Evict cached logs to free memory for the new one.
@@ -259,19 +268,9 @@ public class LogManager {
         logCache.evictIfNeeded();
 
         // If the file is large relative to available heap, evict more aggressively
-        Runtime runtime = Runtime.getRuntime();
-        long availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        boolean evicted = false;
-        while (fileSizeBytes > availableMemory && !logCache.isEmpty()) {
-          logger.info("Evicting logs to make room for {} ({} MB, {} MB available)",
-              filePath.getFileName(), fileSizeBytes / (1024 * 1024), availableMemory / (1024 * 1024));
-          logCache.evictOne();
-          evicted = true;
-          runtime = Runtime.getRuntime();
-          availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        }
-        if (evicted) {
-          System.gc(); // Single GC hint after eviction loop, not per-iteration
+        if (logCache.makeRoomFor(fileSizeBytes)) {
+          logger.info("Unloaded logs to make room for {} ({} MB)", filePath.getFileName(),
+              fileSizeBytes / (1024 * 1024));
         }
 
         // DataLogReader maps the whole file into one int-indexed ByteBuffer, so a file over 2 GB
@@ -298,7 +297,14 @@ public class LogManager {
           // If lazy scan fails (e.g., not a valid WPILOG), fall back to eager parse
           logger.debug("Lazy scan failed for {}, falling back to eager parse: {}",
               filePath.getFileName(), e.getMessage());
-          log = logParser.parse(filePath);
+          try {
+            log = logParser.parse(filePath);
+          } catch (java.io.FileNotFoundException | java.nio.file.FileSystemException opened) {
+            // The file could not be opened after all (removed, or its permissions changed,
+            // since the checks above)
+            throw new LogFileException("Log file could not be opened: " + filePath + " ("
+                + opened.getMessage() + ")");
+          }
         }
 
         // Add to in-memory cache

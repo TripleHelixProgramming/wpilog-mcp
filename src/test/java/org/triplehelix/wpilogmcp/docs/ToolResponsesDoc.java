@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.docs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.GsonBuilder;
@@ -117,11 +118,7 @@ class ToolResponsesDoc {
         "tool.responses.logdir not set; run with -PtoolResponsesLogDir=/path/to/riologs");
     var logDir = Path.of(dirProperty).toAbsolutePath().normalize();
 
-    JsonObject scenarios;
-    try (var in = ToolResponsesDoc.class.getResourceAsStream("/tool-responses/scenarios.json")) {
-      scenarios = JsonParser.parseReader(new InputStreamReader(in, StandardCharsets.UTF_8))
-          .getAsJsonObject();
-    }
+    var scenarios = scenarios();
     var aliases = new LinkedHashMap<String, String>();
     for (var e : scenarios.getAsJsonObject("logs").entrySet()) {
       var file = logDir.resolve(e.getValue().getAsString());
@@ -220,18 +217,148 @@ class ToolResponsesDoc {
     return out;
   }
 
-  @Test
-  @DisplayName("TOOLS.md and TOOL_RESPONSES.md put each tool in the server's section")
-  void docsUseTheServersSections() throws Exception {
+  /** The scenarios file: the logs it reads and the calls captured into TOOL_RESPONSES.md. */
+  static JsonObject scenarios() throws Exception {
+    try (var in = ToolResponsesDoc.class.getResourceAsStream("/tool-responses/scenarios.json")) {
+      return JsonParser.parseReader(new InputStreamReader(in, StandardCharsets.UTF_8))
+          .getAsJsonObject();
+    }
+  }
+
+  /**
+   * What is wrong with a doc's tool sections, given the server's. A section must be one of the
+   * server's, in the server's order, and hold only tools the server puts there. A doc that must
+   * be {@code complete} also holds every tool.
+   *
+   * <p>TOOLS.md is written by hand and must be complete. TOOL_RESPONSES.md is generated from
+   * Team 2363's logs, which someone adding a tool does not have: it may lack that tool until it
+   * is next generated, but it may not misplace a tool or hold one the server does not have.
+   */
+  static List<String> sectionProblems(Map<String, Set<String>> expected,
+      Map<String, Set<String>> actual, boolean complete) {
+    var problems = new ArrayList<String>();
+    var known = actual.keySet().stream().filter(expected::containsKey).toList();
+    actual.keySet().stream().filter(title -> !expected.containsKey(title))
+        .forEach(title -> problems.add("section '" + title + "' is not one of the server's"));
+    var serverOrder = expected.keySet().stream().filter(actual::containsKey).toList();
+    if (!known.equals(serverOrder)) {
+      problems.add("sections are in the order " + known + "; the server's is " + serverOrder);
+    }
+    for (var title : known) {
+      for (var tool : actual.get(title)) {
+        if (expected.get(title).contains(tool)) continue;
+        var belongs = expected.entrySet().stream().filter(e -> e.getValue().contains(tool))
+            .map(Map.Entry::getKey).findFirst();
+        problems.add(tool + " is under '" + title + "'" + belongs
+            .map(where -> "; the server puts it under '" + where + "'")
+            .orElse("; the server has no such tool"));
+      }
+    }
+    if (complete) {
+      expected.forEach((title, tools) -> tools.stream()
+          .filter(tool -> !actual.getOrDefault(title, Set.of()).contains(tool))
+          .forEach(tool -> problems.add(tool + " is missing from '" + title + "'")));
+    }
+    return problems;
+  }
+
+  static Map<String, Set<String>> serverSections() throws Exception {
     var expected = new LinkedHashMap<String, Set<String>>();
     categories(registeredTools())
         .forEach((title, tools) -> expected.put(title, new TreeSet<>(names(tools))));
-    for (var doc : List.of("TOOLS.md", "TOOL_RESPONSES.md")) {
-      var actual = docSections(Path.of("doc", doc));
-      assertEquals(expected, actual, doc);
-      assertEquals(new ArrayList<>(expected.keySet()), new ArrayList<>(actual.keySet()),
-          doc + ": section order");
+    return expected;
+  }
+
+  @Test
+  @DisplayName("TOOLS.md holds every tool in the server's section; TOOL_RESPONSES.md misplaces "
+      + "none")
+  void docsUseTheServersSections() throws Exception {
+    var expected = serverSections();
+    assertEquals(List.of(), sectionProblems(expected, docSections(Path.of("doc", "TOOLS.md")),
+        true), "TOOLS.md");
+    assertEquals(List.of(), sectionProblems(expected,
+        docSections(Path.of("doc", "TOOL_RESPONSES.md")), false), "TOOL_RESPONSES.md");
+  }
+
+  @Test
+  @DisplayName("a tool added without the logs: TOOL_RESPONSES.md may lack it, TOOLS.md may not")
+  void aNewToolNeedsNoLogs() throws Exception {
+    // What a contributor's branch looks like: the server has a tool the generated doc does not
+    // hold yet. This used to fail the build, and the doc cannot be generated without the logs.
+    var doc = serverSections();
+    var server = new LinkedHashMap<String, Set<String>>();
+    doc.forEach((title, tools) -> server.put(title, new TreeSet<>(tools)));
+    server.get("Statistics Tools").add("a_new_tool");
+    assertNotEquals(server, doc, "the old check compared the two for equality");
+    assertEquals(List.of(), sectionProblems(server, doc, false));
+    assertEquals(List.of("a_new_tool is missing from 'Statistics Tools'"),
+        sectionProblems(server, doc, true), "the hand-written doc must have it");
+
+    // What still fails, generated doc or not
+    var misplaced = new LinkedHashMap<String, Set<String>>();
+    doc.forEach((title, tools) -> misplaced.put(title, new TreeSet<>(tools)));
+    misplaced.get("Statistics Tools").remove("get_statistics");
+    misplaced.get("Core Tools").add("get_statistics");
+    assertEquals(List.of("get_statistics is under 'Core Tools'; the server puts it under "
+        + "'Statistics Tools'"), sectionProblems(doc, misplaced, false));
+
+    var unknown = new LinkedHashMap<String, Set<String>>();
+    doc.forEach((title, tools) -> unknown.put(title, new TreeSet<>(tools)));
+    unknown.get("Core Tools").add("removed_tool");
+    unknown.put("Other Tools", new TreeSet<>(Set.of("x")));
+    assertEquals(List.of("section 'Other Tools' is not one of the server's",
+        "removed_tool is under 'Core Tools'; the server has no such tool"),
+        sectionProblems(doc, unknown, false));
+
+    var reordered = new LinkedHashMap<String, Set<String>>();
+    var titles = new ArrayList<>(doc.keySet());
+    java.util.Collections.swap(titles, 0, 1);
+    titles.forEach(title -> reordered.put(title, doc.get(title)));
+    assertEquals(1, sectionProblems(doc, reordered, false).size());
+  }
+
+  /** What is wrong with the scenarios file, given the server's tools. */
+  static List<String> scenarioProblems(Set<String> toolNames, JsonObject scenarios) {
+    var problems = new ArrayList<String>();
+    var called = new HashSet<String>();
+    int index = 0;
+    for (var element : scenarios.getAsJsonArray("calls")) {
+      index++;
+      var call = element.getAsJsonObject();
+      var tool = call.has("tool") ? call.get("tool").getAsString() : null;
+      if (tool == null || !toolNames.contains(tool)) {
+        problems.add("call " + index + " names " + tool + ", which is not a tool");
+        continue;
+      }
+      called.add(tool);
+      if (!call.has("title") || call.get("title").getAsString().isBlank()) {
+        problems.add("call " + index + " (" + tool + ") has no title");
+      }
+      if (!call.has("args") || !call.get("args").isJsonObject()) {
+        problems.add("call " + index + " (" + tool + ") has no args object");
+      }
     }
+    toolNames.stream().filter(name -> !called.contains(name)).sorted()
+        .forEach(name -> problems.add(name + " has no call"));
+    return problems;
+  }
+
+  @Test
+  @DisplayName("the scenarios file has a call for every tool, so the next generation captures it")
+  void everyToolHasAScenario() throws Exception {
+    var toolNames = registeredTools().keySet();
+    assertEquals(List.of(), scenarioProblems(toolNames, scenarios()));
+
+    // A tool added without a call is the one thing a contributor must not forget
+    var withNew = new TreeSet<>(toolNames);
+    withNew.add("a_new_tool");
+    assertEquals(List.of("a_new_tool has no call"), scenarioProblems(withNew, scenarios()));
+    var stale = JsonParser.parseString(
+        "{\"calls\": [{\"tool\": \"removed_tool\", \"title\": \"x\", \"args\": {}},"
+            + " {\"tool\": \"get_types\", \"args\": []}]}").getAsJsonObject();
+    assertEquals(List.of("call 1 names removed_tool, which is not a tool",
+        "call 2 (get_types) has no title", "call 2 (get_types) has no args object"),
+        scenarioProblems(Set.of("get_types"), stale));
   }
 
   static java.util.Optional<String> firstSignalKey(JsonElement result) {

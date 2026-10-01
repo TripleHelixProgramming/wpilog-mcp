@@ -197,11 +197,14 @@ public class Main {
       logger().debug("Default team number: {}", config.team());
     }
 
-    // TBA API key
+    // TBA API key: from the configuration, else the environment, and on to the client. Setting
+    // it without applying it left whoever applies a configuration without starting the server
+    // (the stress tests) with TBA "not configured".
     if (config.tbaKey() != null && !config.tbaKey().isEmpty()) {
       tbaConfig.setApiKey(config.tbaKey());
       logger().debug("TBA API key set from configuration");
     }
+    tbaConfig.applyToClient();
 
     // Cache settings
     if (config.diskcachedir() != null && !config.diskcachedir().isEmpty()) {
@@ -450,7 +453,7 @@ public class Main {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
-    // Ensure TBA is applied (config mode sets apiKey but doesn't call applyToClient)
+    // The legacy command line sets the key without applying it
     tbaConfig.applyToClient();
     if (tbaConfig.isConfigured()) {
       logger().info("TBA enrichment enabled");

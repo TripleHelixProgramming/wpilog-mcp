@@ -98,6 +98,7 @@ final class PermutedLogData implements LogData {
   @Override public double minTimestamp() { return delegate.minTimestamp(); }
   @Override public double maxTimestamp() { return delegate.maxTimestamp(); }
   @Override public boolean truncated() { return delegate.truncated(); }
+  @Override public boolean damaged() { return delegate.damaged(); }
   @Override public String truncationMessage() { return delegate.truncationMessage(); }
   @Override public int sampleCount(String entryName) { return delegate.sampleCount(entryName); }
   @Override public StructSchemas structSchemas() { return delegate.structSchemas(); }

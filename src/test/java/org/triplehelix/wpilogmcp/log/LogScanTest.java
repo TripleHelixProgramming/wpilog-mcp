@@ -255,6 +255,76 @@ class LogScanTest {
   }
 
   @Test
+  @DisplayName("damaged() tells a cut-off final record from lost, ignored, or garbage records")
+  void damagedOrOnlyCutOff() throws Exception {
+    // Clean
+    var clean = dir.resolve("d_clean.wpilog");
+    try (var w = new WpilogWriter(clean, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var cleanScan = LogScan.of(new DataLogReader(clean.toString()), clean);
+    assertFalse(cleanScan.truncated());
+    assertFalse(cleanScan.damaged());
+
+    // The ordinary robot log: power went off inside the last record. Truncated, not damaged.
+    var cut = dir.resolve("d_cut.wpilog");
+    var bytes = java.nio.file.Files.readAllBytes(clean);
+    java.nio.file.Files.write(cut, java.util.Arrays.copyOf(bytes, bytes.length - 3));
+    var cutScan = LogScan.of(new DataLogReader(cut.toString()), cut);
+    assertTrue(cutScan.truncated());
+    assertFalse(cutScan.damaged(), cutScan.truncationMessage());
+
+    // Garbage after the data: a record for an entry that was never declared
+    var garbage = dir.resolve("d_garbage.wpilog");
+    try (var w = new WpilogWriter(garbage, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(1007427528, 2_384_800_000_000_000L, new byte[151]);
+    }
+    var garbageScan = LogScan.of(new DataLogReader(garbage.toString()), garbage);
+    assertTrue(garbageScan.truncated());
+    assertTrue(garbageScan.damaged(), garbageScan.truncationMessage());
+
+    // A record ignored mid-log (its time jumps more than a day): nothing is cut off, but a
+    // record was set aside
+    var jump = dir.resolve("d_jump.wpilog");
+    try (var w = new WpilogWriter(jump, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(v, 1_000_000_000L * SEC, dbl(12.0));
+      for (int i = 11; i <= 20; i++) w.append(v, i * SEC, dbl(12.0));
+    }
+    var jumpScan = LogScan.of(new DataLogReader(jump.toString()), jump);
+    assertTrue(jumpScan.damaged(), jumpScan.truncationMessage());
+
+    // Cut off inside a record, and the record before the cut is garbage that gets rolled back
+    var rolled = dir.resolve("d_rolled.wpilog");
+    try (var w = new WpilogWriter(rolled, "")) {
+      int v = w.start("/Battery/Voltage", "double", "", 0);
+      for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
+      w.append(v, 5_000L * SEC, dbl(3.0)); // 83 minutes ahead: belongs to the damage
+      w.append(v, 11 * SEC, dbl(12.0)); // this one is cut
+    }
+    var rolledBytes = java.nio.file.Files.readAllBytes(rolled);
+    java.nio.file.Files.write(rolled, java.util.Arrays.copyOf(rolledBytes, rolledBytes.length - 3));
+    var rolledScan = LogScan.of(new DataLogReader(rolled.toString()), rolled);
+    assertEquals(10.0, rolledScan.maxTimestamp(), 1e-9, rolledScan.truncationMessage());
+    assertTrue(rolledScan.damaged(), rolledScan.truncationMessage());
+
+    // The lazy log reports the same
+    try (var lazy = new LazyParsedLog(cut.toString(), new DataLogReader(cut.toString()),
+        64L * 1024 * 1024)) {
+      assertTrue(lazy.truncated());
+      assertFalse(lazy.damaged());
+    }
+    try (var lazy = new LazyParsedLog(garbage.toString(), new DataLogReader(garbage.toString()),
+        64L * 1024 * 1024)) {
+      assertTrue(lazy.damaged());
+    }
+  }
+
+  @Test
   @DisplayName("a header whose extra length runs past the end of the file is damage")
   void headerPastEndIsDamage() throws Exception {
     var path = dir.resolve("bad_header.wpilog");

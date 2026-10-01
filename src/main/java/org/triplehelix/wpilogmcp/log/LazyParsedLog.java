@@ -52,6 +52,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final double minTimestamp;
   private final double maxTimestamp;
   private final boolean truncated;
+  private final boolean damaged;
   private final String truncationMessage;
 
   // Per-entry byte offsets into the memory-mapped file (compact: 4 bytes per record)
@@ -101,6 +102,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     this.minTimestamp = scan.minTimestamp();
     this.maxTimestamp = scan.maxTimestamp();
     this.truncated = scan.truncated();
+    this.damaged = scan.damaged();
     this.truncationMessage = scan.truncationMessage();
 
     // Compact offset lists to int[] arrays
@@ -174,6 +176,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   @Override public double minTimestamp() { return minTimestamp; }
   @Override public double maxTimestamp() { return maxTimestamp; }
   @Override public boolean truncated() { return truncated; }
+  @Override public boolean damaged() { return damaged; }
 
   @Override
   public int sampleCount(String entryName) {

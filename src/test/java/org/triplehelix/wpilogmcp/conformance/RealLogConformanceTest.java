@@ -184,8 +184,14 @@ class RealLogConformanceTest {
           long millis = (System.nanoTime() - start) / 1_000_000;
           Integer limit = variant.args().has("limit")
               ? variant.args().get("limit").getAsInt() : null;
-          var failed = result == null ? List.of(Check.TIMEOUT)
+          List<Check> failed = result == null ? List.of(Check.TIMEOUT)
               : ConformanceChecks.check(result, limit, true, tool.name(), variant.args());
+          // Most real logs end inside their last record: every result must say so
+          if (log.truncated() && result != null && result.isJsonObject()
+              && !ConformanceChecks.reportsTruncation(result.getAsJsonObject())) {
+            failed = new ArrayList<>(failed);
+            failed.add(Check.TRUNCATION_UNREPORTED);
+          }
           calls.add(new Call(tool.name(), logFixture.id(), variant.label(), result, failed,
               millis));
         }

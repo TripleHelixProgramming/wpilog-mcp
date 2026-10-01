@@ -29,9 +29,11 @@ import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
  *
  * <p>The server does not guess what an entry means (doc/IDEAS.md section 6.8). An entry is chosen
  * only when it is passed explicitly, follows a well-known logging convention (AdvantageKit,
- * WPILib, CTRE, PathPlanner names; see each role's rules below), or is the only entry of the
- * role's type. Entries that match a role by name alone are {@link Tier#HEURISTIC}: they are
- * listed as candidates for the caller to confirm and pass explicitly, and never used silently.
+ * WPILib, CTRE, PathPlanner, YAGSL, Limelight, PhotonVision names; see each role's rules below),
+ * or is the only entry of the role's type. Entries that match a role by name alone are
+ * {@link Tier#HEURISTIC}: they are listed as candidates for the caller to confirm and pass
+ * explicitly, and never used silently. A word in a name is not evidence: what an entry holds is
+ * decided by the robot code that logs it, which is where a caller confirms a candidate.
  * Choices are deterministic: ties go to the entry declared first and are flagged
  * {@code ambiguous}.
  *
@@ -207,30 +209,47 @@ final class SignalResolver {
       case VISION_POSE -> visionPose(log, null);
       case AUTO_CHOOSER -> autoChooser(log, null);
       case PATH_SETPOINT, PATH_ACTUAL -> pathPose(log, role, null, null);
-      case MODULE_STATES_MEASURED, MODULE_STATES_SETPOINT -> moduleStates(log, role);
+      case MODULE_STATES_MEASURED -> moduleStates(log, null, null, null).measured();
+      case MODULE_STATES_SETPOINT -> moduleStates(log, null, null, null).setpoint();
       case CHASSIS_SPEEDS_MEASURED, CHASSIS_SPEEDS_SETPOINT -> chassisSpeeds(log, role);
       case GYRO_YAW -> gyro(log);
       case VISION_POSE_OBSERVATIONS -> {
-        var streams = byId(log).stream()
-            .filter(e -> FrcDomainTools.AnalyzeVisionTool.isObservationStream(log, e))
-            .map(EntryInfo::name).toList();
-        yield new Resolution(role, streams, streams.isEmpty()
-            ? "no struct array whose records hold a timestamp and a pose"
-            : "struct arrays whose records hold a timestamp and a pose, one per camera",
-            streams, false, null, streams.isEmpty() ? Tier.NONE : Tier.TYPE);
+        var vision = visionEntries(log, null, null);
+        var streams = vision.analyzed(VisionKind.OBSERVATION_STREAM);
+        var candidates = new ArrayList<String>(streams);
+        candidates.addAll(vision.candidates(VisionKind.OBSERVATION_STREAM));
+        if (!streams.isEmpty()) {
+          yield new Resolution(role, streams, "struct:PoseObservation[] entries (the AdvantageKit "
+              + "vision template's record: a timestamp and a pose), one per camera", candidates,
+              false, null, Tier.CONVENTION);
+        }
+        yield candidates.isEmpty()
+            ? new Resolution(role, List.of(), "no struct:PoseObservation[] entry, and no other "
+                + "struct array whose records hold a timestamp and a pose", List.of(), false,
+                null, Tier.NONE)
+            : undecided(role, candidates, "struct arrays whose records hold a timestamp and a "
+                + "pose, which a planned trajectory's samples do as well as a camera's "
+                + "observations");
       }
       case VISION_TARGETS -> {
-        var targets = byId(log).stream().filter(e -> {
-          var lower = e.name().toLowerCase(Locale.ROOT);
-          return lower.contains("hastarget") || lower.endsWith("/tv") || lower.endsWith(".tv")
-              || lower.contains("targetvalid")
-              || FrcDomainTools.AnalyzeVisionTool.isTargetStream(log, e);
-        }).map(EntryInfo::name).toList();
-        yield new Resolution(role, targets, targets.isEmpty()
-            ? "no struct with yaw and pitch fields and no has-target entry"
-            : "structs with yaw and pitch fields, and has-target entries (Limelight tv, "
-                + "PhotonVision hasTarget)", targets, false, null,
-            targets.isEmpty() ? Tier.NONE : Tier.CONVENTION);
+        var vision = visionEntries(log, null, null);
+        var targets = new ArrayList<String>(vision.analyzed(VisionKind.TARGET_STREAM));
+        targets.addAll(vision.analyzed(VisionKind.HAS_TARGET));
+        var candidates = new ArrayList<String>(targets);
+        candidates.addAll(vision.candidates(VisionKind.TARGET_STREAM));
+        candidates.addAll(vision.candidates(VisionKind.HAS_TARGET));
+        if (!targets.isEmpty()) {
+          yield new Resolution(role, targets, "struct:TargetObservation entries with yaw and "
+              + "pitch fields (the AdvantageKit vision template's record), and has-target "
+              + "entries by convention (" + HAS_TARGET_CONVENTIONS + ")", candidates, false, null,
+              Tier.CONVENTION);
+        }
+        yield candidates.isEmpty()
+            ? new Resolution(role, List.of(), "no struct:TargetObservation entry and no "
+                + "has-target entry (" + HAS_TARGET_CONVENTIONS + ")", List.of(), false, null,
+                Tier.NONE)
+            : heuristic(role, candidates, "structs with yaw and pitch fields under another "
+                + "name, and flags named like a has-target entry");
       }
       case CAN_BUS -> {
         var buses = CanBusAnalysis.discoverBuses(log);
@@ -301,6 +320,17 @@ final class SignalResolver {
         + how + " (by name only, not chosen)", candidates, false, null, Tier.HEURISTIC);
   }
 
+  /** Candidates of the role's type that no convention tells apart: listed, never chosen. */
+  static Resolution undecided(Role role, List<String> candidates, String how) {
+    return new Resolution(role, List.of(), "no entry follows a known convention for this role; "
+        + how + " (not chosen)", candidates, false, null, Tier.HEURISTIC);
+  }
+
+  /** How a caller confirms what an entry holds: the code that logs it, then its values. */
+  static final String HOW_TO_CONFIRM = "the robot's source code, where the entry is logged, "
+      + "shows what it holds and in which units; get_entry_info and read_entry show its type and "
+      + "values; or ask the user";
+
   /**
    * Why a tool could not use a role, for a {@code skipped} section or a {@code no_match}
    * reason: the candidates to confirm, or what was searched, and the parameter to pass.
@@ -308,10 +338,10 @@ final class SignalResolver {
   static String unresolvedReason(Resolution r, String param) {
     var what = r.role().description.toLowerCase(Locale.ROOT).replaceFirst("^the ", "");
     if (r.needsConfirmation()) {
-      return "No entry follows a known convention for the " + what + ". Entries that match by "
-          + "name only: " + String.join(", ", r.candidates().stream().limit(5).toList())
+      return "No entry follows a known convention for the " + what + ". Candidates, not used: "
+          + String.join(", ", r.candidates().stream().limit(5).toList())
           + (r.candidates().size() > 5 ? ", ..." : "") + ". Confirm which one (if any) is the "
-          + what + " (get_entry_info, read_entry, or ask the user) and pass it as " + param
+          + what + " (" + HOW_TO_CONFIRM + ") and pass it as " + param
           + "; the server does not guess.";
     }
     return "No " + what + " entry found (" + r.basis() + "); if the log has one under another "
@@ -738,25 +768,302 @@ final class SignalResolver {
 
   // ==================== swerve, chassis, gyro ====================
 
-  private static Resolution moduleStates(LogData log, Role role) {
-    var stateEntries = byId(log).stream()
-        .filter(e -> e.type().equals("struct:SwerveModuleState")
-            || e.type().equals("struct:SwerveModuleState[]"))
-        .filter(e -> log.sampleCount(e.name()) > 0).toList();
-    var modules = RobotAnalysisTools.AnalyzeSwerveTool.discoverModules(log, stateEntries, null,
-        null);
-    var chosen = modules.stream()
-        .map(m -> role == Role.MODULE_STATES_MEASURED ? m.measuredEntry() : m.setpointEntry())
-        .filter(Objects::nonNull).distinct().toList();
-    return new Resolution(role, chosen, chosen.isEmpty()
-        ? (stateEntries.isEmpty() ? "no SwerveModuleState entries"
-            : "no " + (role == Role.MODULE_STATES_MEASURED ? "measured" : "setpoint")
-                + " module states among the SwerveModuleState entries")
-        : "SwerveModuleState[] (one module per index) or per-module entries; setpoints by "
-            + "leaf name (" + String.join(", ",
-                RobotAnalysisTools.AnalyzeSwerveTool.SETPOINT_WORD_LIST)
-            + "), optimized setpoints preferred", stateEntries.stream().map(EntryInfo::name).toList(), false, null,
-        chosen.isEmpty() ? Tier.NONE : Tier.TYPE);
+  /**
+   * A published naming of swerve module states: the measured entry, and the setpoint entries
+   * logged beside it in the same table, best first.
+   */
+  record ModuleStateConvention(String source, String measured, List<String> setpoints) {
+
+    /** "SwerveStates/Measured with SwerveStates/SetpointsOptimized or ... (source)". */
+    String describe() {
+      return measured + " with " + String.join(" or ", setpoints) + " (" + source + ")";
+    }
+
+    /** The table the measured entry {@code name} is in ("/RealOutputs/"), or null. */
+    String tableOf(String name) {
+      var m = Pattern.compile("(?i)^(.*[/:])?" + Pattern.quote(measured) + "$").matcher(name);
+      return m.matches() ? (m.group(1) == null ? "" : m.group(1)) : null;
+    }
+  }
+
+  /**
+   * The module-state names the swerve libraries and templates publish. A team's own names (an
+   * "Actual" beside a "Commanded", two target arrays beside the measured one) are not here:
+   * what such an entry holds is decided by that team's code.
+   */
+  static final List<ModuleStateConvention> MODULE_STATE_CONVENTIONS = List.of(
+      new ModuleStateConvention("AdvantageKit swerve template", "SwerveStates/Measured",
+          List.of("SwerveStates/SetpointsOptimized", "SwerveStates/Setpoints")),
+      new ModuleStateConvention("CTRE swerve telemetry", "DriveState/ModuleStates",
+          List.of("DriveState/ModuleTargets")),
+      new ModuleStateConvention("YAGSL telemetry", "swerve/advantagescope/currentStates",
+          List.of("swerve/advantagescope/desiredStates")));
+
+  private static java.util.Optional<ModuleStateConvention> moduleConvention(String name) {
+    return MODULE_STATE_CONVENTIONS.stream().filter(c -> c.tableOf(name) != null).findFirst();
+  }
+
+  private static boolean isModuleStates(String type) {
+    return type.equals("struct:SwerveModuleState") || type.equals("struct:SwerveModuleState[]");
+  }
+
+  /** The measured and setpoint module states analyze_swerve reads. */
+  record ModuleStates(Resolution measured, Resolution setpoint) {}
+
+  /**
+   * Swerve module states. Measured: an explicit entry; else a conventional name (ties to the
+   * entry declared first, flagged ambiguous); else the only SwerveModuleState entry, when it is
+   * not named like a setpoint; else the entries as candidates. Setpoint: an explicit entry; else
+   * the convention's setpoint beside the measured entry, in the same table; else the other
+   * entries as candidates. No entry is taken for a setpoint, or for the measured states, on the
+   * strength of a word in its name.
+   *
+   * @param prefix Only entries under this prefix (analyze_swerve's module_prefix), or null
+   * @param measuredExplicit The caller's measured_entry, or null
+   * @param setpointExplicit The caller's setpoint_entry, or null
+   */
+  static ModuleStates moduleStates(LogData log, String prefix, String measuredExplicit,
+      String setpointExplicit) {
+    var names = byId(log).stream()
+        .filter(e -> isModuleStates(e.type()))
+        .filter(e -> prefix == null || e.name().startsWith(prefix))
+        .filter(e -> log.sampleCount(e.name()) > 0)
+        .map(EntryInfo::name).toList();
+    var under = prefix != null ? " under " + prefix : "";
+
+    Resolution measured;
+    if (measuredExplicit != null) {
+      measured = explicit(log, Role.MODULE_STATES_MEASURED, measuredExplicit, "measured_entry",
+          SignalResolver::isModuleStates, "struct:SwerveModuleState or struct:SwerveModuleState[]");
+    } else {
+      var conventional = names.stream().filter(n -> moduleConvention(n).isPresent()).toList();
+      if (!conventional.isEmpty()) {
+        var chosen = conventional.get(0);
+        measured = new Resolution(Role.MODULE_STATES_MEASURED, List.of(chosen),
+            moduleConvention(chosen).orElseThrow().measured() + " ("
+                + moduleConvention(chosen).orElseThrow().source() + ")", names,
+            conventional.size() > 1, null, Tier.CONVENTION);
+      } else if (names.size() == 1
+          && !RobotAnalysisTools.AnalyzeSwerveTool.isSetpointName(names.get(0))) {
+        measured = new Resolution(Role.MODULE_STATES_MEASURED, names, "the only SwerveModuleState "
+            + "entry" + under + ", not named like a setpoint; the log does not say whether it "
+            + "holds measured or commanded states", names, false, null, Tier.TYPE);
+      } else if (!names.isEmpty()) {
+        measured = undecided(Role.MODULE_STATES_MEASURED, names, names.size() == 1
+            ? "the only SwerveModuleState entry" + under + " is named like a setpoint"
+            : "several SwerveModuleState entries" + under + ", none under a published name");
+      } else {
+        measured = new Resolution(Role.MODULE_STATES_MEASURED, List.of(),
+            "no SwerveModuleState entries" + under, List.of(), false, null, Tier.NONE);
+      }
+    }
+
+    Resolution setpoint;
+    var chosenMeasured = measured.chosen().orElse(null);
+    var others = names.stream().filter(n -> !n.equals(chosenMeasured)).toList();
+    if (setpointExplicit != null) {
+      setpoint = explicit(log, Role.MODULE_STATES_SETPOINT, setpointExplicit, "setpoint_entry",
+          SignalResolver::isModuleStates, "struct:SwerveModuleState or struct:SwerveModuleState[]");
+    } else if (chosenMeasured == null) {
+      setpoint = names.isEmpty()
+          ? new Resolution(Role.MODULE_STATES_SETPOINT, List.of(), "no SwerveModuleState entries"
+              + under, List.of(), false, null, Tier.NONE)
+          : undecided(Role.MODULE_STATES_SETPOINT, names, "the measured module states are not "
+              + "resolved, so no setpoint is paired with them");
+    } else {
+      // The convention's setpoints beside the measured entry: same table, same shape
+      var convention = moduleConvention(chosenMeasured);
+      var measuredType = log.entries().get(chosenMeasured).type();
+      String paired = null;
+      if (convention.isPresent()) {
+        var table = convention.get().tableOf(chosenMeasured);
+        for (var suffix : convention.get().setpoints()) {
+          var match = byId(log).stream()
+              .filter(e -> e.name().equalsIgnoreCase(table + suffix))
+              .filter(e -> e.type().equals(measuredType) && log.sampleCount(e.name()) > 0)
+              .map(EntryInfo::name).findFirst();
+          if (match.isPresent()) {
+            paired = match.get();
+            break;
+          }
+        }
+      }
+      if (paired != null) {
+        setpoint = new Resolution(Role.MODULE_STATES_SETPOINT, List.of(paired),
+            paired.substring(convention.get().tableOf(chosenMeasured).length()) + " beside the "
+                + "measured entry (" + convention.get().source() + ")", others, false, null,
+            Tier.CONVENTION);
+      } else if (!others.isEmpty()) {
+        setpoint = undecided(Role.MODULE_STATES_SETPOINT, others, "the other SwerveModuleState "
+            + "entries; none is the measured entry's setpoint by a published name");
+      } else {
+        setpoint = new Resolution(Role.MODULE_STATES_SETPOINT, List.of(), "no SwerveModuleState "
+            + "entry besides the measured one", List.of(), false, null, Tier.NONE);
+      }
+    }
+    return new ModuleStates(measured, setpoint);
+  }
+
+  // ==================== vision entries ====================
+
+  private static final Pattern LIMELIGHT_TV = Pattern.compile("(?i)(^|[/:])limelight[^/]*/tv$");
+  private static final Pattern PHOTON_HAS_TARGET =
+      Pattern.compile("(?i)(^|[/:])photonvision/[^/]+/hasTarget$");
+  static final String HAS_TARGET_CONVENTIONS = "Limelight's <table>/tv, PhotonVision's "
+      + "photonvision/<camera>/hasTarget";
+  /** The pose arrays the AdvantageKit vision template records. */
+  private static final Pattern TEMPLATE_POSE_SET = Pattern.compile(
+      "(?i)(^|/)Vision/(Summary|Camera\\d+)/(TagPoses|RobotPoses|RobotPosesAccepted|"
+          + "RobotPosesRejected)$");
+  static final String POSE_SET_CONVENTION = "Vision/Summary/ and Vision/Camera<N>/ TagPoses, "
+      + "RobotPoses, RobotPosesAccepted, RobotPosesRejected";
+
+  private static boolean isFlagType(String type) {
+    return type.equals("boolean") || ToolUtils.isNumericType(type);
+  }
+
+  /** The kinds of vision data analyze_vision reads. */
+  enum VisionKind {
+    OBSERVATION_STREAM("observation_streams"),
+    TARGET_STREAM("target_streams"),
+    POSE_SET("pose_sets"),
+    HAS_TARGET("has_target"),
+    POSE_ESTIMATE("pose_estimates");
+
+    final String key;
+
+    VisionKind(String key) {
+      this.key = key;
+    }
+  }
+
+  /**
+   * The entries analyze_vision analyzes, by kind, and the entries that only look like vision
+   * data, which it lists and does not read.
+   */
+  record VisionEntries(Map<VisionKind, List<String>> analyzed,
+      Map<VisionKind, List<String>> candidates) {
+
+    List<String> analyzed(VisionKind kind) {
+      return analyzed.getOrDefault(kind, List.of());
+    }
+
+    List<String> candidates(VisionKind kind) {
+      return candidates.getOrDefault(kind, List.of());
+    }
+  }
+
+  /**
+   * Vision entries. Analyzed: what the AdvantageKit vision template and the vision libraries
+   * publish under their own names ({@code struct:PoseObservation[]} streams,
+   * {@code struct:TargetObservation} with yaw and pitch, the template's pose arrays, Limelight's
+   * {@code tv}, PhotonVision's {@code hasTarget}), the only scalar pose under a vision path, and
+   * the entries the caller passes, each by its shape. Candidates: entries that have the content
+   * or the name of vision data without being those. Real logs show why content is not enough:
+   * a planned trajectory is a struct array of timestamps and poses, and a gyro's struct has yaw
+   * and pitch. Candidates are found from their type and schema, never by decoding them.
+   *
+   * @param prefix Only entries under this prefix, case-insensitive (vision_prefix), or null;
+   *     entries passed explicitly are not limited by it
+   * @param explicit The caller's vision_entries, or null
+   * @throws IllegalArgumentException if an explicit entry is missing or has a shape
+   *     analyze_vision does not read
+   */
+  static VisionEntries visionEntries(LogData log, String prefix, List<String> explicit) {
+    var analyzed = new java.util.EnumMap<VisionKind, List<String>>(VisionKind.class);
+    var candidates = new java.util.EnumMap<VisionKind, List<String>>(VisionKind.class);
+    for (var kind : VisionKind.values()) {
+      analyzed.put(kind, new ArrayList<>());
+      candidates.put(kind, new ArrayList<>());
+    }
+    var passed = explicit == null ? List.<String>of() : explicit;
+    for (var name : passed) {
+      var info = log.entries().get(name);
+      if (info == null) {
+        throw new IllegalArgumentException("vision_entries " + name + " is not in this log. "
+            + "Use search_entries or resolve_signals to find the entry.");
+      }
+      var kind = shapeOf(log, info);
+      if (kind == null) {
+        throw new IllegalArgumentException("vision_entries " + name + " is " + info.type()
+            + ": analyze_vision reads has-target flags (boolean or number), pose arrays "
+            + "(struct:Pose2d[], struct:Pose3d[]), scalar poses, struct arrays whose records "
+            + "hold a timestamp and a pose, and structs with yaw and pitch fields.");
+      }
+      if (!analyzed.get(kind).contains(name)) analyzed.get(kind).add(name);
+    }
+
+    var scalarVisionPoses = new ArrayList<String>();
+    for (var e : byId(log)) {
+      var name = e.name();
+      if (passed.contains(name)) continue;
+      if (!FrcDomainTools.AnalyzeVisionTool.underPrefix(name, prefix)) continue;
+      var type = e.type();
+      boolean visionPath = FrcDomainTools.AnalyzeVisionTool.VISION_PATH.matcher(name).find();
+      if (isFlagType(type)) {
+        if (LIMELIGHT_TV.matcher(name).find() || PHOTON_HAS_TARGET.matcher(name).find()) {
+          analyzed.get(VisionKind.HAS_TARGET).add(name);
+        } else {
+          var lower = name.toLowerCase(Locale.ROOT);
+          if (lower.contains("hastarget") || lower.contains("targetvalid")
+              || lower.endsWith("/tv") || lower.endsWith(".tv")) {
+            candidates.get(VisionKind.HAS_TARGET).add(name);
+          }
+        }
+      } else if (type.equals("struct:Pose3d[]") || type.equals("struct:Pose2d[]")) {
+        if (TEMPLATE_POSE_SET.matcher(name).find()) {
+          analyzed.get(VisionKind.POSE_SET).add(name);
+        } else if (visionPath) {
+          candidates.get(VisionKind.POSE_SET).add(name);
+        }
+      } else if (isScalarPose(type)) {
+        if (visionPath && log.sampleCount(name) >= 2) scalarVisionPoses.add(name);
+      } else if (type.startsWith("struct:")) {
+        var struct = StructSchemas.structName(type);
+        if (type.endsWith("[]") && "PoseObservation".equals(struct)
+            && FrcDomainTools.AnalyzeVisionTool.isObservationStream(log, e)) {
+          analyzed.get(VisionKind.OBSERVATION_STREAM).add(name);
+        } else if ("TargetObservation".equals(struct)
+            && FrcDomainTools.AnalyzeVisionTool.isTargetStream(log, e)) {
+          analyzed.get(VisionKind.TARGET_STREAM).add(name);
+        } else {
+          // Another struct with the same fields: judged from its schema, never decoded
+          var schema = log.structSchemas().info(struct);
+          if (schema.isEmpty()) continue;
+          if (type.endsWith("[]")
+              && FrcDomainTools.AnalyzeVisionTool.isObservationStream(log, e)) {
+            candidates.get(VisionKind.OBSERVATION_STREAM).add(name);
+          } else if (FrcDomainTools.AnalyzeVisionTool.isTargetStream(log, e)) {
+            candidates.get(VisionKind.TARGET_STREAM).add(name);
+          }
+        }
+      }
+    }
+    // A vision pose estimate to check for jumps: the only scalar pose under a vision path
+    // (the vision_pose role); several are candidates
+    if (scalarVisionPoses.size() == 1
+        && analyzed.get(VisionKind.POSE_ESTIMATE).isEmpty()) {
+      analyzed.get(VisionKind.POSE_ESTIMATE).addAll(scalarVisionPoses);
+    } else {
+      candidates.get(VisionKind.POSE_ESTIMATE).addAll(scalarVisionPoses);
+    }
+    return new VisionEntries(analyzed, candidates);
+  }
+
+  /** The kind an entry passed explicitly is analyzed as, by its shape, or null. */
+  private static VisionKind shapeOf(LogData log, EntryInfo e) {
+    var type = e.type();
+    if (isFlagType(type)) return VisionKind.HAS_TARGET;
+    if (type.equals("struct:Pose3d[]") || type.equals("struct:Pose2d[]")) {
+      return VisionKind.POSE_SET;
+    }
+    if (isScalarPose(type)) return VisionKind.POSE_ESTIMATE;
+    if (!type.startsWith("struct:")) return null;
+    if (type.endsWith("[]") && FrcDomainTools.AnalyzeVisionTool.isObservationStream(log, e)) {
+      return VisionKind.OBSERVATION_STREAM;
+    }
+    return FrcDomainTools.AnalyzeVisionTool.isTargetStream(log, e) ? VisionKind.TARGET_STREAM
+        : null;
   }
 
   private static Resolution chassisSpeeds(LogData log, Role role) {

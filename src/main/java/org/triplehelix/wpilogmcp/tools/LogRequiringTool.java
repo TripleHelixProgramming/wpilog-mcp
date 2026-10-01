@@ -120,6 +120,8 @@ public abstract class LogRequiringTool extends ToolBase {
       var object = result.getAsJsonObject();
       // Never compute silently from partly undecodable entries: say which ones and why
       log.annotate(object);
+      // Nor from a log that was not read to its end
+      ToolUtils.noteTruncation(object, log);
       // Every successful result says what it was computed from (rule R3)
       if (!object.has("success") || object.get("success").getAsBoolean()) {
         log.recordInputs(object);

@@ -12,10 +12,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.channels.FileChannel;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,9 +30,16 @@ import org.slf4j.LoggerFactory;
  *
  * <p>PID files are stored at {@code ~/.wpilog-mcp/run/{name}.pid} and contain the process ID on
  * the first line and the port number on the second line. A start claims the file before it
- * spawns anything (its own process ID, the port, and a third line {@value #STARTING_MARKER}),
- * atomically, so two concurrent starts cannot both spawn a daemon; the claim is replaced by the
- * daemon's record once it is running and removed if the start fails.
+ * spawns anything (its own process ID, the port, and a third line {@value #STARTING_MARKER});
+ * once the daemon is spawned the file holds the daemon's process ID with
+ * {@value #BOOTING_MARKER}, and once the daemon answers, its plain record. The claim is removed
+ * if the start fails.
+ *
+ * <p>Two starts never spawn two daemons. Finding out whether one is running, removing a stale
+ * record, and claiming the file are one step, taken under a lock that holds across threads and
+ * processes ({@code {name}.lock}); and a record marked as starting or booting is left alone by
+ * everyone but its own start, so a daemon that has been spawned and does not answer yet is not
+ * mistaken for a reused process ID.
  *
  * @since 0.8.0
  */
@@ -38,6 +48,8 @@ public class DaemonManager {
   private static final String APP_NAME = "wpilog-mcp";
   /** Third line of a PID file claimed by a start that has not yet recorded its daemon. */
   static final String STARTING_MARKER = "starting";
+  /** Third line of a PID file whose daemon was spawned and has not answered yet. */
+  static final String BOOTING_MARKER = "booting";
   /** How long a start waits for the daemon (or a concurrent start's daemon) to answer. */
   private static final Duration DEFAULT_START_TIMEOUT = Duration.ofSeconds(10);
   private static final Duration HEALTH_POLL_INTERVAL = Duration.ofMillis(250);
@@ -46,8 +58,55 @@ public class DaemonManager {
   /** SimpleLogger's level property; forwarded so a level set for this JVM applies to the daemon. */
   private static final String LOG_LEVEL_PROPERTY = "org.slf4j.simpleLogger.defaultLogLevel";
 
+  /** A spawned daemon process, as far as a start needs it. */
+  interface Launched {
+    long pid();
+
+    boolean isAlive();
+
+    void destroy();
+  }
+
+  /** Starts the daemon process, its output appended to a log file. Tests substitute their own. */
+  interface Launcher {
+    Launched launch(List<String> command, java.io.File logFile) throws IOException;
+  }
+
+  private static final Launcher PROCESS_LAUNCHER = (command, logFile) -> {
+    var pb = new ProcessBuilder(command);
+    pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
+    pb.redirectErrorStream(true);
+    var process = pb.start();
+    return new Launched() {
+      @Override
+      public long pid() {
+        return process.pid();
+      }
+
+      @Override
+      public boolean isAlive() {
+        return process.isAlive();
+      }
+
+      @Override
+      public void destroy() {
+        process.destroy();
+      }
+    };
+  };
+
+  /** A booting record this many start timeouts old whose daemon still does not answer is stale. */
+  private static final int BOOTING_GRACE_TIMEOUTS = 3;
+
+  /**
+   * The start lock within this JVM, by lock file: a file lock holds between processes, but a
+   * second thread of the same process asking for it gets an exception, not a wait.
+   */
+  private static final ConcurrentHashMap<Path, ReentrantLock> JVM_LOCKS = new ConcurrentHashMap<>();
+
   private final Path runDir;
   private final Duration startTimeout;
+  private final Launcher launcher;
 
   public DaemonManager() {
     this(Path.of(System.getProperty("user.home"), "." + APP_NAME, "run"), DEFAULT_START_TIMEOUT);
@@ -58,8 +117,13 @@ public class DaemonManager {
   }
 
   DaemonManager(Path runDir, Duration startTimeout) {
+    this(runDir, startTimeout, PROCESS_LAUNCHER);
+  }
+
+  DaemonManager(Path runDir, Duration startTimeout, Launcher launcher) {
     this.runDir = runDir;
     this.startTimeout = startTimeout;
+    this.launcher = launcher;
   }
 
   /** A daemon recorded in a PID file whose process is alive and answers the health check. */
@@ -79,7 +143,54 @@ public class DaemonManager {
    * @return true if the server is already running and healthy on {@code port}
    */
   public boolean isAlreadyRunning(String name, int port) {
-    return findRunning(name).map(daemon -> reportRunning(name, port, daemon)).orElse(false);
+    return locked(name, () -> findRunning(name))
+        .map(daemon -> reportRunning(name, port, daemon)).orElse(false);
+  }
+
+  /** An action on the named server's PID file that may fail to read or write it. */
+  @FunctionalInterface
+  private interface PidFileAction<T> {
+    T run() throws IOException;
+  }
+
+  /**
+   * Runs {@code action} holding the named server's start lock, across threads and processes.
+   * The lock is held only while the PID file is read and written (and one health check made),
+   * never while a daemon boots.
+   *
+   * @throws java.io.UncheckedIOException if the action fails
+   */
+  private <T> T locked(String name, PidFileAction<T> action) {
+    var lockPath = runDir.resolve(name + ".lock").toAbsolutePath().normalize();
+    var jvmLock = JVM_LOCKS.computeIfAbsent(lockPath, p -> new ReentrantLock());
+    jvmLock.lock();
+    try {
+      FileChannel channel = null;
+      try {
+        Files.createDirectories(runDir);
+        channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        channel.lock();
+      } catch (IOException | UnsupportedOperationException e) {
+        // No lock file (a read-only directory, a file system without locks): this JVM's lock
+        // still holds, and the action reports what it cannot do
+        logger.debug("No start lock file for '{}': {}", name, e.getMessage());
+      }
+      try {
+        return action.run();
+      } catch (IOException e) {
+        throw new java.io.UncheckedIOException(e);
+      } finally {
+        if (channel != null) {
+          try {
+            channel.close(); // releases the lock
+          } catch (IOException e) {
+            logger.debug("Failed to release the start lock for '{}': {}", name, e.getMessage());
+          }
+        }
+      }
+    } finally {
+      jvmLock.unlock();
+    }
   }
 
   private boolean reportRunning(String name, int port, RunningDaemon daemon) {
@@ -94,11 +205,14 @@ public class DaemonManager {
   }
 
   /**
-   * Finds the live daemon recorded in the named server's PID file.
+   * Finds the live daemon recorded in the named server's PID file. Call with the start lock
+   * held: it removes stale records.
    *
    * <p>A malformed file, one whose process is dead, or one whose process no longer answers the
    * health check is removed. A claim by a start still in progress (its process alive) is kept
-   * and reported as not running.
+   * and reported as not running, and so is the record of a daemon that was spawned and does not
+   * answer yet; that record becomes the daemon's plain one when it answers, and is removed if
+   * it still does not after {@value #BOOTING_GRACE_TIMEOUTS} start timeouts.
    */
   Optional<RunningDaemon> findRunning(String name) {
     var pidFile = pidFilePath(name);
@@ -117,6 +231,7 @@ public class DaemonManager {
       long pid = Long.parseLong(lines.get(0).trim());
       int port = Integer.parseInt(lines.get(1).trim());
       boolean starting = lines.size() > 2 && STARTING_MARKER.equals(lines.get(2).trim());
+      boolean booting = lines.size() > 2 && BOOTING_MARKER.equals(lines.get(2).trim());
 
       // Check if process is alive
       var handle = ProcessHandle.of(pid);
@@ -133,10 +248,18 @@ public class DaemonManager {
 
       // Process is alive — verify it's actually our server via health check
       if (healthCheck(port)) {
+        if (booting) writePidFile(name, pid, port); // it answers: no longer booting
         return Optional.of(new RunningDaemon(pid, port));
       }
 
-      // Process alive but health check failed — different process reused the PID
+      if (booting && !olderThanBootingGrace(pidFile)) {
+        logger.debug("Server '{}' (PID {}) was spawned and does not answer on port {} yet",
+            name, pid, port);
+        return Optional.empty();
+      }
+
+      // Process alive but health check failed — a different process reused the PID, or a
+      // daemon that never came up
       logger.debug("PID {} alive but health check failed on port {}", pid, port);
       deletePidFile(name);
       return Optional.empty();
@@ -162,32 +285,39 @@ public class DaemonManager {
    *     started, or a daemon of this name is running on another port
    */
   public boolean spawnDaemon(String name, int port, Path configPath) {
-    var running = findRunning(name);
-    if (running.isPresent()) {
-      return reportRunning(name, port, running.get());
-    }
-
-    // Claim the PID file before spawning: of concurrent starts, only the one that claims it
-    // spawns; the others wait for its daemon.
+    // One start decides at a time: a daemon is running, another start has the file, or this
+    // start claims it. Of concurrent starts, only the one that claims the file spawns; the
+    // others wait for its daemon.
+    record Decision(Optional<RunningDaemon> running, boolean claimed) {}
+    Decision decision;
     try {
-      if (!claimPidFile(name, port)) {
-        logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);
-        return waitForHealth(port, null);
-      }
-    } catch (IOException e) {
-      logger.error("Failed to write PID file for '{}': {}", name, e.getMessage());
+      decision = locked(name, () -> {
+        var running = findRunning(name);
+        return new Decision(running, running.isEmpty() && claimPidFile(name, port));
+      });
+    } catch (java.io.UncheckedIOException e) {
+      logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());
       return false;
     }
+    if (decision.running().isPresent()) {
+      return reportRunning(name, port, decision.running().get());
+    }
+    if (!decision.claimed()) {
+      logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);
+      if (!waitForHealth(port, null)) return false;
+      logger.info("Server '{}' is running on port {} (started by the other start)", name, port);
+      return true;
+    }
 
-    Process process = null;
+    Launched process = null;
     boolean recorded = false;
     try {
       var logDir = runDir.getParent().resolve("logs");
       Files.createDirectories(logDir);
       var logFile = logDir.resolve(name + ".log").toFile();
 
-      // Resolve the JAR path from the code source
-      var jarPath = resolveJarPath();
+      // Resolve the JAR path from the code source (a substituted launcher needs no JAR)
+      var jarPath = launcher == PROCESS_LAUNCHER ? resolveJarPath() : "wpilog-mcp.jar";
       var javaCmd = ProcessHandle.current().info().command().orElse("java");
 
       var maxHeap = daemonMaxHeap(System.getenv("WPILOG_MAX_HEAP"),
@@ -195,18 +325,16 @@ public class DaemonManager {
       var command = daemonCommand(javaCmd, maxHeap, System.getProperty(LOG_LEVEL_PROPERTY),
           jarPath, name, configPath);
 
-      var pb = new ProcessBuilder(command);
-      pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
-      pb.redirectErrorStream(true);
-
       logger.debug("Spawning daemon: {}", command);
-      process = pb.start();
+      process = launcher.launch(command, logFile);
 
-      // Replace the claim with the daemon's record
-      writePidFile(name, process.pid(), port);
+      // Replace the claim with the daemon's record, marked as booting until it answers: a
+      // plain record of a live process that does not answer reads as a reused PID
+      writePidFile(name, process.pid(), port, BOOTING_MARKER);
       recorded = true;
 
       if (waitForHealth(port, process)) {
+        writePidFile(name, process.pid(), port);
         logger.info("Server '{}' started as daemon (PID {}, port {}). Logs: {}",
             name, process.pid(), port, logFile);
         return true;
@@ -280,7 +408,7 @@ public class DaemonManager {
    * Polls the health endpoint until it answers, the process (when given) dies, or the start
    * timeout passes.
    */
-  private boolean waitForHealth(int port, Process process) {
+  private boolean waitForHealth(int port, Launched process) {
     long deadline = System.nanoTime() + startTimeout.toNanos();
     while (true) {
       if (process != null && !process.isAlive()) {
@@ -298,6 +426,17 @@ public class DaemonManager {
         Thread.currentThread().interrupt();
         return false;
       }
+    }
+  }
+
+  /** Whether the PID file was written more than the booting grace period ago. */
+  private boolean olderThanBootingGrace(Path pidFile) {
+    try {
+      var age = Duration.between(Files.getLastModifiedTime(pidFile).toInstant(),
+          java.time.Instant.now());
+      return age.compareTo(startTimeout.multipliedBy(BOOTING_GRACE_TIMEOUTS)) > 0;
+    } catch (IOException e) {
+      return true;
     }
   }
 
@@ -326,11 +465,16 @@ public class DaemonManager {
    * partial record and takes it for a stale one.
    */
   void writePidFile(String name, long pid, int port) throws IOException {
+    writePidFile(name, pid, port, null);
+  }
+
+  /** Records a daemon with a marker on the third line ({@value #BOOTING_MARKER}), or none. */
+  void writePidFile(String name, long pid, int port, String marker) throws IOException {
     Files.createDirectories(runDir);
     var pidFile = pidFilePath(name);
     var temp = Files.createTempFile(runDir, name + ".", ".pid.tmp");
     try {
-      Files.writeString(temp, pid + "\n" + port + "\n");
+      Files.writeString(temp, pid + "\n" + port + "\n" + (marker == null ? "" : marker + "\n"));
       Files.move(temp, pidFile,
           StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } finally {

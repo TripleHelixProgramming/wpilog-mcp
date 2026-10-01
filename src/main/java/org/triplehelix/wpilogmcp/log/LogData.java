@@ -52,6 +52,15 @@ public interface LogData {
   String truncationMessage();
 
   /**
+   * Whether more was lost than a final record cut off mid-write, which is how most robot
+   * logs end (the robot is switched off while logging): garbage or unreadable records, or
+   * records set aside for their timestamps. A damaged log is also {@link #truncated()}.
+   */
+  default boolean damaged() {
+    return false;
+  }
+
+  /**
    * Returns the sample count for an entry without decoding values.
    *
    * <p>For {@link LazyParsedLog}, this returns the record offset count directly,

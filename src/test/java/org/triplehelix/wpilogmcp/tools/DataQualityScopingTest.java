@@ -103,6 +103,64 @@ class DataQualityScopingTest extends ToolTestBase {
   }
 
   @Test
+  @DisplayName("analyze_vision scores the time range it analyzes, not the whole entry")
+  void visionQualityIsScopedToTheRange() throws Exception {
+    var b = new MockLogBuilder().setPath("/mock/vision_range.wpilog");
+    int n = 1501; // 50 Hz for 30 s
+    var ts = new double[n];
+    var poses = new ArrayList<Map<String, Object>>();
+    for (int i = 0; i < n; i++) {
+      ts[i] = i * 0.02;
+      poses.add(pose(i * 0.001, 0, 0.1));
+    }
+    b.addStructEntry("/Odometry/Robot", "struct:Pose2d", ts, poses);
+    var log = b.build();
+    putLogInCache(log);
+
+    var whole = call("analyze_vision", log.path());
+    assertTrue(whole.get("success").getAsBoolean(), whole.toString());
+    assertEquals(1501, whole.getAsJsonObject("data_quality").get("sample_count").getAsInt());
+
+    // 10.00 to 20.00 s: 501 samples
+    var r = call("analyze_vision", log.path(), "start_time", 9.99, "end_time", 20.01);
+    assertTrue(r.get("success").getAsBoolean(), r.toString());
+    var q = r.getAsJsonObject("data_quality");
+    assertEquals(501, q.get("sample_count").getAsInt(),
+        "quality must describe the samples analyzed, not the whole entry: " + q);
+    assertEquals(10.0, q.get("time_span_seconds").getAsDouble(), 0.05);
+    assertTrue(r.getAsJsonObject("server_analysis_directives").get("sample_context")
+        .getAsString().contains("501"), r.toString());
+  }
+
+  @Test
+  @DisplayName("analyze_cycles scores the time range it analyzes, not the whole entry")
+  void cyclesQualityIsScopedToTheRange() throws Exception {
+    // A state that changes every second for a minute
+    var states = new ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+    for (int i = 0; i <= 60; i++) {
+      states.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(i,
+          i % 2 == 0 ? "INTAKE" : "SCORE"));
+    }
+    var log = new MockLogBuilder().setPath("/mock/cycles_range.wpilog")
+        .addEntry("/Robot/State", "string", states).build();
+    putLogInCache(log);
+
+    var whole = call("analyze_cycles", log.path(), "state_entry", "/Robot/State",
+        "cycle_start_state", "INTAKE");
+    assertTrue(whole.get("success").getAsBoolean(), whole.toString());
+    assertEquals(61, whole.getAsJsonObject("data_quality").get("sample_count").getAsInt());
+
+    // 20 to 40 s: 21 samples
+    var r = call("analyze_cycles", log.path(), "state_entry", "/Robot/State",
+        "cycle_start_state", "INTAKE", "start_time", 19.5, "end_time", 40.5);
+    assertTrue(r.get("success").getAsBoolean(), r.toString());
+    var q = r.getAsJsonObject("data_quality");
+    assertEquals(21, q.get("sample_count").getAsInt(),
+        "quality must describe the samples analyzed, not the whole entry: " + q);
+    assertEquals(20.0, q.get("time_span_seconds").getAsDouble(), 1e-9);
+  }
+
+  @Test
   @DisplayName("the time between two windows of a scope is not a gap for compare_poses")
   void windowsAreNotGapsInPoseTools() throws Exception {
     var b = new MockLogBuilder().setPath("/mock/pose_windows.wpilog");

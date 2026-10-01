@@ -126,8 +126,8 @@ class NoGuessRolesTest extends ToolTestBase {
   }
 
   @Test
-  @DisplayName("with explicit role entries, several matching stems are listed, not chosen")
-  void explicitEntriesWithSeveralStems() throws Exception {
+  @DisplayName("with explicit role entries, the name's other matches are listed, not used")
+  void explicitEntriesAndOtherMatches() throws Exception {
     var ts = new double[] {0, 1, 2, 3};
     var log = new MockLogBuilder().setPath("/mock/explicit_stems.wpilog")
         .addNumericEntry("/Drive/ModuleFrontLeft/TurnVelocityRadPerSec", ts, new double[] {0, 1, 0, 1})
@@ -142,11 +142,20 @@ class NoGuessRolesTest extends ToolTestBase {
     assertTrue(r.get("success").getAsBoolean(), r.toString());
     var roles = r.getAsJsonObject("roles");
     assertEquals("/Drive/ModuleFrontLeft/DriveCurrentAmps", roles.get("current").getAsString());
-    assertTrue(roles.get("setpoint").isJsonNull(), "no role is filled from an ambiguous stem");
-    assertFalse(r.has("stem"));
-    assertEquals(2, r.getAsJsonArray("other_stems").size());
-    assertTrue(r.getAsJsonArray("warnings").toString().contains("explicitly passed"), r.toString());
+    assertTrue(roles.get("setpoint").isJsonNull(), "no role is filled from a name");
+    assertFalse(r.has("stem") || r.has("other_stems"));
+    assertFalse(r.has("candidates"), "both roles the name matches were passed: " + r);
     assertEquals(1, r.get("stall_count").getAsInt());
+
+    // One role passed: the other's matches are candidates, and its section is skipped
+    var partial = call("profile_mechanism", log.path(), "mechanism_name", "ModuleFrontLeft",
+        "velocity_entry", "/Drive/ModuleFrontLeft/DriveVelocityRadPerSec");
+    assertTrue(partial.getAsJsonObject("roles").get("current").isJsonNull(), partial.toString());
+    assertEquals(2, partial.getAsJsonObject("candidates").getAsJsonArray("current").size());
+    assertFalse(partial.has("stall_count"));
+    var skipped = partial.getAsJsonArray("skipped").toString();
+    assertTrue(skipped.contains("current_entry was not passed")
+        && skipped.contains("/Drive/ModuleFrontLeft/TurnCurrentAmps"), skipped);
   }
 
   @Test

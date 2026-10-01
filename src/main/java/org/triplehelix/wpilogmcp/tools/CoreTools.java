@@ -594,14 +594,16 @@ public final class CoreTools {
           + "chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, "
           + "vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: "
           + "the entry (or entries, or a value); match, how it was chosen (explicit, convention: "
-          + "a well-known AdvantageKit/WPILib/CTRE/PathPlanner name, type: the only entry of its "
-          + "type or schema, heuristic, or none); the basis; the other candidates best first; "
-          + "ambiguous when another candidate ranked as well (the one declared first wins); and "
-          + "the tools that use it. The server does not guess: a heuristic role has no entry, "
-          + "needs_confirmation, and candidates that match by name only, and the tools skip it. "
-          + "Establish which candidate is right (get_entry_info, read_entry, or ask the user) "
-          + "and pass it with the tool's parameter (voltage_entry, entry, pose_entry, "
-          + "chooser_entry, ...). needs_confirmation lists those roles. These are the choices "
+          + "a well-known AdvantageKit/WPILib/CTRE/PathPlanner/YAGSL/vision-library name, type: "
+          + "the only entry of its type or schema, heuristic, or none); the basis; the other "
+          + "candidates best first; ambiguous when another candidate ranked as well (the one "
+          + "declared first wins); and the tools that use it. The server does not guess: a "
+          + "heuristic role has no entry, needs_confirmation, and candidates, and the tools "
+          + "skip it. A word in a name is not evidence of what an entry holds. Establish which "
+          + "candidate is right from the robot's source code, where the entry is logged (else "
+          + "get_entry_info, read_entry, or the user), and pass it with the tool's parameter "
+          + "(voltage_entry, entry, pose_entry, chooser_entry, measured_entry, ...). "
+          + "needs_confirmation lists those roles. These are the choices "
           + "the tools make; each tool's result records the entries it used under "
           + "inputs.entries.";
     }
@@ -618,12 +620,24 @@ public final class CoreTools {
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       var roles = new java.util.ArrayList<SignalResolver.Role>();
-      if (arguments.has("roles") && arguments.get("roles").isJsonArray()) {
-        for (var r : arguments.getAsJsonArray("roles")) {
+      var rolesArg = arguments.get("roles");
+      if (rolesArg == null || rolesArg.isJsonNull()) {
+        roles.addAll(java.util.List.of(SignalResolver.Role.values()));
+      } else {
+        // Anything but an array used to be read as "all roles"
+        var form = "roles must be an array of role names (for example [\"battery_voltage\", "
+            + "\"robot_pose\"]); omit roles for all of them";
+        if (!rolesArg.isJsonArray()) throw new IllegalArgumentException(form);
+        for (var r : rolesArg.getAsJsonArray()) {
+          if (!r.isJsonPrimitive() || !r.getAsJsonPrimitive().isString()) {
+            throw new IllegalArgumentException(form);
+          }
           roles.add(SignalResolver.Role.fromWire(r.getAsString()));
         }
-      } else {
-        roles.addAll(java.util.List.of(SignalResolver.Role.values()));
+        if (roles.isEmpty()) {
+          throw new IllegalArgumentException("roles is an empty list; omit roles for all of "
+              + "them");
+        }
       }
       var result = new JsonObject();
       result.addProperty("success", true);
@@ -765,12 +779,14 @@ public final class CoreTools {
       names.addAll(usedBy.keySet());
       if (names.isEmpty()) {
         // An empty list is not a listing: the log has no struct types
-        return ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
+        var none = ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
                 + "struct:<Name> type and no /.schema/struct: schema is logged.")
             .hint("list_entries shows the types the log has; list_struct_types without path "
                 + "lists the built-in WPILib struct layouts.")
             .addProperty("log_path", log.path())
             .build();
+        ToolUtils.noteTruncation(none, log);
+        return none;
       }
 
       var types = new JsonArray();
@@ -802,6 +818,7 @@ public final class CoreTools {
       result.addProperty("struct_type_count", types.size());
       result.add("struct_types", types);
       if (!warnings.isEmpty()) result.add("warnings", warnings);
+      ToolUtils.noteTruncation(result, log);
       return result;
     }
   }

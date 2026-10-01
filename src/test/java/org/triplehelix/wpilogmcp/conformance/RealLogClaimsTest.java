@@ -550,34 +550,30 @@ class RealLogClaimsTest {
   }
 
   @Test
-  @DisplayName("profile_mechanism resolves a named mechanism and refuses to choose among several")
-  void mechanismRolesAndAmbiguity() throws Exception {
-    var claim = "profile_mechanism: Turret's current entry resolved; an ambiguous name is no_match with the stems";
+  @DisplayName("profile_mechanism lists a name's matches as candidates and analyzes what is passed")
+  void mechanismCandidatesAndExplicitRoles() throws Exception {
+    var claim = "profile_mechanism: a name alone lists candidates and analyzes nothing; entries passed are analyzed";
     needsLog(Q10, claim);
-    var turret = call("profile_mechanism", "path", path(Q10), "mechanism_name", "Turret");
-    assertTrue(status(turret).equals("ok") || status(turret).equals("partial"), turret.toString());
-    assertEquals("/Turret/CurrentAmps", str(turret.getAsJsonObject("roles"), "current"), turret.getAsJsonObject("roles").toString());
-    var currents = call("list_entries", "path", path(Q10), "pattern", "/CurrentAmps");
-    var stems = new TreeSet<String>();
-    for (var e : currents.getAsJsonArray("entries")) {
-      var name = e.getAsJsonObject().get("name").getAsString();
-      stems.add(name.substring(0, name.lastIndexOf('/')));
-    }
-    String ambiguous = null;
-    for (var candidate : List.of("er", "e", "r", "o")) {
-      long matching = stems.stream().filter(s -> s.toLowerCase().contains(candidate)).count();
-      if (matching >= 2) {
-        ambiguous = candidate;
-        break;
-      }
-    }
-    needs(ambiguous != null, claim, "no substring matches two mechanism stems among " + stems);
-    var several = call("profile_mechanism", "path", path(Q10), "mechanism_name", ambiguous);
-    assertEquals("no_match", status(several), several.toString());
-    assertTrue(several.get("needs_confirmation").getAsBoolean(), several.toString());
-    assertTrue(several.getAsJsonObject("stems").size() >= 2, several.getAsJsonObject("stems").toString());
-    verified(claim, "Turret current /Turret/CurrentAmps; '" + ambiguous + "' matches "
-        + several.getAsJsonObject("stems").size() + " stems and is refused");
+    var byName = call("profile_mechanism", "path", path(Q10), "mechanism_name", "Turret");
+    assertEquals("no_match", status(byName), byName.toString());
+    assertTrue(byName.get("needs_confirmation").getAsBoolean(), byName.toString());
+    assertFalse(byName.has("roles") || byName.has("stall_count") || byName.has("following_error"),
+        "nothing is analyzed from a name: " + byName);
+    var candidates = byName.getAsJsonObject("candidates");
+    assertTrue(candidates.getAsJsonArray("current").toString().contains("/Turret/CurrentAmps"),
+        candidates.toString());
+    needs(candidates.has("velocity"), claim, "no velocity candidate among " + candidates);
+    // The caller's part, done here by the test: a velocity and a current of the same mechanism
+    var velocity = candidates.getAsJsonArray("velocity").get(0).getAsString();
+    assertTrue(velocity.startsWith("/Turret/"), velocity);
+    var passed = call("profile_mechanism", "path", path(Q10), "mechanism_name", "Turret",
+        "velocity_entry", velocity, "current_entry", "/Turret/CurrentAmps");
+    assertTrue(status(passed).equals("ok") || status(passed).equals("partial"), passed.toString());
+    assertEquals("/Turret/CurrentAmps", str(passed.getAsJsonObject("roles"), "current"));
+    assertTrue(passed.has("stall_count"), passed.toString());
+    assertFalse(passed.has("stem") || passed.has("other_stems"));
+    verified(claim, "Turret candidates for " + candidates.keySet() + "; with " + velocity
+        + " and /Turret/CurrentAmps passed: " + passed.get("stall_count") + " stalls");
   }
 
   @Test

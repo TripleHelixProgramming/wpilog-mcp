@@ -9,9 +9,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * The file a tool was pointed at cannot be read as a log: it is missing, empty, not a WPILOG, or
- * too large to map. This is a fact about the file, not a server fault, so tools report its
- * message as an ordinary explained error rather than an internal one.
+ * The file a tool was pointed at cannot be read as a log: it is missing, a directory, not
+ * readable by this process, empty, not a WPILOG, or too large to map. This is a fact about the
+ * file, not a server fault, so tools report its message as an ordinary explained error rather
+ * than an internal one.
  *
  * @since 0.9.0
  */

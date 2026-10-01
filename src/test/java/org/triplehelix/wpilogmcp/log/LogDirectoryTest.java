@@ -795,6 +795,9 @@ class LogDirectoryTest {
     void zeroMatchNumberDoesNotOverwriteValid(@TempDir Path tempDir) throws IOException {
       Path logFile = tempDir.resolve("test.wpilog");
       try (var log = new DataLogWriter(logFile.toString())) {
+        // A match number is read with its match type (2: qualification)
+        var matchTypeEntry = new IntegerLogEntry(log, "/FMSInfo/MatchType");
+        matchTypeEntry.append(2, 1000000);
         var matchEntry = new IntegerLogEntry(log, "/FMSInfo/MatchNumber");
 
         // Boot: zero value
@@ -818,14 +821,16 @@ class LogDirectoryTest {
     void emptyMatchTypeDoesNotOverwriteValid(@TempDir Path tempDir) throws IOException {
       Path logFile = tempDir.resolve("test.wpilog");
       try (var log = new DataLogWriter(logFile.toString())) {
-        var matchTypeEntry = new StringLogEntry(log, "/FMSInfo/MatchType");
+        // The match type is an integer in both frameworks: 0 none, 1 practice,
+        // 2 qualification, 3 elimination
+        var matchTypeEntry = new IntegerLogEntry(log, "/FMSInfo/MatchType");
 
-        // Boot: empty value
-        matchTypeEntry.append("", 1000000);
+        // Boot: none
+        matchTypeEntry.append(0, 1000000);
         // FMS connection: valid value
-        matchTypeEntry.append("Qualification", 2000000);
-        // Periodic update: empty again
-        matchTypeEntry.append("", 3000000);
+        matchTypeEntry.append(2, 2000000);
+        // Periodic update: none again
+        matchTypeEntry.append(0, 3000000);
         log.flush();
       }
 
@@ -844,17 +849,17 @@ class LogDirectoryTest {
       try (var log = new DataLogWriter(logFile.toString())) {
         var eventEntry = new StringLogEntry(log, "/FMSInfo/EventName");
         var matchEntry = new IntegerLogEntry(log, "/FMSInfo/MatchNumber");
-        var matchTypeEntry = new StringLogEntry(log, "/FMSInfo/MatchType");
+        var matchTypeEntry = new IntegerLogEntry(log, "/FMSInfo/MatchType");
 
         // Valid values first
         eventEntry.append("DCMP", 1000000);
         matchEntry.append(7, 1000000);
-        matchTypeEntry.append("Final", 1000000);
+        matchTypeEntry.append(3, 1000000);
 
         // Empty values after
         eventEntry.append("", 2000000);
         matchEntry.append(0, 2000000);
-        matchTypeEntry.append("", 2000000);
+        matchTypeEntry.append(0, 2000000);
         log.flush();
       }
 
@@ -865,19 +870,7 @@ class LogDirectoryTest {
       var info = logs.get(0);
       assertEquals("DCMP", info.eventName());
       assertEquals(7, info.matchNumber());
-      assertEquals("Final", info.matchType());
-    }
-
-    @Test
-    @DisplayName("teamNumber threshold of 10 filters station numbers")
-    void teamNumberThresholdFiltersStationNumbers() {
-      // Station numbers are 1-3, team numbers are > 10
-      // The existing code already had this protection:
-      //   if (val > 10) teamNumber = val;
-      //
-      // This ensures station numbers (1, 2, 3) don't get mistaken for team numbers
-      assertTrue(10 < 2363, "Team number 2363 passes threshold");
-      assertFalse(10 < 3, "Station number 3 does not pass threshold");
+      assertEquals("Elimination", info.matchType());
     }
 
     @Test
@@ -886,10 +879,10 @@ class LogDirectoryTest {
       Path logFile = tempDir.resolve("test.wpilog");
       try (var log = new DataLogWriter(logFile.toString())) {
         var teamEntry = new IntegerLogEntry(log, "/FMSInfo/StationNumber");
-        // First log station number (should be ignored since < 10)
+        // A station number is not a team number
         teamEntry.append(2, 1000000);
-        // Then log something that looks like a team number entry
-        var teamNumEntry = new IntegerLogEntry(log, "/FMSInfo/TeamNumber");
+        // AdvantageKit records the team in its SystemStats table
+        var teamNumEntry = new IntegerLogEntry(log, "/SystemStats/TeamNumber");
         teamNumEntry.append(2363, 2000000);
         log.flush();
       }
@@ -902,15 +895,15 @@ class LogDirectoryTest {
     }
 
     @Test
-    @DisplayName("station number below threshold does not set teamNumber")
-    void stationNumberBelowThresholdIgnored(@TempDir Path tempDir) throws IOException {
+    @DisplayName("a station number is never the team number, whatever its value")
+    void stationNumberIsNotTheTeam(@TempDir Path tempDir) throws IOException {
       Path logFile = tempDir.resolve("test.wpilog");
       try (var log = new DataLogWriter(logFile.toString())) {
-        // Only log station numbers (1-3), should all be ignored
+        // It used to be taken as the team when it was above 10
         var stationEntry = new IntegerLogEntry(log, "/FMSInfo/StationNumber");
         stationEntry.append(1, 1000000);
         stationEntry.append(2, 2000000);
-        stationEntry.append(3, 3000000);
+        stationEntry.append(25, 3000000);
         log.flush();
       }
 
@@ -990,9 +983,10 @@ class LogDirectoryTest {
     }
 
     @Test
-    @DisplayName("parses practice match format")
-    void parsesPracticeMatch(@TempDir Path tempDir) throws IOException {
-      // Practice matches may not have a match number
+    @DisplayName("an event with no match is not called a practice match")
+    void eventWithoutMatch(@TempDir Path tempDir) throws IOException {
+      // A name with an event and no match says the Driver Station gave an event name and
+      // match type None, which it does off the field too. A practice match is named _p3.
       Path logFile = tempDir.resolve("FRC_25-03-15_10-00-00_vadc.wpilog");
       Files.createFile(logFile);
 
@@ -1002,7 +996,8 @@ class LogDirectoryTest {
       assertEquals(1, logs.size());
       var info = logs.get(0);
       assertEquals("VADC", info.eventName());
-      assertEquals("Practice", info.matchType()); // Default when no type specified
+      assertNull(info.matchType());
+      assertEquals("VADC", info.friendlyName());
     }
 
     @Test
@@ -1010,12 +1005,19 @@ class LogDirectoryTest {
     void parsesSimulationFile(@TempDir Path tempDir) throws IOException {
       Path logFile = tempDir.resolve("FRC_25-03-15_10-00-00_test_sim.wpilog");
       Files.createFile(logFile);
+      Path match = tempDir.resolve("FRC_25-03-15_11-00-00_test_q3_sim.wpilog");
+      Files.createFile(match);
 
       logDirectory.setLogDirectory(tempDir.toString());
       var logs = logDirectory.listAvailableLogs();
 
-      assertEquals(1, logs.size());
-      assertTrue(logs.get(0).matchType().contains("sim"), "Should indicate simulation");
+      assertEquals(2, logs.size());
+      for (var log : logs) {
+        assertTrue(log.friendlyName().contains("(sim)"), "Should indicate simulation: "
+            + log.friendlyName());
+      }
+      var withMatch = logs.stream().filter(l -> l.matchNumber() != null).findFirst().orElseThrow();
+      assertEquals("Qualification (sim)", withMatch.matchType());
     }
 
     @Test

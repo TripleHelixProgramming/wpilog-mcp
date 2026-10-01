@@ -10,8 +10,17 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -356,6 +365,206 @@ class DaemonManagerTest {
       assertEquals(List.of("java", "-Xmx2g",
           "-Dorg.slf4j.simpleLogger.defaultLogLevel=debug", "-jar", "a.jar",
           "--internal-daemon", "n"), withLevel);
+    }
+  }
+
+  // ==================== Concurrent starts ====================
+
+  /**
+   * Stands in for the daemon process: counts the launches, and starts a server on the port only
+   * after {@code bootMillis}, as a real daemon answers only once its JVM is up. The "process" is
+   * this JVM, which is alive throughout.
+   */
+  private static final class FakeLauncher implements DaemonManager.Launcher {
+    final AtomicInteger launches = new AtomicInteger();
+    final List<HttpTransport> servers = new CopyOnWriteArrayList<>();
+    final int port;
+    final long bootMillis;
+
+    FakeLauncher(int port, long bootMillis) {
+      this.port = port;
+      this.bootMillis = bootMillis;
+    }
+
+    @Override
+    public DaemonManager.Launched launch(List<String> command, java.io.File logFile) {
+      launches.incrementAndGet();
+      var boot = new Thread(() -> {
+        try {
+          Thread.sleep(bootMillis);
+          var server = new HttpTransport(new ToolRegistry(), port);
+          server.start();
+          servers.add(server);
+        } catch (IOException | InterruptedException e) {
+          // a second "daemon" cannot bind the port, as a real one could not
+        }
+      });
+      boot.setDaemon(true);
+      boot.start();
+      return new DaemonManager.Launched() {
+        @Override
+        public long pid() {
+          return OWN_PID;
+        }
+
+        @Override
+        public boolean isAlive() {
+          return true;
+        }
+
+        @Override
+        public void destroy() {}
+      };
+    }
+
+    void stop() {
+      servers.forEach(HttpTransport::stop);
+    }
+  }
+
+  private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!condition.getAsBoolean()) {
+      assertTrue(System.nanoTime() < deadline, "condition not reached in 10 s");
+      Thread.sleep(5);
+    }
+  }
+
+  @Nested
+  @DisplayName("concurrent starts")
+  class ConcurrentStartTests {
+
+    @Test
+    @DisplayName("a start made while another start's server is booting joins it")
+    void startDuringBoot() throws Exception {
+      // The first start has spawned its server and recorded it; the server does not answer yet.
+      // A second start used to take that record for a reused PID, delete it, and spawn again.
+      int port = freePort();
+      var launcher = new FakeLauncher(port, 700);
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
+      var pool = Executors.newFixedThreadPool(2);
+      try {
+        Future<Boolean> first = pool.submit(() -> manager.spawnDaemon("test", port, null));
+        await(() -> {
+          try {
+            var lines = pidFileLines(manager, "test");
+            return launcher.launches.get() == 1
+                && (lines.size() < 3 || !DaemonManager.STARTING_MARKER.equals(lines.get(2)));
+          } catch (IOException e) {
+            return false;
+          }
+        });
+        Future<Boolean> second = pool.submit(() -> manager.spawnDaemon("test", port, null));
+
+        assertTrue(first.get(15, TimeUnit.SECONDS));
+        assertTrue(second.get(15, TimeUnit.SECONDS));
+        assertEquals(1, launcher.launches.get(), "the second start spawned another server");
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+      } finally {
+        pool.shutdownNow();
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("many starts at once, over a stale record, spawn one server")
+    void manyStartsAtOnce() throws Exception {
+      // Each start used to read the stale record, delete it, and claim the file: a start could
+      // delete the claim another had just made, and both spawned
+      for (int round = 0; round < 6; round++) {
+        var runDir = Files.createDirectories(tempDir.resolve("round" + round));
+        int port = freePort();
+        var launcher = new FakeLauncher(port, 150);
+        var manager = new DaemonManager(runDir, Duration.ofSeconds(8), launcher);
+        manager.writePidFile("test", DEAD_PID, port);
+        int starts = 12;
+        var pool = Executors.newFixedThreadPool(starts);
+        try {
+          var go = new CountDownLatch(1);
+          var results = new ArrayList<Future<Boolean>>();
+          for (int i = 0; i < starts; i++) {
+            results.add(pool.submit(() -> {
+              go.await();
+              return manager.spawnDaemon("test", port, null);
+            }));
+          }
+          go.countDown();
+          for (var result : results) {
+            assertTrue(result.get(20, TimeUnit.SECONDS), "round " + round);
+          }
+          assertEquals(1, launcher.launches.get(), "round " + round + ": servers spawned");
+          assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"), "round " + round);
+        } finally {
+          pool.shutdownNow();
+          launcher.stop();
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("the record of a server still booting is kept, and settles once it answers")
+    void bootingRecord() throws Exception {
+      // What a status check, or a second start, finds while a server is coming up
+      var manager = createManager();
+      int port = freePort();
+      manager.writePidFile("test", OWN_PID, port, DaemonManager.BOOTING_MARKER);
+      var booting = List.of(Long.toString(OWN_PID), Integer.toString(port),
+          DaemonManager.BOOTING_MARKER);
+
+      assertFalse(manager.isAlreadyRunning("test", port));
+      assertEquals(booting, pidFileLines(manager, "test"), "it used to be removed as a reused PID");
+
+      var server = new HttpTransport(new ToolRegistry(), port);
+      server.start();
+      try {
+        assertTrue(manager.isAlreadyRunning("test", port));
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"),
+            "a server that answers is no longer booting");
+      } finally {
+        server.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("a booting record whose server never answered is removed after the grace period")
+    void bootingRecordExpires() throws Exception {
+      var manager = createImpatientManager();
+      int port = freePort();
+      manager.writePidFile("test", OWN_PID, port, DaemonManager.BOOTING_MARKER);
+      Files.setLastModifiedTime(manager.pidFilePath("test"),
+          FileTime.from(Instant.now().minus(Duration.ofMinutes(10))));
+
+      assertFalse(manager.isAlreadyRunning("test", port));
+      assertFalse(Files.exists(manager.pidFilePath("test")));
+    }
+
+    @Test
+    @DisplayName("a start records its server as booting until it answers")
+    void startRecordsBooting() throws Exception {
+      int port = freePort();
+      var launcher = new FakeLauncher(port, 600);
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
+      var pool = Executors.newSingleThreadExecutor();
+      try {
+        Future<Boolean> start = pool.submit(() -> manager.spawnDaemon("test", port, null));
+        await(() -> launcher.launches.get() == 1 && Files.exists(manager.pidFilePath("test"))
+            && !pidLines(manager).contains(DaemonManager.STARTING_MARKER));
+        assertEquals(List.of(Long.toString(OWN_PID), Integer.toString(port),
+            DaemonManager.BOOTING_MARKER), pidLines(manager));
+        assertTrue(start.get(15, TimeUnit.SECONDS));
+        assertEquals(record(OWN_PID, port), pidLines(manager));
+      } finally {
+        pool.shutdownNow();
+        launcher.stop();
+      }
+    }
+
+    private List<String> pidLines(DaemonManager manager) {
+      try {
+        return pidFileLines(manager, "test");
+      } catch (IOException e) {
+        return List.of();
+      }
     }
   }
 

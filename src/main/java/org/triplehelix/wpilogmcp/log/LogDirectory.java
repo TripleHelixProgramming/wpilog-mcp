@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.log;
 
+import edu.wpi.first.util.datalog.DataLogAccess;
 import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
@@ -14,6 +15,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -403,7 +405,40 @@ public class LogDirectory {
   }
 
   /**
-   * Extracts metadata from a log file by reading the first few records.
+   * The entries that carry a log's event, match, and team by convention: AdvantageKit's
+   * {@code /DriverStation/} and {@code /SystemStats/} tables, and NetworkTables' {@code FMSInfo}
+   * table as DataLogManager records it ({@code NT:/FMSInfo/...}). An entry is one of them by
+   * its table, its leaf name, and its type. A name that only contains "MatchType" or
+   * "TeamNumber" is some team's own entry, and is not read: the listing's event, match, and team
+   * choose the Blue Alliance data shown for the log.
+   */
+  private enum MatchFact {
+    EVENT("string", "/driverstation/eventname", "/fmsinfo/eventname"),
+    MATCH_TYPE("int64", "/driverstation/matchtype", "/fmsinfo/matchtype"),
+    MATCH_NUMBER("int64", "/driverstation/matchnumber", "/fmsinfo/matchnumber"),
+    TEAM("int64", "/systemstats/teamnumber");
+
+    private final String type;
+    private final List<String> names;
+
+    MatchFact(String type, String... names) {
+      this.type = type;
+      this.names = List.of(names);
+    }
+
+    static Optional<MatchFact> of(String entryName, String entryType) {
+      var lower = entryName.toLowerCase(Locale.ROOT);
+      return Arrays.stream(values())
+          .filter(f -> f.type.equals(entryType) && f.names.stream().anyMatch(lower::endsWith))
+          .findFirst();
+    }
+  }
+
+  /**
+   * Extracts metadata from a log file by reading the first few records, then its file name for
+   * what the records leave unset (see {@link LogFileName}). Robot code starts logging before the
+   * Driver Station has connected, so the first records usually hold no event or match yet, and
+   * the name the logging framework gave the file later is what carries them.
    *
    * <p>Note: WPILib's DataLogReader does not implement AutoCloseable, so we cannot use
    * try-with-resources. The reader uses memory-mapped buffers internally which are released
@@ -415,34 +450,58 @@ public class LogDirectory {
     var matchType = (MatchType) null;
     var matchNumber = (Integer) null;
     var teamNumber = (Integer) null;
+    // The Driver Station's match type and number as the records go by. A number counts only
+    // while a match type is set: with match type None there is no match, and the number can
+    // hold anything (real logs start with a five-digit one).
+    long currentType = 0;
+    long currentNumber = 0;
 
     try {
       var reader = new DataLogReader(path.toString());
       if (reader.isValid()) {
-        var entryNames = new HashMap<Integer, String>();
+        var facts = new HashMap<Integer, MatchFact>();
         int recordCount = 0;
-        for (var record : reader) {
+        // Walk records by their own bounds, as the log scan does: WPILib's iterator skips a
+        // short final record
+        int pos = DataLogAccess.firstRecordOffset(path);
+        int size = DataLogAccess.size(reader);
+        while (pos >= 12 && pos < size) {
           if (recordCount++ > LogManager.MAX_METADATA_RECORDS) break;
+          int next = DataLogAccess.recordEnd(reader, pos);
+          if (next < 0) break; // the file ends inside this record
+          var record = DataLogAccess.getRecord(reader, pos);
+          pos = next;
 
           if (record.isStart()) {
             var startData = record.getStartData();
-            entryNames.put(startData.entry, startData.name);
+            MatchFact.of(startData.name, startData.type)
+                .ifPresent(fact -> facts.put(startData.entry, fact));
           } else if (!record.isFinish() && !record.isSetMetadata()) {
-            var entryName = entryNames.get(record.getEntry());
-            if (entryName != null) {
-              var lowerName = entryName.toLowerCase();
-              if (lowerName.contains("eventname")) {
-                var s = getSafeString(record);
-                if (s != null && !s.isEmpty()) eventName = s;
-              } else if (lowerName.contains("matchtype")) {
-                var mt = parseMatchTypeFromRecord(record);
-                if (mt != null) matchType = mt;
-              } else if (lowerName.contains("matchnumber")) {
-                int mn = (int) record.getInteger();
-                if (mn > 0) matchNumber = mn;
-              } else if (lowerName.contains("stationnumber") || lowerName.contains("teamnumber")) {
-                int val = (int) record.getInteger();
-                if (val > 10) teamNumber = val;
+            var fact = facts.get(record.getEntry());
+            if (fact == null) continue;
+            // Values not set yet (an empty name, 0, match type None) leave the fact as it is
+            switch (fact) {
+              case EVENT -> {
+                var s = stringOf(record);
+                if (s != null && !s.isBlank()) eventName = s.strip();
+              }
+              case MATCH_TYPE -> {
+                var v = integerOf(record);
+                if (v != null) currentType = v;
+              }
+              case MATCH_NUMBER -> {
+                var v = integerOf(record);
+                if (v != null) currentNumber = v;
+              }
+              case TEAM -> {
+                var v = integerOf(record);
+                if (v != null && v > 0 && v <= Integer.MAX_VALUE) teamNumber = v.intValue();
+              }
+            }
+            if (currentType >= 1 && currentType <= 3) {
+              matchType = MatchType.fromOrdinal((int) currentType);
+              if (currentNumber > 0 && currentNumber <= Integer.MAX_VALUE) {
+                matchNumber = (int) currentNumber;
               }
             }
             if (eventName != null && matchType != null && matchNumber != null && teamNumber != null) break;
@@ -453,130 +512,57 @@ public class LogDirectory {
       logger.debug("Metadata extraction error for {}: {}", filename, e.getMessage());
     }
 
-    // Fallback to filename parsing
-    String matchTypeStr = null;
-    if (eventName == null || matchType == null || matchNumber == null) {
-      var parsed = parseFilename(filename, path, getLastModified(path), getFileSize(path));
-      if (parsed != null) {
-        if (eventName == null) eventName = parsed.eventName();
-        if (matchType == null && parsed.matchType() != null) {
-          matchType = MatchType.fromString(parsed.matchType());
-          matchTypeStr = parsed.matchType(); // Preserve the original string (may include " (sim)")
-        }
-        if (matchNumber == null) matchNumber = parsed.matchNumber();
-      }
+    // What the records leave unset comes from the file name. The match is taken whole from one
+    // or the other: the name's number under the records' type would be neither's match.
+    var name = LogFileName.parse(filename);
+    if (eventName == null) eventName = name.event();
+    if ((matchType == null || matchNumber == null) && name.matchType() != null) {
+      matchType = name.matchType();
+      matchNumber = name.matchNumber();
     }
-
     if (teamNumber == null) teamNumber = defaultTeamNumber;
 
-    // Use preserved string if available (includes sim indicator), otherwise use enum friendly name
-    String finalMatchType = matchTypeStr != null ? matchTypeStr : (matchType != null ? matchType.getFriendlyName() : null);
+    // A replay or simulation output (_sim) is marked in its match type, whichever gave it
+    String matchTypeLabel = matchType == null ? null
+        : matchType.getFriendlyName() + (name.simulation() ? " (sim)" : "");
 
     return new LogFileInfo(
         path.toString(), filename, eventName,
-        finalMatchType,
+        matchTypeLabel,
         matchNumber, teamNumber, getLastModified(path), getFileSize(path),
-        extractCreationTime(filename));
+        creationTime(name));
   }
 
-  private String getSafeString(DataLogRecord record) {
-    try { return record.getString(); } catch (Exception e) { return null; }
+  /** The record's string, or null when it cannot be read as one. */
+  private static String stringOf(DataLogRecord record) {
+    try { return record.getString(); } catch (RuntimeException e) { return null; }
   }
 
-  private MatchType parseMatchTypeFromRecord(DataLogRecord record) {
-    try {
-      var s = record.getString();
-      if (s.length() == 1 && s.charAt(0) <= 3) return MatchType.fromOrdinal(s.charAt(0));
-      return MatchType.fromString(s);
-    } catch (Exception e) {
-      try { return MatchType.fromOrdinal((int) record.getInteger()); } catch (Exception ignored) {}
-    }
-    return null;
+  /** The record's integer, or null when it is not an 8-byte integer. */
+  private static Long integerOf(DataLogRecord record) {
+    try { return record.getInteger(); } catch (RuntimeException e) { return null; }
   }
 
   /**
    * Extracts the creation time from a wpilog filename, or null if unparseable.
    *
    * @param filename The filename (not full path)
-   * @return Epoch milliseconds, or null if the filename doesn't match the expected pattern
+   * @return Epoch milliseconds, or null if the filename carries no time
    * @since 0.8.0
    */
   public Long extractCreationTime(String filename) {
-    var parsed = parseFilename(filename, Path.of(filename), 0, 0);
-    return parsed != null ? parsed.logCreationTime() : null;
-  }
-
-  /**
-   * Parses a WPILOG filename to extract metadata.
-   *
-   * <p>Expected filename format (from WPILib's DataLogManager):
-   * <pre>
-   * {name}_{YY}-{MM}-{DD}_{HH}-{mm}-{SS}_{event}[_{matchType}{matchNum}][_sim].wpilog
-   * </pre>
-   *
-   * <p>Examples:
-   * <ul>
-   *   <li>{@code frc_25-03-15_10-30-00_vadc.wpilog} - Practice at VADC</li>
-   *   <li>{@code frc_25-03-15_10-30-00_vadc_qm42.wpilog} - Qualification match 42 at VADC</li>
-   *   <li>{@code frc_25-03-15_10-30-00_vadc_qm42_sim.wpilog} - Simulated match</li>
-   * </ul>
-   *
-   * @param filename The filename to parse
-   * @param path The full path to the file
-   * @param lastModified Last modified timestamp in millis
-   * @param fileSize File size in bytes
-   * @return Parsed LogFileInfo or null if filename doesn't match expected format
-   */
-  private LogFileInfo parseFilename(String filename, Path path, long lastModified, long fileSize) {
-    // Regex breakdown:
-    // ^[a-z]+_                           - Prefix (e.g., "frc_")
-    // (\d{2})-(\d{2})-(\d{2})_           - Date: YY-MM-DD (groups 1-3)
-    // (\d{2})-(\d{2})-(\d{2})_           - Time: HH-mm-SS (groups 4-6)
-    // ([a-z0-9]+)                        - Event code (group 7, e.g., "vadc")
-    // (?:_([a-z]+)(\d+))?                - Optional match: type + number (groups 8-9, e.g., "qm42")
-    // (?:_sim)?                          - Optional simulation indicator
-    // \.wpilog$                          - File extension
-    var matcher = WPILOG_FILENAME_PATTERN.matcher(filename);
-    
-    if (!matcher.matches()) return null;
-
-    var logCreationTime = parseFilenameTimestamp(
-        matcher.group(1), matcher.group(2), matcher.group(3),
-        matcher.group(4), matcher.group(5), matcher.group(6),
-        filename.toLowerCase().endsWith("_sim.wpilog"));
-
-    var eventName = matcher.group(7).toUpperCase();
-    var typeCode = matcher.group(8);
-    var numStr = matcher.group(9);
-    var matchType = (String) null;
-    var matchNumber = (Integer) null;
-
-    if (typeCode != null && numStr != null) {
-      matchNumber = Integer.parseInt(numStr);
-      var m = MatchType.fromString(typeCode);
-      matchType = m != null ? m.getFriendlyName() : typeCode;
-    } else {
-      matchType = "Practice";
-    }
-
-    if (filename.toLowerCase().endsWith("_sim.wpilog")) matchType += " (sim)";
-
-    return new LogFileInfo(path.toString(), filename, eventName, matchType, matchNumber, null, lastModified, fileSize, logCreationTime);
+    return creationTime(LogFileName.parse(filename));
   }
 
   /**
    * The file-name time as epoch milliseconds. The roboRIO names files in its own zone, UTC
-   * unless a team changed it (see {@link WallClock}); a desktop running simulation names them in
-   * its local zone.
+   * unless a team changed it (see {@link WallClock}), and DataLogManager always in UTC; a
+   * desktop running simulation names them in its local zone.
    */
-  private Long parseFilenameTimestamp(String yy, String mm, String dd, String hh, String min,
-      String ss, boolean simulation) {
-    try {
-      var ldt = LocalDateTime.of(2000 + Integer.parseInt(yy), Integer.parseInt(mm), Integer.parseInt(dd), 
-                                 Integer.parseInt(hh), Integer.parseInt(min), Integer.parseInt(ss));
-      ZoneId zone = simulation ? ZoneId.systemDefault() : ZoneOffset.UTC;
-      return ldt.atZone(zone).toInstant().toEpochMilli();
-    } catch (Exception e) { return null; }
+  private static Long creationTime(LogFileName name) {
+    if (name.time() == null) return null;
+    ZoneId zone = name.simulation() ? ZoneId.systemDefault() : ZoneOffset.UTC;
+    return name.time().atZone(zone).toInstant().toEpochMilli();
   }
 
   private long getLastModified(Path path) {
@@ -602,7 +588,12 @@ public class LogDirectory {
       if (eventName != null) parts.add(eventName);
       if (matchType != null) parts.add(matchType);
       if (matchNumber != null) parts.add(matchNumber.toString());
-      return parts.isEmpty() ? filename.replace(".wpilog", "") : String.join(" ", parts);
+      if (parts.isEmpty()) return filename.replace(".wpilog", "");
+      // A replay or simulation output with no match type to carry the mark
+      if (matchType == null && filename.toLowerCase(Locale.ROOT).endsWith("_sim.wpilog")) {
+        parts.add("(sim)");
+      }
+      return String.join(" ", parts);
     }
 
     public Long getBestTimestamp() {
@@ -615,11 +606,6 @@ public class LogDirectory {
   // =====================================================================
   // RevLog File Discovery
   // =====================================================================
-
-  /** Pattern to parse WPILOG filenames: teamname_YY-MM-DD_HH-mm-SS_event[_matchtype#][_sim].wpilog */
-  private static final Pattern WPILOG_FILENAME_PATTERN = Pattern.compile(
-      "^[a-z]+_(\\d{2})-(\\d{2})-(\\d{2})_(\\d{2})-(\\d{2})-(\\d{2})_([a-z0-9]+)(?:_([a-z]+)(\\d+))?(?:_sim)?\\.wpilog$",
-      Pattern.CASE_INSENSITIVE);
 
   /** Pattern to parse REV log filenames: REV_YYYYMMDD_HHMMSS[_busname].revlog */
   private static final Pattern REVLOG_FILENAME_PATTERN = Pattern.compile(
