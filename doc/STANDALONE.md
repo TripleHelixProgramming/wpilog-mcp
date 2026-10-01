@@ -44,7 +44,7 @@ Either way, the server is installed in `~/.wpilog-mcp/`:
 └── servers.yaml                         # server configurations
 ```
 
-Starting an HTTP server with `start` adds `run/` (its process ID) and `logs/` (its log).
+Starting an HTTP server with `start` adds `run/` (its process ID, and a lock file that makes starts take turns) and `logs/` (its log).
 
 MCP clients start the launcher by its full path, so you need it on your `PATH` only to run `wpilog-mcp` in a terminal. On macOS and Linux, add this to your shell profile (`~/.zshrc` or `~/.bashrc`):
 ```bash

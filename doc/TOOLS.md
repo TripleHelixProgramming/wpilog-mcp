@@ -153,7 +153,7 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 **Parameters:**
 - `name` (optional): Only logs whose file or friendly name contains this (case-insensitive)
 - `event` (optional): Only logs from this event code (case-insensitive exact match, e.g. `VACHE`)
-- `match_type` (optional): `p`, `q` (or `qm`), `qf`, `sf`, `f`, or `e`; anything else is an error
+- `match_type` (optional): `p`, `q` (or `qm`), `qf`, `sf`, `f`, or `e`; anything else is an error. A log with no match (a file named for an event only) has no match type and matches none of them
 - `since` (optional): Only logs from this date on (`2026-03-20`, midnight UTC), or from an ISO-8601 instant
 - `offset`, `limit` (optional): Paging (default limit 50, max 500)
 
@@ -200,11 +200,10 @@ List WPILOG files in the configured log directories with user-friendly names, ne
       }
     },
     {
-      "friendly_name": "VADC Practice",
+      "friendly_name": "VADC",
       "path": "/Users/team2363/Documents/FRC/logs/akit_24-03-15_10-02-11_vadc.wpilog",
       "filename": "akit_24-03-15_10-02-11_vadc.wpilog",
       "event": "VADC",
-      "match_type": "Practice",
       "team_number": 2363,
       "size_bytes": 8765432,
       "last_modified": 1710512345000
@@ -219,17 +218,27 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 - `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission). That directory's logs are missing from the list, not absent, and the status is `partial`
 - `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected. In those cases no log carries a `tba` field, and that says nothing about whether TBA has data for it
 - `metadata_cache`: Cache statistics for log file metadata (`size`, `hits`, `misses`)
-- `team_number`: From the log's DriverStation metadata, else the configured default team (`-team`, `WPILOG_TEAM`, or `team` in the server configuration)
+- `team_number`: From the log's `SystemStats/TeamNumber` entry (AdvantageKit records it), else the configured default team (`-team`, `WPILOG_TEAM`, or `team` in the server configuration)
 - `tba`: TBA data for the match (see [TBA enrichment](#tba-enrichment)): `team_number`, `match_key`, `lookup_method`, `alliance`, `score`, `won`, `opponent_score`, `actual_time` and `scheduled_time` (epoch seconds, each with a `_local` form in the event's time zone when known). `match_key` is the TBA match the data came from and `lookup_method` how it was found: `direct` (a key built from the match type and number), `double_elimination_bracket` (a Driver Station "Elimination N" read as bracket match N, TBA's `sfNm1`, for 2023 and later), `nearest_time` (the team's playoff match nearest the log's file-name time, for the finals, which carry no bracket number), or `play_order` (before 2023: playoff match number N in the order the team played, a heuristic). The last three carry a `lookup_basis` sentence.
 
 **Log directories:** at least one is required: `-logdir` (repeatable), `WPILOG_DIR`, or `logdir` in the server configuration (a path or a list). Without one, the call is an error that says how to set it.
 
-**Event, match, and team:** read from the log's DriverStation metadata entries (event name, match type, match number, station or team number) when it has them; otherwise from the file name. The file names the server parses are WPILib and AdvantageKit's `<prefix>_<YY-MM-DD>_<HH-mm-SS>_<event>[_<type><number>][_sim].wpilog`:
+**Event, match, and team:** read from the entries that carry them by convention, among the log's first records, and otherwise from the file name.
+
+- Entries: a string `DriverStation/EventName` or `FMSInfo/EventName`; integer `MatchType` (1 practice, 2 qualification, 3 elimination) and `MatchNumber` in the same tables; an integer `SystemStats/TeamNumber`. These are AdvantageKit's tables and the NetworkTables table WPILib's DataLogManager records (`NT:/FMSInfo/...`). An entry of a team's own with a similar name (a `GameState/MatchType` string, a scoreboard table) is not read. A match number counts only while a match type is set: with no match, the Driver Station's number can hold anything.
+- File names, in the two forms the logging frameworks write. WPILib's DataLogManager: `FRC_<yyyyMMdd>_<HHmmss>.wpilog`, and `FRC_<yyyyMMdd>_<HHmmss>_<EVENT>_<P|Q|E><number>.wpilog` once the field has given a match. AdvantageKit: `<prefix>_<yy-MM-dd>_<HH-mm-ss>[_<event>][_<type><number>][_sim].wpilog`.
+
+The robot program starts logging before the Driver Station connects, so the first records usually hold no event or match, and the name the framework gave the file later is what carries them. The match type and number are taken together, from the records or from the name.
+
+- `FRC_20260321_162956_VACHE_Q10.wpilog` → "VACHE Qualification 10"
 - `akit_26-03-21_16-29-56_vache_q10.wpilog` → "VACHE Qualification 10"
-- `akit_26-03-22_18-44-53_vache.wpilog` (no match) → "VACHE Practice"
+- `akit_26-03-22_18-44-53_vache.wpilog` → "VACHE", with no match type: a name with an event and no match says the Driver Station gave an event name and no match, which it does off the field too. A practice match is named `_p3`
+- `akit_26-03-22_18-44-53.wpilog` and `FRC_20260322_184453.wpilog` → listed under the file name, with the time read from it
 - `frc_25-03-15_10-30-00_vadc_qm42_sim.wpilog` → "VADC Qualification (sim) 42"
 
-Match type codes are `p`, `q` or `qm`, `qf`, `sf`, `f`, and `e`. A log with no metadata and a file name in another form is listed under its file name. The file-name time is read as UTC (the roboRIO's default zone), or in the server's local zone for a `_sim` log. It orders the listing (newest first; the file's modification time when the name carries no time), and it is the time the `since` filter and TBA's `nearest_time` lookup use.
+Match type codes are `p`, `q` or `qm`, `qf`, `sf`, `f`, and `e`. A file whose name is in neither form (a renamed log, a copy with a suffix) keeps its time when the name still holds one, and nothing else is read from it. The match in a file name is what the framework read from the Driver Station when it named the file. Off the field the Driver Station can report a match type with a number in the tens of thousands for a moment, and a file named then keeps it (`..._p63036.wpilog`); such a number is not a match.
+
+The file-name time is read as UTC (the roboRIO's default zone, and the zone DataLogManager always uses), or in the server's local zone for a `_sim` log. It orders the listing (newest first; the file's modification time when the name carries no time), and it is the time the `since` filter and TBA's `nearest_time` lookup use.
 
 ### `list_loaded_logs`
 List the log files currently loaded in the server's cache, and the cache status. Logs load on demand, so an empty list is normal.
@@ -393,7 +402,11 @@ Before analyzing a team's own structs (vision observations, mechanism states), u
 Show which entry plays each role in a log (the same choices the tools make), with the basis for each choice and the other candidates.
 
 #### The server does not guess
-A tool uses an entry for a role only when it was passed explicitly, follows a well-known logging convention, or is the only entry of the role's type or schema. Entries that match a role by name alone are listed as candidates and not used: the role reports `match: heuristic` and `needs_confirmation`, and a tool that needs it lists the candidates in its `skipped` reason (or its `no_match` hint) with the parameter to pass. The conventions:
+A tool uses an entry for a role only when it was passed explicitly, follows a well-known logging convention, or is the only entry of the role's type or schema. Entries that match a role by name alone are listed as candidates and not used: the role reports `match: heuristic` and `needs_confirmation`, and a tool that needs it lists the candidates in its `skipped` reason (or its `no_match` hint) with the parameter to pass.
+
+A word in a name is not evidence of what an entry holds, and neither is the shape of its data. A `currentHeight` is the present height, not an electrical current. PhotonVision's `targetYaw` is a camera reading, not a setpoint. Real logs hold two target module-state arrays beside the measured one, which no name tells apart; a planned trajectory that is a struct array of timestamps and poses, as a camera's observations are; and a gyro's struct with yaw and pitch fields, as a camera target has. What an entry holds, and in which units, is decided by the robot code that logs it, so that is where a candidate is confirmed: find where the entry is logged in the robot project's source. Without the source, the entry's type and values (`get_entry_info`, `read_entry`) or the team are the next best evidence.
+
+The conventions:
 
 | Role | Chosen by convention | Override |
 |---|---|---|
@@ -406,11 +419,14 @@ A tool uses an entry for a role only when it was passed explicitly, follows a we
 | `vision_pose` | the only scalar `Pose2d`/`Pose3d` with at least two samples under a vision, camera, PhotonVision, or Limelight path | `vision_entry` |
 | `auto_chooser` | the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry, or AdvantageKit's `/NetworkInputs/SmartDashboard/<key>` | `chooser_entry` |
 | `path_setpoint` / `path_actual` | `PathPlanner/targetPose`, AdvantageKit `Odometry/TrajectorySetpoint` / `PathPlanner/currentPose`, else the robot pose | `path_setpoint_entry` / `path_actual_entry` |
+| `module_states_measured` / `_setpoint` | AdvantageKit `SwerveStates/Measured` with `SwerveStates/SetpointsOptimized` or `Setpoints`; CTRE `DriveState/ModuleStates` with `ModuleTargets`; YAGSL `swerve/advantagescope/currentStates` with `desiredStates` (the setpoint in the measured entry's own table); or, for measured, the only `SwerveModuleState` entry when it is not named like a setpoint | `measured_entry` / `setpoint_entry` |
+| `vision_pose_observations` | `struct:PoseObservation[]` entries (the AdvantageKit vision template's record: a timestamp and a pose) | `vision_entries` |
+| `vision_targets` | `struct:TargetObservation` entries with yaw and pitch fields; has-target flags as Limelight's `<table>/tv` and PhotonVision's `photonvision/<camera>/hasTarget` | `vision_entries` |
 | `gyro_yaw` | a yaw entry under a gyro, Pigeon, NavX, Canandgyro, IMU, or AHRS path | none |
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `roles` (optional): Only these roles (default: all); an unknown role is an error that lists them
+- `roles` (optional): Only these roles, as an array of role names (default: all). An unknown role is an error that lists them, and so is anything but an array of names, or an empty array
 
 **Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `vision_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
 
@@ -597,7 +613,7 @@ Statistics on numeric signals. The first two subsections describe the field path
 - `scope`: `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (the i-th enabled segment of `get_match_phases`, from 0). Segments are half-open: the sample logged at a transition belongs to the new state. Any scope other than `all` on a log with no DriverStation state is an error.
 - `windows`: a list of `{start, end}` (or `[start, end]`), half-open `[start, end)`; overlapping windows merge. The `intervals` returned by `find_condition` can be passed as-is ("statistics while the battery was below 11 V").
 
-Differences, spikes, peaks, and angle unwrapping are computed within each window, never across the time between two. `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`). `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
+Differences, spikes, peaks, and, in the tools that measure one signal, angle unwrapping are computed within each window, never across the time between two. `time_correlate` pairs two signals, so it unwraps each angle over the whole log, which keeps both on one continuous branch, and takes its pairs, its lag-1 autocorrelations, and its sample rates within the windows. `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`). `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
 
 ### `get_statistics`
 Statistics of a numeric entry or field over the finite samples in scope, with data quality and analysis directives. A scope with no finite sample is an error that says how many values the log and the scope hold.
@@ -694,7 +710,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. A sample is a 
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
 - `angle` (optional): `radians` or `degrees`: treat the values as an angle when it is logged as a plain number ([Field paths](#field-paths))
-- `type` (optional): `max` (maxima only), `min` (minima only), or `both` (default)
+- `type` (optional): `max` (maxima only), `min` (minima only), or `both` (default); any other value is an error
 - `min_height_diff` (optional): Minimum `height_diff` to count as a peak, to filter out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)); a peak's neighbors are in its own window
@@ -777,7 +793,7 @@ A common rule of thumb for |r|: 0.9 and up is very strong, 0.7 strong, 0.5 moder
 - `max_lag_sec` (optional): Also search for the time shift with the highest correlation, from −max to +max (a positive lag means the second signal follows the first). At most 401 lags are evaluated; the step widens if needed
 - `lag_step_sec` (optional): Lag search step in seconds (default: the first signal's median sample interval)
 
-**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, `p_value_basis`, `inputs`, `data_quality` (of the lower-quality signal), and `server_analysis_directives`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta). Warnings say when fewer than 30 samples overlap, when fewer than 30 effective samples remain, and when the two sample rates differ more than tenfold. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
+**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, `p_value_basis`, `inputs`, `data_quality` (of the lower-quality signal), and `server_analysis_directives`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta). The lag-1 autocorrelations pair consecutive samples within a window, never the two on either side of the time between windows, and the sample rates are measured within the windows too. Warnings say when fewer than 30 samples overlap, when fewer than 30 effective samples remain, and when the two sample rates differ more than tenfold. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
 
 With `max_lag_sec`, `lag_search` gives `lags_evaluated`, `lag_step_sec`, `max_lag_sec`, `best_lag_sec`, `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, and a `note`. A best lag at the edge of the range may lie beyond it.
 
@@ -891,15 +907,25 @@ Find when the robot was enabled, in which mode, and, when the log holds a match,
 ### `analyze_swerve`
 Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per module and, when setpoints are logged, how well each module tracks them.
 
-**How modules are found:**
-- AdvantageKit logs `struct:SwerveModuleState[]` arrays (e.g. `/RealOutputs/SwerveStates/Measured`): each index is one module, labeled `module[0]` to `module[N-1]`. For four modules, `assumed_position` gives the AdvantageKit template's order (front-left, front-right, back-left, back-right). The log does not record that order, and `module_order_note` says so.
-- One `struct:SwerveModuleState` entry per module also works: entries are grouped by parent path (`/Drive/Module2/Measured` is module `Module2`).
-- Measured vs setpoint is judged by leaf name: `setpoint`, `desired`, `target`, `commanded`, `goal`, or `reference` mark a setpoint; anything else is measured. Among arrays, a measured leaf containing `measured` ranks first, and a setpoint leaf containing `optimized` ranks first (the optimized setpoint is what the module tracks); ties go to the lower entry id. Setpoints pair with measured states by index.
+**How module states are found:**
+- A `struct:SwerveModuleState[]` array is one module per index, labeled `module[0]` to `module[N-1]`. For four modules, `assumed_position` gives the AdvantageKit template's order (front-left, front-right, back-left, back-right). The log does not record that order, and `module_order_note` says so.
+- The measured and setpoint entries are taken from a published naming, with the setpoint in the same table as the measured entry and paired with it by index:
+
+  | Source | Measured | Setpoint |
+  |---|---|---|
+  | AdvantageKit swerve template | `SwerveStates/Measured` | `SwerveStates/SetpointsOptimized`, else `SwerveStates/Setpoints` |
+  | CTRE swerve telemetry | `DriveState/ModuleStates` | `DriveState/ModuleTargets` |
+  | YAGSL telemetry | `swerve/advantagescope/currentStates` | `swerve/advantagescope/desiredStates` |
+
+  Any prefix may come before these names (`/RealOutputs/`, `NT:/`). When two tables follow a naming, as a replay log's `/RealOutputs/` and `/ReplayOutputs/` do, the one declared first is used and a warning names both; `module_prefix` or `measured_entry` chooses the other.
+- With no published naming, the only `SwerveModuleState` entry in the log is used, unless its leaf name contains `setpoint`, `desired`, `target`, `commanded`, `goal`, or `reference`. The log does not say whether that entry holds measured or commanded states, and a warning says so.
+- Entries under a team's own names are not interpreted. Words such as `Actual` and `Target` are not taken as evidence, and two target arrays beside the measured states cannot be told apart by name at all. The result is then `no_match` with `needs_confirmation` and `candidates`; when only the setpoint is unresolved, the tracking sections are skipped and the reason lists the candidates. Pass `measured_entry` and `setpoint_entry`. The robot's source code, where each entry is logged, says which is which.
+- One `struct:SwerveModuleState` entry per module is analyzed one module per call, with that module's `measured_entry` and `setpoint_entry`.
 
 **Parameters:**
 - `path` (required): Path to the log file
 - `module_prefix` (optional): Only consider module state entries under this prefix
-- `measured_entry`, `setpoint_entry` (optional): Choose the module state entries explicitly (an array, or one module's entry)
+- `measured_entry`, `setpoint_entry` (optional): The module state entries (an array, or one module's entry; both of the same shape). An entry named here that is missing or not module states is an error
 - `slip_threshold` (optional): Speed tracking error, in m/s, counted as an event (default: 0.5)
 - `sync_threshold_rad` (optional): Steer error, in radians, counted as an event (default: 0.1)
 - `odometry_entry`, `vision_entry` (optional): Scalar pose entries for the drift comparison. An entry named here that is missing or not a `Pose2d`/`Pose3d` is an error, as with `measured_entry`. By default these are the `robot_pose` and `vision_pose` roles (a conventional name, or the only candidate); several name-only candidates are listed in `skipped` to confirm, never guessed
@@ -912,9 +938,9 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - `speed_tracking_error` (`samples`, `mean_mps`, `p95_mps`, `max_mps`, `events_over_threshold`): `| |measured| − |setpoint| |` at each measured sample, against the setpoint logged at most 0.1 s earlier
 - `steer_error` (`samples`, `mean_rad`, `p95_rad`, `max_rad`, `max_deg`, `events_over_threshold`): angle difference modulo 180° (an optimized setpoint may flip the wheel), only while the setpoint speed exceeds 0.05 m/s
 
-**Also returns:** `layout` (`array` or `per_module`), `module_count`, `module_sync` (`basis`, `samples_analyzed`, `desync_events`, `max_deviation_rad`, `max_deviation_deg`, and `worst_module`: the largest steer error across modules), `odometry_drift` (`avg_error_m`, `max_error_m`, `max_error_per_total_time`, `comparisons` between the robot pose and a vision pose at the vision timestamps, with `odometry_entry`, `vision_entry`, and `odometry_basis` and `vision_basis` saying how each was chosen), `scope`, `inputs.entries`, `data_quality` of the measured entry, and `server_analysis_directives`. Sections that cannot be produced (no setpoints, no scalar vision pose) are listed in `skipped` with the reason (status `partial`).
+**Also returns:** `measured_basis` and `setpoint_basis` (how each entry was chosen), `layout` (`array` or `per_module`), `module_count`, `module_sync` (`basis`, `samples_analyzed`, `desync_events`, `max_deviation_rad`, `max_deviation_deg`, and `worst_module`: the largest steer error across modules), `odometry_drift` (`avg_error_m`, `max_error_m`, `max_error_per_total_time`, `comparisons` between the robot pose and a vision pose at the vision timestamps, with `odometry_entry`, `vision_entry`, and `odometry_basis` and `vision_basis` saying how each was chosen), `scope`, `inputs.entries`, `data_quality` of the measured entry, and `server_analysis_directives`. Sections that cannot be produced (no setpoints, no scalar vision pose) are listed in `skipped` with the reason (status `partial`).
 
-**Status:** `no_match` when the log has no `SwerveModuleState` entries (or only setpoints).
+**Status:** `no_match` when the log has no `SwerveModuleState` entries, and `no_match` with `needs_confirmation` and `candidates` when it has some under names the server does not interpret.
 
 **Example Response (abridged):**
 ```json
@@ -924,6 +950,8 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
   "layout": "array",
   "module_count": 4,
   "inputs": {"entries": {"measured": "/RealOutputs/SwerveStates/Measured", "setpoint": "/RealOutputs/SwerveStates/SetpointsOptimized"}},
+  "measured_basis": "SwerveStates/Measured (AdvantageKit swerve template)",
+  "setpoint_basis": "SwerveStates/SetpointsOptimized beside the measured entry (AdvantageKit swerve template)",
   "scope": {"scope": "enabled", "windows": [[40.207, 359.162], "..."], "total_sec": 1311.36},
   "modules": [
     {"module": "module[0]", "index": 0, "assumed_position": "front_left",
@@ -1103,7 +1131,7 @@ Compare one numeric signal across two log files, over the same phase of each.
 
 **Returns:**
 - `entry`, `inputs` (`logs`, `entry`), `logs_compared`
-- `comparisons[]`, one per log in argument order: `{log_path, log_filename, entry_found, signal, scope?, sample_count, statistics: {min, min_at_sec, max, max_at_sec, mean, std_dev, median, p5, p25, p75, p95, angle_unit?}, max_likely_boot_transient?, min_likely_boot_transient?, data_quality}`. When the signal cannot be read, `reason` says why (for example an array entry named without an index, with the element form to use)
+- `comparisons[]`, one per log in argument order: `{log_path, log_filename, log_truncation?, entry_found, signal, scope?, sample_count, statistics: {min, min_at_sec, max, max_at_sec, mean, std_dev, median, p5, p25, p75, p95, angle_unit?}, max_likely_boot_transient?, min_likely_boot_transient?, data_quality}`. When the signal cannot be read, `reason` says why (for example an array entry named without an index, with the element form to use)
 - `differences`: second log minus first, for `mean`, `median`, and `p95`, with a note. Two logs are two samples, and samples within a log are autocorrelated, so no significance test is made
 - `warnings`: a missing entry, no finite values, or an extreme within 5 s of a log's start (likely a boot transient: compare `scope: "enabled"`)
 - `status`: `partial` when only one log has values (`skipped: differences`), `no_match` when neither does
@@ -1346,29 +1374,42 @@ A chronological timeline of robot events: enable/disable transitions, match phas
 ```
 
 ### `analyze_vision`
-Analyze vision data, found by type and content: pose observation streams, target streams, pose sets, has-target flags, and pose jumps.
+Analyze vision data: pose observation streams, target streams, pose sets, has-target flags, and pose jumps.
+
+**Which entries it reads:** the ones the AdvantageKit vision template and the vision libraries publish under their own names, and the ones passed as `vision_entries`. Entries that only have the content or the name of vision data are listed in `candidates`, by kind, with `needs_confirmation`, and are neither analyzed nor decoded. Content is not enough: a planned trajectory is also a struct array of timestamps and poses (and, logged every loop, millions of them), a gyro's struct also has yaw and pitch fields, and a robot's own `HasTargetLock` need not be a camera's. The robot's source code says what each one is.
+
+| Kind | Read by convention | Listed as a candidate |
+|---|---|---|
+| `observation_streams` | `struct:PoseObservation[]` whose records hold a `timestamp` and a pose (the vision template's `/Vision/Camera<N>/PoseObservations`) | other struct arrays whose records hold a timestamp and a pose |
+| `target_streams` | `struct:TargetObservation` with `yaw` and `pitch` fields | other structs with `yaw` and `pitch` fields |
+| `pose_sets` | the template's pose arrays: `Vision/Summary/` and `Vision/Camera<N>/` `TagPoses`, `RobotPoses`, `RobotPosesAccepted`, `RobotPosesRejected` | other `Pose2d[]` and `Pose3d[]` entries under a vision, camera, PhotonVision, or Limelight path |
+| `has_target` | Limelight's `<table>/tv`, PhotonVision's `photonvision/<camera>/hasTarget` | other boolean or numeric entries named `hasTarget`, `targetValid`, or `tv` |
+| `pose_estimates` | the only scalar pose under a vision, camera, PhotonVision, or Limelight path | those poses, when there are several |
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `vision_prefix` (optional): Only vision entries under this prefix (case-insensitive). It limits vision entries only; the robot pose can live elsewhere
+- `vision_prefix` (optional): Only vision entries under this prefix (case-insensitive). It limits vision entries only; the robot pose can live elsewhere, and so can entries passed as `vision_entries`
+- `vision_entries` (optional): Entries to analyze besides the conventional ones. Each is analyzed by its shape: a boolean or a number as a has-target flag (above 0.5 means a target), a `Pose2d[]` or `Pose3d[]` as a pose set, a scalar pose as a pose estimate checked for jumps, a struct array holding a timestamp and a pose as an observation stream, a struct with yaw and pitch as a target stream. An entry that is missing or has another shape is an error
 - `pose_entry` (optional): Robot pose entry (`struct:Pose2d` or `Pose3d`) for residuals and jump detection. Default: the `robot_pose` role (a conventional name, or the only `Pose2d` outside vision paths; several others are listed in `skipped` to confirm, not guessed)
 - `start_time`, `end_time` (optional): Time window
 - `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
 
-**observation_streams:** struct arrays whose records hold a `timestamp` and a pose, found by content, not by name, one stream per camera. The AdvantageKit vision template's `/Vision/Camera<N>/PoseObservations` (`struct:PoseObservation[]`, from PhotonVision or Limelight) is one. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `logged_latency` (median, p95, and max of a sibling entry whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`, as logged), and `residual_vs_robot_pose` (`median_m`, `p95_m`, `max_m` of the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp). The robot pose may itself include vision corrections.
+**observation_streams:** one stream per camera. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `latency_candidates` (numeric entries beside the stream whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`; they are listed, not analyzed, because the name does not say what the entry times or in which units: `get_statistics` reads one once the robot code has said), and `residual_vs_robot_pose` (`median_m`, `p95_m`, `max_m` of the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp). The robot pose may itself include vision corrections.
 
-**target_streams:** struct entries (single or arrays) whose records have `yaw` and `pitch` fields, found by content, such as the vision template's `TargetObservation`. Per stream: `camera`, `records`, `observation_count`, `yaw` and `pitch` distributions (median, p95, max; with a `_deg` suffix when they are WPILib `Rotation2d`s), `area`, `confidence`, and `object_ids` (counts per id).
+**target_streams:** per stream: `camera`, `records`, `observation_count`, `yaw` and `pitch` distributions (median, p95, max; with a `_deg` suffix when they are WPILib `Rotation2d`s), `area`, `confidence`, and `object_ids` (counts per id).
 
-**pose_sets:** `struct:Pose3d[]` entries, and `struct:Pose2d[]` entries under a vision, camera, PhotonVision, or Limelight path (for example `/RealOutputs/Vision/Summary/RobotPosesAccepted`): `records`, `records_non_empty`, `fraction_non_empty`, `pose_count`, `mean_poses_per_non_empty_record`, `max_poses_per_record`. Other `Pose2d[]` entries, such as PathPlanner's `activePath`, are planned paths, not vision data.
+**pose_sets:** `records`, `records_non_empty`, `fraction_non_empty`, `pose_count`, `mean_poses_per_non_empty_record`, `max_poses_per_record`.
 
-**target_acquisition:** entries whose names contain `hasTarget` or `targetValid`, or end in `/tv` (Limelight): `total_samples`, `valid_samples`, `acquisition_rate`, `flicker_events`. Values logged only on change make the per-sample rate approximate.
+**target_acquisition:** `total_samples`, `valid_samples`, `acquisition_rate`, `flicker_events` per has-target entry. Values logged only on change make the per-sample rate approximate.
 
-**pose_jumps:** steps larger than `jump_threshold` between consecutive samples of the robot pose and of scalar vision pose entries (`pose_entries_checked`). Always present (empty when none), with `jump_count` the true total and `limits.pose_jumps` (at most 100 listed). Samples whose pose cannot be read are counted in `unreadable_pose_samples`, never treated as zero movement. A jump within 0.5 s of an enable has `near_enable_sec` (seconds from the enable). Odometry is often reset there, for example when an autonomous routine sets its starting pose, so such a jump is not by itself evidence of a vision correction.
+**candidates:** present, with `needs_confirmation` and `candidates_note`, when the log has entries that only look like vision data: an object with the candidates of each kind (`observation_streams`, `target_streams`, `pose_sets`, `has_target`, `pose_estimates`), at most 20 of each, with `candidate_counts` when a kind has more. A kind that has candidates and nothing analyzed is also listed in `skipped`.
+
+**pose_jumps:** steps larger than `jump_threshold` between consecutive samples of the robot pose and of the vision pose estimates (`pose_entries_checked`). Always present (empty when none), with `jump_count` the true total and `limits.pose_jumps` (at most 100 listed). Samples whose pose cannot be read are counted in `unreadable_pose_samples`, never treated as zero movement. A jump within 0.5 s of an enable has `near_enable_sec` (seconds from the enable). Odometry is often reset there, for example when an autonomous routine sets its starting pose, so such a jump is not by itself evidence of a vision correction.
 
 **Also returns:** `inputs.entries.robot_pose`, and `data_quality` and `server_analysis_directives` of the first observation stream (else the first target stream, else the first pose checked for jumps).
 
-**Status:** `no_match` (with `looked_for`) when the log has no observation streams, target streams, pose sets, has-target entries, or scalar poses; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing).
+**Status:** `no_match` (with `looked_for`, and with `candidates` and `needs_confirmation` when there are any) when the log has no conventional or passed vision entry and no scalar pose; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing), or when a kind has candidates and nothing analyzed.
 
 Pose jumps can point to ambiguous AprilTag detections, tag misidentification, poorly tuned vision standard deviations, or exposure problems.
 
@@ -1478,33 +1519,35 @@ A residual is the pose estimator's change beyond odometry: vision corrections, b
 ```
 
 ### `profile_mechanism`
-Profile one closed-loop mechanism: following error, step response, stalls, and motor temperature.
+Profile one closed-loop mechanism from the entries passed for its roles: following error, step response, stalls, and motor temperature.
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `mechanism_name` (optional if role entries are given): Text contained in the mechanism's entry names, case-insensitive, anywhere in the name (e.g. `Elevator`, or `ModuleFrontLeft/Drive` to pick one stem)
-- `setpoint_entry`, `measurement_entry`, `velocity_entry`, `current_entry`, `temperature_entry` (optional): Choose any role explicitly (scalar numeric entries)
+- `setpoint_entry`, `measurement_entry`, `velocity_entry`, `current_entry`, `temperature_entry` (optional): The mechanism's entries (scalar numbers). Only entries passed here are analyzed. The setpoint and the measurement must be in the same units
+- `mechanism_name` (optional if role entries are given): Text contained in the mechanism's entry names, case-insensitive, anywhere in the name (e.g. `Elevator`, or `ModuleFrontLeft/Drive`). It finds candidates; it does not choose entries
 - `start_time`, `end_time` (optional): Time window (applies to every section)
 - `stall_current_threshold` (optional): Current above which a stopped mechanism counts as stalled (default: 30 A)
 - `stall_velocity_threshold` (optional): `|velocity|` below this counts as stopped, in the velocity entry's units (default: 0.01)
 
-**How entries are found:** scalar numeric entries containing `mechanism_name` are assigned a role by leaf name:
+**Why the entries are passed:** nothing in a log says that an entry is a mechanism's setpoint or its measurement, or what its units are. Names do not settle it: a `currentHeight` is the present height, PhotonVision's `targetYaw` is a camera reading and not a setpoint, and a setpoint in rotations beside a position in meters gives a following error that means nothing. The robot's source code, where each entry is logged, does settle it.
+
+**Candidates:** with `mechanism_name`, `candidates` lists, per role, the scalar numeric entries containing the name whose leaf suggests the role (at most 10 each, with `candidate_counts` when there are more):
 - setpoint: `setpoint`, `goal`, `target`, `reference`, `desired`, `commanded`
 - temperature: `temp`, `temperature`, `celsius`
 - current: the amperage rule `power_analysis` uses
 - velocity: `velocity`, `speed`, `rpm`, `rps`
 - measurement: `position`, `actual`, `measured`, `angle`, `height`, `distance`, `rotations`, but not velocity, current, or voltage names
 
-Entries are grouped by the **stem** before the role word, so `DriveVelocityRadPerSec` and `TurnVelocityRadPerSec` under one module are different mechanisms. When the name matches exactly one stem, its entries are used. When it matches several, the server does not choose among them: the result is `no_match` with `needs_confirmation` and `stems` (each stem's entries by role), and the hint suggests a more specific `mechanism_name` (the stem is matched case-insensitively, e.g. `ModuleFrontLeft/Drive`) or the role parameters. With explicit role entries and several stems, only the explicit entries are used, and `other_stems` lists the stems with a warning. `roles` names every entry used (null when unresolved).
+With `mechanism_name` alone, the result is `no_match` with `needs_confirmation` and the candidates. With some roles passed, the analysis uses those, `candidates` covers the roles not passed, and each skipped section names its candidates. `roles` names every entry used (null when not passed).
 
 **Returns:**
 - `following_error` (setpoint and measurement): `rmse`, `mean_error` (bias), `max_abs_error`, and `samples`, of the measurement minus the setpoint **in force** (held until the next setpoint sample). Then `steps` (setpoint changes larger than 5% of the previous setpoint, and at least 0.01), `settled_steps`, `settling_time_sec` (`avg`, `max`, `min`: time until the measurement enters and stays within 5% of the step size, before the next step), `overshoot_percent` (average over steps of the overshoot beyond the new setpoint as a percent of the step size), `max_overshoot_percent`, and `step_details` (the first 20 steps, with `limits.step_details`)
 - `stall_events` (velocity and current): intervals of `|velocity|` below the velocity threshold with `|current|` above the current threshold (`start_time`, `end_time`, `duration`, `max_current`, `open_at_end` when still stalled at the end of the data); `stall_count` is the true total
 - `temperature` (temperature entry): `max`, `max_time_sec`, `first`, `last`
 - `data_quality` and `server_analysis_directives` of the measurement entry (else the velocity entry) in the window
-- `skipped`: each section whose entries were not found, with the missing role (status `partial`)
+- `skipped`: each section whose entries were not passed, with the parameter to pass and its candidates (status `partial`)
 
-**Status:** `no_match` when nothing containing `mechanism_name` has a recognizable role.
+**Status:** `no_match` when no role entry was passed: with `needs_confirmation` and `candidates` when `mechanism_name` matches entries, without them when it matches none.
 
 **Example Response (abridged):**
 ```json
@@ -1514,7 +1557,6 @@ Entries are grouped by the **stem** before the role word, so `DriveVelocityRadPe
   "mechanism": "Elevator",
   "roles": {"setpoint": "/RealOutputs/Elevator/GoalMeters", "measurement": "/Elevator/PositionMeters",
     "velocity": "/Elevator/VelocityMetersPerSec", "current": "/Elevator/CurrentAmps", "temperature": null},
-  "stem": "",
   "following_error": {
     "rmse": 0.015, "mean_error": -0.004, "max_abs_error": 0.089, "samples": 7500,
     "steps": 14, "settled_steps": 13,
@@ -1524,7 +1566,7 @@ Entries are grouped by the **stem** before the role word, so `DriveVelocityRadPe
   },
   "stall_events": [{"start_time": 45.23, "end_time": 45.78, "duration": 0.55, "max_current": 38.2}],
   "stall_count": 1,
-  "skipped": [{"section": "temperature", "reason": "No temperature entry for this mechanism."}]
+  "skipped": [{"section": "temperature", "reason": "Needs a temperature entry: temperature_entry was not passed."}]
 }
 ```
 
@@ -2444,7 +2486,7 @@ When a log records no schema for a struct type, WPILib's own schema is used for 
 
 Besides the guidance in each tool's description, the server gives the agent general reasoning guidance in two places:
 
-- **MCP `instructions`**: returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a short, ordered checklist, kept under 2 KB because Claude Code truncates longer instructions: answer the question asked first; never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems; never compute statistics by hand (when no tool can read a data type, `export_csv` it and cite the export) and call `get_match_phases` before reasoning about time; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis needing physical inspection); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; truncated logs, revlog sync, and TBA-sourced scores.
+- **MCP `instructions`**: returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a short, ordered checklist, kept under 2 KB because Claude Code truncates longer instructions: answer the question asked first; never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems; an entry's name does not prove what it measures, so read the robot source code that logs it (which mechanism, which units, measured or commanded) or call the mapping an assumption; never compute statistics by hand (when no tool can read the data, `export_csv` it and compute outside) and call `get_match_phases` before reasoning about time; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis to check physically); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; truncated logs, revlog sync, and TBA-sourced scores.
 - **`get_server_guide` → `analysis_principles`**: the long form, returned as a tool result so it reaches the model in every client. The tool's `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}` so Claude Code keeps its description in context even when other MCP tools are deferred.
 
 Both come from one place in the code. Tests check that every tool name they mention exists and that the instructions stay under the size limit.
@@ -2470,6 +2512,7 @@ The server normalizes every tool result, however the tool built it, so that:
 | `limits` | For each list cut short by a limit: `{total, returned, limit}` |
 | `warnings` | Anything the caller should know that does not change the status |
 | `_metadata.non_finite_fields` | Fields whose value could not be computed (NaN or infinite). They are emitted as `null`, never as a bare `NaN` (which is not valid JSON), and named in a warning |
+| `_metadata.log_truncation` | Present on every result computed from a log that was not read to its end: what was not read, and the time range that was. Most robot logs end inside their last record, because the robot is switched off while logging; that alone raises no warning. A log that lost more (garbage or unreadable records at its end, records set aside for their timestamps) gets the same text as a warning too. `compare_matches` gives each log's as `comparisons[].log_truncation` |
 | `_metadata.decode_problems` | Entries the tool read whose records could not all be decoded, each `{entry, failed_records, total_records, reason}` (e.g. a struct with no schema, or a record whose size does not fit its schema). Each also gets a warning; the result uses the records that did decode |
 
 `not_applicable` and `no_match` are answers, not server failures. They tell the agent that finding nothing is not evidence that nothing is wrong, and how to find the right data.

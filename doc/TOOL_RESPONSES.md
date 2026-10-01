@@ -111,7 +111,8 @@ Response:
     "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 49 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
     "tba_tip": "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. TBA data includes autonomous points, final scores, and win/loss results.",
     "statistics_tip": "Use get_statistics (mean, std, percentiles) and time_correlate rather than computing them by hand; for data they cannot read, export_csv and compute externally, citing the export.",
-    "match_phases_tip": "NEVER manually parse timestamps to find auto/teleop—use get_match_phases."
+    "match_phases_tip": "NEVER manually parse timestamps to find auto/teleop—use get_match_phases.",
+    "source_code_tip": "An entry's name does not establish what it measures. When the robot project's source code is available (it is often the workspace you are working in), read where an entry is logged before attributing it to a mechanism: that code says which mechanism, which units, and whether the value is measured or commanded. Without the code, state the mapping as an assumption or ask the user."
   },
   "analysis_principles": {
     "purpose": "How to reason about this server's results without confabulating. Read once per session; apply the method to causal questions and the traps everywhere.",
@@ -119,7 +120,7 @@ Response:
     "method": {
       "applies_to": "Causal or diagnostic questions ('why', 'what caused', 'is X the problem'). A lookup ('what is the loop time', 'what happened at 87s') needs discovery and a direct answer, nothing more.",
       "steps": [
-        "Observe: learn what is actually logged (list_entries, search_entries) and where the phases are (get_match_phases). Confirm the event in the question actually occurred (get_ds_timeline, find_condition).",
+        "Observe: learn what is actually logged (list_entries, search_entries) and where the phases are (get_match_phases). When the robot project's source code is at hand (the workspace is often that project), find where each entry you will rely on is logged: that code, not the entry's name, says which mechanism it belongs to, its units, and whether it is measured or commanded. Confirm the event in the qu... (59 more characters)",
         "Hypothesize: the candidate cause plus at least one rival. Always include 'normal for this phase or state' and 'logging or timing artifact'; for power questions add 'another load at the same instant'.",
         "Predict before testing: 'if H1, entry E exceeds X during phase P within T of the event; if H2, it does not'. A threshold chosen after seeing the data is not a test; if you change it, say so and why.",
         "... (4 more items)"
@@ -154,10 +155,10 @@ Response:
         "fix": "Every entry name must come from list_entries or search_entries; every number from a tool result. If it is not logged, say 'not logged'."
       },
       {
-        "trap": "Treating a page or a summary as the whole message log",
-        "fix": "search_strings is paged: total_matches is the full count and has_more says whether another page exists, so fetch the next offset before saying how many errors there were or that a message never appeared. get_ds_timeline's text_event_summary groups messages after replacing numbers with #; its variants field says how many distinct raw texts a group covers (device 5 and device 7 are one group with va... (183 more characters)"
+        "trap": "Taking an entry's name as proof of what it measures",
+        "fix": "A name is a label a programmer chose: currentHeight is the present height, not an electrical current; PhotonVision's targetYaw is a camera reading, not a setpoint; and real logs hold two target module-state arrays beside the measured one, which no name tells apart. Content misleads too: a planned trajectory is a struct array of timestamps and poses, like a camera's observations, and a gyro's struc... (739 more characters)"
       },
-      "... (20 more items)"
+      "... (21 more items)"
     ],
     "cross_match": [
       "One log is one sample. compare_matches shows that two matches differ, not why.",
@@ -168,8 +169,8 @@ Response:
     "naming": {
       "advantagekit": "/SystemStats/BatteryVoltage, /SystemStats/BrownedOut, /PowerDistribution/ChannelCurrent (array), /PowerDistribution/TotalCurrent, /DriverStation/Enabled, /RealOutputs/<Subsystem>/..., /AdvantageKit/...",
       "wpilib_datalog": "DS:enabled, DS:autonomous, DS:test, DS:estop, DS:joystick0/...; NetworkTables entries prefixed NT:/ (for example NT:/SmartDashboard/...); battery and PDH data only if the team logged them (typically NT:/SmartDashboard/PowerDistribution[<CAN id>]/Voltage, TotalCurrent, and per-channel Chan<N>; the id is 1 for a REV PDH, 0 for a CTRE PDP). Phase, DS, and CAN tools recognize both /DriverStation/... a... (127 more characters)",
-      "when_a_tool_finds_nothing": "If analyze_swerve, profile_mechanism, or analyze_cycles reports no matching entries, list the names you searched, run search_entries with the subsystem word (swerve, module, drive, elevator), and ask the user for their naming. Do not reconstruct the analysis from raw entries by hand.",
-      "the_server_does_not_guess": "Tools pick an entry for a role (battery voltage, loop time, robot pose, vision pose, auto chooser, path poses, total current, a mechanism's setpoint/measurement/velocity/current) only when it follows a well-known convention (AdvantageKit, WPILib, CTRE, PathPlanner names), is the only entry of its type, or is passed explicitly. Entries that match only by name are listed as candidates (resolve_signa... (358 more characters)"
+      "when_a_tool_finds_nothing": "If analyze_swerve, profile_mechanism, or analyze_cycles reports no matching entries, list the names you searched, run search_entries with the subsystem word (swerve, module, drive, elevator), and find the team's naming in the robot code or ask the user for it. Do not reconstruct the analysis from raw entries by hand.",
+      "the_server_does_not_guess": "Tools pick an entry for a role (battery voltage, loop time, robot pose, vision pose, auto chooser, path poses, total current, swerve module states, has-target flags) only when it follows a well-known convention (AdvantageKit, WPILib, CTRE, PathPlanner, YAGSL, Limelight, PhotonVision names), is the only entry of its type, or is passed explicitly. profile_mechanism uses only entries passed explicitl... (678 more characters)"
     },
     "units": "Battery voltage in V (12.0-13.2 V at rest is healthy). Currents in A; ChannelCurrent is an array indexed by channel, TotalCurrent is a scalar. analyze_loop_timing auto-detects ms vs s; a 20 ms nominal loop reported as 0.02 is seconds. Tool timestamps are the log's own clock in seconds (FPGA time, which starts at roboRIO boot, so the first sample is usually not at 0); take the real range from get_e... (83 more characters)",
     "report_format": {
@@ -515,11 +516,11 @@ Response:
   },
   "logs": [
     {
-      "friendly_name": "VACHE Elimination 4",
+      "friendly_name": "VACHE Elimination (sim) 4",
       "path": "<logdir>/vache/session_55/akit_26-03-22_18-15-22_vache_e4_sim.wpilog",
       "filename": "akit_26-03-22_18-15-22_vache_e4_sim.wpilog",
       "event": "VACHE",
-      "match_type": "Elimination",
+      "match_type": "Elimination (sim)",
       "match_number": 4,
       "team_number": 2363,
       "size_bytes": 36375831,
@@ -537,11 +538,10 @@ Response:
       "last_modified": 1774220356000
     },
     {
-      "friendly_name": "VACHE Practice",
+      "friendly_name": "VACHE",
       "path": "<logdir>/vache/session_56/akit_26-03-22_18-44-53_vache.wpilog",
       "filename": "akit_26-03-22_18-44-53_vache.wpilog",
       "event": "VACHE",
-      "match_type": "Practice",
       "team_number": 2363,
       "size_bytes": 1785856,
       "last_modified": 1774219502000
@@ -607,6 +607,9 @@ Response:
       "sample_count": 11735
     }
   ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
@@ -798,6 +801,9 @@ Response:
       ]
     }
   ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/akit_26-09-30_00-10-26.wpilog",
     "entries_read": [
@@ -896,6 +902,9 @@ Response:
       "limit": 1
     }
   },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/akit_26-09-30_00-10-26.wpilog",
     "entries_read": [
@@ -932,7 +941,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 16,
+    "heap_used_mb": 31,
     "heap_max_mb": 512
   }
 }
@@ -940,7 +949,7 @@ Response:
 
 ### `resolve_signals`
 
-Show which entry plays each role in this log: robot_enabled, autonomous, test_mode, fms_attached, battery_voltage, total_current, brownout_flag, brownout_threshold, loop_time_full, loop_time_user, robot_pose, vision_pose, auto_chooser, path_setpoint, path_actual, module_states_measured, module_states_setpoint, chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: the entry (or entries, or a value); match, how it was chosen (explicit, convention: a well-known AdvantageKit/WPILib/CTRE/PathPlanner name, type: the only entry of its type or schema, heuristic, or none); the basis; the other candidates best first; ambiguous when another candidate ranked as well (the one declared first wins); and the tools that use it. The server does not guess: a heuristic role has no entry, needs_confirmation, and candidates that match by name only, and the tools skip it. Establish which candidate is right (get_entry_info, read_entry, or ask the user) and pass it with the tool's parameter (voltage_entry, entry, pose_entry, chooser_entry, ...). needs_confirmation lists those roles. These are the choices the tools make; each tool's result records the entries it used under inputs.entries.
+Show which entry plays each role in this log: robot_enabled, autonomous, test_mode, fms_attached, battery_voltage, total_current, brownout_flag, brownout_threshold, loop_time_full, loop_time_user, robot_pose, vision_pose, auto_chooser, path_setpoint, path_actual, module_states_measured, module_states_setpoint, chassis_speeds_measured, chassis_speeds_setpoint, gyro_yaw, vision_pose_observations, vision_targets, can_bus, console_text, alerts. For each: the entry (or entries, or a value); match, how it was chosen (explicit, convention: a well-known AdvantageKit/WPILib/CTRE/PathPlanner/YAGSL/vision-library name, type: the only entry of its type or schema, heuristic, or none); the basis; the other candidates best first; ambiguous when another candidate ranked as well (the one declared first wins); and the tools that use it. The server does not guess: a heuristic role has no entry, needs_confirmation, and candidates, and the tools skip it. A word in a name is not evidence of what an entry holds. Establish which candidate is right from the robot's source code, where the entry is logged (else get_entry_info, read_entry, or the user), and pass it with the tool's parameter (voltage_entry, entry, pose_entry, chooser_entry, measured_entry, ...). needs_confirmation lists those roles. These are the choices the tools make; each tool's result records the entries it used under inputs.entries.
 
 **Parameters** ([TOOLS.md](TOOLS.md#resolve_signals))
 
@@ -1120,8 +1129,8 @@ Response:
     "module_states_measured": {
       "description": "Measured swerve module states",
       "entry": "/RealOutputs/SwerveStates/Measured",
-      "match": "type",
-      "basis": "SwerveModuleState[] (one module per index) or per-module entries; setpoints by leaf name (setpoint, desired, target, commanded, goal, reference), optimized setpoints preferred",
+      "match": "convention",
+      "basis": "SwerveStates/Measured (AdvantageKit swerve template)",
       "candidates": [
         "/RealOutputs/SwerveStates/Measured",
         "/RealOutputs/SwerveStates/SetpointsOptimized",
@@ -1132,10 +1141,9 @@ Response:
     "module_states_setpoint": {
       "description": "Swerve module setpoints",
       "entry": "/RealOutputs/SwerveStates/SetpointsOptimized",
-      "match": "type",
-      "basis": "SwerveModuleState[] (one module per index) or per-module entries; setpoints by leaf name (setpoint, desired, target, commanded, goal, reference), optimized setpoints preferred",
+      "match": "convention",
+      "basis": "SwerveStates/SetpointsOptimized beside the measured entry (AdvantageKit swerve template)",
       "candidates": [
-        "/RealOutputs/SwerveStates/Measured",
         "/RealOutputs/SwerveStates/SetpointsOptimized",
         "/RealOutputs/SwerveStates/Setpoints"
       ],
@@ -1178,11 +1186,10 @@ Response:
         "/Vision/Camera0/PoseObservations",
         "/Vision/Camera3/PoseObservations",
         "/Vision/Camera1/PoseObservations",
-        "/Vision/Camera2/PoseObservations",
-        "/RealOutputs/AutoSelector/AutonomousInitialTrajectory"
+        "/Vision/Camera2/PoseObservations"
       ],
-      "match": "type",
-      "basis": "struct arrays whose records hold a timestamp and a pose, one per camera",
+      "match": "convention",
+      "basis": "struct:PoseObservation[] entries (the AdvantageKit vision template's record: a timestamp and a pose), one per camera",
       "candidates": [
         "/Vision/Camera0/PoseObservations",
         "/Vision/Camera3/PoseObservations",
@@ -1201,7 +1208,7 @@ Response:
         "/Vision/Camera3/LatestTargetObservation"
       ],
       "match": "convention",
-      "basis": "structs with yaw and pitch fields, and has-target entries (Limelight tv, PhotonVision hasTarget)",
+      "basis": "struct:TargetObservation entries with yaw and pitch fields (the AdvantageKit vision template's record), and has-target entries by convention (Limelight's <table>/tv, PhotonVision's photonvision/<camera>/hasTarget)",
       "candidates": [
         "/Vision/Camera2/LatestTargetObservation",
         "/Vision/Camera1/LatestTargetObservation",
@@ -1273,13 +1280,16 @@ Response:
   "needs_confirmation": [
     "auto_chooser"
   ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
     "entries_read": [
       "/DriverStation/Autonomous",
       "/DriverStation/Enabled",
       "/DriverStation/FMSAttached",
-      "... (7 more items)"
+      "... (6 more items)"
     ]
   }
 }
@@ -1428,7 +1438,10 @@ Response:
       }
     },
     "... (9 more items)"
-  ]
+  ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  }
 }
 ```
 
@@ -1460,12 +1473,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 225,
-    "total_mb": 329,
+    "used_mb": 242,
+    "total_mb": 340,
     "max_mb": 512,
-    "free_mb": 103
+    "free_mb": 97
   },
-  "jvm_heap_used_mb": 225,
+  "jvm_heap_used_mb": 242,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
@@ -1525,6 +1538,9 @@ Response:
     "/SystemStats/6vRail/Voltage",
     "/SystemStats/BatteryVoltage"
   ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
@@ -1590,6 +1606,9 @@ Response:
     },
     "... (22 more items)"
   ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
@@ -1733,6 +1752,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Each entry's value is held until its next sample: for a change-only entry that is what the log means; for a periodic entry, a gap reported in data_quality is time over which the condition was assumed unchanged."
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -1894,7 +1916,10 @@ Response:
   },
   "warnings": [
     "Low data quality (score: 0.40): statistics in this result should be treated as preliminary; directly observed events (a logged flag, a threshold crossing, an error line) are not affected."
-  ]
+  ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
+  }
 }
 ```
 
@@ -1974,6 +1999,9 @@ Response:
       "limit": 100
     }
   },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/akit_26-09-30_00-10-26.wpilog",
     "entries_read": [
@@ -2047,6 +2075,9 @@ Response:
       "returned": 3,
       "limit": 3
     }
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
@@ -2158,6 +2189,9 @@ Response:
       "Use detect_anomalies to check for outliers that may skew these statistics",
       "Use time_correlate to check relationships with other entries"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -2238,6 +2272,9 @@ Response:
       "Use detect_anomalies to check for outliers that may skew these statistics",
       "Use time_correlate to check relationships with other entries"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
   }
 }
 ```
@@ -2349,6 +2386,9 @@ Response:
     "suggested_followup": [
       "Use get_statistics on each entry individually for baseline context"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
   }
 }
 ```
@@ -2481,6 +2521,9 @@ Response:
     "suggested_followup": [
       "Use find_peaks if looking for signal extrema rather than statistical outliers"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -2600,6 +2643,9 @@ Response:
     "suggested_followup": [
       "Use get_statistics to understand baseline before interpreting peaks"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -2707,6 +2753,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Derivatives amplify noise — increase window_size for smoother results"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
   }
 }
 ```
@@ -2791,11 +2840,11 @@ Response:
   },
   "correlation": -0.6278741197591579,
   "lag1_autocorrelation": {
-    "entry1": 0.9443386888465606,
-    "entry2": 0.8729572261282725
+    "entry1": 0.9442714751659614,
+    "entry2": 0.8729479520997179
   },
-  "effective_sample_size": 633.8448536427815,
-  "p_value": 8.503738647779676E-71,
+  "effective_sample_size": 634.1116479239121,
+  "p_value": 7.952059357346021E-71,
   "p_value_basis": "two-sided t test on the correlation with the effective sample size n(1 - r1x r1y)/(1 + r1x r1y) (Bretherton et al. 1999), since consecutive samples are autocorrelated; still assumes the pairing is otherwise independent, so treat it as a rough guide",
   "data_quality": {
     "sample_count": 6644,
@@ -2817,6 +2866,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Correlation does not imply causation — consider confounding variables"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -2921,6 +2973,9 @@ Response:
     "window": {
       "start": 370.0
     }
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
   }
 }
 ```
@@ -3066,13 +3121,16 @@ Response:
       "basis": "game_timing",
       "description": "Endgame"
     }
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
 
 ### `analyze_swerve`
 
-Analyze swerve modules from SwerveModuleState entries: per module, mean and maximum |speed| (magnitude; measured speeds are signed and negative about half the time), and, when a setpoint entry exists, speed tracking error (| |measured| - |setpoint| |, m/s, events above slip_threshold) and steer error (angle difference modulo 180 deg, while the setpoint speed is above 0.05 m/s, events above sync_threshold_rad). AdvantageKit's struct:SwerveModuleState[] arrays count as one module per index (module[0..N-1]; the FL, FR, BL, BR labels are the AdvantageKit template's order, an assumption); one entry per module also works. Setpoints are paired by index, preferring an optimized setpoint entry. Odometry drift compares the robot pose (a conventional name, or the only Pose2d outside vision paths, as resolve_signals reports it) with a vision pose (the only scalar pose under a vision, camera, PhotonVision, or Limelight path); other candidates are listed in skipped to confirm, never guessed. Sections that cannot be produced are listed in skipped with the reason; use measured_entry/setpoint_entry/odometry_entry/vision_entry to point the tool at the right data (an entry named there that is missing or of the wrong type is an error), and scope (e.g. 'enabled') to exclude disabled time. Returns no_match when the log has no SwerveModuleState entries.
+Analyze swerve modules from SwerveModuleState entries: per module, mean and maximum |speed| (magnitude; measured speeds are signed and negative about half the time), and, with setpoints, speed tracking error (| |measured| - |setpoint| |, m/s, events above slip_threshold) and steer error (angle difference modulo 180 deg, while the setpoint speed is above 0.05 m/s, events above sync_threshold_rad). A struct:SwerveModuleState[] array is one module per index (module[0..N-1]; the FL, FR, BL, BR labels are the AdvantageKit template's order, an assumption). The measured and setpoint entries are taken from a published naming, paired within one table: AdvantageKit SwerveStates/Measured with SetpointsOptimized or Setpoints, CTRE DriveState/ModuleStates with ModuleTargets, YAGSL currentStates with desiredStates. Otherwise the only SwerveModuleState entry is used (the log does not say whether it is measured or commanded: a warning says so). Entries under other names are not interpreted: the result is no_match with needs_confirmation and candidates, or the tracking sections are skipped with the candidates; pass measured_entry and setpoint_entry (one module's entries when each module has its own). Which entry is which is in the robot's source code, not in its name. measured_basis and setpoint_basis say how each was chosen. Odometry drift compares the robot pose with a vision pose (as resolve_signals reports them; candidates are listed in skipped, never guessed; pass odometry_entry/vision_entry). An entry passed that is missing or of the wrong type is an error. Use scope (e.g. 'enabled') to exclude disabled time. Returns no_match when the log has no SwerveModuleState entries.
 
 
 
@@ -3084,7 +3142,7 @@ INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings
 |---|---|---|---|
 | `module_prefix` | string | no | Only consider module state entries under this prefix (e.g. '/RealOutputs/SwerveStates') |
 | `measured_entry` | string | no | Measured module states: a SwerveModuleState[] entry, or one module's SwerveModuleState entry |
-| `setpoint_entry` | string | no | Setpoint module states, paired with measured_entry by index |
+| `setpoint_entry` | string | no | Setpoint module states of the same shape as the measured entry, paired by index |
 | `slip_threshold` | number | no | Speed tracking error, in m/s, counted as an event (default: 0.5) |
 | `sync_threshold_rad` | number | no | Steer error, in radians, counted as an event (default: 0.1) |
 | `odometry_entry` | string | no | Explicit odometry pose entry (struct:Pose2d or Pose3d) |
@@ -3133,6 +3191,8 @@ Response:
       "setpoint": "/RealOutputs/SwerveStates/SetpointsOptimized"
     }
   },
+  "measured_basis": "SwerveStates/Measured (AdvantageKit swerve template)",
+  "setpoint_basis": "SwerveStates/SetpointsOptimized beside the measured entry (AdvantageKit swerve template)",
   "layout": "array",
   "module_count": 4,
   "module_order_note": "Indices are the order the robot code logs its modules. The AdvantageKit template logs front-left, front-right, back-left, back-right; that labeling is an assumption, not recorded in the log.",
@@ -3274,6 +3334,9 @@ Response:
     "suggested_followup": [
       "Use power_analysis to check if module issues correlate with brownouts"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -3448,6 +3511,9 @@ Response:
     "suggested_followup": [
       "Use predict_battery_health for comprehensive battery assessment"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -3541,7 +3607,10 @@ Response:
       "entry": "/RealOutputs/Console",
       "line": "Error at frc.robot.subsystems.intake.IntakeArmIOReal.updateInputs(IntakeArmIOReal.java:19): HAL: CAN Receive has Timed Out"
     }
-  ]
+  ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  }
 }
 ```
 
@@ -3600,6 +3669,7 @@ Response:
     {
       "log_path": "<logdir>/akit_26-09-30_00-10-26.wpilog",
       "log_filename": "akit_26-09-30_00-10-26.wpilog",
+      "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered.",
       "entry_found": true,
       "signal": "/RealOutputs/LoggedRobot/FullCycleMS",
       "scope": {
@@ -3656,6 +3726,7 @@ Response:
     {
       "log_path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
       "log_filename": "akit_26-03-21_16-29-56_vache_q10.wpilog",
+      "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered.",
       "entry_found": true,
       "signal": "/RealOutputs/LoggedRobot/FullCycleMS",
       "scope": {
@@ -3761,6 +3832,9 @@ Response:
     "GitDate": "/RealMetadata/GitDate",
     "BuildDate": "/RealMetadata/BuildDate"
   },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
     "entries_read": [
@@ -3852,6 +3926,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Regression estimates depend on data quality and model assumptions"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
@@ -4111,6 +4188,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "data_quality describes /SystemStats/CANBus/Utilization; CAN status entries are often logged at a low rate, which bounds the utilization statistics, not the counter maxima and increases."
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -4258,13 +4338,16 @@ Response:
   },
   "warnings": [
     "The timeline lists the first 100 of 148 alert appearances; search_strings lists every one."
-  ]
+  ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  }
 }
 ```
 
 ### `analyze_vision`
 
-Analyze vision data, found by type and content. observation_streams: struct arrays of pose observations (for example the AdvantageKit vision template's /Vision/Camera<N>/PoseObservations from PhotonVision or Limelight: each record holds a timestamp and a pose), one stream per camera, with record and observation counts, the fraction of records with an observation, observation rate, tag-count and ambiguity distributions, latency (log time minus the observation's own timestamp, and a sibling Latency entry when logged), and the residual between each observation and the robot pose at the observation's timestamp (robot_pose_entry, chosen or passed as pose_entry). target_streams: structs with yaw and pitch fields (such as TargetObservation), with yaw, pitch, area, and confidence distributions and the object ids seen. pose_sets: Pose3d[] entries, and Pose2d[] entries under a vision, camera, PhotonVision, or Limelight path (e.g. accepted or rejected robot poses per loop), with how often they are non-empty and poses per record; other Pose2d[] entries, such as a planned path, are not vision data. target_acquisition: Limelight-style has-target entries (tv, hasTarget, targetValid) with acquisition rate and flicker. pose_jumps: steps larger than jump_threshold in scalar pose entries; a jump within 0.5 s of the robot being enabled has near_enable_sec (odometry is often reset there, e.g. at the start of autonomous), so it is not by itself evidence of a vision correction. vision_prefix limits the vision entries only (case-insensitive); the robot pose may live elsewhere. Returns no_match with what was searched when none of these exist.
+Analyze vision data: what the AdvantageKit vision template and the vision libraries publish under their own names, and the entries passed as vision_entries. Entries that only look like vision data are listed in candidates by kind, with needs_confirmation, and are neither analyzed nor decoded: a planned trajectory is also a struct array of timestamps and poses, a gyro's struct also has yaw and pitch, and a robot's own HasTargetLock need not be a camera's. The robot's source code says what each is; pass the confirmed ones as vision_entries. observation_streams: struct:PoseObservation[] entries (the vision template's /Vision/Camera<N>/PoseObservations from PhotonVision or Limelight: each record holds a timestamp and a pose), one stream per camera, with record and observation counts, the fraction of records with an observation, observation rate, tag-count and ambiguity distributions, latency (log time minus the observation's own timestamp; an entry beside the stream whose name mentions latency is listed in latency_candidates and not analyzed, since its name does not say what it times or in which units: get_statistics reads it), and the residual between each observation and the robot pose at the observation's timestamp (robot_pose_entry, chosen or passed as pose_entry). target_streams: struct:TargetObservation entries with yaw and pitch fields, with yaw, pitch, area, and confidence distributions and the object ids seen. pose_sets: the template's pose arrays (Vision/Summary/ and Vision/Camera<N>/ TagPoses, RobotPoses, RobotPosesAccepted, RobotPosesRejected), with how often they are non-empty and poses per record. target_acquisition: has-target entries with acquisition rate and flicker: Limelight's <table>/tv and PhotonVision's photonvision/<camera>/hasTarget. pose_jumps: steps larger than jump_threshold in the robot pose and in a vision pose estimate (the only scalar pose under a vision path, or those passed); a jump within 0.5 s of the robot being enabled has near_enable_sec (odometry is often reset there, e.g. at the start of autonomous), so it is not by itself evidence of a vision correction. vision_prefix limits the vision entries only (case-insensitive); the robot pose may live elsewhere. Returns no_match with what was searched when none of these exist.
 
 
 
@@ -4275,6 +4358,7 @@ INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `vision_prefix` | string | no | Only vision entries under this prefix (case-insensitive), e.g. '/Vision' |
+| `vision_entries` | array | no | Entries to analyze besides the conventional ones, each by its shape: a has-target flag (boolean, or a number where above 0.5 means a target), a pose array, a scalar pose (checked for jumps), a struct array holding a timestamp and a pose, or a struct with yaw and pitch |
 | `pose_entry` | string | no | Robot pose entry (struct:Pose2d or Pose3d) for residuals and jump detection; default: a conventional name (DriveState/Pose, Odometry/Robot, Drive/Pose, EstimatedPose, RobotPose) or the only Pose2d outside vision entries; several others are listed to confirm, not guessed |
 | `start_time` | number | no | Start timestamp in seconds |
 | `end_time` | number | no | End timestamp in seconds |
@@ -4338,14 +4422,9 @@ Response:
         "robot_pose_entry": "/RealOutputs/Drive/Pose",
         "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
       },
-      "logged_latency": {
-        "n": 22233,
-        "median": 62.324,
-        "p95": 67.3768,
-        "max": 85.514,
-        "entry": "/Vision/Camera0/LatencyMs",
-        "basis": "as logged by the robot program (units per the entry name)"
-      }
+      "latency_candidates": [
+        "/Vision/Camera0/LatencyMs"
+      ]
     },
     {
       "entry": "/Vision/Camera3/PoseObservations",
@@ -4379,14 +4458,9 @@ Response:
         "robot_pose_entry": "/RealOutputs/Drive/Pose",
         "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
       },
-      "logged_latency": {
-        "n": 22325,
-        "median": 61.174,
-        "p95": 67.2644,
-        "max": 5870507.267,
-        "entry": "/Vision/Camera3/LatencyMs",
-        "basis": "as logged by the robot program (units per the entry name)"
-      }
+      "latency_candidates": [
+        "/Vision/Camera3/LatencyMs"
+      ]
     },
     {
       "entry": "/Vision/Camera1/PoseObservations",
@@ -4420,14 +4494,9 @@ Response:
         "robot_pose_entry": "/RealOutputs/Drive/Pose",
         "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
       },
-      "logged_latency": {
-        "n": 22592,
-        "median": 59.5965,
-        "p95": 64.2017,
-        "max": 77.24,
-        "entry": "/Vision/Camera1/LatencyMs",
-        "basis": "as logged by the robot program (units per the entry name)"
-      }
+      "latency_candidates": [
+        "/Vision/Camera1/LatencyMs"
+      ]
     },
     {
       "entry": "/Vision/Camera2/PoseObservations",
@@ -4461,14 +4530,9 @@ Response:
         "robot_pose_entry": "/RealOutputs/Drive/Pose",
         "basis": "planar distance to the robot pose interpolated at the observation's timestamp; the robot pose may itself include vision corrections"
       },
-      "logged_latency": {
-        "n": 22170,
-        "median": 65.0,
-        "p95": 70.782,
-        "max": 86.975,
-        "entry": "/Vision/Camera2/LatencyMs",
-        "basis": "as logged by the robot program (units per the entry name)"
-      }
+      "latency_candidates": [
+        "/Vision/Camera2/LatencyMs"
+      ]
     }
   ],
   "target_streams": [
@@ -4673,6 +4737,9 @@ Response:
       "Timing is consistent with values logged only when they change (sampling change_only): a long interval between samples means the value held, not missing data; a sample count is a count of changes.",
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
   }
 }
 ```
@@ -4825,6 +4892,9 @@ Response:
     "interpretation_guidance": [
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -5014,6 +5084,9 @@ Response:
     "suggested_followup": [
       "Use analyze_vision to see whether corrections coincide with vision observations, and find_condition to limit the scope to driving"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 116490199; the rest of the file was not read. Data from 8.36 to 1588.27 s was recovered."
   }
 }
 ```
@@ -5171,13 +5244,16 @@ Response:
     "suggested_followup": [
       "Use analyze_vision to see whether corrections coincide with vision observations, and find_condition to limit the scope to driving"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
 
 ### `profile_mechanism`
 
-Profile one closed-loop mechanism from its numeric entries: following error (measurement minus the setpoint in force, as RMSE, bias, and maximum), step response for each setpoint step (settling time into a 5% band of the step, percent overshoot of the step), stall events (|current| above stall_current_threshold while |velocity| is below stall_velocity_threshold, each with its signed peak current by magnitude), and motor temperature (maximum and final). Entries are found among names containing mechanism_name (case-insensitive substring anywhere in the name) by role — setpoint (setpoint/goal/target/reference), measurement (position/angle/height/...), velocity, current, temperature — and grouped by the stem before the role word, so /Drive/ModuleFrontLeft/DriveVelocity and TurnVelocity are different stems. When the name matches exactly one stem its entries are used; when it matches several, the server does not choose among them: the result is no_match with needs_confirmation and the stems' entries, unless the roles are passed explicitly (then only those entries are used and other_stems lists the stems). roles names every entry used; any role can be passed explicitly (setpoint_entry, measurement_entry, velocity_entry, current_entry, temperature_entry). Sections without their entries are listed in skipped. Returns no_match when nothing matches.
+Profile one closed-loop mechanism from the numeric entries passed for its roles: following error (measurement_entry minus the setpoint_entry in force, as RMSE, bias, and maximum; the two must be in the same units), step response for each setpoint step (settling time into a 5% band of the step, percent overshoot of the step), stall events (|current_entry| above stall_current_threshold while |velocity_entry| is below stall_velocity_threshold, each with its signed peak current by magnitude), and motor temperature (temperature_entry: maximum and final). Only entries passed explicitly are analyzed: a name does not establish that an entry is this mechanism's setpoint or measurement, or its units (a 'currentHeight' is the present height, and PhotonVision's 'targetYaw' is a camera reading, not a setpoint). mechanism_name (a case-insensitive substring of the entry names) finds the candidates: candidates lists, per role, the entries whose leaf name suggests it. With mechanism_name alone the result is no_match with needs_confirmation and the candidates; confirm each from the robot's source code (where the entry is logged), or its values, and pass it. roles names every entry used. Sections without their entries are listed in skipped with the candidates. Returns no_match when nothing matches.
 
 
 
@@ -5187,19 +5263,19 @@ INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `mechanism_name` | string | no | Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' or 'ModuleFrontLeft/Drive' |
+| `mechanism_name` | string | no | Text contained in the mechanism's entry names (case-insensitive), e.g. 'Elevator' or 'ModuleFrontLeft/Drive': lists candidate entries per role; none is used until passed |
 | `start_time` | number | no | Start timestamp |
 | `end_time` | number | no | End timestamp |
 | `stall_current_threshold` | number | no | Current threshold for stall (default: 30A) |
 | `stall_velocity_threshold` | number | no | \|velocity\| below this counts as stopped, in the velocity entry's units (default: 0.01) |
-| `setpoint_entry` | string | no | Explicit setpoint entry |
-| `measurement_entry` | string | no | Explicit measurement entry |
-| `velocity_entry` | string | no | Explicit velocity entry |
-| `current_entry` | string | no | Explicit current entry |
-| `temperature_entry` | string | no | Explicit temperature entry |
+| `setpoint_entry` | string | no | The mechanism's setpoint entry (a scalar number) |
+| `measurement_entry` | string | no | The mechanism's measurement entry (a scalar number) |
+| `velocity_entry` | string | no | The mechanism's velocity entry (a scalar number) |
+| `current_entry` | string | no | The mechanism's current entry (a scalar number) |
+| `temperature_entry` | string | no | The mechanism's temperature entry (a scalar number) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
-**Example: A drive module**
+**Example: A name alone: candidates to confirm**
 
 Request:
 ```json
@@ -5217,20 +5293,106 @@ Response:
 {
   "success": false,
   "status": "no_match",
-  "reason": "'/Drive/Module0' matches 2 mechanisms by stem (turn, drive); the server does not guess which is meant.",
-  "hint": "Pass a more specific mechanism_name (e.g. '/Drive/Module0/turn', matched case-insensitively), or the entries themselves (setpoint_entry, measurement_entry, velocity_entry, current_entry, temperature_entry).",
-  "stems": {
-    "turn": {
-      "velocity": "/Drive/Module0/TurnVelocityRadPerSec",
-      "current": "/Drive/Module0/TurnCurrentAmps"
-    },
-    "drive": {
-      "measurement": "/Drive/Module0/DrivePositionRad",
+  "reason": "No role entries were passed. profile_mechanism analyzes only entries passed explicitly: a name does not establish that an entry is this mechanism's setpoint, measurement, velocity, current, or temperature, or its units.",
+  "hint": "candidates lists the entries containing '/Drive/Module0' whose leaf name suggests each role. Confirm each one (the robot's source code, where the entry is logged, shows what it holds and in which units; get_entry_info and read_entry show its type and values; or ask the user) and pass it: setpoint_entry, measurement_entry, velocity_entry, current_entry, temperature_entry. The setpoint and the measu... (60 more characters)",
+  "mechanism": "/Drive/Module0",
+  "candidates": {
+    "measurement": [
+      "/Drive/Module0/DrivePositionRad"
+    ],
+    "velocity": [
+      "/Drive/Module0/TurnVelocityRadPerSec",
+      "/Drive/Module0/DriveVelocityRadPerSec"
+    ],
+    "current": [
+      "/Drive/Module0/TurnCurrentAmps",
+      "/Drive/Module0/DriveCurrentAmps"
+    ]
+  },
+  "needs_confirmation": true,
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  }
+}
+```
+
+**Example: A drive motor, its entries passed**
+
+Request:
+```json
+{
+  "name": "profile_mechanism",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "velocity_entry": "/Drive/Module0/DriveVelocityRadPerSec",
+    "current_entry": "/Drive/Module0/DriveCurrentAmps"
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "partial",
+  "roles": {
+    "setpoint": null,
+    "measurement": null,
+    "velocity": "/Drive/Module0/DriveVelocityRadPerSec",
+    "current": "/Drive/Module0/DriveCurrentAmps",
+    "temperature": null
+  },
+  "inputs": {
+    "entries": {
       "velocity": "/Drive/Module0/DriveVelocityRadPerSec",
       "current": "/Drive/Module0/DriveCurrentAmps"
     }
   },
-  "needs_confirmation": true
+  "skipped": [
+    {
+      "section": "following_error",
+      "reason": "Needs a setpoint and a measurement entry: setpoint_entry was not passed; measurement_entry was not passed."
+    },
+    {
+      "section": "temperature",
+      "reason": "Needs a temperature entry: temperature_entry was not passed."
+    }
+  ],
+  "stall_events": [],
+  "limits": {
+    "stall_events": {
+      "total": 0,
+      "returned": 0,
+      "limit": 50
+    }
+  },
+  "stall_count": 0,
+  "data_quality": {
+    "sample_count": 6470,
+    "time_span_seconds": 321.04,
+    "sampling": "periodic",
+    "gap_count": 79,
+    "max_gap_ms": 69282.9,
+    "effective_sample_rate_hz": 48.5,
+    "quality_score": 0.69,
+    "reasons": [
+      "51.4% of the time span is in 79 gaps longer than 5x the median interval (longest 69283 ms)",
+      "irregular timing: intervals deviate from the 20.6 ms median by 4% (median absolute deviation)"
+    ]
+  },
+  "server_analysis_directives": {
+    "confidence_level": "medium",
+    "sample_context": "Based on 6470 samples over 321.0 seconds",
+    "interpretation_guidance": [
+      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
+    ],
+    "suggested_followup": [
+      "Use moi_regression for mechanism inertia estimation"
+    ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  }
 }
 ```
 
@@ -5290,13 +5452,16 @@ Response:
   "skipped": [
     {
       "section": "selected_routine",
-      "reason": "No entry follows a known convention for the selected autonomous routine. Entries that match by name only: /RealOutputs/AutoSelector/SelectedAutoMode. Confirm which one (if any) is the selected autonomous routine (get_entry_info, read_entry, or ask the user) and pass it as chooser_entry; the server does not guess."
+      "reason": "No entry follows a known convention for the selected autonomous routine. Candidates, not used: /RealOutputs/AutoSelector/SelectedAutoMode. Confirm which one (if any) is the selected autonomous routine (the robot's source code, where the entry is logged, shows what it holds and in which units; get_entry_info and read_entry show its type and values; or ask the user) and pass it as chooser_entry; the... (23 more characters)"
     },
     {
       "section": "path_following_error",
       "reason": "No path-following setpoint pose entry found (no PathPlanner/targetPose or Odometry/TrajectorySetpoint); if the log has one under another name, pass it as path_setpoint_entry."
     }
-  ]
+  ],
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  }
 }
 ```
 
@@ -5404,6 +5569,9 @@ Response:
       "Timing is consistent with values logged only when they change (sampling change_only): a long interval between samples means the value held, not missing data; a sample count is a count of changes.",
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions."
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
@@ -5703,6 +5871,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "The health score is a heuristic; battery age, charge, connector condition, and current draw all move it. Compare the same battery across logs."
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -5840,6 +6011,9 @@ Response:
       "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
       "Health score is a heuristic based on violation rate — consider context of violations"
     ]
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   }
 }
 ```
@@ -6106,6 +6280,9 @@ Response:
     }
   },
   "rows_exported": 3,
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
     "entries_read": [
@@ -6357,6 +6534,9 @@ Response:
       "Report is a summary — use individual tools for detailed analysis"
     ]
   },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
     "entries_read": [
@@ -6528,7 +6708,8 @@ Response:
     "REV log 'rio': timestamps aligned by cross-correlation at medium confidence (accuracy about 5-50 ms); sync_status has the signal pairs."
   ],
   "_metadata": {
-    "timing_accuracy_ms": "5-50"
+    "timing_accuracy_ms": "5-50",
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
@@ -6626,7 +6807,8 @@ Response:
     "REV log 'rio': timestamps aligned by cross-correlation at medium confidence (accuracy about 5-50 ms); sync_status has the signal pairs."
   ],
   "_metadata": {
-    "timing_accuracy_ms": "5-50"
+    "timing_accuracy_ms": "5-50",
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
@@ -6691,7 +6873,8 @@ Response:
   ],
   "_metadata": {
     "timing_accuracy_ms": "5-50",
-    "confidence_description": "Some signals correlate well, minor disagreement"
+    "confidence_description": "Some signals correlate well, minor disagreement",
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
   },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
@@ -6738,6 +6921,9 @@ Response:
   "previous_offset_ms": -16.616,
   "previous_method": "CROSS_CORRELATION",
   "new_method": "USER_PROVIDED",
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
@@ -6777,6 +6963,9 @@ Response:
   "was_in_progress": false,
   "revlog_count": 1,
   "synchronized": true,
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
   "inputs": {
     "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }

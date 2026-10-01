@@ -33,13 +33,14 @@ This runs every test that needs nothing outside the repository, in about a minut
 
 Tests are in `src/test/java`, in the same packages as the code they test, plus a few test-only packages: `fixtures`, `conformance`, `golden`, `docs`, and `integration`.
 
-- Fixture logs: about 20 small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
+- Fixture logs: about 20 small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, entries that only look like vision data, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
 - Tool tests: each tool's behavior and its edge cases (empty and single-sample entries, NaN and infinite values, duplicate timestamps, missing DriverStation data, and bad arguments), on the fixtures and on small logs that the tests build in memory.
-- Conformance sweep: every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, and every output the tool's description names. The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
+- Conformance sweep: every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, a note on every result computed from a log that was not read to its end, and every output the tool's description names. The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
 - Differential check: the conformance sweep shows that the tools keep their contract, not that a number is right, so this check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader, and compares the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows. The server may set records aside only where the second reader sees damage itself.
-- Claim checks: the documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, the tool table in the README and the catalog in `get_server_guide` with the registered tools, and the sections of TOOLS.md and TOOL_RESPONSES.md with the server's categories. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
+- Claim checks: the documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it. TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added, but it may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
 - Process tests: some behavior can only be seen from outside, so the tests start the server in a fresh JVM to check its startup configuration and logging, and run the one-line installers against a stand-in for GitHub in a scratch home folder: the shell installer everywhere but Windows, and the PowerShell installer wherever PowerShell is installed, which includes the Windows CI job.
 - Version checks: the extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
+- Build file check: the stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails.
 
 CI runs `./gradlew test shadowJar` on Linux and Windows, and compiles the extension.
 
@@ -68,13 +69,13 @@ Use your own team's logs. Logs that another team has deliberately published can 
 
 ```bash
 ./gradlew stressTest       # Both stress tests
-./gradlew stdioStressTest  # In-process only (compile the tests first: ./gradlew testClasses)
+./gradlew stdioStressTest  # In-process only
 ./gradlew httpStressTest   # Over the HTTP transport only
 ```
 
-The stress tests exercise the server on real logs. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases. Both hold the results of their sequential calls to the conformance checks. Failures are printed but do not fail the build, so read the output. A log directory that does not exist skips every test.
+The stress tests exercise the server on real logs. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. A log directory that does not exist skips every test.
 
-They take their settings from a `stresstest` server: the one in the file given with `-Pconfigpath=/path/to/config.yaml`, else in the first of `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root and `~/.wpilog-mcp/servers.yaml` or `servers.json` that has one (the file the installers write does). With no such server, they use `~/riologs` and team 2363. The heap is `WPILOG_MAX_HEAP`, or `4g`.
+They take their settings from a `stresstest` server: the one in the file given with `-Pconfigpath=/path/to/config.yaml`, else in the first of `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root and `~/.wpilog-mcp/servers.yaml` or `servers.json` that has one (the file the installers write does). With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`.
 
 ### Extension tests
 
@@ -84,13 +85,13 @@ npm ci
 npm test
 ```
 
-These cover the extension's logic that needs no running VS Code: resolving log directories and settings, and writing the Claude Code entry and configuration file.
+These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, and removing the TBA key from those files.
 
 ## Changing or Adding a Tool
 
 A tool is more than its code: agents read its description and schema, and several tests hold them to what the code does. When you add a tool or change what one takes or returns:
 
-1. Follow the design principles. Return measurements with their sample counts, not conclusions. Find inputs through the shared signal resolver, never by a name alone. Say what was used, what was skipped, and what was cut short. A tool that cannot apply returns `not_applicable` or `no_match` with what it looked for, never an empty success.
+1. Follow the design principles. Return measurements with their sample counts, not conclusions. Find inputs through the shared signal resolver, never by a word in a name or by content alone: an entry is used when it is passed, follows a published convention, or is the only one of its type, and anything else that looks right is listed as a candidate. Say what was used, what was skipped, and what was cut short. A tool that cannot apply returns `not_applicable` or `no_match` with what it looked for, never an empty success.
 2. Use the shared pieces. A tool that reads a log extends the log-reading base, which adds the `path` parameter and loads the log. Build the result with the shared response builder, take time ranges through the shared scope and window handling, and attach data quality where the result rests on statistics.
 3. Write the description for an agent. Name every output, and say what the numbers do and don't show. A test fails when a description names an output that no result contains.
 4. Register it and list it. Register the tool in the module with related tools, and add it to the catalog that `get_server_guide` and `suggest_tools` use.
@@ -100,7 +101,7 @@ A tool is more than its code: agents read its description and schema, and severa
    ```bash
    ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/logs
    ```
-   The scenarios file names the three logs it reads, relative to that directory. They are Team 2363's and are not in the repository. Without them you cannot regenerate the file, and for a new tool the test that compares its sections with the server's categories fails until someone does. Say so in your pull request, and a maintainer will regenerate it. The capture fails when a tool has no call.
+   The scenarios file names the three logs it reads, relative to that directory. They are Team 2363's and are not in the repository. Without them you cannot regenerate the file, and you do not have to: the checks accept a TOOL_RESPONSES.md that does not hold a new tool yet, as long as the scenarios file has a call for it. Say so in your pull request, and a maintainer will regenerate it. The capture fails when a tool has no call.
 
 ## Building the VS Code Extension
 

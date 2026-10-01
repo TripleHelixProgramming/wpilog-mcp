@@ -13,7 +13,7 @@ wpilog-mcp exists so that an FRC team can ask an AI agent an engineering questio
 That purpose sets the goals:
 
 - Give no false or guessed answer. Every response must rest on facts that can be checked in the log. A wrong number is worse than no number, because the agent builds an explanation on it and the team acts on that explanation at a competition.
-- Work on any team's log. The review that shaped the current design put it this way: "An agent should be able to analyze a log correctly without ever seeing the code that produced it" ([ROBUSTNESS_REVIEW.md](ROBUSTNESS_REVIEW.md)). Logs differ by framework (AdvantageKit, WPILib's DataLogManager, CTRE's swerve template, PathPlanner), by team, and by situation: a practice session is not an FMS match.
+- Work on any team's log. The review that shaped the current design put it this way: "An agent should be able to analyze a log correctly without ever seeing the code that produced it" ([ROBUSTNESS_REVIEW.md](ROBUSTNESS_REVIEW.md)). Logs differ by framework (AdvantageKit, WPILib's DataLogManager, CTRE's swerve template, PathPlanner), by team, and by situation: a practice session is not an FMS match. So the server assumes nothing about a team's names. What a team's entry measures is another matter. The log does not record it, so the server does not supply it; the robot's source code does, and the server sends the agent there.
 - Lead the model toward sound reasoning. Language models find an explanation that fits the data even when the data can't support it. The server should make the scientific method the easy path: check the premise, test a rival explanation, and claim no more certainty than the evidence allows.
 - Be easy to run. The server is one JAR that needs only Java 17 (the WPILib JDK is enough), with no database and no service to operate. The VS Code extension bundles it and finds Java and the logs by itself.
 - Handle real logs: hundreds of megabytes, cut off when the robot lost power, holding a team's own struct types.
@@ -37,11 +37,15 @@ A few tools do give a summary for a pit crew in a hurry: a battery health score,
 
 When a tool needs a particular signal, such as the battery voltage, the robot pose, or the autonomous chooser, it uses an entry only if the caller named it, it follows a known logging convention, or it is the only entry of the right type. An entry that merely has a suggestive name is listed as a candidate for the agent or the user to confirm, and is not used. Most choices can be overridden with a parameter, and an entry named that way which is missing or of the wrong type is an error, not a reason to fall back on something else.
 
-Names still play a part where something stronger has already narrowed the choice. Among entries of the swerve module state type, words such as "setpoint" or "desired" in a name tell setpoints from measurements. Once the caller has named a mechanism, its entries are matched to roles by name. The vision tool finds target and latency entries by the names vision libraries use. In each case the result names the entries it used.
+A word in a name is not evidence, and neither is the shape of the data. The swerve tool takes the measured and setpoint module states from the names the swerve libraries and templates publish, each pair from one table. The mechanism tool analyzes only the entries passed to it, and uses a mechanism's name to list candidates. The vision tool reads what the vision template and the vision libraries publish under their own names. An entry that only has the content or the name of vision data is listed as a candidate and is not decoded. In each case the result names the entries it used and how each was chosen.
+
+What a candidate holds is settled where the entry is logged, in the robot's source code. That code says which mechanism an entry belongs to, its units, and whether it is measured or commanded. The server's guidance tells the agent to read it, and to call a mapping taken from a name an assumption when the code is not at hand.
 
 The rule holds beyond entry names. When REV logs are synchronized, names only nominate pairs of signals to compare, and the data decides which pairs are used. When a log records loop time under none of the known conventions, the loop-timing tool says so; it does not derive loop time from whatever periodic signal it can find.
 
 A guess is right on the logs a tool was written against and wrong elsewhere, and the wrong answer looks just like a right one. Version 0.8.2 took the first entry with "voltage" in its name as the battery. On one log that was the roboRIO's 5 V rail, and the tool reported a high brownout risk with 46,242 samples below the threshold. Its search for CAN errors looked for "can" anywhere in a message, which also matches "scan" and "cancel". The REV log matcher of the time treated every AdvantageKit output entry as a motor's output, because each such path (`/RealOutputs/...`) contains the word "output".
+
+The tools that still judged by a name or by content after that review failed the same way on real logs. A planned autonomous trajectory is a struct array of timestamps and poses, as a camera's observations are. The vision tool reported it as a camera in 86 of Team 2363's 88 logs, with a latency of minutes, and decoding its millions of samples took one call on a 688 MB log past 3 GB of heap. In logs other teams publish, a gyro's struct has yaw and pitch fields and was reported as a camera target. The mechanism tool took a camera's `targetYaw` for a setpoint. The swerve tool, given two target arrays beside the measured states, compared the measured states with whichever was declared first.
 
 ### The log decides
 
@@ -68,7 +72,7 @@ Where the honest answer is "unknown", the result says so. A value that can't be 
 
 A cap or a priority applied to a list is a judgment the model cannot see. A list of the first hundred console messages can leave out the only errors that matter. So for console text the server reports exact counts and a summary of the distinct messages with the count of each, and offers the complete list with search and paging (`search_strings`). Emphasis comes from the counts, not from a selection the server made.
 
-The same goes for what the server could not read. Records that failed to decode are reported by every tool that read them, the statistics tools count the values that were not finite numbers, and a log cut short is marked as truncated where its entries are listed.
+The same goes for what the server could not read. Records that failed to decode are reported by every tool that read them, the statistics tools count the values that were not finite numbers, and every result computed from a log that was not read to its end says so. Most robot logs end inside their last record, because the robot is switched off while logging. That alone is a note in the result's metadata and not a warning, since a warning on nearly every result teaches a model to ignore warnings. A log that lost more than its last record gets the warning as well.
 
 ### Confidence is calibrated to the evidence
 
@@ -84,7 +88,7 @@ A confidence level never claims more than its evidence shows. REV log synchroniz
 
 Guidance reaches the model in three places: in the descriptions of the analysis tools (what their numbers do and don't show), in results that rest on statistics (the confidence level, interpretation guidance in hedged language, suggested follow-up calls, and a reminder that one match may not generalize), and in server-level rules sent when the client connects.
 
-The server-level rules are concrete. They are phrased in terms of this server's outputs: confirm with `get_ds_timeline` that the event in the question happened before explaining it, and quote only numbers a tool returned. The most important rules come first, and the whole text fits the 2 KB that Claude Code keeps. Rules that cost effort, such as testing a proposed cause against a rival explanation, apply only to "why" questions, so that a lookup gets a direct answer; a pit crew has little time. No rule forbids the only way around a limit: the rule against computing statistics by hand names `export_csv` as the way out when no tool can read the data. Some clients drop these rules, so `get_server_guide` returns the full method as a tool result, and its description asks the agent to call it first. [TOOLS.md](TOOLS.md#server-instructions) describes both.
+The server-level rules are concrete. They are phrased in terms of this server's outputs: confirm with `get_ds_timeline` that the event in the question happened before explaining it, and quote only numbers a tool returned. The most important rules come first, and the whole text fits the 2 KB that Claude Code keeps. Rules that cost effort, such as testing a proposed cause against a rival explanation, apply only to "why" questions, so that a lookup gets a direct answer; a pit crew has little time. One rule is about meaning: an entry's name does not prove what it measures, so the agent reads the robot's source code where the entry is logged, or calls the mapping an assumption. No rule forbids the only way around a limit: the rule against computing statistics by hand names `export_csv` as the way out when no tool can read the data. Some clients drop these rules, so `get_server_guide` returns the full method as a tool result, and its description asks the agent to call it first. [TOOLS.md](TOOLS.md#server-instructions) describes both.
 
 ### Each call stands alone
 
@@ -156,7 +160,7 @@ Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small cl
 4. The tool finds the signals it needs through the signal resolver. A tool that takes a scope or windows turns them into time windows through the shared scope handling.
 5. It reads the values it needs. An entry's values are decoded the first time any call asks for them, and then cached.
 6. It computes its result and, in most tools, builds it with the result builder: the status, the inputs, what was skipped or shortened, and data quality where the result rests on statistics.
-7. The base that log-reading tools share adds any records that failed to decode and, to a success, the entries the tool read. The wrapper then enforces the result contract.
+7. The base that log-reading tools share adds any records that failed to decode, a note when the log was not read to its end, and, to a success, the entries the tool read. The wrapper then enforces the result contract.
 8. The protocol handler adds the execution time and returns the result as the text of the reply.
 
 ## Startup and Configuration
@@ -165,13 +169,13 @@ The server starts in one of three ways:
 
 - From a configuration file: with no arguments, or with `start <name>`. The named server's settings come from the file. This is what the installers set up and what MCP clients run. [STANDALONE.md](STANDALONE.md#configuration) describes the file, where it is looked for, and how a server inherits the top-level settings.
 - From command-line flags, with environment variables as their defaults and no configuration file. The VS Code extension starts the server for VS Code's agents this way. [STANDALONE.md](STANDALONE.md#command-line-flags) lists the flags.
-- As a background HTTP server: `start <name>` for a server whose transport is HTTP starts a second process and returns once it answers. The start first claims a PID file with an atomic create, to keep two concurrent starts from both spawning a server. The background process gets the same heap the launcher would give it.
+- As a background HTTP server: `start <name>` for a server whose transport is HTTP starts a second process and returns once it answers. Two starts of one server never spawn two processes. A start decides under a lock that holds across threads and processes whether a server is running, clears a stale PID file, and claims the file. The file then records the spawned process as booting until it answers, so another start, or a status check, made in that interval waits for it and does not take the record for a reused process ID. The background process gets the same heap the launcher would give it.
 
 Started from a file, the server takes its log directories, team number, key, transport, and cache settings from the file, so an MCP client needs no environment variables to run it. A few things have no field in the file and come from the environment: the heap size, and the HTTP bind address, path, and allowed origins.
 
 All logging goes to stderr. In stdio mode stdout carries the protocol, so the server points its own standard output at stderr, and no library can write into the protocol stream. The log level is decided before the first logger is created, because the logging library reads it only once.
 
-Startup then applies the Blue Alliance key, starts the disk cache sweep, loads the current season's game data, registers every tool, and starts the transport.
+Applying a configuration hands the Blue Alliance key to the client that uses it. Startup then starts the disk cache sweep, loads the current season's game data, registers every tool, and starts the transport.
 
 ## Transports and Protocol
 
@@ -202,7 +206,7 @@ Tools are grouped in modules by subject (core, query, statistics, robot analysis
 
 Every tool runs through one base, so the same things happen for every call:
 
-- A bad argument, or a file that is not a readable log (missing, empty, in another format, or too large), becomes an error result whose message says what is wrong.
+- A bad argument, or a file that is not a readable log (missing, a directory, not readable by the server's user, empty, in another format, or too large), becomes an error result whose message says what is wrong.
 - Any other exception becomes an "Internal error" result. The tests treat an internal error as a bug.
 - Running out of memory becomes an error result that names the heap size and the remedies (a narrower time window, or a larger heap), and the server keeps serving.
 - The result contract is enforced on every result, whatever built it. `success` and `status` come first, a missing reason is filled in, and a number that is NaN or infinite, which is not valid JSON, becomes `null` and is listed in the result's metadata.
@@ -211,7 +215,7 @@ Tools that read a log share a second base (two tools, which take an optional pat
 
 Most tools build their results with a shared result builder. The rest assemble theirs by hand, which is why the contract is enforced in one place for all of them. [TOOLS.md](TOOLS.md#response-fields) describes the fields. The tools also share these services:
 
-- The signal resolver maps each role a tool may need to entries, by the rule above: an entry passed explicitly, then a known convention, then the only entry of the right type, and otherwise candidates that are listed but not used. The roles include the Driver Station state, battery voltage, the brownout flag and threshold, loop time, the robot pose, a vision pose, swerve module states, chassis speeds, gyro yaw, CAN buses, console text, and alerts. Because every tool asks the same resolver, two tools never disagree about which entry is the battery voltage, and `resolve_signals` shows the agent the same choices. [TOOLS.md](TOOLS.md#resolve_signals) lists the conventions.
+- The signal resolver maps each role a tool may need to entries, by the rule above: an entry passed explicitly, then a known convention, then the only entry of the right type, and otherwise candidates that are listed but not used. The roles include the Driver Station state, battery voltage, the brownout flag and threshold, loop time, the robot pose, a vision pose, swerve module states, chassis speeds, gyro yaw, vision observations and targets, CAN buses, console text, and alerts. Because every tool asks the same resolver, two tools never disagree about which entry is the battery voltage, and `resolve_signals` shows the agent the same choices. [TOOLS.md](TOOLS.md#resolve_signals) lists the conventions.
 - For the tools that take them, scope handling turns a named scope (`enabled`, `auto`, `teleop`, one enabled segment), explicit windows, or a start and end time into a list of time windows. The phases come from the same timeline `get_match_phases` reports, so every tool agrees on when the robot was in autonomous. Rates, differences, and peaks are computed within each window, not across the gap between two.
 - Field paths let the statistics and query tools read a number inside a struct or an array as they read a numeric entry.
 - Data quality classifies a series as periodic, logged on change, or event-driven, and scores it. Analysis directives turn the score into a confidence level and guidance for the model. [TOOLS.md](TOOLS.md#data_quality) gives the scoring.
@@ -221,7 +225,7 @@ Most tools build their results with a shared result builder. The rest assemble t
 
 ### Finding logs
 
-The directory listing covers every configured log directory, to a depth of 5 by default. A file reachable through two overlapping directories is listed once, and a directory that cannot be read is reported in the result instead of failing the listing. For each log, the listing reads the event, the match, and the team from entries named for them among roughly the first 2,000 records, and the event, the match, and the time from a file name in AdvantageKit's form (`akit_26-03-21_16-29-56_vache_q10.wpilog`). A log that records no team gets the configured team number. The listing remembers all this until the file's modification time changes. A time in a file name is read as UTC, the roboRIO's zone, except in a name ending in `_sim`, which a computer wrote in its local time.
+The directory listing covers every configured log directory, to a depth of 5 by default. A file reachable through two overlapping directories is listed once, and a directory that cannot be read is reported in the result instead of failing the listing. For each log, the listing reads the event, the match, and the team from the entries that carry them by convention (AdvantageKit's Driver Station and system tables, and NetworkTables' FMS table) among roughly the first 2,000 records. Robot code starts logging before the Driver Station connects, so those records usually hold no event or match yet, and the listing takes what they leave unset from the file name. It reads the two forms the logging frameworks write: WPILib's (`FRC_20260321_162956_VACHE_Q10.wpilog`) and AdvantageKit's (`akit_26-03-21_16-29-56_vache_q10.wpilog`). A match type and its number are taken together, from the records or from the name, and a name with an event and no match is listed as that: the Driver Station reports an event name off the field too. A file someone renamed keeps its time and nothing else. A log that records no team gets the configured team number. The listing remembers all this until the file's modification time changes. A time in a file name is read as UTC, the roboRIO's zone, except in a name ending in `_sim`, which a computer wrote in its local time.
 
 ### Path security
 
@@ -240,6 +244,8 @@ The scan is built for logs that were not closed cleanly:
 - Negative timestamps are kept. WPILib's DataLogManager writes records before time zero.
 - An entry declared twice with the same type is one entry with all its records. A name declared again with a different type is ignored, with a warning in the server's log.
 - A file that is not a WPILOG at all (empty, all zeros, another format) gets an error that says what the file is.
+
+The scan tells a log that only ends inside its last record, the ordinary end of a robot's log, from one that lost more: records dropped or ignored, garbage, a header that runs past the file. Results on the first carry a note, and on the second a warning.
 
 These rules came from real logs. Three of the 88 logs the scan was first run against ended in garbage records, with timestamps as large as 6 × 10¹² seconds, which had stretched their time ranges.
 
@@ -262,8 +268,8 @@ A loaded log costs:
 Loaded logs are kept in a cache:
 
 - A log not used for 30 minutes is unloaded.
-- When less than 15% of the maximum heap is free, the least recently used logs are unloaded, one after another, until the measure recovers. Free heap is measured without forcing a garbage collection, so this can unload more logs than is strictly needed. It is checked on every load and every 5 minutes.
-- Before a log larger than the free heap is loaded, other logs are unloaded.
+- When less than 15% of the maximum heap is free after a garbage collection, the least recently used log is unloaded and the heap collected again, until the measure recovers. The collection matters: the heap's used figure counts garbage, and what an unloaded log held is garbage until it is collected, so a measure taken without one sees no change and goes on to unload every log. The check runs on every load and every 5 minutes, and forces no collection when the heap is not under pressure.
+- Before a log larger than the free heap is loaded, other logs are unloaded in the same way, until that much is free.
 
 The value budgets are estimates, and they are not rebalanced as more logs load, so together they can exceed the heap. The heap-pressure check is what keeps the total within it. A log unloaded while a call is still reading it stays usable for that call: its value cache is emptied, later reads decode without caching, and the mapping is released once nothing refers to the log.
 
@@ -337,7 +343,7 @@ In stdio mode the server handles one message at a time. In HTTP mode, requests r
 The design keeps shared mutable state small:
 
 - Tools hold no state. One instance of each tool serves every thread, and everything a call builds is created for that call.
-- Shared structures that change while the server runs are concurrent ones: concurrent maps, the Caffeine caches, volatile fields, and atomic counters. Apart from one lock per log path during loading and a few synchronized accessors, the code takes no locks.
+- Shared structures that change while the server runs are concurrent ones: concurrent maps, the Caffeine caches, volatile fields, and atomic counters. The code takes few locks: one per log path during loading, one that keeps heap-pressure checks made at the same time from each unloading a log, the one that makes starts of a background server take turns, and a few synchronized accessors.
 - Check-then-act sequences are atomic. A log is loaded once under its path's lock, after a second look at the cache. An entry's values are decoded once, through the cache's per-key computation. A finished synchronization replaces its placeholder only if the placeholder is still there, so a log unloaded in the meantime stays unloaded. A background start claims its PID file with an atomic create.
 - Background work is limited to a single thread that runs REV log synchronizations one at a time, a timer that checks heap pressure every 5 minutes, a timer that removes expired sessions, one sweep of the disk cache at startup, and the value caches' own upkeep, which Caffeine runs on the JVM's shared pool.
 
@@ -366,7 +372,5 @@ The extension exists so that a team installs one thing. It bundles the server's 
 - The server does not notice when a log file changes on disk after it was loaded. Until the log is unloaded, results come from the first load, or are wrong if the file was overwritten in place, and a call made while the file is being overwritten can end a stdio server ([IDEAS.md](IDEAS.md), "Logs That Change After Loading").
 - Compressed logs are not read ([IDEAS.md](IDEAS.md), "Compressed Log Files").
 - Protobuf entries are not decoded. A record of 100 bytes or less is returned as hex, and a longer one only as its size.
-- A log cut short is marked as truncated only where its entries are listed (`list_entries`) and in `generate_report`. Other tools' results on it do not say so.
-- `analyze_vision` and `analyze_cycles` score data quality on the whole entry, not on the time range they were given.
 - The memory budgets are estimates, and the heap-pressure check is the backstop (see [Memory Management](#memory-management)).
 - The MCP instructions do not reach every client, which is why `get_server_guide` repeats the guidance.

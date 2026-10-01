@@ -45,7 +45,7 @@ If you use the WPILib VS Code distribution, install with its own `code` binary o
 
 The extension starts once VS Code has finished starting up, and registers the server with VS Code through its MCP server provider API. When VS Code asks for the server, the extension finds Java, the server JAR, and your log directories (see [Auto-Detection](#auto-detection)), and gives VS Code a stdio server to run. Changing a `wpilog-mcp` setting or the TBA key restarts the server with the new values.
 
-Keep your robot project open in VS Code while you analyze logs. The agent can then read your code too: it can match logged entry names to the subsystems that write them, compare PID constants with the behavior in the log, and fit its analysis to your robot.
+Keep your robot project open in VS Code while you analyze logs. The agent can then read your code too: it can match logged entry names to the subsystems that write them, compare PID constants with the behavior in the log, and fit its analysis to your robot. The server tells it to: an entry's name does not say for certain what it measures, and the code that logs it does.
 
 ## Using It with Claude Code
 
