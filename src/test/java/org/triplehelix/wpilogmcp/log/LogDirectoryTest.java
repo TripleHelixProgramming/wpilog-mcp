@@ -121,11 +121,301 @@ class LogDirectoryTest {
     }
 
     @Test
-    @DisplayName("getLogDirectory returns absolute path")
-    void getLogDirectoryReturnsAbsolutePath(@TempDir Path tempDir) {
+    @DisplayName("getLogDirectories returns absolute paths")
+    void getLogDirectoriesReturnsAbsolutePaths(@TempDir Path tempDir) {
       logDirectory.setLogDirectory(tempDir.toString());
-      Path result = logDirectory.getLogDirectory();
-      assertTrue(result.isAbsolute());
+      var result = logDirectory.getLogDirectories();
+      assertEquals(1, result.size());
+      assertTrue(result.get(0).isAbsolute());
+    }
+  }
+
+  @Nested
+  @DisplayName("Several Directories")
+  class SeveralDirectories {
+
+    /** An empty file whose name gives its time (the metadata falls back to the name). */
+    private Path log(Path dir, String hhmmss) throws IOException {
+      Files.createDirectories(dir);
+      return Files.createFile(dir.resolve("frc_26-03-21_" + hhmmss + "_vaale.wpilog"));
+    }
+
+    private void configure(Path... dirs) {
+      logDirectory.setLogDirectories(java.util.Arrays.stream(dirs).map(Path::toString).toList());
+    }
+
+    @Test
+    @DisplayName("keeps the order given, drops null and blank entries and repeats")
+    void orderAndRepeats(@TempDir Path tempDir) {
+      var a = tempDir.resolve("a");
+      var b = tempDir.resolve("b");
+      var entries = new java.util.ArrayList<String>();
+      entries.add(b.toString());
+      entries.add(null);
+      entries.add("  ");
+      entries.add(a.toString());
+      entries.add(b.resolve("..").resolve("b").toString());
+      logDirectory.setLogDirectories(entries);
+      assertEquals(java.util.List.of(b, a), logDirectory.getLogDirectories());
+    }
+
+    @Test
+    @DisplayName("null, an empty list, and a null single directory all clear the directories")
+    void clearing(@TempDir Path tempDir) {
+      configure(tempDir);
+      logDirectory.setLogDirectories(null);
+      assertTrue(logDirectory.getLogDirectories().isEmpty());
+      configure(tempDir);
+      logDirectory.setLogDirectories(java.util.List.of());
+      assertTrue(logDirectory.getLogDirectories().isEmpty());
+      configure(tempDir);
+      logDirectory.setLogDirectory(null);
+      assertTrue(logDirectory.getLogDirectories().isEmpty());
+      assertFalse(logDirectory.isConfigured());
+    }
+
+    @Test
+    @DisplayName("the list returned cannot be modified")
+    void unmodifiable(@TempDir Path tempDir) {
+      configure(tempDir);
+      assertThrows(UnsupportedOperationException.class,
+          () -> logDirectory.getLogDirectories().add(tempDir));
+    }
+
+    @Test
+    @DisplayName("isConfigured when at least one directory exists")
+    void configuredWhenOneExists(@TempDir Path tempDir) {
+      configure(tempDir.resolve("missing"), tempDir);
+      assertTrue(logDirectory.isConfigured());
+      configure(tempDir.resolve("missing"), tempDir.resolve("also-missing"));
+      assertFalse(logDirectory.isConfigured());
+    }
+
+    @Test
+    @DisplayName("lists the logs of every directory together, newest first")
+    void listsAllNewestFirst(@TempDir Path tempDir) throws Exception {
+      var a = tempDir.resolve("a");
+      var b = tempDir.resolve("b");
+      log(a, "10-00-00");
+      log(b, "11-00-00");
+      log(a, "12-00-00");
+      configure(a, b);
+
+      var scan = logDirectory.scanLogs();
+      assertEquals(java.util.List.of(a, b), scan.directories());
+      assertTrue(scan.unavailable().isEmpty());
+      assertFalse(scan.noneReadable());
+      var names = scan.logs().stream().map(LogFileInfo::filename).toList();
+      assertEquals(java.util.List.of("frc_26-03-21_12-00-00_vaale.wpilog",
+          "frc_26-03-21_11-00-00_vaale.wpilog", "frc_26-03-21_10-00-00_vaale.wpilog"), names);
+      assertEquals(scan.logs(), logDirectory.listAvailableLogs());
+    }
+
+    @Test
+    @DisplayName("a log reached from nested directories is listed once")
+    void nestedDirectories(@TempDir Path tempDir) throws Exception {
+      var inner = tempDir.resolve("event/session_1");
+      log(inner, "10-00-00");
+      log(tempDir.resolve("event"), "11-00-00");
+      configure(tempDir.resolve("event"), inner);
+
+      var logs = logDirectory.listAvailableLogs();
+      assertEquals(2, logs.size(), logs.toString());
+      assertEquals(2, logs.stream().map(LogFileInfo::path).distinct().count());
+    }
+
+    @Test
+    @DisplayName("a directory configured twice under different names (a link) is listed once")
+    void linkedDirectory(@TempDir Path tempDir) throws Exception {
+      var real = tempDir.resolve("real");
+      log(real, "10-00-00");
+      var link = tempDir.resolve("link");
+      try {
+        Files.createSymbolicLink(link, real);
+      } catch (UnsupportedOperationException | IOException e) {
+        org.junit.jupiter.api.Assumptions.assumeTrue(false, "symbolic links not available");
+      }
+      configure(real, link);
+
+      var logs = logDirectory.listAvailableLogs();
+      assertEquals(1, logs.size(), logs.toString());
+      assertTrue(logs.get(0).path().startsWith(real.toString()), "listed under the first");
+    }
+
+    @Test
+    @DisplayName("a missing directory is reported and the others are still listed")
+    void missingDirectory(@TempDir Path tempDir) throws Exception {
+      var present = tempDir.resolve("present");
+      var missing = tempDir.resolve("missing");
+      log(present, "10-00-00");
+      configure(missing, present);
+
+      var scan = logDirectory.scanLogs();
+      assertEquals(1, scan.logs().size());
+      assertFalse(scan.noneReadable());
+      assertEquals(java.util.List.of(new LogDirectory.UnavailableDirectory(missing,
+          "does not exist")), scan.unavailable());
+      assertEquals(1, logDirectory.listAvailableLogs().size());
+    }
+
+    @Test
+    @DisplayName("a file configured as a directory is reported as not a directory")
+    void fileAsDirectory(@TempDir Path tempDir) throws Exception {
+      var file = Files.createFile(tempDir.resolve("notes.txt"));
+      log(tempDir.resolve("logs"), "10-00-00");
+      configure(file, tempDir.resolve("logs"));
+
+      var scan = logDirectory.scanLogs();
+      assertEquals(1, scan.unavailable().size());
+      assertEquals("is not a directory", scan.unavailable().get(0).reason());
+      assertEquals(1, scan.logs().size());
+    }
+
+    @Test
+    @DisplayName("when no directory can be read, listing throws naming each and why")
+    void noneReadable(@TempDir Path tempDir) throws Exception {
+      var missing = tempDir.resolve("missing");
+      var file = Files.createFile(tempDir.resolve("notes.txt"));
+      configure(missing, file);
+
+      var scan = logDirectory.scanLogs();
+      assertTrue(scan.noneReadable());
+      assertTrue(scan.logs().isEmpty());
+      var e = assertThrows(IOException.class, () -> logDirectory.listAvailableLogs());
+      assertTrue(e.getMessage().contains(missing + " does not exist"), e.getMessage());
+      assertTrue(e.getMessage().contains(file + " is not a directory"), e.getMessage());
+      assertThrows(IOException.class, () -> logDirectory.listRevLogFiles());
+    }
+
+    @Test
+    @DisplayName("with no directory configured, scanning throws")
+    void noneConfigured() {
+      logDirectory.setLogDirectories(java.util.List.of());
+      assertThrows(IOException.class, () -> logDirectory.scanLogs());
+      assertThrows(IOException.class, () -> logDirectory.listRevLogFiles());
+    }
+
+    @Test
+    @DisplayName("a directory without read permission is reported, the others still listed")
+    void unreadableDirectory(@TempDir Path tempDir) throws Exception {
+      var locked = Files.createDirectories(tempDir.resolve("locked"));
+      log(tempDir.resolve("open"), "10-00-00");
+      org.junit.jupiter.api.Assumptions.assumeTrue(
+          java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"),
+          "POSIX permissions");
+      var saved = Files.getPosixFilePermissions(locked);
+      Files.setPosixFilePermissions(locked, java.util.Set.of());
+      try {
+        org.junit.jupiter.api.Assumptions.assumeFalse(Files.isReadable(locked),
+            "running as a user who can read anything");
+        configure(locked, tempDir.resolve("open"));
+        var scan = logDirectory.scanLogs();
+        assertEquals(1, scan.logs().size());
+        assertEquals(1, scan.unavailable().size());
+        assertEquals("is not readable", scan.unavailable().get(0).reason());
+      } finally {
+        Files.setPosixFilePermissions(locked, saved);
+      }
+    }
+
+    @Test
+    @DisplayName("a directory whose subdirectory cannot be read is reported with the cause")
+    void unreadableSubdirectory(@TempDir Path tempDir) throws Exception {
+      var root = tempDir.resolve("root");
+      var locked = Files.createDirectories(root.resolve("locked"));
+      log(root, "10-00-00");
+      log(tempDir.resolve("other"), "11-00-00");
+      org.junit.jupiter.api.Assumptions.assumeTrue(
+          java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"),
+          "POSIX permissions");
+      var saved = Files.getPosixFilePermissions(locked);
+      Files.setPosixFilePermissions(locked, java.util.Set.of());
+      try {
+        org.junit.jupiter.api.Assumptions.assumeFalse(Files.isReadable(locked),
+            "running as a user who can read anything");
+        configure(root, tempDir.resolve("other"));
+        var scan = logDirectory.scanLogs();
+        assertEquals(java.util.List.of("frc_26-03-21_11-00-00_vaale.wpilog"),
+            scan.logs().stream().map(LogFileInfo::filename).toList());
+        assertEquals(1, scan.unavailable().size());
+        assertEquals(root, scan.unavailable().get(0).directory());
+        assertTrue(scan.unavailable().get(0).reason().startsWith("could not be read ("),
+            scan.unavailable().get(0).reason());
+      } finally {
+        Files.setPosixFilePermissions(locked, saved);
+      }
+    }
+
+    @Test
+    @DisplayName("the scan depth counts from each directory")
+    void depthPerDirectory(@TempDir Path tempDir) throws Exception {
+      int savedDepth = logDirectory.getScanDepth();
+      var deep = tempDir.resolve("a/b/c");
+      log(deep, "10-00-00");
+      try {
+        logDirectory.setScanDepth(2);
+        configure(tempDir);
+        assertTrue(logDirectory.listAvailableLogs().isEmpty(), "depth 4 from the top");
+        configure(tempDir, tempDir.resolve("a/b"));
+        assertEquals(1, logDirectory.listAvailableLogs().size(), "depth 2 from a/b");
+      } finally {
+        logDirectory.setScanDepth(savedDepth);
+      }
+    }
+
+    @Test
+    @DisplayName("directoriesContaining names every configured directory above a file, in order")
+    void containing(@TempDir Path tempDir) throws Exception {
+      var event = tempDir.resolve("event");
+      var session = event.resolve("session_1");
+      var other = tempDir.resolve("other");
+      var file = log(session, "10-00-00");
+      Files.createDirectories(other);
+      configure(other, event, session);
+
+      assertEquals(java.util.List.of(event, session), logDirectory.directoriesContaining(file));
+      assertEquals(java.util.List.of(), logDirectory.directoriesContaining(
+          tempDir.resolve("elsewhere.wpilog")));
+      // A sibling whose name starts with a configured directory's is not inside it
+      var sibling = log(tempDir.resolve("event2"), "11-00-00");
+      assertEquals(java.util.List.of(), logDirectory.directoriesContaining(sibling));
+    }
+
+    @Test
+    @DisplayName("directoriesContaining sees through a link to a configured directory")
+    void containingThroughLink(@TempDir Path tempDir) throws Exception {
+      var real = tempDir.resolve("real");
+      var file = log(real, "10-00-00");
+      var link = tempDir.resolve("link");
+      try {
+        Files.createSymbolicLink(link, real);
+      } catch (UnsupportedOperationException | IOException e) {
+        org.junit.jupiter.api.Assumptions.assumeTrue(false, "symbolic links not available");
+      }
+      configure(link);
+      assertEquals(java.util.List.of(link), logDirectory.directoriesContaining(file));
+      configure(real);
+      assertEquals(java.util.List.of(real),
+          logDirectory.directoriesContaining(link.resolve(file.getFileName())));
+    }
+
+    @Test
+    @DisplayName("REV logs are listed from every directory, each once, newest first")
+    void revlogsFromEveryDirectory(@TempDir Path tempDir) throws Exception {
+      var a = Files.createDirectories(tempDir.resolve("a"));
+      var b = Files.createDirectories(tempDir.resolve("b"));
+      Files.createFile(a.resolve("REV_20260321_100000.revlog"));
+      Files.createFile(b.resolve("REV_20260321_110000.revlog"));
+      configure(a, b, tempDir.resolve("missing"));
+
+      var names = logDirectory.listRevLogFiles().stream()
+          .map(LogDirectory.RevLogFileInfo::filename).toList();
+      assertEquals(java.util.List.of("REV_20260321_110000.revlog", "REV_20260321_100000.revlog"),
+          names);
+      assertEquals(2, logDirectory.listRevLogFilesInDirectories(java.util.List.of(tempDir, a, b))
+          .size(), "a REV log reached from two directories is listed once");
+      assertEquals(java.util.List.of(), logDirectory.listRevLogFilesInDirectories(
+          java.util.List.of(tempDir.resolve("missing"))));
     }
   }
 
@@ -279,6 +569,13 @@ class LogDirectoryTest {
       assertEquals(0L, stats.get("size"));
       assertEquals(0L, stats.get("hits"));
       assertEquals(0L, stats.get("misses"));
+    }
+
+    @Test
+    @DisplayName("getCacheStats keys come in a fixed order: size, hits, misses")
+    void getCacheStatsOrder() {
+      assertEquals(java.util.List.of("size", "hits", "misses"),
+          java.util.List.copyOf(logDirectory.getCacheStats().keySet()));
     }
 
     @Test

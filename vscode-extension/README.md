@@ -60,6 +60,7 @@ On activation, the extension finds the WPILib JDK and server JAR, then registers
 | `wpilog-mcp.javaPath` | Path to `java` executable | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib installation year (e.g., `2026`) | auto-detect latest |
 | `wpilog-mcp.logDirectory` | Path to `.wpilog` files | auto-detect |
+| `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published); REV logs are matched only within the directory holding each wpilog | none |
 | `wpilog-mcp.teamNumber` | FRC team number for TBA lookups | `2363` |
 | `wpilog-mcp.maxHeap` | JVM heap size | `4g` |
 | `wpilog-mcp.writeMcpJson` | Add a `wpilog-analyzer` entry to the workspace's `.mcp.json` for Claude Code | off |

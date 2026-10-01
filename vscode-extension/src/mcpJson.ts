@@ -6,6 +6,7 @@
  * from its own environment (empty when unset). Only the `wpilog-analyzer` entry is written; every
  * other server and key in the file is kept.
  */
+import { addLogDirectories } from "./logDirectories";
 
 /** The server's name under `mcpServers`. */
 export const SERVER_NAME = "wpilog-analyzer";
@@ -24,15 +25,12 @@ export function buildServerEntry(
   javaPath: string,
   jarPath: string,
   maxHeap: string,
-  logDir: string | undefined,
+  logDirs: string[],
   teamNumber: number
 ): ServerEntry {
   const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
   const env: Record<string, string> = {};
-  if (logDir) {
-    args.push("-logdir", logDir);
-    env["WPILOG_DIR"] = logDir;
-  }
+  addLogDirectories(args, env, logDirs);
   if (teamNumber > 0) {
     args.push("-team", String(teamNumber));
     env["WPILOG_TEAM"] = String(teamNumber);

@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.log;
 import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -15,16 +16,21 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Manages a configured directory of WPILOG files for browsing and discovery.
+ * Manages the configured directories of WPILOG files for browsing and discovery.
  *
  * <p>This class is a thread-safe singleton that provides log file discovery and
  * metadata caching. It uses {@link ConcurrentHashMap} for the cache and
@@ -41,8 +47,11 @@ public class LogDirectory {
     static final LogDirectory INSTANCE = new LogDirectory();
   }
 
-  /** Configured root directory for log file discovery. */
-  private volatile Path logDirectory;
+  /**
+   * Configured root directories for log file discovery, in the order given: an unmodifiable list,
+   * replaced whole, so a reader works on one consistent snapshot.
+   */
+  private volatile List<Path> logDirectories = List.of();
 
   /**
    * Cache of log file metadata, keyed by absolute path.
@@ -131,20 +140,41 @@ public class LogDirectory {
   }
 
   /**
-   * Sets the root directory for log file discovery.
+   * Sets the root directories for log file discovery, replacing those set before. Null and blank
+   * entries are ignored, and a directory given twice is kept once, at its first position.
+   *
+   * @param paths The directories, or null for none
+   * @since 0.9.0
    */
-  public void setLogDirectory(String path) {
-    if (path != null && !path.isEmpty()) {
-      this.logDirectory = Path.of(path).toAbsolutePath();
-      logger.info("Log directory set to: {}", logDirectory);
+  public void setLogDirectories(List<String> paths) {
+    var dirs = paths == null ? List.<Path>of() : paths.stream()
+        .filter(p -> p != null && !p.isBlank())
+        .map(p -> Path.of(p).toAbsolutePath().normalize())
+        .distinct()
+        .toList();
+    this.logDirectories = dirs;
+    if (dirs.isEmpty()) {
+      logger.info("Log directories cleared");
     } else {
-      this.logDirectory = null;
-      logger.info("Log directory cleared");
+      logger.info("Log directories set to: {}", dirs);
     }
   }
 
-  public Path getLogDirectory() {
-    return logDirectory;
+  /**
+   * Sets a single root directory for log file discovery, or none when the path is null or blank.
+   */
+  public void setLogDirectory(String path) {
+    setLogDirectories(path == null ? null : List.of(path));
+  }
+
+  /**
+   * The configured root directories, absolute, in the order given.
+   *
+   * @return An unmodifiable list, empty when none is configured
+   * @since 0.9.0
+   */
+  public List<Path> getLogDirectories() {
+    return logDirectories;
   }
 
   public void setDefaultTeamNumber(Integer teamNumber) {
@@ -177,12 +207,18 @@ public class LogDirectory {
     return scanDepth;
   }
 
+  /** Whether at least one configured directory exists. */
   public boolean isConfigured() {
-    return logDirectory != null && Files.isDirectory(logDirectory);
+    return logDirectories.stream().anyMatch(Files::isDirectory);
   }
 
+  /** Cache size, hits, and misses, in that order (Map.of's order changes from run to run). */
   public Map<String, Long> getCacheStats() {
-    return Map.of("size", (long) metadataCache.size(), "hits", cacheHits.sum(), "misses", cacheMisses.sum());
+    var stats = new java.util.LinkedHashMap<String, Long>();
+    stats.put("size", (long) metadataCache.size());
+    stats.put("hits", cacheHits.sum());
+    stats.put("misses", cacheMisses.sum());
+    return java.util.Collections.unmodifiableMap(stats);
   }
 
   public void clearCache() {
@@ -192,24 +228,152 @@ public class LogDirectory {
   }
 
   /**
-   * Lists all available WPILOG files in the configured directory.
+   * A configured directory that could not be scanned, and why.
+   *
+   * @param directory The directory, as configured
+   * @param reason Why: it does not exist, is not a directory, or could not be read
+   * @since 0.9.0
+   */
+  public record UnavailableDirectory(Path directory, String reason) {}
+
+  /**
+   * The WPILOG files found in the configured directories.
+   *
+   * @param directories The directories scanned, as configured
+   * @param logs The files found, newest first, each listed once even when two directories reach
+   *     it (nested directories, or two names for the same one)
+   * @param unavailable The directories that could not be scanned
+   * @since 0.9.0
+   */
+  public record DirectoryScan(List<Path> directories, List<LogFileInfo> logs,
+      List<UnavailableDirectory> unavailable) {
+
+    /** Whether no configured directory could be scanned. */
+    public boolean noneReadable() {
+      return unavailable.size() == directories.size();
+    }
+  }
+
+  private static final Predicate<Path> WPILOG_FILE = p -> p.toString().endsWith(".wpilog");
+
+  private static final Predicate<Path> REVLOG_FILE =
+      p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".revlog");
+
+  private static final Comparator<LogFileInfo> NEWEST_LOG_FIRST =
+      Comparator.comparing(LogFileInfo::getBestTimestamp,
+              Comparator.nullsLast(Comparator.<Long>reverseOrder()))
+          .thenComparing(LogFileInfo::path);
+
+  private static final Comparator<RevLogFileInfo> NEWEST_REVLOG_FIRST =
+      Comparator.comparing(RevLogFileInfo::parsedTimestamp,
+          Comparator.nullsLast(Comparator.reverseOrder()));
+
+  /**
+   * Scans every configured directory for WPILOG files. A directory that cannot be scanned is
+   * reported in the result rather than failing the scan.
+   *
+   * @return The files found and the directories that could not be scanned
+   * @throws IOException if no directory is configured
+   * @since 0.9.0
+   */
+  public DirectoryScan scanLogs() throws IOException {
+    var dirs = logDirectories;
+    if (dirs.isEmpty()) throw new IOException("Log directory not configured");
+
+    var unavailable = new ArrayList<UnavailableDirectory>();
+    var logs = findFiles(dirs, WPILOG_FILE, unavailable).stream()
+        .map(this::getOrExtractLogInfo)
+        .sorted(NEWEST_LOG_FIRST)
+        .toList();
+    unavailable.forEach(u -> logger.warn("Log directory {} skipped: it {}", u.directory(),
+        u.reason()));
+
+    logger.info("Found {} log files in {} of {} directories. Cache hits: {}, misses: {}",
+        logs.size(), dirs.size() - unavailable.size(), dirs.size(), cacheHits.sum(),
+        cacheMisses.sum());
+    return new DirectoryScan(dirs, logs, List.copyOf(unavailable));
+  }
+
+  /**
+   * Lists the WPILOG files in the configured directories, newest first, skipping any directory
+   * that cannot be scanned.
+   *
+   * @throws IOException if no directory is configured, or none could be scanned
    */
   public List<LogFileInfo> listAvailableLogs() throws IOException {
-    if (!isConfigured()) throw new IOException("Log directory not configured");
+    var scan = scanLogs();
+    if (scan.noneReadable()) throw new IOException(noneReadableMessage(scan.unavailable()));
+    return scan.logs();
+  }
 
-    try (var paths = Files.walk(logDirectory, scanDepth)) {
-      var logs = paths
-          .filter(Files::isRegularFile)
-          .filter(p -> p.toString().endsWith(".wpilog"))
-          .map(this::getOrExtractLogInfo)
-          .sorted(Comparator.comparing(LogFileInfo::getBestTimestamp,
-                  Comparator.nullsLast(Comparator.<Long>reverseOrder()))
-              .thenComparing(LogFileInfo::path))
-          .toList();
+  private static String noneReadableMessage(List<UnavailableDirectory> unavailable) {
+    return "No configured log directory could be read: " + unavailable.stream()
+        .map(u -> u.directory() + " " + u.reason())
+        .collect(Collectors.joining("; "));
+  }
 
-      logger.info("Found {} log files. Cache hits: {}, misses: {}",
-          logs.size(), cacheHits.sum(), cacheMisses.sum());
-      return logs;
+  /**
+   * The configured directories that hold a file, directly or in a subdirectory. Paths are compared
+   * after resolving links, so a directory configured through a link, or a file named through one,
+   * still matches.
+   *
+   * @param file The file
+   * @return The containing directories as configured, in configuration order (empty when none)
+   * @since 0.9.0
+   */
+  public List<Path> directoriesContaining(Path file) {
+    var real = realPath(file);
+    return logDirectories.stream().filter(dir -> real.startsWith(realPath(dir))).toList();
+  }
+
+  /**
+   * The files matching {@code wanted} under each directory, to the scan depth, in directory
+   * order. A file reached from two directories (nested directories, or two names for the same
+   * one) is listed once, under the first. A directory that cannot be walked is added to
+   * {@code unavailable} and contributes nothing.
+   */
+  private List<Path> findFiles(List<Path> dirs, Predicate<Path> wanted,
+      List<UnavailableDirectory> unavailable) {
+    var seen = new HashSet<Path>();
+    var found = new ArrayList<Path>();
+    for (var dir : dirs) {
+      var problem = unavailableReason(dir);
+      if (problem.isPresent()) {
+        unavailable.add(new UnavailableDirectory(dir, problem.get()));
+        continue;
+      }
+      List<Path> files;
+      try (var paths = Files.walk(dir, scanDepth)) {
+        files = paths.filter(Files::isRegularFile).filter(wanted).toList();
+      } catch (IOException | UncheckedIOException e) {
+        // Files.walk stops at the first subdirectory it cannot read
+        var cause = e instanceof UncheckedIOException u ? u.getCause() : e;
+        var reason = "could not be read (" + cause.getClass().getSimpleName() + ": "
+            + cause.getMessage() + ")";
+        unavailable.add(new UnavailableDirectory(dir, reason));
+        continue;
+      }
+      for (var file : files) {
+        if (seen.add(realPath(file))) found.add(file);
+      }
+    }
+    return found;
+  }
+
+  /** Why a directory cannot be scanned, or empty when it can be. */
+  private static Optional<String> unavailableReason(Path dir) {
+    if (!Files.exists(dir)) return Optional.of("does not exist");
+    if (!Files.isDirectory(dir)) return Optional.of("is not a directory");
+    if (!Files.isReadable(dir)) return Optional.of("is not readable");
+    return Optional.empty();
+  }
+
+  /** The path with links resolved, or its normalized absolute form when it cannot be resolved. */
+  private static Path realPath(Path path) {
+    try {
+      return path.toRealPath();
+    } catch (IOException e) {
+      return path.toAbsolutePath().normalize();
     }
   }
 
@@ -493,31 +657,31 @@ public class LogDirectory {
   }
 
   /**
-   * Lists all available .revlog files in the configured directory.
+   * Lists the .revlog files in the configured directories, skipping any directory that cannot be
+   * scanned.
    *
    * <p>RevLog files are CAN bus logs from REV SPARK motor controllers. They use
    * the naming convention: REV_YYYYMMDD_HHMMSS[_busname].revlog
    *
    * @return List of discovered revlog files, sorted by timestamp (newest first)
-   * @throws IOException if the directory cannot be read
+   * @throws IOException if no directory is configured, or none could be scanned
    * @since 0.5.0
    */
   public List<RevLogFileInfo> listRevLogFiles() throws IOException {
-    if (!isConfigured()) throw new IOException("Log directory not configured");
+    var dirs = logDirectories;
+    if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
-    try (var paths = Files.walk(logDirectory, scanDepth)) {
-      var revlogs = paths
-          .filter(Files::isRegularFile)
-          .filter(p -> p.toString().toLowerCase().endsWith(".revlog"))
-          .map(this::extractRevLogInfo)
-          .sorted(Comparator.comparing(
-              RevLogFileInfo::parsedTimestamp,
-              Comparator.nullsLast(Comparator.reverseOrder())))
-          .toList();
+    var unavailable = new ArrayList<UnavailableDirectory>();
+    var revlogs = findFiles(dirs, REVLOG_FILE, unavailable).stream()
+        .map(this::extractRevLogInfo)
+        .sorted(NEWEST_REVLOG_FIRST)
+        .toList();
+    unavailable.forEach(u -> logger.warn("Log directory {} skipped: it {}", u.directory(),
+        u.reason()));
+    if (unavailable.size() == dirs.size()) throw new IOException(noneReadableMessage(unavailable));
 
-      logger.info("Found {} revlog files", revlogs.size());
-      return revlogs;
-    }
+    logger.info("Found {} revlog files", revlogs.size());
+    return revlogs;
   }
 
   /**
@@ -559,21 +723,28 @@ public class LogDirectory {
    * @since 0.8.0
    */
   public List<RevLogFileInfo> listRevLogFilesInDirectory(Path dir) {
-    if (dir == null || !Files.isDirectory(dir)) return List.of();
+    if (dir == null) return List.of();
+    return listRevLogFilesInDirectories(List.of(dir));
+  }
 
-    try (var paths = Files.walk(dir, scanDepth)) {
-      return paths
-          .filter(Files::isRegularFile)
-          .filter(p -> p.toString().toLowerCase().endsWith(".revlog"))
-          .map(this::extractRevLogInfo)
-          .sorted(Comparator.comparing(
-              RevLogFileInfo::parsedTimestamp,
-              Comparator.nullsLast(Comparator.reverseOrder())))
-          .toList();
-    } catch (IOException e) {
-      logger.debug("Error scanning for revlogs in {}: {}", dir, e.getMessage());
-      return List.of();
-    }
+  /**
+   * Lists revlog files in the given directories (each walked up to the configured scan depth),
+   * each file once even when two directories reach it. A directory that cannot be scanned is
+   * skipped.
+   *
+   * @param dirs The directories to scan
+   * @return List of discovered revlog files, sorted by timestamp (newest first)
+   * @since 0.9.0
+   */
+  public List<RevLogFileInfo> listRevLogFilesInDirectories(List<Path> dirs) {
+    var unavailable = new ArrayList<UnavailableDirectory>();
+    var revlogs = findFiles(dirs, REVLOG_FILE, unavailable).stream()
+        .map(this::extractRevLogInfo)
+        .sorted(NEWEST_REVLOG_FIRST)
+        .toList();
+    unavailable.forEach(u -> logger.debug("No revlogs from {}: it {}", u.directory(),
+        u.reason()));
+    return revlogs;
   }
 
   /**

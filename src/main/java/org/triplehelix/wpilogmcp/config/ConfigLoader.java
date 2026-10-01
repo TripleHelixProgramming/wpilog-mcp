@@ -333,10 +333,10 @@ public class ConfigLoader {
   }
 
   private ServerConfig parseServerBlock(
-      String name, JsonObject block, Collection<String> warnings) {
+      String name, JsonObject block, Collection<String> warnings) throws ConfigException {
     return new ServerConfig(
         name,
-        expandPath(interpolate(getString(block, "logdir"), warnings)),
+        getPathList(block, "logdir", warnings),
         getInteger(block, "team"),
         secretOrNull("tba_key", interpolate(getString(block, "tba_key"), warnings), warnings),
         getString(block, "transport"),
@@ -425,6 +425,33 @@ public class ConfigLoader {
       return System.getProperty("user.home") + path.substring(1);
     }
     return path;
+  }
+
+  /**
+   * One path, or a list of them (a YAML list or JSON array), as a list in the order written, each
+   * interpolated and tilde-expanded; null when the key is absent.
+   *
+   * @throws ConfigException if the value, or an item of the list, is not a single value
+   */
+  private List<String> getPathList(JsonObject obj, String key, Collection<String> warnings)
+      throws ConfigException {
+    if (!obj.has(key) || obj.get(key).isJsonNull()) return null;
+    var value = obj.get(key);
+    var items = new ArrayList<JsonElement>();
+    if (value.isJsonArray()) {
+      value.getAsJsonArray().forEach(items::add);
+    } else {
+      items.add(value);
+    }
+    var paths = new ArrayList<String>();
+    for (var item : items) {
+      if (!item.isJsonPrimitive()) {
+        throw new ConfigException("Config key '" + key + "' expects a path or a list of paths, "
+            + "got: " + value);
+      }
+      paths.add(expandPath(interpolate(item.getAsString(), warnings)));
+    }
+    return paths;
   }
 
   private static String getString(JsonObject obj, String key) {

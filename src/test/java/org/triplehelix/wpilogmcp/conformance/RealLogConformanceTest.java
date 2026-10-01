@@ -66,7 +66,7 @@ class RealLogConformanceTest {
   static List<Tool> tools;
   static Path exportDir;
   static Path savedExportDir;
-  static Path savedLogDir;
+  static java.util.List<Path> savedLogDirs;
   static ExecutorService executor;
 
   @BeforeAll
@@ -94,7 +94,7 @@ class RealLogConformanceTest {
     Files.createDirectories(exportDir);
     savedExportDir = ExportTools.getExportDirectory();
     ExportTools.setExportDirectory(exportDir.toString());
-    savedLogDir = LogDirectory.getInstance().getLogDirectory();
+    savedLogDirs = LogDirectory.getInstance().getLogDirectories();
     LogDirectory.getInstance().setLogDirectory(logDir.toString());
 
     var captured = new ArrayList<Tool>();
@@ -125,7 +125,8 @@ class RealLogConformanceTest {
     if (executor == null) return;
     executor.shutdownNow();
     ExportTools.setExportDirectory(savedExportDir.toString());
-    LogDirectory.getInstance().setLogDirectory(savedLogDir == null ? null : savedLogDir.toString());
+    LogDirectory.getInstance().setLogDirectories(
+        savedLogDirs.stream().map(Path::toString).toList());
     LogManager.getInstance().unloadAllLogs();
   }
 

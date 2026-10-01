@@ -69,6 +69,14 @@
             "default": "",
             "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect."
           },
+          "wpilog-mcp.additionalLogDirectories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). REV logs are matched to a wpilog only within the directory that holds it."
+          },
           "wpilog-mcp.teamNumber": {
             "type": "number",
             "default": 2363,

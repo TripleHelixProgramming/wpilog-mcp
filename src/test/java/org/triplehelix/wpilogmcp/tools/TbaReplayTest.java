@@ -318,7 +318,7 @@ class TbaReplayTest {
     // default team number, which makes it eligible for enrichment
     Files.createFile(dir.resolve("frc_26-03-21_18-50-00_vaale_qm5.wpilog"));
     var logDir = LogDirectory.getInstance();
-    var savedDir = logDir.getLogDirectory();
+    var savedDirs = logDir.getLogDirectories();
     var client = TbaClient.getInstance();
     logDir.setLogDirectory(dir.toString());
     logDir.setDefaultTeamNumber(2363);
@@ -334,7 +334,7 @@ class TbaReplayTest {
     } finally {
       client.setBaseUrl(replayUrl());
       logDir.setDefaultTeamNumber(null);
-      logDir.setLogDirectory(savedDir == null ? null : savedDir.toString());
+      logDir.setLogDirectories(savedDirs.stream().map(Path::toString).toList());
       logDir.clearCache();
     }
   }

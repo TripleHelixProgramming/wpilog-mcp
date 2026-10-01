@@ -141,7 +141,7 @@ Given a natural language description of what you want to analyze, this tool reco
 ## Core Tools
 
 ### `list_available_logs`
-List WPILOG files in the configured log directory with user-friendly names, newest first.
+List WPILOG files in the configured log directories with user-friendly names, newest first.
 
 **Parameters:**
 - `name` (optional): Only logs whose file or friendly name contains this (case-insensitive)
@@ -150,13 +150,14 @@ List WPILOG files in the configured log directory with user-friendly names, newe
 - `since` (optional): Only logs from this date on (`2026-03-20`, or an ISO-8601 instant)
 - `offset`, `limit` (optional): Paging (default limit 50, max 500)
 
-**Returns:** `log_count` (logs matching the filters), `total_logs` (in the directory), `offset`, `returned`, `has_more`, `limits.logs`, and the page of logs with friendly names, event info, file details, and TBA enrichment when configured (only the listed page is enriched). No log matching the filters is `no_match`
+**Returns:** `log_directories` (the configured directories, in order), `log_count` (logs matching the filters), `total_logs` (in all the directories), `offset`, `returned`, `has_more`, `limits.logs`, and the page of logs with friendly names, event info, file details, and TBA enrichment when configured (only the listed page is enriched). No log matching the filters is `no_match`. A directory that could not be read makes the result `partial`, with an entry in `skipped` (`section: "logs"`, `directory`, `reason`); when none can be read, the call is an error naming each directory and why
 
 **Example Response:**
 ```json
 {
   "success": true,
-  "log_directory": "/Users/team2363/Documents/FRC/logs",
+  "status": "ok",
+  "log_directories": ["/Users/team2363/Documents/FRC/logs"],
   "log_count": 3,
   "tba_enrichment": {"available": true},
   "metadata_cache": {
@@ -203,12 +204,14 @@ List WPILOG files in the configured log directory with user-friendly names, newe
 ```
 
 **Response Fields:**
+- `log_directories`: Every configured directory, in configuration order. A log reached from two of them (nested directories, or one directory under two names) is listed once
+- `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission); that directory's logs are missing from the list, not absent, and the status is `partial`
 - `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected (then no log carries a `tba` field for that reason, not because TBA has no data)
 - `metadata_cache`: Cache statistics for log file metadata (size, hits, misses)
 - `team_number`: Team number extracted from DriverStation/FMS metadata in the log
 - `tba`: TBA enrichment data (only present for qualifying competition matches when TBA is configured). `match_key` is the TBA match the data came from and `lookup_method` how it was found: `direct` (a key built from the match type and number), `double_elimination_bracket` (a Driver Station "Elimination N" read as bracket match N, TBA's `sfNm1`, for 2023 and later), `nearest_time` (the team's playoff match nearest the log's file-name time, for the finals, which carry no bracket number), or `play_order` (before 2023: playoff match number N in the order the team played, a heuristic). The last three carry a `lookup_basis` sentence.
 
-**Note:** Requires `-logdir` to be configured. Team numbers and friendly names are extracted from DriverStation metadata in the log file, or parsed from common filename patterns. A file-name time (`frc_26-03-21_18-50-00_...`) is read as UTC, the roboRIO's default zone, or in the server's local zone for a `_sim` log; it orders the listing and serves the `since` filter and TBA's time matching.
+**Note:** Requires at least one log directory (`-logdir`, repeatable; `WPILOG_DIR`; or `logdir` in the server configuration, a path or a list). Team numbers and friendly names are extracted from DriverStation metadata in the log file, or parsed from common filename patterns. A file-name time (`frc_26-03-21_18-50-00_...`) is read as UTC, the roboRIO's default zone, or in the server's local zone for a `_sim` log; it orders the listing and serves the `since` filter and TBA's time matching.
 
 ### `list_loaded_logs`
 List the log files currently loaded in the server's cache, and the cache status. Logs load on demand, so an empty list is normal.

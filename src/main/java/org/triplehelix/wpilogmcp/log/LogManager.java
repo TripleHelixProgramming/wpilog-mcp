@@ -8,8 +8,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -437,78 +435,6 @@ public class LogManager {
   }
 
   /**
-   * Gets the maximum number of logs setting.
-   *
-   * @return The configured max loaded logs, or null if using default/memory-based
-   */
-
-  /**
-   * Lists all available WPILOG files in the configured directories.
-   *
-   * @return List of log metadata, sorted by modification time (newest first)
-   * @since 0.4.0
-   */
-  public List<LogMetadata> listAvailableLogs() {
-    var allowedDirs = securityValidator.getAllowedDirectories();
-
-    if (allowedDirs.isEmpty()) {
-      logger.warn(
-          "No allowed directories configured. Use addAllowedDirectory() to enable log discovery.");
-      return Collections.emptyList();
-    }
-
-    List<LogMetadata> logs = new ArrayList<>();
-
-    for (Path dir : allowedDirs) {
-      if (!Files.isDirectory(dir)) {
-        logger.debug("Skipping non-directory: {}", dir);
-        continue;
-      }
-
-      try {
-        scanDirectoryForLogs(dir, logs);
-      } catch (IOException e) {
-        logger.warn("Error scanning directory {}: {}", dir, e.getMessage());
-      }
-    }
-
-    // Sort by modification time (newest first)
-    logs.sort(Comparator.comparing(LogMetadata::lastModified).reversed());
-
-    logger.info("Found {} WPILOG files across {} directories", logs.size(), allowedDirs.size());
-    return logs;
-  }
-
-  /** Maximum directory depth when scanning for WPILOG files. */
-  private static final int MAX_SCAN_DEPTH = 5;
-
-  /**
-   * Scans a directory for WPILOG files up to a bounded depth.
-   *
-   * <p>Uses {@link Files#walk} with a depth limit instead of unbounded recursion,
-   * consistent with {@link LogDirectory}'s approach.
-   *
-   * @param dir The directory to scan
-   * @param logs The list to add found logs to
-   */
-  private void scanDirectoryForLogs(Path dir, List<LogMetadata> logs) throws IOException {
-    try (var stream = Files.walk(dir, MAX_SCAN_DEPTH)) {
-      stream
-          .filter(Files::isRegularFile)
-          .filter(p -> p.toString().endsWith(".wpilog"))
-          .forEach(entry -> {
-            try {
-              long size = Files.size(entry);
-              long lastModified = Files.getLastModifiedTime(entry).toMillis();
-              logs.add(new LogMetadata(entry.toString(), size, lastModified));
-            } catch (IOException e) {
-              logger.debug("Error reading metadata for {}: {}", entry, e.getMessage());
-            }
-          });
-    }
-  }
-
-  /**
    * Gets metadata about currently loaded logs.
    *
    * @return List of metadata for loaded logs
@@ -915,8 +841,10 @@ public class LogManager {
    *   <li>File modification time as last resort</li>
    * </ol>
    *
-   * <p>Discovers revlogs by walking up to the configured scan depth under the configured logdir
-   * and the wpilog's parent directory.
+   * <p>Discovers revlogs by walking up to the configured scan depth under each configured log
+   * directory that holds the wpilog, and under the wpilog's parent directory. Other configured
+   * directories are not searched: one may hold another robot's REV logs from the same event,
+   * which would match by time.
    */
   private List<RevLogFileInfo> findMatchingRevLogs(LogData wpilog) {
     // A wall clock never seen being set may read the roboRIO's default date, which every boot
@@ -953,33 +881,15 @@ public class LogManager {
         java.time.Instant.ofEpochMilli(rangeEnd),
         toleranceMinutes, usingMtimeFallback, zone.basis());
 
-    // Step 2: Discover all revlogs (walk the configured scan depth)
+    // Step 2: Discover revlogs (walk the configured scan depth) in the configured directories
+    // that hold the wpilog, and in the wpilog's own directory tree (handles ad-hoc paths outside
+    // them). Other configured directories are left out: one may hold another robot's REV logs
+    // from the same event, which match by time
     var logDir = LogDirectory.getInstance();
-    List<RevLogFileInfo> allRevLogs = new ArrayList<>();
-    var seenPaths = new java.util.HashSet<Path>();
-
-    // Scan configured logdir (the configured scan depth)
-    if (logDir.isConfigured()) {
-      try {
-        for (var info : logDir.listRevLogFiles()) {
-          if (seenPaths.add(info.path().toAbsolutePath().normalize())) {
-            allRevLogs.add(info);
-          }
-        }
-      } catch (IOException e) {
-        logger.debug("Error listing revlogs from logdir: {}", e.getMessage());
-      }
-    }
-
-    // Also scan the wpilog's parent directory tree (handles ad-hoc paths outside logdir)
-    Path wpilogDir = Path.of(wpilog.path()).getParent();
-    if (wpilogDir != null) {
-      for (var info : logDir.listRevLogFilesInDirectory(wpilogDir)) {
-        if (seenPaths.add(info.path().toAbsolutePath().normalize())) {
-          allRevLogs.add(info);
-        }
-      }
-    }
+    var wpilogFile = Path.of(wpilog.path());
+    var searchDirs = new ArrayList<>(logDir.directoriesContaining(wpilogFile));
+    if (wpilogFile.getParent() != null) searchDirs.add(wpilogFile.getParent());
+    List<RevLogFileInfo> allRevLogs = logDir.listRevLogFilesInDirectories(searchDirs);
 
     if (allRevLogs.isEmpty()) {
       return List.of();
@@ -1089,16 +999,6 @@ public class LogManager {
   // These were previously inner records and are now separate files,
   // but we keep them here for backwards compatibility with existing code
   // that imports ParsedLog, etc.
-
-  /**
-   * Metadata about an available WPILOG file.
-   *
-   * @param path The absolute file path
-   * @param sizeBytes The file size in bytes
-   * @param lastModified The last modified timestamp in milliseconds since epoch
-   * @since 0.4.0
-   */
-  public record LogMetadata(String path, long sizeBytes, long lastModified) {}
 
   /**
    * Information about a loaded log in cache.

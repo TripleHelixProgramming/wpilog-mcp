@@ -129,7 +129,7 @@ This data is automatically added to `list_available_logs` output for logs that h
 wpilog-mcp correlates `.revlog` files (written by REVLib 2026 and later in robot programs using REV SPARK MAX/Flex controllers) with your WPILOG data, giving you access to high-resolution motor controller telemetry with synchronized timestamps.
 
 **How it works:**
-1. Revlog files are discovered automatically via time-based matching — they can be in the same directory, sibling directories, or anywhere within the configured log directory tree (up to the configured scan depth (default 5))
+1. Revlog files are discovered automatically via time-based matching — they can be in the same directory, sibling directories, or anywhere within the configured log directory that holds the wpilog (up to the configured scan depth (default 5)). With several log directories configured, only the one holding the wpilog is searched, so another team's REV logs from the same event are never matched to yours
 2. Reference the wpilog in any tool call — matching revlogs are discovered and synchronized automatically on first access
 3. Use `sync_status` to verify synchronization confidence before relying on timestamps
 4. Sync results are cached to disk — reloading the same wpilog+revlog pair skips both parsing and correlation

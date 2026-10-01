@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { findJava } from "./javaFinder";
-import { findLogDirectory } from "./logFinder";
+import { findLogDirectories } from "./logFinder";
+import { addLogDirectories } from "./logDirectories";
 import { findJar } from "./jarManager";
 import { buildServerEntry, mergeServerEntry, scrubTbaKey } from "./mcpJson";
 
@@ -57,8 +58,10 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(`Java: ${javaPath}`);
     outputChannel.appendLine(`JAR: ${jarPath}`);
 
-    const logDir = await findLogDirectory();
-    outputChannel.appendLine(`Log directory: ${logDir ?? "(none)"}`);
+    const logDirs = await findLogDirectories();
+    outputChannel.appendLine(
+      `Log directories: ${logDirs.length > 0 ? logDirs.join(", ") : "(none)"}`
+    );
 
     const teamNumber = config.get<number>("teamNumber") || 0;
     const tbaKey = (await context.secrets.get(TBA_SECRET)) || "";
@@ -68,10 +71,7 @@ export function activate(context: vscode.ExtensionContext) {
     const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
     const env: Record<string, string> = {};
 
-    if (logDir) {
-      args.push("-logdir", logDir);
-      env["WPILOG_DIR"] = logDir;
-    }
+    addLogDirectories(args, env, logDirs);
     if (teamNumber > 0) {
       args.push("-team", String(teamNumber));
       env["WPILOG_TEAM"] = String(teamNumber);
@@ -314,7 +314,7 @@ async function writeMcpJson(outputChannel: vscode.OutputChannel) {
     javaPath,
     jarPath,
     config.get<string>("maxHeap") || "4g",
-    await findLogDirectory(),
+    await findLogDirectories(),
     config.get<number>("teamNumber") || 0
   );
   const edit = mergeServerEntry(await readText(uri), entry);

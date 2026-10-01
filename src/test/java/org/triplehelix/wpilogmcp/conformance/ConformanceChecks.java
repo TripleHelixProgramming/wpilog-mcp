@@ -67,7 +67,7 @@ public final class ConformanceChecks {
       "condition", "conditions", "scope", "pattern", "mechanism_name", "expression",
       "brownout_threshold", "threshold", "method", "unit", "type", "can_bus", "season", "year",
       "event_code", "match_type", "match_number", "team_number", "window_sec", "smooth_window",
-      "bus", "chosen_stem", "mechanism", "sampling", "log_directory", "export_directory", "tool",
+      "bus", "chosen_stem", "mechanism", "sampling", "log_directories", "export_directory", "tool",
       "query", "task", "combine", "interpolation", "time_source");
 
   /** Tools whose successful results are statistics over samples and so carry data_quality. */

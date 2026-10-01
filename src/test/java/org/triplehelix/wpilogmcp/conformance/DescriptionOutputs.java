@@ -39,6 +39,8 @@ final class DescriptionOutputs {
       Map.entry("get_entry_info | decode_problem", "StructToolsFixtureTest.entryInfoMystery"),
       Map.entry("get_statistics | records_in_window", "FieldPathToolsTest.wildcardPools"),
       Map.entry("list_available_logs | has_more", "CoreToolsLogicTest.paging (needs a log directory)"),
+      Map.entry("list_available_logs | log_directories",
+          "CoreToolsLogicTest.severalDirectories (needs a log directory)"),
       Map.entry("list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)"),
       Map.entry("list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)"),
       Map.entry("profile_mechanism | other_stems", "NoGuessRolesTest.explicitEntriesWithSeveralStems"),

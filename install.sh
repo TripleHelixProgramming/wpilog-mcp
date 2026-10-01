@@ -129,6 +129,10 @@ team: 0
 
 # Directory containing .wpilog files downloaded from the roboRIO
 logdir: ~/riologs
+# Or several directories, listed together:
+# logdir:
+#   - ~/riologs
+#   - /Volumes/LOGS/archive
 
 # The Blue Alliance API key (get one at https://www.thebluealliance.com/account)
 # tba_key: your-key-here

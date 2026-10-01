@@ -74,9 +74,10 @@ public final class RevLogTools {
       return ResponseBuilder.notApplicable(unconfirmed.get());
     }
     return ResponseBuilder.notApplicable("No REV log (.revlog) files were found for this wpilog.")
-        .hint("Revlogs are discovered in the configured log directory tree by recording time: a "
-            + ".revlog whose time range overlaps this wpilog's is synchronized with it when the "
-            + "wpilog is loaded.");
+        .hint("Revlogs are discovered by recording time in the configured log directory that "
+            + "holds this wpilog and in the wpilog's own folder (other configured directories are "
+            + "not searched): a .revlog whose time range overlaps this wpilog's is synchronized "
+            + "with it when the wpilog is loaded.");
   }
 
   /**

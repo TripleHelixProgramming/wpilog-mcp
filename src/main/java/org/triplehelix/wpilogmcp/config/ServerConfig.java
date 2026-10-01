@@ -4,21 +4,25 @@
  */
 package org.triplehelix.wpilogmcp.config;
 
+import java.util.List;
+
 /**
  * Configuration for a named server instance.
  *
  * <p>All fields are nullable except {@code name}. Null fields indicate "use default."
  * The merge logic in {@link ConfigLoader} overlays per-server values onto the
  * {@code defaults} section, then applies built-in defaults for anything still null.
+ * A per-server {@code logdirs} replaces the default list; the two are not combined.
  *
  * <p>Memory management is automatic — the server adapts to available JVM heap.
  * Users control capacity via {@code WPILOG_MAX_HEAP} environment variable.
  *
+ * @param logdirs The log directories (the {@code logdir} key: one path or a list), in order
  * @since 0.8.0
  */
 public record ServerConfig(
     String name,
-    String logdir,
+    List<String> logdirs,
     Integer team,
     String tbaKey,
     String transport,
@@ -30,6 +34,10 @@ public record ServerConfig(
     String exportdir,
     Integer scandepth
 ) {
+
+  public ServerConfig {
+    logdirs = logdirs == null ? null : List.copyOf(logdirs);
+  }
 
   /** Returns true if this config uses HTTP transport. */
   public boolean isHttp() {
@@ -54,7 +62,7 @@ public record ServerConfig(
     if (defaults == null) return this;
     return new ServerConfig(
         name,
-        logdir != null ? logdir : defaults.logdir(),
+        logdirs != null ? logdirs : defaults.logdirs(),
         team != null ? team : defaults.team(),
         tbaKey != null ? tbaKey : defaults.tbaKey(),
         transport != null ? transport : defaults.transport(),

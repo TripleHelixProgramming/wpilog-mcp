@@ -186,11 +186,9 @@ public class Main {
       logger().info("Debug logging enabled");
     }
 
-    // Log directory
-    if (config.logdir() != null && !config.logdir().isEmpty()) {
-      logger().info("Configuring log directory: {}", config.logdir());
-      LogDirectory.getInstance().setLogDirectory(config.logdir());
-      logManager.addAllowedDirectory(config.logdir());
+    // Log directories
+    if (config.logdirs() != null && !config.logdirs().isEmpty()) {
+      configureLogDirectories(config.logdirs());
     }
 
     // Team number
@@ -231,6 +229,23 @@ public class Main {
     }
   }
 
+  /**
+   * Sets the directories logs are listed from and may be loaded from, warning about any that does
+   * not exist (yet: a drive may be mounted later).
+   */
+  static void configureLogDirectories(java.util.List<String> dirs) {
+    var logDirectory = LogDirectory.getInstance();
+    logDirectory.setLogDirectories(dirs);
+    var logManager = LogManager.getInstance();
+    for (var dir : logDirectory.getLogDirectories()) {
+      logger().info("Configuring log directory: {}", dir);
+      logManager.addAllowedDirectory(dir);
+      if (!java.nio.file.Files.isDirectory(dir)) {
+        logger().warn("Log directory {} does not exist; its logs are listed once it does", dir);
+      }
+    }
+  }
+
   // ==================== Legacy CLI Mode ====================
 
   private static void handleLegacyCli(String[] args) {
@@ -240,7 +255,8 @@ public class Main {
     var logManager = LogManager.getInstance();
 
     // Read environment variable defaults (CLI flags override these)
-    var logDir = System.getenv("WPILOG_DIR");
+    var logDirs = new java.util.ArrayList<>(splitPathList(System.getenv("WPILOG_DIR")));
+    boolean logDirsFromCli = false;
     boolean httpMode = "true".equalsIgnoreCase(System.getenv("WPILOG_HTTP"));
     int httpPort = parseEnvInt("WPILOG_HTTP_PORT", 2363);
     String httpBind = System.getenv("WPILOG_HTTP_BIND");
@@ -272,8 +288,13 @@ public class Main {
         logger().info("Debug logging enabled");
       } else if (arg.equals("-logdir")) {
         if (i + 1 < args.length) {
-          logDir = args[++i];
-          logger().debug("Log directory set from command line: {}", logDir);
+          if (!logDirsFromCli) {
+            // The first -logdir replaces WPILOG_DIR's directories; each further one adds one
+            logDirs.clear();
+            logDirsFromCli = true;
+          }
+          logDirs.add(args[++i]);
+          logger().debug("Log directory added from command line: {}", args[i]);
         } else {
           logger().error("Error: -logdir requires a path argument");
           printUsage();
@@ -393,11 +414,9 @@ public class Main {
       }
     }
 
-    // Configure log directory
-    if (logDir != null && !logDir.isEmpty()) {
-      logger().info("Configuring log directory: {}", logDir);
-      LogDirectory.getInstance().setLogDirectory(logDir);
-      LogManager.getInstance().addAllowedDirectory(logDir);
+    // Configure log directories
+    if (!logDirs.isEmpty()) {
+      configureLogDirectories(logDirs);
     } else {
       logger().warn("No log directory configured. Use -logdir or WPILOG_DIR env var.");
     }
@@ -505,7 +524,7 @@ public class Main {
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");
-    logger().info("  -logdir <path>    Set default directory for log files");
+    logger().info("  -logdir <path>    Directory of log files (repeat for several)");
     logger().info("  -team <number>    Default team number for logs missing metadata");
     logger().info("  -tba-key <key>    The Blue Alliance API key for match data");
     logger().info("  -diskcachedir <path> Set directory for persistent disk cache");
@@ -520,7 +539,8 @@ public class Main {
     logger().info("  -help, -h         Show this help message");
     logger().info("");
     logger().info("Environment variables (CLI flags override these):");
-    logger().info("  WPILOG_DIR             Default directory for log files");
+    logger().info("  WPILOG_DIR             Directories of log files, separated by '{}'",
+        java.io.File.pathSeparator);
     logger().info("  WPILOG_TEAM            Default team number for logs missing metadata");
     logger().info("  TBA_API_KEY            The Blue Alliance API key");
     logger().info("  WPILOG_DISK_CACHE_DIR     Directory for persistent disk cache");
@@ -538,6 +558,23 @@ public class Main {
     logger().info("");
     logger().info("Memory management is automatic — the server adapts to available JVM heap.");
     logger().info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");
+  }
+
+  /**
+   * The directories in a path list such as {@code WPILOG_DIR}, separated as in {@code PATH}: by
+   * {@code :}, or {@code ;} on Windows. Entries are trimmed and blank ones dropped.
+   */
+  static java.util.List<String> splitPathList(String value) {
+    return splitPathList(value, java.io.File.pathSeparator);
+  }
+
+  /** As {@link #splitPathList(String)}, with the separator given (for testing). */
+  static java.util.List<String> splitPathList(String value, String separator) {
+    if (value == null) return java.util.List.of();
+    return java.util.Arrays.stream(value.split(java.util.regex.Pattern.quote(separator)))
+        .map(String::strip)
+        .filter(entry -> !entry.isEmpty())
+        .toList();
   }
 
   private static java.util.Set<String> parseAllowedOrigins(String value) {

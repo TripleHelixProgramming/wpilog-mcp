@@ -59,9 +59,12 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List WPILOG files available in the configured log directory with friendly names, "
+      return "List WPILOG files available in the configured log directories with friendly names, "
           + "newest first, paged: log_count is the number matching the filters, offset/limit "
-          + "select a page (default 50), has_more says whether another page exists. Filters: "
+          + "select a page (default 50), has_more says whether another page exists. "
+          + "log_directories names the directories searched; one that could not be read (a drive "
+          + "not mounted, no permission) is listed in skipped with the reason, and the result is "
+          + "partial: its logs are missing from the list, not absent. Filters: "
           + "name (substring of the file or friendly name), event (event code, e.g. VACHE), "
           + "match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). "
           + "IMPORTANT: When TBA is configured, this tool automatically enriches each listed log "
@@ -112,15 +115,34 @@ public final class CoreTools {
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      if (!logDirectory.isConfigured()) {
+      if (logDirectory.getLogDirectories().isEmpty()) {
         var result = new JsonObject();
         result.addProperty("success", false);
         result.addProperty("error", "Log directory not configured. Start server with -logdir /path/to/logs");
-        result.addProperty("hint", "Configure via: -logdir argument or WPILOG_DIR environment variable");
+        result.addProperty("hint", "Configure via: -logdir (repeat it for several directories), "
+            + "the WPILOG_DIR environment variable (several separated by '"
+            + java.io.File.pathSeparator + "'), or logdir in the server configuration (a path "
+            + "or a list of paths)");
         return result;
       }
 
-      var all = logDirectory.listAvailableLogs();
+      var scan = logDirectory.scanLogs();
+      var directories = new JsonArray();
+      scan.directories().forEach(dir -> directories.add(dir.toString()));
+      if (scan.noneReadable()) {
+        var result = new JsonObject();
+        result.addProperty("success", false);
+        result.addProperty("error", "No configured log directory could be read: "
+            + scan.unavailable().stream()
+                .map(u -> u.directory() + " " + u.reason())
+                .collect(java.util.stream.Collectors.joining("; ")));
+        result.add("log_directories", directories);
+        result.addProperty("hint", "Check that each directory exists and can be read (a "
+            + "removable drive may not be mounted)");
+        return result;
+      }
+
+      var all = scan.logs();
       var nameFilter = getOptString(arguments, "name", null);
       var eventFilter = getOptString(arguments, "event", null);
       var matchTypeArg = getOptString(arguments, "match_type", null);
@@ -185,7 +207,7 @@ public final class CoreTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
-      result.addProperty("log_directory", logDirectory.getLogDirectory().toString());
+      result.add("log_directories", directories);
       result.addProperty("log_count", logs.size());
       result.addProperty("total_logs", all.size());
       result.addProperty("offset", Math.min(offset, logs.size()));
@@ -212,10 +234,25 @@ public final class CoreTools {
       result.add("metadata_cache", cacheStats);
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);
+      // A directory that could not be read leaves its logs out of the list: said, not silent
+      if (!scan.unavailable().isEmpty()) {
+        var skipped = new JsonArray();
+        for (var u : scan.unavailable()) {
+          var entry = new JsonObject();
+          entry.addProperty("section", "logs");
+          entry.addProperty("directory", u.directory().toString());
+          entry.addProperty("reason", "The directory " + u.reason()
+              + "; its logs are not listed.");
+          skipped.add(entry);
+        }
+        result.add("skipped", skipped);
+      }
       if (logs.isEmpty() && !all.isEmpty()) {
         result.addProperty("status", "no_match");
         result.addProperty("reason", "No log matches the filters (" + all.size()
-            + " logs in the directory).");
+            + " logs in the configured directories).");
+      } else if (!scan.unavailable().isEmpty()) {
+        result.addProperty("status", "partial");
       }
       return result;
     }

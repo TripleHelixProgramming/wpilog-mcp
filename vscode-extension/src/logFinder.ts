@@ -2,6 +2,19 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
+import { combineLogDirectories, expandTilde } from "./logDirectories";
+
+/**
+ * The directories to pass to the server: the main one (see findLogDirectory), then those in
+ * wpilog-mcp.additionalLogDirectories, each once.
+ */
+export async function findLogDirectories(): Promise<string[]> {
+  const config = vscode.workspace.getConfiguration("wpilog-mcp");
+  return combineLogDirectories(
+    await findLogDirectory(),
+    config.get<unknown>("additionalLogDirectories")
+  );
+}
 
 /**
  * Finds the directory containing .wpilog files.
@@ -63,11 +76,4 @@ export async function findLogDirectory(): Promise<string | undefined> {
   }
 
   return undefined;
-}
-
-function expandTilde(p: string): string {
-  if (p.startsWith("~/") || p === "~") {
-    return path.join(os.homedir(), p.slice(1));
-  }
-  return p;
 }

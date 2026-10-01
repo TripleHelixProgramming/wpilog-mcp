@@ -76,7 +76,7 @@ class RealLogClaimsTest {
   static int port;
   static Path exportDir;
   static Path savedExportDir;
-  static Path savedLogDir;
+  static java.util.List<Path> savedLogDirs;
   static final List<String> report = new ArrayList<>();
   static int nextId = 1;
 
@@ -90,7 +90,7 @@ class RealLogClaimsTest {
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(logDir);
-    savedLogDir = LogDirectory.getInstance().getLogDirectory();
+    savedLogDirs = LogDirectory.getInstance().getLogDirectories();
     LogDirectory.getInstance().setLogDirectory(logDir.toString());
     exportDir = Files.createTempDirectory("claims-export");
     savedExportDir = ExportTools.getExportDirectory();
@@ -110,7 +110,10 @@ class RealLogClaimsTest {
   static void stop() throws IOException {
     if (transport != null) transport.stop();
     if (savedExportDir != null) ExportTools.setExportDirectory(savedExportDir.toString());
-    LogDirectory.getInstance().setLogDirectory(savedLogDir == null ? null : savedLogDir.toString());
+    if (savedLogDirs != null) {
+      LogDirectory.getInstance().setLogDirectories(
+          savedLogDirs.stream().map(Path::toString).toList());
+    }
     LogManager.getInstance().unloadAllLogs();
     if (!report.isEmpty()) {
       Files.createDirectories(REPORT.getParent());

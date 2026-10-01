@@ -45,6 +45,11 @@ team: 2363
 
 # Directory containing .wpilog files downloaded from the roboRIO
 logdir: ~/riologs
+# Or several directories, listed together (for example an archive drive, or logs another
+# team published):
+# logdir:
+#   - ~/riologs
+#   - /Volumes/LOGS/archive
 
 # The Blue Alliance API key (get one at https://www.thebluealliance.com/account)
 # tba_key: your-key-here
@@ -67,7 +72,7 @@ Top-level settings (like `team` and `logdir`) are inherited by all server config
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `logdir` | Directory containing log files (scans subdirectories) | — |
+| `logdir` | Directory containing log files (scans subdirectories), or a list of directories | — |
 | `team` | Default team number | — |
 | `tba_key` | The Blue Alliance API key (supports `${TBA_API_KEY}`) | — |
 | `transport` | `"stdio"` or `"http"` | `"stdio"` |
@@ -80,6 +85,16 @@ Top-level settings (like `team` and `logdir`) are inherited by all server config
 | `debug` | Enable debug logging | `false` |
 
 String values support `${ENV_VAR}` interpolation and `~/` tilde expansion.
+
+### Several Log Directories
+
+`logdir` takes one directory or a list. `list_available_logs` lists the logs of every directory together, newest first, and names them in `log_directories`; a log reached from two of them (one inside the other, or the same directory under two names) is listed once. Tools can load logs from any of the directories, and from nowhere else.
+
+- A directory that cannot be read (a drive not mounted, no permission) does not stop the others: the listing is `partial` and names it in `skipped` with the reason. The server warns at startup about a directory that does not exist yet.
+- REV logs are matched to a wpilog only within the configured directory that holds it (and the wpilog's own folder). The other directories are not searched, so a REV log another team recorded at the same event, which would match by time, is never synchronized with your log.
+- A server's own `logdir` replaces the top-level list rather than adding to it.
+- On the command line, repeat `-logdir`; in `WPILOG_DIR`, separate directories as in `PATH` (`:`, or `;` on Windows). `-logdir` replaces `WPILOG_DIR`'s directories.
+- `scandepth` counts from each directory.
 
 ### Named Server Configurations
 
@@ -103,12 +118,13 @@ Any config field can also be passed as a CLI flag:
 
 ```bash
 wpilog-mcp -logdir /media/usb/logs -debug
+wpilog-mcp -logdir ~/riologs -logdir /media/usb/archive
 wpilog-mcp start http --port 9000
 ```
 
 | Flag | Env Variable |
 |------|-------------|
-| `-logdir <path>` | `WPILOG_DIR` |
+| `-logdir <path>` (repeatable) | `WPILOG_DIR` (several separated by `:`, or `;` on Windows) |
 | `-team <number>` | `WPILOG_TEAM` |
 | `-tba-key <key>` | `TBA_API_KEY` |
 | `-diskcachedir <path>` | `WPILOG_DISK_CACHE_DIR` |

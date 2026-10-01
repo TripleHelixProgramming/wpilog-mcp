@@ -466,7 +466,7 @@ Response:
 
 ### `list_available_logs`
 
-List WPILOG files available in the configured log directory with friendly names, newest first, paged: log_count is the number matching the filters, offset/limit select a page (default 50), has_more says whether another page exists. Filters: name (substring of the file or friendly name), event (event code, e.g. VACHE), match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). IMPORTANT: When TBA is configured, this tool automatically enriches each listed log with match data including alliance scores, win/loss results, and actual match times. Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! tba_enrichment.available says whether The Blue Alliance answered for this page; when false, its reason (not configured, an outage, a rejected key) is why no log carries a tba field. A tba field's match_key and lookup_method say which TBA match it came from: an 'Elimination N' log is read as double-elimination bracket match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use this tool first to find logs and get match results, then pass the path to other tools.
+List WPILOG files available in the configured log directories with friendly names, newest first, paged: log_count is the number matching the filters, offset/limit select a page (default 50), has_more says whether another page exists. log_directories names the directories searched; one that could not be read (a drive not mounted, no permission) is listed in skipped with the reason, and the result is partial: its logs are missing from the list, not absent. Filters: name (substring of the file or friendly name), event (event code, e.g. VACHE), match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). IMPORTANT: When TBA is configured, this tool automatically enriches each listed log with match data including alliance scores, win/loss results, and actual match times. Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! tba_enrichment.available says whether The Blue Alliance answered for this page; when false, its reason (not configured, an outage, a rejected key) is why no log carries a tba field. A tba field's match_key and lookup_method say which TBA match it came from: an 'Elimination N' log is read as double-elimination bracket match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use this tool first to find logs and get match results, then pass the path to other tools.
 
 **Parameters** ([TOOLS.md](TOOLS.md#list_available_logs))
 
@@ -497,7 +497,9 @@ Response:
 {
   "success": true,
   "status": "ok",
-  "log_directory": "<logdir>",
+  "log_directories": [
+    "<logdir>"
+  ],
   "log_count": 37,
   "total_logs": 96,
   "offset": 0,
@@ -931,7 +933,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 22,
+    "heap_used_mb": 18,
     "heap_max_mb": 512
   }
 }
@@ -1459,12 +1461,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 214,
-    "total_mb": 365,
+    "used_mb": 203,
+    "total_mb": 342,
     "max_mb": 512,
-    "free_mb": 150
+    "free_mb": 138
   },
-  "jvm_heap_used_mb": 214,
+  "jvm_heap_used_mb": 203,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",

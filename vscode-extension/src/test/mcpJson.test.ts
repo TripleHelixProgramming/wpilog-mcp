@@ -1,6 +1,7 @@
 // Tests for the .mcp.json entry (no VS Code needed): npm test
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as path from "path";
 import {
   SERVER_NAME,
   TBA_KEY_REFERENCE,
@@ -9,16 +10,23 @@ import {
   scrubTbaKey,
 } from "../mcpJson";
 
-const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", "/logs", 2363);
+const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", ["/logs"], 2363);
 
 test("the entry references the TBA key and never contains one", () => {
   assert.equal(entry.env["TBA_API_KEY"], TBA_KEY_REFERENCE);
   assert.ok(!entry.args.includes("-tba-key"));
   assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/ext/server/wpilog-mcp.jar", "-logdir",
     "/logs", "-team", "2363"]);
-  const bare = buildServerEntry("/java", "/jar", "2g", undefined, 0);
+  const bare = buildServerEntry("/java", "/jar", "2g", [], 0);
   assert.deepEqual(bare.args, ["-Xmx2g", "-jar", "/jar"]);
   assert.deepEqual(bare.env, { TBA_API_KEY: TBA_KEY_REFERENCE });
+});
+
+test("several log directories are each a -logdir and joined in WPILOG_DIR", () => {
+  const several = buildServerEntry("/java", "/jar", "2g", ["/logs", "/archive"], 0);
+  assert.deepEqual(several.args, ["-Xmx2g", "-jar", "/jar", "-logdir", "/logs", "-logdir",
+    "/archive"]);
+  assert.equal(several.env["WPILOG_DIR"], ["/logs", "/archive"].join(path.delimiter));
 });
 
 test("a missing or blank file gets just this entry", () => {

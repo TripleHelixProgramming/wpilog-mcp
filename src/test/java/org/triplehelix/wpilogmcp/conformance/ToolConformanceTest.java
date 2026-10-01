@@ -64,7 +64,7 @@ class ToolConformanceTest {
   static List<Tool> tools;
   static Path exportDir;
   static Path savedExportDir;
-  static Path savedLogDir;
+  static java.util.List<Path> savedLogDirs;
   static ExecutorService executor;
 
   @BeforeAll
@@ -79,7 +79,7 @@ class ToolConformanceTest {
     savedExportDir = ExportTools.getExportDirectory();
     ExportTools.setExportDirectory(exportDir.toString());
     // list_available_logs lists the fixture directory
-    savedLogDir = LogDirectory.getInstance().getLogDirectory();
+    savedLogDirs = LogDirectory.getInstance().getLogDirectories();
     LogDirectory.getInstance().setLogDirectory(dir.toString());
 
     var captured = new ArrayList<Tool>();
@@ -103,7 +103,8 @@ class ToolConformanceTest {
   static void tearDown() {
     executor.shutdownNow();
     ExportTools.setExportDirectory(savedExportDir.toString());
-    LogDirectory.getInstance().setLogDirectory(savedLogDir == null ? null : savedLogDir.toString());
+    LogDirectory.getInstance().setLogDirectories(
+        savedLogDirs.stream().map(Path::toString).toList());
     LogManager.getInstance().unloadAllLogs();
   }
 
