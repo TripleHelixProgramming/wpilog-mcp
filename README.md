@@ -6,7 +6,7 @@
   <h1 align="center">wpilog-mcp</h1>
   <p align="center">Model Context Protocol (MCP) Server for WPILib Logs</p>
 </td>
-<td valign="top">
+<td valign="middle">
 
 Why did the robot die with 30 seconds left? Why did auto work in practice but not at competition? wpilog-mcp lets an AI assistant read your robot's telemetry logs, so you can ask questions like these in plain English and get answers based on the data.
 
