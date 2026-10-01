@@ -168,7 +168,7 @@ To make the server available in a single project instead, put the same command i
 ```
 Use the full path (`~` is not expanded in JSON), and **never commit or share this file**: it holds a path on your computer, so add `.mcp.json` to the project's `.gitignore`. Claude Code asks you to approve a server from `.mcp.json` the first time it sees it.
 
-The server reads everything else from `~/.wpilog-mcp/servers.yaml`, including the TBA key (`tba_key`), so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It with Claude Code](../vscode-extension/README.md#using-it-with-claude-code): it leaves a `.mcp.json` that already runs wpilog-mcp alone, and with a user-scope registration like the one above, set its `wpilog-mcp.writeMcpJson` to `never`.
+The server reads everything else from `~/.wpilog-mcp/servers.yaml`, including the TBA key (`tba_key`), so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It with Claude Code](../vscode-extension/README.md#using-it-with-claude-code): it leaves a `.mcp.json` that already runs wpilog-mcp alone, and with a user-scope registration like the one above, turn off its **Enable For Claude Code** setting.
 
 ### Claude Desktop
 

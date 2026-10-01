@@ -48,6 +48,11 @@
         "command": "wpilog-mcp.clearTbaApiKey",
         "title": "Clear The Blue Alliance API Key",
         "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.addToClaudeCode",
+        "title": "Add to Claude Code in This Folder",
+        "category": "WPILog Analyzer"
       }
     ],
     "configuration": [
@@ -88,20 +93,10 @@
             "markdownDescription": "Deprecated: settings are stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command, which keeps the key in VS Code's secret storage. A key entered here is moved there and cleared from settings.",
             "markdownDeprecationMessage": "Stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command instead; a key entered here is moved into VS Code's secret storage and cleared."
           },
-          "wpilog-mcp.writeMcpJson": {
-            "type": "string",
-            "enum": [
-              "robotProjects",
-              "always",
-              "never"
-            ],
-            "enumDescriptions": [
-              "In WPILib robot projects (folders with .wpilib/wpilib_preferences.json), and wherever .mcp.json already has a wpilog-analyzer entry.",
-              "In every workspace folder.",
-              "Never. Claude Code then finds the server only if you register it yourself."
-            ],
-            "default": "robotProjects",
-            "markdownDescription": "Where to add (and keep up to date) a `wpilog-analyzer` entry in the workspace folder's `.mcp.json`, the file Claude Code reads to find MCP servers. Other servers in the file are kept. The entry holds this computer's Java and JAR paths, so it is never written into a `.mcp.json` that git tracks, and the extension offers to add `.mcp.json` to `.gitignore` when git would pick it up. The TBA API key is never written into the entry."
+          "wpilog-mcp.enableForClaudeCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "**Claude Code only** (Copilot and other VS Code agents always have the server). Make WPILog Analyzer available to Claude Code, which finds servers in a project's `.mcp.json` rather than in VS Code: the extension adds a `wpilog-analyzer` entry to the `.mcp.json` of each WPILib robot project you open, and keeps any existing entry up to date. For a folder that is not a robot project, run **WPILog Analyzer: Add to Claude Code in This Folder**. The entry holds this computer's paths, so it is never written into a `.mcp.json` that git tracks, and the extension offers to add `.mcp.json` to `.gitignore`. The TBA API key is never written into it."
           },
           "wpilog-mcp.maxHeap": {
             "type": "string",

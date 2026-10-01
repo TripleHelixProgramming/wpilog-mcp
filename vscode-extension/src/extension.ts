@@ -17,7 +17,6 @@ import {
   otherWpilogServer,
   scrubTbaKey,
   shouldWriteEntry,
-  writeMode,
 } from "./mcpJson";
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
@@ -183,11 +182,36 @@ export function activate(context: vscode.ExtensionContext) {
 
   // One update at a time, so overlapping triggers neither race on the files nor repeat a notice
   let mcpJsonUpdate: Promise<void> = Promise.resolve();
-  function scheduleMcpJsonUpdate() {
+  function scheduleMcpJsonUpdate(requested?: vscode.WorkspaceFolder) {
     mcpJsonUpdate = mcpJsonUpdate
-      .then(() => updateMcpJsonFiles(context, outputChannel))
+      .then(() => updateMcpJsonFiles(context, outputChannel, requested))
       .catch((e) => outputChannel.appendLine(`Failed to update .mcp.json: ${e}`));
+    return mcpJsonUpdate;
   }
+
+  // For a folder that is not a robot project (robot projects get the entry by themselves)
+  context.subscriptions.push(
+    vscode.commands.registerCommand("wpilog-mcp.addToClaudeCode", async () => {
+      const folders = (vscode.workspace.workspaceFolders ?? []).filter(
+        (f) => f.uri.scheme === "file"
+      );
+      if (folders.length === 0) {
+        vscode.window.showWarningMessage(
+          "WPILog Analyzer: Open a folder first; Claude Code finds the server in that folder's .mcp.json."
+        );
+        return;
+      }
+      const folder =
+        folders.length === 1
+          ? folders[0]
+          : await vscode.window.showWorkspaceFolderPick({
+              placeHolder: "Folder in which Claude Code should find WPILog Analyzer",
+            });
+      if (folder) {
+        await scheduleMcpJsonUpdate(folder);
+      }
+    })
+  );
 
   // Re-register when settings change, and update .mcp.json
   context.subscriptions.push(
@@ -291,7 +315,8 @@ async function exists(uri: vscode.Uri): Promise<boolean> {
 
 /**
  * Removes a TBA API key that earlier versions wrote into this server's .mcp.json entry in
- * plaintext, whatever the writeMcpJson setting: a file in the workspace root is easily committed.
+ * plaintext, whatever the enableForClaudeCode setting: a file in the workspace root is easily
+ * committed.
  */
 async function removeTbaKeyFromMcpJson(outputChannel: vscode.OutputChannel) {
   for (const { uri } of mcpJsonFiles()) {
@@ -463,31 +488,35 @@ async function offerToIgnore(
 }
 
 /**
- * Adds or updates the `wpilog-analyzer` entry in each workspace folder's .mcp.json, which Claude
- * Code reads to find MCP servers (it does not use the McpServerDefinitionProvider API): by
- * default in WPILib robot projects and wherever an entry already exists (see
- * `wpilog-mcp.writeMcpJson`). Every other entry in the file is kept. The entry holds this
- * computer's paths, so a .mcp.json that git tracks (the repository shares it) is left alone, and
- * one git would pick up comes with an offer to ignore it. The entry points at a JAR path that
- * survives extension updates and passes the TBA key by file, never in the entry.
+ * Adds or updates the `wpilog-analyzer` entry in each workspace folder's .mcp.json, which only
+ * Claude Code reads (it does not use the McpServerDefinitionProvider API): with
+ * `wpilog-mcp.enableForClaudeCode` on, in WPILib robot projects and wherever an entry already
+ * exists, and in `requested`, the folder the user named with the Add to Claude Code command
+ * (whose outcome is then reported directly). Every other entry in the file is kept. The entry
+ * holds this computer's paths, so a .mcp.json that git tracks (the repository shares it) is left
+ * alone, and one git would pick up comes with an offer to ignore it. The entry points at a JAR
+ * path that survives extension updates and passes the TBA key by file, never in the entry.
  */
 async function updateMcpJsonFiles(
   context: vscode.ExtensionContext,
-  outputChannel: vscode.OutputChannel
+  outputChannel: vscode.OutputChannel,
+  requested?: vscode.WorkspaceFolder
 ) {
   const config = vscode.workspace.getConfiguration("wpilog-mcp");
-  const mode = writeMode(config.get<unknown>("writeMcpJson"));
-  if (mode === "never") {
+  const enabled = config.get<boolean>("enableForClaudeCode", true);
+  if (!enabled && !requested) {
     return;
   }
 
+  const isRequested = (folder: vscode.WorkspaceFolder) =>
+    requested !== undefined && folder.uri.toString() === requested.uri.toString();
   const targets: { folder: vscode.WorkspaceFolder; uri: vscode.Uri; text: string | undefined }[] = [];
   for (const { folder, uri } of mcpJsonFiles()) {
     const text = await readText(uri);
     const robotProject = await exists(
       vscode.Uri.joinPath(folder.uri, ".wpilib", "wpilib_preferences.json")
     );
-    if (shouldWriteEntry(mode, robotProject, hasServerEntry(text))) {
+    if (shouldWriteEntry(enabled, robotProject, hasServerEntry(text), isRequested(folder))) {
       targets.push({ folder, uri, text });
     }
   }
@@ -510,31 +539,43 @@ async function updateMcpJsonFiles(
   );
 
   for (const { folder, uri, text } of targets) {
+    // A folder the user asked for hears the outcome now; any other, once at most
+    const asked = isRequested(folder);
     const other = otherWpilogServer(text);
     if (other) {
       outputChannel.appendLine(
         `Left ${uri.fsPath} alone: its "${other}" entry already runs wpilog-mcp for Claude Code.`
       );
+      if (asked) {
+        vscode.window.showInformationMessage(
+          `WPILog Analyzer: ${folder.name}/.mcp.json already runs wpilog-mcp as "${other}", so ` +
+            "Claude Code already finds it there; no second entry was added."
+        );
+      }
       continue;
     }
     const action = gitAction(await gitStatusOf(folder.uri.fsPath));
     if (action === "skipShared") {
       outputChannel.appendLine(`Left ${uri.fsPath} alone: git tracks it (the repository shares it).`);
-      void showOnce(context, `wpilog-mcp.sharedMcpJsonNoticed:${folder.uri}`, () =>
-        vscode.window.showWarningMessage(
-          `WPILog Analyzer did not add its server to ${folder.name}/.mcp.json for Claude Code: ` +
-            "git tracks that file, so the repository shares it, and the entry holds paths for " +
-            "this computer only. To use WPILog Analyzer from Claude Code here, stop tracking the " +
-            "file (git rm --cached .mcp.json), add .mcp.json to .gitignore, and reload the window."
-        )
-      );
+      const message =
+        `WPILog Analyzer did not add its server to ${folder.name}/.mcp.json for Claude Code: ` +
+        "git tracks that file, so the repository shares it, and the entry holds paths for " +
+        "this computer only. To use WPILog Analyzer from Claude Code here, stop tracking the " +
+        "file (git rm --cached .mcp.json), add .mcp.json to .gitignore, and reload the window.";
+      if (asked) {
+        vscode.window.showWarningMessage(message);
+      } else {
+        void showOnce(context, `wpilog-mcp.sharedMcpJsonNoticed:${folder.uri}`, () =>
+          vscode.window.showWarningMessage(message)
+        );
+      }
       continue;
     }
     const edit = mergeServerEntry(text, entry);
     if (!edit.ok) {
       outputChannel.appendLine(`Did not update ${uri.fsPath}: ${edit.error}`);
       vscode.window.showWarningMessage(
-        `WPILog Analyzer: ${edit.error}, so it was not updated. Fix the file, or set wpilog-mcp.writeMcpJson to never.`
+        `WPILog Analyzer: ${edit.error}, so it was not updated for Claude Code. Fix the file, or turn off wpilog-mcp.enableForClaudeCode.`
       );
       continue;
     }
@@ -544,8 +585,17 @@ async function updateMcpJsonFiles(
         outputChannel.appendLine(`Updated the wpilog-analyzer entry in ${uri.fsPath}`);
       } catch (e) {
         outputChannel.appendLine(`Failed to write ${uri.fsPath}: ${e}`);
+        if (asked) {
+          vscode.window.showErrorMessage(`WPILog Analyzer: could not write ${uri.fsPath}: ${e}`);
+        }
         continue;
       }
+    }
+    if (asked) {
+      vscode.window.showInformationMessage(
+        `WPILog Analyzer is in ${folder.name}/.mcp.json. Start (or restart) Claude Code in that ` +
+          "folder and approve wpilog-analyzer when it asks."
+      );
     }
     if (action === "writeAndOfferIgnore") {
       void offerToIgnore(context, folder, outputChannel);

@@ -49,14 +49,14 @@ On activation, the extension finds the WPILib JDK and server JAR, then registers
 
 ## Using It with Claude Code
 
-Claude Code doesn't use VS Code's MCP server registry; it finds servers in a `.mcp.json` file in the folder it runs in. So in a WPILib robot project (a folder with `.wpilib/wpilib_preferences.json`), the extension adds a `wpilog-analyzer` entry to that folder's `.mcp.json` and keeps it up to date. Other servers in the file are left alone, and a file that isn't valid JSON is not touched.
+Claude Code doesn't use VS Code's MCP server registry; it finds servers in a `.mcp.json` file in the folder it runs in. So in a WPILib robot project (a folder with `.wpilib/wpilib_preferences.json`), the extension adds a `wpilog-analyzer` entry to that folder's `.mcp.json` and keeps it up to date. Other servers in the file are left alone, and a file that isn't valid JSON is not touched. All of this is controlled by one checkbox, **Enable For Claude Code** (`wpilog-mcp.enableForClaudeCode`, on by default); it affects only Claude Code, since Copilot and other VS Code agents get the server from VS Code itself.
 
 - **Nothing to set up.** Open the robot project in VS Code with the extension installed, start Claude Code there, and approve `wpilog-analyzer` when it asks (Claude Code asks once per project before starting a server from `.mcp.json`; `/mcp` lists it). This works for Claude Code in VS Code and for the `claude` command in a terminal in that folder.
 - **Never commit or share `.mcp.json`.** The entry holds this computer's Java and JAR paths, which mean nothing on a teammate's computer, so the file belongs in `.gitignore`. The extension never writes into a `.mcp.json` that git tracks (it tells you how to stop tracking it), and when git would pick the file up, it offers to add `.mcp.json` to `.gitignore`.
 - **The TBA key needs nothing extra.** The key you set with **WPILog Analyzer: Set The Blue Alliance API Key** reaches Claude Code's server through a file only you can read, in the extension's storage; `.mcp.json` holds only that file's path, never the key.
 - **Updates don't break it.** The entry points at a copy of the server JAR in the extension's storage, refreshed when the extension updates, so its path never changes. An entry an earlier version wrote (pointing at a folder VS Code deletes after an update) is rewritten when the project is next opened.
-- **Using the standalone install with Claude Code too?** If the project's `.mcp.json` already has an entry that runs wpilog-mcp (such as the standalone install's `wpilog`), the extension leaves the file alone, so Claude Code doesn't start two servers. If you registered the standalone server for all projects (`claude mcp add --scope user`), set `wpilog-mcp.writeMcpJson` to `never`.
-- **Other folders:** set `wpilog-mcp.writeMcpJson` to `always` to add the entry in every workspace folder, or to `never` to stop adding it.
+- **Using the standalone install with Claude Code too?** If the project's `.mcp.json` already has an entry that runs wpilog-mcp (such as the standalone install's `wpilog`), the extension leaves the file alone, so Claude Code doesn't start two servers. If you registered the standalone server for all projects (`claude mcp add --scope user`), turn off **Enable For Claude Code**.
+- **Other folders:** in a folder that is not a robot project (a folder of logs, say), run **WPILog Analyzer: Add to Claude Code in This Folder** from the Command Palette; the entry is then kept up to date there too. To stop, turn off **Enable For Claude Code** and delete the `wpilog-analyzer` entry from `.mcp.json`.
 
 ## Requirements
 
@@ -73,7 +73,7 @@ Claude Code doesn't use VS Code's MCP server registry; it finds servers in a `.m
 | `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published); REV logs are matched only within the directory holding each wpilog | none |
 | `wpilog-mcp.teamNumber` | FRC team number for TBA lookups | `2363` |
 | `wpilog-mcp.maxHeap` | JVM heap size | `4g` |
-| `wpilog-mcp.writeMcpJson` | Where to add the `wpilog-analyzer` entry Claude Code reads from `.mcp.json`: `robotProjects`, `always`, or `never` | `robotProjects` |
+| `wpilog-mcp.enableForClaudeCode` | **Claude Code only:** add the server to robot projects' `.mcp.json`, where Claude Code finds it (see [Using It with Claude Code](#using-it-with-claude-code)) | on |
 
 ## The Blue Alliance API Key
 
@@ -109,7 +109,7 @@ Besides its install directory, the extension writes the `wpilog-analyzer` entry 
 - **Server not starting** — Open the Output panel (`Ctrl+Shift+U`) and select **WPILog Analyzer** from the dropdown. This shows the Java path, JAR path, and any error messages.
 - **Java not found** — If you're using WPILib VS Code, the extension should find the bundled JDK automatically. Otherwise, set `wpilog-mcp.javaPath` in VS Code settings to point to a JDK 17+ `java` executable.
 - **Tools not appearing** — Restart VS Code completely (quit and relaunch, not just reload the window).
-- **Claude Code doesn't list `wpilog-analyzer`** — The **WPILog Analyzer** output says what the extension did with each folder's `.mcp.json`: no entry outside robot projects (set `wpilog-mcp.writeMcpJson` to `always`), none in a `.mcp.json` that git tracks or that already runs wpilog-mcp. In Claude Code, run `/mcp`: a server waiting for approval is listed as pending. A Claude Code session started before the entry was written needs restarting.
+- **Claude Code doesn't list `wpilog-analyzer`** — Check that **Enable For Claude Code** is on. The **WPILog Analyzer** output says what the extension did with each folder's `.mcp.json`: no entry outside robot projects (run **WPILog Analyzer: Add to Claude Code in This Folder**), none in a `.mcp.json` that git tracks or that already runs wpilog-mcp. In Claude Code, run `/mcp`: a server waiting for approval is listed as pending. A Claude Code session started before the entry was written needs restarting.
 - **Out of memory with large logs** — Set `wpilog-mcp.maxHeap` to `8g` in VS Code settings.
 - **Log files show as corrupted** — Truncated logs (from robot power loss) are handled gracefully. The server recovers as much data as possible and marks the log as truncated.
 

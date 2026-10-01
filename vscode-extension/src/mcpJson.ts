@@ -48,30 +48,20 @@ export function buildServerEntry(
   return { command: javaPath, args, env };
 }
 
-/** Where the extension keeps an entry in `.mcp.json`: the `wpilog-mcp.writeMcpJson` setting. */
-export type WriteMode = "robotProjects" | "always" | "never";
-
-/** The setting's value as a mode; `true` and `false` (its values in development builds) mean always and never. */
-export function writeMode(value: unknown): WriteMode {
-  if (value === "always" || value === true) return "always";
-  if (value === "never" || value === false) return "never";
-  return "robotProjects";
-}
-
 /**
- * Whether to add or update the entry in a workspace folder: in every folder, in none, or (the
- * default) in a WPILib robot project and wherever an entry already exists, so that an entry an
- * earlier version wrote (pointing at its own, since deleted, folder) is brought up to date.
+ * Whether to add or update the entry in a workspace folder. Only with Claude Code enabled (the
+ * `wpilog-mcp.enableForClaudeCode` setting), and then in a WPILib robot project, wherever an entry
+ * already exists (so an entry an earlier version wrote, pointing at its own since-deleted folder,
+ * is brought up to date), or where the user asked for one (the "Add to Claude Code in This
+ * Folder" command, which works even with the setting off).
  */
-export function shouldWriteEntry(mode: WriteMode, robotProject: boolean, hasEntry: boolean): boolean {
-  switch (mode) {
-    case "always":
-      return true;
-    case "never":
-      return false;
-    default:
-      return robotProject || hasEntry;
-  }
+export function shouldWriteEntry(
+  enabled: boolean,
+  robotProject: boolean,
+  hasEntry: boolean,
+  requested = false
+): boolean {
+  return requested || (enabled && (robotProject || hasEntry));
 }
 
 /** Whether the file's text holds this server's entry (a file that is not a JSON object holds none). */

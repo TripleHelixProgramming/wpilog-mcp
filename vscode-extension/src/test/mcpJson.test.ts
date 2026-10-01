@@ -13,7 +13,6 @@ import {
   otherWpilogServer,
   scrubTbaKey,
   shouldWriteEntry,
-  writeMode,
 } from "../mcpJson";
 
 const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", ["/logs"], 2363);
@@ -118,22 +117,16 @@ test("the TBA key reaches the server by file: its path is an argument, the key i
   assert.ok(!buildServerEntry("/java", "/jar", "2g", [], 0).args.includes("-tba-key-file"));
 });
 
-test("writeMcpJson: robot projects by default; true and false from development builds", () => {
-  assert.equal(writeMode(undefined), "robotProjects");
-  assert.equal(writeMode("robotProjects"), "robotProjects");
-  assert.equal(writeMode("always"), "always");
-  assert.equal(writeMode("never"), "never");
-  assert.equal(writeMode(true), "always");
-  assert.equal(writeMode(false), "never");
-  assert.equal(writeMode("sometimes"), "robotProjects");
+test("enabled for Claude Code: written in robot projects and kept wherever one exists", () => {
+  assert.equal(shouldWriteEntry(true, true, false), true);
+  assert.equal(shouldWriteEntry(true, false, true), true, "an earlier version's entry");
+  assert.equal(shouldWriteEntry(true, false, false), false, "another folder, unasked");
 });
 
-test("by default the entry is written in robot projects and kept wherever one exists", () => {
-  assert.equal(shouldWriteEntry("robotProjects", true, false), true);
-  assert.equal(shouldWriteEntry("robotProjects", false, true), true, "an earlier version's entry");
-  assert.equal(shouldWriteEntry("robotProjects", false, false), false);
-  assert.equal(shouldWriteEntry("always", false, false), true);
-  assert.equal(shouldWriteEntry("never", true, true), false);
+test("disabled for Claude Code: nothing is written unless the user asks for a folder", () => {
+  assert.equal(shouldWriteEntry(false, true, true), false);
+  assert.equal(shouldWriteEntry(false, false, false, true), true, "the Add command");
+  assert.equal(shouldWriteEntry(true, false, false, true), true, "the Add command");
 });
 
 test("hasServerEntry finds this server's entry and nothing else", () => {
