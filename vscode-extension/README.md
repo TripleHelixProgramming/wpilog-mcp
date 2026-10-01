@@ -1,8 +1,8 @@
 <table>
 <tr>
 <td width="180" valign="top" align="center">
-  <img src="images/icon.png" alt="WPILog Analyzer icon" width="140"><br>
-  <h1>WPILog Analyzer</h1>
+  <p align="center"><img src="images/icon.png" alt="WPILog Analyzer icon" width="140"></p>
+  <h1 align="center">WPILog Analyzer</h1>
 </td>
 <td valign="top">
 

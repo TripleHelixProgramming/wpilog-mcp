@@ -1,9 +1,9 @@
 <table>
 <tr>
 <td width="220" valign="top" align="center">
-  <img src="vscode-extension/images/icon.png" alt="wpilog-mcp icon" width="140"><br>
-  <h1>wpilog-mcp</h1>
-  Model Context Protocol (MCP) Server for WPILib Logs
+  <p align="center"><img src="vscode-extension/images/icon.png" alt="wpilog-mcp icon" width="140"></p>
+  <h1 align="center">wpilog-mcp</h1>
+  <p align="center">Model Context Protocol (MCP) Server for WPILib Logs</p>
 </td>
 <td valign="top">
 
