@@ -112,7 +112,8 @@ public class SecurityValidator {
     }
 
     logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
-    throw new IOException(
+    // A fact about the caller's path, reported as an ordinary error (not an internal one)
+    throw new org.triplehelix.wpilogmcp.log.LogFileException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
   }
@@ -175,7 +176,8 @@ public class SecurityValidator {
     }
 
     logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
-    throw new IOException(
+    // A fact about the caller's path, reported as an ordinary error (not an internal one)
+    throw new org.triplehelix.wpilogmcp.log.LogFileException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
   }

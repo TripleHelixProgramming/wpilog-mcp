@@ -151,7 +151,28 @@ class RealLogConformanceTest {
     for (var logFixture : logs) {
       var path = logFixture.path().toString();
       System.out.println("[conformance] " + logFixture.id());
-      var log = logManager.getOrLoad(path);
+      org.triplehelix.wpilogmcp.log.LogData log;
+      try {
+        log = logManager.getOrLoad(path);
+      } catch (Exception e) {
+        // A file that is not a readable log (empty, zero-filled, cut before its header): there is
+        // nothing to analyze, and every tool must say so with an explained error, never a
+        // success and never an internal error
+        System.out.println("[conformance]   not loadable (" + e.getMessage() + ")");
+        for (var tool : tools) {
+          var args = new com.google.gson.JsonObject();
+          args.addProperty("path", path);
+          var result = run(tool, args);
+          var failed = new ArrayList<Check>(result == null ? List.of(Check.TIMEOUT)
+              : ConformanceChecks.check(result));
+          if (result != null && result.isJsonObject()
+              && ConformanceChecks.succeeded(result.getAsJsonObject())) {
+            failed.add(Check.SHAPE);
+          }
+          calls.add(new Call(tool.name(), logFixture.id(), "unloadable", result, failed, 0));
+        }
+        continue;
+      }
       var firstVariants = new java.util.LinkedHashMap<Tool, ToolArguments.Variant>();
       for (var tool : tools) {
         var variants = ToolArguments.variants(tool, logFixture, log, logs, exportDir);
@@ -163,7 +184,7 @@ class RealLogConformanceTest {
           Integer limit = variant.args().has("limit")
               ? variant.args().get("limit").getAsInt() : null;
           var failed = result == null ? List.of(Check.TIMEOUT)
-              : ConformanceChecks.check(result, limit, true);
+              : ConformanceChecks.check(result, limit, true, tool.name(), variant.args());
           calls.add(new Call(tool.name(), logFixture.id(), variant.label(), result, failed,
               millis));
         }

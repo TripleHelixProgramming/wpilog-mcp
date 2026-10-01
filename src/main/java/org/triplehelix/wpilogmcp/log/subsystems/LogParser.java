@@ -55,8 +55,8 @@ public class LogParser {
   public ParsedLog parse(Path path) throws IOException {
     var reader = new DataLogReader(path.toString());
     if (!reader.isValid()) {
-      logger.error("Invalid WPILOG file: {}", path);
-      throw new IOException("Invalid WPILOG file: " + path);
+      logger.debug("Invalid WPILOG file: {}", path);
+      throw org.triplehelix.wpilogmcp.log.LogFileException.invalid(path);
     }
 
     // The same record scan LazyParsedLog uses (a damaged tail is not read), then each entry's

@@ -158,6 +158,10 @@ public abstract class ToolBase implements McpServer.Tool {
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
       result = errorResult(e.getMessage());
+    } catch (org.triplehelix.wpilogmcp.log.LogFileException e) {
+      // The file is missing, empty, not a log, or too large: a fact about the caller's file,
+      // explained, not a server fault
+      result = errorResult(e.getMessage());
     } catch (Exception e) {
       // Unexpected errors - return error response instead of propagating
       // raw exceptions to the MCP layer

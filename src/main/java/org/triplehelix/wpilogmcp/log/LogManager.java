@@ -251,7 +251,7 @@ public class LogManager {
 
         // Check file exists
         if (!Files.exists(filePath)) {
-          throw new IOException("File not found: " + filePath);
+          throw new LogFileException("File not found: " + filePath);
         }
 
         // Evict cached logs to free memory for the new one.
@@ -279,7 +279,7 @@ public class LogManager {
         // DataLogReader maps the whole file into one int-indexed ByteBuffer, so a file over 2 GB
         // cannot be read: say so here, before the reader fails and the eager fallback rethrows.
         if (fileSizeBytes > Integer.MAX_VALUE) {
-          throw new IOException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
+          throw new LogFileException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
               + filePath + " (" + (fileSizeBytes / (1024 * 1024)) + " MB)");
         }
 
@@ -292,6 +292,10 @@ public class LogManager {
           long perLogBudgetBytes = getPerLogCacheBudgetBytes();
           var reader = new edu.wpi.first.util.datalog.DataLogReader(filePath.toString());
           log = new LazyParsedLog(filePath.toString(), reader, perLogBudgetBytes);
+        } catch (LogFileException e) {
+          // Not a log at all (empty, zeros, another format): the eager parser would only say
+          // the same
+          throw e;
         } catch (Exception e) {
           // If lazy scan fails (e.g., not a valid WPILOG), fall back to eager parse
           logger.debug("Lazy scan failed for {}, falling back to eager parse: {}",

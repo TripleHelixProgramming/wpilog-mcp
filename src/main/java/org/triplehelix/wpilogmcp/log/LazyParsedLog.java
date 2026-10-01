@@ -81,7 +81,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   public LazyParsedLog(String path, DataLogReader reader, long maxCacheWeightBytes)
       throws IOException {
     if (!reader.isValid()) {
-      throw new IOException("Invalid WPILOG file: " + path);
+      throw LogFileException.invalid(java.nio.file.Path.of(path));
     }
 
     this.path = path;
