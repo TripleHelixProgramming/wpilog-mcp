@@ -2459,7 +2459,7 @@ Auto-generated LLM guidance based on data quality issues detected. Included alon
 | Field | Description |
 |-------|-------------|
 | `confidence_level` | `"high"`, `"medium"`, `"low"`, or `"insufficient"` |
-| `sample_context` | Human-readable summary (e.g., "Based on 4500 samples over 150.0 seconds") |
+| `sample_context` | Human-readable summary (e.g., "Based on 4500 samples over 150.0 seconds"). It counts the samples the statistics rest on: when some are NaN or infinite it reads "Based on 25 finite samples of 300 (275 NaN or infinite) over 6.0 seconds" |
 | `interpretation_guidance` | Array of warnings about data quality issues detected |
 | `suggested_followup` | Array of recommended next tools to call |
 

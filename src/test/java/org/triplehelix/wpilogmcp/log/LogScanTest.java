@@ -184,24 +184,24 @@ class LogScanTest {
   @Test
   @DisplayName("negative timestamps are data: a healthy DataLogManager log keeps them")
   void negativeTimestampsAreData() throws Exception {
-    // What real robots log (seen in logs published by teams 340, 3602, 3847, and 4003): one
-    // record per NetworkTables entry, tens of seconds before zero, in a log with no damage
+    // What real robots log: one record per NetworkTables entry, tens of seconds before zero,
+    // in a log with no damage (the values here are made up)
     var path = dir.resolve("retained_values.wpilog");
     try (var w = new WpilogWriter(path, "")) {
       int v = w.start("/Battery/Voltage", "double", "", 0);
       int led = w.start("NT:/photonvision/ledModeState", "int64", "", 0);
-      w.append(led, -30_204_473L, WpilogWriter.encodeInt64(1));
-      w.append(v, -8_571_203L, dbl(12.5));
+      w.append(led, -30_250_000L, WpilogWriter.encodeInt64(1));
+      w.append(v, -8_500_000L, dbl(12.5));
       for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
     }
     var scan = LogScan.of(new DataLogReader(path.toString()), path);
     assertFalse(scan.truncated(), String.valueOf(scan.truncationMessage()));
     assertNull(scan.truncationMessage());
-    assertEquals(-30.204473, scan.minTimestamp(), 1e-9);
+    assertEquals(-30.25, scan.minTimestamp(), 1e-9);
     assertEquals(12, scan.dataRecords());
     assertEquals(1, scan.offsets().get("NT:/photonvision/ledModeState").size(),
         "an entry whose only record is before zero is not empty");
-    assertParsersAgree(path, -30.204473, 10.0, 11);
+    assertParsersAgree(path, -30.25, 10.0, 11);
   }
 
   @Test

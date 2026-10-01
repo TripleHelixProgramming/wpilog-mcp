@@ -420,9 +420,9 @@ public final class FixtureLogs {
 
   /**
    * A DataLogManager log as real robots write it: several NetworkTables entries carry one record
-   * each with a timestamp before zero (8 to 30 s early), then the session. Logs published by
-   * teams 340, 3602, 3847, and 4003 look like this; a rule that read negative timestamps as
-   * damage emptied those entries and called healthy logs truncated.
+   * each with a timestamp before zero (8 to 30 s early), then the session. Real logs from
+   * several teams look like this; a rule that read negative timestamps as damage emptied those
+   * entries and called healthy logs truncated. Every name and value here is made up.
    */
   static Fixture dlmRetained(Path dir) throws IOException {
     var path = dir.resolve("2026-dlm_retained.wpilog");
@@ -430,11 +430,11 @@ public final class FixtureLogs {
     double end = 60.0;
     var segments = List.of(new Segment(10.0, 50.0, false));
     try (var w = new FixtureWriter(path, "")) {
-      w.i64("NT:/photonvision/ledModeState", -30.204473, 1)
+      w.i64("NT:/photonvision/ledModeState", -30.25, 1)
           .str("NT:/CameraPublisher/Front/description", -29.9, "USB camera")
           .bool("NT:/CameraPublisher/Front/connected", -29.9, true)
           .strArr("NT:/SmartDashboard/Auto Chooser/options", -12.5, "Do Nothing", "Two Piece")
-          .dbl("NT:/SmartDashboard/Shooter/kP", -8.571203, 0.05)
+          .dbl("NT:/SmartDashboard/Shooter/kP", -8.5, 0.05)
           .bool("DS:enabled", start, false)
           .bool("DS:autonomous", start, false)
           .i64("systemTime", start, epochMicros("2026-03-15T15:54:22Z", start));
