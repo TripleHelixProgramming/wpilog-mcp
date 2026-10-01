@@ -39,16 +39,26 @@ export function buildServerEntry(
   };
 }
 
+/** What a project's configuration file holds. */
+export interface ServerConfigValues {
+  logDirs: string[];
+  teamNumber: number;
+  tbaKey?: string;
+  /** The extension's own disk cache, never the standalone install's (see extensionCacheDir). */
+  cacheDir?: string;
+}
+
 /**
  * The configuration file's text: one stdio server, `default`, with the log directories, the team
- * number (when set), and the TBA key (when set). The server reads it as it reads the standalone's
- * `servers.yaml`.
+ * number (when set), the TBA key (when set), and the disk cache directory (when set). The server
+ * reads it as it reads the standalone's `servers.yaml`.
  */
-export function buildServerConfig(logDirs: string[], teamNumber: number, tbaKey?: string): string {
+export function buildServerConfig(values: ServerConfigValues): string {
   const server: Record<string, unknown> = { transport: "stdio" };
-  if (logDirs.length > 0) server.logdir = logDirs;
-  if (teamNumber > 0) server.team = teamNumber;
-  if (tbaKey) server.tba_key = tbaKey;
+  if (values.logDirs.length > 0) server.logdir = values.logDirs;
+  if (values.teamNumber > 0) server.team = values.teamNumber;
+  if (values.tbaKey) server.tba_key = values.tbaKey;
+  if (values.cacheDir) server.diskcachedir = values.cacheDir;
   return JSON.stringify({ servers: { default: server } }, null, 2) + "\n";
 }
 

@@ -27,22 +27,37 @@ test("the entry only starts the server with the configuration file: no settings,
 });
 
 test("the configuration file holds the settings in the standalone's format", () => {
-  const config = JSON.parse(buildServerConfig(["/logs", "/archive"], 2363, "the-key"));
+  const config = JSON.parse(buildServerConfig({
+    logDirs: ["/logs", "/archive"],
+    teamNumber: 2363,
+    tbaKey: "the-key",
+    cacheDir: "/storage/cache",
+  }));
   assert.deepEqual(config, {
     servers: {
-      default: { transport: "stdio", logdir: ["/logs", "/archive"], team: 2363, tba_key: "the-key" },
+      default: {
+        transport: "stdio",
+        logdir: ["/logs", "/archive"],
+        team: 2363,
+        tba_key: "the-key",
+        diskcachedir: "/storage/cache",
+      },
     },
   });
 });
 
 test("the configuration file leaves out what is not set", () => {
-  const config = JSON.parse(buildServerConfig([], 0));
+  const config = JSON.parse(buildServerConfig({ logDirs: [], teamNumber: 0 }));
   assert.deepEqual(config, { servers: { default: { transport: "stdio" } } });
-  assert.equal(JSON.parse(buildServerConfig(["/logs"], 0, "")).servers.default.tba_key, undefined);
+  const noKey = JSON.parse(buildServerConfig({ logDirs: ["/logs"], teamNumber: 0, tbaKey: "" }));
+  assert.equal(noKey.servers.default.tba_key, undefined);
 });
 
 test("the configuration file is valid JSON ending in a newline, with paths kept exactly", () => {
-  const text = buildServerConfig(["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"], 2363);
+  const text = buildServerConfig({
+    logDirs: ["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"],
+    teamNumber: 2363,
+  });
   assert.ok(text.endsWith("\n"));
   assert.deepEqual(JSON.parse(text).servers.default.logdir,
     ["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"]);

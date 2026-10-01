@@ -103,6 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (tbaKey) {
       env["TBA_API_KEY"] = tbaKey;
     }
+    args.push("-diskcachedir", extensionCacheDir(context));
 
     return { command: javaPath, args, env };
   }
@@ -464,22 +465,33 @@ function projectConfigPath(context: vscode.ExtensionContext, folderPath: string)
 }
 
 /**
+ * The disk cache of every server the extension starts (Copilot's and Claude Code's), in its own
+ * storage: never the standalone install's cache, so the two never delete each other's files when
+ * their cache formats differ, and uninstalling the extension removes it.
+ */
+function extensionCacheDir(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "cache");
+}
+
+/**
  * Writes one project's configuration file, which its .mcp.json entry starts the server with, as
  * the standalone install's servers.yaml does for it: the log directories (relative ones inside
- * the project), the team number, and the TBA key. The server Claude Code starts runs outside VS
- * Code and cannot read its settings or secret storage; this file, which only this user can read,
- * is where it finds them, so the user sets nothing. Written only when its contents change.
+ * the project), the team number, the TBA key, and the extension's own disk cache. The server
+ * Claude Code starts runs outside VS Code and cannot read its settings or secret storage; this
+ * file, which only this user can read, is where it finds them, so the user sets nothing. Written
+ * only when its contents change.
  */
 async function writeProjectConfig(
   context: vscode.ExtensionContext,
   folderPath: string,
   settings: LogSettings
 ): Promise<string> {
-  const text = buildServerConfig(
-    logDirectoriesFor(settings, folderPath),
-    settings.teamNumber || 0,
-    await context.secrets.get(TBA_SECRET)
-  );
+  const text = buildServerConfig({
+    logDirs: logDirectoriesFor(settings, folderPath),
+    teamNumber: settings.teamNumber || 0,
+    tbaKey: await context.secrets.get(TBA_SECRET),
+    cacheDir: extensionCacheDir(context),
+  });
   const file = projectConfigPath(context, folderPath);
   const current = await fs.promises.readFile(file, "utf8").catch(() => undefined);
   if (current !== text) {

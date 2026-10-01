@@ -37,7 +37,16 @@ There are two ways to run wpilog-mcp, depending on which AI client you use. The 
 
 **[Standalone Install](doc/STANDALONE.md)** — For MCP clients outside VS Code: Claude Desktop, Claude Code CLI, Gemini, or other MCP-compatible tools. You run `./gradlew install`, configure `servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.  The server will add its capabilities to those your tool already possesses.
 
-Both can be installed at the same time. They run as independent server instances with separate configuration — the extension uses VS Code settings while the standalone install uses `~/.wpilog-mcp/servers.yaml`. For Claude Code, use one of them per project: the extension adds itself to a robot project's `.mcp.json` unless that file already runs wpilog-mcp (see [Using It with Claude Code](vscode-extension/README.md#using-it-with-claude-code)). The extension's `.mcp.json` entry holds paths specific to your computer, so committing it would do teammates no good.
+### Extension or Standalone?
+
+**Most people want the extension.** The standalone install is for power users: Claude Code or Claude Desktop without VS Code, the HTTP transport, or settings the extension doesn't offer (disk cache size, export directory, scan depth, named server configurations in `servers.yaml`).
+
+If you install both, they stay out of each other's way:
+
+- **Each has its own configuration and its own disk cache** (the extension's is in its VS Code storage), so different versions never discard each other's cached logs.
+- **Copilot and other VS Code agents** always use the extension's server.
+- **Claude Code** uses one server per project. If the project's `.mcp.json` already runs the standalone server, the extension leaves it alone; otherwise the extension adds its own entry (see [Using It with Claude Code](vscode-extension/README.md#using-it-with-claude-code)). If you registered the standalone server for all projects (`claude mcp add --scope user`), turn off the extension's **Enable For Claude Code** setting, or Claude Code would start both.
+- The extension's `.mcp.json` entry holds paths specific to your computer, so committing it would do teammates no good.
 
 ### Then Just Ask
 

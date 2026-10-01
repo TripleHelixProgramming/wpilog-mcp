@@ -27,7 +27,12 @@ class MainExtensionConfigTest {
   @TempDir
   Path tempDir;
 
-  /** The file as the extension writes it, plus a disabled disk cache for the test. */
+  /** The extension's own disk cache (here in the test's directory, never the user's). */
+  private Path cacheDir() {
+    return tempDir.resolve("extension-storage").resolve("cache");
+  }
+
+  /** The file as the extension writes it. */
   private Path writeConfig(List<Path> logDirs, String tbaKey) throws Exception {
     var server = new JsonObject();
     server.addProperty("transport", "stdio");
@@ -36,7 +41,7 @@ class MainExtensionConfigTest {
     server.add("logdir", dirs);
     server.addProperty("team", 2363);
     if (tbaKey != null) server.addProperty("tba_key", tbaKey);
-    server.addProperty("diskcachedisable", true);
+    server.addProperty("diskcachedir", cacheDir().toString());
     var servers = new JsonObject();
     servers.add("default", server);
     var root = new JsonObject();
@@ -58,6 +63,25 @@ class MainExtensionConfigTest {
     assertTrue(output.contains("Configuring log directory: " + b), output);
     assertTrue(output.contains("TBA enrichment enabled"), output);
     assertFalse(output.contains("secret-key-1234"), output);
+  }
+
+  @Test
+  @DisplayName("the disk cache is the extension's own, never the standalone install's")
+  void ownDiskCache() throws Exception {
+    var config = writeConfig(List.of(Files.createDirectories(tempDir.resolve("logs"))), null);
+    var output = MainProcess.run(tempDir, List.of("start", "default", "--config",
+        config.toString()), Map.of());
+    assertTrue(output.contains("Cache directory: " + cacheDir()), output);
+    assertTrue(Files.isDirectory(cacheDir()), "the cache directory is created");
+  }
+
+  @Test
+  @DisplayName("the server VS Code starts (flags, not a file) uses the extension's cache too")
+  void ownDiskCacheByFlag() throws Exception {
+    var logs = Files.createDirectories(tempDir.resolve("logs"));
+    var output = MainProcess.run(tempDir, List.of("-logdir", logs.toString(), "-diskcachedir",
+        cacheDir().toString()), Map.of());
+    assertTrue(output.contains("Cache directory: " + cacheDir()), output);
   }
 
   @Test

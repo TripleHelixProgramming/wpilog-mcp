@@ -167,7 +167,7 @@ To make the server available in a single project instead, put the same command i
 ```
 Claude Code expands `${HOME}` in `.mcp.json` (it does not expand `~`). Written this way the entry holds nothing specific to your computer, so on macOS and Linux it works for any teammate who has the standalone install, and committing it is fine; a teammate without one is asked to approve a server that then fails to start. If only you use it, add `.mcp.json` to `.gitignore` instead. On Windows, use `"command": "cmd", "args": ["/c", "${USERPROFILE}\\.wpilog-mcp\\bin\\wpilog-mcp.bat"]`. Claude Code asks you to approve a server from `.mcp.json` the first time it sees it.
 
-The server reads everything else from `~/.wpilog-mcp/servers.yaml`, including the TBA key (`tba_key`), so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It with Claude Code](../vscode-extension/README.md#using-it-with-claude-code): it leaves a `.mcp.json` that already runs wpilog-mcp alone, and with a user-scope registration like the one above, turn off its **Enable For Claude Code** setting.
+The server reads everything else from `~/.wpilog-mcp/servers.yaml`, including the TBA key (`tba_key`), so Claude Code needs no environment variables. If you also use the VS Code extension, see [Extension or Standalone?](../README.md#extension-or-standalone): the two keep separate disk caches, the extension leaves a `.mcp.json` that already runs wpilog-mcp alone, and with a user-scope registration like the one above, turn off its **Enable For Claude Code** setting.
 
 ### Claude Desktop
 
