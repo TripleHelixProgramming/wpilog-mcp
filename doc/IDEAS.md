@@ -449,17 +449,45 @@ Remaining work:
 - Warn when approaching limits
 - Streaming mode for very large logs
 
+### 8.4 Compressed Log Files
+**Priority:** Medium
+**Complexity:** Medium
+
+Read gzipped and zipped `.wpilog` and `.revlog` files directly. Logs compress well (gzip leaves about 40% of a wpilog and 20% of a REV log), and logs other teams publish often come zipped. Today discovery lists only `.wpilog` and `.revlog` names, and a compressed file passed by path fails as "Invalid WPILOG file".
+
+**Approach:**
+- Detect gzip and zip by magic bytes (both are in the JDK); give an explained error for xz, zstd, bzip2, 7z, and tar.
+- Decompress into the cache directory and memory-map the copy as today, rather than into heap (`DataLogReader` maps the whole file).
+- Address zip members as `archive.zip!/name.wpilog` when an archive holds more than one log; skip macOS `__MACOSX/` and `._*` entries.
+- Read a cut-off gzip as a truncated log. Discover `.revlog` files inside archives too, so REV sync still works.
+- Code that assumes plain `.wpilog`/`.revlog` names or paths: the discovery filters in `LogDirectory` and `LogManager`, the file-name patterns, `LogScan.of` (reads the header length from the path), and `RevLogParser.parse`.
+
+### 8.5 Logs That Change After Loading
+**Priority:** High
+**Complexity:** Medium
+
+A loaded log keeps answering from its first load after the file changes on disk, for example when a live log is copied off the robot and copied again once it has grown. `LogManager.loadLog` never re-checks a cached path. Depending on how the file was replaced:
+- **Renamed into place** (rsync's default): results stay stale.
+- **Overwritten in place** (`cp` keeps the inode): old byte offsets are applied to new bytes, so new records are invisible, or a different log copied over the name decodes as garbage, with no warning.
+- **During an in-place copy**: reading the truncated mapping throws `java.lang.InternalError`, which nothing in the call path catches; in stdio mode it ends the server loop.
+
+REV logs too: sync runs once at load, so a REV log copied in later is never found.
+
+**Approach:** record each file's size, modification time, and file key at load; re-check on every `getOrLoad` and reload when they differ; re-check after each call and discard a result read while the file changed; catch `InternalError` from mapped reads as an explained error; tell each session once when a log it used was reloaded; re-run REV discovery and sync when REV files change.
+
 ---
 
 ## Implementation Priority Matrix
 
 | ID | Feature | Impact | Effort | Priority |
 |----|---------|--------|--------|----------|
+| 8.5 | Logs that change after loading | High | Medium | **P1** |
 | 4.1 | PathPlanner integration | High | Medium | **P2** |
 | 4.2 | AdvantageScope integration | Medium | Medium | **P2** |
 | 5.1 | Analysis presets | Medium | Low | **P2** |
 | 5.4 | Batch tool execution | Medium | Low | **P2** |
 | 5.5 | Entry name aliasing | Medium | Medium | **P2** |
+| 8.4 | Compressed log files | Medium | Medium | **P2** |
 | 6.3 | MCP guided prompts | Medium | Medium | **P2** |
 | 6.4 | Primitive tool design | Medium | Medium | **P2** |
 | 6.8 | Don't guess entry meaning | High | Medium | **P2** |
