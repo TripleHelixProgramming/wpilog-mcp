@@ -72,7 +72,8 @@
           "wpilog-mcp.logDirectory": {
             "type": "string",
             "default": "",
-            "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect."
+            "scope": "resource",
+            "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect. Set it in your User settings for every project; a project's own (Workspace) setting overrides it there. A relative path is a folder inside the project."
           },
           "wpilog-mcp.additionalLogDirectories": {
             "type": "array",
@@ -80,12 +81,14 @@
               "type": "string"
             },
             "default": [],
-            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). REV logs are matched to a wpilog only within the directory that holds it."
+            "scope": "resource",
+            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). A relative path is a folder inside the project: `logs` adds each project's simulation logs. A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
           },
           "wpilog-mcp.teamNumber": {
             "type": "number",
             "default": 2363,
-            "markdownDescription": "Your FRC team number for TBA match data lookups."
+            "scope": "resource",
+            "markdownDescription": "Your FRC team number for TBA match data lookups. A project's own (Workspace) setting overrides your User setting there."
           },
           "wpilog-mcp.tbaApiKey": {
             "type": "string",

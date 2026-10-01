@@ -2,19 +2,48 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import { combineLogDirectories, expandTilde } from "./logDirectories";
+import { LogSettings, combineLogDirectories, expandTilde } from "./logDirectories";
+
+/** The local workspace folders' paths, against which relative log paths resolve. */
+export function localWorkspaceFolders(): string[] {
+  return (vscode.workspace.workspaceFolders ?? [])
+    .filter((folder) => folder.uri.scheme === "file")
+    .map((folder) => folder.uri.fsPath);
+}
 
 /**
- * The directories to pass to the server: the main one (see findLogDirectory), then those in
- * wpilog-mcp.additionalLogDirectories, each once. With `prompt` false, a missing main directory is
- * left out rather than asked for (for work done in the background).
+ * The directories to pass to the server VS Code starts: the main one (see findLogDirectory), then
+ * those in wpilog-mcp.additionalLogDirectories, each once, relative paths resolved inside each of
+ * the window's folders. With `prompt` false, a missing main directory is left out rather than
+ * asked for (for work done in the background).
  */
 export async function findLogDirectories(prompt = true): Promise<string[]> {
   const config = vscode.workspace.getConfiguration("wpilog-mcp");
   return combineLogDirectories(
     await findLogDirectory(prompt),
-    config.get<unknown>("additionalLogDirectories")
+    config.get<unknown>("additionalLogDirectories"),
+    localWorkspaceFolders()
   );
+}
+
+/**
+ * One project's directories, from settings already resolved for it (the user's, with the
+ * project's own on top): relative paths inside that project, and a well-known folder when no main
+ * directory is set. Never prompts.
+ */
+export function logDirectoriesFor(settings: LogSettings, projectDir: string): string[] {
+  const main = settings.logDirectory?.trim() ? settings.logDirectory : wellKnownLogDirectory();
+  return combineLogDirectories(main, settings.additionalLogDirectories, [projectDir]);
+}
+
+/** The first of ~/riologs, ~/wpilib/logs, ~/Documents/FRC/logs that exists. */
+export function wellKnownLogDirectory(): string | undefined {
+  const home = os.homedir();
+  return [
+    path.join(home, "riologs"),
+    path.join(home, "wpilib", "logs"),
+    path.join(home, "Documents", "FRC", "logs"),
+  ].find((dir) => fs.existsSync(dir));
 }
 
 /**
@@ -38,18 +67,11 @@ export async function findLogDirectory(prompt = true): Promise<string | undefine
   }
 
   // 2-4. Well-known paths
-  const home = os.homedir();
-  const candidates = [
-    path.join(home, "riologs"),
-    path.join(home, "wpilib", "logs"),
-    path.join(home, "Documents", "FRC", "logs"),
-  ];
-
-  for (const dir of candidates) {
-    if (fs.existsSync(dir)) {
-      return dir;
-    }
+  const wellKnown = wellKnownLogDirectory();
+  if (wellKnown) {
+    return wellKnown;
   }
+  const home = os.homedir();
 
   // 5. Prompt user
   if (!prompt) {

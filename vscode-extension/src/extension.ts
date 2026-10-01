@@ -4,8 +4,13 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { findJava } from "./javaFinder";
-import { findLogDirectories } from "./logFinder";
-import { addLogDirectories } from "./logDirectories";
+import { findLogDirectories, logDirectoriesFor } from "./logFinder";
+import {
+  LogSettings,
+  addLogDirectories,
+  overlaySettings,
+  projectConfigName,
+} from "./logDirectories";
 import { findJar } from "./jarManager";
 import {
   GitStatus,
@@ -25,7 +30,7 @@ const PROVIDER_ID = "wpilog-analyzer.mcpServer";
 /**
  * Where the TBA API key is kept: VS Code's secret storage (the OS keychain), never a settings
  * file. Claude Code's server, outside VS Code, reads a copy from its configuration file, which
- * only this user can read (see writeClaudeConfig).
+ * only this user can read (see writeProjectConfig).
  */
 const TBA_SECRET = "wpilog-mcp.tbaApiKey";
 
@@ -169,10 +174,8 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("wpilog-mcp.clearTbaApiKey", async () => {
       await context.secrets.delete(TBA_SECRET);
-      // Out of Claude Code's configuration file too, even with Claude Code turned off
-      if (fs.existsSync(claudeConfigPath(context))) {
-        await writeClaudeConfig(context);
-      }
+      // Out of Claude Code's configuration files too, even with Claude Code turned off
+      await refreshKnownProjects(context, new Set());
       vscode.window.showInformationMessage(
         "WPILog Analyzer: TBA API key removed. The server restarts without it."
       );
@@ -420,26 +423,64 @@ async function stableJar(
   }
 }
 
-/** The configuration file the server Claude Code starts reads (see buildServerConfig). */
-function claudeConfigPath(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, "servers.json");
+/**
+ * The projects that have Claude Code's entry, each with its own settings as last seen, so that a
+ * change to the user's settings rewrites their configuration files too, open or not.
+ */
+const PROJECTS_KEY = "wpilog-mcp.claudeCodeProjects";
+type KnownProjects = Record<string, LogSettings>;
+
+/** The user's values: User settings, else the defaults. */
+function userSettings(): LogSettings {
+  const config = vscode.workspace.getConfiguration("wpilog-mcp");
+  const value = <T>(key: string) => {
+    const inspected = config.inspect<T>(key);
+    return inspected?.globalValue ?? inspected?.defaultValue;
+  };
+  return {
+    logDirectory: value<string>("logDirectory"),
+    additionalLogDirectories: value<unknown>("additionalLogDirectories"),
+    teamNumber: value<number>("teamNumber"),
+  };
+}
+
+/** A folder's own values (its folder settings, else the workspace's), undefined where it has none. */
+function projectSettings(folder: vscode.WorkspaceFolder): LogSettings {
+  const config = vscode.workspace.getConfiguration("wpilog-mcp", folder.uri);
+  const value = <T>(key: string) => {
+    const inspected = config.inspect<T>(key);
+    return inspected?.workspaceFolderValue ?? inspected?.workspaceValue;
+  };
+  return {
+    logDirectory: value<string>("logDirectory"),
+    additionalLogDirectories: value<unknown>("additionalLogDirectories"),
+    teamNumber: value<number>("teamNumber"),
+  };
+}
+
+/** A project's configuration file, in the extension's storage. */
+function projectConfigPath(context: vscode.ExtensionContext, folderPath: string): string {
+  return path.join(context.globalStorageUri.fsPath, "projects", projectConfigName(folderPath));
 }
 
 /**
- * Writes the settings and the TBA key into the configuration file that every project's .mcp.json
- * entry starts the server with, as the standalone install's servers.yaml does for it. The server
- * Claude Code starts runs outside VS Code and cannot read its settings or secret storage; this
- * file, which only this user can read, is where it finds them, so the user sets nothing. Written
- * only when its contents change.
+ * Writes one project's configuration file, which its .mcp.json entry starts the server with, as
+ * the standalone install's servers.yaml does for it: the log directories (relative ones inside
+ * the project), the team number, and the TBA key. The server Claude Code starts runs outside VS
+ * Code and cannot read its settings or secret storage; this file, which only this user can read,
+ * is where it finds them, so the user sets nothing. Written only when its contents change.
  */
-async function writeClaudeConfig(context: vscode.ExtensionContext): Promise<string> {
-  const config = vscode.workspace.getConfiguration("wpilog-mcp");
+async function writeProjectConfig(
+  context: vscode.ExtensionContext,
+  folderPath: string,
+  settings: LogSettings
+): Promise<string> {
   const text = buildServerConfig(
-    await findLogDirectories(false),
-    config.get<number>("teamNumber") || 0,
+    logDirectoriesFor(settings, folderPath),
+    settings.teamNumber || 0,
     await context.secrets.get(TBA_SECRET)
   );
-  const file = claudeConfigPath(context);
+  const file = projectConfigPath(context, folderPath);
   const current = await fs.promises.readFile(file, "utf8").catch(() => undefined);
   if (current !== text) {
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
@@ -449,6 +490,45 @@ async function writeClaudeConfig(context: vscode.ExtensionContext): Promise<stri
   }
   await fs.promises.chmod(file, 0o600);
   return file;
+}
+
+/** Remembers a project that has the entry, with its own settings as they are now. */
+async function rememberProject(
+  context: vscode.ExtensionContext,
+  folderPath: string,
+  own: LogSettings
+) {
+  const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
+  known[folderPath] = own;
+  await context.globalState.update(PROJECTS_KEY, known);
+}
+
+/**
+ * Rewrites the configuration file of every known project except `skip` (those just written),
+ * from the user's settings and the project's own as last seen; a project's own settings changed
+ * while it was closed are picked up when it is next opened. A project whose .mcp.json no longer
+ * has the entry is forgotten and its file removed.
+ */
+async function refreshKnownProjects(context: vscode.ExtensionContext, skip: Set<string>) {
+  const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
+  const user = userSettings();
+  let forgotten = false;
+  for (const [folderPath, own] of Object.entries(known)) {
+    if (skip.has(folderPath)) continue;
+    const text = await fs.promises
+      .readFile(path.join(folderPath, ".mcp.json"), "utf8")
+      .catch(() => undefined);
+    if (!hasServerEntry(text)) {
+      delete known[folderPath];
+      forgotten = true;
+      await fs.promises.rm(projectConfigPath(context, folderPath), { force: true });
+      continue;
+    }
+    await writeProjectConfig(context, folderPath, overlaySettings(user, own));
+  }
+  if (forgotten) {
+    await context.globalState.update(PROJECTS_KEY, known);
+  }
 }
 
 /** Shows a message once per workspace (remembered under `key`); returns the button chosen. */
@@ -498,12 +578,8 @@ async function offerToIgnore(
  * Claude Code reads (it does not use the McpServerDefinitionProvider API): with
  * `wpilog-mcp.enableForClaudeCode` on, in WPILib robot projects and wherever an entry already
  * exists, and in `requested`, the folder the user named with the Add to Claude Code command
- * (whose outcome is then reported directly). Every other entry in the file is kept. The entry
- * holds this computer's paths, so a .mcp.json that git tracks (the repository shares it) is left
- * alone, and one git would pick up comes with an offer to ignore it. The entry only starts the
- * server, from a JAR path that survives extension updates, with the configuration file that holds
- * the settings and the TBA key; that file is rewritten first, since entries in projects not open
- * here use it too.
+ * (whose outcome is then reported directly). Then rewrites the configuration files of the other
+ * projects that have the entry, so a change to the user's settings reaches them too.
  */
 async function updateMcpJsonFiles(
   context: vscode.ExtensionContext,
@@ -515,39 +591,57 @@ async function updateMcpJsonFiles(
   if (!enabled && !requested) {
     return;
   }
-  const configPath = await writeClaudeConfig(context);
 
   const isRequested = (folder: vscode.WorkspaceFolder) =>
     requested !== undefined && folder.uri.toString() === requested.uri.toString();
-  const targets: { folder: vscode.WorkspaceFolder; uri: vscode.Uri; text: string | undefined }[] = [];
+  const targets: McpJsonTarget[] = [];
   for (const { folder, uri } of mcpJsonFiles()) {
     const text = await readText(uri);
     const robotProject = await exists(
       vscode.Uri.joinPath(folder.uri, ".wpilib", "wpilib_preferences.json")
     );
     if (shouldWriteEntry(enabled, robotProject, hasServerEntry(text), isRequested(folder))) {
-      targets.push({ folder, uri, text });
+      targets.push({ folder, uri, text, asked: isRequested(folder) });
     }
   }
-  if (targets.length === 0) {
-    return;
+  const written = await writeEntries(context, outputChannel, targets);
+  if (enabled) {
+    await refreshKnownProjects(context, written);
   }
+}
 
+interface McpJsonTarget {
+  folder: vscode.WorkspaceFolder;
+  uri: vscode.Uri;
+  text: string | undefined;
+  /** The user named this folder (the Add command): report the outcome now. */
+  asked: boolean;
+}
+
+/**
+ * Writes each target folder's configuration file and its .mcp.json entry, which only starts the
+ * server (from a JAR path that survives extension updates) with that file. Every other entry in
+ * .mcp.json is kept. The entry holds this computer's paths, so a .mcp.json that git tracks (the
+ * repository shares it) is left alone, and one git would pick up comes with an offer to ignore
+ * it. Returns the folders written.
+ */
+async function writeEntries(
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.OutputChannel,
+  targets: McpJsonTarget[]
+): Promise<Set<string>> {
+  const written = new Set<string>();
+  if (targets.length === 0) return written;
   const javaPath = await findJava();
-  if (!javaPath) return;
+  if (!javaPath) return written;
   const bundled = findJar(context.extensionPath);
-  if (!bundled) return;
+  if (!bundled) return written;
+  const jar = await stableJar(context, bundled, outputChannel);
+  const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap") || "4g";
+  const user = userSettings();
 
-  const entry = buildServerEntry(
-    javaPath,
-    await stableJar(context, bundled, outputChannel),
-    config.get<string>("maxHeap") || "4g",
-    configPath
-  );
-
-  for (const { folder, uri, text } of targets) {
+  for (const { folder, uri, text, asked } of targets) {
     // A folder the user asked for hears the outcome now; any other, once at most
-    const asked = isRequested(folder);
     const other = otherWpilogServer(text);
     if (other) {
       outputChannel.appendLine(
@@ -579,7 +673,15 @@ async function updateMcpJsonFiles(
       }
       continue;
     }
-    const edit = mergeServerEntry(text, entry);
+
+    // This project's settings: the user's, with the project's own on top
+    const own = projectSettings(folder);
+    const configPath = await writeProjectConfig(
+      context,
+      folder.uri.fsPath,
+      overlaySettings(user, own)
+    );
+    const edit = mergeServerEntry(text, buildServerEntry(javaPath, jar, maxHeap, configPath));
     if (!edit.ok) {
       outputChannel.appendLine(`Did not update ${uri.fsPath}: ${edit.error}`);
       vscode.window.showWarningMessage(
@@ -599,6 +701,8 @@ async function updateMcpJsonFiles(
         continue;
       }
     }
+    await rememberProject(context, folder.uri.fsPath, own);
+    written.add(folder.uri.fsPath);
     if (asked) {
       vscode.window.showInformationMessage(
         `WPILog Analyzer is in ${folder.name}/.mcp.json. Start (or restart) Claude Code in that ` +
@@ -609,6 +713,7 @@ async function updateMcpJsonFiles(
       void offerToIgnore(context, folder, outputChannel);
     }
   }
+  return written;
 }
 
 export function deactivate() {}

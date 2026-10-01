@@ -3,7 +3,13 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as os from "os";
 import * as path from "path";
-import { addLogDirectories, combineLogDirectories, expandTilde } from "../logDirectories";
+import {
+  addLogDirectories,
+  combineLogDirectories,
+  expandTilde,
+  overlaySettings,
+  projectConfigName,
+} from "../logDirectories";
 
 test("the main directory comes first, then the additional ones, each once", () => {
   assert.deepEqual(combineLogDirectories("/logs", ["/archive", "/logs", "/usb", "/archive"]),
@@ -48,4 +54,39 @@ test("no directories adds nothing", () => {
   addLogDirectories(args, env, []);
   assert.deepEqual(args, []);
   assert.deepEqual(env, {});
+});
+
+test("a relative path is a folder inside the project", () => {
+  assert.deepEqual(combineLogDirectories("logs", ["/archive"], ["/robot"]),
+    [path.join("/robot", "logs"), "/archive"]);
+  assert.deepEqual(combineLogDirectories(undefined, ["./sim/logs"], ["/robot"]),
+    [path.join("/robot", "sim", "logs")]);
+});
+
+test("a relative path names a folder in each project, and nothing without one", () => {
+  assert.deepEqual(combineLogDirectories(undefined, ["logs"], ["/a", "/b"]),
+    [path.join("/a", "logs"), path.join("/b", "logs")]);
+  assert.deepEqual(combineLogDirectories("logs", ["/archive"]), ["/archive"]);
+  assert.deepEqual(combineLogDirectories("logs", ["/robot/logs"], ["/robot"]),
+    [path.join("/robot", "logs")], "the same folder twice is listed once");
+});
+
+test("a project's own settings override the user's; the rest come from the user", () => {
+  const user = { logDirectory: "/riologs", additionalLogDirectories: ["/archive"], teamNumber: 2363 };
+  assert.deepEqual(overlaySettings(user, {}), user);
+  assert.deepEqual(overlaySettings(user, { logDirectory: "logs" }),
+    { logDirectory: "logs", additionalLogDirectories: ["/archive"], teamNumber: 2363 });
+  assert.deepEqual(overlaySettings(user, { additionalLogDirectories: ["logs"], teamNumber: 1 }),
+    { logDirectory: "/riologs", additionalLogDirectories: ["logs"], teamNumber: 1 },
+    "a project's list replaces the user's, as VS Code does");
+  assert.deepEqual(overlaySettings({}, {}),
+    { logDirectory: undefined, additionalLogDirectories: undefined, teamNumber: undefined });
+});
+
+test("each project has its own configuration file, named the same every time", () => {
+  const a = projectConfigName("/th/Rebuilt");
+  assert.match(a, /^[0-9a-f]{16}\.json$/);
+  assert.equal(projectConfigName("/th/Rebuilt"), a);
+  assert.equal(projectConfigName("/th/Rebuilt/"), a, "a trailing separator is the same folder");
+  assert.notEqual(projectConfigName("/th/Rebuilt2025"), a);
 });

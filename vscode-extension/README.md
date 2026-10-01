@@ -51,10 +51,10 @@ On activation, the extension finds the WPILib JDK and server JAR, then registers
 
 Claude Code doesn't use VS Code's MCP server registry; it finds servers in a `.mcp.json` file in the folder it runs in. So in a WPILib robot project (a folder with `.wpilib/wpilib_preferences.json`), the extension adds a `wpilog-analyzer` entry to that folder's `.mcp.json`. Other servers in the file are left alone, and a file that isn't valid JSON is not touched. All of this is controlled by one checkbox, **Enable For Claude Code** (`wpilog-mcp.enableForClaudeCode`, on by default); it affects only Claude Code, since Copilot and other VS Code agents get the server from VS Code itself.
 
-It works like the [standalone install](../doc/STANDALONE.md): the entry only starts the server (Java, heap size, JAR) with a configuration file, and the configuration lives in that one file, which the extension keeps in its storage (`servers.json`, in the format of the standalone's `servers.yaml`): your log directories, team number, and TBA key.
+It works like the [standalone install](../doc/STANDALONE.md): the entry only starts the server (Java, heap size, JAR) with a configuration file, and the configuration lives in that file, which the extension keeps in its storage, one per project (in the format of the standalone's `servers.yaml`): the project's log directories, team number, and TBA key. Claude Code in a project gets the same settings VS Code uses there (see [Settings](#settings)).
 
 - **Nothing to set up.** Open the robot project in VS Code with the extension installed, start Claude Code there, and approve `wpilog-analyzer` when it asks (Claude Code asks once per project before starting a server from `.mcp.json`; `/mcp` lists it). This works for Claude Code in VS Code and for the `claude` command in a terminal in that folder.
-- **Settings changes reach every project.** Changing a setting (or the TBA key) rewrites the configuration file, which every project's entry uses; Claude Code picks it up the next time it starts the server (a new session, or reconnecting the server in `/mcp`). Entries themselves are the same in every project and change only with the Java path or heap size, which are updated when the project is next opened in VS Code.
+- **Settings changes reach the right projects.** Changing a User setting (or the TBA key) rewrites the configuration file of every project with the entry, open or not; changing a project's own setting rewrites only that project's. Claude Code picks the change up the next time it starts the server (a new session, or reconnecting the server in `/mcp`). The entry itself changes only with the Java path or heap size, and is updated when the project is next opened in VS Code; so is a project's own setting edited outside VS Code.
 - **Keep `.mcp.json` out of git.** Nothing in the entry is secret (the TBA key is never in it), but it holds this computer's Java, JAR, and configuration paths, which don't exist on a teammate's computer, and each teammate's extension would rewrite it with their own. So the extension doesn't write into a `.mcp.json` that git already tracks (it tells you how to stop tracking it), and when git would pick the file up, it offers to add `.mcp.json` to `.gitignore`.
 - **The TBA key needs nothing extra.** The key you set with **WPILog Analyzer: Set The Blue Alliance API Key** reaches Claude Code's server through the configuration file, which only you can read; it is never in `.mcp.json`, and you set no environment variable.
 - **Updates don't break it.** The entry points at a copy of the server JAR in the extension's storage, refreshed when the extension updates, so its path never changes. An entry an earlier version wrote (pointing at a folder VS Code deletes after an update) is rewritten when the project is next opened.
@@ -68,12 +68,14 @@ It works like the [standalone install](../doc/STANDALONE.md): the entry only sta
 
 ## Settings
 
+Your **User** settings apply to every project. A project's own settings (**Workspace**, its `.vscode/settings.json`) override the log directories and team number in that project, for Copilot and Claude Code alike; a project's list of additional directories replaces your User list there, as lists do in VS Code. A relative log path is a folder inside the project: `logs` in your User settings adds every project's simulation logs, and in a project's settings, that project's. Robot projects usually commit `.vscode/settings.json`, so in a project's settings prefer relative paths, which mean the same folder on every teammate's computer.
+
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `wpilog-mcp.javaPath` | Path to `java` executable | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib installation year (e.g., `2026`) | auto-detect latest |
-| `wpilog-mcp.logDirectory` | Path to `.wpilog` files | auto-detect |
-| `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published); REV logs are matched only within the directory holding each wpilog | none |
+| `wpilog-mcp.logDirectory` | Path to `.wpilog` files (relative: inside the project) | auto-detect |
+| `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published, `logs` for a project's simulation logs); REV logs are matched only within the directory holding each wpilog | none |
 | `wpilog-mcp.teamNumber` | FRC team number for TBA lookups | `2363` |
 | `wpilog-mcp.maxHeap` | JVM heap size | `4g` |
 | `wpilog-mcp.enableForClaudeCode` | **Claude Code only:** add the server to robot projects' `.mcp.json`, where Claude Code finds it (see [Using It with Claude Code](#using-it-with-claude-code)) | on |
@@ -105,7 +107,7 @@ Open the Extensions sidebar (`Ctrl+Shift+X`), find **WPILog Analyzer**, click th
 code --uninstall-extension TripleHelixProgramming.wpilog-analyzer
 ```
 
-Besides its install directory, the extension writes the `wpilog-analyzer` entry in robot projects' `.mcp.json` (delete the entry, or the file, if you no longer want it), and, in VS Code's storage for the extension (`globalStorage/triplehelixprogramming.wpilog-analyzer`), a copy of the server JAR and the configuration file (`servers.json`, holding your settings and the TBA key) for Claude Code. To remove the stored TBA API key, from that file too, run **WPILog Analyzer: Clear The Blue Alliance API Key** before uninstalling.
+Besides its install directory, the extension writes the `wpilog-analyzer` entry in robot projects' `.mcp.json` (delete the entry, or the file, if you no longer want it), and, in VS Code's storage for the extension (`globalStorage/triplehelixprogramming.wpilog-analyzer`), a copy of the server JAR and, under `projects/`, a configuration file for each project with the entry (holding its settings and the TBA key) for Claude Code. To remove the stored TBA API key, from those files too, run **WPILog Analyzer: Clear The Blue Alliance API Key** before uninstalling.
 
 ## Troubleshooting
 
