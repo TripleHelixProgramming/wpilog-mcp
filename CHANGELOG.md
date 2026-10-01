@@ -138,6 +138,7 @@ Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBU
 ### Documentation
 - `doc/STANDALONE.md` registers the server with Claude Code correctly: `claude mcp add --scope user wpilog -- ~/.wpilog-mcp/bin/wpilog-mcp`, or a project `.mcp.json` written with `${HOME}`. It used to say `~/.claude/settings.json`, which Claude Code does not read for MCP servers.
 - `README.md` is an overview with an index of the documentation: what the server does, which install to choose, and where each topic is covered. The reference material it carried moved to the documents that own it: data types and the REV log details to `doc/TOOLS.md`, and the rules for running the extension beside the standalone install to the extension's README, which also shows its icon.
+- The icon in the header of `README.md` and of the extension's README sits midway between the top of its cell and the title (it sat high), and the icon, title, and tagline are each centered by their own `align="center"`, so a viewer whose stylesheet left-aligns table cells no longer shows the icon flush left.
 - `doc/TOOLS.md` and `README.md` were matched to the current code, including the examples for `compare_matches`, `can_health`, `get_ds_timeline`, and `power_analysis`.
 - `doc/TOOL_RESPONSES.md` is generated from real logs by a checked-in harness, with at least one call for every tool, grouped as `get_server_guide` and `doc/TOOLS.md` group the tools.
 - `doc/DEVELOPMENT.md` covers building, every test suite and how to run it, a checklist for adding or changing a tool, and releasing.
