@@ -68,14 +68,14 @@ It works like the [standalone install](../doc/STANDALONE.md): the entry only sta
 
 ## Settings
 
-Your **User** settings apply to every project. A project's own settings (**Workspace**, its `.vscode/settings.json`) override the log directories and team number in that project, for Copilot and Claude Code alike; a project's list of additional directories replaces your User list there, as lists do in VS Code. A relative log path is a folder inside the project: `logs` in your User settings adds every project's simulation logs, and in a project's settings, that project's. Robot projects usually commit `.vscode/settings.json`, so in a project's settings prefer relative paths, which mean the same folder on every teammate's computer.
+Your **User** settings apply to every project. A project's own settings (**Workspace**, its `.vscode/settings.json`) override the log directories and team number in that project, for Copilot and Claude Code alike; a project's list of additional directories replaces your User list there, as lists do in VS Code. A relative log path is a folder inside the project: in your User settings it names that folder in every project, and in a project's settings, in that project. For example, if your robot code writes simulation logs to a `logs` folder, adding `logs` lists them. Robot projects usually commit `.vscode/settings.json`, so in a project's settings prefer relative paths, which mean the same folder on every teammate's computer.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `wpilog-mcp.javaPath` | Path to `java` executable | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib installation year (e.g., `2026`) | auto-detect latest |
 | `wpilog-mcp.logDirectory` | Path to `.wpilog` files (relative: inside the project) | auto-detect |
-| `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published, `logs` for a project's simulation logs); REV logs are matched only within the directory holding each wpilog | none |
+| `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published, or a folder inside the project, given as a relative path); REV logs are matched only within the directory holding each wpilog | none |
 | `wpilog-mcp.teamNumber` | FRC team number for TBA lookups | `2363` |
 | `wpilog-mcp.maxHeap` | JVM heap size | `4g` |
 | `wpilog-mcp.enableForClaudeCode` | **Claude Code only:** add the server to robot projects' `.mcp.json`, where Claude Code finds it (see [Using It with Claude Code](#using-it-with-claude-code)) | on |

@@ -82,7 +82,7 @@
             },
             "default": [],
             "scope": "resource",
-            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). A relative path is a folder inside the project: `logs` adds each project's simulation logs. A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
+            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). A relative path is a folder inside the project (for example, if your robot code writes simulation logs to a `logs` folder, `logs` lists them). A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
           },
           "wpilog-mcp.teamNumber": {
             "type": "number",
