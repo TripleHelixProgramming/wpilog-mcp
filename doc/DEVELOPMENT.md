@@ -120,7 +120,7 @@ The extension's version is the project version in `build.gradle`. Every extensio
 1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; a test fails until the extension's files match.
 2. Regenerate [TOOL_RESPONSES.md](TOOL_RESPONSES.md), whose first lines carry the version (step 7 of [Changing or Adding a Tool](#changing-or-adding-a-tool)).
 3. Move the `[Unreleased]` entries in [CHANGELOG.md](../CHANGELOG.md) under the new version.
-4. Commit, then tag `v0.9.0` and push the tag. The release workflow (`.github/workflows/release.yml`) builds the server JAR and the `.vsix` under that version and attaches both to a GitHub release. It stops if the tag and `build.gradle` disagree.
+4. Commit, then tag `v0.9.0` and push the tag. The release workflow (`.github/workflows/release.yml`) builds the server JAR and the `.vsix` under that version and attaches both to a GitHub release. It stops if the tag and `build.gradle` disagree. A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release; for one, skip steps 1 to 3 and tag the version `build.gradle` already carries.
 
 ## Contributing
 
