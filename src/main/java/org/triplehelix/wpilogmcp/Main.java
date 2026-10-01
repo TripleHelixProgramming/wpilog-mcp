@@ -310,6 +310,21 @@ public class Main {
           printUsage();
           System.exit(1);
         }
+      } else if (arg.equals("-tba-key-file")) {
+        if (i + 1 < args.length) {
+          var keyFile = args[++i];
+          readKeyFile(keyFile).ifPresentOrElse(
+              key -> {
+                tbaConfig.setApiKey(key);
+                logger().debug("TBA API key read from {}", keyFile);
+              },
+              () -> logger().warn("TBA API key file {} is missing, unreadable, or empty; "
+                  + "TBA_API_KEY is used if set", keyFile));
+        } else {
+          logger().error("Error: -tba-key-file requires a path argument");
+          printUsage();
+          System.exit(1);
+        }
       } else if (arg.equals("-team")) {
         if (i + 1 < args.length) {
           try {
@@ -527,6 +542,7 @@ public class Main {
     logger().info("  -logdir <path>    Directory of log files (repeat for several)");
     logger().info("  -team <number>    Default team number for logs missing metadata");
     logger().info("  -tba-key <key>    The Blue Alliance API key for match data");
+    logger().info("  -tba-key-file <path> File holding The Blue Alliance API key");
     logger().info("  -diskcachedir <path> Set directory for persistent disk cache");
     logger().info("  -diskcachesize <mb>  Max disk cache size in MB (default: 8192)");
     logger().info("  -diskcachedisable    Disable persistent disk cache");
@@ -558,6 +574,20 @@ public class Main {
     logger().info("");
     logger().info("Memory management is automatic — the server adapts to available JVM heap.");
     logger().info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");
+  }
+
+  /**
+   * The TBA API key held in a file, trimmed; empty when the file is missing, unreadable, or blank.
+   * The VS Code extension passes one to the server it registers for Claude Code, so the key is in
+   * neither .mcp.json nor the environment.
+   */
+  static java.util.Optional<String> readKeyFile(String file) {
+    try {
+      var key = java.nio.file.Files.readString(Path.of(file)).strip();
+      return key.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(key);
+    } catch (IOException | RuntimeException e) {
+      return java.util.Optional.empty();
+    }
   }
 
   /**

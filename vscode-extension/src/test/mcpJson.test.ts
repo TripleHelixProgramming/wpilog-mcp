@@ -5,9 +5,15 @@ import * as path from "path";
 import {
   SERVER_NAME,
   TBA_KEY_REFERENCE,
+  addToGitignore,
   buildServerEntry,
+  gitAction,
+  hasServerEntry,
   mergeServerEntry,
+  otherWpilogServer,
   scrubTbaKey,
+  shouldWriteEntry,
+  writeMode,
 } from "../mcpJson";
 
 const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", ["/logs"], 2363);
@@ -103,4 +109,64 @@ test("nothing to remove: no file, no entry, a reference, or unparseable text", (
   assert.ok(again.ok);
   assert.equal(again.changed, false);
   assert.equal(scrubTbaKey("{ broken").ok, false);
+});
+
+test("the TBA key reaches the server by file: its path is an argument, the key is nowhere", () => {
+  const withKey = buildServerEntry("/java", "/jar", "2g", [], 0, "/storage/tba-api-key");
+  assert.deepEqual(withKey.args.slice(-2), ["-tba-key-file", "/storage/tba-api-key"]);
+  assert.equal(withKey.env["TBA_API_KEY"], TBA_KEY_REFERENCE);
+  assert.ok(!buildServerEntry("/java", "/jar", "2g", [], 0).args.includes("-tba-key-file"));
+});
+
+test("writeMcpJson: robot projects by default; true and false from development builds", () => {
+  assert.equal(writeMode(undefined), "robotProjects");
+  assert.equal(writeMode("robotProjects"), "robotProjects");
+  assert.equal(writeMode("always"), "always");
+  assert.equal(writeMode("never"), "never");
+  assert.equal(writeMode(true), "always");
+  assert.equal(writeMode(false), "never");
+  assert.equal(writeMode("sometimes"), "robotProjects");
+});
+
+test("by default the entry is written in robot projects and kept wherever one exists", () => {
+  assert.equal(shouldWriteEntry("robotProjects", true, false), true);
+  assert.equal(shouldWriteEntry("robotProjects", false, true), true, "an earlier version's entry");
+  assert.equal(shouldWriteEntry("robotProjects", false, false), false);
+  assert.equal(shouldWriteEntry("always", false, false), true);
+  assert.equal(shouldWriteEntry("never", true, true), false);
+});
+
+test("hasServerEntry finds this server's entry and nothing else", () => {
+  assert.equal(hasServerEntry(undefined), false);
+  assert.equal(hasServerEntry(""), false);
+  assert.equal(hasServerEntry("{ broken"), false);
+  assert.equal(hasServerEntry(JSON.stringify({ mcpServers: { wpilog: { command: "x" } } })), false);
+  assert.equal(hasServerEntry(JSON.stringify({ mcpServers: [] })), false);
+  assert.equal(hasServerEntry(JSON.stringify({ mcpServers: { [SERVER_NAME]: entry } })), true);
+});
+
+test("a .mcp.json the repository shares is never written; one git would pick up is offered to ignore", () => {
+  assert.equal(gitAction("tracked"), "skipShared");
+  assert.equal(gitAction("untracked"), "writeAndOfferIgnore");
+  assert.equal(gitAction("ignored"), "write");
+  assert.equal(gitAction("none"), "write");
+});
+
+test("another entry that runs wpilog-mcp (the standalone install) is found; this server's is not", () => {
+  const standalone = { mcpServers: { wpilog: { command: "/Users/x/.wpilog-mcp/bin/wpilog-mcp" } } };
+  assert.equal(otherWpilogServer(JSON.stringify(standalone)), "wpilog");
+  const jar = { mcpServers: { logs: { command: "java", args: ["-jar", "/opt/wpilog-mcp-0.9.0-all.jar"] } } };
+  assert.equal(otherWpilogServer(JSON.stringify(jar)), "logs");
+  assert.equal(otherWpilogServer(JSON.stringify({ mcpServers: { [SERVER_NAME]: entry } })), undefined);
+  assert.equal(otherWpilogServer(JSON.stringify({ mcpServers: { github: { command: "gh" } } })), undefined);
+  assert.equal(otherWpilogServer(undefined), undefined);
+  assert.equal(otherWpilogServer("{ broken"), undefined);
+});
+
+test("addToGitignore appends .mcp.json with a comment, keeping what is there", () => {
+  const added = "# Claude Code's MCP servers (paths for this computer only)\n.mcp.json\n";
+  assert.equal(addToGitignore(undefined), added);
+  assert.equal(addToGitignore(""), added);
+  assert.equal(addToGitignore("build/\n"), "build/\n\n" + added);
+  assert.equal(addToGitignore("build/"), "build/\n\n" + added);
 });

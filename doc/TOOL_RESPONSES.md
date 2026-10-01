@@ -507,7 +507,7 @@ Response:
   "has_more": true,
   "tba_enrichment": {
     "available": false,
-    "reason": "not configured (set TBA_API_KEY, -tba-key, or tba_key)"
+    "reason": "not configured. In VS Code, run 'WPILog Analyzer: Set The Blue Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml (or pass -tba-key, or set TBA_API_KEY)"
   },
   "metadata_cache": {
     "size": 96,
@@ -933,7 +933,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 18,
+    "heap_used_mb": 25,
     "heap_max_mb": 512
   }
 }
@@ -1461,12 +1461,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 203,
-    "total_mb": 342,
+    "used_mb": 251,
+    "total_mb": 376,
     "max_mb": 512,
-    "free_mb": 138
+    "free_mb": 124
   },
-  "jvm_heap_used_mb": 203,
+  "jvm_heap_used_mb": 251,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
@@ -6400,7 +6400,7 @@ Response:
   "status": "ok",
   "available": false,
   "configuration": "not_configured",
-  "hint": "Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account"
+  "hint": "In VS Code, run 'WPILog Analyzer: Set The Blue Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml (or pass -tba-key, or set TBA_API_KEY). Get a free API key at https://www.thebluealliance.com/account"
 }
 ```
 
@@ -6438,7 +6438,7 @@ Response:
 {
   "success": false,
   "status": "error",
-  "error": "TBA API not configured. Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account"
+  "error": "TBA API not configured. In VS Code, run 'WPILog Analyzer: Set The Blue Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml (or pass -tba-key, or set TBA_API_KEY). Get a free API key at https://www.thebluealliance.com/account"
 }
 ```
 

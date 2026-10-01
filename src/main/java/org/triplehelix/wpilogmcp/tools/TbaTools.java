@@ -98,13 +98,13 @@ public final class TbaTools {
             ? "TBA data will be included in list_available_logs for logs with team number in "
                 + "metadata"
             : "list_available_logs reports tba_enrichment.available false with this reason until "
-                + "the key works: check TBA_API_KEY, -tba-key, or tba_key in servers.yaml");
+                + "the key works. To change the key: "
+                + org.triplehelix.wpilogmcp.tba.TbaConfig.HOW_TO_SET_KEY);
       } else {
         result.addProperty("available", false);
         result.addProperty("configuration", "not_configured");
-        result.addProperty("hint",
-            "Set TBA_API_KEY environment variable or use -tba-key argument. "
-                + "Get a free API key at https://www.thebluealliance.com/account");
+        result.addProperty("hint", org.triplehelix.wpilogmcp.tba.TbaConfig.HOW_TO_SET_KEY
+            + ". Get a free API key at https://www.thebluealliance.com/account");
       }
 
       return result;
@@ -167,8 +167,9 @@ public final class TbaTools {
       var client = tbaClient;
 
       if (!client.isAvailable()) {
-        return errorResult("TBA API not configured. Set TBA_API_KEY environment variable or use -tba-key argument. "
-            + "Get a free API key at https://www.thebluealliance.com/account");
+        return errorResult("TBA API not configured. "
+            + org.triplehelix.wpilogmcp.tba.TbaConfig.HOW_TO_SET_KEY
+            + ". Get a free API key at https://www.thebluealliance.com/account");
       }
 
       int year = getRequiredInt(arguments, "year");

@@ -8,7 +8,7 @@
 
 AI-powered FRC robot log analysis for VS Code. Analyzes `.wpilog` telemetry files from the roboRIO to help diagnose brownouts, CAN errors, swerve drive issues, loop timing problems, and more.
 
-This extension registers an [MCP server](https://modelcontextprotocol.io/) that gives AI agents access to semantically described robot log analysis tools, including the ability to extract the raw data for further processing. The server is designed for and tested with Claude. It should work with any AI agent that uses the VS Code MCP server registry (Claude Code, Copilot, etc.).
+This extension registers an [MCP server](https://modelcontextprotocol.io/) that gives AI agents access to semantically described robot log analysis tools, including the ability to extract the raw data for further processing. The server is designed for and tested with Claude. Copilot and other agents that use VS Code's MCP server registry find it there; for Claude Code, which reads `.mcp.json` instead, the extension adds it to your robot project's `.mcp.json` (see [Using It with Claude Code](#using-it-with-claude-code)).
 
 </td>
 </tr>
@@ -18,7 +18,8 @@ This extension registers an [MCP server](https://modelcontextprotocol.io/) that 
 
 1. **Install this extension** (see below)
 2. **Put your `.wpilog` files** in `~/riologs` (or configure a custom path in settings)
-3. **Ask your AI assistant** about your logs:
+3. **Open your robot project** in VS Code. With Claude Code, approve the `wpilog-analyzer` server the first time it asks in that project.
+4. **Ask your AI assistant** about your logs:
    - *"What logs are available?"*
    - *"Can you walk me through the power delivery in our last match?"*
    - *"Help me understand if we had any CAN bus issues while enabled"*
@@ -44,9 +45,18 @@ code --install-extension wpilog-analyzer-{version}.vsix
 
 On activation, the extension finds the WPILib JDK and server JAR, then registers a stdio-based MCP server via the VS Code `McpServerDefinitionProvider` API. Settings changes trigger automatic re-registration.
 
-**Claude Code** does not use that API; it finds servers in a `.mcp.json` file in the workspace root. Turn on `wpilog-mcp.writeMcpJson` and the extension adds (and keeps up to date) a `wpilog-analyzer` entry there. Other servers already in the file are left alone, and a file that isn't valid JSON is not touched. The entry contains this computer's Java and JAR paths, so keep `.mcp.json` out of version control (add it to your robot project's `.gitignore`).
-
 **Tip:** Open your robot project in VS Code while analyzing logs. The AI agent can cross-reference telemetry data with your source code — mapping logged entry names back to the subsystems that produce them, correlating PID tuning constants with observed behavior, and providing analysis tailored to your team's specific robot architecture.
+
+## Using It with Claude Code
+
+Claude Code doesn't use VS Code's MCP server registry; it finds servers in a `.mcp.json` file in the folder it runs in. So in a WPILib robot project (a folder with `.wpilib/wpilib_preferences.json`), the extension adds a `wpilog-analyzer` entry to that folder's `.mcp.json` and keeps it up to date. Other servers in the file are left alone, and a file that isn't valid JSON is not touched.
+
+- **Nothing to set up.** Open the robot project in VS Code with the extension installed, start Claude Code there, and approve `wpilog-analyzer` when it asks (Claude Code asks once per project before starting a server from `.mcp.json`; `/mcp` lists it). This works for Claude Code in VS Code and for the `claude` command in a terminal in that folder.
+- **Never commit or share `.mcp.json`.** The entry holds this computer's Java and JAR paths, which mean nothing on a teammate's computer, so the file belongs in `.gitignore`. The extension never writes into a `.mcp.json` that git tracks (it tells you how to stop tracking it), and when git would pick the file up, it offers to add `.mcp.json` to `.gitignore`.
+- **The TBA key needs nothing extra.** The key you set with **WPILog Analyzer: Set The Blue Alliance API Key** reaches Claude Code's server through a file only you can read, in the extension's storage; `.mcp.json` holds only that file's path, never the key.
+- **Updates don't break it.** The entry points at a copy of the server JAR in the extension's storage, refreshed when the extension updates, so its path never changes. An entry an earlier version wrote (pointing at a folder VS Code deletes after an update) is rewritten when the project is next opened.
+- **Using the standalone install with Claude Code too?** If the project's `.mcp.json` already has an entry that runs wpilog-mcp (such as the standalone install's `wpilog`), the extension leaves the file alone, so Claude Code doesn't start two servers. If you registered the standalone server for all projects (`claude mcp add --scope user`), set `wpilog-mcp.writeMcpJson` to `never`.
+- **Other folders:** set `wpilog-mcp.writeMcpJson` to `always` to add the entry in every workspace folder, or to `never` to stop adding it.
 
 ## Requirements
 
@@ -63,15 +73,15 @@ On activation, the extension finds the WPILib JDK and server JAR, then registers
 | `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published); REV logs are matched only within the directory holding each wpilog | none |
 | `wpilog-mcp.teamNumber` | FRC team number for TBA lookups | `2363` |
 | `wpilog-mcp.maxHeap` | JVM heap size | `4g` |
-| `wpilog-mcp.writeMcpJson` | Add a `wpilog-analyzer` entry to the workspace's `.mcp.json` for Claude Code | off |
+| `wpilog-mcp.writeMcpJson` | Where to add the `wpilog-analyzer` entry Claude Code reads from `.mcp.json`: `robotProjects`, `always`, or `never` | `robotProjects` |
 
 ## The Blue Alliance API Key
 
-Match data from The Blue Alliance needs a free read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account). Run **WPILog Analyzer: Set The Blue Alliance API Key** from the Command Palette (`Ctrl+Shift+P`) and paste it. The key is kept in VS Code's secret storage (your operating system's keychain), not in a settings file, and reaches the server only through its environment. **WPILog Analyzer: Clear The Blue Alliance API Key** removes it.
+Match data from The Blue Alliance needs a free read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account). Run **WPILog Analyzer: Set The Blue Alliance API Key** from the Command Palette (`Ctrl+Shift+P`) and paste it. The key is kept in VS Code's secret storage (your operating system's keychain), not in a settings file. It reaches the server VS Code starts through that server's environment, and Claude Code's through a file only you can read (see [Using It with Claude Code](#using-it-with-claude-code)); you set no environment variables. **WPILog Analyzer: Clear The Blue Alliance API Key** removes it, and that file.
 
 - **Upgrading from 0.8.x:** earlier versions kept the key in the `wpilog-mcp.tbaApiKey` setting, which is stored in plaintext. The extension moves a key found there into secret storage and clears the setting.
 - **Earlier versions also wrote the key into `.mcp.json`** in the workspace root. The extension removes it from that file. If the file (or a workspace `.vscode/settings.json` holding the key) was ever committed or shared, revoke the key on your TBA account page and set a new one.
-- **Claude Code:** the `.mcp.json` entry never contains the key. It passes `${TBA_API_KEY}` from Claude Code's own environment, so to use TBA from Claude Code, set `TBA_API_KEY` in the shell that starts it.
+- **Claude Code:** the `.mcp.json` entry never contains the key, only the path of the file that holds it.
 
 ## Auto-Detection
 
@@ -92,19 +102,20 @@ Open the Extensions sidebar (`Ctrl+Shift+X`), find **WPILog Analyzer**, click th
 code --uninstall-extension TripleHelixProgramming.wpilog-analyzer
 ```
 
-The extension writes no files outside its own install directory, except the `wpilog-analyzer` entry in the workspace's `.mcp.json` when `wpilog-mcp.writeMcpJson` is on: delete that entry (or the file) if you no longer want it. To remove the stored TBA API key, run **WPILog Analyzer: Clear The Blue Alliance API Key** before uninstalling.
+Besides its install directory, the extension writes the `wpilog-analyzer` entry in robot projects' `.mcp.json` (delete the entry, or the file, if you no longer want it), and, in VS Code's storage for the extension (`globalStorage/triplehelixprogramming.wpilog-analyzer`), a copy of the server JAR for Claude Code and the TBA key file. To remove the stored TBA API key and its file, run **WPILog Analyzer: Clear The Blue Alliance API Key** before uninstalling.
 
 ## Troubleshooting
 
 - **Server not starting** — Open the Output panel (`Ctrl+Shift+U`) and select **WPILog Analyzer** from the dropdown. This shows the Java path, JAR path, and any error messages.
 - **Java not found** — If you're using WPILib VS Code, the extension should find the bundled JDK automatically. Otherwise, set `wpilog-mcp.javaPath` in VS Code settings to point to a JDK 17+ `java` executable.
 - **Tools not appearing** — Restart VS Code completely (quit and relaunch, not just reload the window).
+- **Claude Code doesn't list `wpilog-analyzer`** — The **WPILog Analyzer** output says what the extension did with each folder's `.mcp.json`: no entry outside robot projects (set `wpilog-mcp.writeMcpJson` to `always`), none in a `.mcp.json` that git tracks or that already runs wpilog-mcp. In Claude Code, run `/mcp`: a server waiting for approval is listed as pending. A Claude Code session started before the entry was written needs restarting.
 - **Out of memory with large logs** — Set `wpilog-mcp.maxHeap` to `8g` in VS Code settings.
 - **Log files show as corrupted** — Truncated logs (from robot power loss) are handled gracefully. The server recovers as much data as possible and marks the log as truncated.
 
 ## Standalone Install (without VS Code)
 
-If you use Claude Desktop, Claude Code CLI, or another MCP client, see [doc/STANDALONE.md](../doc/STANDALONE.md) for standalone installation and configuration.
+If you use Claude Desktop, or Claude Code without VS Code, or another MCP client, see [doc/STANDALONE.md](../doc/STANDALONE.md) for standalone installation and configuration.
 
 ## More Information
 

@@ -6,12 +6,13 @@ import { combineLogDirectories, expandTilde } from "./logDirectories";
 
 /**
  * The directories to pass to the server: the main one (see findLogDirectory), then those in
- * wpilog-mcp.additionalLogDirectories, each once.
+ * wpilog-mcp.additionalLogDirectories, each once. With `prompt` false, a missing main directory is
+ * left out rather than asked for (for work done in the background).
  */
-export async function findLogDirectories(): Promise<string[]> {
+export async function findLogDirectories(prompt = true): Promise<string[]> {
   const config = vscode.workspace.getConfiguration("wpilog-mcp");
   return combineLogDirectories(
-    await findLogDirectory(),
+    await findLogDirectory(prompt),
     config.get<unknown>("additionalLogDirectories")
   );
 }
@@ -24,9 +25,9 @@ export async function findLogDirectories(): Promise<string[]> {
  * 2. ~/riologs
  * 3. ~/wpilib/logs
  * 4. ~/Documents/FRC/logs
- * 5. Prompt user with a folder picker
+ * 5. Prompt user with a folder picker (unless `prompt` is false)
  */
-export async function findLogDirectory(): Promise<string | undefined> {
+export async function findLogDirectory(prompt = true): Promise<string | undefined> {
   const config = vscode.workspace.getConfiguration("wpilog-mcp");
 
   // 1. User override — trust the path without checking existence
@@ -51,6 +52,9 @@ export async function findLogDirectory(): Promise<string | undefined> {
   }
 
   // 5. Prompt user
+  if (!prompt) {
+    return undefined;
+  }
   const choice = await vscode.window.showInformationMessage(
     "WPILog Analyzer: No log directory found. Where are your .wpilog files?",
     "Browse...",

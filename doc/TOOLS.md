@@ -1279,7 +1279,7 @@ Get The Blue Alliance API integration status, including configuration and cache 
   "status": "ok",
   "available": false,
   "configuration": "not_configured",
-  "hint": "Set TBA_API_KEY environment variable or use -tba-key argument. Get a free API key at https://www.thebluealliance.com/account"
+  "hint": "In VS Code, run 'WPILog Analyzer: Set The Blue Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml (or pass -tba-key, or set TBA_API_KEY). Get a free API key at https://www.thebluealliance.com/account"
 }
 ```
 
@@ -1367,7 +1367,7 @@ Query match scores and detailed results directly from The Blue Alliance. **Use t
 ```
 
 **Error Handling:**
-- If TBA is not configured: Returns error with instructions to set `TBA_API_KEY`
+- If TBA is not configured: Returns error saying how to set the key (the VS Code command, or `tba_key` in the standalone server's `servers.yaml`)
 - If the match or the event is not found (TBA answers 404): `status: no_match` with `match_found: false`, a `reason` (the event code is wrong, or the event has no such match), and suggestions or similar event codes
 - If TBA cannot answer (a rejected API key, a server error, no network): `status: error` saying so — never reported as a missing match
 

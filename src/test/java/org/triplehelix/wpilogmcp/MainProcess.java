@@ -28,8 +28,8 @@ final class MainProcess {
   /**
    * Runs {@code Main} with the given arguments in a child JVM on this JVM's class path, stdin
    * at end of file (the stdio server starts, sees the client gone, and exits), with
-   * {@code WPILOG_DEBUG} and {@code WPILOG_DIR} unset unless {@code env} sets them, and returns
-   * everything it wrote to stdout and stderr.
+   * {@code WPILOG_DEBUG}, {@code WPILOG_DIR}, and {@code TBA_API_KEY} unset unless {@code env}
+   * sets them, and returns everything it wrote to stdout and stderr.
    *
    * @param workDir A scratch directory for the empty stdin file
    */
@@ -50,6 +50,7 @@ final class MainProcess {
     var pb = new ProcessBuilder(command);
     pb.environment().remove("WPILOG_DEBUG");
     pb.environment().remove("WPILOG_DIR");
+    pb.environment().remove("TBA_API_KEY");
     pb.environment().putAll(env);
     pb.redirectErrorStream(true);
     pb.redirectInput(stdin.toFile());

@@ -217,7 +217,8 @@ public final class CoreTools {
       var tbaStatus = new JsonObject();
       if (!tbaAvailable) {
         tbaStatus.addProperty("available", false);
-        tbaStatus.addProperty("reason", "not configured (set TBA_API_KEY, -tba-key, or tba_key)");
+        tbaStatus.addProperty("reason", "not configured. "
+            + org.triplehelix.wpilogmcp.tba.TbaConfig.HOW_TO_SET_KEY);
       } else if (tbaFailure != null) {
         tbaStatus.addProperty("available", false);
         tbaStatus.addProperty("reason", tbaFailure + " The logs on this page carry no tba field "

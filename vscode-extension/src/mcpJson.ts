@@ -2,9 +2,11 @@
  * The workspace `.mcp.json` entry through which Claude Code finds the server. Pure functions (no
  * VS Code API) so they can be tested on their own.
  *
- * The entry never holds the TBA API key: it passes `${TBA_API_KEY:-}`, which Claude Code expands
- * from its own environment (empty when unset). Only the `wpilog-analyzer` entry is written; every
- * other server and key in the file is kept.
+ * The entry holds this computer's paths, so it belongs in a `.mcp.json` that git ignores, never in
+ * one the repository shares. It never holds the TBA API key: the key reaches the server through a
+ * file only this user can read (`-tba-key-file`), or `${TBA_API_KEY:-}` from Claude Code's own
+ * environment. Only the `wpilog-analyzer` entry is written; every other server and key in the file
+ * is kept.
  */
 import { addLogDirectories } from "./logDirectories";
 
@@ -20,13 +22,17 @@ export interface ServerEntry {
   env: Record<string, string>;
 }
 
-/** Builds the entry. The key is referenced, never included. */
+/**
+ * Builds the entry. The key is never included: `tbaKeyFile` names the file holding it, and the
+ * environment reference covers a key set where Claude Code runs.
+ */
 export function buildServerEntry(
   javaPath: string,
   jarPath: string,
   maxHeap: string,
   logDirs: string[],
-  teamNumber: number
+  teamNumber: number,
+  tbaKeyFile?: string
 ): ServerEntry {
   const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
   const env: Record<string, string> = {};
@@ -35,8 +41,85 @@ export function buildServerEntry(
     args.push("-team", String(teamNumber));
     env["WPILOG_TEAM"] = String(teamNumber);
   }
+  if (tbaKeyFile) {
+    args.push("-tba-key-file", tbaKeyFile);
+  }
   env["TBA_API_KEY"] = TBA_KEY_REFERENCE;
   return { command: javaPath, args, env };
+}
+
+/** Where the extension keeps an entry in `.mcp.json`: the `wpilog-mcp.writeMcpJson` setting. */
+export type WriteMode = "robotProjects" | "always" | "never";
+
+/** The setting's value as a mode; `true` and `false` (its values in development builds) mean always and never. */
+export function writeMode(value: unknown): WriteMode {
+  if (value === "always" || value === true) return "always";
+  if (value === "never" || value === false) return "never";
+  return "robotProjects";
+}
+
+/**
+ * Whether to add or update the entry in a workspace folder: in every folder, in none, or (the
+ * default) in a WPILib robot project and wherever an entry already exists, so that an entry an
+ * earlier version wrote (pointing at its own, since deleted, folder) is brought up to date.
+ */
+export function shouldWriteEntry(mode: WriteMode, robotProject: boolean, hasEntry: boolean): boolean {
+  switch (mode) {
+    case "always":
+      return true;
+    case "never":
+      return false;
+    default:
+      return robotProject || hasEntry;
+  }
+}
+
+/** Whether the file's text holds this server's entry (a file that is not a JSON object holds none). */
+export function hasServerEntry(existing: string | undefined): boolean {
+  const parsed = parse(existing);
+  return parsed.ok && isObject(parsed.doc.mcpServers) && isObject(parsed.doc.mcpServers[SERVER_NAME]);
+}
+
+/**
+ * The name of another entry in the file that already runs wpilog-mcp (the standalone install's
+ * launcher, or a wpilog-mcp JAR), if any: adding this server beside it would give Claude Code two
+ * copies of every tool.
+ */
+export function otherWpilogServer(existing: string | undefined): string | undefined {
+  const parsed = parse(existing);
+  if (!parsed.ok || !isObject(parsed.doc.mcpServers)) return undefined;
+  for (const [name, server] of Object.entries(parsed.doc.mcpServers)) {
+    if (name === SERVER_NAME || !isObject(server)) continue;
+    const words = [server.command, ...(Array.isArray(server.args) ? server.args : [])];
+    if (words.some((w) => typeof w === "string" && /wpilog-mcp/i.test(w))) return name;
+  }
+  return undefined;
+}
+
+/** What git makes of a folder's `.mcp.json`; `none` when it is not in a repository or git is unavailable. */
+export type GitStatus = "ignored" | "untracked" | "tracked" | "none";
+
+/**
+ * What to do with `.mcp.json` given git's view of it. The entry holds this computer's paths, so it
+ * is never written into a file the repository shares (`tracked`); a file git would pick up
+ * (`untracked`) is written, with an offer to ignore it.
+ */
+export function gitAction(status: GitStatus): "write" | "writeAndOfferIgnore" | "skipShared" {
+  switch (status) {
+    case "tracked":
+      return "skipShared";
+    case "untracked":
+      return "writeAndOfferIgnore";
+    default:
+      return "write";
+  }
+}
+
+/** The `.gitignore` text with `.mcp.json` added at the end, under a comment saying why. */
+export function addToGitignore(existing: string | undefined): string {
+  const text = existing ?? "";
+  const lead = text === "" ? "" : text.endsWith("\n") ? "\n" : "\n\n";
+  return text + lead + "# Claude Code's MCP servers (paths for this computer only)\n.mcp.json\n";
 }
 
 export type Edit = { ok: true; text: string; changed: boolean } | { ok: false; error: string };

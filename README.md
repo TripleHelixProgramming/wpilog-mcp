@@ -33,11 +33,11 @@ wpilog-mcp lets you ask those questions in plain English. Load your robot's tele
 
 There are two ways to run wpilog-mcp, depending on which AI client you use. The server is designed for and tested with Claude, but should work with any MCP-capable client.
 
-**[VS Code Extension](vscode-extension/README.md)** — Install the **WPILog Analyzer** extension and it handles everything: Java detection, server startup, and MCP registration. This is the easiest path if you use VS Code with Claude Code, Copilot, or any other MCP-compatible agent. No manual configuration needed. When used with your robot project open, the AI can cross-reference log data with your source code for richer, team-specific analysis.
+**[VS Code Extension](vscode-extension/README.md)** — Install the **WPILog Analyzer** extension and it handles everything: Java detection, server startup, and MCP registration. This is the easiest path if you use VS Code with Claude Code, Copilot, or any other MCP-compatible agent. No manual configuration needed: for Claude Code, the extension adds the server to your robot project's `.mcp.json`, and you approve it once. When used with your robot project open, the AI can cross-reference log data with your source code for richer, team-specific analysis.
 
 **[Standalone Install](doc/STANDALONE.md)** — For MCP clients outside VS Code: Claude Desktop, Claude Code CLI, Gemini, or other MCP-compatible tools. You run `./gradlew install`, configure `servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.  The server will add its capabilities to those your tool already possesses.
 
-Both can be installed at the same time. They run as independent server instances with separate configuration — the extension uses VS Code settings while the standalone install uses `~/.wpilog-mcp/servers.yaml`. Changes to one do not affect the other.
+Both can be installed at the same time. They run as independent server instances with separate configuration — the extension uses VS Code settings while the standalone install uses `~/.wpilog-mcp/servers.yaml`. For Claude Code, use one of them per project: the extension adds itself to a robot project's `.mcp.json` unless that file already runs wpilog-mcp (see [Using It with Claude Code](vscode-extension/README.md#using-it-with-claude-code)). `.mcp.json` holds paths on your computer, so never commit or share it.
 
 ### Then Just Ask
 

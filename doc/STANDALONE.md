@@ -127,6 +127,7 @@ wpilog-mcp start http --port 9000
 | `-logdir <path>` (repeatable) | `WPILOG_DIR` (several separated by `:`, or `;` on Windows) |
 | `-team <number>` | `WPILOG_TEAM` |
 | `-tba-key <key>` | `TBA_API_KEY` |
+| `-tba-key-file <path>` (a file holding the key; the VS Code extension passes one) | — |
 | `-diskcachedir <path>` | `WPILOG_DISK_CACHE_DIR` |
 | `-diskcachesize <mb>` | `WPILOG_DISK_CACHE_SIZE` |
 | `-diskcachedisable` | `WPILOG_DISK_CACHE_DISABLE` |
@@ -145,31 +146,43 @@ The launcher script sets `WPILOG_MAX_HEAP` (default `4g`) for JVM heap size. Lar
 
 ## MCP Client Setup
 
-### Claude Code CLI
+### Claude Code
 
-Add to `~/.claude/settings.json`:
+Register the server once, for all your projects:
+```bash
+claude mcp add --scope user wpilog -- ~/.wpilog-mcp/bin/wpilog-mcp
+```
+On Windows (Command Prompt): `claude mcp add --scope user wpilog -- cmd /c %USERPROFILE%\.wpilog-mcp\bin\wpilog-mcp.bat`
+
+This stores the server in your own Claude Code configuration (`~/.claude.json`), not in any project. The launcher path never changes when you upgrade, so the registration keeps working. Run `/mcp` in Claude Code to check that `wpilog` is connected.
+
+To make the server available in a single project instead, put the same command in a `.mcp.json` at the project root:
 ```json
 {
   "mcpServers": {
     "wpilog": {
-      "command": "wpilog-mcp"
+      "command": "/Users/you/.wpilog-mcp/bin/wpilog-mcp"
     }
   }
 }
 ```
+Use the full path (`~` is not expanded in JSON), and **never commit or share this file**: it holds a path on your computer, so add `.mcp.json` to the project's `.gitignore`. Claude Code asks you to approve a server from `.mcp.json` the first time it sees it.
+
+The server reads everything else from `~/.wpilog-mcp/servers.yaml`, including the TBA key (`tba_key`), so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It with Claude Code](../vscode-extension/README.md#using-it-with-claude-code): it leaves a `.mcp.json` that already runs wpilog-mcp alone, and with a user-scope registration like the one above, set its `wpilog-mcp.writeMcpJson` to `never`.
 
 ### Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows), with the launcher's full path (Claude Desktop does not search your shell's `PATH`):
 ```json
 {
   "mcpServers": {
     "wpilog": {
-      "command": "wpilog-mcp"
+      "command": "/Users/you/.wpilog-mcp/bin/wpilog-mcp"
     }
   }
 }
 ```
+On Windows, use `C:\\Users\\you\\.wpilog-mcp\\bin\\wpilog-mcp.bat`.
 
 ### HTTP Transport
 
