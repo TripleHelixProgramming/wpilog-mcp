@@ -72,6 +72,13 @@ Stress tests use `~/riologs` and team 2363 by default. Override by adding a `str
 
 Requires [Node.js](https://nodejs.org/). For `installExtension`, close VS Code before running, then restart when done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
 
+The extension's version is the project version in `build.gradle`: every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release and is replaced by the release itself.
+
+## Releasing
+
+1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; `ExtensionVersionTest` fails until the extension's files match.
+2. Commit, then tag `v0.9.0` and push the tag. The release workflow builds the server JAR and the `.vsix` under that version, and stops if the tag and `build.gradle` disagree.
+
 ## Contributing
 
 1. **Report bugs** - Open an issue with reproduction steps

@@ -184,6 +184,9 @@ shadowJar {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Read by ExtensionVersionTest: a changed version must rerun the tests
+    inputs.files('vscode-extension/package.json', 'vscode-extension/package-lock.json')
+        .withPropertyName('extensionManifests')
 }
 
 // Convenience task to build the fat JAR
@@ -389,12 +392,45 @@ servers:
 }
 
 // ==================== VS Code Extension ====================
+// The extension's version is the project version: syncExtensionVersion writes it into
+// package.json and package-lock.json (only when it differs), and every extension task runs it,
+// as does the release workflow. ExtensionVersionTest fails when the committed files disagree.
+
+tasks.register('syncExtensionVersion') {
+    group = 'application'
+    description = 'Write the project version into the VS Code extension\'s package.json and lock file'
+
+    def extDir = "${projectDir}/vscode-extension"
+    def projectVersion = project.version.toString()
+    doLast {
+        // Textual edits keep the files' formatting; only the extension's own version changes
+        // (in the lock file, the root and packages[""], never a dependency's)
+        def edits = [
+            (file("${extDir}/package.json")): [/(?m)^(  "version": ")[^"]*(")/],
+            (file("${extDir}/package-lock.json")): [/(?m)^(  "version": ")[^"]*(")/,
+                                                     /("packages": \{\s*"": \{[^}]*?"version": ")[^"]*(")/],
+        ]
+        edits.each { f, patterns ->
+            def text = f.text
+            def updated = patterns.inject(text) { t, p ->
+                def m = t =~ p
+                if (!m.find()) throw new GradleException("No version field matching ${p} in ${f}")
+                m.replaceFirst("\$1${java.util.regex.Matcher.quoteReplacement(projectVersion)}\$2")
+            }
+            if (updated != text) {
+                f.text = updated
+                println "Set ${f.name} version to ${projectVersion}"
+            }
+        }
+    }
+}
+
 // Copies the shadow JAR into vscode-extension/server/ for local development.
 // After running this, cd into vscode-extension/ and run: npm install && npm run compile
 // Then press F5 in VS Code to launch an Extension Development Host.
 
 tasks.register('bundleExtension', Copy) {
-    dependsOn shadowJar
+    dependsOn shadowJar, 'syncExtensionVersion'
     group = 'application'
     description = 'Copy shadow JAR into vscode-extension/server/ for local dev'
 
@@ -415,7 +451,8 @@ tasks.register('buildExtension', Exec) {
 
     def extDir = "${projectDir}/vscode-extension"
     def pkg = new groovy.json.JsonSlurper().parse(file("${extDir}/package.json"))
-    def extVersion = pkg.version
+    // The project version, which syncExtensionVersion writes into package.json before packaging
+    def extVersion = project.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
 
     // The extension lives in a subdirectory of the repo. vsce rewrites relative README
@@ -454,8 +491,7 @@ tasks.register('installExtension', Exec) {
     description = 'Build, package, and install the VS Code extension into VS Code'
 
     def extDir = "${projectDir}/vscode-extension"
-    def extVersion = new groovy.json.JsonSlurper()
-            .parse(file("${extDir}/package.json")).version
+    def extVersion = project.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
 
     // Find VS Code CLI — prefer WPILib VS Code, fall back to system 'code'
