@@ -338,7 +338,7 @@ category returns empty categories silently. `analyze_cycles`: incomplete idle pe
   recalibration (G1: sampling classification, time-weighted gaps, MAD jitter, `reasons`), with the guidance and
   CLAUDE.md calibration text; `align_entries` (sample times from records or embedded timestamps, three
   interpolations, angle-aware difference statistics) and lag search in `time_correlate`/`compare_entries`. The
-  optional §5.6 pose helpers remain deferred.
+  optional §5.6 pose helpers remain deferred. *[Later added as `pose_corrections` and `compare_poses`; see Follow-up.]*
 - [x] **Phase 5 — Consistency and docs.** Done: `list_available_logs` paging and filters (G6); the description
   test (G4: every snake_case output term a description names appears in a fixture result, run inside the
   conformance sweep); the guidance audit (instructions name field paths and scope within 2000 characters; traps

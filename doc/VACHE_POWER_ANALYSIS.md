@@ -2,6 +2,8 @@
 ## What's Drawing Power, When, and What To Do About It
 ### FCH District Chesapeake VA Event | March 21-22, 2026
 
+> **Note (added 2026-10-01).** This is a historical example, produced on 2026-03-24 with wpilog-mcp 0.8.0, and its brownout conclusions are wrong. That version compared battery voltage with a fixed 6.3 V threshold and did not read the roboRIO's own brownout records. These logs record a 6.75 V brownout threshold and the roboRIO's brownout flag set in Q54 (twice, between 260.9 and 261.2 s) and in Q13 (26 times, between 191.9 and 295.5 s), so the robot did brown out at VACHE. Current versions read the threshold and the flag from the log.
+
 ---
 
 ## Bottom Line Up Front

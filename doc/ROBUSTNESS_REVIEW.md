@@ -3,6 +3,7 @@
 | | |
 |---|---|
 | **Date** | 2026-09-29 |
+| **Status** | Historical record of 0.8.2 and the working tree at that date. The issues below were worked through for 0.9.0; [ROBUSTNESS_PLAN.md](ROBUSTNESS_PLAN.md) records what was done. Appendix A and section 6 are still the reference for the golden and conformance tests. |
 | **Builds tested** | Installed 0.8.2 release jar, and the working tree (HEAD `4b39641` plus uncommitted changes; shadow jar built 2026-08-28 15:34, after the last source edit). Both builds behaved identically except where noted as **WT** (working tree). |
 | **Test log** | `akit_26-09-30_00-10-26.wpilog` — Team 2363 (Biocore), practice session, 2026-09-29 |
 | **Paths** | `tools/` = `src/main/java/org/triplehelix/wpilogmcp/tools/`, `log/` = `src/main/java/org/triplehelix/wpilogmcp/log/`. Line numbers refer to the working tree at the time of review; class and method names are given so they can be found after edits. |
@@ -95,7 +96,7 @@ Issue IDs refer to [section 4](#4-issues).
 | `generate_report` | Counted the boot-banner console batch as an error; 6.8 V hardcoded | F2, E3, B8 |
 | `analyze_swerve` | **Wrong** average module speed (0.054 m/s; true mean \|speed\| 0.93 m/s); ~400 unrelated entry names under `other`; slip, sync, and drift sections silently absent | B5, A4 |
 | `analyze_vision` | Only generic pose-jump detection on `/RealOutputs/Drive/Pose`. With `vision_prefix: "/Vision"` it returns `{target_acquisition: []}` and nothing else. | B4, A1, G4 |
-| `analyze_can_bus` | `errors: []` at confidence "high", although CANHD's transmit error counter reached 85; `bus_name` ignored; `BusOffCount` reported as utilization; 0–1 fractions labeled `avg_percent` | B3 |
+| `analyze_can_bus` | `errors: []` at confidence "high", although CANHD's transmit error counter reached 85 *[corrected: it peaks at 215 at 650.86 s]*; `bus_name` ignored; `BusOffCount` reported as utilization; 0–1 fractions labeled `avg_percent` | B3 |
 | `can_health` | "CONCERNING" from one console line; ignores the structured CAN counters | F3 |
 | `analyze_replay_drift` | `divergent_count: 0` on a log that has no replay outputs | A3, B10 |
 | `analyze_auto` | `success: true` with no content (the log has no autonomous period) | A2 |
@@ -576,7 +577,7 @@ suitable as golden values.
 - `/SystemStats/BrownedOut` true: 655.433–655.577 s and 708.435–708.473 s. `/SystemStats/BrownoutVoltage` = 6.75.
   Minimum battery voltage 6.618 V.
 - Camera 3 disconnected (`/Vision/Camera3/Connected` false; alert "Vision camera 3 is disconnected."):
-  737.68–783.86 s.
+  737.68–783.86 s. *[Corrected: that is the `Connected` interval; the alert in `/RealOutputs/Alerts/warnings` runs 737.678–783.804 s. Camera 3 was also disconnected at boot, 12.658–26.719 s, with its alert raised at 10.827 s.]*
 
 **Loop timing** (`/RealOutputs/LoggedRobot/FullCycleMS`)
 - First sample 9,603.5 ms at 8.359 s (boot).
