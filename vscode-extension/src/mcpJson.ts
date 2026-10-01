@@ -1,52 +1,55 @@
 /**
- * The workspace `.mcp.json` entry through which Claude Code finds the server. Pure functions (no
- * VS Code API) so they can be tested on their own.
+ * How Claude Code finds and configures the server. Pure functions (no VS Code API) so they can be
+ * tested on their own.
  *
- * The entry holds this computer's paths, so it belongs in a `.mcp.json` that git ignores, not in
- * one the repository shares, where it would be no use to others and each person's extension would
- * rewrite it. It never holds the TBA API key: the key reaches the server through a
- * file only this user can read (`-tba-key-file`), or `${TBA_API_KEY:-}` from Claude Code's own
- * environment. Only the `wpilog-analyzer` entry is written; every other server and key in the file
- * is kept.
+ * As with the standalone install, configuration lives in one file and each project's `.mcp.json`
+ * entry only starts the server with it: the extension writes its settings into a configuration
+ * file in its global storage (the format of the standalone's `servers.yaml`, as JSON), and the
+ * entry runs `start default --config <that file>`. A settings change rewrites that one file and
+ * reaches every project; entries are the same in every project and change only with the Java
+ * path or heap size. The entry holds this computer's paths, so it belongs in a `.mcp.json` that
+ * git ignores, not in one the repository shares, where it would be no use to others and each
+ * person's extension would rewrite it. It never holds the TBA API key, which is in the
+ * configuration file. Only the `wpilog-analyzer` entry is written; every other server and key in
+ * `.mcp.json` is kept.
  */
-import { addLogDirectories } from "./logDirectories";
 
 /** The server's name under `mcpServers`. */
 export const SERVER_NAME = "wpilog-analyzer";
 
-/** The key as Claude Code should pass it: from its environment, empty when unset. */
+/** A key reference left where an earlier version wrote the key in plaintext (see scrubTbaKey). */
 export const TBA_KEY_REFERENCE = "${TBA_API_KEY:-}";
 
 export interface ServerEntry {
   command: string;
   args: string[];
-  env: Record<string, string>;
+  env?: Record<string, string>;
 }
 
-/**
- * Builds the entry. The key is never included: `tbaKeyFile` names the file holding it, and the
- * environment reference covers a key set where Claude Code runs.
- */
+/** Builds the entry: the JVM, its heap, the JAR, and the configuration file to start with. */
 export function buildServerEntry(
   javaPath: string,
   jarPath: string,
   maxHeap: string,
-  logDirs: string[],
-  teamNumber: number,
-  tbaKeyFile?: string
+  configPath: string
 ): ServerEntry {
-  const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
-  const env: Record<string, string> = {};
-  addLogDirectories(args, env, logDirs);
-  if (teamNumber > 0) {
-    args.push("-team", String(teamNumber));
-    env["WPILOG_TEAM"] = String(teamNumber);
-  }
-  if (tbaKeyFile) {
-    args.push("-tba-key-file", tbaKeyFile);
-  }
-  env["TBA_API_KEY"] = TBA_KEY_REFERENCE;
-  return { command: javaPath, args, env };
+  return {
+    command: javaPath,
+    args: [`-Xmx${maxHeap}`, "-jar", jarPath, "start", "default", "--config", configPath],
+  };
+}
+
+/**
+ * The configuration file's text: one stdio server, `default`, with the log directories, the team
+ * number (when set), and the TBA key (when set). The server reads it as it reads the standalone's
+ * `servers.yaml`.
+ */
+export function buildServerConfig(logDirs: string[], teamNumber: number, tbaKey?: string): string {
+  const server: Record<string, unknown> = { transport: "stdio" };
+  if (logDirs.length > 0) server.logdir = logDirs;
+  if (teamNumber > 0) server.team = teamNumber;
+  if (tbaKey) server.tba_key = tbaKey;
+  return JSON.stringify({ servers: { default: server } }, null, 2) + "\n";
 }
 
 /**

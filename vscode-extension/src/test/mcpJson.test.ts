@@ -1,11 +1,11 @@
-// Tests for the .mcp.json entry (no VS Code needed): npm test
+// Tests for Claude Code's .mcp.json entry and configuration file (no VS Code needed): npm test
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as path from "path";
 import {
   SERVER_NAME,
   TBA_KEY_REFERENCE,
   addToGitignore,
+  buildServerConfig,
   buildServerEntry,
   gitAction,
   hasServerEntry,
@@ -15,23 +15,37 @@ import {
   shouldWriteEntry,
 } from "../mcpJson";
 
-const entry = buildServerEntry("/jdk/bin/java", "/ext/server/wpilog-mcp.jar", "4g", ["/logs"], 2363);
+const entry = buildServerEntry("/jdk/bin/java", "/storage/server/wpilog-mcp-all.jar", "4g",
+  "/storage/servers.json");
 
-test("the entry references the TBA key and never contains one", () => {
-  assert.equal(entry.env["TBA_API_KEY"], TBA_KEY_REFERENCE);
-  assert.ok(!entry.args.includes("-tba-key"));
-  assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/ext/server/wpilog-mcp.jar", "-logdir",
-    "/logs", "-team", "2363"]);
-  const bare = buildServerEntry("/java", "/jar", "2g", [], 0);
-  assert.deepEqual(bare.args, ["-Xmx2g", "-jar", "/jar"]);
-  assert.deepEqual(bare.env, { TBA_API_KEY: TBA_KEY_REFERENCE });
+test("the entry only starts the server with the configuration file: no settings, no key", () => {
+  assert.equal(entry.command, "/jdk/bin/java");
+  assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/storage/server/wpilog-mcp-all.jar", "start",
+    "default", "--config", "/storage/servers.json"]);
+  assert.equal(entry.env, undefined);
+  assert.ok(!JSON.stringify(entry).includes("tba"));
 });
 
-test("several log directories are each a -logdir and joined in WPILOG_DIR", () => {
-  const several = buildServerEntry("/java", "/jar", "2g", ["/logs", "/archive"], 0);
-  assert.deepEqual(several.args, ["-Xmx2g", "-jar", "/jar", "-logdir", "/logs", "-logdir",
-    "/archive"]);
-  assert.equal(several.env["WPILOG_DIR"], ["/logs", "/archive"].join(path.delimiter));
+test("the configuration file holds the settings in the standalone's format", () => {
+  const config = JSON.parse(buildServerConfig(["/logs", "/archive"], 2363, "the-key"));
+  assert.deepEqual(config, {
+    servers: {
+      default: { transport: "stdio", logdir: ["/logs", "/archive"], team: 2363, tba_key: "the-key" },
+    },
+  });
+});
+
+test("the configuration file leaves out what is not set", () => {
+  const config = JSON.parse(buildServerConfig([], 0));
+  assert.deepEqual(config, { servers: { default: { transport: "stdio" } } });
+  assert.equal(JSON.parse(buildServerConfig(["/logs"], 0, "")).servers.default.tba_key, undefined);
+});
+
+test("the configuration file is valid JSON ending in a newline, with paths kept exactly", () => {
+  const text = buildServerConfig(["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"], 2363);
+  assert.ok(text.endsWith("\n"));
+  assert.deepEqual(JSON.parse(text).servers.default.logdir,
+    ["C:\\Users\\me\\riologs", "/odd \"quoted\" dir"]);
 });
 
 test("a missing or blank file gets just this entry", () => {
@@ -108,13 +122,6 @@ test("nothing to remove: no file, no entry, a reference, or unparseable text", (
   assert.ok(again.ok);
   assert.equal(again.changed, false);
   assert.equal(scrubTbaKey("{ broken").ok, false);
-});
-
-test("the TBA key reaches the server by file: its path is an argument, the key is nowhere", () => {
-  const withKey = buildServerEntry("/java", "/jar", "2g", [], 0, "/storage/tba-api-key");
-  assert.deepEqual(withKey.args.slice(-2), ["-tba-key-file", "/storage/tba-api-key"]);
-  assert.equal(withKey.env["TBA_API_KEY"], TBA_KEY_REFERENCE);
-  assert.ok(!buildServerEntry("/java", "/jar", "2g", [], 0).args.includes("-tba-key-file"));
 });
 
 test("enabled for Claude Code: written in robot projects and kept wherever one exists", () => {

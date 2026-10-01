@@ -10,6 +10,7 @@ import { findJar } from "./jarManager";
 import {
   GitStatus,
   addToGitignore,
+  buildServerConfig,
   buildServerEntry,
   gitAction,
   hasServerEntry,
@@ -21,7 +22,11 @@ import {
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
 
-/** Where the TBA API key is kept: VS Code's secret storage (the OS keychain), never a file. */
+/**
+ * Where the TBA API key is kept: VS Code's secret storage (the OS keychain), never a settings
+ * file. Claude Code's server, outside VS Code, reads a copy from its configuration file, which
+ * only this user can read (see writeClaudeConfig).
+ */
 const TBA_SECRET = "wpilog-mcp.tbaApiKey";
 
 const TBA_ACCOUNT_URL = "https://www.thebluealliance.com/account";
@@ -164,12 +169,15 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("wpilog-mcp.clearTbaApiKey", async () => {
       await context.secrets.delete(TBA_SECRET);
-      await removeTbaKeyFile(context);
+      // Out of Claude Code's configuration file too, even with Claude Code turned off
+      if (fs.existsSync(claudeConfigPath(context))) {
+        await writeClaudeConfig(context);
+      }
       vscode.window.showInformationMessage(
         "WPILog Analyzer: TBA API key removed. The server restarts without it."
       );
     }),
-    // A stored or removed key restarts the server, and changes Claude Code's entry and key file
+    // A stored or removed key restarts the server, and rewrites Claude Code's configuration file
     context.secrets.onDidChange((e) => {
       if (e.key === TBA_SECRET) {
         didChangeEmitter.fire();
@@ -412,33 +420,31 @@ async function stableJar(
   }
 }
 
-/** Where the TBA key is kept for the server Claude Code starts. */
-function tbaKeyFilePath(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, "tba-api-key");
-}
-
-async function removeTbaKeyFile(context: vscode.ExtensionContext) {
-  await fs.promises.rm(tbaKeyFilePath(context), { force: true });
+/** The configuration file the server Claude Code starts reads (see buildServerConfig). */
+function claudeConfigPath(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "servers.json");
 }
 
 /**
- * The TBA key for the server Claude Code starts, which runs outside VS Code and cannot read its
- * secret storage: written to a file only this user can read, in the extension's global storage,
- * and passed by path (-tba-key-file), so the key is in neither .mcp.json nor the environment and
- * the user sets nothing. Undefined, and the file removed, when no key is stored.
+ * Writes the settings and the TBA key into the configuration file that every project's .mcp.json
+ * entry starts the server with, as the standalone install's servers.yaml does for it. The server
+ * Claude Code starts runs outside VS Code and cannot read its settings or secret storage; this
+ * file, which only this user can read, is where it finds them, so the user sets nothing. Written
+ * only when its contents change.
  */
-async function syncTbaKeyFile(context: vscode.ExtensionContext): Promise<string | undefined> {
-  const file = tbaKeyFilePath(context);
-  const key = await context.secrets.get(TBA_SECRET);
-  if (!key) {
-    await removeTbaKeyFile(context);
-    return undefined;
-  }
+async function writeClaudeConfig(context: vscode.ExtensionContext): Promise<string> {
+  const config = vscode.workspace.getConfiguration("wpilog-mcp");
+  const text = buildServerConfig(
+    await findLogDirectories(false),
+    config.get<number>("teamNumber") || 0,
+    await context.secrets.get(TBA_SECRET)
+  );
+  const file = claudeConfigPath(context);
   const current = await fs.promises.readFile(file, "utf8").catch(() => undefined);
-  if (current?.trim() !== key) {
+  if (current !== text) {
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    const temp = `${file}.${process.pid}.tmp`;
-    await fs.promises.writeFile(temp, key + "\n", { mode: 0o600 });
+    const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(temp, text, { mode: 0o600 });
     await fs.promises.rename(temp, file);
   }
   await fs.promises.chmod(file, 0o600);
@@ -494,8 +500,10 @@ async function offerToIgnore(
  * exists, and in `requested`, the folder the user named with the Add to Claude Code command
  * (whose outcome is then reported directly). Every other entry in the file is kept. The entry
  * holds this computer's paths, so a .mcp.json that git tracks (the repository shares it) is left
- * alone, and one git would pick up comes with an offer to ignore it. The entry points at a JAR
- * path that survives extension updates and passes the TBA key by file, never in the entry.
+ * alone, and one git would pick up comes with an offer to ignore it. The entry only starts the
+ * server, from a JAR path that survives extension updates, with the configuration file that holds
+ * the settings and the TBA key; that file is rewritten first, since entries in projects not open
+ * here use it too.
  */
 async function updateMcpJsonFiles(
   context: vscode.ExtensionContext,
@@ -507,6 +515,7 @@ async function updateMcpJsonFiles(
   if (!enabled && !requested) {
     return;
   }
+  const configPath = await writeClaudeConfig(context);
 
   const isRequested = (folder: vscode.WorkspaceFolder) =>
     requested !== undefined && folder.uri.toString() === requested.uri.toString();
@@ -533,9 +542,7 @@ async function updateMcpJsonFiles(
     javaPath,
     await stableJar(context, bundled, outputChannel),
     config.get<string>("maxHeap") || "4g",
-    await findLogDirectories(false),
-    config.get<number>("teamNumber") || 0,
-    await syncTbaKeyFile(context)
+    configPath
   );
 
   for (const { folder, uri, text } of targets) {

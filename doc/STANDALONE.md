@@ -127,7 +127,6 @@ wpilog-mcp start http --port 9000
 | `-logdir <path>` (repeatable) | `WPILOG_DIR` (several separated by `:`, or `;` on Windows) |
 | `-team <number>` | `WPILOG_TEAM` |
 | `-tba-key <key>` | `TBA_API_KEY` |
-| `-tba-key-file <path>` (a file holding the key; the VS Code extension passes one) | — |
 | `-diskcachedir <path>` | `WPILOG_DISK_CACHE_DIR` |
 | `-diskcachesize <mb>` | `WPILOG_DISK_CACHE_SIZE` |
 | `-diskcachedisable` | `WPILOG_DISK_CACHE_DISABLE` |
