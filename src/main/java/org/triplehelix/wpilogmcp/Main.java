@@ -554,7 +554,8 @@ public class Main {
     logger().info("  WPILOG_HTTP_PATH       HTTP endpoint path (default: /mcp)");
     logger().info("  WPILOG_HTTP_ALLOWED_ORIGINS  Comma-separated hostnames for Origin validation");
     logger().info("  WPILOG_DEBUG           Set to 'true' to enable debug logging");
-    logger().info("  WPILOG_MAX_HEAP        Max JVM heap size (default: 4g, used by run-mcp.sh/bat)");
+    logger().info("  WPILOG_MAX_HEAP        Max JVM heap size (default: 4g), read by the wpilog-mcp "
+        + "launcher and by servers started in the background with 'start'");
     logger().info("");
     logger().info("Memory management is automatic — the server adapts to available JVM heap.");
     logger().info("To increase capacity, set WPILOG_MAX_HEAP in the MCP env block (e.g., 8g).");

@@ -106,4 +106,43 @@ class SwerveFixtureTest extends FixtureToolTestBase {
     assertEquals("error", r.get("status").getAsString());
     assertTrue(r.get("error").getAsString().contains("struct:Pose2d"));
   }
+
+  @Test
+  @DisplayName("a wrong odometry_entry or vision_entry is an error naming that parameter")
+  void wrongPoseEntryIsError() {
+    // Whoever names an entry wants the drift, so a wrong one is not just a skipped section, as
+    // with measured_entry. The robot pose resolver used to name the parameter pose_entry.
+    for (var param : java.util.List.of("odometry_entry", "vision_entry")) {
+      for (var bad : java.util.List.of("/No/Such/Pose", "/RealOutputs/SwerveStates/Measured")) {
+        var r = call("analyze_swerve", "swerve_per_module", param, bad);
+        assertEquals("error", r.get("status").getAsString(), param + " " + bad + ": " + r);
+        var error = r.get("error").getAsString();
+        assertTrue(error.contains(param + " " + bad), error);
+        assertFalse(error.contains("pose_entry"), error);
+      }
+    }
+  }
+
+  @Test
+  @DisplayName("right odometry_entry and vision_entry give the drift; none found is still a skip")
+  void explicitPoseEntries() {
+    var r = call("analyze_swerve", "swerve_per_module", "odometry_entry", "/Odometry/Robot",
+        "vision_entry", "/Vision/EstimatedPose");
+    var drift = r.getAsJsonObject("odometry_drift");
+    assertEquals("/Odometry/Robot", drift.get("odometry_entry").getAsString(), r.toString());
+    assertEquals("/Vision/EstimatedPose", drift.get("vision_entry").getAsString());
+    // Without them, a log with no usable vision pose skips the drift (driftSkippedWithReason)
+    assertEquals("partial", call("analyze_swerve", "swerve_array").get("status").getAsString());
+  }
+
+  @Test
+  @DisplayName("without module states, looked_for names every word that marks a setpoint")
+  void lookedForNamesEverySetpointWord() {
+    var r = call("analyze_swerve", "wpilib_dlm");
+    assertEquals("no_match", r.get("status").getAsString(), r.toString());
+    var lookedFor = r.get("looked_for").toString();
+    for (var word : RobotAnalysisTools.AnalyzeSwerveTool.SETPOINT_WORD_LIST) {
+      assertTrue(lookedFor.contains(word), word + " missing from " + lookedFor);
+    }
+  }
 }

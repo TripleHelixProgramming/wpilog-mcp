@@ -315,6 +315,50 @@ class DaemonManagerTest {
     }
   }
 
+  // ==================== Daemon Command ====================
+
+  @Nested
+  @DisplayName("daemon heap and command")
+  class DaemonCommandTests {
+
+    @Test
+    @DisplayName("without WPILOG_MAX_HEAP or -Xmx the daemon gets the launcher's 4g, not the "
+        + "JVM default")
+    void defaultsToLauncherHeap() {
+      assertEquals("4g", DaemonManager.daemonMaxHeap(null, List.of()));
+      assertEquals("4g", DaemonManager.daemonMaxHeap("  ", List.of("-Dfoo=bar")));
+    }
+
+    @Test
+    @DisplayName("WPILOG_MAX_HEAP wins, trimmed")
+    void environmentWins() {
+      assertEquals("8g", DaemonManager.daemonMaxHeap(" 8g ", List.of("-Xmx2g")));
+    }
+
+    @Test
+    @DisplayName("otherwise the heap this JVM was started with; the last -Xmx is the one in force")
+    void inheritsOwnHeap() {
+      assertEquals("2g", DaemonManager.daemonMaxHeap(null, List.of("-Xmx2g")));
+      assertEquals("6g", DaemonManager.daemonMaxHeap(null,
+          List.of("-Xmx2g", "-Dx=y", "-Xmx6g")));
+      assertEquals("4g", DaemonManager.daemonMaxHeap(null, List.of("-Xmx")),
+          "an empty -Xmx is not a size");
+    }
+
+    @Test
+    @DisplayName("the command always sets the heap before -jar and passes the config")
+    void commandShape() {
+      var command = DaemonManager.daemonCommand("java", "4g", null, "/x/wpilog-mcp.jar",
+          "team", Path.of("/c/servers.yaml"));
+      assertEquals(List.of("java", "-Xmx4g", "-jar", "/x/wpilog-mcp.jar", "--internal-daemon",
+          "team", "--config", "/c/servers.yaml"), command);
+      var withLevel = DaemonManager.daemonCommand("java", "2g", "debug", "a.jar", "n", null);
+      assertEquals(List.of("java", "-Xmx2g",
+          "-Dorg.slf4j.simpleLogger.defaultLogLevel=debug", "-jar", "a.jar",
+          "--internal-daemon", "n"), withLevel);
+    }
+  }
+
   // ==================== Health Check ====================
 
   @Nested

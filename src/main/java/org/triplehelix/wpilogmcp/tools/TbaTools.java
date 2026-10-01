@@ -95,8 +95,9 @@ public final class TbaTools {
         result.add("cache", cache);
 
         result.addProperty("hint", check.valid()
-            ? "TBA data will be included in list_available_logs for logs with team number in "
-                + "metadata"
+            ? "list_available_logs adds TBA data to qualification and playoff logs whose event "
+                + "and match number are known, for the team number the log records or, when it "
+                + "records none, the configured team number"
             : "list_available_logs reports tba_enrichment.available false with this reason until "
                 + "the key works. To change the key: "
                 + org.triplehelix.wpilogmcp.tba.TbaConfig.HOW_TO_SET_KEY);

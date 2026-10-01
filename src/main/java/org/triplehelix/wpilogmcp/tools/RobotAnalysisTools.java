@@ -219,7 +219,8 @@ public final class RobotAnalysisTools {
           + "confirm, never guessed. "
           + "Sections that cannot be produced are listed in skipped "
           + "with the reason; use measured_entry/setpoint_entry/odometry_entry/vision_entry to "
-          + "point the tool at the right data, and scope (e.g. 'enabled') to exclude disabled time. "
+          + "point the tool at the right data (an entry named there that is missing or of the "
+          + "wrong type is an error), and scope (e.g. 'enabled') to exclude disabled time. "
           + "Returns no_match when the log has no SwerveModuleState entries."
           + GUIDANCE_UNIVERSAL + GUIDANCE_MECHANISM;
     }
@@ -247,8 +248,11 @@ public final class RobotAnalysisTools {
     record Module(String label, String measuredEntry, int measuredIndex, String setpointEntry,
         int setpointIndex) {}
 
+    /** Leaf-name words that mark a module state as a setpoint; anything else is measured. */
+    static final List<String> SETPOINT_WORD_LIST =
+        List.of("setpoint", "desired", "target", "commanded", "goal", "reference");
     static final java.util.regex.Pattern SETPOINT_WORDS =
-        java.util.regex.Pattern.compile("(?i)setpoint|desired|target|commanded|goal|reference");
+        java.util.regex.Pattern.compile("(?i)" + String.join("|", SETPOINT_WORD_LIST));
     static final java.util.regex.Pattern MEASURED_WORDS =
         java.util.regex.Pattern.compile("(?i)measured|actual|real|current|state");
 
@@ -281,6 +285,10 @@ public final class RobotAnalysisTools {
               + ", not struct:SwerveModuleState or struct:SwerveModuleState[]");
         }
       }
+      // The poses for the drift: an entry named here that is missing or not a pose is an error
+      // (whoever names one wants the drift), as above; one the tool cannot find is a skip
+      var odomRole = SignalResolver.robotPose(log, odomArg, "odometry_entry");
+      var visionRole = SignalResolver.visionPose(log, visionArg);
 
       var stateEntries = log.entries().values().stream()
           .filter(e -> e.type().equals("struct:SwerveModuleState")
@@ -300,8 +308,8 @@ public final class RobotAnalysisTools {
                     + "); no measured module states to analyze.")
             .lookedFor(List.of("struct:SwerveModuleState[] entries (one module per index)",
                 "struct:SwerveModuleState entries (one per module, grouped by parent path)",
-                "measured vs setpoint by leaf name: setpoint/desired/target/commanded/goal are "
-                    + "setpoints; anything else is measured"))
+                "measured vs setpoint by leaf name: " + String.join("/", SETPOINT_WORD_LIST)
+                    + " are setpoints; anything else is measured"))
             .hint("Pass measured_entry (and setpoint_entry) to choose the entries, or use "
                 + "search_entries with type 'SwerveModuleState'.");
         return nm.build();
@@ -428,7 +436,7 @@ public final class RobotAnalysisTools {
         builder.addData("module_sync", sync);
       }
 
-      var drift = analyzeOdometryDrift(log, odomArg, visionArg, scope, builder);
+      var drift = analyzeOdometryDrift(log, odomRole, visionRole, scope, builder);
       if (drift != null) builder.addData("odometry_drift", drift);
 
       if (qualityValues != null && !qualityValues.isEmpty()) {
@@ -543,17 +551,8 @@ public final class RobotAnalysisTools {
      * explicit entry, a conventional name, or the only candidate; entries that match by name
      * alone are listed in skipped to confirm, never used (the server does not guess).
      */
-    private JsonObject analyzeOdometryDrift(LogData log, String odomArg, String visionArg,
-        TimeScope scope, ResponseBuilder builder) {
-      SignalResolver.Resolution odomRole;
-      SignalResolver.Resolution visionRole;
-      try {
-        odomRole = SignalResolver.robotPose(log, odomArg);
-        visionRole = SignalResolver.visionPose(log, visionArg);
-      } catch (IllegalArgumentException e) {
-        builder.addSkipped("odometry_drift", e.getMessage());
-        return null;
-      }
+    private JsonObject analyzeOdometryDrift(LogData log, SignalResolver.Resolution odomRole,
+        SignalResolver.Resolution visionRole, TimeScope scope, ResponseBuilder builder) {
       if (odomRole.chosen().isEmpty() || visionRole.chosen().isEmpty()) {
         builder.addSkipped("odometry_drift", "Needs a scalar odometry pose and a scalar vision "
             + "pose (struct:Pose2d or struct:Pose3d, at least 2 samples). Odometry: "
@@ -1107,8 +1106,9 @@ public final class RobotAnalysisTools {
 
     @Override
     public String description() {
-      return "Compare one numeric signal across two logs: per log, count, min, max (with when), "
-          + "mean, std_dev, median, p5, p25, p75, p95, and data_quality; and the differences "
+      return "Compare one numeric signal across two logs: per log, sample_count, min and max "
+          + "(with min_at_sec and max_at_sec), mean, std_dev, median, p5, p25, p75, p95, and "
+          + "data_quality; and the differences "
           + "(second minus first) of mean, median, and p95. scope ('enabled', 'teleop', "
           + "'segment:<i>', ...) is resolved in each log's own timeline, so the same phase is "
           + "compared; start_time/end_time apply to each log's own clock. The name may carry a "

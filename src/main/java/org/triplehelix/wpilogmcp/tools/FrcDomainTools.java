@@ -1943,7 +1943,7 @@ public final class FrcDomainTools {
     @Override
     public String description() {
       return "Validate AdvantageKit deterministic replay: in a replay output log (the _sim log "
-          + "AdvantageScope writes), compare every /RealOutputs/X entry with /ReplayOutputs/X "
+          + "AdvantageKit's replay writes), compare every /RealOutputs/X entry with /ReplayOutputs/X "
           + "sample by sample (timestamps matched within 1 ms). Numbers are equal within "
           + "relative_tolerance (default 1e-9); arrays and structs are compared element by "
           + "element. Returns pairs_compared, the entries present on only one side, and for each "
@@ -1983,7 +1983,7 @@ public final class FrcDomainTools {
         return ResponseBuilder.notApplicable("This log has no /ReplayOutputs/ entries, so it is "
                 + "not an AdvantageKit replay output log (" + real.size() + " /RealOutputs/ "
                 + "entries, nothing to compare them with).")
-            .hint("Run AdvantageKit replay on this log (AdvantageScope writes a _sim log) and "
+            .hint("Run AdvantageKit replay on this log (it writes a _sim log) and "
                 + "call this tool on the _sim log.")
             .build();
       }

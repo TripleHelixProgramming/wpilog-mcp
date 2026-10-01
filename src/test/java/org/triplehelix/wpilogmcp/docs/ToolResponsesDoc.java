@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.docs;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.GsonBuilder;
@@ -17,10 +18,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,23 +34,15 @@ import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
-import org.triplehelix.wpilogmcp.tools.CoreTools;
-import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
-import org.triplehelix.wpilogmcp.tools.FrcDomainTools;
-import org.triplehelix.wpilogmcp.tools.PoseTools;
-import org.triplehelix.wpilogmcp.tools.QueryTools;
-import org.triplehelix.wpilogmcp.tools.RevLogTools;
-import org.triplehelix.wpilogmcp.tools.RobotAnalysisTools;
-import org.triplehelix.wpilogmcp.tools.StatisticsTools;
-import org.triplehelix.wpilogmcp.tools.TbaTools;
+import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
 /**
  * Regenerates {@code doc/TOOL_RESPONSES.md} by running the calls in
  * {@code src/test/resources/tool-responses/scenarios.json} against real logs:
  *
  * <pre>
- * ./gradlew test --tests '*ToolResponsesDoc*' -PtoolResponsesLogDir=/path/to/riologs
+ * ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/riologs
  * </pre>
  *
  * <p>Skipped unless the log directory is given. Every registered tool must have a call.
@@ -58,19 +54,60 @@ class ToolResponsesDoc {
   static final int MAX_ITEMS = 5;
   static final int MAX_STRING = 400;
 
-  record Category(String title, Consumer<ToolRegistry> register) {}
+  /** The section title for each of the server's categories, in TOOLS.md's order. */
+  static final Map<String, String> TITLES = titles();
 
-  static final List<Category> CATEGORIES = List.of(
-      new Category("Discovery Tools", DiscoveryTools::registerAll),
-      new Category("Core Tools", CoreTools::registerAll),
-      new Category("Query Tools", QueryTools::registerAll),
-      new Category("Statistics Tools", StatisticsTools::registerAll),
-      new Category("Robot Analysis Tools", RobotAnalysisTools::registerAll),
-      new Category("FRC Domain Tools", FrcDomainTools::registerAll),
-      new Category("Pose Tools", PoseTools::registerAll),
-      new Category("Export Tools", ExportTools::registerAll),
-      new Category("TBA Tools", TbaTools::registerAll),
-      new Category("RevLog Tools", RevLogTools::registerAll));
+  private static Map<String, String> titles() {
+    var titles = new LinkedHashMap<String, String>();
+    titles.put("discovery", "Discovery Tools");
+    titles.put("core", "Core Tools");
+    titles.put("query", "Query Tools");
+    titles.put("statistics", "Statistics Tools");
+    titles.put("robot_analysis", "Robot Analysis Tools");
+    titles.put("frc_domain", "FRC Domain Tools");
+    titles.put("export", "Export Tools");
+    titles.put("tba", "TBA Tools");
+    titles.put("revlog", "RevLog Tools");
+    return titles;
+  }
+
+  /** Every tool the server registers, by name. */
+  static Map<String, Tool> registeredTools() {
+    var byName = new LinkedHashMap<String, Tool>();
+    WpilogTools.registerAll(new ToolRegistry() {
+      @Override
+      public void registerTool(Tool tool) {
+        byName.put(tool.name(), tool);
+      }
+    });
+    return byName;
+  }
+
+  /**
+   * The tools grouped as the server groups them for agents (get_server_guide's categories),
+   * titled and ordered as in TOOLS.md, each section in the catalog's order.
+   */
+  static Map<String, List<Tool>> categories(Map<String, Tool> toolsByName) throws Exception {
+    var guide = toolsByName.get("get_server_guide").execute(new JsonObject()).getAsJsonObject();
+    var byId = new LinkedHashMap<String, List<Tool>>();
+    for (var element : guide.getAsJsonArray("categories")) {
+      var category = element.getAsJsonObject();
+      var id = category.get("name").getAsString();
+      assertTrue(TITLES.containsKey(id), "no section title for the server's category " + id);
+      var list = new ArrayList<Tool>();
+      for (var t : category.getAsJsonArray("tools")) {
+        var name = t.getAsJsonObject().get("name").getAsString();
+        assertTrue(toolsByName.containsKey(name), "cataloged but not registered: " + name);
+        list.add(toolsByName.get(name));
+      }
+      byId.put(id, list);
+    }
+    var sections = new LinkedHashMap<String, List<Tool>>();
+    TITLES.forEach((id, title) -> {
+      if (byId.containsKey(id)) sections.put(title, byId.get(id));
+    });
+    return sections;
+  }
 
   @Test
   @DisplayName("capture every scenario into doc/TOOL_RESPONSES.md")
@@ -97,19 +134,8 @@ class ToolResponsesDoc {
     LogManager.getInstance().addAllowedDirectory(logDir);
     LogDirectory.getInstance().setLogDirectory(logDir.toString());
     try {
-      var toolsByCategory = new LinkedHashMap<String, List<Tool>>();
-      var toolsByName = new LinkedHashMap<String, Tool>();
-      for (var category : CATEGORIES) {
-        var list = new ArrayList<Tool>();
-        category.register().accept(new ToolRegistry() {
-          @Override
-          public void registerTool(Tool tool) {
-            list.add(tool);
-            toolsByName.put(tool.name(), tool);
-          }
-        });
-        toolsByCategory.put(category.title(), list);
-      }
+      var toolsByName = registeredTools();
+      var toolsByCategory = categories(toolsByName);
 
       // Run every call in order; ${first_revlog_signal} comes from list_revlog_signals
       var captures = new LinkedHashMap<String, List<String[]>>();
@@ -154,6 +180,57 @@ class ToolResponsesDoc {
     } finally {
       ExportTools.setExportDirectory(savedExport.toString());
       LogManager.getInstance().unloadAllLogs();
+    }
+  }
+
+  static List<String> names(List<Tool> tools) {
+    return tools.stream().map(Tool::name).toList();
+  }
+
+  @Test
+  @DisplayName("sections are the server's categories: every tool once, under its own category")
+  void sectionsAreTheServersCategories() throws Exception {
+    var byName = registeredTools();
+    var sections = categories(byName);
+    var listed = sections.values().stream().flatMap(List::stream).map(Tool::name).toList();
+    assertEquals(new TreeSet<>(byName.keySet()), new TreeSet<>(listed), "every tool");
+    assertEquals(listed.size(), new HashSet<>(listed).size(), "each tool once");
+    assertEquals(new ArrayList<>(TITLES.values()), new ArrayList<>(sections.keySet()));
+    // The server puts these here; their Java classes (PoseTools, CanBusAnalysis) do not decide
+    assertTrue(names(sections.get("FRC Domain Tools"))
+        .containsAll(List.of("compare_poses", "pose_corrections")));
+    assertTrue(names(sections.get("Robot Analysis Tools")).contains("analyze_can_bus"));
+  }
+
+  /** The "## ... Tools" sections of a doc and the "### `tool`" headings under each. */
+  static Map<String, Set<String>> docSections(Path doc) throws Exception {
+    var out = new LinkedHashMap<String, Set<String>>();
+    Set<String> current = null;
+    var toolHeading = Pattern.compile("^### `([a-z_0-9]+)`$");
+    for (var line : Files.readAllLines(doc)) {
+      if (line.startsWith("## ")) {
+        var title = line.substring(3).strip();
+        current = title.endsWith(" Tools") ? out.computeIfAbsent(title, k -> new TreeSet<>())
+            : null;
+      } else if (current != null) {
+        var m = toolHeading.matcher(line);
+        if (m.matches()) current.add(m.group(1));
+      }
+    }
+    return out;
+  }
+
+  @Test
+  @DisplayName("TOOLS.md and TOOL_RESPONSES.md put each tool in the server's section")
+  void docsUseTheServersSections() throws Exception {
+    var expected = new LinkedHashMap<String, Set<String>>();
+    categories(registeredTools())
+        .forEach((title, tools) -> expected.put(title, new TreeSet<>(names(tools))));
+    for (var doc : List.of("TOOLS.md", "TOOL_RESPONSES.md")) {
+      var actual = docSections(Path.of("doc", doc));
+      assertEquals(expected, actual, doc);
+      assertEquals(new ArrayList<>(expected.keySet()), new ArrayList<>(actual.keySet()),
+          doc + ": section order");
     }
   }
 
@@ -226,9 +303,10 @@ class ToolResponsesDoc {
     var md = new StringBuilder();
     md.append("# wpilog-mcp Tool Response Reference\n\n");
     md.append("The JSON every tool of **wpilog-mcp ").append(Version.VERSION)
-        .append("** returns, captured from real logs by `ToolResponsesDoc` running the calls in ")
-        .append("`src/test/resources/tool-responses/scenarios.json`. To regenerate:\n\n")
-        .append("```\n./gradlew test --tests '*ToolResponsesDoc*' ")
+        .append("** returns, captured from real logs by running the calls in ")
+        .append("`src/test/resources/tool-responses/scenarios.json`. To regenerate (see ")
+        .append("[DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):\n\n")
+        .append("```\n./gradlew test --tests '*.docs.*' ")
         .append("-PtoolResponsesLogDir=/path/to/riologs\n```\n\n")
         .append("The logs: Team 2363 at VACHE 2026 (qualification 10, with its REV log), a ")
         .append("practice session (the robustness review's log), and an AdvantageKit replay ")

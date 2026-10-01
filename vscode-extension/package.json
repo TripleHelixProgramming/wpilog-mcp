@@ -73,7 +73,7 @@
             "type": "string",
             "default": "",
             "scope": "resource",
-            "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect. Set it in your User settings for every project; a project's own (Workspace) setting overrides it there. A relative path is a folder inside the project."
+            "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect. Set it in your User settings for every project; a project's own (Workspace) setting overrides it there. A path starting with `~/` is in your home folder, on macOS, Linux, and Windows alike (`~/riologs`); write paths with forward slashes, which work on every system. A relative path is a folder inside the project."
           },
           "wpilog-mcp.additionalLogDirectories": {
             "type": "array",
@@ -82,13 +82,17 @@
             },
             "default": [],
             "scope": "resource",
-            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). A relative path is a folder inside the project (for example, if your robot code writes simulation logs to a `logs` folder, `logs` lists them). A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
+            "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). As there, `~/` is your home folder on every system, and forward slashes work everywhere. A relative path is a folder inside the project (for example, if your robot code writes simulation logs to a `logs` folder, `logs` lists them). A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
           },
           "wpilog-mcp.teamNumber": {
-            "type": "number",
-            "default": 2363,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 1,
             "scope": "resource",
-            "markdownDescription": "Your FRC team number for TBA match data lookups. A project's own (Workspace) setting overrides your User setting there."
+            "markdownDescription": "Your FRC team number, for The Blue Alliance match data when a log does not record one. Empty until you set it. A project's own (Workspace) setting overrides your User setting there."
           },
           "wpilog-mcp.tbaApiKey": {
             "type": "string",

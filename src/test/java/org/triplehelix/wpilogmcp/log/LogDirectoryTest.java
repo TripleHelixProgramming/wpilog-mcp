@@ -940,6 +940,32 @@ class LogDirectoryTest {
       assertEquals(1, logs.size());
       assertEquals(2363, logs.get(0).teamNumber(), "Should use default team number");
     }
+
+    @Test
+    @DisplayName("a default team number of 0 or less is no team (old installers wrote team: 0)")
+    void nonPositiveDefaultTeamIsUnset(@TempDir Path tempDir) throws IOException {
+      Path logFile = tempDir.resolve("test.wpilog");
+      try (var log = new DataLogWriter(logFile.toString())) {
+        var entry = new StringLogEntry(log, "/Other/Entry");
+        entry.append("test", 1000000);
+        log.flush();
+      }
+
+      logDirectory.setLogDirectory(tempDir.toString());
+      try {
+        for (int team : new int[] {0, -1, Integer.MIN_VALUE}) {
+          logDirectory.setDefaultTeamNumber(2363);
+          logDirectory.setDefaultTeamNumber(team);
+          assertNull(logDirectory.getDefaultTeamNumber(), "team " + team);
+          logDirectory.clearCache();
+          assertNull(logDirectory.listAvailableLogs().get(0).teamNumber(), "team " + team);
+        }
+        logDirectory.setDefaultTeamNumber(1);
+        assertEquals(1, logDirectory.getDefaultTeamNumber(), "team 1 is a team");
+      } finally {
+        logDirectory.setDefaultTeamNumber(null);
+      }
+    }
   }
 
   @Nested

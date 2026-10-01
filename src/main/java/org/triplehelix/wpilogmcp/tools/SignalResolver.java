@@ -546,8 +546,13 @@ final class SignalResolver {
    * Pose2d entries as candidates to confirm. The same choice analyze_vision makes.
    */
   static Resolution robotPose(LogData log, String explicit) {
+    return robotPose(log, explicit, "pose_entry");
+  }
+
+  /** The robot pose, with errors about an explicit entry naming the tool's parameter. */
+  static Resolution robotPose(LogData log, String explicit, String param) {
     if (explicit != null) {
-      return explicit(log, Role.ROBOT_POSE, explicit, "pose_entry",
+      return explicit(log, Role.ROBOT_POSE, explicit, param,
           SignalResolver::isScalarPose, "struct:Pose2d or struct:Pose3d");
     }
     var candidates = byId(log).stream()
@@ -748,8 +753,9 @@ final class SignalResolver {
             : "no " + (role == Role.MODULE_STATES_MEASURED ? "measured" : "setpoint")
                 + " module states among the SwerveModuleState entries")
         : "SwerveModuleState[] (one module per index) or per-module entries; setpoints by "
-            + "leaf name (setpoint, desired, target, commanded, goal), optimized setpoints "
-            + "preferred", stateEntries.stream().map(EntryInfo::name).toList(), false, null,
+            + "leaf name (" + String.join(", ",
+                RobotAnalysisTools.AnalyzeSwerveTool.SETPOINT_WORD_LIST)
+            + "), optimized setpoints preferred", stateEntries.stream().map(EntryInfo::name).toList(), false, null,
         chosen.isEmpty() ? Tier.NONE : Tier.TYPE);
   }
 

@@ -13,7 +13,7 @@ import java.nio.file.Path;
  * too large to map. This is a fact about the file, not a server fault, so tools report its
  * message as an ordinary explained error rather than an internal one.
  *
- * @since 0.9.1
+ * @since 0.9.0
  */
 public class LogFileException extends IOException {
 

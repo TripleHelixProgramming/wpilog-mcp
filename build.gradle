@@ -205,9 +205,9 @@ tasks.register('buildMcp') {
 //   ~/.wpilog-mcp/
 //   ├── jars/wpilog-mcp-{version}.jar    # versioned JARs (multiple versions can coexist)
 //   ├── bin/
-//   │   ├── wpilog-mcp-{version}.sh      # versioned launcher script
-//   │   └── wpilog-mcp -> wpilog-mcp-{version}.sh  # symlink to current version
-//   └── servers.json                      # server configurations (preserved on upgrade)
+//   │   ├── wpilog-mcp-{version}[.bat]   # versioned launcher script
+//   │   └── wpilog-mcp[.bat]             # current version: a symlink (macOS, Linux) or a copy (Windows)
+//   └── servers.yaml                      # server configurations (preserved on upgrade)
 
 tasks.register('install') {
     dependsOn shadowJar
@@ -323,14 +323,15 @@ exec "\${JAVA_EXEC}" -Xmx\${MAX_HEAP} -jar "${jarsDir.absolutePath}/${jarName}" 
         if (!yamlConfig.exists() && !jsonConfig.exists()) {
             yamlConfig.text = """\
 # wpilog-mcp server configuration
-# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp#configuration
+# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
 
 # ---- Defaults ----
 # Top-level settings are inherited by all server configurations below.
 # Individual servers can override any of these.
 
-# Your FRC team number (used for TBA match lookups)
-team: 2363
+# Your FRC team number, for The Blue Alliance match data when a log does not record one.
+# Remove the # and put in your number:
+# team: 1234
 
 # Directory containing .wpilog files downloaded from the roboRIO
 logdir: ~/riologs
@@ -339,7 +340,8 @@ logdir: ~/riologs
 #   - ~/riologs
 #   - /Volumes/LOGS/archive
 
-# The Blue Alliance API key (get one at https://www.thebluealliance.com/account)
+# The Blue Alliance API key (get one at https://www.thebluealliance.com/account).
+# Remove the # and put in your key, or set the TBA_API_KEY environment variable instead:
 # tba_key: your-key-here
 
 # ---- Server Configurations ----
@@ -354,10 +356,8 @@ servers:
     transport: http
     port: 2363
 
-  # Stress testing configuration
-  # Set TBA_API_KEY environment variable before running stress tests
-  stresstest:
-    tba_key: \${TBA_API_KEY}
+  # For the project's stress tests (./gradlew stressTest), with the settings above
+  stresstest: {}
 """
             println "Created default config: ${yamlConfig}"
             println "  Edit this file to set your team number and log directory."
@@ -525,18 +525,14 @@ tasks.register('installExtension', Exec) {
 }
 
 // ==================== Stress Test Task ====================
-// Stress tests load configuration from the "stresstest" server in a config file
-// (.wpilog-mcp.yaml in the project root, or -Pconfigpath=<file>).
-// The default config includes a stresstest entry. Set your logdir and TBA_API_KEY env var:
+// Stress tests load configuration from the "stresstest" server in a config file:
+// -Pconfigpath=<file>, else the first of .wpilog-mcp.yaml/.json in the project root and
+// ~/.wpilog-mcp/servers.yaml/.json that has one. The installers' default config has a
+// stresstest entry with no settings of its own, so it takes the top-level ones:
 //
-//   {
-//     "logdir": "/path/to/your/logs",
-//     "servers": {
-//       "stresstest": {
-//         "tba_key": "${TBA_API_KEY}"
-//       }
-//     }
-//   }
+//   logdir: /path/to/your/logs
+//   servers:
+//     stresstest: {}
 
 import groovy.json.JsonSlurper
 
@@ -702,21 +698,4 @@ tasks.register('stressTest') {
 // Add JUnit Platform Console dependency for stressTest task
 dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-console:1.10.2'
-}
-
-tasks.register('measureMemory') {
-    dependsOn classes
-    doLast {
-        def logPath = project.findProperty('logfile') ?: ''
-        if (!logPath) {
-            throw new GradleException('Usage: ./gradlew measureMemory -Plogfile=/path/to/file.wpilog')
-        }
-        javaexec {
-            classpath = sourceSets.main.runtimeClasspath
-            mainClass = 'org.triplehelix.wpilogmcp.Main'
-            maxHeapSize = '4g'
-            // We'll use a special --measure flag
-            args '--measure-memory', logPath
-        }
-    }
 }

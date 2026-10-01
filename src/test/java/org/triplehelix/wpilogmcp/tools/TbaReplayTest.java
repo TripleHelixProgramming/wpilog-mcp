@@ -292,6 +292,11 @@ class TbaReplayTest {
     assertTrue(check.get("valid").getAsBoolean());
     assertEquals(2026, check.get("current_season").getAsInt());
     assertFalse(check.get("datafeed_down").getAsBoolean());
+    // Logs that record no team number are enriched with the configured one (it said "logs with
+    // team number in metadata" only)
+    var hint = r.get("hint").getAsString();
+    assertTrue(hint.contains("configured team number"), hint);
+    assertTrue(hint.contains("qualification") && hint.contains("playoff"), hint);
   }
 
   @Test

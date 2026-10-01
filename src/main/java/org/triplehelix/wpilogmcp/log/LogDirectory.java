@@ -177,7 +177,16 @@ public class LogDirectory {
     return logDirectories;
   }
 
+  /**
+   * The team number for logs that do not record one. FRC team numbers are positive: 0 or less
+   * (earlier one-line installers wrote {@code team: 0}) is no team, with a warning.
+   */
   public void setDefaultTeamNumber(Integer teamNumber) {
+    if (teamNumber != null && teamNumber <= 0) {
+      logger.warn("Ignoring team number {}: FRC team numbers are positive. Set team (or -team, "
+          + "or WPILOG_TEAM) to your team's number.", teamNumber);
+      teamNumber = null;
+    }
     this.defaultTeamNumber = teamNumber;
     if (teamNumber != null) {
       logger.info("Default team number set to: {}", teamNumber);

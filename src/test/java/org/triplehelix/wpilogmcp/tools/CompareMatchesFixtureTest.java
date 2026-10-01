@@ -49,6 +49,26 @@ class CompareMatchesFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
+  @DisplayName("the description names every per-log statistic by its key")
+  void descriptionNamesStatistics() {
+    // It said "count" for sample_count, and "with when" for min_at_sec and max_at_sec
+    var r = call("compare_matches", "akit_match", "compare_path",
+        fixturePath("akit_practice").toString(), "name", "/RealOutputs/LoggedRobot/FullCycleMS");
+    var description = tools.get("compare_matches").description();
+    var keys = new java.util.TreeSet<String>();
+    for (var c : r.getAsJsonArray("comparisons")) {
+      var comparison = c.getAsJsonObject();
+      assertTrue(comparison.has("sample_count"), c.toString());
+      keys.add("sample_count");
+      keys.addAll(comparison.getAsJsonObject("statistics").keySet());
+    }
+    for (var key : keys) {
+      assertTrue(java.util.regex.Pattern.compile("\\b" + java.util.regex.Pattern.quote(key) + "\\b")
+          .matcher(description).find(), key + " is not named in the description");
+    }
+  }
+
+  @Test
   @DisplayName("a field path; a log without the entry makes the result partial")
   void fieldPathAndPartial() {
     // the practice fixture logs no PowerDistribution channels

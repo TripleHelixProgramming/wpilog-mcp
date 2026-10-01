@@ -72,6 +72,18 @@ class ResolveSignalsTest extends FixtureToolTestBase {
   }
 
   @Test
+  @DisplayName("the module-state basis names every leaf word analyze_swerve treats as a setpoint")
+  void moduleStateBasisNamesEverySetpointWord() {
+    var r = call("resolve_signals", "swerve_array");
+    for (var name : List.of("module_states_measured", "module_states_setpoint")) {
+      var basis = role(r, name).get("basis").getAsString();
+      for (var word : RobotAnalysisTools.AnalyzeSwerveTool.SETPOINT_WORD_LIST) {
+        assertTrue(basis.contains(word), name + " basis lacks " + word + ": " + basis);
+      }
+    }
+  }
+
+  @Test
   @DisplayName("the mapping is the tools' own choice")
   void matchesTools() {
     var roles = call("resolve_signals", "akit_match");

@@ -14,6 +14,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +41,8 @@ public class DaemonManager {
   /** How long a start waits for the daemon (or a concurrent start's daemon) to answer. */
   private static final Duration DEFAULT_START_TIMEOUT = Duration.ofSeconds(10);
   private static final Duration HEALTH_POLL_INTERVAL = Duration.ofMillis(250);
+  /** The launchers' heap when WPILOG_MAX_HEAP is unset (bin/wpilog-mcp, bin/wpilog-mcp.bat). */
+  static final String DEFAULT_MAX_HEAP = "4g";
   /** SimpleLogger's level property; forwarded so a level set for this JVM applies to the daemon. */
   private static final String LOG_LEVEL_PROPERTY = "org.slf4j.simpleLogger.defaultLogLevel";
 
@@ -187,30 +190,10 @@ public class DaemonManager {
       var jarPath = resolveJarPath();
       var javaCmd = ProcessHandle.current().info().command().orElse("java");
 
-      var command = new ArrayList<String>();
-      command.add(javaCmd);
-
-      // Forward JVM heap settings if set
-      var maxHeap = System.getenv("WPILOG_MAX_HEAP");
-      if (maxHeap != null && !maxHeap.isBlank()) {
-        command.add("-Xmx" + maxHeap);
-      }
-
-      // The daemon decides its log level from its configuration and environment; a level given
-      // to this JVM as a system property is forwarded so it applies there too.
-      var logLevel = System.getProperty(LOG_LEVEL_PROPERTY);
-      if (logLevel != null && !logLevel.isBlank()) {
-        command.add("-D" + LOG_LEVEL_PROPERTY + "=" + logLevel);
-      }
-
-      command.add("-jar");
-      command.add(jarPath);
-      command.add("--internal-daemon");
-      command.add(name);
-      if (configPath != null) {
-        command.add("--config");
-        command.add(configPath.toString());
-      }
+      var maxHeap = daemonMaxHeap(System.getenv("WPILOG_MAX_HEAP"),
+          java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments());
+      var command = daemonCommand(javaCmd, maxHeap, System.getProperty(LOG_LEVEL_PROPERTY),
+          jarPath, name, configPath);
 
       var pb = new ProcessBuilder(command);
       pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
@@ -253,6 +236,44 @@ public class DaemonManager {
         deletePidFile(name);
       }
     }
+  }
+
+  /**
+   * The daemon's maximum heap: {@code WPILOG_MAX_HEAP}; else the {@code -Xmx} this JVM was
+   * started with (the launcher passes one), the last one given being the one in force; else the
+   * launcher's default. Never left to the JVM, whose default is a fraction of physical memory.
+   */
+  static String daemonMaxHeap(String envMaxHeap, List<String> jvmArguments) {
+    if (envMaxHeap != null && !envMaxHeap.isBlank()) {
+      return envMaxHeap.strip();
+    }
+    return jvmArguments.stream()
+        .filter(arg -> arg.startsWith("-Xmx") && arg.length() > "-Xmx".length())
+        .reduce((first, second) -> second)
+        .map(arg -> arg.substring("-Xmx".length()))
+        .orElse(DEFAULT_MAX_HEAP);
+  }
+
+  /** The command that starts the named server's daemon from {@code jarPath}. */
+  static List<String> daemonCommand(String javaCmd, String maxHeap, String logLevel,
+      String jarPath, String name, Path configPath) {
+    var command = new ArrayList<String>();
+    command.add(javaCmd);
+    command.add("-Xmx" + maxHeap);
+    // The daemon decides its log level from its configuration and environment; a level given
+    // to this JVM as a system property is forwarded so it applies there too.
+    if (logLevel != null && !logLevel.isBlank()) {
+      command.add("-D" + LOG_LEVEL_PROPERTY + "=" + logLevel);
+    }
+    command.add("-jar");
+    command.add(jarPath);
+    command.add("--internal-daemon");
+    command.add(name);
+    if (configPath != null) {
+      command.add("--config");
+      command.add(configPath.toString());
+    }
+    return command;
   }
 
   /**
