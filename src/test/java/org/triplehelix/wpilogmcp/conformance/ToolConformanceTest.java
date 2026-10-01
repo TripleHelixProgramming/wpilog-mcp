@@ -180,9 +180,15 @@ class ToolConformanceTest {
     }
 
     writeReport(calls);
-    var promised = DescriptionOutputs.missing(tools, calls.stream()
+    var results = calls.stream()
         .map(c -> java.util.Map.entry(c.tool(), c.result() == null
-            ? (JsonElement) com.google.gson.JsonNull.INSTANCE : c.result())).toList());
+            ? (JsonElement) com.google.gson.JsonNull.INSTANCE : c.result())).toList();
+    var promised = DescriptionOutputs.missing(tools, results);
+    // The server guidance names fields, events, and bases the agent should look for: each must
+    // be something a tool produces
+    var guidanceMissing = DescriptionOutputs.missingInGuidance(tools, results,
+        org.triplehelix.wpilogmcp.tools.AnalysisGuidance.analysisPrinciples().toString()
+            + org.triplehelix.wpilogmcp.tools.AnalysisGuidance.SERVER_INSTRUCTIONS);
 
     var observed = new TreeSet<String>();
     for (var call : calls) {
@@ -232,13 +238,16 @@ class ToolConformanceTest {
     // G4: every output a description names appears in at least one result of that tool
     assertTrue(promised.isEmpty(), "Descriptions name outputs no fixture result contains "
         + "(tool | term): " + promised);
+    assertTrue(guidanceMissing.isEmpty(), "The guidance names outputs no fixture result "
+        + "contains: " + guidanceMissing);
   }
 
   Call evaluate(Tool tool, String fixtureId, ToolArguments.Variant variant) throws Exception {
     var result = run(tool, variant.args());
     Integer limit = variant.args().has("limit") ? variant.args().get("limit").getAsInt() : null;
     List<Check> failed = result == null ? List.of(Check.TIMEOUT)
-        : ConformanceChecks.check(result, limit, ToolArguments.takesPath(tool));
+        : ConformanceChecks.check(result, limit, ToolArguments.takesPath(tool), tool.name(),
+            variant.args());
     return new Call(tool.name(), fixtureId, variant.label(), result, failed);
   }
 

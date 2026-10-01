@@ -724,6 +724,15 @@ public final class CoreTools {
       }
       var names = new java.util.LinkedHashSet<>(schemas.loggedStructs());
       names.addAll(usedBy.keySet());
+      if (names.isEmpty()) {
+        // An empty list is not a listing: the log has no struct types
+        return ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
+                + "struct:<Name> type and no /.schema/struct: schema is logged.")
+            .hint("list_entries shows the types the log has; list_struct_types without path "
+                + "lists the built-in WPILib struct layouts.")
+            .addProperty("log_path", log.path())
+            .build();
+      }
 
       var types = new JsonArray();
       var warnings = new JsonArray();

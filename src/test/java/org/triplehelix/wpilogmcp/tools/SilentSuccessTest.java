@@ -60,6 +60,36 @@ class SilentSuccessTest extends ToolTestBase {
   }
 
   @Test
+  @DisplayName("a log without struct types: list_struct_types is no_match")
+  void noStructTypesIsNoMatch() throws Exception {
+    var log = bareLog("/mock/bare_structs.wpilog");
+    putLogInCache(log);
+    var r = call("list_struct_types", log.path());
+    assertEquals("no_match", r.get("status").getAsString(), r.toString());
+    assertTrue(r.get("reason").getAsString().contains("no struct types"));
+  }
+
+  @Test
+  @DisplayName("zero peaks and zero transitions say how many samples were searched")
+  void zeroFindingsNameTheSamplesSearched() throws Exception {
+    var log = bareLog("/mock/bare_peaks.wpilog"); // 1, 2, 3: monotonic, no peak
+    putLogInCache(log);
+    var peaks = call("find_peaks", log.path(), "name", "/Motor/Speed");
+    assertEquals("ok", peaks.get("status").getAsString(), peaks.toString());
+    assertEquals(0, peaks.get("maxima_count").getAsInt());
+    assertEquals(3, peaks.get("samples_analyzed").getAsInt());
+    var args = new JsonObject();
+    args.addProperty("path", log.path());
+    args.addProperty("name", "/Motor/Speed");
+    args.addProperty("operator", "gt");
+    args.addProperty("threshold", 100.0);
+    var condition = findTool("find_condition").execute(args).getAsJsonObject();
+    assertEquals("ok", condition.get("status").getAsString(), condition.toString());
+    assertEquals(0, condition.get("transition_count").getAsInt());
+    assertEquals(3, condition.get("samples_evaluated").getAsInt());
+  }
+
+  @Test
   @DisplayName("listings and exports that match nothing are no_match")
   void emptyListingsAreNoMatch() throws Exception {
     var log = bareLog("/mock/bare_list.wpilog");

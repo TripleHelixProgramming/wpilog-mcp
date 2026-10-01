@@ -336,7 +336,7 @@ Read values from an entry with time range filtering and pagination.
 ```
 
 ### `list_struct_types`
-List struct types and how they decode. Struct values are decoded from each log's own schemas (`/.schema/struct:<Name>` entries, also `NT:/.schema/struct:<Name>`), so any struct a log records a schema for decodes — WPILib's, a vendor's, or a team's own, with nested structs, fixed-size arrays, enums, and bit-fields.
+List struct types and how they decode. Struct values are decoded from each log's own schemas (`/.schema/struct:<Name>` entries, also `NT:/.schema/struct:<Name>`), so any struct a log records a schema for decodes — WPILib's, a vendor's, or a team's own, with nested structs, fixed-size arrays, enums, and bit-fields. With a path, returns `no_match` when the log declares no struct types.
 
 **Parameters:**
 - `path` (optional): Path to the log file. Omit it to list only the fallback schemas
@@ -444,7 +444,7 @@ Get all data types used in the log file.
 **Returns:** Types with entry counts and entry names (`no_match` for a log with no entries)
 
 ### `find_condition`
-Find when a numeric or boolean entry satisfies a condition — or several entries at once — and for how long. Useful for questions like "When did battery voltage drop below 11V, and for how long?" or "When was the robot disabled and stationary?"
+Find when a numeric or boolean entry satisfies a condition — or several entries at once — and for how long. Useful for questions like "When did battery voltage drop below 11V, and for how long?" or "When was the robot disabled and stationary?" `samples_evaluated` counts the samples of the condition entries in scope, so zero transitions can be read against them.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -512,6 +512,7 @@ List or search the text a log holds, completely and in time order across all ent
 - `entry_pattern` (optional): Only search entries whose name contains this substring
 - `start_time` / `end_time` (optional): Time window in seconds; an alert matches when it was present in the window, whenever it appeared
 - `offset` (optional, default 0) and `limit` (optional, default 100, max 1000): Paging over the time-ordered result; values outside those ranges are clamped and the clamped values are echoed
+- `limit` (optional): Maximum matches to return per call (default: 
 - `collapse_repeats` (optional, default `false`): Fold runs of identical samples that are **adjacent in the same entry's stream** into one match with `repeat_count` and `last_timestamp_sec`. Any other sample in between — even one the filters exclude — ends the run, so a `repeat_count` never spans a gap
 - `max_value_chars` (optional, default 500, minimum 1): Truncate each returned `value`
 
@@ -670,7 +671,7 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 ```
 
 ### `find_peaks`
-Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are listed in time order, each with its height difference (how much it stands out from neighboring values).
+Find local maxima and minima (peaks and valleys) in numeric data. Uses a simple algorithm that compares each point to its immediate neighbors. Peaks are listed in time order, each with its height difference (how much it stands out from neighboring values). `samples_analyzed` counts the finite samples in scope the search ran over, so zero peaks can be read against them.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -761,6 +762,7 @@ Compute Pearson correlation coefficient between two numeric entries. Aligns samp
 - `end_time` (optional): End timestamp in seconds
 - `scope`, `windows` (optional): The first signal's samples in this time are paired with the second, interpolated ([Scopes and windows](#scopes-and-windows))
 - `max_lag_sec` (optional): Also search for the time shift that best aligns the signals, from −max to +max; `lag_step_sec` (optional) sets the step (default: the first signal's median sample interval; at most 401 lags are evaluated, widening the step if needed). Returns `lag_search`: `best_lag_sec` (positive: the second signal follows the first), `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, `lags_evaluated`, `lag_step_sec`. Shared timing (both signals following the match phase) also aligns signals
+- `lag_step_sec` (optional): Lag search step in seconds (default: the first signal's median sample interval)
 
 **Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, and `p_value_basis`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta); a warning says when fewer than 30 effective samples remain. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
 
@@ -886,6 +888,7 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - `sync_threshold_rad` (optional): Steer error, in radians, counted as an event (default: 0.1)
 - `odometry_entry`, `vision_entry` (optional): Scalar pose entries for the drift comparison (default: the `robot_pose` and `vision_pose` roles — a conventional name, or the only candidate; several name-only candidates are listed in `skipped` to confirm, never guessed)
 - `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
+- `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 
 **Returns (per module in `modules[]`):**
 - `mean_abs_speed_mps`, `max_abs_speed_mps`, `samples` — magnitudes: measured speeds are signed (negative about half the time as modules flip direction), so a signed average cancels toward zero
@@ -1145,6 +1148,7 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 **Physics model:** `G × motor_count × kt × I = J × α + B × ω`
 
 **Parameters:**
+- `path` (required): Path to the log file
 - `velocity_entry` (string, **required**): Entry path for mechanism velocity (rad/s, or m/s if `wheel_radius` given)
 - `current_entry` (string, **required**): Entry path for motor current (A)
 - `kt` (number, **required**): Motor torque constant (Nm/A). Kraken X60=0.01940, NEO Vortex=0.01706, NEO 550=0.0108
@@ -1930,6 +1934,7 @@ How often robot code exceeded the loop period, and the distribution of loop time
 - `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20 ms, the standard 50 Hz period)
 - `unit` (optional): `ms`, `s`, `us`, or `auto` (default: from the entry name — `...MS`, `...Ms`, `_ms`, `...Micros`, `...Sec` — else from the median: 0.001–1 looks like seconds, above 500 like microseconds)
 - `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
+- `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 
 **Entry discovery, in order:** the `entry` argument; AdvantageKit's `LoggedRobot/FullCycleMS` (the whole cycle, including logging), reported with `LoggedRobot/UserCodeMS` alongside as `user_code`; loop periods derived from consecutive AdvantageKit `/Timestamp` values; `UserCodeMS` alone. Other entries named like a loop time (`looptime`, `cycletime`) are not guessed at: `no_match` lists them in `candidates` to confirm and pass as `entry`. A first sample more than 10× the median — the slow boot cycle, often several seconds — is excluded and reported as `excluded_boot_cycle`.
 
@@ -1971,6 +1976,7 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 **Parameters:**
 - `path` (required): Path to the log file
 - `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (default: `enabled` when the log records enabled state, else `all`, so averages do not mix in idle time); combined with `start_time`/`end_time`
+- `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 - `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
 - `brownout_threshold` (optional): Brownout threshold (default: the logged `BrownoutVoltage`, else 6.8V — see `power_analysis`)
 - `warning_threshold` (optional): Voltage below which a dip is reported (default: 9.0V)

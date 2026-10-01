@@ -388,6 +388,12 @@ public final class QueryTools {
           .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
           .addProperty("total_true_sec", totalTrue)
           .addProperty("window_sec", knownDuration);
+      // Zero transitions is a finding only when samples were evaluated: say how many
+      int samplesEvaluated = 0;
+      for (var c : conditions) {
+        for (var segment : scope.split(c.signal().values())) samplesEvaluated += segment.size();
+      }
+      builder.addProperty("samples_evaluated", samplesEvaluated);
       for (int k = 0; k < n; k++) {
         builder.addInputSignal(n == 1 ? "entry" : "condition" + k, conditions.get(k).signal());
       }

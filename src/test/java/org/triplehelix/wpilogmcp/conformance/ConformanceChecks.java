@@ -43,7 +43,9 @@ public final class ConformanceChecks {
     /** A successful result from a log-reading tool does not say what it used (rule R3). */
     INPUTS,
     /** The call did not finish in time. */
-    TIMEOUT;
+    TIMEOUT,
+    /** A successful result of an analytical tool carries no {@code data_quality} (rule R6). */
+    QUALITY_MISSING;
 
     public String label() {
       return name().toLowerCase();
@@ -58,10 +60,37 @@ public final class ConformanceChecks {
   static final Set<String> STATUSES = Set.of("ok", "partial", "not_applicable", "no_match", "error");
 
   /**
+   * Keys that name what was analyzed or how, not what was found: a result whose only content is
+   * such labels (and echoes of its arguments) found nothing.
+   */
+  static final Set<String> LABELS = Set.of("name", "entry", "log_path", "path", "signal_key",
+      "condition", "conditions", "scope", "pattern", "mechanism_name", "expression",
+      "brownout_threshold", "threshold", "method", "unit", "type", "can_bus", "season", "year",
+      "event_code", "match_type", "match_number", "team_number", "window_sec", "smooth_window",
+      "bus", "chosen_stem", "mechanism", "sampling", "log_directory", "export_directory", "tool",
+      "query", "task", "combine", "interpolation", "time_source");
+
+  /** Tools whose successful results are statistics over samples and so carry data_quality. */
+  static final Set<String> QUALITY_TOOLS = Set.of("get_statistics", "detect_anomalies",
+      "find_peaks", "rate_of_change", "time_correlate", "compare_entries", "find_condition",
+      "compare_matches", "analyze_swerve", "power_analysis", "predict_battery_health",
+      "profile_mechanism", "analyze_loop_timing", "analyze_can_bus", "compare_poses",
+      "pose_corrections");
+
+  /**
    * Runs the single-result checks. {@code limit} is the limit the call requested, or null;
    * {@code readsLog} is whether the tool reads a log (and so must report its inputs).
    */
   public static List<Check> check(JsonElement result, Integer limit, boolean readsLog) {
+    return check(result, limit, readsLog, null, null);
+  }
+
+  /**
+   * As above, with the call itself: {@code tool} selects the tool-specific rules (data_quality
+   * on analytical tools) and {@code args} lets the silent-empty rule ignore echoed arguments.
+   */
+  public static List<Check> check(JsonElement result, Integer limit, boolean readsLog,
+      String tool, JsonObject args) {
     var failed = check(result);
     if (result == null || !result.isJsonObject()) return failed;
     var obj = result.getAsJsonObject();
@@ -71,7 +100,59 @@ public final class ConformanceChecks {
       failed.add(Check.UNREPORTED_TRUNCATION);
     }
     if (readsLog && succeeded(obj) && !hasInputs(obj)) failed.add(Check.INPUTS);
+    if (args != null && succeeded(obj) && !failed.contains(Check.SILENT_EMPTY)
+        && isSilentEmpty(obj, args)) {
+      failed.add(Check.SILENT_EMPTY);
+    }
+    // A partial result may have skipped its statistical section (power_analysis without a
+    // voltage entry), so only a whole (ok) result must carry quality
+    if (tool != null && QUALITY_TOOLS.contains(tool) && succeeded(obj)
+        && "ok".equals(obj.get("status").getAsString()) && !hasQuality(obj, 3)) {
+      failed.add(Check.QUALITY_MISSING);
+    }
     return failed;
+  }
+
+  /**
+   * A {@code data_quality} object with a sample count, at the top level or within {@code depth}
+   * levels (compare_matches carries one per compared log).
+   */
+  static boolean hasQuality(JsonObject obj, int depth) {
+    var quality = obj.get("data_quality");
+    if (quality != null && quality.isJsonObject()
+        && quality.getAsJsonObject().has("sample_count")) {
+      return true;
+    }
+    if (depth == 0) return false;
+    for (var entry : obj.entrySet()) {
+      var v = entry.getValue();
+      if (v.isJsonObject() && hasQuality(v.getAsJsonObject(), depth - 1)) return true;
+      if (v.isJsonArray()) {
+        for (var item : v.getAsJsonArray()) {
+          if (item.isJsonObject() && hasQuality(item.getAsJsonObject(), depth - 1)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * As {@link #isSilentEmpty(JsonObject)}, but labels ({@link #LABELS}) and values that merely
+   * echo an argument do not count as information: {@code {"entry": "/x", "scope": "enabled"}}
+   * says what was asked, not what was found.
+   */
+  static boolean isSilentEmpty(JsonObject obj, JsonObject args) {
+    var echoes = new java.util.HashSet<JsonElement>();
+    for (var a : args.entrySet()) {
+      if (a.getValue().isJsonPrimitive()) echoes.add(a.getValue());
+    }
+    for (var entry : obj.entrySet()) {
+      if (BOOKKEEPING.contains(entry.getKey()) || LABELS.contains(entry.getKey())) continue;
+      var v = entry.getValue();
+      if (v.isJsonPrimitive() && echoes.contains(v)) continue;
+      if (informative(v)) return false;
+    }
+    return true;
   }
 
   static boolean succeeded(JsonObject obj) {

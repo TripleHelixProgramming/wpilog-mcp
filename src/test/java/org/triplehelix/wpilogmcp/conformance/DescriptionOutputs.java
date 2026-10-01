@@ -92,6 +92,41 @@ final class DescriptionOutputs {
     return missing;
   }
 
+  /**
+   * Guidance terms present only in situations the fixture sweep does not create, each checked
+   * by the named test instead.
+   */
+  static final Map<String, String> GUIDANCE_VERIFIED_ELSEWHERE = Map.ofEntries();
+
+  /**
+   * Every snake_case term the server guidance names that is neither a tool, a parameter, a
+   * status, nor a key or short string value in any fixture result: a field, event, or basis the
+   * guidance tells the agent to look for that no tool produces.
+   */
+  static Set<String> missingInGuidance(List<Tool> tools,
+      List<Map.Entry<String, JsonElement>> results, String guidance) {
+    var toolNames = new HashSet<String>();
+    var allParams = new HashSet<String>();
+    for (var t : tools) {
+      toolNames.add(t.name());
+      var props = t.inputSchema().getAsJsonObject("properties");
+      if (props != null) allParams.addAll(props.keySet());
+    }
+    var names = new HashSet<String>();
+    for (var r : results) collectKeys(r.getValue(), names);
+    var missing = new TreeSet<String>();
+    var m = TERM.matcher(guidance);
+    while (m.find()) {
+      var term = m.group();
+      if (toolNames.contains(term) || allParams.contains(term) || NOT_KEYS.contains(term)
+          || names.contains(term) || GUIDANCE_VERIFIED_ELSEWHERE.containsKey(term)) {
+        continue;
+      }
+      missing.add(term);
+    }
+    return missing;
+  }
+
   /** Every key, and every short string value (a basis, a column name), anywhere in e. */
   static void collectKeys(JsonElement e, Set<String> keys) {
     if (e == null || e.isJsonNull()) return;

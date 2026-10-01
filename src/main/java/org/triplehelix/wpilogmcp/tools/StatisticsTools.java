@@ -671,6 +671,8 @@ public final class StatisticsTools {
       var builder = success().addProperty("name", name).addInputSignal("entry", signal)
           .addInputScope(scope);
       if (signal.isAngle()) builder.addProperty("angle_unit", signal.angle().wire());
+      // No peaks is a finding only against the samples searched: say how many
+      builder.addProperty("samples_analyzed", quality.sampleCount());
       if (!"min".equals(peakType)) {
         var list = new com.google.gson.JsonArray();
         maxima.stream().limit(limit).forEach(list::add);
