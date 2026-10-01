@@ -60,6 +60,24 @@ class SilentSuccessTest extends ToolTestBase {
   }
 
   @Test
+  @DisplayName("start_time after end_time is an error in the two tools the validation batch missed")
+  void invertedRangesAreErrors() throws Exception {
+    var log = bareLog("/mock/bare_range.wpilog");
+    putLogInCache(log);
+    for (var tool : java.util.List.of("predict_battery_health", "get_revlog_data")) {
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("start_time", 10.0);
+      args.addProperty("end_time", 5.0);
+      if (tool.equals("get_revlog_data")) args.addProperty("signal_key", "REV/SparkMax_1/X");
+      var r = findTool(tool).execute(args).getAsJsonObject();
+      assertEquals("error", r.get("status").getAsString(), tool + ": " + r);
+      assertTrue(r.get("error").getAsString().contains("start_time must not be after end_time"),
+          tool + ": " + r);
+    }
+  }
+
+  @Test
   @DisplayName("a log without struct types: list_struct_types is no_match")
   void noStructTypesIsNoMatch() throws Exception {
     var log = bareLog("/mock/bare_structs.wpilog");

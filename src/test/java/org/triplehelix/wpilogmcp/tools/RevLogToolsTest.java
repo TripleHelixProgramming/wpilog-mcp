@@ -1311,4 +1311,55 @@ class RevLogToolsTest extends ToolTestBase {
       assertTrue(list.get("reason").getAsString().contains("NoSuchDevice"));
     }
   }
+
+  @Nested
+  @DisplayName("set_revlog_offset under concurrency (review 6 sections 2.4, 4.1)")
+  class ConcurrentOffsets {
+    @Test
+    @DisplayName("offsets set on two buses at the same time are both kept")
+    void twoBusesAtOnce() throws Exception {
+      var wpilog = createMockWpilog();
+      logManager.testPutLog(wpilog.path(), wpilog);
+      var rio = createMockRevLog();
+      var canivore = rio.at("/test/REV_second_canivore.revlog", rio.filenameTimestamp());
+      setSynchronizedLogs(wpilog.path(), new SynchronizedLogs.Builder().wpilog(wpilog)
+          .addRevLog(rio, createGoodSyncResult(), "rio")
+          .addRevLog(canivore, createGoodSyncResult(), "canivore").build());
+      var tool = findTool("set_revlog_offset");
+      var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+      try {
+        for (int round = 1; round <= 30; round++) {
+          double rioMs = 100.0 + round;
+          double canMs = 200.0 + round;
+          var a = pool.submit(() -> tool.execute(offsetArgs("rio", rioMs)));
+          var b = pool.submit(() -> tool.execute(offsetArgs("canivore", canMs)));
+          assertTrue(a.get().getAsJsonObject().get("success").getAsBoolean(), a.get().toString());
+          assertTrue(b.get().getAsJsonObject().get("success").getAsBoolean(), b.get().toString());
+        }
+      } finally {
+        pool.shutdownNow();
+      }
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      var status = findTool("sync_status").execute(args).getAsJsonObject();
+      var offsets = new java.util.HashMap<String, Long>();
+      for (var r : status.getAsJsonArray("revlogs")) {
+        var o = r.getAsJsonObject();
+        var sync = o.getAsJsonObject("sync");
+        assertEquals("USER_PROVIDED", sync.get("method").getAsString(), o.toString());
+        offsets.put(o.get("can_bus").getAsString(), sync.get("offset_microseconds").getAsLong());
+      }
+      // A lost update would leave one bus at an earlier round's offset, or at the correlation's
+      assertEquals(130_000L, offsets.get("rio"), offsets.toString());
+      assertEquals(230_000L, offsets.get("canivore"), offsets.toString());
+    }
+
+    JsonObject offsetArgs(String bus, double offsetMs) {
+      var args = new JsonObject();
+      args.addProperty("path", "/test.wpilog");
+      args.addProperty("can_bus", bus);
+      args.addProperty("offset_ms", offsetMs);
+      return args;
+    }
+  }
 }

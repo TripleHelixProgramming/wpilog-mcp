@@ -56,6 +56,7 @@ class TbaReplayTest {
       {"key": "2026vache", "event_code": "vache", "name": "FIRST Chesapeake Event",
        "year": 2026, "timezone": "America/New_York"}
       """;
+  static final String EVENT_2022 = EVENT.replace("2026", "2022");
 
   /** 2026-03-21, in seconds since the epoch: the team's three playoff matches. */
   static final long SF4_TIME = 1774116000L; // 18:00 UTC
@@ -89,6 +90,7 @@ class TbaReplayTest {
       Map.entry("/api/v3/event/2026vache", new Object[] {200, EVENT}),
       Map.entry("/api/v3/event/2026vache/matches",
           new Object[] {200, "[" + SF4 + "," + SF8 + "," + F1 + "]"}),
+      Map.entry("/api/v3/event/2022vache", new Object[] {200, EVENT_2022}),
       Map.entry("/api/v3/event/2022vache/matches", new Object[] {200, "["
           + playoff("2022vache_qf1m1", "qf", 1, 1, 1650000000L) + ","
           + playoff("2022vache_sf1m1", "sf", 1, 1, 1650003600L) + ","
@@ -133,8 +135,13 @@ class TbaReplayTest {
   }
 
   static JsonObject call(String event, String type, int number, Integer team) throws Exception {
+    return call(2026, event, type, number, team);
+  }
+
+  static JsonObject call(int year, String event, String type, int number, Integer team)
+      throws Exception {
     var args = new JsonObject();
-    args.addProperty("year", 2026);
+    args.addProperty("year", year);
     args.addProperty("event_code", event);
     args.addProperty("match_type", type);
     args.addProperty("match_number", number);
@@ -210,6 +217,44 @@ class TbaReplayTest {
     var reason = r.get("reason").getAsString();
     assertTrue(reason.contains("finals carry no bracket number"), reason);
     assertTrue(reason.contains("match_type f"), reason);
+  }
+
+  @Test
+  @DisplayName("a bracket match the event does not have: no_match names the key that was tried")
+  void bracketMatchMissing() throws Exception {
+    var r = call("vache", "Elimination", 5, 2363); // the replay has sf4m1, not sf5m1
+    assertEquals("no_match", r.get("status").getAsString(), r.toString());
+    var reason = r.get("reason").getAsString();
+    assertTrue(reason.contains("bracket match 5 (TBA key sf5m1), which this event does not have"),
+        reason);
+  }
+
+  @Test
+  @DisplayName("before 2023, Elimination N without team_number: the reason asks for the team")
+  void playOrderNeedsTheTeam() throws Exception {
+    var r = call(2022, "vache", "Elimination", 2, null);
+    assertEquals("no_match", r.get("status").getAsString(), r.toString());
+    var reason = r.get("reason").getAsString();
+    assertTrue(reason.contains("before 2023"), reason);
+    assertTrue(reason.contains("pass team_number"), reason);
+    assertTrue(reason.contains("play_order"), reason);
+  }
+
+  @Test
+  @DisplayName("an unreachable TBA: get_tba_status is not available and says why")
+  void statusUnreachable() throws Exception {
+    var client = TbaClient.getInstance();
+    client.setBaseUrl("http://127.0.0.1:1/api/v3"); // nothing listens there
+    try {
+      var r = registry.getTool("get_tba_status").execute(new JsonObject()).getAsJsonObject();
+      assertFalse(r.get("available").getAsBoolean(), r.toString());
+      assertEquals("configured", r.get("configuration").getAsString());
+      var check = r.getAsJsonObject("key_check");
+      assertFalse(check.get("valid").getAsBoolean());
+      assertTrue(check.get("detail").getAsString().contains("could not be reached"), check.toString());
+    } finally {
+      client.setBaseUrl(replayUrl());
+    }
   }
 
   @Test

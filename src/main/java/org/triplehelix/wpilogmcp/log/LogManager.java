@@ -750,9 +750,7 @@ public class LogManager {
           // Try sync disk cache first. A sync depends on both files' names as well as their
           // contents (the REV name's time sets the coarse offset, the wpilog's name the zone),
           // and the decoded values on the DBC, so all of them are part of the key
-          String revlogFp = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
-              revlogInfo.path()) + "|" + revlogInfo.filename() + "|dbc:"
-              + revLogParser.dbcContentHash();
+          String revlogFp = revlogCacheKey(revlogInfo, revLogParser.dbcContentHash());
           String wpilogKey = wpilogFingerprint + "|" + Path.of(wpilogPath).getFileName();
           var cached = syncDiskCache.load(wpilogKey, revlogFp);
 
@@ -791,6 +789,16 @@ public class LogManager {
 
     syncInProgress.put(wpilogPath, future);
     future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
+  }
+
+  /**
+   * The revlog half of a sync cache key: the file's content fingerprint, its name (the name's
+   * time sets the coarse offset), and the hash of the DBC that decoded it, so a replaced DBC
+   * does not serve values decoded by the old one.
+   */
+  static String revlogCacheKey(RevLogFileInfo info, String dbcHash) throws IOException {
+    return org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(info.path()) + "|"
+        + info.filename() + "|dbc:" + dbcHash;
   }
 
   /**
