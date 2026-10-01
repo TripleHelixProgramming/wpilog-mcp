@@ -7,7 +7,9 @@ package org.triplehelix.wpilogmcp.config;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -40,6 +42,11 @@ import org.slf4j.LoggerFactory;
  * processes ({@code {name}.lock}); and a record marked as starting or booting is left alone by
  * everyone but its own start, so a daemon that has been spawned and does not answer yet is not
  * mistaken for a reused process ID.
+ *
+ * <p>A start reads and writes the PID file only while it holds that lock. Windows refuses to
+ * replace a file that is open in another program, so a start that replaced the record while
+ * another start was reading it failed there. A write refused because some other program has the
+ * file open (a virus scanner, someone displaying it) is tried again for half a second.
  *
  * @since 0.8.0
  */
@@ -95,8 +102,40 @@ public class DaemonManager {
     };
   };
 
+  /**
+   * The writes that put a PID file in place. Windows refuses them while the file, or one just
+   * deleted under the same name, is open in another program; tests substitute a file system
+   * that refuses.
+   */
+  interface PidFileWriter {
+    /** Creates the file with this content; fails if it exists. */
+    void create(Path pidFile, String content) throws IOException;
+
+    /** Moves a finished temporary file onto the PID file, replacing it. */
+    void replace(Path temp, Path pidFile) throws IOException;
+  }
+
+  static final PidFileWriter FILE_SYSTEM = new PidFileWriter() {
+    @Override
+    public void create(Path pidFile, String content) throws IOException {
+      Files.writeString(pidFile, content, StandardOpenOption.CREATE_NEW,
+          StandardOpenOption.WRITE);
+    }
+
+    @Override
+    public void replace(Path temp, Path pidFile) throws IOException {
+      Files.move(temp, pidFile,
+          StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    }
+  };
+
   /** A booting record this many start timeouts old whose daemon still does not answer is stale. */
   private static final int BOOTING_GRACE_TIMEOUTS = 3;
+
+  /** Tries of a write to the PID file that is refused because the file is open elsewhere. */
+  static final int FILE_BUSY_ATTEMPTS = 20;
+  /** The wait between those tries: half a second in all. */
+  private static final long FILE_BUSY_WAIT_MILLIS = 25;
 
   /**
    * The start lock within this JVM, by lock file: a file lock holds between processes, but a
@@ -107,6 +146,7 @@ public class DaemonManager {
   private final Path runDir;
   private final Duration startTimeout;
   private final Launcher launcher;
+  private final PidFileWriter files;
 
   public DaemonManager() {
     this(Path.of(System.getProperty("user.home"), "." + APP_NAME, "run"), DEFAULT_START_TIMEOUT);
@@ -121,9 +161,14 @@ public class DaemonManager {
   }
 
   DaemonManager(Path runDir, Duration startTimeout, Launcher launcher) {
+    this(runDir, startTimeout, launcher, FILE_SYSTEM);
+  }
+
+  DaemonManager(Path runDir, Duration startTimeout, Launcher launcher, PidFileWriter files) {
     this.runDir = runDir;
     this.startTimeout = startTimeout;
     this.launcher = launcher;
+    this.files = files;
   }
 
   /** A daemon recorded in a PID file whose process is alive and answers the health check. */
@@ -153,15 +198,25 @@ public class DaemonManager {
     T run() throws IOException;
   }
 
+  private Path lockPath(String name) {
+    return runDir.resolve(name + ".lock").toAbsolutePath().normalize();
+  }
+
+  /** Whether the calling thread holds the named server's start lock. */
+  boolean holdsStartLock(String name) {
+    var lock = JVM_LOCKS.get(lockPath(name));
+    return lock != null && lock.isHeldByCurrentThread();
+  }
+
   /**
    * Runs {@code action} holding the named server's start lock, across threads and processes.
    * The lock is held only while the PID file is read and written (and one health check made),
-   * never while a daemon boots.
+   * never while a daemon boots. An action must not ask for the lock again.
    *
    * @throws java.io.UncheckedIOException if the action fails
    */
   private <T> T locked(String name, PidFileAction<T> action) {
-    var lockPath = runDir.resolve(name + ".lock").toAbsolutePath().normalize();
+    var lockPath = lockPath(name);
     var jvmLock = JVM_LOCKS.computeIfAbsent(lockPath, p -> new ReentrantLock());
     jvmLock.lock();
     try {
@@ -248,7 +303,7 @@ public class DaemonManager {
 
       // Process is alive — verify it's actually our server via health check
       if (healthCheck(port)) {
-        if (booting) writePidFile(name, pid, port); // it answers: no longer booting
+        if (booting) settleRecord(name, pid, port); // it answers: no longer booting
         return Optional.of(new RunningDaemon(pid, port));
       }
 
@@ -330,11 +385,18 @@ public class DaemonManager {
 
       // Replace the claim with the daemon's record, marked as booting until it answers: a
       // plain record of a live process that does not answer reads as a reused PID
-      writePidFile(name, process.pid(), port, BOOTING_MARKER);
+      recordDaemon(name, process.pid(), port, BOOTING_MARKER);
       recorded = true;
 
       if (waitForHealth(port, process)) {
-        writePidFile(name, process.pid(), port);
+        try {
+          recordDaemon(name, process.pid(), port, null);
+        } catch (IOException e) {
+          // It is running and recorded as booting: the next start that finds it answering
+          // settles the record
+          logger.warn("Server '{}' is running, but its PID file could not be updated: {}",
+              name, e.toString());
+        }
         logger.info("Server '{}' started as daemon (PID {}, port {}). Logs: {}",
             name, process.pid(), port, logFile);
         return true;
@@ -342,7 +404,7 @@ public class DaemonManager {
 
       if (!process.isAlive()) {
         logger.error("Daemon process exited immediately. Check logs: {}", logFile);
-        deletePidFile(name);
+        releaseRecord(name);
         return false;
       }
 
@@ -353,7 +415,7 @@ public class DaemonManager {
       return false;
 
     } catch (IOException e) {
-      logger.error("Failed to spawn daemon for '{}': {}", name, e.getMessage());
+      logger.error("Failed to spawn daemon for '{}': {}", name, e.toString());
       if (process != null && !recorded) {
         process.destroy();
       }
@@ -361,7 +423,77 @@ public class DaemonManager {
     } finally {
       if (!recorded) {
         // Release the claim: nothing was spawned, or its PID could not be recorded
-        deletePidFile(name);
+        releaseRecord(name);
+      }
+    }
+  }
+
+  /**
+   * Writes a daemon's record holding the start lock, so that no start has the file open to read
+   * while it is replaced.
+   */
+  private void recordDaemon(String name, long pid, int port, String marker) throws IOException {
+    try {
+      locked(name, () -> {
+        writePidFile(name, pid, port, marker);
+        return null;
+      });
+    } catch (java.io.UncheckedIOException e) {
+      throw e.getCause();
+    }
+  }
+
+  /** Removes the named server's record, or this start's claim, holding the start lock. */
+  private void releaseRecord(String name) {
+    locked(name, () -> {
+      deletePidFile(name);
+      return null;
+    });
+  }
+
+  /**
+   * Replaces the booting record of a daemon that answers with its plain record. A record that
+   * cannot be replaced stays as it is: the daemon is running either way, and the next start
+   * that finds it answering tries again.
+   */
+  private void settleRecord(String name, long pid, int port) {
+    try {
+      writePidFile(name, pid, port);
+    } catch (IOException e) {
+      logger.debug("The PID file of running server '{}' could not be updated: {}", name,
+          e.toString());
+    }
+  }
+
+  /** A write to the PID file. */
+  @FunctionalInterface
+  private interface PidFileWrite {
+    void run() throws IOException;
+  }
+
+  /**
+   * Makes a write to the PID file, again after a short wait while the file system refuses it
+   * because the file is open elsewhere. Only Windows refuses: it will not replace a file, or
+   * create one under the name of a file just deleted, while another program has it open. A
+   * refusal for any other reason (the file exists, the directory is gone) is not tried again.
+   */
+  private static void whenFileIsFree(PidFileWrite write) throws IOException {
+    for (int attempt = 1;; attempt++) {
+      try {
+        write.run();
+        return;
+      } catch (FileSystemException e) {
+        // Windows reports an open file as access denied, or as a sharing violation, which
+        // Java gives no class of its own
+        boolean busy = e instanceof AccessDeniedException
+            || e.getClass() == FileSystemException.class;
+        if (!busy || attempt >= FILE_BUSY_ATTEMPTS) throw e;
+        try {
+          Thread.sleep(FILE_BUSY_WAIT_MILLIS);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
       }
     }
   }
@@ -449,10 +581,9 @@ public class DaemonManager {
    */
   boolean claimPidFile(String name, int port) throws IOException {
     Files.createDirectories(runDir);
+    var claim = ProcessHandle.current().pid() + "\n" + port + "\n" + STARTING_MARKER + "\n";
     try {
-      Files.writeString(pidFilePath(name),
-          ProcessHandle.current().pid() + "\n" + port + "\n" + STARTING_MARKER + "\n",
-          StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+      whenFileIsFree(() -> files.create(pidFilePath(name), claim));
       return true;
     } catch (FileAlreadyExistsException e) {
       return false;
@@ -475,8 +606,7 @@ public class DaemonManager {
     var temp = Files.createTempFile(runDir, name + ".", ".pid.tmp");
     try {
       Files.writeString(temp, pid + "\n" + port + "\n" + (marker == null ? "" : marker + "\n"));
-      Files.move(temp, pidFile,
-          StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      whenFileIsFree(() -> files.replace(temp, pidFile));
     } finally {
       Files.deleteIfExists(temp);
     }

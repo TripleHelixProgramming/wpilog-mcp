@@ -8,7 +8,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
@@ -21,6 +24,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
+import java.util.function.IntPredicate;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -566,6 +571,205 @@ class DaemonManagerTest {
         return pidFileLines(manager, "test");
       } catch (IOException e) {
         return List.of();
+      }
+    }
+  }
+
+  // ==================== A PID file open elsewhere ====================
+
+  /**
+   * A file system that refuses writes to the PID file, as Windows does while the file is open in
+   * another program, then makes them. The first {@code createRefusals} creates are refused, and
+   * each replace {@code refuseReplace} accepts, asked with its number from 1.
+   */
+  private static final class BusyFiles implements DaemonManager.PidFileWriter {
+    final AtomicInteger creates = new AtomicInteger();
+    final AtomicInteger replaces = new AtomicInteger();
+    /** For each replace, whether the thread making it held the start lock. */
+    final List<Boolean> lockHeld = new CopyOnWriteArrayList<>();
+    private final int createRefusals;
+    private final IntPredicate refuseReplace;
+    private final BiFunction<Path, Path, IOException> refusal;
+    volatile DaemonManager manager;
+
+    BusyFiles(int createRefusals, IntPredicate refuseReplace) {
+      this(createRefusals, refuseReplace,
+          (temp, pidFile) -> new AccessDeniedException(temp.toString(), pidFile.toString(), null));
+    }
+
+    BusyFiles(int createRefusals, IntPredicate refuseReplace,
+        BiFunction<Path, Path, IOException> refusal) {
+      this.createRefusals = createRefusals;
+      this.refuseReplace = refuseReplace;
+      this.refusal = refusal;
+    }
+
+    @Override
+    public void create(Path pidFile, String content) throws IOException {
+      if (creates.incrementAndGet() <= createRefusals) {
+        throw new AccessDeniedException(pidFile.toString());
+      }
+      DaemonManager.FILE_SYSTEM.create(pidFile, content);
+    }
+
+    @Override
+    public void replace(Path temp, Path pidFile) throws IOException {
+      if (manager != null) lockHeld.add(manager.holdsStartLock("test"));
+      if (refuseReplace.test(replaces.incrementAndGet())) {
+        throw refusal.apply(temp, pidFile);
+      }
+      DaemonManager.FILE_SYSTEM.replace(temp, pidFile);
+    }
+  }
+
+  @Nested
+  @DisplayName("a PID file that is open in another program (Windows refuses to replace it)")
+  class BusyFileTests {
+
+    private final DaemonManager.Launcher noLauncher = (command, logFile) -> {
+      throw new IOException("no server is launched in this test");
+    };
+
+    private DaemonManager managerOn(BusyFiles files, DaemonManager.Launcher launcher) {
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher, files);
+      files.manager = manager;
+      return manager;
+    }
+
+    private List<String> booting(int port) {
+      return List.of(Long.toString(OWN_PID), Integer.toString(port),
+          DaemonManager.BOOTING_MARKER);
+    }
+
+    private long temporaryFiles() throws IOException {
+      try (var listing = Files.list(tempDir)) {
+        return listing.filter(p -> p.getFileName().toString().endsWith(".pid.tmp")).count();
+      }
+    }
+
+    @Test
+    @DisplayName("a refused replace is tried again until the file is free")
+    void replaceIsTriedAgain() throws IOException {
+      var files = new BusyFiles(0, n -> n <= 3);
+      var manager = managerOn(files, noLauncher);
+      manager.writePidFile("test", 12345, 2363);
+      assertEquals(4, files.replaces.get());
+      assertEquals(record(12345, 2363), pidFileLines(manager, "test"));
+      assertEquals(0, temporaryFiles());
+    }
+
+    @Test
+    @DisplayName("a refused claim is tried again; a file that exists is an answer, not a refusal")
+    void claimIsTriedAgain() throws IOException {
+      var files = new BusyFiles(2, n -> false);
+      var manager = managerOn(files, noLauncher);
+      assertTrue(manager.claimPidFile("test", 2363));
+      assertEquals(3, files.creates.get());
+      assertEquals(claim(OWN_PID, 2363), pidFileLines(manager, "test"));
+
+      assertFalse(manager.claimPidFile("test", 2363), "already claimed");
+      assertEquals(4, files.creates.get(), "asked once");
+    }
+
+    @Test
+    @DisplayName("a file that stays busy fails the write after its tries, and nothing is left")
+    void givesUp() throws IOException {
+      createManager().writePidFile("test", 111, 2363);
+      var files = new BusyFiles(0, n -> true);
+      var manager = managerOn(files, noLauncher);
+      assertThrows(AccessDeniedException.class, () -> manager.writePidFile("test", 222, 2363));
+      assertEquals(DaemonManager.FILE_BUSY_ATTEMPTS, files.replaces.get());
+      assertEquals(record(111, 2363), pidFileLines(manager, "test"), "the old record is intact");
+      assertEquals(0, temporaryFiles());
+    }
+
+    @Test
+    @DisplayName("a sharing violation is tried again; a failure of another kind is not")
+    void whichFailuresAreTriedAgain() throws IOException {
+      // Windows reports a file open elsewhere as access denied or as a sharing violation
+      var sharing = new BusyFiles(0, n -> n <= 2,
+          (temp, pidFile) -> new FileSystemException(temp.toString(), pidFile.toString(),
+              "The process cannot access the file because it is being used by another process"));
+      managerOn(sharing, noLauncher).writePidFile("test", 12345, 2363);
+      assertEquals(3, sharing.replaces.get());
+
+      var missing = new BusyFiles(0, n -> true,
+          (temp, pidFile) -> new NoSuchFileException(pidFile.toString()));
+      var manager = managerOn(missing, noLauncher);
+      assertThrows(NoSuchFileException.class, () -> manager.writePidFile("test", 1, 2363));
+      assertEquals(1, missing.replaces.get(), "not a busy file: not tried again");
+    }
+
+    @Test
+    @DisplayName("a start whose record is refused at first still starts its server")
+    void startSurvivesABusyFile() throws Exception {
+      // What failed on Windows: another start had the record open when this one replaced it,
+      // and this start stopped the server it had just launched and reported failure
+      int port = freePort();
+      var launcher = new FakeLauncher(port, 100);
+      var files = new BusyFiles(0, n -> n <= 2);
+      var manager = managerOn(files, launcher);
+      try {
+        assertTrue(manager.spawnDaemon("test", port, null));
+        assertEquals(1, launcher.launches.get());
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+      } finally {
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("a start replaces the record only while it holds the start lock")
+    void recordsUnderTheLock() throws Exception {
+      // Starts read the record under the lock; replacing it outside the lock is what collided
+      int port = freePort();
+      var launcher = new FakeLauncher(port, 100);
+      var files = new BusyFiles(0, n -> false);
+      var manager = managerOn(files, launcher);
+      try {
+        assertTrue(manager.spawnDaemon("test", port, null));
+        assertEquals(List.of(true, true), files.lockHeld,
+            "the booting record, then the plain one");
+      } finally {
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("a server that is up is not reported failed because its record cannot be updated")
+    void runningServerIsNotReportedFailed() throws Exception {
+      // The booting record is written; every replace after it is refused
+      int port = freePort();
+      var launcher = new FakeLauncher(port, 100);
+      var files = new BusyFiles(0, n -> n >= 2);
+      var manager = managerOn(files, launcher);
+      try {
+        assertTrue(manager.spawnDaemon("test", port, null), "the server answers");
+        assertEquals(booting(port), pidFileLines(manager, "test"));
+
+        // A later start, the file free again, finds it running and settles the record
+        var later = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
+        assertTrue(later.spawnDaemon("test", port, null));
+        assertEquals(1, launcher.launches.get(), "no second server");
+        assertEquals(record(OWN_PID, port), pidFileLines(later, "test"));
+      } finally {
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("the record of a running server is kept when it cannot be updated")
+    void runningServersRecordIsKept() throws Exception {
+      // It used to be deleted as unreadable, and the next start spawned a second server
+      var server = startServer();
+      try {
+        int port = server.getPort();
+        createManager().writePidFile("test", OWN_PID, port, DaemonManager.BOOTING_MARKER);
+        var manager = managerOn(new BusyFiles(0, n -> true), noLauncher);
+        assertTrue(manager.isAlreadyRunning("test", port));
+        assertEquals(booting(port), pidFileLines(manager, "test"));
+      } finally {
+        server.stop();
       }
     }
   }
