@@ -1,7 +1,8 @@
 <table>
 <tr>
 <td width="220" valign="top" align="center">
-  <p align="center"><img src="vscode-extension/images/icon.png" alt="wpilog-mcp icon" width="140"></p>
+  <!-- The leading <br> balances the h1's top margin, so the icon sits midway between the cell's top edge and the title. -->
+  <p align="center"><br><img src="vscode-extension/images/icon.png" alt="wpilog-mcp icon" width="140" align="top"></p>
   <h1 align="center">wpilog-mcp</h1>
   <p align="center">Model Context Protocol (MCP) Server for WPILib Logs</p>
 </td>
