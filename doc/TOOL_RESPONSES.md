@@ -941,7 +941,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 31,
+    "heap_used_mb": 28,
     "heap_max_mb": 512
   }
 }
@@ -1473,12 +1473,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 242,
-    "total_mb": 340,
+    "used_mb": 207,
+    "total_mb": 342,
     "max_mb": 512,
-    "free_mb": 97
+    "free_mb": 134
   },
-  "jvm_heap_used_mb": 242,
+  "jvm_heap_used_mb": 207,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
@@ -2777,7 +2777,7 @@ INTERPRETATION GUIDANCE: Results are raw data, not conclusions. Express findings
 | `field1` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name), for name1 |
 | `field2` | string | no | Field path inside the entry's values, e.g. 'translation.x', '[3]', '[0].tagCount' (or append it to the name), for name2 |
 | `angle` | string | no | Treat the values as an angle in 'radians' or 'degrees' (unwrapped across +-180 degrees, circular statistics), for an angle logged as a plain number such as a gyro yaw double; struct angle fields are recognized without it (both signals) |
-| `max_lag_sec` | number | no | Also search for the time shift that best aligns the two signals, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal follows the first) |
+| `max_lag_sec` | number | no | Also search for the time shift at which the two signals correlate most strongly, positively or negatively, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal follows the first) |
 | `lag_step_sec` | number | no | Lag search step (default: the first signal's median sample interval) |
 | `start_time` | number | no | Start time |
 | `end_time` | number | no | End time |
@@ -2832,11 +2832,11 @@ Response:
     "lags_evaluated": 19,
     "lag_step_sec": 0.020553000000006705,
     "max_lag_sec": 0.18497700000006034,
-    "best_lag_sec": 0.18497700000006034,
-    "correlation_at_best_lag": -0.4460458742281736,
+    "best_lag_sec": 0.020553000000006705,
+    "correlation_at_best_lag": -0.6344640116258345,
     "samples_at_best_lag": 6584,
     "correlation_at_zero_lag": -0.6278741197591584,
-    "note": "Positive lag: the second signal follows the first (the second at t + lag pairs with the first at t). A best lag at the edge of the range may lie beyond it. Shared timing (both follow the match phase) also aligns signals."
+    "note": "best_lag_sec is the lag with the strongest correlation, positive or negative (correlation_at_best_lag keeps its sign). Positive lag: the second signal follows the first (the second at t + lag pairs with the first at t). A best lag at the edge of the range may lie beyond it. If correlation_at_best_lag and correlation_at_zero_lag have opposite signs, the relationship changes direction with the shift... (159 more characters)"
   },
   "correlation": -0.6278741197591579,
   "lag1_autocorrelation": {

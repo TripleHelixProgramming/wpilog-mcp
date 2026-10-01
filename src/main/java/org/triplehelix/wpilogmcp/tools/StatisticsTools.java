@@ -417,6 +417,10 @@ public final class StatisticsTools {
       + "signals, from -max_lag_sec to +max_lag_sec (a positive lag means the second signal "
       + "follows the first)";
 
+  static final String CORRELATION_LAG_SCHEMA_MAX = "Also search for the time shift at which the "
+      + "two signals correlate most strongly, positively or negatively, from -max_lag_sec to "
+      + "+max_lag_sec (a positive lag means the second signal follows the first)";
+
   /** " in scope enabled (4 windows, 1052.3 s)" or " between 10 and 20 s", for messages. */
   static String scopeText(TimeScope scope) {
     if (!scope.isAll()) return " in " + scope.describe();
@@ -857,7 +861,7 @@ public final class StatisticsTools {
           .addProperty("field1", "string", NumericSignal.FIELD_PARAM + ", for name1", false)
           .addProperty("field2", "string", NumericSignal.FIELD_PARAM + ", for name2", false)
           .addProperty("angle", "string", NumericSignal.ANGLE_PARAM + " (both signals)", false)
-          .addNumberProperty("max_lag_sec", LAG_SCHEMA_MAX, false, null)
+          .addNumberProperty("max_lag_sec", CORRELATION_LAG_SCHEMA_MAX, false, null)
           .addNumberProperty("lag_step_sec", "Lag search step (default: the first signal's "
               + "median sample interval)", false, null)
           .addNumberProperty("start_time", "Start time", false, null)
@@ -1277,7 +1281,7 @@ public final class StatisticsTools {
       List<org.triplehelix.wpilogmcp.log.TimestampedValue> first,
       List<org.triplehelix.wpilogmcp.log.TimestampedValue> secondFull) {
     var lags = lagGrid(arguments, first);
-    double bestR = Double.NEGATIVE_INFINITY;
+    double bestR = Double.NaN;
     double bestLag = Double.NaN;
     int bestN = 0;
     Double zeroR = null;
@@ -1298,7 +1302,12 @@ public final class StatisticsTools {
       if (vx <= 1e-15 * n || vy <= 1e-15 * n) continue;
       double r = Math.max(-1, Math.min(1, cov / Math.sqrt(vx * vy)));
       if (Math.abs(lag) < 1e-12) zeroR = r;
-      if (r > bestR) {
+      // Best is the strongest relationship in either direction: when the signals move
+      // oppositely every r is negative, and the highest r is the weakest match. Among equally
+      // strong lags, the one nearest zero.
+      double strength = Math.abs(r);
+      if (Double.isNaN(bestLag) || strength > Math.abs(bestR)
+          || (strength == Math.abs(bestR) && Math.abs(lag) < Math.abs(bestLag))) {
         bestR = r;
         bestLag = lag;
         bestN = n;
@@ -1317,9 +1326,14 @@ public final class StatisticsTools {
     o.addProperty("correlation_at_best_lag", bestR);
     o.addProperty("samples_at_best_lag", bestN);
     if (zeroR != null) o.addProperty("correlation_at_zero_lag", zeroR);
-    o.addProperty("note", "Positive lag: the second signal follows the first (the second at "
-        + "t + lag pairs with the first at t). A best lag at the edge of the range may lie "
-        + "beyond it. Shared timing (both follow the match phase) also aligns signals.");
+    o.addProperty("note", "best_lag_sec is the lag with the strongest correlation, positive or "
+        + "negative (correlation_at_best_lag keeps its sign). Positive lag: the second signal "
+        + "follows the first (the second at t + lag pairs with the first at t). A best lag at "
+        + "the edge of the range may lie beyond it. If correlation_at_best_lag and "
+        + "correlation_at_zero_lag have opposite signs, the relationship changes direction "
+        + "with the shift, as oscillating signals do half a period apart: check that before "
+        + "reading the lag as a delay. Shared timing (both follow the match phase) also aligns "
+        + "signals.");
     return o;
   }
 

@@ -152,6 +152,12 @@ final class ToolArguments {
           args.addProperty("name1", first.get());
           args.addProperty("name2", second.orElse(first.get()));
           variants.add(new Variant(kind.label(), args));
+          if (kind == Kind.NUMERIC) {
+            // The lag search too: the lowest RMSE, or the strongest correlation
+            var lagged = args.deepCopy();
+            lagged.addProperty("max_lag_sec", 0.1);
+            variants.add(new Variant("numeric-lag", lagged));
+          }
         }
         if (variants.isEmpty()) {
           var args = base.deepCopy();
