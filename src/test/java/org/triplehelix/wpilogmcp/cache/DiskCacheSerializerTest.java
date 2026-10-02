@@ -5,8 +5,13 @@
 package org.triplehelix.wpilogmcp.cache;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -14,11 +19,15 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.CRC32;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.msgpack.core.MessagePack;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
@@ -745,6 +754,57 @@ class DiskCacheSerializerTest {
     void nonExistentFile() {
       Path noFile = tempDir.resolve("does-not-exist.msgpack");
       assertNull(serializer.read(noFile));
+    }
+
+    /**
+     * A payload whose header declares far more bytes than the file holds is rejected without
+     * allocating the declared size (CVE-2026-21452, GHSA-cw39-r4h6-8j3x). The file is otherwise
+     * valid and its CRC matches, so the bytes reach the unpacker. Before msgpack-core 0.9.11,
+     * {@code readPayload(int)} allocated the declared length up front: about 2 GB here, an
+     * {@link OutOfMemoryError} that escaped {@code read}'s {@code catch (Exception)}. The bound is
+     * checked on the bytes this thread allocates, so the result does not depend on the heap size.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"bin32", "ext32"})
+    @DisplayName("rejects a payload that declares more bytes than the file holds, without allocating them")
+    void oversizedDeclaredPayload(String format) throws IOException {
+      final int declaredLength = Integer.MAX_VALUE - 15;
+      var out = new ByteArrayOutputStream();
+      try (var packer = MessagePack.newDefaultPacker(out)) {
+        // Header and log metadata, in the order readPayload reads them
+        packer.packInt(DiskCacheSerializer.CURRENT_FORMAT_VERSION)
+            .packString("0.9.0").packString("/test/log.wpilog").packLong(1024).packLong(0)
+            .packString("abcdef1234567890").packLong(0)
+            .packDouble(0.0).packDouble(1.0).packBoolean(false).packNil()
+            .packString("/test/log.wpilog");
+        // One entry of a struct type (read by the generic value reader) holding one value
+        packer.packInt(1).packInt(1).packString("/Huge").packString("struct:Huge").packNil()
+            .packInt(1).packDouble(0.5);
+        if (format.equals("bin32")) {
+          packer.packBinaryHeader(declaredLength);
+        } else {
+          packer.packExtensionTypeHeader(DiskCacheSerializer.ENUM_VALUE_EXT, declaredLength);
+        }
+        packer.writePayload(new byte[] {1});
+      }
+      byte[] payload = out.toByteArray();
+      var crc = new CRC32();
+      crc.update(payload);
+      Path cacheFile = tempDir.resolve("oversized-" + format + ".msgpack");
+      Files.write(cacheFile, ByteBuffer.allocate(payload.length + 4).order(ByteOrder.LITTLE_ENDIAN)
+          .put(payload).putInt((int) crc.getValue()).array());
+
+      var threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+      assumeTrue(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled(),
+          "this JVM does not measure per-thread allocation");
+      long before = threads.getCurrentThreadAllocatedBytes();
+      ParsedLog log = serializer.read(cacheFile);
+      long allocated = threads.getCurrentThreadAllocatedBytes() - before;
+
+      assertNull(log, "a payload shorter than its declared length is a corrupt file");
+      assertTrue(allocated < 32L * 1024 * 1024,
+          "read allocated " + allocated + " bytes for a " + Files.size(cacheFile)
+              + "-byte file that declares a " + declaredLength + "-byte payload");
     }
   }
 
