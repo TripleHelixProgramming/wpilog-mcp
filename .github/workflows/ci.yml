@@ -44,11 +44,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Check VS Code extension compiles
+      # npm test compiles the extension, then runs its tests
+      - name: Build and test VS Code extension
         working-directory: vscode-extension
         run: |
           npm ci
-          npm run compile
+          npm test
 
       - name: Upload shadow JAR
         if: matrix.os == 'ubuntu-latest'
