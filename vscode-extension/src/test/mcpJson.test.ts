@@ -5,6 +5,7 @@ import {
   SERVER_NAME,
   TBA_KEY_REFERENCE,
   addToGitignore,
+  claudeCodeRestartNotice,
   buildServerConfig,
   buildServerEntry,
   gitAction,
@@ -185,3 +186,20 @@ test("addToGitignore appends .mcp.json with a comment, keeping what is there", (
   assert.equal(addToGitignore("build/\n"), "build/\n\n" + added);
   assert.equal(addToGitignore("build/"), "build/\n\n" + added);
 });
+
+test("the notice after adding the entry says a running Claude Code needs a restart, and how", () => {
+  const inVsCode = claudeCodeRestartNotice("robot", true);
+  assert.equal(inVsCode.offerReload, true);
+  assert.match(inVsCode.message, /robot\/\.mcp\.json/);
+  assert.match(inVsCode.message, /only when it starts/);
+  assert.match(inVsCode.message, /Reload the window/);
+  assert.match(inVsCode.message, /claude --continue/);
+  assert.match(inVsCode.message, /approve wpilog-analyzer/);
+
+  // Without the Claude Code extension, Claude Code runs in a terminal: no window to reload
+  const terminalOnly = claudeCodeRestartNotice("robot", false);
+  assert.equal(terminalOnly.offerReload, false);
+  assert.doesNotMatch(terminalOnly.message, /Reload the window/);
+  assert.match(terminalOnly.message, /claude --continue/);
+});
+

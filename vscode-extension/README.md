@@ -19,7 +19,7 @@ The extension runs an [MCP server](https://modelcontextprotocol.io/) whose tools
 
 1. Install the extension (see [Install](#install)).
 2. Put your `.wpilog` files in `~/riologs`, or set another folder in [Settings](#settings).
-3. Open your robot project in VS Code. With Claude Code, approve the `wpilog-analyzer` server the first time it asks in that project.
+3. Open your robot project in VS Code. With Claude Code, approve the `wpilog-analyzer` server the first time it asks in that project. If Claude Code was already running, restart it first: it reads its servers only when it starts (see [Using It with Claude Code](#using-it-with-claude-code)).
 4. Ask your AI assistant about your logs:
    - *"What logs are available?"*
    - *"Can you walk me through the power delivery in our last match?"*
@@ -53,6 +53,8 @@ Keep your robot project open in VS Code while you analyze logs. The agent can th
 Claude Code doesn't use VS Code's MCP server registry; it finds servers in a `.mcp.json` file in the folder it runs in. So in a WPILib robot project (a folder with `.wpilib/wpilib_preferences.json`), the extension adds a `wpilog-analyzer` entry to that folder's `.mcp.json`. It leaves other servers in the file alone, and doesn't touch a file that isn't valid JSON. One checkbox controls this: **Enable For Claude Code** (`wpilog-mcp.enableForClaudeCode`, on by default). It affects only Claude Code, since Copilot and other VS Code agents get the server from VS Code itself.
 
 There is nothing to set up. Open the robot project in VS Code with the extension installed, start Claude Code there, and approve `wpilog-analyzer` when it asks. Claude Code asks once per project before starting a server from `.mcp.json`, and `/mcp` lists it. This works for Claude Code in VS Code and for the `claude` command in a terminal in that folder.
+
+Claude Code reads `.mcp.json` only when a session starts; a running session, a new conversation in it, and `/clear` don't pick up a new server. So when the extension adds the entry to a project, it tells you, once per project, that a Claude Code session already running there needs a restart. If the Claude Code extension for VS Code is installed, the notice offers **Reload Window**, which restarts its sessions. In a terminal, exit Claude Code and run `claude --continue`, which starts a new session with your conversation. **Don't Show Again** turns the notice off, for those who use only Copilot or other VS Code agents.
 
 As with the [standalone install](../doc/STANDALONE.md), the entry only starts the server (Java, heap size, and JAR) with a configuration file, and the configuration lives in that file. The extension keeps one such file per project in its storage, in the format of the standalone install's `servers.yaml`. It holds the project's log directories, team number, and TBA key, so Claude Code in a project gets the same settings VS Code uses there (see [Settings](#settings)).
 

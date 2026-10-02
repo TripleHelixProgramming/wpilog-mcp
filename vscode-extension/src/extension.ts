@@ -17,6 +17,8 @@ import {
   addToGitignore,
   buildServerConfig,
   buildServerEntry,
+  CLAUDE_CODE_EXTENSION_ID,
+  claudeCodeRestartNotice,
   gitAction,
   hasServerEntry,
   otherWpilogServer,
@@ -597,6 +599,40 @@ async function showOnce(
   return show();
 }
 
+/** A global switch the notice's Don't Show Again button sets. */
+const RESTART_NOTICE_OFF = "wpilog-mcp.claudeCodeRestartNoticeOff";
+
+/**
+ * Tells the user that Claude Code must restart to find the entry just added to the folder's
+ * .mcp.json, and offers to reload the window when the Claude Code extension is installed (which
+ * restarts its sessions). A notice the extension shows by itself can be turned off for good, for
+ * those who use only Copilot or other VS Code agents.
+ */
+async function showRestartNotice(
+  context: vscode.ExtensionContext,
+  folder: vscode.WorkspaceFolder,
+  canTurnOff: boolean
+): Promise<string | undefined> {
+  if (canTurnOff && context.globalState.get<boolean>(RESTART_NOTICE_OFF)) {
+    return undefined;
+  }
+  const notice = claudeCodeRestartNotice(
+    folder.name,
+    vscode.extensions.getExtension(CLAUDE_CODE_EXTENSION_ID) !== undefined
+  );
+  const buttons = [
+    ...(notice.offerReload ? ["Reload Window"] : []),
+    ...(canTurnOff ? ["Don't Show Again"] : []),
+  ];
+  const choice = await vscode.window.showInformationMessage(notice.message, ...buttons);
+  if (choice === "Reload Window") {
+    await vscode.commands.executeCommand("workbench.action.reloadWindow");
+  } else if (choice === "Don't Show Again") {
+    await context.globalState.update(RESTART_NOTICE_OFF, true);
+  }
+  return choice;
+}
+
 /** Offers, once, to add .mcp.json to the folder's .gitignore. */
 async function offerToIgnore(
   context: vscode.ExtensionContext,
@@ -771,10 +807,13 @@ async function writeEntries(
     }
     await rememberProject(context, folder.uri.fsPath, own);
     written.add(folder.uri.fsPath);
+    // A Claude Code session that is already running does not see a new entry. The folder the user
+    // asked for always hears how to restart; a folder the entry was added to by itself, once
     if (asked) {
-      vscode.window.showInformationMessage(
-        `WPILog Analyzer is in ${folder.name}/.mcp.json. Start (or restart) Claude Code in that ` +
-          "folder and approve wpilog-analyzer when it asks."
+      void showRestartNotice(context, folder, false);
+    } else if (!hasServerEntry(text)) {
+      void showOnce(context, `wpilog-mcp.claudeCodeRestartNoticed:${folder.uri}`, () =>
+        showRestartNotice(context, folder, true)
       );
     }
     if (action === "writeAndOfferIgnore") {
