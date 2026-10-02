@@ -26,6 +26,36 @@ export interface ServerEntry {
   env?: Record<string, string>;
 }
 
+/** The Claude Code extension for VS Code, whose sessions restart when the window reloads. */
+export const CLAUDE_CODE_EXTENSION_ID = "anthropic.claude-code";
+
+/**
+ * What to tell the user once the entry is in a folder's `.mcp.json`. Claude Code reads that file
+ * only when a session starts (a running session, a new conversation in it, or `/clear` does not
+ * pick up a new server), so a session that was already running has no WPILog Analyzer until it
+ * restarts. Reloading the window restarts the Claude Code extension's sessions; in a terminal,
+ * `claude --continue` starts a new session that keeps the conversation.
+ *
+ * @param claudeCodeInVsCode whether the Claude Code extension for VS Code is installed
+ * @returns the message, and whether to offer to reload the window
+ */
+export function claudeCodeRestartNotice(
+  folderName: string,
+  claudeCodeInVsCode: boolean
+): { message: string; offerReload: boolean } {
+  const restart = claudeCodeInVsCode
+    ? "Reload the window to restart Claude Code in VS Code. In a terminal, exit Claude Code and " +
+      "run claude --continue, which keeps your conversation."
+    : "Exit Claude Code and run claude --continue, which keeps your conversation.";
+  return {
+    message:
+      `WPILog Analyzer is now in ${folderName}/.mcp.json for Claude Code. Claude Code reads that ` +
+      `file only when it starts, so a session already running does not have the server yet. ` +
+      `${restart} Then approve wpilog-analyzer when Claude Code asks.`,
+    offerReload: claudeCodeInVsCode,
+  };
+}
+
 /** Builds the entry: the JVM, its heap, the JAR, and the configuration file to start with. */
 export function buildServerEntry(
   javaPath: string,
