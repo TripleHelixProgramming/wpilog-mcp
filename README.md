@@ -38,11 +38,11 @@ Start broad. The model finds the logs and the entries, and you can get as specif
 
 There are two ways to run wpilog-mcp. The server is designed for and tested with Claude, but should work with any MCP client.
 
-**[VS Code extension](vscode-extension/README.md):** install **WPILog Analyzer** from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases/latest) (it is not on the Marketplace). The extension finds Java, starts the server, and registers it with VS Code, where Copilot and other agents find it. For Claude Code, it adds the server to your robot project's `.mcp.json`, and you approve it once. With the robot project open, the agent can also read your code and connect log entries to the subsystems that write them.
+**[VS Code extension](vscode-extension/README.md):** install **WPILog Analyzer** from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases), where pre-releases are listed too (it is not on the Marketplace). The extension finds Java, starts the server, and registers it with VS Code, where Copilot and other agents find it. For Claude Code, it adds the server to your robot project's `.mcp.json`, and you approve it once. With the robot project open, the agent can also read your code and connect log entries to the subsystems that write them.
 
 **[Standalone install](doc/STANDALONE.md):** for MCP clients outside VS Code, such as Claude Desktop, the Claude Code CLI, or Gemini. Run the one-line installer (or clone the repository and run `./gradlew install`), set your team number and log directory in `~/.wpilog-mcp/servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.
 
-Both take the same settings: where your logs are (one directory or several), your team number, and a Blue Alliance API key if you want match results. The extension takes the first two in VS Code [settings](vscode-extension/README.md#settings) and the key through a [command](vscode-extension/README.md#the-blue-alliance-api-key). The standalone server takes all three in its [configuration file](doc/STANDALONE.md#configuration).
+Both take the same settings: where your logs are (one directory or several), your team number, and a Blue Alliance API key if you want match results. The extension takes all three in VS Code [settings](vscode-extension/README.md#settings), and moves the key into VS Code's secret storage so that no settings file keeps it ([details](vscode-extension/README.md#the-blue-alliance-api-key)). The standalone server takes all three in its [configuration file](doc/STANDALONE.md#configuration).
 
 ### Extension or Standalone?
 

@@ -30,7 +30,7 @@ How deep the analysis goes depends on the AI model you use. The server provides 
 
 ## Install
 
-The extension is not on the Visual Studio Marketplace. Download `wpilog-analyzer-{version}.vsix` from the [latest release](https://github.com/TripleHelixProgramming/wpilog-mcp/releases/latest), then:
+The extension is not on the Visual Studio Marketplace. Download `wpilog-analyzer-{version}.vsix` from the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases) (a pre-release is a test build of the next version), then:
 
 1. Open the Extensions sidebar (`Ctrl+Shift+X`, or `Cmd+Shift+X` on macOS), click `...` at its top right, choose **Install from VSIX...**, and select the downloaded file.
 2. Restart VS Code.
@@ -79,20 +79,26 @@ Your **User** settings apply to every project. A project's own settings (**Works
 
 Paths work the same way on macOS, Linux, and Windows. A path starting with `~/` is in your home folder (`~/riologs` is `/Users/you/riologs` on a Mac and `C:\Users\you\riologs` on Windows), and forward slashes work on every system, so use them (`~/riologs`, `sim/logs`).
 
+The Settings editor lists them in this order: where your logs are, your team and its Blue Alliance key, then Claude Code, and last the Java settings, which are detected for you.
+
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `wpilog-mcp.javaPath` | Path to the `java` executable | auto-detect |
-| `wpilog-mcp.wpiLibYear` | WPILib installation year whose JDK to use (e.g., `2026`) | latest installed |
 | `wpilog-mcp.logDirectory` | Directory of `.wpilog` files (a relative path is inside the project) | auto-detect |
 | `wpilog-mcp.additionalLogDirectories` | More directories of `.wpilog` files, listed along with `logDirectory` (an archive drive, logs another team published, or a folder inside the project, given as a relative path). REV logs are matched to a wpilog only within the directory that holds it | none |
 | `wpilog-mcp.teamNumber` | Your FRC team number, for TBA lookups when a log doesn't record it | (empty) |
-| `wpilog-mcp.maxHeap` | JVM heap size, such as `2g`, `4g`, or `8g` | `4g` |
+| `wpilog-mcp.tbaApiKey` | Your Blue Alliance read API key, for match data. A key pasted here is moved into VS Code's secret storage and the field is cleared (see [The Blue Alliance API Key](#the-blue-alliance-api-key)) | (empty) |
 | `wpilog-mcp.enableForClaudeCode` | Claude Code only: add the server to robot projects' `.mcp.json`, where Claude Code finds it (see [Using It with Claude Code](#using-it-with-claude-code)) | on |
-| `wpilog-mcp.tbaApiKey` | Deprecated: settings are stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command; a key entered here is moved into secret storage and cleared from settings | empty |
+| `wpilog-mcp.javaPath` | Path to the `java` executable | auto-detect |
+| `wpilog-mcp.wpiLibYear` | WPILib installation year whose JDK to use (e.g., `2026`) | latest installed |
+| `wpilog-mcp.maxHeap` | JVM heap size, such as `2g`, `4g`, or `8g` | `4g` |
 
 ## The Blue Alliance API Key
 
-Match data from The Blue Alliance needs a free read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account). Run **WPILog Analyzer: Set The Blue Alliance API Key** from the Command Palette (`Ctrl+Shift+P`) and paste it. The key is kept in VS Code's secret storage (your operating system's keychain), not in a settings file. The server VS Code starts gets it in its environment, and Claude Code's server reads it from the configuration file the extension writes for it, which only you can read (see [Using It with Claude Code](#using-it-with-claude-code)). You set no environment variables. **WPILog Analyzer: Clear The Blue Alliance API Key** removes the key, from that file too.
+Match data from The Blue Alliance needs a free read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account). Paste it into the **Tba Api Key** field in your User settings (search the Settings editor for `wpilog-mcp`). A few seconds later the extension moves it into VS Code's secret storage (your operating system's keychain) and clears the field, which shows empty once you leave it. The key is never kept in a settings file, and Settings Sync never uploads it. The field shows no key even when one is stored; to replace the key, paste a new one. To enter the key without it showing on screen, run **WPILog Analyzer: Set The Blue Alliance API Key** from the Command Palette (`Ctrl+Shift+P`) instead. **WPILog Analyzer: Clear The Blue Alliance API Key**, also linked from the field's description, removes the key.
+
+The server VS Code starts gets the key in its environment, and Claude Code's server reads it from the configuration file the extension writes for it, which only you can read (see [Using It with Claude Code](#using-it-with-claude-code)). You set no environment variables. Clearing the key removes it from that file too.
+
+A key in a project's own settings (its `.vscode/settings.json`) is moved out of that file the same way, but it never replaces a key you already stored, because it may be a teammate's that was committed with the project. The extension tells you to revoke it if the file was committed or shared.
 
 If you are upgrading from 0.8.x:
 

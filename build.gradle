@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.triplehelix'
-version = '0.9.0-dev2'
+version = '0.9.0-dev3'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -94,7 +94,7 @@ dependencies {
     implementation 'org.yaml:snakeyaml:2.6'
 
     // Binary serialization for disk cache
-    implementation 'org.msgpack:msgpack-core:0.9.8'
+    implementation 'org.msgpack:msgpack-core:0.9.12'
 
     // In-memory cache with weight-based eviction for lazy log value loading
     implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'

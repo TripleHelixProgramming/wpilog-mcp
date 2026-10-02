@@ -24,6 +24,12 @@ import {
   shouldWriteEntry,
 } from "./mcpJson";
 import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
+import {
+  TBA_KEY_QUIET_MS,
+  TBA_KEY_SETTING,
+  planTbaKeyMove,
+  settingsThatRestartTheServer,
+} from "./tbaKey";
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
 
@@ -230,13 +236,31 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Re-register when settings change, and update .mcp.json
+  // A key entered in the TBA API key field is moved into secret storage, one move at a time. While
+  // the field is being edited, the move waits until it has been quiet for a moment (TBA_KEY_QUIET_MS)
+  let tbaKeyMove: Promise<void> = Promise.resolve();
+  let tbaKeyTimer: ReturnType<typeof setTimeout> | undefined;
+  function moveTbaKeyNow(): Promise<void> {
+    tbaKeyMove = tbaKeyMove
+      .then(() => moveTbaKeyToSecretStorage(context, outputChannel))
+      .catch((e) => outputChannel.appendLine(`Failed to move the TBA API key into secret storage: ${e}`));
+    return tbaKeyMove;
+  }
+  function scheduleTbaKeyMove() {
+    clearTimeout(tbaKeyTimer);
+    tbaKeyTimer = setTimeout(() => void moveTbaKeyNow(), TBA_KEY_QUIET_MS);
+  }
+  context.subscriptions.push({ dispose: () => clearTimeout(tbaKeyTimer) });
+
+  // Re-register when settings change, and update .mcp.json. The TBA API key field is not among
+  // these settings: a key entered there restarts the server once it is stored (secrets.onDidChange)
+  const serverSettings = settingsThatRestartTheServer(context.extension.packageJSON);
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("wpilog-mcp.tbaApiKey")) {
-        void moveTbaKeyToSecretStorage(context, outputChannel);
+      if (e.affectsConfiguration(TBA_KEY_SETTING)) {
+        scheduleTbaKeyMove();
       }
-      if (e.affectsConfiguration("wpilog-mcp")) {
+      if (serverSettings.some((key) => e.affectsConfiguration(key))) {
         outputChannel.appendLine("Settings changed, restarting MCP server...");
         didChangeEmitter.fire();
         scheduleMcpJsonUpdate();
@@ -246,7 +270,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   void (async () => {
-    await moveTbaKeyToSecretStorage(context, outputChannel);
+    await moveTbaKeyNow();
     await removeTbaKeyFromMcpJson(outputChannel);
     // Add or update Claude Code's entry in .mcp.json (robot projects, by default)
     scheduleMcpJsonUpdate();
@@ -259,49 +283,57 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 /**
- * Moves a TBA API key from the (deprecated) `wpilog-mcp.tbaApiKey` setting into secret storage
- * and clears it from settings, where it was plaintext in settings.json.
+ * Moves a TBA API key entered in the `wpilog-mcp.tbaApiKey` setting into secret storage and clears
+ * the setting, so the key does not stay in a settings file in plaintext (see planTbaKeyMove). The
+ * key is stored before the setting is cleared: if storing fails, the key is still in the setting,
+ * and the next move tries again. The message is not waited for: moves run one at a time, and a
+ * notification nobody closes would hold up every later one.
  */
 async function moveTbaKeyToSecretStorage(
   context: vscode.ExtensionContext,
   outputChannel: vscode.OutputChannel
 ) {
   const config = vscode.workspace.getConfiguration("wpilog-mcp");
-  const inspected = config.inspect<string>("tbaApiKey");
-  const workspaceKey = inspected?.workspaceValue?.trim() || "";
-  const globalKey = inspected?.globalValue?.trim() || "";
-  const key = workspaceKey || globalKey;
-  if (!key) {
+  const inspected = config.inspect<unknown>("tbaApiKey");
+  if (inspected?.globalValue === undefined && inspected?.workspaceValue === undefined) {
     return;
   }
 
-  if (!(await context.secrets.get(TBA_SECRET))) {
-    await context.secrets.store(TBA_SECRET, key);
+  const workspaceFile = vscode.workspace.workspaceFile;
+  const move = planTbaKeyMove({
+    userValue: inspected?.globalValue,
+    workspaceValue: inspected?.workspaceValue,
+    storedKey: await context.secrets.get(TBA_SECRET),
+    workspaceSettingsName:
+      workspaceFile && workspaceFile.scheme === "file"
+        ? path.basename(workspaceFile.fsPath)
+        : ".vscode/settings.json",
+  });
+
+  if (move.store !== undefined) {
+    await context.secrets.store(TBA_SECRET, move.store);
+    outputChannel.appendLine("Stored the TBA API key from settings in secret storage.");
   }
-  if (inspected?.globalValue !== undefined) {
+  if (move.clearUser) {
     await config.update("tbaApiKey", undefined, vscode.ConfigurationTarget.Global);
   }
-  if (inspected?.workspaceValue !== undefined) {
+  if (move.clearWorkspace) {
     await config.update("tbaApiKey", undefined, vscode.ConfigurationTarget.Workspace);
   }
-  outputChannel.appendLine("Moved the TBA API key from settings into secret storage.");
+  if (move.clearUser || move.clearWorkspace) {
+    outputChannel.appendLine("Cleared the TBA API key setting.");
+  }
 
-  const where = workspaceKey
-    ? "the workspace's .vscode/settings.json"
-    : "your user settings";
-  const message =
-    `WPILog Analyzer: Your TBA API key was in ${where} in plaintext; it is now kept in ` +
-    "VS Code's secret storage and removed from settings." +
-    (workspaceKey
-      ? " If that settings file was committed or shared, revoke the key and set a new one " +
-        "(WPILog Analyzer: Set The Blue Alliance API Key)."
-      : "");
-  const choice = await vscode.window.showInformationMessage(
-    message,
-    ...(workspaceKey ? ["Open TBA Account"] : [])
-  );
-  if (choice === "Open TBA Account") {
-    vscode.env.openExternal(vscode.Uri.parse(TBA_ACCOUNT_URL));
+  if (move.message && move.offerRevoke) {
+    void vscode.window
+      .showWarningMessage(move.message, "Open TBA Account")
+      .then((choice) => {
+        if (choice === "Open TBA Account") {
+          void vscode.env.openExternal(vscode.Uri.parse(TBA_ACCOUNT_URL));
+        }
+      });
+  } else if (move.message) {
+    void vscode.window.showInformationMessage(move.message);
   }
 }
 

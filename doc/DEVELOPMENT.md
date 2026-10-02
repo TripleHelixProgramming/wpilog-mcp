@@ -42,7 +42,7 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 - Version checks: the extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
 - Build file check: the stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails.
 
-CI runs `./gradlew test shadowJar` on Linux and Windows, and compiles the extension.
+CI runs `./gradlew test shadowJar` on Linux and Windows, and builds and tests the extension. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
 ### Tests on real logs
 
@@ -85,7 +85,7 @@ npm ci
 npm test
 ```
 
-These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, and removing the TBA key from those files.
+These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, removing the TBA key from those files, what happens to a key entered in the settings, and the settings' order and declarations. `npm test` compiles the extension and runs every compiled `*.test.js` through `src/test/runTests.ts`, which works with Node 20 and later on any platform; a new test file is picked up by its name.
 
 ## Changing or Adding a Tool
 
