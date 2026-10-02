@@ -58,3 +58,24 @@ jobs:
           name: wpilog-mcp-jar
           path: build/libs/wpilog-mcp-*-all.jar
           retention-days: 14
+
+  # GitHub's dependency graph does not read build.gradle, so Dependabot cannot see the libraries in
+  # the server JAR on its own. This submits the dependencies Gradle resolves on main (runtime, test,
+  # and build plugins), and Dependabot then alerts on them as it does on the extension's npm packages.
+  dependency-submission:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Submit the Gradle dependency graph
+        uses: gradle/actions/dependency-submission@v4
