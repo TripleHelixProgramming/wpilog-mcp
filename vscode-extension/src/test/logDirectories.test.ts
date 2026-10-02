@@ -71,6 +71,25 @@ test("a relative path names a folder in each project, and nothing without one", 
     [path.join("/robot", "logs")], "the same folder twice is listed once");
 });
 
+test("on Windows, the same folder written with / or \\, or in another case, is listed once", () => {
+  // Found by CI on Windows: a relative folder resolved inside the project has backslashes, while
+  // the same folder given as an absolute path kept its forward slashes, so it was listed twice
+  const w = path.win32;
+  assert.deepEqual(combineLogDirectories("logs", ["C:/robot/logs"], ["C:\\robot"], w), ["C:\\robot\\logs"]);
+  assert.deepEqual(combineLogDirectories("C:\\Robot\\Logs", ["c:/robot/logs/", "D:/archive"], [], w),
+    ["C:\\Robot\\Logs", "D:\\archive"], "the first spelling is kept");
+  assert.deepEqual(combineLogDirectories("C:/robot/sim/../logs", ["C:\\robot\\logs"], [], w),
+    ["C:\\robot\\logs"]);
+});
+
+test("on macOS and Linux, a trailing slash or .. is the same folder, but case is not", () => {
+  const p = path.posix;
+  assert.deepEqual(combineLogDirectories("/robot/logs/", ["/robot/logs", "/robot/x/../logs"], [], p),
+    ["/robot/logs/"]);
+  assert.deepEqual(combineLogDirectories("/Logs", ["/logs"], [], p), ["/Logs", "/logs"]);
+  assert.deepEqual(combineLogDirectories("/", ["//"], [], p), ["/"], "a root keeps its slash");
+});
+
 test("a project's own settings override the user's; the rest come from the user", () => {
   const user = { logDirectory: "/riologs", additionalLogDirectories: ["/archive"], teamNumber: 2363 };
   assert.deepEqual(overlaySettings(user, {}), user);
