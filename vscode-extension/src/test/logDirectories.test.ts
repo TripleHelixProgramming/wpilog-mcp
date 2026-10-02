@@ -77,9 +77,9 @@ test("on Windows, the same folder written with / or \\, or in another case, is l
   const w = path.win32;
   assert.deepEqual(combineLogDirectories("logs", ["C:/robot/logs"], ["C:\\robot"], w), ["C:\\robot\\logs"]);
   assert.deepEqual(combineLogDirectories("C:\\Robot\\Logs", ["c:/robot/logs/", "D:/archive"], [], w),
-    ["C:\\Robot\\Logs", "D:\\archive"], "the first spelling is kept");
+    ["C:\\Robot\\Logs", "D:/archive"], "each is passed as written, the first spelling of a folder");
   assert.deepEqual(combineLogDirectories("C:/robot/sim/../logs", ["C:\\robot\\logs"], [], w),
-    ["C:\\robot\\logs"]);
+    ["C:/robot/sim/../logs"]);
 });
 
 test("on macOS and Linux, a trailing slash or .. is the same folder, but case is not", () => {

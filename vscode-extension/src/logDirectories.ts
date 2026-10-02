@@ -34,9 +34,9 @@ function directoryIdentity(dir: string, pathApi: path.PlatformPath): string {
  * which may hold anything a user typed into settings.json): non-blank strings only, tilde-expanded,
  * each once, in that order. A relative path names a folder inside the project (such as one where
  * the robot code writes simulation logs) and is resolved against each of `projectDirs`; without a
- * project, it names nothing and is left out. Each directory is passed normalized, and two paths
- * that name the same folder (`C:/robot/logs` and `logs` in `C:\robot` on Windows, or one with a
- * trailing separator) count once, the first as given.
+ * project, it names nothing and is left out. Two paths that name the same folder (`C:/robot/logs`
+ * and `logs` in `C:\robot` on Windows, or one with a trailing separator) count once, and the first
+ * is passed as written.
  *
  * @param pathApi the platform's path rules; tests pass `path.win32` or `path.posix`
  */
@@ -53,7 +53,7 @@ export function combineLogDirectories(
     const identity = directoryIdentity(dir, pathApi);
     if (!seen.has(identity)) {
       seen.add(identity);
-      dirs.push(pathApi.normalize(dir));
+      dirs.push(dir);
     }
   };
   for (const dir of [main, ...extra]) {
