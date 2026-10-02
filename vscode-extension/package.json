@@ -59,19 +59,10 @@
       {
         "title": "WPILog Analyzer",
         "properties": {
-          "wpilog-mcp.javaPath": {
-            "type": "string",
-            "default": "",
-            "markdownDescription": "Path to the `java` executable. Leave blank to auto-detect the WPILib JDK."
-          },
-          "wpilog-mcp.wpiLibYear": {
-            "type": "string",
-            "default": "",
-            "markdownDescription": "WPILib installation year (e.g., `2026`). Leave blank to auto-detect the latest installed year."
-          },
           "wpilog-mcp.logDirectory": {
             "type": "string",
             "default": "",
+            "order": 1,
             "scope": "resource",
             "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect. Set it in your User settings for every project; a project's own (Workspace) setting overrides it there. A path starting with `~/` is in your home folder, on macOS, Linux, and Windows alike (`~/riologs`); write paths with forward slashes, which work on every system. A relative path is a folder inside the project."
           },
@@ -81,6 +72,7 @@
               "type": "string"
             },
             "default": [],
+            "order": 2,
             "scope": "resource",
             "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). As there, `~/` is your home folder on every system, and forward slashes work everywhere. A relative path is a folder inside the project (for example, if your robot code writes simulation logs to a `logs` folder, `logs` lists them). A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
           },
@@ -90,6 +82,7 @@
               "null"
             ],
             "default": null,
+            "order": 3,
             "minimum": 1,
             "scope": "resource",
             "markdownDescription": "Your FRC team number, for The Blue Alliance match data when a log does not record one. Empty until you set it. A project's own (Workspace) setting overrides your User setting there."
@@ -97,17 +90,32 @@
           "wpilog-mcp.tbaApiKey": {
             "type": "string",
             "default": "",
-            "markdownDescription": "Deprecated: settings are stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command, which keeps the key in VS Code's secret storage. A key entered here is moved there and cleared from settings.",
-            "markdownDeprecationMessage": "Stored in plaintext. Use the **WPILog Analyzer: Set The Blue Alliance API Key** command instead; a key entered here is moved into VS Code's secret storage and cleared."
+            "order": 4,
+            "markdownDescription": "Your read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account), for match data. Paste it here, in your **User** settings: a few seconds later the extension moves it into VS Code's secret storage (your operating system's keychain) and clears this field, which shows empty once you leave it, so the key never stays in a settings file. The field shows no key even when one is stored. Paste a new key to replace it, or [remove the stored key](command:wpilog-mcp.clearTbaApiKey). To enter the key without it showing on screen, run [Set The Blue Alliance API Key](command:wpilog-mcp.setTbaApiKey).",
+            "ignoreSync": true
           },
           "wpilog-mcp.enableForClaudeCode": {
             "type": "boolean",
             "default": true,
+            "order": 5,
             "markdownDescription": "**Claude Code only** (Copilot and other VS Code agents always have the server). Make WPILog Analyzer available to Claude Code, which finds servers in a project's `.mcp.json` rather than in VS Code: the extension adds a `wpilog-analyzer` entry to the `.mcp.json` of each WPILib robot project you open, and keeps any existing entry up to date. For a folder that is not a robot project, run **WPILog Analyzer: Add to Claude Code in This Folder**. The entry holds this computer's paths, so it is never written into a `.mcp.json` that git tracks, and the extension offers to add `.mcp.json` to `.gitignore`. The TBA API key is never written into it."
+          },
+          "wpilog-mcp.javaPath": {
+            "type": "string",
+            "default": "",
+            "order": 6,
+            "markdownDescription": "Path to the `java` executable. Leave blank to auto-detect the WPILib JDK."
+          },
+          "wpilog-mcp.wpiLibYear": {
+            "type": "string",
+            "default": "",
+            "order": 7,
+            "markdownDescription": "WPILib installation year (e.g., `2026`). Leave blank to auto-detect the latest installed year."
           },
           "wpilog-mcp.maxHeap": {
             "type": "string",
             "default": "4g",
+            "order": 8,
             "markdownDescription": "Maximum JVM heap size. Examples: `2g`, `4g`, `8g`."
           }
         }

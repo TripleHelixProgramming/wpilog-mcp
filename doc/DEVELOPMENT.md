@@ -85,7 +85,7 @@ npm ci
 npm test
 ```
 
-These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, and removing the TBA key from those files. `npm test` compiles the extension and runs every compiled `*.test.js` through `src/test/runTests.ts`, which works with Node 20 and later on any platform; a new test file is picked up by its name.
+These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, removing the TBA key from those files, what happens to a key entered in the settings, and the settings' order and declarations. `npm test` compiles the extension and runs every compiled `*.test.js` through `src/test/runTests.ts`, which works with Node 20 and later on any platform; a new test file is picked up by its name.
 
 ## Changing or Adding a Tool
 

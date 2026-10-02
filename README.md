@@ -42,7 +42,7 @@ There are two ways to run wpilog-mcp. The server is designed for and tested with
 
 **[Standalone install](doc/STANDALONE.md):** for MCP clients outside VS Code, such as Claude Desktop, the Claude Code CLI, or Gemini. Run the one-line installer (or clone the repository and run `./gradlew install`), set your team number and log directory in `~/.wpilog-mcp/servers.yaml`, and point your MCP client at the `wpilog-mcp` launcher.
 
-Both take the same settings: where your logs are (one directory or several), your team number, and a Blue Alliance API key if you want match results. The extension takes the first two in VS Code [settings](vscode-extension/README.md#settings) and the key through a [command](vscode-extension/README.md#the-blue-alliance-api-key). The standalone server takes all three in its [configuration file](doc/STANDALONE.md#configuration).
+Both take the same settings: where your logs are (one directory or several), your team number, and a Blue Alliance API key if you want match results. The extension takes all three in VS Code [settings](vscode-extension/README.md#settings), and moves the key into VS Code's secret storage so that no settings file keeps it ([details](vscode-extension/README.md#the-blue-alliance-api-key)). The standalone server takes all three in its [configuration file](doc/STANDALONE.md#configuration).
 
 ### Extension or Standalone?
 
