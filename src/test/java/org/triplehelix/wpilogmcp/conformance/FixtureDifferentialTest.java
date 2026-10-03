@@ -34,14 +34,19 @@ class FixtureDifferentialTest {
     var report = new ArrayList<String>();
     int findings = 0;
     int statistics = 0;
+    int domain = 0;
     for (var fixture : fixtures) {
       var outcome = DifferentialChecks.compare(registry, fixture.path());
-      report.addAll(DifferentialChecks.describe(fixture.id(), outcome));
+      var lines = DifferentialChecks.describe(fixture.id(), outcome);
+      report.addAll(lines);
+      System.out.println("[differential] " + lines.get(0));
       findings += outcome.findings().size();
       statistics += outcome.statisticsCompared();
+      domain += outcome.domainCompared();
     }
     logManager.unloadAllLogs();
     assertEquals(0, findings, String.join("\n", report));
     assertTrue(statistics > 500, "the check compared too little to mean anything: " + statistics);
+    assertTrue(domain > 0, "no domain answer was recomputed: " + domain);
   }
 }

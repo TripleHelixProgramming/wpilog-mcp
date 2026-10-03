@@ -63,6 +63,7 @@ class HttpStressTest {
   private static HttpClient httpClient;
   private static int port;
   private static List<String> availableLogPaths;
+  private static String testCacheFolder;
 
   // Statistics
   private static final AtomicInteger totalRequests = new AtomicInteger(0);
@@ -93,6 +94,7 @@ class HttpStressTest {
             "stdio", null, null, null, null, null, null, null);
       }
       org.triplehelix.wpilogmcp.Main.applyConfig(config);
+      testCacheFolder = StressSupport.useTestCache();
 
       var logDirs = config.logdirs();
       assumeTrue(logDirs != null && !logDirs.isEmpty(),
@@ -122,6 +124,8 @@ class HttpStressTest {
     System.out.println("========================================");
     System.out.println("Server: http://127.0.0.1:" + port + "/mcp");
     System.out.println("Log directories: " + logDirectories);
+    System.out.println("Disk cache: " + (testCacheFolder != null ? testCacheFolder
+        : "the configured one (not started by the build's stress task)"));
     System.out.println();
   }
 
@@ -178,17 +182,26 @@ class HttpStressTest {
     var sessionId = initialize();
     System.out.println("\nDiscover and load via HTTP:");
 
-    // list_available_logs
-    var listLogsArgs = new JsonObject();
-    listLogsArgs.addProperty("limit", 500); // every log, not the default first page
-    var result = toolCall(sessionId, "list_available_logs", listLogsArgs);
-    int logCount = result.get("log_count").getAsInt();
-    System.out.println("  Found " + logCount + " logs");
-
+    // list_available_logs: every log, page by page (a page holds at most 500)
     availableLogPaths = new ArrayList<>();
-    for (var entry : result.getAsJsonArray("logs")) {
-      availableLogPaths.add(entry.getAsJsonObject().get("path").getAsString());
+    int logCount = -1;
+    for (int offset = 0; ; ) {
+      var listLogsArgs = new JsonObject();
+      listLogsArgs.addProperty("limit", 500);
+      listLogsArgs.addProperty("offset", offset);
+      var result = toolCall(sessionId, "list_available_logs", listLogsArgs);
+      if (logCount < 0) {
+        logCount = result.get("log_count").getAsInt();
+        System.out.println("  Found " + logCount + " logs");
+      }
+      var page = result.getAsJsonArray("logs");
+      for (var entry : page) {
+        availableLogPaths.add(entry.getAsJsonObject().get("path").getAsString());
+      }
+      offset += page.size();
+      if (page.isEmpty() || !result.get("has_more").getAsBoolean()) break;
     }
+    assertEquals(logCount, availableLogPaths.size(), "the pages together list every log");
     assumeTrue(!availableLogPaths.isEmpty(), "No log files found");
 
     // Load first log via list_entries (auto-loads)
@@ -617,9 +630,12 @@ class HttpStressTest {
     // TBA (not log-requiring)
     exerciseTool(sessionId, "get_tba_status", new JsonObject(), "tba");
 
-    // RevLog (log-requiring)
-    exerciseTool(sessionId, "sync_status", withPath(logPath), "revlog");
-    exerciseTool(sessionId, "list_revlog_signals", withPath(logPath), "revlog");
+    // RevLog (log-requiring), on a log that has a REV log when the directories hold one
+    var revLogPath = StressSupport.firstLogWithRevLog(availableLogPaths);
+    var revPath = revLogPath != null ? revLogPath : logPath;
+    exerciseTool(sessionId, "wait_for_sync", withPath(revPath), "revlog");
+    exerciseTool(sessionId, "sync_status", withPath(revPath), "revlog");
+    exerciseTool(sessionId, "list_revlog_signals", withPath(revPath), "revlog");
 
     delete(sessionId);
   }

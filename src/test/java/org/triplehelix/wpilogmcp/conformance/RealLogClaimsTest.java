@@ -47,9 +47,10 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  * manifest (written by a different parser), facts recorded about the real logs, the test's own
  * decoding of a REV log's bytes, or a second tool that reports the same fact another way.
  *
- * <p>Opt-in, because it needs the real logs:
+ * <p>Opt-in, because it needs the real logs, and the simulated logs for the manifest claim:
  * <pre>
- * ./gradlew test --tests '*RealLogClaimsTest*' -PconformanceLogDir=$HOME/th/riologs
+ * ./gradlew test --tests '*RealLogClaimsTest*' -PconformanceLogDir=$HOME/th/riologs \
+ *     -PsimLogDir=$HOME/th/wpilog/frc-public-sim
  * </pre>
  * A claim whose precondition the available logs do not meet is skipped and reported as not
  * verifiable, never passed. The report is {@code build/reports/conformance/claims.txt}.
@@ -67,9 +68,10 @@ class RealLogClaimsTest {
   static final String Q10_REVLOG = "REV_20260321_162932.revlog"; // named by the roboRIO clock, UTC
   static final String E4 = "vache/session_55/akit_26-03-22_18-15-22_vache_e4.wpilog";
   static final String E4_REPLAY = "vache/session_55/akit_26-03-22_18-15-22_vache_e4_sim.wpilog";
-  static final String SIM_MANIFEST = "sim/MANIFEST.md";
+  static final String SIM_MANIFEST = "MANIFEST.md";
 
   static Path logDir;
+  static Path simLogDir; // the simulated logs and their manifest, or null
   static HttpTransport transport;
   static HttpClient http;
   static String session;
@@ -90,6 +92,12 @@ class RealLogClaimsTest {
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(logDir);
+    var simProperty = System.getProperty("conformance.simlogdir");
+    if (simProperty != null && !simProperty.isBlank()) {
+      simLogDir = Path.of(simProperty).toAbsolutePath().normalize();
+      // Readable, but not listed: the listing claims are about the real logs alone
+      if (Files.isDirectory(simLogDir)) logManager.addAllowedDirectory(simLogDir);
+    }
     savedLogDirs = LogDirectory.getInstance().getLogDirectories();
     LogDirectory.getInstance().setLogDirectory(logDir.toString());
     exportDir = Files.createTempDirectory("claims-export");
@@ -237,7 +245,8 @@ class RealLogClaimsTest {
       String enabledSource, List<double[]> enabledWindows) {}
 
   static List<SimFacts> simFacts() throws IOException {
-    var file = logDir.resolve(SIM_MANIFEST);
+    if (simLogDir == null) return List.of();
+    var file = simLogDir.resolve(SIM_MANIFEST);
     if (!Files.exists(file)) return List.of();
     var facts = new ArrayList<SimFacts>();
     String name = null;
@@ -296,11 +305,14 @@ class RealLogClaimsTest {
   void simulatedLogsAgreeWithTheirManifest() throws Exception {
     var claim = "simulated logs: phases, span, truncation, scope windows versus the manifest";
     var facts = simFacts();
-    needs(!facts.isEmpty(), claim, "no " + SIM_MANIFEST);
+    needs(!facts.isEmpty(), claim, simLogDir == null
+        ? "no simulated logs given (-PsimLogDir)"
+        : "no " + simLogDir.resolve(SIM_MANIFEST));
     var checked = new ArrayList<String>();
     for (var f : facts) {
-      var log = "sim/" + f.file();
-      if (!Files.exists(logDir.resolve(log))) continue;
+      // Absolute, so path() and entriesOfType() take it as it is
+      var log = simLogDir.resolve(f.file()).toString();
+      if (!Files.exists(Path.of(log))) continue;
       var entries = call("list_entries", "path", path(log));
       assertEquals("ok", status(entries), entries.toString());
       var range = entries.getAsJsonObject("time_range_sec");

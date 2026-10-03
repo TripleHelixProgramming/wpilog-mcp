@@ -15,8 +15,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Resolution order:
  * <ol>
+ *   <li>An explicit directory, set with {@link #setOverride}: the {@code -diskcachedir} argument
+ *       or a configuration's {@code diskcachedir}</li>
  *   <li>{@code WPILOG_DISK_CACHE_DIR} environment variable</li>
- *   <li>{@code -diskcachedir} CLI argument (set via {@link #setOverride})</li>
  *   <li>OS-specific application data directory:
  *     <ul>
  *       <li>macOS: {@code ~/Library/Application Support/wpilog-mcp/cache/}</li>

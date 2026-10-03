@@ -54,7 +54,7 @@ class RealLogDifferentialTest {
     Assumptions.assumeTrue(Files.isDirectory(logDir), "not a directory: " + logDir);
     int maxLogs = Integer.getInteger("conformance.maxlogs", Integer.MAX_VALUE);
     List<Path> logs;
-    try (Stream<Path> walk = Files.walk(logDir, 6)) {
+    try (Stream<Path> walk = Files.walk(logDir, RealLogConformanceTest.SCAN_DEPTH)) {
       logs = walk.filter(p -> p.toString().toLowerCase().endsWith(".wpilog")).sorted()
           .limit(maxLogs).toList();
     }
@@ -73,6 +73,7 @@ class RealLogDifferentialTest {
     int tooLarge = 0;
     int findings = 0;
     long statistics = 0;
+    long domain = 0;
     try {
       for (var log : logs) {
         var id = logDir.relativize(log).toString();
@@ -84,6 +85,7 @@ class RealLogDifferentialTest {
           lines.addAll(DifferentialChecks.describe(id, outcome));
           findings += outcome.findings().size();
           statistics += outcome.statisticsCompared();
+          domain += outcome.domainCompared();
         } catch (IndependentLog.NotALog | IndependentLog.TooLarge unreadableHere) {
           // The independent reader cannot read it: the server must decline it too, and say why
           var said = new ArrayList<String>();
@@ -115,7 +117,8 @@ class RealLogDifferentialTest {
       report.add(0, logs.size() + " logs" + (reached < logs.size() ? " (the run stopped after "
           + reached + ")" : "") + ": " + compared + " compared, " + unreadable
           + " not readable as logs, " + tooLarge + " over 2 GB; " + statistics
-          + " statistics compared; " + findings + " disagreements");
+          + " statistics and " + domain + " domain answers compared; " + findings
+          + " disagreements");
       Files.createDirectories(REPORT.getParent());
       Files.write(REPORT, report, StandardCharsets.UTF_8);
     }

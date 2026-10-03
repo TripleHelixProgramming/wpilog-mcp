@@ -131,15 +131,21 @@ tasks.register('extractTestNatives', Copy) {
     into "$buildDir/testnatives"
 }
 
+// The disk cache of every test task (test and the stress tests): a private folder emptied before
+// each run, so a run starts with nothing cached, never reuses sync results computed by other code,
+// and never writes to the user's cache. -PtestCacheDir=<folder> uses that folder instead and keeps
+// what is in it, so a run starts from an earlier run's results, or from a copy of a cache an
+// older version wrote (a copy: the tests write to it)
+def testCacheDir = project.hasProperty('testCacheDir')
+    ? file(project.property('testCacheDir')) : file("$buildDir/test-disk-cache")
+def keepTestCache = project.hasProperty('testCacheDir')
+
 // Make test task depend on native extraction and set the library path
 tasks.named('test') {
     dependsOn extractTestNatives
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
-    // A private disk cache, emptied before each run: tests never reuse sync results computed by
-    // other code, and never write to the user's cache
-    def testDiskCache = file("$buildDir/test-disk-cache")
-    environment 'WPILOG_DISK_CACHE_DIR', testDiskCache.absolutePath
-    doFirst { delete testDiskCache }
+    environment 'WPILOG_DISK_CACHE_DIR', testCacheDir.absolutePath
+    doFirst { if (!keepTestCache) delete testCacheDir }
     // ToolConformanceTest: -PconformanceUpdate rewrites the known-failures list from current results
     if (project.hasProperty('conformanceUpdate')) {
         systemProperty 'conformance.update', 'true'
@@ -148,12 +154,20 @@ tasks.named('test') {
     if (project.hasProperty('goldenLog')) {
         systemProperty 'golden.log', project.property('goldenLog')
     }
+    // Golden tests against another team's match (opt-in): -PgoldenMatchLog=/path/to/akit_cmptx_e4_sample.wpilog
+    if (project.hasProperty('goldenMatchLog')) {
+        systemProperty 'golden.matchlog', project.property('goldenMatchLog')
+    }
     // Conformance rules on every real log in a directory (opt-in): -PconformanceLogDir=/path/to/logs
     // (-PconformanceMaxLogs=N limits it to the first N)
     if (project.hasProperty('conformanceLogDir')) {
         systemProperty 'conformance.logdir', project.property('conformanceLogDir')
         // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+    }
+    // The simulated logs and their MANIFEST.md, for the claims test: -PsimLogDir=/path/to/sim-logs
+    if (project.hasProperty('simLogDir')) {
+        systemProperty 'conformance.simlogdir', project.property('simLogDir')
     }
     if (project.hasProperty('conformanceMaxLogs')) {
         systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
@@ -606,7 +620,9 @@ tasks.register('stdioStressTest') {
         println '========================================'
         println "Config: ${configFile ?: '(defaults: ~/riologs, team 2363, TBA from env)'}"
         println "Heap: ${heapSize}"
+        println "Disk cache: ${testCacheDir} (${keepTestCache ? 'kept from earlier runs' : 'emptied first'})"
         println ''
+        if (!keepTestCache) delete testCacheDir
 
         def result = javaexec {
             classpath = sourceSets.test.runtimeClasspath
@@ -627,6 +643,10 @@ tasks.register('stdioStressTest') {
             if (configFile) {
                 systemProperty 'stress.configpath', configFile
             }
+            // The test cache: the tests set it after applying the configuration, so a diskcachedir
+            // there does not win, and the environment covers anything resolved before that
+            systemProperty 'stress.cachedir', testCacheDir.absolutePath
+            environment 'WPILOG_DISK_CACHE_DIR', testCacheDir.absolutePath
             systemProperty 'wpilib.natives.path', "${buildDir}/testnatives"
 
             // SLF4J: suppress server internals, only show warnings and errors
@@ -657,7 +677,9 @@ tasks.register('httpStressTest') {
         println '========================================'
         println "Config: ${configFile ?: '(defaults: ~/riologs, team 2363, TBA from env)'}"
         println "Heap: ${heapSize}"
+        println "Disk cache: ${testCacheDir} (${keepTestCache ? 'kept from earlier runs' : 'emptied first'})"
         println ''
+        if (!keepTestCache) delete testCacheDir
 
         def result = javaexec {
             classpath = sourceSets.test.runtimeClasspath
@@ -678,6 +700,10 @@ tasks.register('httpStressTest') {
             if (configFile) {
                 systemProperty 'stress.configpath', configFile
             }
+            // The test cache: the tests set it after applying the configuration, so a diskcachedir
+            // there does not win, and the environment covers anything resolved before that
+            systemProperty 'stress.cachedir', testCacheDir.absolutePath
+            environment 'WPILOG_DISK_CACHE_DIR', testCacheDir.absolutePath
             systemProperty 'wpilib.natives.path', "${buildDir}/testnatives"
             systemProperty 'org.slf4j.simpleLogger.defaultLogLevel', 'warn'
 

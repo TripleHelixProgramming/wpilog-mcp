@@ -38,7 +38,7 @@ class CompareMatchesFixtureTest extends FixtureToolTestBase {
     for (var c : r.getAsJsonArray("comparisons")) {
       var comparison = c.getAsJsonObject();
       var stats = comparison.getAsJsonObject("statistics");
-      assertEquals(31.0, stats.get("max").getAsDouble()); // the enabled overruns
+      assertEquals(33.0, stats.get("max").getAsDouble()); // the largest enabled overrun
       assertTrue(stats.get("median").getAsDouble() < 20);
       assertTrue(stats.has("p95") && stats.has("p25") && stats.has("std_dev"));
       assertEquals("enabled", comparison.getAsJsonObject("scope").get("scope").getAsString());

@@ -7,11 +7,14 @@ package org.triplehelix.wpilogmcp.integration;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.*;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,7 +23,6 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
-import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 import org.triplehelix.wpilogmcp.config.ServerConfig;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
@@ -63,7 +65,9 @@ class StressTest {
   private static List<Tool> tools;
   private static List<String> availableLogPaths;
   private static List<String> loadedEntryNames;
-  private static Path diskCacheDir;
+  private static String testCacheFolder;
+  private static String revLogLogPath;
+  private static boolean revLogLogSearched;
 
   // Statistics
   private static final AtomicInteger totalOperations = new AtomicInteger(0);
@@ -98,6 +102,7 @@ class StressTest {
             "stdio", null, null, null, null, null, null, null);
       }
       Main.applyConfig(config);
+      testCacheFolder = StressSupport.useTestCache();
 
       var logDirs = config.logdirs();
       assumeTrue(logDirs != null && !logDirs.isEmpty(),
@@ -136,7 +141,8 @@ class StressTest {
     System.out.println("========================================");
     System.out.println("Log directories: " + logDirectories);
     System.out.println("Registered " + tools.size() + " tools");
-    System.out.println("Disk cache enabled: " + LogManager.getInstance().getDiskCache().isEnabled());
+    System.out.println("Disk cache: " + (testCacheFolder != null ? testCacheFolder
+        : "the configured one (not started by the build's stress task)"));
     System.out.println("TBA configured: " + TbaConfig.getInstance().isConfigured());
     System.out.println();
   }
@@ -153,29 +159,36 @@ class StressTest {
   @DisplayName("1. List available logs")
   void listAvailableLogs() throws Exception {
     var tool = findTool("list_available_logs");
-    var listArgs = new JsonObject();
-    listArgs.addProperty("limit", 500); // every log, not the default first page
-    var result = executeTool(tool, listArgs);
-
-    assertTrue(result.has("success") && result.get("success").getAsBoolean(),
-        "list_available_logs failed: " + result);
-
-    int logCount = result.get("log_count").getAsInt();
-    System.out.println("Found " + logCount + " log files");
-    assertEquals(logDirectories.size(), result.getAsJsonArray("log_directories").size(),
-        "every configured directory is named: " + result.get("log_directories"));
-    if (result.has("skipped")) {
-      System.out.println("Directories not read: " + result.get("skipped"));
-    }
-
     availableLogPaths = new ArrayList<>();
-    var logsArray = result.getAsJsonArray("logs");
-    for (var logEntry : logsArray) {
-      var logObj = logEntry.getAsJsonObject();
-      availableLogPaths.add(logObj.get("path").getAsString());
-      System.out.println("  - " + logObj.get("friendly_name").getAsString() +
-          " (" + formatBytes(logObj.get("size_bytes").getAsLong()) + ")");
+    int logCount = -1;
+    // Every log, page by page: a page holds at most 500
+    for (int offset = 0; ; ) {
+      var listArgs = new JsonObject();
+      listArgs.addProperty("limit", 500);
+      listArgs.addProperty("offset", offset);
+      var result = executeTool(tool, listArgs);
+      assertTrue(result.has("success") && result.get("success").getAsBoolean(),
+          "list_available_logs failed: " + result);
+      if (logCount < 0) {
+        logCount = result.get("log_count").getAsInt();
+        System.out.println("Found " + logCount + " log files");
+        assertEquals(logDirectories.size(), result.getAsJsonArray("log_directories").size(),
+            "every configured directory is named: " + result.get("log_directories"));
+        if (result.has("skipped")) {
+          System.out.println("Directories not read: " + result.get("skipped"));
+        }
+      }
+      var logsArray = result.getAsJsonArray("logs");
+      for (var logEntry : logsArray) {
+        var logObj = logEntry.getAsJsonObject();
+        availableLogPaths.add(logObj.get("path").getAsString());
+        System.out.println("  - " + logObj.get("friendly_name").getAsString() +
+            " (" + formatBytes(logObj.get("size_bytes").getAsLong()) + ")");
+      }
+      offset += logsArray.size();
+      if (logsArray.isEmpty() || !result.get("has_more").getAsBoolean()) break;
     }
+    assertEquals(logCount, availableLogPaths.size(), "the pages together list every log");
 
     assumeTrue(!availableLogPaths.isEmpty(), "No log files found in directory");
   }
@@ -828,117 +841,112 @@ class StressTest {
 
   @Test
   @Order(8)
-  @DisplayName("8. Exercise RevLog tools")
+  @DisplayName("8. Exercise RevLog tools on a log that has a REV log")
   void exerciseRevLogTools() throws Exception {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
-    loadLog(availableLogPaths.get(0));
+    String logPath = logWithRevLog();
+    assumeTrue(logPath != null, "No log in the log directories has a REV log synchronized with it");
+    loadLog(logPath);
 
-    String logPath = availableLogPaths.get(0);
-    System.out.println("\nExercising RevLog tools:");
-
-    var syncArgs = new JsonObject();
-    syncArgs.addProperty("path", logPath);
-    testTool("sync_status", syncArgs, result -> {
-      int revlogCount = result.has("revlog_count") ? result.get("revlog_count").getAsInt() : 0;
-      System.out.println("  sync_status: " + revlogCount + " revlogs");
-    });
-
-    List<String> revlogSignalKeys = new ArrayList<>();
-    var listSigArgs = new JsonObject();
-    listSigArgs.addProperty("path", logPath);
-    testTool("list_revlog_signals", listSigArgs, result -> {
-      int signalCount = result.has("signal_count") ? result.get("signal_count").getAsInt() : 0;
-      System.out.println("  list_revlog_signals: " + signalCount + " signals");
-      if (result.has("signals")) {
-        for (var signal : result.getAsJsonArray("signals")) {
-          revlogSignalKeys.add(signal.getAsJsonObject().get("key").getAsString());
-          if (revlogSignalKeys.size() >= 3) break;
-        }
-      }
-    });
+    System.out.println("\nExercising RevLog tools on " + Path.of(logPath).getFileName() + ":");
 
     var waitArgs = new JsonObject();
     waitArgs.addProperty("path", logPath);
-    testTool("wait_for_sync", waitArgs, result -> {
-      String status = result.has("status") ? result.get("status").getAsString() : "unknown";
-      System.out.println("  wait_for_sync: " + status);
-    });
+    testTool("wait_for_sync", waitArgs, result ->
+        System.out.println("  wait_for_sync: " + result.get("status").getAsString()));
 
-    var offsetArgs = new JsonObject();
-    offsetArgs.addProperty("path", logPath);
-    offsetArgs.addProperty("offset_ms", 0.0);
-    testTool("set_revlog_offset", offsetArgs, result -> {
-      System.out.println("  set_revlog_offset: OK");
-    });
+    var syncArgs = new JsonObject();
+    syncArgs.addProperty("path", logPath);
+    var sync = executeTool(findTool("sync_status"), syncArgs);
+    assertEquals("ok", sync.get("status").getAsString(), sync.toString());
+    assertTrue(sync.get("revlog_count").getAsInt() > 0, sync.toString());
+    System.out.println("  sync_status: " + sync.get("revlog_count").getAsInt() + " revlog(s), "
+        + sync.get("overall_confidence").getAsString() + " confidence");
+
+    var listSigArgs = new JsonObject();
+    listSigArgs.addProperty("path", logPath);
+    var signals = executeTool(findTool("list_revlog_signals"), listSigArgs);
+    assertEquals("ok", signals.get("status").getAsString(), signals.toString());
+    List<String> revlogSignalKeys = new ArrayList<>();
+    for (var signal : signals.getAsJsonArray("signals")) {
+      revlogSignalKeys.add(signal.getAsJsonObject().get("key").getAsString());
+      if (revlogSignalKeys.size() >= 3) break;
+    }
+    System.out.println("  list_revlog_signals: " + signals.get("signal_count").getAsInt() + " signals");
+    assertFalse(revlogSignalKeys.isEmpty(), signals.toString());
 
     for (String key : revlogSignalKeys) {
       var dataArgs = new JsonObject();
       dataArgs.addProperty("path", logPath);
       dataArgs.addProperty("signal_key", key);
       dataArgs.addProperty("limit", 10);
-      testTool("get_revlog_data", dataArgs, result -> {
-        int samples = result.has("sample_count") ? result.get("sample_count").getAsInt() : 0;
-        System.out.println("  get_revlog_data (" + key + "): " + samples + " samples");
-      });
+      var data = executeTool(findTool("get_revlog_data"), dataArgs);
+      assertEquals("ok", data.get("status").getAsString(), data.toString());
+      System.out.println("  get_revlog_data (" + key + "): "
+          + data.get("total_samples").getAsInt() + " samples");
     }
+
+    // Last, because it replaces the synchronization's offset with the one given
+    var offsetArgs = new JsonObject();
+    offsetArgs.addProperty("path", logPath);
+    offsetArgs.addProperty("offset_ms", 0.0);
+    testTool("set_revlog_offset", offsetArgs, result -> System.out.println("  set_revlog_offset: OK"));
   }
 
-  // ==================== 9. Disk Cache ====================
+  // ==================== 9. REV log sync and the disk cache ====================
 
+  /**
+   * A synchronization read back from the disk cache gives the same answers as one computed fresh.
+   * The fresh one runs with the disk cache off; then the log is loaded twice with it on, and the
+   * second load is served from the cache, because the first either read the result there or
+   * computed and saved it. With {@code -PtestCacheDir} pointing at a cache an older version wrote,
+   * the first load may read that version's result, and a difference fails the test: the format
+   * version should have been raised.
+   */
   @Test
   @Order(9)
-  @DisplayName("9. Disk cache stress test")
-  void diskCacheStressTest() throws Exception {
+  @DisplayName("9. REV log sync: a result read from the disk cache matches a fresh one")
+  void syncCacheMatchesFreshSync() throws Exception {
     assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
+    String logPath = logWithRevLog();
+    assumeTrue(logPath != null, "No log in the log directories has a REV log synchronized with it");
+    var manager = LogManager.getInstance();
+    var syncCache = manager.getSyncDiskCache();
+    assumeTrue(syncCache.isEnabled(), "The sync disk cache is disabled");
+    Path cacheDir = manager.getCacheDirectory().getPath();
+    System.out.println("\nREV log sync and the disk cache (" + cacheDir + "), on "
+        + Path.of(logPath).getFileName() + ":");
 
-    DiskCache diskCache = LogManager.getInstance().getDiskCache();
-    assumeTrue(diskCache.isEnabled(), "Disk cache is disabled");
-
-    System.out.println("\nDisk cache stress test:");
-
-    String logPath = availableLogPaths.get(0);
-
-    // First load: parses from disk, writes to cache
-    LogManager.getInstance().unloadAllLogs();
-    long firstLoadStart = System.currentTimeMillis();
-    loadLog(logPath);
-    long firstLoadMs = System.currentTimeMillis() - firstLoadStart;
-    System.out.printf("  First load (parse + cache write): %dms%n", firstLoadMs);
-
-    // Wait for async cache write to complete
-    Thread.sleep(2000);
-
-    // Second load: should hit disk cache
-    LogManager.getInstance().unloadAllLogs();
-    long secondLoadStart = System.currentTimeMillis();
-    loadLog(logPath);
-    long secondLoadMs = System.currentTimeMillis() - secondLoadStart;
-    System.out.printf("  Second load (disk cache hit): %dms%n", secondLoadMs);
-
-    if (secondLoadMs < firstLoadMs && firstLoadMs > 100) {
-      double speedup = (double) firstLoadMs / Math.max(secondLoadMs, 1);
-      System.out.printf("  Speedup: %.1fx%n", speedup);
+    manager.unloadAllLogs();
+    syncCache.setEnabled(false);
+    Map<String, JsonObject> fresh;
+    try {
+      fresh = revLogAnswers(logPath);
+    } finally {
+      syncCache.setEnabled(true);
     }
+    System.out.println("  computed with the disk cache off: " + fresh.size() + " answers");
 
-    // Verify data integrity: compare entry counts
-    var log1entries = LogManager.getInstance().getOrLoad(logPath).entryCount();
+    manager.unloadAllLogs();
+    long before = countSyncFiles(cacheDir);
+    var first = revLogAnswers(logPath);
+    long after = countSyncFiles(cacheDir);
+    System.out.println("  first load with the cache: "
+        + (after > before ? "computed and saved" : "read from the cache"));
+    manager.unloadAllLogs();
+    var cached = revLogAnswers(logPath);
+    System.out.println("  second load: read from the cache");
 
-    // Third load from cache
-    LogManager.getInstance().unloadAllLogs();
-    loadLog(logPath);
-    var log2entries = LogManager.getInstance().getOrLoad(logPath).entryCount();
-
-    assertEquals(log1entries, log2entries,
-        "Cached log should have same entry count as original parse");
-    System.out.printf("  Integrity check: %d entries (consistent)%n", log1entries);
-
-    // Test cache with multiple logs
-    if (availableLogPaths.size() >= 2) {
-      LogManager.getInstance().unloadAllLogs();
-      loadLog(availableLogPaths.get(0));
-      loadLog(availableLogPaths.get(1));
-      System.out.println("  Multi-log cache: loaded 2 logs successfully");
+    for (var entry : fresh.entrySet()) {
+      for (var other : List.of(Map.entry("first load", first), Map.entry("from the cache", cached))) {
+        var difference = firstDifference(entry.getValue(), other.getValue().get(entry.getKey()),
+            entry.getKey());
+        assertNull(difference, other.getKey() + " differs from the fresh synchronization at "
+            + difference);
+      }
     }
+    assertEquals(fresh.keySet(), cached.keySet());
+    System.out.println("  every answer is the same");
   }
 
   // ==================== 10. In-Memory Cache Eviction ====================
@@ -1197,6 +1205,85 @@ class StressTest {
     } catch (Exception e) {
       System.out.println("  " + toolName + ": ERROR - " + e.getMessage());
     }
+  }
+
+  /** The first listed log with a REV log synchronized with it, searched for once; or null. */
+  private static String logWithRevLog() {
+    if (!revLogLogSearched) {
+      revLogLogPath = StressSupport.firstLogWithRevLog(availableLogPaths);
+      revLogLogSearched = true;
+    }
+    return revLogLogPath;
+  }
+
+  /**
+   * What the REV log tools answer about a log once its synchronization is done, by call:
+   * sync_status with the signal pairs, list_revlog_signals, and the first three signals' data
+   * with statistics.
+   */
+  private Map<String, JsonObject> revLogAnswers(String logPath) throws Exception {
+    loadLog(logPath);
+    assertTrue(LogManager.getInstance().waitForRevLogSync(logPath, StressSupport.SYNC_TIMEOUT_MS),
+        "the REV log synchronization did not finish");
+    var answers = new LinkedHashMap<String, JsonObject>();
+    var syncArgs = new JsonObject();
+    syncArgs.addProperty("path", logPath);
+    syncArgs.addProperty("include_signal_pairs", true);
+    answers.put("sync_status", executeTool(findTool("sync_status"), syncArgs));
+    var listArgs = new JsonObject();
+    listArgs.addProperty("path", logPath);
+    var signals = executeTool(findTool("list_revlog_signals"), listArgs);
+    answers.put("list_revlog_signals", signals);
+    if (signals.has("signals")) {
+      var list = signals.getAsJsonArray("signals");
+      for (int i = 0; i < Math.min(3, list.size()); i++) {
+        var key = list.get(i).getAsJsonObject().get("key").getAsString();
+        var dataArgs = new JsonObject();
+        dataArgs.addProperty("path", logPath);
+        dataArgs.addProperty("signal_key", key);
+        dataArgs.addProperty("limit", 100);
+        dataArgs.addProperty("include_stats", true);
+        answers.put("get_revlog_data " + key, executeTool(findTool("get_revlog_data"), dataArgs));
+      }
+    }
+    return answers;
+  }
+
+  private static long countSyncFiles(Path dir) throws java.io.IOException {
+    try (var files = Files.list(dir)) {
+      return files.filter(f -> f.getFileName().toString().endsWith("-sync.msgpack")).count();
+    }
+  }
+
+  /** The first place two JSON values differ, as "where: one vs other", or null when equal. */
+  static String firstDifference(JsonElement a, JsonElement b, String where) {
+    if (a == null || b == null) return a == b ? null : where + ": " + a + " vs " + b;
+    if (a.isJsonObject() && b.isJsonObject()) {
+      var keys = new java.util.TreeSet<>(a.getAsJsonObject().keySet());
+      keys.addAll(b.getAsJsonObject().keySet());
+      for (var key : keys) {
+        var d = firstDifference(a.getAsJsonObject().get(key), b.getAsJsonObject().get(key),
+            where + "." + key);
+        if (d != null) return d;
+      }
+      return null;
+    }
+    if (a.isJsonArray() && b.isJsonArray()) {
+      var x = a.getAsJsonArray();
+      var y = b.getAsJsonArray();
+      if (x.size() != y.size()) return where + ": " + x.size() + " items vs " + y.size();
+      for (int i = 0; i < x.size(); i++) {
+        var d = firstDifference(x.get(i), y.get(i), where + "[" + i + "]");
+        if (d != null) return d;
+      }
+      return null;
+    }
+    return a.equals(b) ? null : where + ": " + abbreviate(a) + " vs " + abbreviate(b);
+  }
+
+  private static String abbreviate(JsonElement e) {
+    var text = e.toString();
+    return text.length() <= 200 ? text : text.substring(0, 200) + "...";
   }
 
   private List<String> findNumericEntries(int limit) {

@@ -57,7 +57,11 @@ class RealLogConformanceTest {
 
   static final Path REPORT = Path.of("build", "reports", "conformance", "real-logs.txt");
   static final long CALL_TIMEOUT_SECONDS = 180;
-  static final int SCAN_DEPTH = 5;
+  /**
+   * Folder levels searched below the log directory, here and in the differential check: enough
+   * for an archive sorted by team, year, event, and day under a folder of archives.
+   */
+  static final int SCAN_DEPTH = 6;
   static final java.util.Set<String> REVLOG_TOOLS = java.util.Set.of("list_revlog_signals",
       "get_revlog_data", "sync_status", "set_revlog_offset", "wait_for_sync");
 

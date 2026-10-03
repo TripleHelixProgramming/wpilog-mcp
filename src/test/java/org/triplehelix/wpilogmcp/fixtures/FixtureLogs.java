@@ -177,7 +177,8 @@ public final class FixtureLogs {
     if (i == 0) {
       full = 9603.5;
     } else if (enabled && i % 25 == 0) {
-      full = 31.0; // overrun: 4 % of enabled loops
+      // Overrun: 4 % of enabled loops, of 31, 32, or 33 ms, so the top percentiles differ
+      full = 31.0 + (i / 25) % 3;
     } else {
       full = 16.0 + (i % 7) * 0.5;
     }
@@ -911,6 +912,9 @@ public final class FixtureLogs {
       for (var name : List.of("REC", "BusOffCount", "TxFullCount")) {
         w.i64("/RealOutputs/CANBus/CANHD/" + name, start, 0);
       }
+      // TX-full rises by 2 while disabled, then the counter resets (also while disabled)
+      w.i64("/RealOutputs/CANBus/CANHD/TxFullCount", 10.0, 2)
+          .i64("/RealOutputs/CANBus/CANHD/TxFullCount", 65.0, 0);
       w.i64("/RealOutputs/CANBus/CANHD/TEC", start, 0)
           .i64("/RealOutputs/CANBus/CAN2/TEC", start, 0)
           .str("/RealOutputs/Console", start, BOOT_BANNER)

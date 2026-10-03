@@ -31,7 +31,8 @@ import java.util.Set;
  *
  * <p>A log is read in two passes, so that a 2 GB log needs neither a 2 GB array nor every value
  * in memory: {@code read(file, Set.of())} counts each entry's records, and a second call names
- * the few entries whose times and values to keep.
+ * the few entries whose times and values to keep, and those whose raw payloads to keep (struct
+ * arrays and their schemas, which this reader does not decode itself).
  */
 final class IndependentLog {
 
@@ -64,6 +65,10 @@ final class IndependentLog {
     final int width;
     /** Whether the times and values of its numeric records are kept. */
     final boolean kept;
+    /** Whether the times and payloads of all its records are kept, whatever the type. */
+    final boolean keptRaw;
+    final java.util.List<Double> payloadTimes = new java.util.ArrayList<>();
+    final java.util.List<byte[]> payloads = new java.util.ArrayList<>();
     /** Data records of the entry. */
     int records;
     /** Of those, the ones that decode as a number: a numeric type and a payload of its size. */
@@ -75,10 +80,11 @@ final class IndependentLog {
     /** How many times and values are kept: {@link #numeric} when kept, otherwise 0. */
     int n;
 
-    Series(String name, String type, boolean kept) {
+    Series(String name, String type, boolean kept, boolean keptRaw) {
       this.name = name;
       this.type = type;
       this.kept = kept;
+      this.keptRaw = keptRaw;
       this.width = switch (type) {
         case "double", "int64" -> 8;
         case "float" -> 4;
@@ -159,6 +165,12 @@ final class IndependentLog {
    * entries named in {@code keep}.
    */
   static IndependentLog read(Path file, Set<String> keep) throws IOException {
+    return read(file, keep, Set.of());
+  }
+
+  /** As {@link #read(Path, Set)}, also keeping the raw payloads of the entries in {@code keepRaw}. */
+  static IndependentLog read(Path file, Set<String> keep, Set<String> keepRaw)
+      throws IOException {
     var b = bytes(file);
     long length = b.limit();
     if (length < 12 || unsigned(b, 0, 6) != 0x474F4C495057L) { // "WPILOG", little-endian
@@ -202,7 +214,7 @@ final class IndependentLog {
           }
           var existing = log.series.get(name);
           if (existing == null) {
-            existing = new Series(name, type, keep.contains(name));
+            existing = new Series(name, type, keep.contains(name), keepRaw.contains(name));
             log.series.put(name, existing);
             active.put(entry, existing);
           } else {
@@ -229,6 +241,12 @@ final class IndependentLog {
           if (log.lastRecords.size() > NEAR_DAMAGE) log.lastRecords.removeFirst();
           s.records++;
           log.dataRecords++;
+          if (s.keptRaw) {
+            var raw = new byte[(int) size];
+            b.get((int) data, raw);
+            s.payloadTimes.add(time);
+            s.payloads.add(raw);
+          }
           log.minTime = Math.min(log.minTime, time);
           log.maxTime = Math.max(log.maxTime, time);
           if (s.width > 0 && size == s.width) {

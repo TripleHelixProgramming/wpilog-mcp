@@ -20,7 +20,8 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 /**
  * Compares what the tools say about a log with what {@link IndependentLog} reads from the same
  * file: the time range, every entry's type and sample count, the statistics of its most-sampled
- * numeric entries (and of those holding NaN or infinite values), and the enabled windows.
+ * numeric entries (and of those holding NaN or infinite values), the enabled windows, and the
+ * domain answers {@link DomainChecks} recomputes from the entries each tool names.
  *
  * <p>A conformance sweep shows the tools keep their contract; it cannot show a number is right.
  * This does: on other teams' published logs it found a rule that dropped every record with a
@@ -42,7 +43,7 @@ final class DifferentialChecks {
   static final double TIME_TOLERANCE_SEC = 1e-6;
 
   record Outcome(int entries, long records, int countsCompared, int statisticsCompared,
-      int windowsCompared, List<String> findings, List<String> notes) {}
+      int windowsCompared, int domainCompared, List<String> findings, List<String> notes) {}
 
   static JsonObject call(ToolRegistry registry, String tool, Path log, Object... keyValues)
       throws Exception {
@@ -130,7 +131,7 @@ final class DifferentialChecks {
         findings.add("list_entries is " + status(listed) + " but the file holds "
             + survey.series.size() + " entries: " + listed);
       }
-      return new Outcome(survey.series.size(), survey.dataRecords, 0, 0, 0, findings, notes);
+      return new Outcome(survey.series.size(), survey.dataRecords, 0, 0, 0, 0, findings, notes);
     }
     boolean damaged = survey.stopped != null;
     if (damaged) notes.add("the independent reader stopped: " + survey.stopped);
@@ -211,9 +212,14 @@ final class DifferentialChecks {
       if (inputs.has("enabled")) enabledName = inputs.get("enabled").getAsString();
       else if (inputs.has("control_word")) enabledName = inputs.get("control_word").getAsString();
     }
+    // The domain answers, recomputed below from the entries each tool names
+    var answers = new DomainChecks.Answers(phases, call(registry, "analyze_loop_timing", log),
+        call(registry, "power_analysis", log), call(registry, "get_ds_timeline", log),
+        call(registry, "analyze_can_bus", log), call(registry, "analyze_swerve", log));
     var keep = new LinkedHashSet<>(chosen);
     if (enabledName != null) keep.add(enabledName);
-    var detail = IndependentLog.read(log, keep);
+    keep.addAll(DomainChecks.entries(answers));
+    var detail = IndependentLog.read(log, keep, DomainChecks.rawEntries(answers, survey));
 
     for (var name : chosen) {
       var s = detail.series.get(name);
@@ -301,15 +307,21 @@ final class DifferentialChecks {
                 + (source == null ? "not in the file" : source.type) + ")"));
       }
     }
+    int domainCompared = 0;
+    if (survey.dataRecords > 0) {
+      double serverEnd = listed.getAsJsonObject("time_range_sec").get("end").getAsDouble();
+      domainCompared = DomainChecks.compare(detail, serverCounts, serverEnd, answers, findings,
+          notes);
+    }
     return new Outcome(survey.series.size(), survey.dataRecords, countsCompared,
-        statisticsCompared, windowsCompared, findings, notes);
+        statisticsCompared, windowsCompared, domainCompared, findings, notes);
   }
 
   static List<String> describe(String id, Outcome o) {
     var lines = new ArrayList<String>();
     lines.add(id + ": " + o.entries() + " entries, " + o.records() + " records; "
         + o.countsCompared() + " counts, " + o.statisticsCompared() + " statistics, "
-        + o.windowsCompared() + " timelines compared; "
+        + o.windowsCompared() + " timelines, " + o.domainCompared() + " domain answers compared; "
         + (o.findings().isEmpty() ? "agree" : o.findings().size() + " DISAGREE"));
     o.findings().forEach(f -> lines.add("    DISAGREE " + f));
     o.notes().forEach(n -> lines.add("    note " + n));
