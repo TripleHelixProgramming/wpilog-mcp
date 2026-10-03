@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 - The READMEs install the extension from the Marketplace, with the `.vsix` on the releases page as the way to a particular build. The README's header links the Marketplace listing, and the installation section says most people want the extension.
 - `doc/STANDALONE.md` says why the TBA key belongs in the configuration file or the environment rather than on the command line, where the process list shows it.
+- The README is reorganized. The example questions follow "How It Works" instead of repeating the header's questions a paragraph later, the installation section says once that most people want the extension, the agents the server works with are named (Claude, GitHub Copilot, Gemini, ChatGPT over the HTTP transport, and others), and a new section on supporting Triple Helix links the Intentional Innovation Foundation's donation page. The prose got an editorial pass.
 - `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date: the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension, with season-specific detail left to the documents that own it.
 
 ## [0.9.0] - 2026-10-02
