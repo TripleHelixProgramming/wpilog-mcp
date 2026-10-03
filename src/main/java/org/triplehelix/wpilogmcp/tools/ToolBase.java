@@ -167,6 +167,16 @@ public abstract class ToolBase implements McpServer.Tool {
       // raw exceptions to the MCP layer
       var msg = e.getMessage();
       result = errorResult("Internal error: " + (msg != null ? msg : e.getClass().getSimpleName()));
+    } catch (InternalError e) {
+      // A read of a memory-mapped log faulted: the file was truncated or rewritten in place
+      // while it was loaded. An Error, so the catch above misses it, and uncaught it ends a
+      // stdio server. Tools on the log-reading base unload the log themselves; here the next
+      // load's check of the file does it
+      logger.warn("{}: a mapped read faulted: {}", name(), e.getMessage());
+      result = errorResult("A log file changed on disk while this call was reading it (a read "
+          + "of the file faulted: " + e.getMessage() + "), which happens when the file is "
+          + "truncated or rewritten while it is loaded. Call again: the server loads a changed "
+          + "file again.");
     } catch (OutOfMemoryError e) {
       // One call's allocations (usually decoding a dense entry of a very large log) exceeded the
       // heap; they are garbage once the call unwinds, so the server can go on serving

@@ -218,7 +218,7 @@ class LogCacheTest {
   @Test
   void evictionCallbackIsInvokedOnEviction() {
     var evictedPaths = new java.util.ArrayList<String>();
-    cache.setEvictionCallback(evictedPaths::add);
+    cache.setEvictionCallback((path, log) -> evictedPaths.add(path));
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
@@ -240,7 +240,7 @@ class LogCacheTest {
   @Test
   void clearInvokesEvictionCallbackForEachLog() {
     var evictedPaths = new java.util.ArrayList<String>();
-    cache.setEvictionCallback(evictedPaths::add);
+    cache.setEvictionCallback((path, log) -> evictedPaths.add(path));
 
     cache.put("/a.wpilog", createMockLog("/a.wpilog", 1));
     cache.put("/b.wpilog", createMockLog("/b.wpilog", 1));
@@ -302,7 +302,7 @@ class LogCacheTest {
   @Test
   void putOverwriteDoesNotInvokeEvictionCallback() {
     var evictedPaths = new java.util.ArrayList<String>();
-    cache.setEvictionCallback(evictedPaths::add);
+    cache.setEvictionCallback((path, log) -> evictedPaths.add(path));
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
     // Overwrite with new value
@@ -358,7 +358,7 @@ class LogCacheTest {
     heap.perLog = perLog;
     var c = new LogCache(1_800_000, heap);
     heap.cache = c;
-    c.setEvictionCallback(p -> heap.garbage.addAndGet(heap.perLog));
+    c.setEvictionCallback((p, log) -> heap.garbage.addAndGet(heap.perLog));
     for (int i = 0; i < logs; i++) {
       c.put("/log" + i + ".wpilog", createMockLog("/log" + i + ".wpilog", 1));
     }

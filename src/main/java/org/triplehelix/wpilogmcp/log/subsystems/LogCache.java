@@ -83,8 +83,13 @@ public class LogCache {
    */
   private final Object evictionLock = new Object();
 
-  /** Optional callback invoked when a log is evicted, for cleaning up associated resources. */
-  private volatile java.util.function.Consumer<String> evictionCallback;
+  /**
+   * Optional callback invoked with the path and the log when a log is evicted, for cleaning up
+   * associated resources. It gets the instance because a path can be loaded again before the
+   * callback runs for the old instance (an expired entry is reported when the cache next does
+   * its upkeep, which may be after a reload): what belongs to the new instance must stay.
+   */
+  private volatile java.util.function.BiConsumer<String, LogData> evictionCallback;
 
   public LogCache() {
     this(DEFAULT_IDLE_MS);
@@ -112,9 +117,9 @@ public class LogCache {
   /**
    * Sets a callback to be invoked when a log is evicted from the cache.
    *
-   * @param callback A consumer that receives the evicted log's path
+   * @param callback A consumer that receives the evicted log's path and the evicted instance
    */
-  public void setEvictionCallback(java.util.function.Consumer<String> callback) {
+  public void setEvictionCallback(java.util.function.BiConsumer<String, LogData> callback) {
     this.evictionCallback = callback;
   }
 
@@ -151,6 +156,16 @@ public class LogCache {
       cache.invalidate(path);
     }
     return removed;
+  }
+
+  /**
+   * Removes a log only while the cache still holds that instance under the path: a reload or a
+   * discard after the file changed must not remove a newer instance another call loaded since.
+   *
+   * @return Whether the instance was removed
+   */
+  public boolean remove(String path, LogData log) {
+    return cache.asMap().remove(path, log);
   }
 
   /** Checks if the cache contains a log. */
@@ -258,7 +273,7 @@ public class LogCache {
       var callback = this.evictionCallback;
       if (callback != null) {
         try {
-          callback.accept(path);
+          callback.accept(path, log);
         } catch (Exception e) {
           logger.warn("Eviction callback failed for '{}': {}", path, e.getMessage());
         }

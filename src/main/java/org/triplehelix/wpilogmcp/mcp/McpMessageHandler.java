@@ -288,6 +288,15 @@ public class McpMessageHandler {
       logger.error("Tool '{}' failed with out of memory error", toolName);
       return HandlerResult.of(
           JsonRpc.createResponse(id, wrapToolError("Out of memory", "memory_error")));
+    } catch (InternalError e) {
+      // A faulting read of a memory-mapped log file (truncated or rewritten while loaded). The
+      // tool base turns it into a result; this catch keeps a tool that does not use the base
+      // from ending a stdio server
+      logger.error("Tool '{}' failed reading a file that changed on disk: {}", toolName,
+          e.getMessage());
+      return HandlerResult.of(
+          JsonRpc.createResponse(id, wrapToolError("A log file changed on disk while it was "
+              + "being read; call again", "file_changed")));
     } catch (Exception e) {
       logger.error("Tool '{}' failed with internal error: {}", toolName, e.getMessage(), e);
       return HandlerResult.of(

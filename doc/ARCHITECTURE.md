@@ -160,11 +160,11 @@ Each step is explained in the sections that follow.
 
 1. A client sends a `tools/call` request over stdio or HTTP. The transport hands it to the protocol handler, which finds the tool by name.
 2. The tool runs inside a wrapper that every tool shares, which turns an exception or an out-of-memory condition into an explained result.
-3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against the configured log directories. A log already in memory is returned at once. Otherwise the file is mapped into memory and scanned once.
+3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against the configured log directories. A log already in memory is returned at once, once a look at the file's attributes shows it is still the file the log was read from; a file that changed is loaded again. Otherwise the file is mapped into memory and scanned once.
 4. The tool finds the signals it needs through the signal resolver. A tool that takes a scope or windows turns them into time windows through the shared scope handling.
 5. It reads the values it needs. An entry's values are decoded the first time any call asks for them, and then cached.
 6. It computes its result and, in most tools, builds it with the result builder: the status, the inputs, what was skipped or shortened, and data quality where the result rests on statistics.
-7. The base that log-reading tools share adds a report of any records that failed to decode, a note when the log was not read to its end, and, to a success, the entries the tool read. The wrapper then enforces the result contract.
+7. The base that log-reading tools share looks at the file again, and discards the result with an explained error if the file changed while the tool read it. Otherwise it adds a report of any records that failed to decode, a note when the log was not read to its end, and, to a success, the entries the tool read; a session that used the log before its file changed is told once that it was reloaded. The wrapper then enforces the result contract.
 8. The protocol handler adds the execution time and returns the result as the text of the reply.
 
 ## Startup and Configuration
@@ -246,6 +246,8 @@ A path given to a tool is checked before the file is opened: its real path, with
 ### Loading
 
 The log manager returns a log already in memory, or loads it. Loading takes a lock for that path, so two calls for the same log load it once, while different logs load in parallel. A file over 2 GB is refused, because WPILib's reader maps a file into a single buffer.
+
+A loaded log follows its file. The manager keeps the file's size, modification time, and identity (the inode, where the file system has one) as they were just before the log was read, and compares them with the file on every call: a file that changed is loaded again, and a file that is gone is an error. The comparison is made again after each call, and a result read across a change is discarded with an error that says what changed, because the result may hold old data (a file renamed into place keeps serving its old bytes through the mapping) or mix old and new (a file overwritten in place has its old record offsets applied to new bytes). A change the attributes do not show can still make a read of the mapping fault, which the JVM reports as an `InternalError`; the tool base turns that into the same explained error and unloads the log, where before it escaped every catch and ended a stdio server. Each session is told once, on its next result from the log, that the log was reloaded, since results it holds from earlier calls came from the old file; a session that first used the log after the change is not told, having nothing stale. The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when the candidates or their files changed, keeping an offset set by hand for a file that did not. These rules came from logs copied off a robot while it was still writing them, and copied again once they had grown.
 
 Loading does not decode the log. WPILib's reader maps the file into memory outside the Java heap, and a single pass over it records each entry (name, type, and metadata, in the order the robot program declared them) and, for each data record, only its byte offset: 4 bytes per record. Records are read one by one through WPILib's record-level access, because WPILib's own iterator silently skips a final record shorter than 16 bytes. If the scan fails in a way the rules below do not cover, an older parser is tried, which decodes the whole log into memory at once.
 
@@ -384,7 +386,7 @@ The extension exists so that a team installs one thing. It bundles the server's 
 ## Known Limits
 
 - A file over 2 GB is not loaded.
-- The server does not notice when a log file changes on disk after it was loaded. Until the log is unloaded, results come from the first load, or are wrong if the file was overwritten in place; a call made while the file is being overwritten can end a stdio server ([IDEAS.md](IDEAS.md), "Logs That Change After Loading").
+- On Windows, a loaded log's file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until the garbage collector does, so copying a newer log over a loaded one fails there until the old log has been collected ([IDEAS.md](IDEAS.md), "Logs That Change After Loading").
 - Compressed logs are not read ([IDEAS.md](IDEAS.md), "Compressed Log Files").
 - Protobuf entries are not decoded. A record of 100 bytes or less is returned as hex, and a longer one only as its size.
 - The memory budgets are estimates, and the heap-pressure check is the backstop (see [Memory Management](#memory-management)).

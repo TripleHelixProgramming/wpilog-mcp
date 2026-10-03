@@ -384,23 +384,10 @@ Approach:
 Code that assumes plain `.wpilog` and `.revlog` names or paths: the discovery filters in `LogDirectory`, the file-name patterns, `LogScan.of` (which reads the header length from the path), and `RevLogParser.parse`.
 
 ### 8.5 Logs That Change After Loading
-Priority: High. Complexity: Medium.
+Done (see the CHANGELOG's Unreleased section). A loaded log keeps its file's size, modification time, and identity from just before it was read, and every call compares them with the file: a changed file is loaded again, a result read across a change is discarded with an error that says what changed, a faulting read of the mapping (`java.lang.InternalError`) is the same explained error instead of the end of a stdio server, each session is told once that a log it used was reloaded, and the REV log tools look again for REV logs that changed, keeping an offset set by hand. `doc/ARCHITECTURE.md` ("Loading") has the rules.
 
-A loaded log keeps answering from its first load after the file changes on disk, for example when a live log is copied off the robot and copied again once it has grown. `LogManager.loadLog` never re-checks a cached path. What happens depends on how the file was replaced:
-- Renamed into place (rsync's default): results stay stale.
-- Overwritten in place (`cp` keeps the inode): old byte offsets are applied to new bytes, so new records are invisible, or a different log copied over the name decodes as garbage, with no warning.
-- Read during an in-place copy: reading the truncated mapping throws `java.lang.InternalError`, which nothing in the call path catches; in stdio mode it ends the server loop.
-- On Windows: the file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). CI's Windows run hit this when a test class regenerated fixture logs that an earlier class had loaded.
-
-REV logs too: sync runs once at load, so a REV log copied in later is never found.
-
-Approach:
-- Record each file's size, modification time, and file key at load
-- Re-check on every `getOrLoad` and reload when they differ
-- Re-check after each call and discard a result read while the file changed
-- Turn an `InternalError` from a mapped read into an explained error
-- Tell each session once when a log it used was reloaded
-- Re-run REV discovery and sync when REV files change
+Remaining:
+- On Windows, the file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). Releasing the mapping on unload needs a count of the calls still reading the log, since a closed log must keep answering a call that holds it.
 
 ---
 
@@ -408,7 +395,6 @@ Approach:
 
 | ID | Feature | Impact | Effort | Priority |
 |----|---------|--------|--------|----------|
-| 8.5 | Logs that change after loading | High | Medium | **P1** |
 | 4.1 | PathPlanner integration | High | Medium | **P2** |
 | 4.2 | AdvantageScope integration | Medium | Medium | **P2** |
 | 5.1 | Analysis presets | Medium | Low | **P2** |
