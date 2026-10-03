@@ -425,11 +425,12 @@ public final class ExportTools {
       }
 
       // Peak currents: power_analysis's channel_analysis over the same scope
-      var peaks = peakCurrents(log, scope, 3);
+      var currents = RobotAnalysisTools.PowerAnalysisTool.channelAnalysis(log, null, scope);
+      var peaks = peakCurrents(currents, 3);
       if (!peaks.isEmpty()) {
         report.add("peak_currents", peaks);
       } else {
-        skipped.add(skippedSection("peak_currents", "no amperage entries"));
+        skipped.add(skippedSection("peak_currents", currents.emptyReason(scope)));
       }
 
       // Errors and warnings: one classification per sample, as get_ds_timeline counts them
@@ -557,9 +558,10 @@ public final class ExportTools {
      * The largest current peaks: power_analysis's channel_analysis over the same scope (each
      * channel of an array separately), with the fields power_analysis reports for them.
      */
-    static JsonArray peakCurrents(LogData log, TimeScope scope, int limit) {
+    static JsonArray peakCurrents(RobotAnalysisTools.PowerAnalysisTool.Channels currents,
+        int limit) {
       var out = new JsonArray();
-      RobotAnalysisTools.PowerAnalysisTool.channelAnalysis(log, null, scope).channels().stream()
+      currents.channels().stream()
           .limit(limit).forEach(c -> {
             var o = new JsonObject();
             o.addProperty("entry", c.get("entry").getAsString());

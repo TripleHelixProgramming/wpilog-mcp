@@ -99,6 +99,39 @@ class ExportToolsLogicTest extends ToolTestBase {
     assertTrue(resultObj.has("battery"));
   }
 
+  @Test
+  @DisplayName("generate_report names amperage entries with no samples in its scope, not 'none'")
+  void reportPeakCurrentsOutsideScope() throws Exception {
+    // Never enabled: the report's enabled scope holds no time, though the log has a current
+    var log = new MockLogBuilder()
+        .setPath("/test/report_never_enabled.wpilog")
+        .addBooleanEntry("DS:enabled", new double[]{0}, new boolean[]{false})
+        .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1, 2},
+            new double[]{12.5, 12.4, 12.4})
+        .addNumericEntry("/Drive/CurrentAmps", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 1.0})
+        .build();
+    putLogInCache(log);
+    var args = new JsonObject();
+    args.addProperty("path", log.path());
+    var r = findTool("generate_report").execute(args).getAsJsonObject();
+    assertEquals("partial", r.get("status").getAsString(), r.toString());
+    assertFalse(r.has("peak_currents"));
+    var text = r.toString();
+    assertTrue(text.contains("the amperage entry /Drive/CurrentAmps has no finite samples in "
+        + "scope 'enabled'"), text);
+    assertFalse(text.contains("no amperage entries"), text);
+
+    // A log without amperage entries still says there are none
+    var voltageOnly = new MockLogBuilder()
+        .setPath("/test/report_voltage_only.wpilog")
+        .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.5, 12.4})
+        .build();
+    putLogInCache(voltageOnly);
+    args.addProperty("path", voltageOnly.path());
+    var none = findTool("generate_report").execute(args).getAsJsonObject();
+    assertTrue(none.toString().contains("no amperage entries"), none.toString());
+  }
+
   @Nested
   @DisplayName("export_csv Tool")
   class ExportCsvToolTests {

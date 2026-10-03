@@ -1029,6 +1029,167 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("power_analysis on a log where the robot was never enabled is no_match naming the empty scope")
+    void powerAnalysisNeverEnabled() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/power_never_enabled.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0}, new boolean[]{false})
+          .addBooleanEntry("DS:autonomous", new double[]{0}, new boolean[]{false})
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1, 2, 3, 4},
+              new double[]{12.5, 12.4, 12.4, 12.3, 12.3})
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{0, 1, 2, 3, 4},
+              new double[]{0.0, 1.0, 2.0, 1.0, 0.0})
+          .build();
+      putLogInCache(log);
+      var tool = findTool("power_analysis");
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+
+      // The default scope, 'enabled', holds no time: say so instead of a success with every
+      // section skipped
+      var r = tool.execute(args).getAsJsonObject();
+      assertFalse(r.get("success").getAsBoolean(), r.toString());
+      assertEquals("no_match", r.get("status").getAsString());
+      assertEquals("The scope 'enabled' holds no time in this log (data from 0.00 to 4.00 s), so "
+          + "there is nothing to measure in it.", r.get("reason").getAsString());
+      assertEquals(0, r.getAsJsonObject("scope").get("window_count").getAsInt());
+      assertTrue(r.get("hint").getAsString().contains("scope 'all'"), r.toString());
+      assertEquals("/SystemStats/BatteryVoltage",
+          r.getAsJsonObject("inputs").getAsJsonObject("entries").get("voltage").getAsString());
+      assertFalse(r.has("voltage_analysis"));
+      assertFalse(r.has("channel_analysis"));
+
+      // The whole log has data
+      args.addProperty("scope", "all");
+      var all = tool.execute(args).getAsJsonObject();
+      assertEquals("ok", all.get("status").getAsString(), all.toString());
+      assertTrue(all.has("voltage_analysis"));
+      assertEquals(1, all.get("current_entries_analyzed").getAsInt());
+
+      // A window outside the log's data holds no time either; the reason names the bounds
+      args.addProperty("start_time", 100.0);
+      args.addProperty("end_time", 200.0);
+      var outside = tool.execute(args).getAsJsonObject();
+      assertEquals("no_match", outside.get("status").getAsString(), outside.toString());
+      assertTrue(outside.get("reason").getAsString().startsWith("The scope 'all' between "
+          + "start_time 100.0 and end_time 200.0 holds no time in this log"), outside.toString());
+      assertTrue(outside.get("hint").getAsString().contains("without start_time/end_time"));
+    }
+
+    @Test
+    @DisplayName("power_analysis: a brownout flag covers the time a scope has, never an empty scope")
+    void powerAnalysisFlagAndScope() throws Exception {
+      // Enabled from 0 to 10 s; voltage and current logged only afterwards, while disabled
+      var log = new MockLogBuilder()
+          .setPath("/test/power_disabled_only.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 10}, new boolean[]{true, false})
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{12, 13, 14},
+              new double[]{12.4, 12.3, 12.3})
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{12, 13, 14}, new double[]{5, 6, 5})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var r = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("no_match", r.get("status").getAsString(), r.toString());
+      assertEquals("No finite samples of /SystemStats/BatteryVoltage or of the amperage entry "
+          + "/Drive/CurrentAmps fall inside the scope enabled (1 window, 10.0 s).",
+          r.get("reason").getAsString());
+
+      // A current alone, outside the scope: it is named, not reported missing
+      var currentOnly = new MockLogBuilder()
+          .setPath("/test/power_current_only_disabled.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 10}, new boolean[]{true, false})
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{12, 13, 14}, new double[]{5, 6, 5})
+          .build();
+      putLogInCache(currentOnly);
+      args.addProperty("path", currentOnly.path());
+      var current = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("no_match", current.get("status").getAsString(), current.toString());
+      assertEquals("No finite samples of the amperage entry /Drive/CurrentAmps fall inside the "
+          + "scope enabled (1 window, 10.0 s).", current.get("reason").getAsString());
+      assertFalse(current.has("looked_for"), current.toString());
+
+      // A brownout flag holds its value over the scope's time: it held false, so no brownout
+      var flagged = new MockLogBuilder()
+          .setPath("/test/power_disabled_only_flag.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 10}, new boolean[]{true, false})
+          .addBooleanEntry("/SystemStats/BrownedOut", new double[]{0}, new boolean[]{false})
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{12, 13, 14},
+              new double[]{12.4, 12.3, 12.3})
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{12, 13, 14}, new double[]{5, 6, 5})
+          .build();
+      putLogInCache(flagged);
+      args.addProperty("path", flagged.path());
+      var withFlag = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("partial", withFlag.get("status").getAsString(), withFlag.toString());
+      assertEquals(0, withFlag.getAsJsonObject("rio_brownouts").get("count").getAsInt());
+      var skipped = withFlag.getAsJsonArray("skipped").toString();
+      assertTrue(skipped.contains("No finite samples of /SystemStats/BatteryVoltage in scope "
+          + "'enabled'"), skipped);
+      assertTrue(skipped.contains("the amperage entry /Drive/CurrentAmps has no finite samples "
+          + "in scope 'enabled'"), skipped);
+      assertFalse(withFlag.getAsJsonArray("warnings").toString().contains("No current entries found"));
+
+      // An empty scope has no time for the flag to cover
+      var neverEnabled = new MockLogBuilder()
+          .setPath("/test/power_never_enabled_flag.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0}, new boolean[]{false})
+          .addBooleanEntry("/SystemStats/BrownedOut", new double[]{0}, new boolean[]{false})
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1}, new double[]{12.4, 12.3})
+          .build();
+      putLogInCache(neverEnabled);
+      args.addProperty("path", neverEnabled.path());
+      var empty = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("no_match", empty.get("status").getAsString(), empty.toString());
+      assertEquals("/SystemStats/BrownedOut",
+          empty.getAsJsonObject("inputs").getAsJsonObject("entries").get("brownout_flag").getAsString());
+    }
+
+    @Test
+    @DisplayName("power_analysis names amperage entries without samples in scope, counting only numeric ones")
+    void powerAnalysisCurrentsOutsideScope() throws Exception {
+      // Voltage while enabled; two currents logged only while disabled; a boolean whose name
+      // matches the amperage rules but holds no amperage
+      var log = new MockLogBuilder()
+          .setPath("/test/power_currents_disabled.wpilog")
+          .addBooleanEntry("DS:enabled", new double[]{0, 10}, new boolean[]{true, false})
+          .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{1, 2, 3},
+              new double[]{12.4, 12.3, 12.2})
+          .addNumericEntry("/Drive/CurrentAmps", new double[]{12, 13}, new double[]{5.0, 6.0})
+          .addNumericEntry("/Intake/StatorCurrent", new double[]{12, 13}, new double[]{2.0, 3.0})
+          .addBooleanEntry("/Intake/OverCurrent", new double[]{1}, new boolean[]{false})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      var r = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals("partial", r.get("status").getAsString(), r.toString());
+      assertEquals(0, r.get("current_entries_analyzed").getAsInt());
+      var reason = "none of the 2 amperage entries (/Drive/CurrentAmps, /Intake/StatorCurrent) "
+          + "has finite samples in scope 'enabled'";
+      assertTrue(r.getAsJsonArray("skipped").toString().contains(reason), r.toString());
+      var warnings = r.getAsJsonArray("warnings").toString();
+      assertTrue(warnings.contains("No current measured: " + reason), warnings);
+      assertFalse(warnings.contains("No current entries found"), warnings);
+
+      // Over the whole log both are measured, and the boolean never is
+      args.addProperty("scope", "all");
+      var all = findTool("power_analysis").execute(args).getAsJsonObject();
+      assertEquals(2, all.get("current_entries_analyzed").getAsInt(), all.toString());
+
+      // At most three names, with the count
+      var four = new RobotAnalysisTools.PowerAnalysisTool.Channels(List.of(), null,
+          List.of("/a/Current", "/b/Current", "/c/Current", "/d/Current"));
+      assertEquals("the 4 amperage entries (/a/Current, /b/Current, /c/Current, ...)",
+          four.describeEntries());
+      var scope = TimeScope.resolve(log, null, "all", null, null);
+      assertEquals("no amperage entries",
+          new RobotAnalysisTools.PowerAnalysisTool.Channels(List.of(), null, List.of())
+              .emptyReason(scope));
+    }
+
+    @Test
     @DisplayName("power_analysis works with loaded log")
     void powerAnalysisWithLog() throws Exception {
       var log = new MockLogBuilder()

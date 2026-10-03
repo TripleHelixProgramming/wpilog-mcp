@@ -636,7 +636,11 @@ public final class RobotAnalysisTools {
           + "named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib "
           + "PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. "
           + "Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. "
-          + "Warns when no voltage or current entries are found. The battery voltage entry is "
+          + "Warns when no voltage or current entries are found, or when they have no finite "
+          + "samples in the scope. When nothing can be measured in the scope (it holds no time, "
+          + "as 'enabled' does on a log where the robot was never enabled, or no finite voltage or "
+          + "current sample falls in it and no brownout flag is logged), the status is no_match, "
+          + "with the scope and a reason naming it. The battery voltage entry is "
           + "BatteryVoltage (e.g. /SystemStats/BatteryVoltage) or Voltage under "
           + "PowerDistribution, PDH, PDP, or Battery; the server does not guess among other "
           + "voltage entries: it lists them in the skipped reason, and voltage_entry names the "
@@ -712,7 +716,7 @@ public final class RobotAnalysisTools {
         }
       }
 
-      if (voltageEntry.isEmpty() && channels.isEmpty() && flag.isEmpty()) {
+      if (voltageEntry.isEmpty() && channelResult.entries().isEmpty() && flag.isEmpty()) {
         return ResponseBuilder.noMatch("No battery voltage, current, or brownout flag entries "
                 + "found" + (prefix != null ? " under " + prefix : "") + ".")
             .lookedFor(List.of("a battery voltage entry: BatteryVoltage, or Voltage under "
@@ -725,6 +729,23 @@ public final class RobotAnalysisTools {
                 : "Use search_entries with pattern 'voltage' or 'current'.")
             .build();
       }
+      // Nothing measured: no voltage or current sample in the scope, and no brownout flag to say
+      // there was none (a flag holds its value, so it speaks for any time the scope has)
+      if (voltageFacts.isEmpty() && channels.isEmpty() && (flag.isEmpty() || scope.isEmpty())) {
+        var hint = scope.isAll() && scope.requestedStart() == null && scope.requestedEnd() == null
+            ? "The entries hold no finite values; read_entry shows what they hold."
+            : "Use scope 'all' without start_time/end_time for the whole log; get_match_phases "
+                + "lists the log's enabled and disabled segments.";
+        if (voltageEntry.isEmpty() && battery.needsConfirmation()) {
+          hint += " " + SignalResolver.unresolvedReason(battery, "voltage_entry");
+        }
+        return ResponseBuilder.noMatch(nothingInScope(log, scope, voltageEntry, channelResult))
+            .addData("scope", scope.toJson())
+            .addInput("voltage", voltageEntry.orElse(null))
+            .addInput("brownout_flag", flag.orElse(null))
+            .hint(hint)
+            .build();
+      }
       if (voltageFacts.isEmpty()) {
         var reason = voltageEntry.isEmpty()
             ? SignalResolver.unresolvedReason(battery, "voltage_entry")
@@ -734,11 +755,13 @@ public final class RobotAnalysisTools {
       }
       if (channels.isEmpty()) {
         var skipped = result.has("skipped") ? result.getAsJsonArray("skipped") : new JsonArray();
-        skipped.addAll(skippedEntry("channel_analysis", "no amperage entries"));
+        skipped.addAll(skippedEntry("channel_analysis", channelResult.emptyReason(scope)));
         result.add("skipped", skipped);
-        warnings.add("No current entries found. Amperage entries are named ...Current, ...Amps, "
-            + "...Current/<sub>, or PowerDistribution[<id>]/Chan<N>; pass power_prefix to narrow, or "
-            + "use read_entry on a specific entry.");
+        warnings.add(channelResult.entries().isEmpty()
+            ? "No current entries found. Amperage entries are named ...Current, ...Amps, "
+                + "...Current/<sub>, or PowerDistribution[<id>]/Chan<N>; pass power_prefix to "
+                + "narrow, or use read_entry on a specific entry."
+            : "No current measured: " + channelResult.emptyReason(scope) + ".");
       }
       if (!warnings.isEmpty()) {
         result.add("warnings", GSON.toJsonTree(warnings));
@@ -827,8 +850,52 @@ public final class RobotAnalysisTools {
       return null;
     }
 
-    /** Per-channel current results sorted by peak magnitude, and the first scalar entry. */
-    record Channels(List<JsonObject> channels, String firstScalarEntry) {}
+    /**
+     * Per-channel current results sorted by peak magnitude, the first scalar entry, and every
+     * numeric amperage entry the names select (declaration order), with or without finite samples
+     * in the scope.
+     */
+    record Channels(List<JsonObject> channels, String firstScalarEntry, List<String> entries) {
+      /** "the amperage entry X" or "the 3 amperage entries (X, Y, Z)", at most three named. */
+      String describeEntries() {
+        if (entries.size() == 1) return "the amperage entry " + entries.get(0);
+        return "the " + entries.size() + " amperage entries ("
+            + String.join(", ", entries.subList(0, Math.min(3, entries.size())))
+            + (entries.size() > 3 ? ", ..." : "") + ")";
+      }
+
+      /** Why no channel was measured: no amperage entries, or none with samples in the scope. */
+      String emptyReason(TimeScope scope) {
+        if (entries.isEmpty()) return "no amperage entries";
+        var who = entries.size() == 1 ? describeEntries() + " has no"
+            : "none of " + describeEntries() + " has";
+        return who + " finite samples in scope '" + scope.name() + "'";
+      }
+    }
+
+    /**
+     * The no_match reason of a scope with nothing to measure: it holds no time, or no finite
+     * voltage or current sample falls in it.
+     */
+    static String nothingInScope(LogData log, TimeScope scope, Optional<String> voltageEntry,
+        Channels currents) {
+      if (scope.isEmpty()) {
+        var start = scope.requestedStart();
+        var end = scope.requestedEnd();
+        var bounds = start != null && end != null ? " between start_time " + start + " and end_time " + end
+            : start != null ? " from start_time " + start
+            : end != null ? " until end_time " + end : "";
+        return "The scope '" + scope.name() + "'" + bounds + " holds no time in this log (data "
+            + String.format(java.util.Locale.ROOT, "from %.2f to %.2f s", log.minTimestamp(),
+                log.maxTimestamp())
+            + "), so there is nothing to measure in it.";
+      }
+      var measured = new ArrayList<String>();
+      voltageEntry.ifPresent(measured::add);
+      if (!currents.entries().isEmpty()) measured.add(currents.describeEntries());
+      return "No finite samples of " + String.join(" or of ", measured) + " fall inside the "
+          + scope.describe() + ".";
+    }
 
     /**
      * Current in every amperage entry (declaration order; arrays expanded per channel index)
@@ -843,6 +910,13 @@ public final class RobotAnalysisTools {
           .filter(e -> isCurrentEntryName(e.getKey()))
           .sorted(Comparator.comparingInt(e -> e.getValue().id()))
           .map(Map.Entry::getKey)
+          .toList();
+      var numericEntries = currentEntries.stream()
+          .filter(name -> {
+            var type = log.entries().get(name).type();
+            return isNumericType(type)
+                || (type.endsWith("[]") && isNumericType(type.substring(0, type.length() - 2)));
+          })
           .toList();
       var channels = new ArrayList<JsonObject>();
       String firstScalarCurrentEntry = null;
@@ -878,7 +952,7 @@ public final class RobotAnalysisTools {
       }
       channels.sort(Comparator.comparingDouble(
           (JsonObject c) -> Math.abs(c.get("peak_current_A").getAsDouble())).reversed());
-      return new Channels(channels, firstScalarCurrentEntry);
+      return new Channels(channels, firstScalarCurrentEntry, numericEntries);
     }
 
     /**

@@ -996,7 +996,7 @@ Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are exc
 - `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
 
-**Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries; `partial` with `skipped` when either the voltage or the current section cannot be produced.
+**Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries. `no_match` with `scope` when it has them but there is nothing to measure in the scope: the scope holds no time (`enabled` on a log where the robot was never enabled, or a `start_time`/`end_time` outside the data), or no finite voltage or current sample falls in it and no brownout flag is logged. A logged flag holds its value, so it covers any time the scope has. `partial` with `skipped` when either the voltage or the current section cannot be produced; a skipped current section says whether the log has no amperage entries or has them without finite samples in the scope.
 
 **Returns:**
 - `scope`: the time scope analyzed (`scope` parameter; default `enabled` when the log records enabled state, else `all`), so idle and boot time do not dilute averages or peaks
@@ -1968,7 +1968,7 @@ Generate a one-call summary of a log. Each section uses the same entry choice an
 - `basic_info`: `duration_sec`, `start_timestamp`, `end_timestamp`, `entry_count`, `truncated` (with `truncation_message` when it is)
 - `timeline`: enabled segments, enabled time, FMS matches, season, and the enabled entry used (`source`), as `get_match_phases` derives them
 - `battery`: the voltage entry `power_analysis` would choose, over enabled time when the log records it (`scope`). It carries the same fields as `power_analysis`'s `voltage_analysis` (min with its time, max, average, samples below the threshold, crossings, seconds below), the brownout threshold with its basis, `rio_brownouts` in scope when the roboRIO flag is logged, and `brownout_risk` with its basis by the same rule
-- `peak_currents`: the three largest current peaks (`entry`, signed `peak_current_A`, `peak_current_time_sec`) in the same scope: the top of `power_analysis`'s `channel_analysis`, each channel of an array separately
+- `peak_currents`: the three largest current peaks (`entry`, signed `peak_current_A`, `peak_current_time_sec`) in the same scope: the top of `power_analysis`'s `channel_analysis`, each channel of an array separately. When there are none, `skipped` says whether the log has no amperage entries or has them without finite samples in the scope
 - `errors`: `total_errors` and `total_warnings` (samples classified by the same line rule as `get_ds_timeline` and `search_strings`: a multi-line console batch counts once, by its most severe line, and "default" is not a fault), `distinct_error_messages`, `top_messages` (the five most frequent, numbers normalized), `samples` (the first five error lines with time and entry), and a `note`
 - `code_info`: `git_sha`, `git_branch`, `git_dirty`, `git_date`, `build_date`, `project_name`, `version` (whichever the log has; the entries `get_code_metadata` reads)
 - `top_data_types`: the ten most common data types with their entry counts (ties by name), and `type_count`, the number of types

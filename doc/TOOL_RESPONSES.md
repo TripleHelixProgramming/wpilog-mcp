@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Response Reference
 
-The JSON every tool of **wpilog-mcp 0.9.0-dev** returns, captured from real logs by running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate (see [DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):
+The JSON every tool of **wpilog-mcp 0.9.0-dev4** returns, captured from real logs by running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate (see [DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):
 
 ```
 ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/riologs
@@ -103,7 +103,7 @@ Response:
   "status": "ok",
   "overview": {
     "server_name": "wpilog-mcp",
-    "version": "0.9.0-dev",
+    "version": "0.9.0-dev4",
     "total_tools": 49,
     "purpose": "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)"
   },
@@ -501,7 +501,7 @@ Response:
     "<logdir>"
   ],
   "log_count": 37,
-  "total_logs": 96,
+  "total_logs": 88,
   "offset": 0,
   "returned": 3,
   "has_more": true,
@@ -510,9 +510,9 @@ Response:
     "reason": "not configured. In VS Code, run 'WPILog Analyzer: Set The Blue Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml (or pass -tba-key, or set TBA_API_KEY)"
   },
   "metadata_cache": {
-    "size": 96,
+    "size": 88,
     "hits": 0,
-    "misses": 96
+    "misses": 88
   },
   "logs": [
     {
@@ -1468,17 +1468,17 @@ Response:
 {
   "success": true,
   "status": "ok",
-  "server_version": "0.9.0-dev",
+  "server_version": "0.9.0-dev4",
   "loaded_logs": 2,
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 207,
-    "total_mb": 342,
+    "used_mb": 245,
+    "total_mb": 357,
     "max_mb": 512,
-    "free_mb": 134
+    "free_mb": 111
   },
-  "jvm_heap_used_mb": 207,
+  "jvm_heap_used_mb": 245,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
@@ -3343,7 +3343,7 @@ Response:
 
 ### `power_analysis`
 
-Analyze battery and current distribution data over a scope (default: enabled time when the log records it, so idle and boot time do not dilute averages). Reports battery voltage statistics (min with its time, max, avg, samples below the brownout threshold, threshold crossings with 0.2 V hysteresis and the seconds spent below; the threshold comes from the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only from the roboRIO's logged brownout flag, or from crossings when no flag is logged; MODERATE for crossings the logged flag did not confirm, or a minimum within 1 V; LOW otherwise), the roboRIO's own brownouts in scope when its flag is logged (rio_brownouts: start and duration of each), and, for every amperage entry, the peak current by magnitude with its timestamp, signed min/max, average, and sample count in scope, sorted by peak. Amperage entries are named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. Warns when no voltage or current entries are found. The battery voltage entry is BatteryVoltage (e.g. /SystemStats/BatteryVoltage) or Voltage under PowerDistribution, PDH, PDP, or Battery; the server does not guess among other voltage entries: it lists them in the skipped reason, and voltage_entry names the one to use.
+Analyze battery and current distribution data over a scope (default: enabled time when the log records it, so idle and boot time do not dilute averages). Reports battery voltage statistics (min with its time, max, avg, samples below the brownout threshold, threshold crossings with 0.2 V hysteresis and the seconds spent below; the threshold comes from the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only from the roboRIO's logged brownout flag, or from crossings when no flag is logged; MODERATE for crossings the logged flag did not confirm, or a minimum within 1 V; LOW otherwise), the roboRIO's own brownouts in scope when its flag is logged (rio_brownouts: start and duration of each), and, for every amperage entry, the peak current by magnitude with its timestamp, signed min/max, average, and sample count in scope, sorted by peak. Amperage entries are named ...Current, ...CurrentAmps, ...Amps, ...Current/<sub>, or WPILib PowerDistribution[<id>]/Chan<N>; names like CurrentAngle or CurrentLimit are excluded. Per-channel arrays such as /PowerDistribution/ChannelCurrent are expanded per channel index. Warns when no voltage or current entries are found, or when they have no finite samples in the scope. When nothing can be measured in the scope (it holds no time, as 'enabled' does on a log where the robot was never enabled, or no finite voltage or current sample falls in it and no brownout flag is logged), the status is no_match, with the scope and a reason naming it. The battery voltage entry is BatteryVoltage (e.g. /SystemStats/BatteryVoltage) or Voltage under PowerDistribution, PDH, PDP, or Battery; the server does not guess among other voltage entries: it lists them in the skipped reason, and voltage_entry names the one to use.
 
 
 
