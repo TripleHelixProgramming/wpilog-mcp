@@ -35,5 +35,6 @@ CODE_REVIEW_REJECTION.md
 .claude/settings.local.json
 .claude/worktrees/
 vscode-extension/*.vsix
+vscode-extension/LICENSE
 vscode-extension/server/wpilog-mcp-all.jar
 release-notes.md

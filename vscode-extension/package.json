@@ -10,6 +10,14 @@
     "type": "git",
     "url": "https://github.com/TripleHelixProgramming/wpilog-mcp"
   },
+  "bugs": {
+    "url": "https://github.com/TripleHelixProgramming/wpilog-mcp/issues"
+  },
+  "homepage": "https://github.com/TripleHelixProgramming/wpilog-mcp#readme",
+  "galleryBanner": {
+    "color": "#1c0f2b",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.101.0"
   },
