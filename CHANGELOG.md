@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI checks that every Java file carries the license header (`./gradlew license`); it ran the check only locally, as part of `./gradlew build`.
 
 ### Documentation
-- The READMEs install the extension from the Marketplace, with the `.vsix` on the releases page as the way to a particular build.
+- The READMEs install the extension from the Marketplace, with the `.vsix` on the releases page as the way to a particular build. The README's header links the Marketplace listing, and the installation section says most people want the extension.
 - `doc/STANDALONE.md` says why the TBA key belongs in the configuration file or the environment rather than on the command line, where the process list shows it.
 - `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date: the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension, with season-specific detail left to the documents that own it.
 
