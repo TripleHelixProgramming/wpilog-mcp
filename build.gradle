@@ -57,6 +57,10 @@ public final class Version {
 
 sourceSets.main.java.srcDir generatedSrcDir
 compileJava.dependsOn generateVersionSource
+// The license tasks scan the main source set, which includes the generated folder (Version.java
+// itself is excluded from the check, but the folder is still an input), so Gradle requires them
+// to run after the generator; without this, a run that schedules both fails.
+tasks.matching { it.name.startsWith('license') }.configureEach { dependsOn generateVersionSource }
 
 jacoco {
     toolVersion = "0.8.11"
