@@ -41,9 +41,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Bundle JAR into extension
+      # vsce wants the license beside package.json; the repository's is one level up
+      - name: Bundle JAR and license into extension
         run: |
           cp build/libs/wpilog-mcp-*-all.jar vscode-extension/server/wpilog-mcp-all.jar
+          cp LICENSE vscode-extension/LICENSE
 
       # The extension lives in a subdirectory, so vsce must be told where relative
       # README links/images resolve (it otherwise assumes the repo root). The URLs
@@ -92,3 +94,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${{ github.repository }}"
+
+      # A release without a suffix also goes to the Visual Studio Marketplace, which refuses a
+      # version with one (0.9.0-dev2), so test builds stay on GitHub. The step needs the VSCE_PAT
+      # repository secret: a Personal Access Token with the Marketplace (Manage) scope for the
+      # publisher named in package.json. Without it, the step says so and the .vsix is uploaded
+      # by hand on the publisher's management page. It runs last, so a Marketplace problem never
+      # holds up the GitHub release.
+      - name: Publish to the Visual Studio Marketplace
+        if: ${{ !contains(github.ref_name, '-') }}
+        working-directory: vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::notice::VSCE_PAT is not set, so the extension was not published to the Marketplace. Upload the .vsix from this release at https://marketplace.visualstudio.com/manage"
+            exit 0
+          fi
+          npx @vscode/vsce publish --packagePath wpilog-analyzer-*.vsix

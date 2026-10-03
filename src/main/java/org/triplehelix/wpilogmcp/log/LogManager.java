@@ -80,6 +80,53 @@ public class LogManager {
   /** Per-path locks to prevent duplicate concurrent parses of the same log file. */
   private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
 
+  /** A loaded log with its file as the file looked just before the log was read. */
+  private record Loaded(LogData log, FileSnapshot snapshot) {}
+
+  /**
+   * Each loaded log's file snapshot, by path. Kept beside the cache rather than in the log, so
+   * the eager parser's logs and logs put by tests need no snapshot of their own; a path without
+   * one is never reloaded.
+   */
+  private final ConcurrentHashMap<String, Loaded> loaded = new ConcurrentHashMap<>();
+
+  /**
+   * A reload forced by a change to the file, or a result discarded because the file changed
+   * while a call read it.
+   *
+   * @param generation How many times this has happened to the path, starting at 1
+   * @param at When
+   * @param change What changed, as {@link FileSnapshot#describeChange} words it
+   */
+  public record Reload(int generation, java.time.Instant at, String change) {}
+
+  /** The latest reload of each path, for telling each session once. */
+  private final ConcurrentHashMap<String, Reload> reloads = new ConcurrentHashMap<>();
+
+  /**
+   * For each session, the reload generation of each path at the session's last call on it. A
+   * session that has not called for two hours is forgotten, which matches the transports: a
+   * stdio client is one session for the life of the process, and an HTTP session expires after
+   * an hour idle.
+   */
+  private final com.github.benmanes.caffeine.cache.Cache<String,
+      ConcurrentHashMap<String, Integer>> sessionsSeen =
+      com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+          .expireAfterAccess(2, java.util.concurrent.TimeUnit.HOURS).build();
+
+  /**
+   * The REV log candidates each wpilog's last synchronization started from, with each file's
+   * snapshot, so a REV log copied in later, or one that grew, is noticed and synchronized.
+   */
+  private final ConcurrentHashMap<String, Map<Path, FileSnapshot>> revCandidates =
+      new ConcurrentHashMap<>();
+
+  /** When each wpilog's REV candidates were last compared with the directory (nanoTime). */
+  private final ConcurrentHashMap<String, Long> revChecked = new ConcurrentHashMap<>();
+
+  /** How often the REV log tools look for REV files that changed, at most. */
+  static final long REV_RECHECK_INTERVAL_NANOS = 2_000_000_000L;
+
   /** Private constructor for singleton pattern. */
   /** Package-private so tests can use an instance of their own (e.g. to shut one down). */
   LogManager() {
@@ -102,13 +149,26 @@ public class LogManager {
       return t;
     });
 
-    // Clean up syncCache and cancel in-progress syncs when logs are evicted
-    this.logCache.setEvictionCallback(evictedPath -> {
-      syncCache.remove(evictedPath);
-      var pending = syncInProgress.remove(evictedPath);
-      if (pending != null && !pending.isDone()) {
-        pending.cancel(false);
-        logger.debug("Cancelled sync for evicted log: {}", evictedPath);
+    // Clean up what belongs to an evicted log: its snapshot, its sync results, and a sync still
+    // running for it. Only its own: the path may already hold a newer instance (a reload, or a
+    // load after an expiry the cache reports late), whose records must stay
+    this.logCache.setEvictionCallback((evictedPath, evicted) -> {
+      loaded.computeIfPresent(evictedPath, (k, v) -> v.log() == evicted ? null : v);
+      // The sync results and a pending sync belong to the newer instance only when the sync
+      // cache already holds that instance's entry; otherwise they are the evicted log's
+      boolean[] anotherInstance = {false};
+      syncCache.computeIfPresent(evictedPath, (k, v) -> {
+        if (v.wpilog() == evicted) return null;
+        anotherInstance[0] = true;
+        return v;
+      });
+      if (!anotherInstance[0]) {
+        revCandidates.remove(evictedPath);
+        var pending = syncInProgress.remove(evictedPath);
+        if (pending != null && !pending.isDone()) {
+          pending.cancel(false);
+          logger.debug("Cancelled sync for evicted log: {}", evictedPath);
+        }
       }
     });
 
@@ -214,9 +274,12 @@ public class LogManager {
   /**
    * Loads a WPILOG file into memory and parses its contents.
    *
-   * <p>If the log is already cached, returns the cached copy. Otherwise, parses the file and adds
-   * it to the cache. May trigger eviction of the least recently used log if cache limits are
-   * exceeded.
+   * <p>If the log is already cached and its file is as it was when the log was loaded, returns
+   * the cached copy. A file that changed since (its size, modification time, or identity) is
+   * loaded again, because the loaded log would answer from the old copy, or, when the file was
+   * overwritten in place, apply the old record offsets to new bytes. Otherwise, parses the file
+   * and adds it to the cache. May trigger eviction of the least recently used log if cache limits
+   * are exceeded.
    *
    * @param path The file path (can be relative or absolute)
    * @return The parsed log
@@ -229,10 +292,10 @@ public class LogManager {
     // Validate path is allowed (or cache is already loaded)
     securityValidator.validateOrAllowCached(filePath, logCache::containsKey);
 
-    // Check if already cached (fast path, no lock needed)
+    // Check if already cached (fast path, no lock needed), and still the file on disk
     String normalizedPath = filePath.toString();
     LogData cachedLog = logCache.get(normalizedPath);
-    if (cachedLog != null) {
+    if (cachedLog != null && changeSinceLoad(normalizedPath, cachedLog) == null) {
       logger.debug("Returning cached log: {}", filePath);
       return cachedLog;
     }
@@ -240,11 +303,17 @@ public class LogManager {
     // Per-path lock to prevent duplicate concurrent parses of the same file
     Object lock = loadLocks.computeIfAbsent(normalizedPath, k -> new Object());
     try { synchronized (lock) {
-        // Double-check cache after acquiring lock (another thread may have finished parsing)
+        // Double-check cache after acquiring lock (another thread may have finished parsing,
+        // or reloaded the changed file)
         cachedLog = logCache.get(normalizedPath);
         if (cachedLog != null) {
-          logger.debug("Returning cached log (loaded by another thread): {}", filePath);
-          return cachedLog;
+          var change = changeSinceLoad(normalizedPath, cachedLog);
+          if (change == null) {
+            logger.debug("Returning cached log (loaded by another thread): {}", filePath);
+            return cachedLog;
+          }
+          logger.info("Reloading {}: {}", filePath.getFileName(), change);
+          fileChanged(normalizedPath, cachedLog, change);
         }
 
         // Check file exists, and is a file this process can read: each is a fact about the
@@ -280,6 +349,13 @@ public class LogManager {
               + filePath + " (" + (fileSizeBytes / (1024 * 1024)) + " MB)");
         }
 
+        // The file as it is before it is read: a change during the read shows against this,
+        // and the next call reloads
+        var snapshot = FileSnapshot.of(filePath);
+        if (snapshot == null) {
+          throw new LogFileException("File not found: " + filePath);
+        }
+
         // Lazy loading: single-pass scan collects entry metadata and stashes
         // lightweight DataLogRecord references (ByteBuffer slices into the memory-mapped
         // file — no data copying, no value decoding). Values are decoded on demand
@@ -307,8 +383,9 @@ public class LogManager {
           }
         }
 
-        // Add to in-memory cache
+        // Add to in-memory cache, with the file it was read from
         logCache.put(normalizedPath, log);
+        loaded.put(normalizedPath, new Loaded(log, snapshot));
         logger.debug(
             "Loaded log with {} entries spanning {} seconds",
             log.entryCount(), String.format("%.2f", log.duration()));
@@ -350,6 +427,179 @@ public class LogManager {
     return loadLog(path);
   }
 
+  // ==================== FILES THAT CHANGE AFTER LOADING ====================
+
+  /**
+   * What changed about a loaded log's file since the log was loaded, or null when nothing did,
+   * when the log has no snapshot (put by a test, or parsed eagerly), or when the file's
+   * attributes cannot be read now (the log keeps serving; a read that fails will say so).
+   */
+  private String changeSinceLoad(String normalizedPath, LogData log) {
+    var entry = loaded.get(normalizedPath);
+    if (entry == null || entry.log() != log) return null;
+    return changeSince(normalizedPath, entry.snapshot());
+  }
+
+  /**
+   * What changed about the file at {@code path} since {@code snapshot} was taken, or null when
+   * nothing did (or the attributes cannot be read now).
+   */
+  private static String changeSince(String normalizedPath, FileSnapshot snapshot) {
+    try {
+      var now = FileSnapshot.of(Path.of(normalizedPath));
+      return snapshot.sameAs(now) ? null : snapshot.describeChange(now);
+    } catch (IOException e) {
+      logger.debug("Cannot read the attributes of {}: {}", normalizedPath, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * The file snapshot a loaded log was read from, for {@link #changeDuringCall}: taken by the
+   * caller before its call, so that an eviction during the call (idle, heap pressure) does not
+   * lose it. Null for a log without one.
+   *
+   * @param path The log's path
+   * @param log The instance the caller holds
+   */
+  public FileSnapshot snapshotOf(String path, LogData log) {
+    var entry = loaded.get(Path.of(path).toAbsolutePath().normalize().toString());
+    return entry != null && entry.log() == log ? entry.snapshot() : null;
+  }
+
+  /**
+   * Whether the file changed while a call read the log, and what changed. A result read across
+   * a change may hold old data (the file was renamed into place) or mix old and new bytes (it
+   * was overwritten in place), so the caller discards it. The changed log is unloaded here, so
+   * the next call loads the file as it is now, and the change is recorded for the sessions that
+   * used the log.
+   *
+   * @param path The log's path
+   * @param log The instance the call read
+   * @param before Its snapshot from {@link #snapshotOf}, or null when it has none
+   * @return What changed, or null when the file is as it was
+   */
+  public String changeDuringCall(String path, LogData log, FileSnapshot before) {
+    if (before == null) return null;
+    String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
+    var change = changeSince(normalizedPath, before);
+    if (change != null) {
+      logger.info("{} changed while a call read it: {}", Path.of(normalizedPath).getFileName(),
+          change);
+      fileChanged(normalizedPath, log, change);
+    }
+    return change;
+  }
+
+  /**
+   * As {@link #changeDuringCall}, for a call whose read of the memory-mapped file faulted: the
+   * file was truncated or rewritten in place under the mapping. The fault counts as the change
+   * even when the attributes show none (the same size written again within the file system's
+   * time resolution), and what the attributes do show is added.
+   *
+   * @param path The log's path
+   * @param log The instance the call read
+   * @param before Its snapshot from {@link #snapshotOf}, or null when it has none
+   * @param fault The fault's message
+   * @return What changed, never null
+   */
+  public String faultDuringCall(String path, LogData log, FileSnapshot before, String fault) {
+    String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
+    var change = "a read of the file faulted (" + fault + "), which happens when the file is "
+        + "truncated or rewritten while it is loaded";
+    var attributes = before == null ? null : changeSince(normalizedPath, before);
+    if (attributes != null) change += "; " + attributes;
+    logger.info("{} changed while a call read it: {}", Path.of(normalizedPath).getFileName(),
+        change);
+    fileChanged(normalizedPath, log, change);
+    return change;
+  }
+
+  /**
+   * Records that a log's file changed under it, and unloads that instance (if it is still the
+   * one loaded), so the next call loads the file as it is now.
+   *
+   * @param path The log's path
+   * @param log The instance read from the old file
+   * @param change What changed, for the sessions that used the log
+   */
+  public void fileChanged(String path, LogData log, String change) {
+    String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
+    reloads.compute(normalizedPath, (k, previous) -> new Reload(
+        previous == null ? 1 : previous.generation() + 1, java.time.Instant.now(), change));
+    logCache.remove(normalizedPath, log);
+  }
+
+  /**
+   * The reload a session has not been told about yet, if its last call on this log came before
+   * one: a session is told once per reload, and a session that first used the log after the
+   * reload is not told at all, since no result it holds came from the old file. Every call
+   * through this method counts as the session's latest.
+   *
+   * @param sessionKey The session (the stdio client counts as one session)
+   * @param path The log's path
+   * @return The reload to report, or null
+   */
+  public Reload reloadNoticeFor(String sessionKey, String path) {
+    String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
+    var reload = reloads.get(normalizedPath);
+    int current = reload == null ? 0 : reload.generation();
+    var seen = sessionsSeen.get(sessionKey, k -> new ConcurrentHashMap<>());
+    Integer previous = seen.put(normalizedPath, current);
+    return previous != null && previous < current ? reload : null;
+  }
+
+  /**
+   * Looks again for the REV logs that belong to a loaded wpilog, and synchronizes them again
+   * when the set of candidates or any candidate file changed since the last synchronization: a
+   * REV log copied off the robot after the wpilog, or copied again once it had grown. Called by
+   * the REV log tools, at most once per {@value #REV_RECHECK_INTERVAL_NANOS} ns per log; a
+   * synchronization still running is left to finish. An offset set by hand is kept for a REV log
+   * whose file did not change.
+   *
+   * @param wpilogPath The wpilog's path
+   * @return Whether a new synchronization was started
+   */
+  public boolean refreshRevLogsIfChanged(String wpilogPath) {
+    String normalizedPath = Path.of(wpilogPath).toAbsolutePath().normalize().toString();
+    var wpilog = logCache.get(normalizedPath);
+    var before = revCandidates.get(normalizedPath);
+    if (wpilog == null || before == null || !autoSyncEnabled) return false;
+    if (isRevLogSyncInProgress(normalizedPath)) return false;
+    // One look per interval, claimed atomically: two calls at once must not both synchronize
+    long now = System.nanoTime();
+    boolean[] claimed = {false};
+    revChecked.compute(normalizedPath, (k, last) -> {
+      if (last != null && now - last < REV_RECHECK_INTERVAL_NANOS) return last;
+      claimed[0] = true;
+      return now;
+    });
+    if (!claimed[0]) return false;
+
+    var candidates = findMatchingRevLogs(wpilog);
+    var current = snapshotsOf(candidates);
+    if (current.equals(before)) return false;
+    logger.info("REV logs of {} changed on disk ({} candidate(s), was {}); synchronizing again",
+        Path.of(normalizedPath).getFileName(), current.size(), before.size());
+    var previous = syncCache.get(normalizedPath);
+    startRevLogSync(wpilog, candidates, previous, before);
+    return true;
+  }
+
+  /** Each candidate's file snapshot, by path (a file that vanished meanwhile is left out). */
+  private static Map<Path, FileSnapshot> snapshotsOf(List<RevLogFileInfo> candidates) {
+    var snapshots = new java.util.HashMap<Path, FileSnapshot>();
+    for (var info : candidates) {
+      try {
+        var snapshot = FileSnapshot.of(info.path());
+        if (snapshot != null) snapshots.put(info.path(), snapshot);
+      } catch (IOException e) {
+        logger.debug("Cannot read the attributes of {}: {}", info.path(), e.getMessage());
+      }
+    }
+    return snapshots;
+  }
+
 
   /**
    * Clears all loaded logs from the cache.
@@ -360,6 +610,8 @@ public class LogManager {
     syncInProgress.clear();
     logCache.clear();
     syncCache.clear();
+    loaded.clear();
+    revCandidates.clear();
     logger.info("Cleared all loaded logs");
   }
 
@@ -427,6 +679,8 @@ public class LogManager {
       var future = syncInProgress.remove(normalizedPath);
       if (future != null) future.cancel(false);
       syncCache.remove(normalizedPath);
+      loaded.remove(normalizedPath);
+      revCandidates.remove(normalizedPath);
     }
     return removed;
   }
@@ -636,27 +890,42 @@ public class LogManager {
   }
 
   /**
-   * Automatically discovers and syncs matching revlog files for the given wpilog.
-   *
-   * @param wpilog The parsed wpilog
-   */
-  /**
-   * Starts asynchronous revlog synchronization for a wpilog.
-   *
-   * <p>Immediately puts a "pending" SynchronizedLogs (with no revlogs) into the sync cache
-   * so tools can detect the in-progress state. The actual sync runs on a background thread.
-   * When complete, the syncCache entry is atomically replaced with the final result.
+   * Starts asynchronous revlog synchronization for a wpilog that was just loaded: finds the REV
+   * logs recorded with it and synchronizes them in the background.
    *
    * @param wpilog The parsed wpilog to sync revlogs for
    */
   private void autoSyncRevLogsAsync(LogData wpilog) {
+    startRevLogSync(wpilog, findMatchingRevLogs(wpilog), null, Map.of());
+  }
+
+  /**
+   * Starts asynchronous synchronization of the given REV logs with a wpilog.
+   *
+   * <p>Immediately puts a "pending" SynchronizedLogs (with no revlogs) into the sync cache so
+   * tools can detect the in-progress state. The actual sync runs on a background thread. When
+   * complete, the syncCache entry is atomically replaced with the final result.
+   *
+   * <p>A synchronization run again because the REV files changed keeps an offset the user set
+   * with {@code set_revlog_offset}: the previous result of a REV log whose file is as it was is
+   * carried over when its offset was set by hand, since the data decides the automatic result
+   * and that data did not change, while the user's choice is not the server's to drop.
+   *
+   * @param wpilog The parsed wpilog to sync revlogs for
+   * @param matchingRevLogs The REV logs to synchronize
+   * @param previous The wpilog's synchronized logs before this run, or null on first load
+   * @param before The candidates' files before this run, to tell unchanged ones
+   */
+  private void startRevLogSync(LogData wpilog, List<RevLogFileInfo> matchingRevLogs,
+      SynchronizedLogs previous, Map<Path, FileSnapshot> before) {
     String wpilogPath = wpilog.path();
+
+    // What this run starts from, so a later look can tell whether the REV files changed
+    revCandidates.put(wpilogPath, snapshotsOf(matchingRevLogs));
 
     // Put a placeholder immediately so tools see "sync pending" rather than null
     var placeholder = new SynchronizedLogs(wpilog);
     syncCache.put(wpilogPath, placeholder);
-
-    List<RevLogFileInfo> matchingRevLogs = findMatchingRevLogs(wpilog);
 
     if (matchingRevLogs.isEmpty()) {
       logger.debug("No matching .revlog files found for {}", wpilogPath);
@@ -667,54 +936,69 @@ public class LogManager {
         matchingRevLogs.size(), wpilogPath);
 
     // Compute wpilog fingerprint once for all revlog cache lookups
-    final String wpilogFingerprint;
+    String fingerprint;
     try {
-      wpilogFingerprint = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
+      fingerprint = org.triplehelix.wpilogmcp.cache.ContentFingerprint.compute(
           Path.of(wpilogPath));
     } catch (IOException e) {
       logger.debug("Cannot fingerprint wpilog for sync cache: {}", e.getMessage());
-      // Fall through with null — will skip cache lookup/save
-      startSyncWithoutCache(wpilog, matchingRevLogs, wpilogPath, placeholder);
-      return;
+      fingerprint = null; // skip cache lookup/save
     }
+    final String wpilogFingerprint = fingerprint;
 
     var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
       SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
 
       for (RevLogFileInfo revlogInfo : matchingRevLogs) {
         try {
-          // Try sync disk cache first. A sync depends on both files' names as well as their
-          // contents (the REV name's time sets the coarse offset, the wpilog's name the zone),
-          // and the decoded values on the DBC, so all of them are part of the key
-          String revlogFp = revlogCacheKey(revlogInfo, revLogParser.dbcContentHash());
-          String wpilogKey = wpilogFingerprint + "|" + Path.of(wpilogPath).getFileName();
-          var cached = syncDiskCache.load(wpilogKey, revlogFp);
-
-          if (cached.isPresent()) {
-            var entry = cached.get();
-            // Keyed by content: an identical file elsewhere reports its own path
-            var revlog = entry.revlog().at(revlogInfo.path().toString(),
-                revlogInfo.filenameTimestamp());
-            if (overlaps(wpilog, revlog, entry.syncResult())) {
-              addRevLog(builder, revlog, entry.syncResult(), revlogInfo);
-            }
+          var kept = userOffsetToKeep(previous, before, revlogInfo);
+          if (kept != null) {
+            addRevLog(builder, kept.revlog(), kept.syncResult(), revlogInfo);
+            logger.info("Kept the offset set by hand for {}", revlogInfo.path().getFileName());
             continue;
           }
 
-          // Cache miss — parse and correlate
-          ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
-          SyncResult result = synchronizer.synchronize(wpilog, revlog);
+          if (wpilogFingerprint != null) {
+            // Try sync disk cache first. A sync depends on both files' names as well as their
+            // contents (the REV name's time sets the coarse offset, the wpilog's name the
+            // zone), and the decoded values on the DBC, so all of them are part of the key
+            String revlogFp = revlogCacheKey(revlogInfo, revLogParser.dbcContentHash());
+            String wpilogKey = wpilogFingerprint + "|" + Path.of(wpilogPath).getFileName();
+            var cached = syncDiskCache.load(wpilogKey, revlogFp);
 
-          if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
+            if (cached.isPresent()) {
+              var entry = cached.get();
+              // Keyed by content: an identical file elsewhere reports its own path
+              var revlog = entry.revlog().at(revlogInfo.path().toString(),
+                  revlogInfo.filenameTimestamp());
+              if (overlaps(wpilog, revlog, entry.syncResult())) {
+                addRevLog(builder, revlog, entry.syncResult(), revlogInfo);
+              }
+              continue;
+            }
 
-          // Save to sync cache
-          syncDiskCache.save(revlog, result, wpilogKey, revlogFp);
+            // Cache miss — parse and correlate
+            ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
+            SyncResult result = synchronizer.synchronize(wpilog, revlog);
 
-          logger.info("Synced {} (confidence: {}, offset: {}ms)",
-              revlogInfo.path().getFileName(),
-              result.confidenceLevel().getLabel(),
-              result.offsetMillis());
+            if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
 
+            // Save to sync cache
+            syncDiskCache.save(revlog, result, wpilogKey, revlogFp);
+
+            logger.info("Synced {} (confidence: {}, offset: {}ms)",
+                revlogInfo.path().getFileName(),
+                result.confidenceLevel().getLabel(),
+                result.offsetMillis());
+          } else {
+            ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
+            SyncResult result = synchronizer.synchronize(wpilog, revlog);
+            if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
+            logger.info("Synced {} (no cache, confidence: {}, offset: {}ms)",
+                revlogInfo.path().getFileName(),
+                result.confidenceLevel().getLabel(),
+                result.offsetMillis());
+          }
         } catch (Exception e) {
           logger.warn("Failed to sync revlog {}: {}", revlogInfo.path(), e.getMessage());
         }
@@ -725,6 +1009,29 @@ public class LogManager {
 
     syncInProgress.put(wpilogPath, future);
     future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
+  }
+
+  /**
+   * The previous result for a REV log to carry into a new synchronization: the one whose offset
+   * the user set by hand, when the file is as it was. Null when there is none to keep.
+   */
+  private static SyncedRevLog userOffsetToKeep(SynchronizedLogs previous,
+      Map<Path, FileSnapshot> before, RevLogFileInfo info) {
+    if (previous == null) return null;
+    var earlier = before.get(info.path());
+    if (earlier == null) return null;
+    try {
+      if (!earlier.sameAs(FileSnapshot.of(info.path()))) return null;
+    } catch (IOException e) {
+      return null;
+    }
+    for (var synced : previous.revlogs()) {
+      if (synced.syncResult().method() == org.triplehelix.wpilogmcp.sync.SyncMethod.USER_PROVIDED
+          && Path.of(synced.revlog().path()).equals(info.path())) {
+        return synced;
+      }
+    }
+    return null;
   }
 
   /**
@@ -748,32 +1055,6 @@ public class LogManager {
     } else {
       builder.addRevLog(revlog, result);
     }
-  }
-
-  /**
-   * Fallback sync path when wpilog fingerprint cannot be computed (skips disk cache).
-   */
-  private void startSyncWithoutCache(LogData wpilog, List<RevLogFileInfo> matchingRevLogs,
-      String wpilogPath, SynchronizedLogs placeholder) {
-    var future = java.util.concurrent.CompletableFuture.runAsync(() -> {
-      SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
-      for (RevLogFileInfo revlogInfo : matchingRevLogs) {
-        try {
-          ParsedRevLog revlog = revLogParser.parse(revlogInfo.path());
-          SyncResult result = synchronizer.synchronize(wpilog, revlog);
-          if (overlaps(wpilog, revlog, result)) addRevLog(builder, revlog, result, revlogInfo);
-          logger.info("Synced {} (no cache, confidence: {}, offset: {}ms)",
-              revlogInfo.path().getFileName(),
-              result.confidenceLevel().getLabel(),
-              result.offsetMillis());
-        } catch (Exception e) {
-          logger.warn("Failed to sync revlog {}: {}", revlogInfo.path(), e.getMessage());
-        }
-      }
-      completeSync(wpilogPath, placeholder, builder.build());
-    }, syncExecutor);
-    syncInProgress.put(wpilogPath, future);
-    future.whenComplete((result, error) -> syncInProgress.remove(wpilogPath));
   }
 
   /**
@@ -1052,5 +1333,14 @@ public class LogManager {
   /** Test accessor: Checks if a log is in cache. */
   public boolean testContainsLog(String path) {
     return testIsLogLoaded(path);
+  }
+
+  /**
+   * Test accessor: forgets when a wpilog's REV candidates were last compared with the directory,
+   * so the next {@link #refreshRevLogsIfChanged} looks at once instead of waiting out the
+   * interval.
+   */
+  public void testForgetRevCheck(String path) {
+    revChecked.remove(Path.of(path).toAbsolutePath().normalize().toString());
   }
 }

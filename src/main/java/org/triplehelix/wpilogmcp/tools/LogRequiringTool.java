@@ -59,6 +59,21 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
  */
 public abstract class LogRequiringTool extends ToolBase {
 
+  /** Creates a tool using the singleton dependencies. */
+  protected LogRequiringTool() {
+    super();
+  }
+
+  /**
+   * Creates a tool with injected dependencies, as {@link ToolBase#ToolBase(ToolDependencies)}
+   * does: a test can give it a log manager of its own.
+   *
+   * @param deps The dependency container
+   */
+  protected LogRequiringTool(ToolDependencies deps) {
+    super(deps);
+  }
+
   /**
    * Returns the tool-specific input schema (without the {@code path} parameter).
    *
@@ -114,8 +129,21 @@ public abstract class LogRequiringTool extends ToolBase {
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
     var path = getRequiredString(arguments, "path");
-    var log = new AccessTrackingLogData(logManager.getOrLoad(path));
-    var result = executeWithLog(log, arguments);
+    var loaded = logManager.getOrLoad(path);
+    // The file as the log was read from it, taken now so that an eviction during the call does
+    // not lose it; the call's result is trusted only if the file is still that file afterwards
+    var before = logManager.snapshotOf(path, loaded);
+    var log = new AccessTrackingLogData(loaded);
+    JsonElement result;
+    try {
+      result = executeWithLog(log, arguments);
+    } catch (InternalError e) {
+      // A read of the memory-mapped file faulted: the file was truncated or rewritten in place
+      // under the mapping. The attributes may or may not show it, so the fault itself counts
+      return changedDuringCall(logManager.faultDuringCall(path, loaded, before, e.getMessage()));
+    }
+    var change = logManager.changeDuringCall(path, loaded, before);
+    if (change != null) return changedDuringCall(change);
     if (result != null && result.isJsonObject()) {
       var object = result.getAsJsonObject();
       // Never compute silently from partly undecodable entries: say which ones and why
@@ -126,8 +154,52 @@ public abstract class LogRequiringTool extends ToolBase {
       if (!object.has("success") || object.get("success").getAsBoolean()) {
         log.recordInputs(object);
       }
+      // A session that used this log before its file changed is told once that it was reloaded
+      var reload = logManager.reloadNoticeFor(sessionKey(), path);
+      if (reload != null) noteReload(object, reload);
     }
     return result;
+  }
+
+  /**
+   * The error for a result read while the file changed: it may hold old data, or mix old and
+   * new bytes, so it is discarded; the log is already unloaded, and the next call loads the file
+   * as it is now.
+   */
+  private static JsonElement changedDuringCall(String change) {
+    return ToolUtils.errorResult("The log file changed on disk while this call was reading it ("
+        + change + "). The result was discarded, because it may mix old and new data; the "
+        + "server has reloaded the log, so call again.");
+  }
+
+  /**
+   * The session this call belongs to: the HTTP session, or the one stdio client, which is one
+   * session for the life of the process.
+   */
+  private static String sessionKey() {
+    var session = org.triplehelix.wpilogmcp.mcp.SessionContext.current();
+    return session == null ? "stdio" : session.getId();
+  }
+
+  /**
+   * Says in a result, once per session, that its log was reloaded because the file changed:
+   * {@code _metadata.log_reloaded} with when and what changed, and a warning, since results the
+   * session holds from earlier calls came from the file as it was.
+   */
+  static void noteReload(JsonObject result, org.triplehelix.wpilogmcp.log.LogManager.Reload reload) {
+    var metadata = result.has("_metadata") && result.get("_metadata").isJsonObject()
+        ? result.getAsJsonObject("_metadata") : new JsonObject();
+    var note = new JsonObject();
+    note.addProperty("at", reload.at().toString());
+    note.addProperty("change", reload.change());
+    metadata.add("log_reloaded", note);
+    result.add("_metadata", metadata);
+    var warnings = result.has("warnings") && result.get("warnings").isJsonArray()
+        ? result.getAsJsonArray("warnings") : new JsonArray();
+    warnings.add("This log was reloaded from disk because its file changed (" + reload.change()
+        + "). Results from earlier calls in this session came from the file as it was; repeat "
+        + "any you rely on.");
+    result.add("warnings", warnings);
   }
 
   /**

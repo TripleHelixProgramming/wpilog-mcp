@@ -9,13 +9,13 @@ The server is designed for and tested with Claude. Other MCP clients work too, b
 - JDK 17 or newer (the WPILib JDK is recommended)
 - Nothing else: the WPILib libraries are bundled in the JAR
 
-The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME` (macOS and Linux), then `java` on your `PATH`. Building with `./gradlew` uses `JAVA_HOME`, or `java` on your `PATH`. WPILib puts its JDK here:
+The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME` (macOS and Linux), then `java` on your `PATH`. Building with `./gradlew` uses `JAVA_HOME` or `java` on your `PATH`. WPILib puts its JDK here:
 - macOS and Linux: `~/wpilib/2026/jdk/bin/java`
 - Windows: `C:\Users\Public\wpilib\2026\jdk\bin\java.exe`
 
 ## Install
 
-To install the latest release, run the installer for your system. The installers skip pre-releases; to try one from the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases), build the code instead (below), which is what a pre-release is made from.
+To install the latest release, run the installer for your system. The installers install only full releases. To try a pre-release from the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases), build it from the code instead (below).
 
 macOS and Linux:
 ```bash
@@ -44,7 +44,7 @@ Either way, the server is installed in `~/.wpilog-mcp/`:
 └── servers.yaml                         # server configurations
 ```
 
-Starting an HTTP server with `start` adds `run/` (its process ID, and a lock file that makes starts take turns) and `logs/` (its log).
+Starting an HTTP server with `start` (see [HTTP Transport](#http-transport)) adds `run/`, holding the server's process ID and a lock file that makes starts take turns, and `logs/`, holding its log.
 
 MCP clients start the launcher by its full path, so you need it on your `PATH` only to run `wpilog-mcp` in a terminal. On macOS and Linux, add this to your shell profile (`~/.zshrc` or `~/.bashrc`):
 ```bash
@@ -54,7 +54,7 @@ On Windows, the installer prints the folder to add to your `Path`.
 
 ## Configuration
 
-Edit `~/.wpilog-mcp/servers.yaml`. The installer creates it and never overwrites it. Set your team number there: the installer leaves it out, because it can't know it.
+Edit `~/.wpilog-mcp/servers.yaml`. The installer creates it and never overwrites it. Set your team number there: the installer has no way to know it, so the file ships with that line commented out.
 
 ```yaml
 # Your FRC team number, for The Blue Alliance match data when a log does not record one.
@@ -85,9 +85,9 @@ servers:
     port: 2363
 ```
 
-The installer's file also has a `stresstest` server, which only the project's stress tests use. It has no settings of its own, so it takes the ones at the top, the TBA key among them. Put the key at the top level, not under one server: a key under `stresstest` reaches no other server.
-
 Top-level settings such as `team` and `logdir` apply to every server, and a server's own value overrides the top-level one.
+
+The installer's file also has a `stresstest` server, which only the project's stress tests use. It has no settings of its own, so it takes the ones at the top, the TBA key among them. Put the key at the top level, not under one server: a key under `stresstest` reaches no other server.
 
 ### Config Fields
 
@@ -113,12 +113,12 @@ The default disk cache directory is `~/Library/Application Support/wpilog-mcp/ca
 
 ### Several Log Directories
 
-`logdir` takes one directory or a list. `list_available_logs` lists the logs of every directory together, newest first, and names them in `log_directories`; a log reached from two of them (one inside the other, or the same directory under two names) is listed once. Tools can load logs from any of the directories, and from nowhere else.
+`logdir` takes one directory or a list. `list_available_logs` lists the logs of every directory together, newest first, and names the directories in `log_directories`; a log reached from two directories (one inside the other, or the same directory under two names) is listed once. Tools can load logs from any of the directories, and from nowhere else.
 
 - A directory that cannot be read (a drive not mounted, no permission) does not stop the others: the listing is `partial` and names it in `skipped` with the reason. The server warns at startup about a directory that does not exist yet.
 - REV logs are matched to a wpilog only within the configured directory that holds it (and the wpilog's own folder). The other directories are not searched, so a REV log another team recorded at the same event, which would match by time, is never synchronized with your log.
 - A server's own `logdir` replaces the top-level list rather than adding to it.
-- On the command line, repeat `-logdir`; in `WPILOG_DIR`, separate directories as in `PATH` (`:`, or `;` on Windows). `-logdir` replaces `WPILOG_DIR`'s directories. The server expands `~` only in the configuration file. In a flag or an environment variable, your shell expands it or nothing does: macOS and Linux shells do, but Windows Command Prompt and MCP client configurations do not, so there give the full path.
+- On the command line and in `WPILOG_DIR`, see [Command-Line Flags](#command-line-flags).
 - `scandepth` counts from each directory.
 
 ### Named Server Configurations
@@ -168,11 +168,13 @@ wpilog-mcp -logdir ~/riologs --http --port 9000
 | `-scandepth <n>` | `WPILOG_SCAN_DEPTH` | `scandepth` |
 | `--http` | `WPILOG_HTTP=true` | `transport: http` |
 | `--port <port>` | `WPILOG_HTTP_PORT` | `port` |
-
-Prefer `tba_key` in the configuration file, or `TBA_API_KEY`, to `-tba-key`: a command-line argument is visible to every user of the computer in the process list, and the key is a secret.
 | `-debug` | `WPILOG_DEBUG=true` | `debug` |
 
-`wpilog-mcp -debug` on its own is flag mode too, so it reads no configuration file. To debug a configured server, run `wpilog-mcp start default -debug` or set `debug: true`.
+Prefer `tba_key` in the configuration file, or `TBA_API_KEY`, to `-tba-key`: a command-line argument is visible to every user of the computer in the process list, and the key is a secret.
+
+Several log directories: repeat `-logdir`, or separate them in `WPILOG_DIR` as in `PATH` (`:`, or `;` on Windows); `-logdir` replaces `WPILOG_DIR`'s directories. The server expands `~` only in the configuration file. In a flag or an environment variable, your shell expands it or nothing does: macOS and Linux shells do, but Windows Command Prompt and MCP client configurations do not, so give the full path there.
+
+`wpilog-mcp -debug` on its own is a start with flags too, so it reads no configuration file. To debug a configured server, run `wpilog-mcp start default -debug` or set `debug: true`.
 
 Three environment variables, with no flag or config field, set up the HTTP transport whether the server was started with flags or with `start`:
 - `WPILOG_HTTP_BIND`: the address to listen on (default `127.0.0.1`; `0.0.0.0` accepts connections from other machines)
@@ -207,9 +209,9 @@ To add the server to a single project instead, put it in a `.mcp.json` at the pr
 ```
 Claude Code expands `${HOME}` in `.mcp.json` but not `~`. On Windows, use `"command": "cmd", "args": ["/c", "${USERPROFILE}\\.wpilog-mcp\\bin\\wpilog-mcp.bat"]`. Claude Code asks you to approve a server from `.mcp.json` the first time it sees it.
 
-Written this way, the entry holds nothing specific to your computer. On macOS and Linux it works for any teammate who has the standalone install, so committing it is fine; a teammate without the install is asked to approve a server that then fails to start. If only you use it, add `.mcp.json` to `.gitignore` instead.
+Written this way, the entry holds nothing specific to your computer: it works for any teammate who has the standalone install on the same kind of system, so committing the file is fine. A teammate without the install is asked to approve a server that then fails to start. If only you use it, add `.mcp.json` to `.gitignore` instead.
 
-The server reads everything else from `~/.wpilog-mcp/servers.yaml`, including the TBA key (`tba_key`), so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It Alongside the Standalone Install](../vscode-extension/README.md#using-it-alongside-the-standalone-install): with a registration for all projects like the one above, the extension's own entries for Claude Code have to be turned off, or Claude Code starts both servers.
+Beyond the command, the server reads everything from `~/.wpilog-mcp/servers.yaml`, the TBA key (`tba_key`) included, so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It Alongside the Standalone Install](../vscode-extension/README.md#using-it-alongside-the-standalone-install): once the server is registered for all projects as above, turn off the extension's own Claude Code entries, or Claude Code starts both servers.
 
 ### Claude Desktop
 
@@ -225,58 +227,20 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 ```
 On Windows, use `C:\\Users\\you\\.wpilog-mcp\\bin\\wpilog-mcp.bat`.
 
-### HTTP Transport
+See [modelcontextprotocol.io](https://modelcontextprotocol.io/) for other MCP clients.
+
+## HTTP Transport
 
 For browser-based or multi-client access, start the `http` server from `servers.yaml`:
 ```bash
 wpilog-mcp start http
 ```
 
-The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. Running `start http` while it is up reports the running server rather than starting another. To stop it, end that process (`kill <pid>` on macOS and Linux).
+The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. Running `start http` while it is up reports the running server rather than starting another. To stop it, end that process (`kill <pid>` on macOS and Linux, `taskkill /PID <pid>` on Windows). `GET /health` answers as soon as the server is up.
 
-The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. `GET /health` answers as soon as the server is up. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
+The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
 
 Started with flags, `wpilog-mcp --http` runs the HTTP server in the foreground instead, as the Docker image below does.
-
-See [modelcontextprotocol.io](https://modelcontextprotocol.io/) for other MCP clients.
-
-## Upgrading
-
-Run the installer again. The one-line installer gets the latest release; for the Gradle installer, pull the latest code first:
-```bash
-cd wpilog-mcp
-git pull
-./gradlew install
-```
-
-Either installer adds the new version's JAR and launcher, points `wpilog-mcp` at them, and leaves `servers.yaml` alone. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until you stop it and start it again.
-
-## Uninstalling
-
-Stop any running HTTP server, then delete the install directory (on Windows, the `.wpilog-mcp` folder in your user folder):
-```bash
-rm -rf ~/.wpilog-mcp
-```
-
-Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your shell profile) and remove the server from your MCP client's configuration. The disk cache is kept elsewhere (see [Config Fields](#config-fields)); delete it too to free the space.
-
-## Troubleshooting
-
-- **Server shows "Failed"**: run it by hand and read what it prints. A working server answers with a line of JSON; errors such as a missing or invalid configuration file are logged to standard error.
-  ```bash
-  echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | wpilog-mcp
-  ```
-- **Check the configuration files**:
-  - Server: `~/.wpilog-mcp/servers.yaml`, or a `.wpilog-mcp.yaml` in the directory the server starts in
-  - Claude Code: `~/.claude.json` (user scope) or the project's `.mcp.json`
-  - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
-  - HTTP server log: `~/.wpilog-mcp/logs/<name>.log`
-- **Server times out**: usually the Java version or a wrong path. The launcher needs Java 17 or newer and picks the newest WPILib JDK, then `JAVA_HOME` (macOS and Linux), then `java` on your `PATH`. Check the one it would use:
-  ```bash
-  ~/wpilib/2026/jdk/bin/java -version   # or: java -version
-  ```
-- **Out of memory with large logs**: set `WPILOG_MAX_HEAP=8g` in the environment the server starts in. For an MCP client, that is the `env` of the server's entry, since the client starts the launcher.
-- **Log reported as truncated**: a log cut short (by a power loss on the robot, for example) still loads. The server reads every complete record and reports the log as `truncated`.
 
 ## Containerization
 
@@ -329,4 +293,42 @@ docker run -p 8000:8000 \
   wpilog-mcp
 ```
 
-The server is then at `http://localhost:8000/wpilogmcp`. Mount your log directory at `/logs` and pass the rest of the configuration as environment variables (see [Command-Line Flags](#command-line-flags)): the container starts the server with flags, so it reads no `servers.yaml`. The heap is set by `-Xmx4g` in `ENTRYPOINT`, since the image does not use the launcher. A browser-based client sends an `Origin` header; if it names a host other than `localhost`, `127.0.0.1`, or `[::1]`, add that host name to `WPILOG_HTTP_ALLOWED_ORIGINS`.
+The server is then at `http://localhost:8000/wpilogmcp`. Mount your log directory at `/logs` and pass the rest of the configuration as environment variables (see [Command-Line Flags](#command-line-flags)): the container starts the server with flags, so it reads no `servers.yaml`. The heap is set by `-Xmx4g` in `ENTRYPOINT`, since the image does not use the launcher. A browser-based client sends an `Origin` header; if it names a host other than `localhost`, `127.0.0.1`, or `[::1]`, add that host name to `WPILOG_HTTP_ALLOWED_ORIGINS`. The server listens on every interface here and has no authentication (see [HTTP Transport](#http-transport)), so put it behind something that controls who can reach port 8000.
+
+## Upgrading
+
+Run the installer again. The one-line installer gets the latest release; for the Gradle installer, pull the latest code first:
+```bash
+cd wpilog-mcp
+git pull
+./gradlew install
+```
+
+Either installer adds the new version's JAR and launcher, points `wpilog-mcp` at them, and leaves `servers.yaml` alone. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until you stop it and start it again.
+
+## Uninstalling
+
+Stop any running HTTP server, then delete the install directory (on Windows, the `.wpilog-mcp` folder in your user folder):
+```bash
+rm -rf ~/.wpilog-mcp
+```
+
+Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your shell profile) and remove the server from your MCP client's configuration. The disk cache lives outside the install directory (its location is under [Config Fields](#config-fields)); delete it too to free the space.
+
+## Troubleshooting
+
+- **Server shows "Failed"**: run it by hand and read what it prints. A working server answers with a line of JSON; errors such as a missing or invalid configuration file are logged to standard error.
+  ```bash
+  echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | wpilog-mcp
+  ```
+- **Where the files are**:
+  - Server: `~/.wpilog-mcp/servers.yaml`, or a `.wpilog-mcp.yaml` in the directory the server starts in
+  - Claude Code: `~/.claude.json` (user scope) or the project's `.mcp.json`
+  - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
+  - HTTP server log: `~/.wpilog-mcp/logs/<name>.log`
+- **Server times out**: usually the Java version or a wrong path. The launcher needs Java 17 or newer; [Requirements](#requirements) gives the order in which it looks. Check the one it would use:
+  ```bash
+  ~/wpilib/2026/jdk/bin/java -version   # or: java -version
+  ```
+- **Out of memory with large logs**: set `WPILOG_MAX_HEAP=8g` in the environment the server starts in. For an MCP client, that is the `env` of the server's entry, since the client starts the launcher.
+- **Log reported as truncated**: a log cut short (by a power loss on the robot, for example) still loads. The server reads every complete record and reports the log as `truncated`.

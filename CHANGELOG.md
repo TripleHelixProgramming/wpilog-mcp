@@ -7,12 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The VS Code extension is on the Visual Studio Marketplace; it was only a `.vsix` on the releases page. When the `VSCE_PAT` secret holds a Marketplace token, the release workflow publishes every release without a version suffix there (the Marketplace refuses suffixed versions, so test builds stay on GitHub); without the token, the workflow says how to add one. The package carries the license file; the manifest links the issue tracker and the README.
+
+### Fixed
+- A loaded log follows its file. The server keeps each loaded log's file size, modification time, and identity from just before the log was read, and compares them with the file on every call: a file that changed on disk is loaded again, and a result read while the file changed is discarded with an error that says what changed, because it may hold old data or mix old and new bytes. A read of a file truncated under its memory mapping is the same explained error, and the log is unloaded. Each session is told once, in `_metadata.log_reloaded` and a warning, when a log it used was reloaded. Before, a loaded log answered from its first load for as long as it stayed in memory, so a log copied off the robot again once it had grown kept its old contents; a file overwritten in place had the old record offsets applied to the new bytes, which hid the new records or decoded garbage; and the read of a file truncated while loaded threw an `InternalError` that nothing caught, which in stdio mode ended the server.
+- The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when a REV log appeared, grew, or went: a REV log copied off the robot after the wpilog is found without reloading the wpilog, and an offset set with `set_revlog_offset` is kept for a REV log whose file did not change. Before, REV logs were found only when the wpilog was loaded.
+
 ### Testing
-- CI checks that every Java file carries the license header (`./gradlew license`); it ran the check only locally, as part of `./gradlew build`.
+- CI checks that every Java file carries the license header (`./gradlew license`); the check used to run only locally, as part of `./gradlew build`.
 
 ### Documentation
+- The READMEs now send readers to the Marketplace to install the extension; the `.vsix` on the releases page remains the way to a particular build. The README's header links the Marketplace listing.
 - `doc/STANDALONE.md` says why the TBA key belongs in the configuration file or the environment rather than on the command line, where the process list shows it.
-- `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date: the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension, with season-specific detail left to the documents that own it.
+- The README is reorganized. The example questions follow "How It Works" instead of repeating the header's questions a paragraph later; the installation section says once that most people want the extension; the agents the server works with are named (Claude, GitHub Copilot, Gemini, ChatGPT over the HTTP transport, and others); and a new section on supporting Triple Helix links the Intentional Innovation Foundation's donation page. The prose was edited throughout.
+- The other documents got the same editorial pass: pronoun references and wrong words fixed; chained clauses broken up; the standalone guide's `-debug` flag back in its table, the HTTP transport and containerization sections placed as sections of their own, and the command-line notes gathered under the flags; the extension README's requirements moved ahead of installation and its upgrading section covering the Marketplace; the tools reference's REV log reference material, troubleshooting, and workflow gathered in the section's introduction, with one "When to use it" heading for every tool that has one; the development guide's test suites as paragraphs, its extension build beside the server build, and its releasing step split from what the workflow does; the ideas file's stale references and duplicated hand-off removed.
+- `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date. It now covers the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension; season-specific detail is left to the documents that own it.
 
 ## [0.9.0] - 2026-10-02
 

@@ -492,6 +492,8 @@ tasks.register('buildExtension', Exec) {
     }
 
     doFirst {
+        // vsce wants the license beside package.json; the repository's is one level up
+        file("${extDir}/LICENSE").text = file("${projectDir}/LICENSE").text
         println "Building WPILog Analyzer VS Code extension v${extVersion}..."
     }
     doLast {

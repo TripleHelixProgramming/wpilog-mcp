@@ -5,7 +5,7 @@ How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) ex
 ## Requirements
 
 - JDK 17 or newer; the WPILib JDK is recommended (see [STANDALONE.md](STANDALONE.md#requirements) for where WPILib puts it). `./gradlew` uses `JAVA_HOME`, or `java` on your `PATH`.
-- [Node.js](https://nodejs.org/) 20, the version CI uses (`npm` on your `PATH`), only to build or test the VS Code extension.
+- [Node.js](https://nodejs.org/) 20, the version CI uses, with `npm` on your `PATH`: needed only to build or test the VS Code extension.
 
 ## Building
 
@@ -16,6 +16,18 @@ How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) ex
 ```
 
 The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` sets up the [standalone install](STANDALONE.md#install) from your build.
+
+### The VS Code extension
+
+```bash
+./gradlew bundleExtension    # Copy the server JAR into the extension (for local development)
+./gradlew buildExtension     # Build, compile, and package the .vsix
+./gradlew installExtension   # Build, package, and install into VS Code
+```
+
+`installExtension` installs into WPILib's VS Code for the current year when that is installed, and otherwise uses the `code` command. Close VS Code before running the task, and restart VS Code when the task is done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
+
+The extension's version is the project version in `build.gradle`. Every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release, and the release that follows it installs over the development version.
 
 ## Testing
 
@@ -33,16 +45,25 @@ This runs every test that needs nothing outside the repository, in about a minut
 
 Tests are in `src/test/java`, in the same packages as the code they test, plus a few test-only packages: `fixtures`, `conformance`, `golden`, `docs`, and `integration`.
 
-- Fixture logs: about 20 small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, entries that only look like vision data, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
-- Tool tests: each tool's behavior and its edge cases (empty and single-sample entries, NaN and infinite values, duplicate timestamps, missing DriverStation data, and bad arguments), on the fixtures and on small logs that the tests build in memory.
-- Conformance sweep: every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, a note on every result computed from a log that was not read to its end, and every output the tool's description names. The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
-- Differential check: the conformance sweep shows that the tools keep their contract, not that a number is right, so this check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader, and compares the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows. It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives: the loop-time statistics of `analyze_loop_timing`, the roboRIO brownouts in `power_analysis` and `get_ds_timeline`, the per-bus figures of `analyze_can_bus`, the module speeds of `analyze_swerve`, and the mode of each enabled segment in `get_match_phases`. No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
-- Claim checks: the documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it. TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added, but it may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
-- Process tests: some behavior can only be seen from outside, so the tests start the server in a fresh JVM to check its startup configuration and logging, and run the one-line installers against a stand-in for GitHub in a scratch home folder: the shell installer everywhere but Windows, and the PowerShell installer wherever PowerShell is installed, which includes the Windows CI job.
-- Version checks: the extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
-- Build file check: the stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails.
+**Fixture logs.** About 20 small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, entries that only look like vision data, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
 
-CI runs `./gradlew test shadowJar license` on Linux and Windows (`license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one), and builds and tests the extension. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
+**Tool tests.** Each tool's behavior and its edge cases (empty and single-sample entries, NaN and infinite values, duplicate timestamps, missing Driver Station data, and bad arguments), on the fixtures and on small logs that the tests build in memory.
+
+**Conformance sweep.** Every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, a note on every result computed from a log that was not read to its end, and every output the tool's description names.
+
+The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
+
+**Differential check.** The conformance sweep shows that the tools keep their contract, not that a number is right. This check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader, and compares what the two read: the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows. It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives: the loop-time statistics of `analyze_loop_timing`, the roboRIO brownouts in `power_analysis` and `get_ds_timeline`, the per-bus figures of `analyze_can_bus`, the module speeds of `analyze_swerve`, and the mode of each enabled segment in `get_match_phases`. No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
+
+**Claim checks.** The documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it. TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added; it may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
+
+**Process tests.** Some behavior can only be seen from outside, so the tests start the server in a fresh JVM to check its startup configuration and logging. They also run the one-line installers against a stand-in for GitHub in a scratch home folder: the shell installer everywhere but Windows, and the PowerShell installer wherever PowerShell is installed, which includes the Windows CI job.
+
+**Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
+
+**Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails.
+
+CI runs `./gradlew test shadowJar license` on Linux and Windows, and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
 ### Tests on real logs
 
@@ -55,6 +76,8 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 # Golden values from known logs
 ./gradlew test --tests '*.golden.*' -PgoldenLog=/path/to/akit_26-09-30_00-10-26.wpilog -PgoldenMatchLog=/path/to/akit_cmptx_e4_sample.wpilog
 ```
+
+`-PconformanceMaxLogs` limits a run to the first N logs, `-PconformanceTools` to the tools named, and `-PsimLogDir` is described under the claims check below.
 
 - Real-log conformance sweep: the fixture sweep's checks (all but the comparison of each description with its outputs) and argument variants, for every tool that reads a log, on every `.wpilog` under the directory (up to 6 levels deep), with the entries reversed for determinism. There is no ratchet, so any violation fails. The report, with the time of every call, is `build/reports/conformance/real-logs.txt`.
 - Real-log differential check: the second reader against the server on every log, with the domain answers above. A file neither can read is counted, and a file only one can read is a finding. The report is `build/reports/conformance/differential.txt`.
@@ -73,13 +96,13 @@ Use your own team's logs. Logs that another team has deliberately published can 
 ./gradlew httpStressTest   # Over the HTTP transport only
 ```
 
-The stress tests exercise the server on real logs. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache: it synchronizes the log with the cache off, then twice with it on, the second time from the cache, and the REV log tools must give the same answers each time. The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. A log directory that does not exist skips every test.
+The stress tests also need real logs, but they are Gradle tasks of their own rather than properties on `test`. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache: it synchronizes the log with the cache off, then twice with it on, the second time from the cache, and the REV log tools must give the same answers each time. The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. When the log directory does not exist, every test is skipped.
 
-They take their settings from a `stresstest` server: the one in the file given with `-Pconfigpath=/path/to/config.yaml`, else in the first of `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root and `~/.wpilog-mcp/servers.yaml` or `servers.json` that has one (the file the installers write does). With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
+They take their settings from a server named `stresstest`. It is looked for in the file given with `-Pconfigpath=/path/to/config.yaml`, or else in the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one). With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
 
 ### The disk cache in tests
 
-Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache an older version wrote, it shows how this version treats that version's results. Use a copy, because the tests write to the folder.
+Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.
 
 ### Extension tests
 
@@ -105,29 +128,25 @@ A tool is more than its code: agents read its description and schema, and severa
    ```bash
    ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/logs
    ```
-   The scenarios file names the three logs it reads, relative to that directory. They are Team 2363's and are not in the repository. Without them you cannot regenerate the file, and you do not have to: the checks accept a TOOL_RESPONSES.md that does not hold a new tool yet, as long as the scenarios file has a call for it. Say so in your pull request, and a maintainer will regenerate it. The capture fails when a tool has no call.
-
-## Building the VS Code Extension
-
-```bash
-./gradlew bundleExtension    # Copy the server JAR into the extension (for local development)
-./gradlew buildExtension     # Build, compile, and package the .vsix
-./gradlew installExtension   # Build, package, and install into VS Code
-```
-
-`installExtension` installs into WPILib's VS Code for the current year when it is installed, and otherwise uses the `code` command. Close VS Code before running it, and restart it when done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
-
-The extension's version is the project version in `build.gradle`. Every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release and is replaced by the release itself.
+   The scenarios file names the three logs it reads, relative to that directory. They are Team 2363's and are not in the repository. Without them you cannot regenerate the file, and you do not have to: the checks accept a TOOL_RESPONSES.md that does not hold a new tool yet, as long as the scenarios file has a call for it (the capture fails when a tool has none). Say so in your pull request, and a maintainer will regenerate it.
 
 ## Releasing
 
 1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; a test fails until the extension's files match.
 2. Regenerate [TOOL_RESPONSES.md](TOOL_RESPONSES.md), whose first lines carry the version (step 7 of [Changing or Adding a Tool](#changing-or-adding-a-tool)).
 3. Move the `[Unreleased]` entries in [CHANGELOG.md](../CHANGELOG.md) under the new version.
-4. Commit, then tag `v0.9.0` with an annotated tag (`git tag -a v0.9.0 -F notes.md`, whose first line is a title and whose body becomes the release notes, with the list of merged pull requests appended) and push the tag. The release workflow (`.github/workflows/release.yml`) builds the server JAR and the `.vsix` under that version and attaches both to a GitHub release. It stops if the tag and `build.gradle` disagree. A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release; for one, skip steps 2 and 3 and tag the version `build.gradle` carries. The repository's releases are immutable: a published release's files and tag cannot be changed, and a deleted release's tag name cannot be used again, so a release that went wrong gets a new version (`0.9.0-dev2`), never a moved tag.
+4. Commit, then tag `v0.9.0` with an annotated tag (`git tag -a v0.9.0 -F notes.md`: the file's first line is the title, the rest becomes the release notes, and the workflow appends the list of merged pull requests) and push the tag.
+
+The release workflow (`.github/workflows/release.yml`) builds the server JAR and the `.vsix` under that version and attaches both to a GitHub release. It stops if the tag and `build.gradle` disagree. A release without a suffix is also published to the Visual Studio Marketplace; see [Publishing to the Marketplace](#publishing-to-the-marketplace).
+
+A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release. For a pre-release, skip steps 2 and 3 and tag the version `build.gradle` carries. The repository's releases are immutable: a published release's files and tag cannot be changed, and a deleted release's tag name cannot be used again, so a release that went wrong gets a new version (`0.9.0-dev2` for a pre-release, the next patch version for a release), never a moved tag.
+
+## Publishing to the Marketplace
+
+The extension is published under the `TripleHelixProgramming` publisher. Publishing needs a Personal Access Token from an Azure DevOps organization, created with **All accessible organizations** and the **Marketplace (Manage)** scope. The publisher's management page is [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage). The release workflow publishes every release without a suffix when the token is in the `VSCE_PAT` repository secret; when the secret is missing or the token has expired, the workflow says so, and the `.vsix` from the GitHub release can be uploaded on the management page instead. The Marketplace does not accept a version with a suffix, and never accepts a version twice, so a release that must be redone gets a new patch version. `package.json`'s `publisher` must stay the publisher's ID: VS Code identifies the extension as `TripleHelixProgramming.wpilog-analyzer`, and changing it would make the Marketplace listing a different extension.
 
 ## Contributing
 
-1. Report bugs: open an issue with steps to reproduce, and the tool call and result if a tool gave a wrong answer.
-2. Request features: open an issue describing your use case.
-3. Submit pull requests: fork, make your changes, add tests, and open a PR.
+- Report bugs: open an issue with steps to reproduce, and the tool call and result if a tool gave a wrong answer.
+- Request features: open an issue describing your use case.
+- Submit pull requests: fork, make your changes, add tests, and open a PR.

@@ -176,6 +176,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      // A REV log copied in after the wpilog, or copied again once it grew, is found here
+      logManager.refreshRevLogsIfChanged(log.path());
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
 
@@ -331,6 +333,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      // A REV log copied in after the wpilog, or copied again once it grew, is found here
+      logManager.refreshRevLogsIfChanged(log.path());
       ToolUtils.validateTimeRange(ToolUtils.getOptDouble(arguments, "start_time"),
           ToolUtils.getOptDouble(arguments, "end_time"));
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
@@ -479,6 +483,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      // A REV log copied in after the wpilog, or copied again once it grew, is found here
+      logManager.refreshRevLogsIfChanged(log.path());
       boolean syncInProgress = logManager.isRevLogSyncInProgress(log.path());
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
@@ -621,6 +627,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      // A REV log copied in after the wpilog, or copied again once it grew, is found here
+      logManager.refreshRevLogsIfChanged(log.path());
       SynchronizedLogs syncLogs = logManager.getSynchronizedLogs(log.path());
 
       if (syncLogs == null || syncLogs.revlogCount() == 0) {
@@ -716,6 +724,8 @@ public final class RevLogTools {
 
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
+      // A REV log copied in after the wpilog, or copied again once it grew, is found here
+      logManager.refreshRevLogsIfChanged(log.path());
       int timeoutMs = Math.max(0, Math.min(MAX_WAIT_MS, getOptInt(arguments, "timeout_ms", 30000)));
 
       boolean wasInProgress = logManager.isRevLogSyncInProgress(log.path());
