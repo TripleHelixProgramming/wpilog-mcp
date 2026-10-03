@@ -5,7 +5,7 @@ All notable changes to wpilog-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-10-02
 
 Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBUSTNESS_REVIEW.md), following [doc/ROBUSTNESS_PLAN.md](doc/ROBUSTNESS_PLAN.md): tools take their behavior from the log itself and never report success when they found nothing to analyze. It also adds several log directories and changes how the VS Code extension sets up Claude Code.
 
