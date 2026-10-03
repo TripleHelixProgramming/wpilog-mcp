@@ -54,6 +54,19 @@ class LogReloadTest {
 
   private static final String ENTRY = "/Drive/Speed";
 
+  /**
+   * Windows refuses to truncate, rename over, or delete a file while it is memory-mapped, so a
+   * loaded log's file can change there only by being rewritten in place at the same size, which
+   * still changes its modification time. The tests that grow, replace, or remove the file run
+   * elsewhere; the rest run everywhere.
+   */
+  private static final boolean WINDOWS =
+      System.getProperty("os.name").toLowerCase().contains("win");
+
+  private static void assumeFileCanBeReplaced() {
+    assumeFalse(WINDOWS, "Windows keeps a mapped file from being truncated, replaced, or removed");
+  }
+
   private final LogManager manager = new LogManager();
 
   @AfterEach
@@ -65,20 +78,43 @@ class LogReloadTest {
   // ==================== reloading ====================
 
   @Test
-  @DisplayName("a file overwritten in place (same inode) is loaded again on the next call")
-  void overwrittenInPlace(@TempDir Path dir) throws Exception {
-    var log = dir.resolve("overwritten.wpilog");
+  @DisplayName("a file rewritten in place at the same size (new content, new time) is loaded "
+      + "again on the next call")
+  void rewrittenInPlace(@TempDir Path dir) throws Exception {
+    var log = dir.resolve("rewritten.wpilog");
+    writeLog(log, 10.0, Math::sin);
+    age(log);
+    manager.addAllowedDirectory(dir);
+
+    var first = manager.getOrLoad(log.toString());
+    assertEquals(0.0, firstValue(first), 1e-12, "sin(0)");
+    assertSame(first, manager.getOrLoad(log.toString()), "unchanged file: the same log");
+
+    var other = dir.resolve("other.tmp");
+    writeLog(other, 10.0, Math::cos);
+    rewriteInPlace(log, other);
+
+    var second = manager.getOrLoad(log.toString());
+    assertNotSame(first, second, "the rewritten file was not loaded again");
+    assertEquals(1.0, firstValue(second), 1e-12, "cos(0): the new file's values");
+    assertSame(second, manager.getOrLoad(log.toString()), "reloaded once, then cached");
+  }
+
+  @Test
+  @DisplayName("a file grown in place (same inode, more records) is loaded again on the next call")
+  void grownInPlace(@TempDir Path dir) throws Exception {
+    assumeFileCanBeReplaced();
+    var log = dir.resolve("grown.wpilog");
     writeLog(log, 10.0);
     age(log);
     manager.addAllowedDirectory(dir);
 
     var first = manager.getOrLoad(log.toString());
     assertEquals(10.0, first.maxTimestamp(), 1e-6);
-    assertSame(first, manager.getOrLoad(log.toString()), "unchanged file: the same log");
 
     var longer = dir.resolve("longer.tmp");
     writeLog(longer, 20.0);
-    overwriteInPlace(log, longer);
+    growInPlace(log, longer);
 
     var second = manager.getOrLoad(log.toString());
     assertNotSame(first, second, "the changed file was not loaded again");
@@ -90,6 +126,7 @@ class LogReloadTest {
   @Test
   @DisplayName("a file renamed into place (new inode) is loaded again on the next call")
   void renamedIntoPlace(@TempDir Path dir) throws Exception {
+    assumeFileCanBeReplaced();
     var log = dir.resolve("renamed.wpilog");
     writeLog(log, 10.0);
     age(log);
@@ -108,6 +145,7 @@ class LogReloadTest {
   @Test
   @DisplayName("a loaded log whose file was removed is an error, not the old data")
   void removed(@TempDir Path dir) throws Exception {
+    assumeFileCanBeReplaced();
     var log = dir.resolve("removed.wpilog");
     writeLog(log, 10.0);
     manager.addAllowedDirectory(dir);
@@ -126,23 +164,23 @@ class LogReloadTest {
       + "the next call loads the new file")
   void changedDuringCall(@TempDir Path dir) throws Exception {
     var log = dir.resolve("changing.wpilog");
-    writeLog(log, 10.0);
+    writeLog(log, 10.0, Math::sin);
     age(log);
     manager.addAllowedDirectory(dir);
-    var longer = dir.resolve("longer.tmp");
-    writeLog(longer, 20.0);
+    var other = dir.resolve("other.tmp");
+    writeLog(other, 10.0, Math::cos);
 
-    var tool = new CountingTool(manager, () -> overwriteInPlace(log, longer));
+    var tool = new CountingTool(manager, () -> rewriteInPlace(log, other));
     var result = tool.execute(args(log)).getAsJsonObject();
     assertEquals("error", result.get("status").getAsString(), result.toString());
     var error = result.get("error").getAsString();
     assertTrue(error.contains("changed on disk while this call was reading it"), error);
-    assertTrue(error.contains("size went from"), error);
+    assertTrue(error.contains("modified at"), error);
 
     // Not left loaded from the old file: the next call reads the new one
     var next = new CountingTool(manager, () -> { }).execute(args(log)).getAsJsonObject();
     assertEquals("ok", next.get("status").getAsString(), next.toString());
-    assertEquals(1001, next.get("count").getAsInt());
+    assertEquals(1.0, next.get("first").getAsDouble(), 1e-12, "cos(0): the new file");
   }
 
   @Test
@@ -171,8 +209,7 @@ class LogReloadTest {
   @DisplayName("a log truncated under its mapping does not end the server: the call is an error "
       + "and the next call loads what is left")
   void truncatedUnderMapping(@TempDir Path dir) throws Exception {
-    // Windows refuses to truncate a mapped file, so the fault cannot happen there
-    assumeFalse(System.getProperty("os.name").toLowerCase().contains("win"));
+    assumeFileCanBeReplaced(); // the fault cannot happen where the truncation is refused
     var log = dir.resolve("truncated.wpilog");
     writeLog(log, 600.0); // ~400 KB: many pages past the cut
     manager.addAllowedDirectory(dir);
@@ -204,7 +241,7 @@ class LogReloadTest {
       + "did not is not told")
   void sessionsToldOnce(@TempDir Path dir) throws Exception {
     var log = dir.resolve("told.wpilog");
-    writeLog(log, 10.0);
+    writeLog(log, 10.0, Math::sin);
     age(log);
     manager.addAllowedDirectory(dir);
     var tool = new CountingTool(manager, () -> { });
@@ -217,14 +254,14 @@ class LogReloadTest {
     SessionContext.clear();
     assertNull(reloadNote(tool.execute(args(log))));
 
-    var longer = dir.resolve("longer.tmp");
-    writeLog(longer, 20.0);
-    overwriteInPlace(log, longer);
+    var other = dir.resolve("other.tmp");
+    writeLog(other, 10.0, Math::cos);
+    rewriteInPlace(log, other);
 
     SessionContext.set(a);
     var note = reloadNote(tool.execute(args(log)));
     assertNotNull(note, "session A used the old file and is told of the reload");
-    assertTrue(note.get("change").getAsString().contains("size went from"), note.toString());
+    assertTrue(note.get("change").getAsString().contains("modified at"), note.toString());
     assertNull(reloadNote(tool.execute(args(log))), "told once, not on every call");
 
     SessionContext.set(b);
@@ -240,18 +277,18 @@ class LogReloadTest {
   @DisplayName("the reload notice is a warning as well as metadata")
   void noticeIsAWarning(@TempDir Path dir) throws Exception {
     var log = dir.resolve("warned.wpilog");
-    writeLog(log, 10.0);
+    writeLog(log, 10.0, Math::sin);
     age(log);
     manager.addAllowedDirectory(dir);
     var tool = new CountingTool(manager, () -> { });
     tool.execute(args(log));
-    var longer = dir.resolve("longer.tmp");
-    writeLog(longer, 20.0);
-    overwriteInPlace(log, longer);
+    var other = dir.resolve("other.tmp");
+    writeLog(other, 10.0, Math::cos);
+    rewriteInPlace(log, other);
 
     var result = tool.execute(args(log)).getAsJsonObject();
     assertEquals("ok", result.get("status").getAsString());
-    assertEquals(1001, result.get("count").getAsInt(), "the result is from the new file");
+    assertEquals(1.0, result.get("first").getAsDouble(), 1e-12, "the result is from the new file");
     var warnings = result.getAsJsonArray("warnings");
     assertNotNull(warnings);
     assertTrue(warnings.toString().contains("reloaded from disk"), warnings.toString());
@@ -368,9 +405,10 @@ class LogReloadTest {
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       beforeRead.run();
-      int count = log.values().get(ENTRY).size();
+      var values = log.values().get(ENTRY);
       afterRead.run();
-      return success().addProperty("count", count).build();
+      return success().addProperty("count", values.size())
+          .addProperty("first", (Double) values.get(0).value()).build();
     }
   }
 
@@ -390,13 +428,27 @@ class LogReloadTest {
 
   /** A log with one double entry at 50 Hz from 0 to {@code endSec}: (end / 0.02) + 1 records. */
   private static void writeLog(Path path, double endSec) throws IOException {
+    writeLog(path, endSec, Math::sin);
+  }
+
+  /**
+   * As {@link #writeLog(Path, double)}, with {@code shape} giving each value from its time. Two
+   * logs of the same length and different shapes have the same size, byte for byte in layout,
+   * so one can be written over the other in place without truncating.
+   */
+  private static void writeLog(Path path, double endSec, java.util.function.DoubleUnaryOperator shape)
+      throws IOException {
     try (var w = new FixtureWriter(path, FixtureWriter.AKIT_METADATA)) {
       int n = (int) Math.round(endSec / 0.02) + 1;
       for (int i = 0; i < n; i++) {
         double t = i * 0.02;
-        w.dbl(ENTRY, t, Math.sin(t));
+        w.dbl(ENTRY, t, shape.applyAsDouble(t));
       }
     }
+  }
+
+  private static double firstValue(LogData log) {
+    return (Double) log.values().get(ENTRY).get(0).value();
   }
 
   /** Dates the file a minute back, so a change made right after has a different time. */
@@ -404,16 +456,35 @@ class LogReloadTest {
     Files.setLastModifiedTime(path, FileTime.from(Instant.now().minusSeconds(60)));
   }
 
-  /** Writes {@code source}'s bytes over {@code target}, keeping its identity (as cp does). */
-  private static void overwriteInPlace(Path target, Path source) throws IOException {
+  /**
+   * Writes {@code source}'s bytes over {@code target}, keeping its identity (as cp does) and
+   * truncating first, so the size changes. Not on Windows, which refuses to truncate a mapped
+   * file.
+   */
+  private static void growInPlace(Path target, Path source) throws IOException {
+    copyInto(target, source, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+  }
+
+  /**
+   * Writes {@code source}'s bytes over {@code target} without truncating, which every system
+   * allows on a mapped file; the two must be the same size, so only the content and the
+   * modification time change.
+   */
+  private static void rewriteInPlace(Path target, Path source) throws IOException {
+    assertEquals(Files.size(source), Files.size(target), "the rewrite must keep the size");
+    copyInto(target, source, StandardOpenOption.WRITE);
+  }
+
+  private static void copyInto(Path target, Path source, StandardOpenOption... options)
+      throws IOException {
     try (var in = FileChannel.open(source, StandardOpenOption.READ);
-        var out = FileChannel.open(target, StandardOpenOption.WRITE,
-            StandardOpenOption.TRUNCATE_EXISTING)) {
+        var out = FileChannel.open(target, options)) {
       long position = 0;
       long size = in.size();
       while (position < size) {
         position += in.transferTo(position, size - position, out);
       }
+      out.force(true);
     }
   }
 
