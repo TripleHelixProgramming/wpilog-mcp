@@ -168,6 +168,8 @@ wpilog-mcp -logdir ~/riologs --http --port 9000
 | `-scandepth <n>` | `WPILOG_SCAN_DEPTH` | `scandepth` |
 | `--http` | `WPILOG_HTTP=true` | `transport: http` |
 | `--port <port>` | `WPILOG_HTTP_PORT` | `port` |
+
+Prefer `tba_key` in the configuration file, or `TBA_API_KEY`, to `-tba-key`: a command-line argument is visible to every user of the computer in the process list, and the key is a secret.
 | `-debug` | `WPILOG_DEBUG=true` | `debug` |
 
 `wpilog-mcp -debug` on its own is flag mode too, so it reads no configuration file. To debug a configured server, run `wpilog-mcp start default -debug` or set `debug: true`.
