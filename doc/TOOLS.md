@@ -215,7 +215,7 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 
 **Response Fields:**
 - `log_directories`: Every configured directory, in configuration order. A log reached from two of them (nested directories, or one directory under two names) is listed once
-- `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission). That directory's logs are missing from the list, not absent, and the status is `partial`
+- `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission). That directory's logs are missing from the list, not from the disk, and the status is `partial`
 - `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected. In those cases no log carries a `tba` field, and that says nothing about whether TBA has data for it
 - `metadata_cache`: Cache statistics for log file metadata (`size`, `hits`, `misses`)
 - `team_number`: From the log's `SystemStats/TeamNumber` entry (AdvantageKit records it), else the configured default team (`-team`, `WPILOG_TEAM`, or `team` in the server configuration)
@@ -430,7 +430,7 @@ The conventions:
 
 **Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `vision_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
 
-**Returns:** `log_path` and `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `match` (`explicit`, `convention`, `type`, `heuristic`, or `none`), `basis` (why), `needs_confirmation` (heuristic: candidates only, not used), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked as well; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry, `needs_confirmation` the ones with name-only candidates, and `warnings` name ambiguous choices.
+**Returns:** `log_path` and `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `match` (`explicit`, `convention`, `type`, `heuristic`, or `none`), `basis` (why), `needs_confirmation` (heuristic: candidates only, not used), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked equally; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry, `needs_confirmation` the ones with name-only candidates, and `warnings` name ambiguous choices.
 
 Each tool's result records the entries it used under `inputs.entries`. Tools with an entry parameter (`pose_entry`, `measured_entry`, `entry`, ...) accept an override when a choice is wrong.
 
@@ -532,7 +532,7 @@ List or search the text a log holds, completely and in time order across all ent
 **Parameters:**
 - `path` (required): Path to the log file
 - `pattern` (optional): Case-insensitive substring, or a Java regular expression when `regex` is true. Omit to list every string sample (narrow with `level`, `entry_pattern`, or a time window)
-- `regex` (optional): Treat `pattern` as a Java regex, case-insensitive (Unicode-aware) with `^`/`$` anchoring to lines of a multi-line sample; `.` does not cross a line break. Default `false`. An invalid regex is an error, and so is a pattern that backtracks for more than a second on one value (nested quantifiers on long text), rather than hanging the server
+- `regex` (optional): Treat `pattern` as a Java regex, case-insensitive (Unicode-aware) with `^`/`$` anchoring to lines of a multi-line sample; `.` does not cross a line break. Default `false`. An invalid regex is an error; so is a pattern that backtracks for more than a second on one value (nested quantifiers on long text), which would otherwise hang the server
 - `level` (optional): `error`, `warning`, `info`, or `any` (default). An alert's level comes from its entry name (`errors`, `warnings`, `infos`); other text is classified line by line by the same rule `get_ds_timeline` uses for `text_event_counts`, so the numbers agree
 - `entry_pattern` (optional): Only search entries whose name contains this (case-insensitive)
 - `start_time` / `end_time` (optional): Time window in seconds; an alert matches when it was present in the window, whenever it appeared
@@ -613,7 +613,7 @@ Statistics on numeric signals. The first two subsections describe the field path
 - `scope`: `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (the i-th enabled segment of `get_match_phases`, from 0). Segments are half-open: the sample logged at a transition belongs to the new state. Any scope other than `all` on a log with no DriverStation state is an error.
 - `windows`: a list of `{start, end}` (or `[start, end]`), half-open `[start, end)`; overlapping windows merge. The `intervals` returned by `find_condition` can be passed as-is ("statistics while the battery was below 11 V").
 
-Differences, spikes, peaks, and, in the tools that measure one signal, angle unwrapping are computed within each window, never across the time between two. `time_correlate` pairs two signals, so it unwraps each angle over the whole log, which keeps both on one continuous branch, and takes its pairs, its lag-1 autocorrelations, and its sample rates within the windows. `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`). `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
+Differences, spikes, peaks, and, in the tools that measure one signal, angle unwrapping are computed within each window, never across the time between two. `time_correlate` pairs two signals, so it unwraps each angle over the whole log, which keeps both on one continuous branch; its entry says what it still measures within the windows. `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`). `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
 
 ### `get_statistics`
 Statistics of a numeric entry or field over the finite samples in scope, with data quality and analysis directives. A scope with no finite sample is an error that says how many values the log and the scope hold.
@@ -795,7 +795,7 @@ A common rule of thumb for |r|: 0.9 and up is very strong, 0.7 strong, 0.5 moder
 
 **Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, `p_value_basis`, `inputs`, `data_quality` (of the lower-quality signal), and `server_analysis_directives`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta). The lag-1 autocorrelations pair consecutive samples within a window, never the two on either side of the time between windows, and the sample rates are measured within the windows too. Warnings say when fewer than 30 samples overlap, when fewer than 30 effective samples remain, and when the two sample rates differ more than tenfold. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
 
-With `max_lag_sec`, `lag_search` gives `lags_evaluated`, `lag_step_sec`, `max_lag_sec`, `best_lag_sec`, `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, and a `note`. The best lag is the one where the correlation is strongest in either direction, and `correlation_at_best_lag` keeps its sign: two signals that move oppositely, such as battery voltage and a motor's current, have a negative correlation at every lag, and the strongest is the most negative. Among equally strong lags, the one nearest zero is reported. If the sign at the best lag differs from the sign at zero lag, the relationship changes direction with the shift, as oscillating signals do half a period apart, so check that before reading the lag as a delay. A best lag at the edge of the range may lie beyond it.
+With `max_lag_sec`, `lag_search` gives `lags_evaluated`, `lag_step_sec`, `max_lag_sec`, `best_lag_sec`, `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, and a `note`. The best lag is the one where the correlation is strongest in either direction, and `correlation_at_best_lag` keeps its sign: two signals that move oppositely, such as battery voltage and a motor's current, have a negative correlation at every lag, and the strongest is the most negative. Among equally strong lags, the one nearest zero is reported. If the sign at the best lag differs from the sign at zero lag, the relationship reverses with the shift, as oscillating signals do half a period apart; check that before reading the lag as a delay. A best lag at the edge of the range may lie beyond it.
 
 **Example Response:**
 ```json
@@ -852,7 +852,7 @@ Find when the robot was enabled, in which mode, and, when the log holds a match,
 - Reads one DriverStation entry per role, by leaf name: `Enabled`, `Autonomous`, `Test`, `FMSAttached` under AdvantageKit `/DriverStation/` or WPILib DataLogManager `DS:` (AdvantageKit wins when both exist, then the lowest entry id; the others are named in `notes`). Logs with only NetworkTables data use the `FMSInfo/FMSControlData` control word.
 - Values are logged only on change, so each holds until the next sample (sample-and-hold). A single `Autonomous=false` sample means the robot was never in autonomous.
 - `segments` tiles the whole log: every interval of constant state (`enabled`, `disabled`, or `unknown` before the first DriverStation sample), with `mode` (`auto`/`teleop`/`test`/`unknown`) while enabled and `end_reason` (`disabled`, `enabled`, `mode_change`, `ds_data`, `log_end`). A disable logged at the log's last timestamp ends the final segment with `disabled`; `log_end` means the robot was still in that state when the log stopped.
-- `matches` lists each FMS match found: an enabled autonomous segment followed within the season's auto-to-teleop delay (plus 5 s) by an enabled teleop segment, with `basis` `fms_attached` (FMS attached at the start) or `mode_sequence` (no FMS, but the autonomous segment lasted 50–150 % of the season's autonomous time). A teleop segment within 5 s of the season's teleop length with FMS attached is a match even if the robot was disabled through autonomous. `complete` says whether teleop ended in a disable within 5 s of the season's teleop length; `endgame` is derived from the season's timing (`basis: game_timing`) only for complete matches. `expected_timing` gives the season values used.
+- `matches` lists each FMS match found: an enabled autonomous segment followed, within the season's auto-to-teleop delay plus 5 s, by an enabled teleop segment. Its `basis` is `fms_attached` (FMS attached at the start) or `mode_sequence` (no FMS, but the autonomous segment lasted 50–150% of the season's autonomous time). A teleop segment within 5 s of the season's teleop length with FMS attached is a match even if the robot was disabled through autonomous. `complete` says whether teleop ended in a disable within 5 s of the season's teleop length; `endgame` is derived from the season's timing (`basis: game_timing`) only for complete matches. `expected_timing` gives the season values used.
 - `phases` repeats the first match (compatibility). With no match and exactly one enabled segment, it holds that segment as `enabled`; with several enabled segments it is empty, so use `segments`.
 - `season` is the year the log was recorded, from the log's own clock (`/SystemStats/EpochTimeMicros` or `systemTime`), then `/RealMetadata/BuildDate`, then a year in the file name, then the current year; `basis` says which.
 
@@ -920,7 +920,7 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
   Any prefix may come before these names (`/RealOutputs/`, `NT:/`). When two tables follow a naming, as a replay log's `/RealOutputs/` and `/ReplayOutputs/` do, the one declared first is used and a warning names both; `module_prefix` or `measured_entry` chooses the other.
 - With no published naming, the only `SwerveModuleState` entry in the log is used, unless its leaf name contains `setpoint`, `desired`, `target`, `commanded`, `goal`, or `reference`. The log does not say whether that entry holds measured or commanded states, and a warning says so.
 - Entries under a team's own names are not interpreted. Words such as `Actual` and `Target` are not taken as evidence, and two target arrays beside the measured states cannot be told apart by name at all. The result is then `no_match` with `needs_confirmation` and `candidates`; when only the setpoint is unresolved, the tracking sections are skipped and the reason lists the candidates. Pass `measured_entry` and `setpoint_entry`. The robot's source code, where each entry is logged, says which is which.
-- One `struct:SwerveModuleState` entry per module is analyzed one module per call, with that module's `measured_entry` and `setpoint_entry`.
+- Per-module `struct:SwerveModuleState` entries are analyzed one module per call, by passing that module's `measured_entry` and `setpoint_entry`.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -938,7 +938,7 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - `speed_tracking_error` (`samples`, `mean_mps`, `p95_mps`, `max_mps`, `events_over_threshold`): `| |measured| − |setpoint| |` at each measured sample, against the setpoint logged at most 0.1 s earlier
 - `steer_error` (`samples`, `mean_rad`, `p95_rad`, `max_rad`, `max_deg`, `events_over_threshold`): angle difference modulo 180° (an optimized setpoint may flip the wheel), only while the setpoint speed exceeds 0.05 m/s
 
-**Also returns:** `measured_basis` and `setpoint_basis` (how each entry was chosen), `layout` (`array` or `per_module`), `module_count`, `module_sync` (`basis`, `samples_analyzed`, `desync_events`, `max_deviation_rad`, `max_deviation_deg`, and `worst_module`: the largest steer error across modules), `odometry_drift` (`avg_error_m`, `max_error_m`, `max_error_per_total_time`, `comparisons` between the robot pose and a vision pose at the vision timestamps, with `odometry_entry`, `vision_entry`, and `odometry_basis` and `vision_basis` saying how each was chosen), `scope`, `inputs.entries`, `data_quality` of the measured entry, and `server_analysis_directives`. Sections that cannot be produced (no setpoints, no scalar vision pose) are listed in `skipped` with the reason (status `partial`).
+**Also returns:** `measured_basis` and `setpoint_basis` (how each entry was chosen), `layout` (`array` or `per_module`), `module_count`, `module_sync` (`basis`, `samples_analyzed`, `desync_events`, `max_deviation_rad`, `max_deviation_deg`, and `worst_module`: the largest steer error across modules), `odometry_drift` (`avg_error_m`, `max_error_m`, `max_error_per_total_time`, `comparisons` between the robot pose and a vision pose at the vision timestamps, with `odometry_entry` and `vision_entry`, and with `odometry_basis` and `vision_basis` saying how each was chosen), `scope`, `inputs.entries`, `data_quality` of the measured entry, and `server_analysis_directives`. Sections that cannot be produced (no setpoints, no scalar vision pose) are listed in `skipped` with the reason (status `partial`).
 
 **Status:** `no_match` when the log has no `SwerveModuleState` entries, and `no_match` with `needs_confirmation` and `candidates` when it has some under names the server does not interpret.
 
@@ -1076,7 +1076,7 @@ Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are exc
 CAN bus health from two sources: console and message text that reports CAN failures, and the structured bus counters `analyze_can_bus` reads. Returns `not_applicable` when the log has neither text entries nor CAN counters, because absence of evidence is not GOOD. `health_assessment` is UNKNOWN when CAN error lines exist but the log has no DriverStation state.
 
 **How it works:**
-- Text: every line of every text entry is checked: string entries, `string[]` alerts (once per appearance), and the string values of json entries. A line is a CAN failure when "CAN" appears as a word (or as CANbus, CANivore, CANcoder; not "cannot", "scan", "Canandgyro", or "cancel") together with timeout, timed out, error, or fault ("default" is not a fault).
+- Text: every line of every text entry is checked (string entries, `string[]` alerts once per appearance, and the string values of json entries). A line is a CAN failure when "CAN" appears as a word (or as CANbus, CANivore, CANcoder; not "cannot", "scan", "Canandgyro", or "cancel") together with timeout, timed out, error, or fault ("default" is not a fault).
 - Each line is classified by the robot's state at that moment from the DriverStation timeline `get_match_phases` uses: `while_enabled`, `while_disabled`, or `state_unknown` (before the first DriverStation sample, or no DriverStation data at all).
 - Counters: TEC/REC maxima (overall and while enabled) and bus-off increases per bus, from the same analysis as `analyze_can_bus`.
 
@@ -1091,7 +1091,7 @@ CAN bus health from two sources: console and message text that reports CAN failu
 **Parameters:**
 - `path` (required): Path to the log file
 
-**Returns:** `error_counts_by_entry` (per text entry: `total`, `while_enabled`, `while_disabled`, `state_unknown`), `total_can_errors`, `errors_while_enabled`, `errors_while_disabled` (when DriverStation data exists), `errors_state_unknown` (when any), `first_errors_while_enabled` (up to 5 lines with time and entry), `bus_counters[]` (`bus`, `tec_max`, `tec_max_time_sec`, `tec_max_while_enabled`, the same for `rec`, `bus_off_increase`, `bus_off_increase_while_enabled`), `health_assessment`, `assessment_basis`, `inputs.entries`, and warnings.
+**Returns:** `error_counts_by_entry` (per text entry: `total`, `while_enabled`, `while_disabled`, `state_unknown`), `total_can_errors`, `errors_while_enabled`, `errors_while_disabled` (when DriverStation data exists), `errors_state_unknown` (when any), `first_errors_while_enabled` (up to 5 lines with time and entry), `bus_counters[]` (`bus`, `tec_max`, `tec_max_time_sec`, `tec_max_while_enabled`, the same for `rec`, `bus_off_increase`, `bus_off_increase_while_enabled`), `health_assessment`, `assessment_basis`, `inputs.entries`, and `warnings`.
 
 **Example Response:**
 ```json
@@ -1199,16 +1199,16 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 
 **Parameters:**
 - `path` (required): Path to the log file
-- `velocity_entry` (string, **required**): Entry path for mechanism velocity (rad/s, or m/s if `wheel_radius` given)
-- `current_entry` (string, **required**): Entry path for motor current (A)
-- `kt` (number, **required**): Motor torque constant per motor (Nm/A), positive. Kraken X60=0.01940, NEO Vortex=0.01706, NEO 550=0.0108
-- `gear_ratio` (number, **required**): Overall gear ratio from motor shaft to output shaft, positive
-- `motor_count` (integer, default 1): Number of motors driving the mechanism in parallel
-- `wheel_radius` (number): Wheel radius (m), positive, for converting linear velocity to angular
-- `applied_volts_entry` (string): Entry for applied voltage, used to recover the torque's sign when current is always non-negative (TalonFX/SparkMax)
-- `start_time` / `end_time` (number): Analysis time window
-- `alpha_threshold` (number, default 1.0): Minimum |α| (rad/s²) for a sample to enter the fit, which drops near-steady-state samples
-- `smooth_window` (integer, default 2): Moving-average half-width applied to velocity before differentiating; must be non-negative (0 disables smoothing)
+- `velocity_entry` (required): Entry path for mechanism velocity (rad/s, or m/s if `wheel_radius` given)
+- `current_entry` (required): Entry path for motor current (A)
+- `kt` (required): Motor torque constant per motor (Nm/A), positive. Kraken X60=0.01940, NEO Vortex=0.01706, NEO 550=0.0108
+- `gear_ratio` (required): Overall gear ratio from motor shaft to output shaft, positive
+- `motor_count` (optional): Number of motors driving the mechanism in parallel (default 1)
+- `wheel_radius` (optional): Wheel radius (m), positive, for converting linear velocity to angular
+- `applied_volts_entry` (optional): Entry for applied voltage, used to recover the torque's sign when current is always non-negative (TalonFX/SparkMax)
+- `start_time` / `end_time` (optional): Analysis time window
+- `alpha_threshold` (optional): Minimum |α| (rad/s²) for a sample to enter the fit, which drops near-steady-state samples (default 1.0)
+- `smooth_window` (optional): Moving-average half-width applied to velocity before differentiating; must be non-negative, and 0 disables smoothing (default 2)
 
 **Returns:**
 - `J_kg_m2`: Estimated moment of inertia
@@ -1221,11 +1221,10 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 
 **Notes:**
 - R² is uncentered (`1 - SS_res / Σy²`) because the physics model has no intercept term; the centered R² does not apply to regression through the origin.
-- Samples where current or voltage interpolation returns null (e.g., when a log starts later than the velocity log) are skipped rather than zero-filled, so they cannot distort the fit.
-- Provide `applied_volts_entry` when using motor controllers that report unsigned current (TalonFX, SparkMax) so torque direction can be recovered from voltage sign.
+- Samples where current or voltage interpolation returns null (e.g., when the current entry starts later than the velocity entry) are skipped rather than zero-filled, so they cannot distort the fit.
 
 ### `analyze_can_bus`
-Analyze CAN bus health from the counters the log records, per bus: utilization, the transmit and receive error counters, and bus-off and TX-full counts.
+Analyze CAN bus health from the counters the log records, per bus: utilization, the transmit and receive error counters, and bus-off and TX-full counts. Run it when you see intermittent motor controller disconnects, sensor reading timeouts, or "CAN timeout" errors in the Driver Station.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1271,13 +1270,11 @@ Analyze CAN bus health from the counters the log records, per bus: utilization, 
 
 **Utilization guidelines** (rules of thumb, not something the tool applies):
 - Below 50%: healthy, plenty of bandwidth
-- 50-70%: fine; watch it when adding devices
-- 70-85%: concerning; reduce status frame rates
+- 50–70%: fine; watch it when adding devices
+- 70–85%: concerning; reduce status frame rates
 - Above 85%: high risk of timeouts and errors
 
-To bring utilization down: reduce motor controller status frame rates, move devices to a CAN FD bus where the hardware supports it, remove devices you don't need, and lower PDH/PDP reporting rates.
-
-Run this tool when you see intermittent motor controller disconnects, sensor reading timeouts, or "CAN timeout" errors in the Driver Station.
+To bring utilization down: reduce motor controller status frame rates, move devices to a CAN FD bus where the hardware supports it, remove devices you do not need, and lower PDH/PDP reporting rates.
 
 ---
 
@@ -1395,7 +1392,7 @@ Analyze vision data: pose observation streams, target streams, pose sets, has-ta
 - `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
 
-**observation_streams:** one stream per camera. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `latency_candidates` (numeric entries beside the stream whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`; they are listed, not analyzed, because the name does not say what the entry times or in which units: `get_statistics` reads one once the robot code has said), and `residual_vs_robot_pose` (`median_m`, `p95_m`, `max_m` of the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp). The robot pose may itself include vision corrections.
+**observation_streams:** one stream per camera. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `latency_candidates` (numeric entries beside the stream whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`; they are listed, not analyzed, because the name does not say what the entry times or in which units: `get_statistics` reads one once the robot code has settled what it times and in which units), and `residual_vs_robot_pose` (`median_m`, `p95_m`, `max_m` of the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp). The robot pose may itself include vision corrections.
 
 **target_streams:** per stream: `camera`, `records`, `observation_count`, `yaw` and `pitch` distributions (median, p95, max; with a `_deg` suffix when they are WPILib `Rotation2d`s), `area`, `confidence`, and `object_ids` (counts per id).
 
@@ -1453,7 +1450,7 @@ The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter
 - `max_gap_sec` (optional): Longest reference gap to interpolate across (default 0.25 s); records without a reference value are counted in `unaligned`
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time scope, as for the statistics tools
 
-**Returns:** `pose_entry`, `reference_entry`, `frame`, `interpolation`, `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (the size's median, p95, max, and `mean_signed`); the two components (count, mean, std_dev, p5, p95); `largest` (the times of the five largest distances, with `limits.largest`); `inputs`; `data_quality` of the pose entry and `server_analysis_directives`. When `pose_entry` was not passed, `robot_pose` shows how it was chosen. `no_match` when no record in scope has a reference value. For each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
+**Returns:** `pose_entry`, `reference_entry`, `frame`, `interpolation`, `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (median, p95, and max of its size, and `mean_signed`); the two components (count, mean, std_dev, p5, p95); `largest` (the times of the five largest distances, with `limits.largest`); `inputs`; `data_quality` of the pose entry and `server_analysis_directives`. When `pose_entry` was not passed, `robot_pose` shows how it was chosen. `no_match` when no record in scope has a reference value. To measure each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
 
 **Example** (the turret's pose in the robot's frame, VACHE q10, enabled; abridged): the turret sits 0.058 m behind and 0.126 m to the right of the robot's center (p5 and p95 are equal), except around an odometry reset at the start of autonomous, where the largest distances fall:
 ```json
@@ -1496,9 +1493,9 @@ How much a pose changed beyond what odometry predicts. For each pair of consecut
 - `correction_interval_sec`: the time between consecutive corrections (n, min, median, p95, max), for example the cadence of vision updates
 - `inputs`, `data_quality` of the pose entry, and `server_analysis_directives`
 
-A residual is the pose estimator's change beyond odometry: vision corrections, but also wheel slip, collisions, pose resets, and timing differences between the entries. Compare with the vision entries (`analyze_vision`) before attributing one, and use `find_condition` to limit the scope to driving. In a simulated CTRE swerve log with no vision, where the pose is odometry, the residual median was 0.3 mm and the p99 1 cm.
+A residual is the pose estimator's change beyond odometry: vision corrections, but also wheel slip, collisions, pose resets, and timing differences between the entries. Compare with the vision entries (`analyze_vision`) before attributing a residual to vision, and use `find_condition` to limit the scope to driving. In a simulated CTRE swerve log with no vision, where the pose is odometry, the residual median was 0.3 mm and the p99 1 cm.
 
-**Example** (the review log while the robot sat disabled; abridged): the robot is still (`speed_mps` ~0.0004) while its pose steps about 0.3 m back and forth every 0.1–0.2 s:
+**Example** (the log of the [robustness review](ROBUSTNESS_REVIEW.md), while the robot sat disabled; abridged): the robot is still (`speed_mps` ~0.0004) while its pose steps about 0.3 m back and forth every 0.1–0.2 s:
 ```json
 {
   "status": "ok",
@@ -1524,14 +1521,14 @@ Profile one closed-loop mechanism from the entries passed for its roles: followi
 **Parameters:**
 - `path` (required): Path to the log file
 - `setpoint_entry`, `measurement_entry`, `velocity_entry`, `current_entry`, `temperature_entry` (optional): The mechanism's entries (scalar numbers). Only entries passed here are analyzed. The setpoint and the measurement must be in the same units
-- `mechanism_name` (optional if role entries are given): Text contained in the mechanism's entry names, case-insensitive, anywhere in the name (e.g. `Elevator`, or `ModuleFrontLeft/Drive`). It finds candidates; it does not choose entries
+- `mechanism_name` (optional if role entries are given): Text the mechanism's entry names contain (case-insensitive, anywhere in the name; e.g. `Elevator`, or `ModuleFrontLeft/Drive`). It finds candidates; it does not choose entries
 - `start_time`, `end_time` (optional): Time window (applies to every section)
 - `stall_current_threshold` (optional): Current above which a stopped mechanism counts as stalled (default: 30 A)
 - `stall_velocity_threshold` (optional): `|velocity|` below this counts as stopped, in the velocity entry's units (default: 0.01)
 
 **Why the entries are passed:** nothing in a log says that an entry is a mechanism's setpoint or its measurement, or what its units are. Names do not settle it: a `currentHeight` is the present height, PhotonVision's `targetYaw` is a camera reading and not a setpoint, and a setpoint in rotations beside a position in meters gives a following error that means nothing. The robot's source code, where each entry is logged, does settle it.
 
-**Candidates:** with `mechanism_name`, `candidates` lists, per role, the scalar numeric entries containing the name whose leaf suggests the role (at most 10 each, with `candidate_counts` when there are more):
+**Candidates:** with `mechanism_name`, `candidates` lists, per role, the scalar numeric entries that contain the name and whose leaf suggests the role (at most 10 each, with `candidate_counts` when there are more):
 - setpoint: `setpoint`, `goal`, `target`, `reference`, `desired`, `commanded`
 - temperature: `temp`, `temperature`, `celsius`
 - current: the amperage rule `power_analysis` uses
@@ -1588,7 +1585,7 @@ Analyze every autonomous period in the log: when it started and ended, which rou
 
 **How it works:**
 - Autonomous periods are the enabled `auto` segments of the same DriverStation timeline `get_match_phases` reports (a log can hold several; all are listed in `auto_periods`, and the top-level `auto_*` fields describe the first).
-- Selected routine: the value, at each period's start, of the `auto_chooser` role ([The server does not guess](#the-server-does-not-guess)). That is `chooser_entry` when given, else the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry (its sibling `.type` is `String Chooser`, or it has `options`) or an AdvantageKit dashboard input (`/NetworkInputs/SmartDashboard/<key>`, or `/DashboardInputs/...`). With no such chooser, or more than one, nothing is chosen. The choosers and the string entries named like a selected auto mode (`auto` with `selected`, `mode`, `routine`, or `choice`, or `chooser`, e.g. `/RealOutputs/AutoSelector/SelectedAutoMode`) are listed in `skipped` as candidates to confirm and pass as `chooser_entry`. Chooser metadata (`.type`, `default`, `options`) is never read as the selection.
+- Selected routine: the value, at each period's start, of the `auto_chooser` role ([The server does not guess](#the-server-does-not-guess)). That is `chooser_entry` when given, else the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry (its sibling `.type` is `String Chooser`, or it has `options`) or an AdvantageKit dashboard input (`/NetworkInputs/SmartDashboard/<key>`, or `/DashboardInputs/...`). With no such chooser, or more than one, nothing is chosen. The choosers and the string entries named like a selected auto mode (a name containing `auto` together with `selected`, `mode`, `routine`, `choice`, or `chooser`; e.g. `/RealOutputs/AutoSelector/SelectedAutoMode`) are listed in `skipped` as candidates to confirm and pass as `chooser_entry`. Chooser metadata (`.type`, `default`, `options`) is never read as the selection.
 - Path following: the `path_setpoint` and `path_actual` roles, chosen among `struct:Pose2d`/`struct:Pose3d` entries with at least two samples (under `auto_prefix` when given). Setpoint: `path_setpoint_entry`, else `PathPlanner/targetPose` or AdvantageKit `Odometry/TrajectorySetpoint`; other poses named like a setpoint (`setpoint`, `target`, `desired`) are candidates listed in `skipped`, not used. Actual: `path_actual_entry`, else `PathPlanner/currentPose`, else the robot pose as `resolve_signals` chooses it (the `robot_pose` role). The result is the RMSE and maximum distance between them, sampled at each setpoint time with the actual pose held (zero-order hold). Samples whose pose layout cannot be read are counted in `unreadable_samples`, never treated as zero error.
 
 **Returns:** `auto_periods[]` (`start`, `end`, `duration`, `end_reason`, `selected_routine`, `path_following_error` with `rmse_meters`, `max_error_meters`, `samples`), `auto_start_time`/`auto_end_time`/`auto_duration`/`selected_routine`/`path_following_error` for the first period, `expected_auto_sec` (season timing), `inputs.entries` (DriverStation, chooser, and pose entries used), and `skipped` entries for sections that could not be produced (status `partial`).
@@ -1658,7 +1655,7 @@ Returns `no_match`, listing the states seen (up to 10), when `cycle_start_state`
 - States that match none of `cycle_start_state`, `cycle_end_state`, and `idle_state` (listed when there are at most 5), which may mean unexpected behavior or a typo in a state name
 - Incomplete cycles, which should be left out of statistics
 
-**Example 1: start_to_end**
+**Example request (start_to_end)**
 ```json
 {
   "state_entry": "/Superstructure/State",
@@ -1673,7 +1670,7 @@ Returns `no_match`, listing the states seen (up to 10), when `cycle_start_state`
 }
 ```
 
-**Example 2: start_to_start**
+**Example request (start_to_start)**
 ```json
 {
   "state_entry": "/Intake/State",
@@ -1759,10 +1756,10 @@ Validate AdvantageKit deterministic replay. Run it on a replay output log (the `
 }
 ```
 
-When replay outputs don't match real outputs, the entries that diverge first usually lead to the non-deterministic code. Common causes are `Timer.getFPGATimestamp()`, `Math.random()`, network data, and sensor reads outside AdvantageKit inputs.
+When replay outputs do not match real outputs, the entries that diverge first usually lead to the non-deterministic code. Common causes are `Timer.getFPGATimestamp()`, `Math.random()`, network data, and sensor reads outside AdvantageKit inputs.
 
 ### `predict_battery_health`
-Battery and power-delivery evidence, with a heuristic health score and risk level. The facts come first, and the score summarizes them. The score is kept by design, as a trade-off for decisions in the pit at competition, and the facts it summarizes are reported beside it.
+Battery and power-delivery evidence, with a heuristic health score and risk level. The facts come first; the score, kept by design for decisions in the pit at competition, summarizes them and is reported beside them.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1846,7 +1843,7 @@ How often robot code exceeded the loop period, and the distribution of loop time
 
 **Status:** `no_match` when the log has no loop timing; `overrun_messages` then counts WPILib's "loop overrun" console messages, which `search_strings` lists.
 
-**Example Response** (the review log, `scope: "enabled"`, `threshold_ms: 25`):
+**Example Response** (the robustness review's log, `scope: "enabled"`, `threshold_ms: 25`):
 ```json
 {
   "success": true,
@@ -1943,7 +1940,7 @@ Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return 
 
 **Export directory:** `{java.io.tmpdir}/wpilog-export` by default, or `-exportdir`, the `WPILOG_EXPORT_DIR` environment variable, or `exportdir` in the server config. Every file result names it (`export_directory`), and so does the error for a refused path. Symlinks cannot escape it.
 
-**Columns:** every value is flattened. A scalar is one `value` column. A struct is one column per field, with nested fields as dot paths (`translation.x`), array fields as `field[i]`, and an enum field as two columns, `field` (the number) and `field.label`, sorted by name. A struct array or primitive array is one row per element with an `index` column. Header and rows always align.
+**Columns:** every value is flattened. A scalar is one `value` column. A struct is one column per field, sorted by name, with nested fields as dot paths (`translation.x`), array fields as `field[i]`, and an enum field as two columns, `field` (the number) and `field.label`. A struct array or primitive array is one row per element with an `index` column. Header and rows always align.
 
 **Returns:** `entry`, `type`, `columns`, `rows_exported`, and either `output_path` (absolute) and `export_directory`, or (inline) `rows` with `limits.rows` (total vs returned; `rows_exported` is then the rows returned).
 
@@ -2012,7 +2009,7 @@ Sections that cannot be produced are listed in `skipped` (status `partial`); an 
 
 ## TBA Tools
 
-These tools need a The Blue Alliance API key (the hint in each result says how to set one).
+These tools need an API key for The Blue Alliance (the hint in each result says how to set one).
 
 ### TBA enrichment
 
@@ -2063,7 +2060,7 @@ Whether The Blue Alliance API is configured and the key works, with cache statis
 ### `get_tba_match_data`
 Query match scores and detailed results directly from The Blue Alliance. **Use this tool to answer questions about match outcomes**; the telemetry does not record the score.
 
-**Use Cases:**
+**When to use it:**
 - "What was our score?"
 - "Did we win?"
 - "How many autonomous points did we score?"
@@ -2071,7 +2068,7 @@ Query match scores and detailed results directly from The Blue Alliance. **Use t
 
 **Parameters:**
 - `year` (required): Competition year (e.g., 2024, 2025, 2026)
-- `event_code` (required): TBA event code (e.g., "caph" for Poway, "cmptx" for Houston Championship), in any case. It is TBA's code, not necessarily the abbreviation in a log's file name; thebluealliance.com/events/{year} lists them
+- `event_code` (required): TBA event code (e.g., "caph" for Poway, "cmptx" for Houston Championship), in upper or lower case. It is TBA's code, not necessarily the abbreviation in a log's file name; thebluealliance.com/events/{year} lists them
 - `match_type` (required): `Qualification`, `Quarterfinal`, `Semifinal`, `Final`, or `Elimination` (the names `list_available_logs` reports), or TBA's codes `qm` (or `q`), `qf`, `sf`, `f`. "Elimination" N, as the Driver Station names playoff matches, is read as double-elimination bracket match N (TBA's `sfNm1`) for 2023 and later. The finals carry no bracket number, so query them as `f` with the finals match number. Before 2023, with `team_number`, Elimination N is read as playoff match number N in the order the team played (a heuristic, `lookup_method: play_order`)
 - `match_number` (required): Match number within the type (1-indexed)
 - `team_number` (optional): Your team number, to mark your alliance
@@ -2152,19 +2149,19 @@ REV log (`.revlog`) files hold CAN status frames from SPARK MAX and SPARK Flex m
 
 REV logs are found by recording time in the configured log directory that holds the wpilog and in the wpilog's own folder, each down to the scan depth (5 levels by default). Other configured directories are not searched, so another team's REV logs from the same event are never matched to yours. Sync results are cached on disk, so loading the same wpilog and REV logs again skips both parsing and correlation. When no REV log was found, every revlog tool returns `status: not_applicable` with the same `reason`. While synchronization is still running, the reason says so and the `hint` points to `wait_for_sync`.
 
-### How Timestamp Synchronization Works
+### How timestamp synchronization works
 
-`.wpilog` files timestamp data on the **roboRIO's FPGA clock**, while `.revlog` files timestamp each CAN frame in milliseconds on the clock of whatever recorded them: robot code (REVLib's status logger, 2026 and later) on the roboRIO, or a laptop running the REV Hardware Client. In the robot-code REV logs we have tested, the two clocks agreed within about 20 ms, but the server does not assume it: it estimates the offset and then measures it.
+`.wpilog` files timestamp data on the **roboRIO's FPGA clock**, while `.revlog` files timestamp each CAN frame in milliseconds on the clock of whatever recorded them: robot code (REVLib's status logger, 2026 and later) on the roboRIO, or a laptop running the REV Hardware Client. In the robot-code REV logs tested so far, the two clocks agreed within about 20 ms, but the server does not assume it: it estimates the offset and then measures it.
 
 Synchronization has two phases:
 
-#### Phase 1: Coarse Alignment (seconds-level accuracy)
+#### Phase 1: coarse alignment (seconds)
 
-The wpilog's wall-clock entry (WPILib's `systemTime` or AdvantageKit's `/SystemStats/EpochTimeMicros`) maps FPGA timestamps to UTC. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog`) in the zone of the clock that named it: the roboRIO names files in UTC unless a team changes its zone, and a desktop running simulation names them in its local zone. The server reads REV log names in the zone the wpilog's own filename shows against its wall clock (the same clock is taken to have named both), or in UTC when the wpilog's name carries no time. `sync_status` reports this as `revlog_filename_zone`. The same zone decides which REV logs belong to a wpilog.
+The wpilog's wall-clock entry (WPILib's `systemTime` or AdvantageKit's `/SystemStats/EpochTimeMicros`) maps FPGA timestamps to UTC. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog`) in the zone of the clock that named it: the roboRIO names files in UTC unless a team changes its zone, and a desktop running simulation names them in its local zone. The server reads REV log names in the zone that the wpilog's own file name reveals when compared with its wall-clock entry (the same clock is taken to have named both), or in UTC when the wpilog's name carries no time. `sync_status` reports this as `revlog_filename_zone`. The same zone decides which REV logs belong to a wpilog.
 
-Only the clock as set counts. Until the Driver Station sets it, a roboRIO's clock reads 1970 or a fixed default date (2024-12-18 in real logs) that every boot shares. So the server uses the readings after the clock was set, and matches REV logs to a wpilog by time only when its clock is known to have been set: it was set during the log, or the log's filename time agrees with it (AdvantageKit and DataLogManager name a log with its time once the clock is set). A log whose clock reads one date throughout under a placeholder name such as `akit_cfb6568c35d66529.wpilog` gets no REV logs, and the revlog tools say why. REV logs are candidates when their name's time falls within 5 minutes of the log (30 minutes when only file modification times are available). A candidate that, once synchronized, neither correlates with the log nor overlaps it (recorded in the session before or after) is not attached. The estimate is only as good as the roboRIO's clock when the file was named: in a real 2026 log the REV log's name was 15 s earlier than its first frame. Without a wall-clock entry there is no estimate, and the search is centered on an offset of 0.
+Only readings taken after the clock was set count. Until the Driver Station sets it, a roboRIO's clock reads 1970 or a fixed default date (2024-12-18 in real logs) that every boot shares. So the server uses the readings after the clock was set, and matches REV logs to a wpilog by time only when the wpilog's clock is known to have been set: either the log records the clock being set, or the time in the log's file name agrees with the clock (AdvantageKit and DataLogManager name a log with its time once the clock is set). A log whose clock reads one date throughout under a placeholder name such as `akit_cfb6568c35d66529.wpilog` gets no REV logs, and the revlog tools say why. REV logs are candidates when their name's time falls within 5 minutes of the log (30 minutes when only file modification times are available). A candidate that, once synchronized, neither correlates with the log nor overlaps it (recorded in the session before or after) is not attached. The estimate is only as good as the roboRIO's clock when the file was named: in a real 2026 log the REV log's name was 15 s earlier than its first frame. Without a wall-clock entry there is no estimate, and the search is centered on an offset of 0.
 
-#### Phase 2: Fine Alignment via Cross-Correlation (millisecond accuracy)
+#### Phase 2: fine alignment by cross-correlation (milliseconds)
 
 Both logs record overlapping physical quantities. For example, the robot code logs a motor's applied output to the wpilog, and the SPARK independently records its applied output in the revlog: the same signal seen through two clocks.
 
@@ -2173,9 +2170,9 @@ The algorithm:
 2. Resampling. Both signals are resampled to a uniform 100 Hz rate by linear interpolation. A long recording is trimmed to its highest-variance window, which matters when a log starts with minutes of the robot disabled.
 3. Cross-correlation (at least 10 s of overlapping data; a peak in a few seconds is not evidence). For each candidate pair, the [Pearson correlation coefficient](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient) is computed at every integer sample lag within ±60 s of the coarse estimate. Pearson correlation ignores scale and DC offset, so duty cycle can be compared against voltage or velocity.
 4. Sub-sample refinement. Parabolic interpolation on the correlation peak refines the offset below one 10 ms sample.
-5. Consensus. Among the strong pairs (correlation > 0.7, else > 0.5), the group whose offsets agree within 50 ms with the most correlation behind it gives the estimate (its median). Pairs that correlate at a contradictory offset are set aside and named in the explanation, not averaged in. Confidence is scored from average correlation (0–0.4), the number of agreeing pairs (0–0.3), and their offset standard deviation (0–0.3), and the level never claims more agreement than the pairs show (below).
+5. Consensus. Among the strong pairs (correlation > 0.7, else > 0.5), of the groups of pairs whose offsets agree within 50 ms, the one with the most correlation behind it gives the estimate (its median). Pairs that correlate at a contradictory offset are set aside and named in the explanation, not averaged in. Confidence is scored from average correlation (0–0.4), the number of agreeing pairs (0–0.3), and their offset standard deviation (0–0.3), and the level never claims more agreement than the pairs show (below).
 
-#### Clock Drift Compensation (for recordings > 15 minutes)
+#### Clock drift compensation (recordings over 15 minutes)
 
 Over a long recording the two clocks may drift apart, typically 10–50 ms per hour, even when both run on the same roboRIO. The synchronizer splits the signal into halves, computes an offset for each, and fits a linear drift rate (nanoseconds per second). An estimate above 1,000,000 ns/s (1000 ppm) is rejected as implausible, and one below 1 ns/s is ignored. When drift is detected, all timestamp conversions apply a correction:
 
@@ -2185,9 +2182,9 @@ fpga_time = revlog_time + offset + (revlog_time − reference_time) × drift_rat
 
 `sync_status` reports the drift rate when one is detected.
 
-### Confidence Levels
+### Confidence levels
 
-| Confidence Level | Estimated Accuracy | How It's Determined |
+| Confidence level | Estimated accuracy | How it is determined |
 |-----------------|-------------------|---------------------|
 | **HIGH** | 1–5 ms | Two or more pairs whose offsets have a standard deviation of 5 ms or less, with strong correlation |
 | **MEDIUM** | 5–50 ms | Pairs agree within 50 ms, or a single strong pair (nothing to check it against) |
@@ -2196,20 +2193,48 @@ fpga_time = revlog_time + offset + (revlog_time − reference_time) × drift_rat
 
 The explanation gives the used pairs' offset range and standard deviation.
 
-**Always check `sync_confidence` before using REV log data for precise timing analysis.** If automatic synchronization produces poor results, use `set_revlog_offset` to provide a known-good offset manually.
+Check `sync_confidence` before using REV log data for precise timing; `set_revlog_offset` replaces a poor automatic result.
 
 ### Limitations
 
-- Correlation needs a signal that varies in both logs at the same time. Flat or disabled-only data lowers the confidence, and so can a short log or steady running.
+- Correlation needs a signal that varies in both logs at the same time. Flat or disabled-only data lowers the confidence; so does a short log or steady running.
 - A REV log named by another clock (the REV Hardware Client names files in the laptop's local time) may be missed or misaligned. `set_revlog_offset` corrects the offset of one that was found.
 
-### Binary Parsing Robustness
+### Binary parsing robustness
 
 The revlog parser guards against corrupt or truncated files:
 - It stops after 10 million records, so a corrupt file cannot exhaust memory
 - A corrupt record is skipped without aborting the parse
 - Records with negative timestamps are discarded
 - CAN frames shorter than 8 bytes are skipped
+
+### REV signals and device keys
+
+**Available Signals** (SPARK firmware 25 and later, whose status frames REVLib 2026 records; layouts from REV's published SPARK frame specification, spark-frames 2.1.0). A signal appears when its frame was logged; REVLib enables the frames a program reads.
+- Status 0 (10 ms): `AppliedOutput` (duty cycle, −1 to 1), `BusVoltage` (V), `OutputCurrent` (A), `MotorTemperature` (°C), `HardForwardLimitReached`, `HardReverseLimitReached`, `SoftForwardLimitReached`, `SoftReverseLimitReached`, `IsInverted`, `PrimaryHeartbeatLock` (0/1)
+- Status 1 (250 ms), each 0/1: faults `OtherFault`, `MotorTypeFault`, `SensorFault`, `CanFault`, `TemperatureFault`, `DrvFault`, `EscEepromFault`, `FirmwareFault`; warnings `BrownoutWarning`, `OvercurrentWarning`, `EscEepromWarning`, `ExtEepromWarning`, `SensorWarning`, `StallWarning`, `HasResetWarning`, `OtherWarning`; the sticky version of each (`OtherStickyFault`, ..., `BrownoutStickyWarning`, ...); `IsFollower`
+- Status 2: `Velocity`, `Position` (primary encoder; RPM and rotations unless a conversion factor is configured, which the unit says)
+- Status 3: `AnalogVoltage` (V), `AnalogVelocity`, `AnalogPosition`; status 4: `ExternalEncoderVelocity`, `ExternalEncoderPosition` (the alternate encoder on a SPARK MAX); status 5: `DutyCycleEncoderVelocity`, `DutyCycleEncoderPosition`; status 6: `UnadjustedDutyCycle` (0–1), `DutyCyclePeriod` (µs), `DutyCycleNoSignal`; status 7: `IAccum`; status 8: `Setpoint`, `IsAtSetpoint`, `SelectedPidSlot`; status 9: `MaxMotionPositionSetpoint`, `MaxMotionVelocitySetpoint`
+
+Device keys are `SparkMax_<CAN id>` or `SparkFlex_<CAN id>` by the model the SPARK's status 0 frames report (the `SparkModel` signal: 1 = Flex, 2 = MAX, the codes of REVLib's `SparkModel`), or `Spark_<CAN id>` when no frame carried the field (device type 2 in the CAN ID covers both models). A REV log named `REV_YYYYMMDD_HHMMSS_<bus>.revlog` is reported under that bus name; one without a suffix is `rio` (then `can1`, `can2`, ...). Firmware 25+ also sends the legacy status 0 frame once a second for old followers, with zero output and every fault set; it carries no data and is not decoded.
+
+A custom DBC file replaces the built-in signal definitions: `rev_spark.dbc` in `~/Library/Application Support/wpilog-mcp/` (macOS), `%APPDATA%\wpilog-mcp\` (Windows), or `~/.config/wpilog-mcp/` (Linux), or a file named by the `WPILOG_REV_DBC` environment variable. Keep the built-in signal names so synchronization still finds its candidate pairs.
+
+### Troubleshooting low confidence
+
+1. Make sure the wpilog and the revlog were recorded over the same period
+2. Check that matching signals exist in both (e.g., motor outputs logged in the wpilog)
+3. If sync fails, check that the motor controllers were connected and reporting data
+4. If you know the offset, set it with `set_revlog_offset`
+
+### Example workflow
+
+```
+1. sync_status(path="/logs/match.wpilog")    # Check sync confidence (loads the log)
+2. list_revlog_signals(path="/logs/match.wpilog")  # See available signals
+3. get_revlog_data(path="/logs/match.wpilog", signal_key="REV/SparkMax_1/AppliedOutput", start_time=15.0, end_time=30.0)
+4. compare with read_entry(path="/logs/match.wpilog", name="/drive/frontLeft/output", start_time=15.0, end_time=30.0)
+```
 
 ### `list_revlog_signals`
 List the signals in the wpilog's REV logs, with device, unit, sample count, and synchronization status. Returns `not_applicable`, listing the buses for `set_revlog_offset`, when no REV log could be synchronized, and `no_match` when the filters match no signal.
@@ -2264,18 +2289,14 @@ List the signals in the wpilog's REV logs, with device, unit, sample count, and 
 }
 ```
 
-**Available Signals** (SPARK firmware 25 and later, whose status frames REVLib 2026 records; layouts from REV's published SPARK frame specification, spark-frames 2.1.0). A signal appears when its frame was logged; REVLib enables the frames a program reads.
-- Status 0 (10 ms): `AppliedOutput` (duty cycle, −1 to 1), `BusVoltage` (V), `OutputCurrent` (A), `MotorTemperature` (°C), `HardForwardLimitReached`, `HardReverseLimitReached`, `SoftForwardLimitReached`, `SoftReverseLimitReached`, `IsInverted`, `PrimaryHeartbeatLock` (0/1)
-- Status 1 (250 ms), each 0/1: faults `OtherFault`, `MotorTypeFault`, `SensorFault`, `CanFault`, `TemperatureFault`, `DrvFault`, `EscEepromFault`, `FirmwareFault`; warnings `BrownoutWarning`, `OvercurrentWarning`, `EscEepromWarning`, `ExtEepromWarning`, `SensorWarning`, `StallWarning`, `HasResetWarning`, `OtherWarning`; the sticky version of each (`OtherStickyFault`, ..., `BrownoutStickyWarning`, ...); `IsFollower`
-- Status 2: `Velocity`, `Position` (primary encoder; RPM and rotations unless a conversion factor is configured, which the unit says)
-- Status 3: `AnalogVoltage` (V), `AnalogVelocity`, `AnalogPosition`; status 4: `ExternalEncoderVelocity`, `ExternalEncoderPosition` (the alternate encoder on a SPARK MAX); status 5: `DutyCycleEncoderVelocity`, `DutyCycleEncoderPosition`; status 6: `UnadjustedDutyCycle` (0–1), `DutyCyclePeriod` (µs), `DutyCycleNoSignal`; status 7: `IAccum`; status 8: `Setpoint`, `IsAtSetpoint`, `SelectedPidSlot`; status 9: `MaxMotionPositionSetpoint`, `MaxMotionVelocitySetpoint`
-
-Device keys are `SparkMax_<CAN id>` or `SparkFlex_<CAN id>` by the model the SPARK's status 0 frames report (the `SparkModel` signal: 1 = Flex, 2 = MAX, the codes of REVLib's `SparkModel`), or `Spark_<CAN id>` when no frame carried the field (device type 2 in the CAN ID covers both models). A REV log named `REV_YYYYMMDD_HHMMSS_<bus>.revlog` is reported under that bus name; one without a suffix is `rio` (then `can1`, `can2`, ...). Firmware 25+ also sends the legacy status 0 frame once a second for old followers, with zero output and every fault set; it carries no data and is not decoded.
-
-A custom DBC file replaces the built-in signal definitions: `rev_spark.dbc` in `~/Library/Application Support/wpilog-mcp/` (macOS), `%APPDATA%\wpilog-mcp\` (Windows), or `~/.config/wpilog-mcp/` (Linux), or a file named by the `WPILOG_REV_DBC` environment variable. Keep the built-in signal names so synchronization still finds its candidate pairs.
-
 ### `get_revlog_data`
 Read a REV log signal with its timestamps converted to FPGA time, like `read_entry` for REV motor controller data. A signal whose REV log could not be synchronized returns `not_applicable` until `set_revlog_offset` provides an offset, because its timestamps are on the REV log's own clock. An unknown key is an error.
+
+**When to use it:**
+- Compare a motor's commanded output (wpilog) with its applied output (revlog)
+- Look at motor velocity and position response
+- Check PID tuning against the motor controller's own data
+- Debug motor controller communication issues
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2314,12 +2335,6 @@ Read a REV log signal with its timestamps converted to FPGA time, like `read_ent
   }
 }
 ```
-
-**Use cases:**
-- Compare a motor's commanded output (wpilog) with its applied output (revlog)
-- Look at motor velocity and position response
-- Check PID tuning against the motor controller's own data
-- Debug motor controller communication issues
 
 ### `sync_status`
 Synchronization status for each REV log of the wpilog: confidence, offset, drift, and optionally the signal pairs used.
@@ -2382,22 +2397,14 @@ Synchronization status for each REV log of the wpilog: confidence, offset, drift
 - `USER_PROVIDED`: an offset set with `set_revlog_offset`
 - `FAILED`: no synchronization could be established
 
-**Troubleshooting low confidence:**
-1. Make sure the wpilog and the revlog were recorded over the same period
-2. Check that matching signals exist in both (e.g., motor outputs logged in the wpilog)
-3. If sync fails, check that the motor controllers were connected and reporting data
-4. If you know the offset, set it with `set_revlog_offset`
-
-**Example workflow:**
-```
-1. sync_status(path="/logs/match.wpilog")    # Check sync confidence (loads the log)
-2. list_revlog_signals(path="/logs/match.wpilog")  # See available signals
-3. get_revlog_data(path="/logs/match.wpilog", signal_key="REV/SparkMax_1/AppliedOutput", start_time=15.0, end_time=30.0)
-4. compare with read_entry(path="/logs/match.wpilog", name="/drive/frontLeft/output", start_time=15.0, end_time=30.0)
-```
-
 ### `set_revlog_offset`
 Set the synchronization offset for one REV log by hand, replacing the automatic result. Use it when automatic sync fails or is wrong, or when you know the offset another way (e.g., by aligning a distinctive event in both logs). `offset_ms` is required: omitting it is an error and leaves the synchronization unchanged.
+
+**When to use it:**
+- Automatic synchronization reports LOW or FAILED confidence
+- You know the offset from a distinctive event visible in both logs (e.g., a motor stall, a sudden stop)
+- The automatic offset leaves corresponding wpilog and revlog signals visibly misaligned
+- The recording started with the robot disabled for a long time and correlation was poor
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2420,14 +2427,12 @@ Set the synchronization offset for one REV log by hand, replacing the automatic 
 }
 ```
 
-**When to use it:**
-- Automatic synchronization reports LOW or FAILED confidence
-- You know the offset from a distinctive event visible in both logs (e.g., a motor stall, a sudden stop)
-- The automatic offset leaves corresponding wpilog and revlog signals visibly misaligned
-- The recording started with the robot disabled for a long time and correlation was poor
-
 ### `wait_for_sync`
 Wait for background REV log synchronization to finish. Synchronization runs in the background after a log is first loaded, so revlog data may not be available at once. Returns immediately if sync is already done, and `not_applicable` when the wpilog has no REV logs.
+
+**When to use it:**
+- After loading a log, when you need revlog signals right away
+- When `sync_status` shows `sync_in_progress: true`, or a revlog tool's reason says synchronization is still running
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2446,10 +2451,6 @@ Wait for background REV log synchronization to finish. Synchronization runs in t
   "synchronized": true
 }
 ```
-
-**When to use it:**
-- After loading a log, when you need revlog signals right away
-- When `sync_status` shows `sync_in_progress: true`, or a revlog tool's reason says synchronization is still running
 
 ---
 
@@ -2486,8 +2487,8 @@ When a log records no schema for a struct type, WPILib's own schema is used for 
 
 Besides the guidance in each tool's description, the server gives the agent general reasoning guidance in two places:
 
-- **MCP `instructions`**: returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a short, ordered checklist, kept under 2 KB because Claude Code truncates longer instructions: answer the question asked first; never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems; an entry's name does not prove what it measures, so read the robot source code that logs it (which mechanism, which units, measured or commanded) or call the mapping an assumption; never compute statistics by hand (when no tool can read the data, `export_csv` it and compute outside) and call `get_match_phases` before reasoning about time; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis to check physically); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; truncated logs, revlog sync, and TBA-sourced scores.
-- **`get_server_guide` → `analysis_principles`**: the long form, returned as a tool result so it reaches the model in every client. The tool's `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}` so Claude Code keeps its description in context even when other MCP tools are deferred.
+- **MCP `instructions`**: returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a short, ordered checklist, kept under 2 KB because Claude Code truncates longer instructions: answer the question asked first; never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems; an entry's name does not prove what it measures, so read the robot source code that logs it (which mechanism, which units, measured or commanded) or call the mapping an assumption; never compute statistics by hand (when no tool can read the data, `export_csv` it and compute outside) and call `get_match_phases` before reasoning about time; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis to check physically); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; and notes on truncated logs, revlog sync, and TBA-sourced scores.
+- **`get_server_guide` → `analysis_principles`**: the long form, returned as a tool result so it reaches the model in every client. Its `tools/list` entry is marked always-loaded (see `get_server_guide`).
 
 Both come from one place in the code. Tests check that every tool name they mention exists and that the instructions stay under the size limit.
 
@@ -2497,7 +2498,7 @@ These are not tools. They are fields in tool results that help an agent judge ho
 
 ### Result contract (`success`, `status`, and related fields)
 
-The server normalizes every tool result, however the tool built it, so that:
+The server normalizes every tool result, however the tool built it, so these fields mean the same in every result:
 
 | Field | Meaning |
 |-------|---------|
@@ -2540,7 +2541,7 @@ Tools that report discrete events, counts, or catalog data carry none, because a
 | `max_gap_ms` | Longest of them, in milliseconds (only present if gaps > 0) |
 | `nan_filtered` | Count of NaN/Infinity values (only present if > 0) |
 | `effective_sample_rate_hz` | One over the median interval |
-| `quality_score` | Composite score 0.0-1.0 (see below) |
+| `quality_score` | Composite score 0.0–1.0 (see below) |
 | `reasons` | One line per penalty, e.g. `"28.0% of the time span is in 530 gaps longer than 5x the median interval (longest 85468 ms)"` (only present when the score is below 1) |
 
 **Quality score** (each penalty listed in `reasons`):
@@ -2552,7 +2553,7 @@ score = 1.0
   - 0.3 if fewer than 100 finite samples, 0.15 if fewer than 500
 (0 when no value is finite)
 ```
-Long intervals weigh by the time they cover, not their number: a full-match 50 Hz series with a few hundred loop stalls scores about 0.9. For a `change_only` series they are holds, not missing data, but statistics weigh samples, not time, so a series that sat unchanged for a quarter of the match still reads `medium`. Event series are not penalized for irregular timing.
+Long intervals are weighed by the time they cover, not by their number: a full-match 50 Hz series with a few hundred loop stalls scores about 0.9. For a `change_only` series they are holds, not missing data, but statistics weigh samples, not time, so a series that sat unchanged for a quarter of the match still reads `medium`. Event series are not penalized for irregular timing.
 
 **Confidence levels** derived from the quality score:
 - `"high"` (> 0.8, and at most 10% of the time span in long intervals, except for event series): reliable data; results can be stated with confidence

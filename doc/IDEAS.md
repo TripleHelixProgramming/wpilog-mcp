@@ -1,6 +1,6 @@
 # Future Enhancement Ideas
 
-Ideas for future versions of wpilog-mcp, grouped by theme and roughly prioritized within each section. Where part of an idea already exists, the section says so.
+Ideas for future versions of wpilog-mcp, grouped by theme and roughly prioritized within each section. Where part of an idea already exists, the section says so. Section numbers are kept when an idea is completed or dropped, so the code and the robustness documents can refer to them; the gaps are expected.
 
 ---
 
@@ -9,7 +9,7 @@ Ideas for future versions of wpilog-mcp, grouped by theme and roughly prioritize
 ### 1.6 FFT-Based Cross-Correlation
 Priority: Low. Complexity: High.
 
-Revlog sync searches lags by brute force: for each lag in a ±60 s window (12,001 lags at 100 Hz) it computes a full Pearson correlation over the overlap. An FFT-based normalized cross-correlation would be O(n log n), with prefix sums for each lag's local mean and variance.
+REV log sync searches lags by brute force: for each lag in a ±60 s window (12,001 lags at 100 Hz) it computes a full Pearson correlation over the overlap. An FFT-based normalized cross-correlation would be O(n log n), with prefix sums for each lag's local mean and variance.
 
 The cost is bounded today. A signal longer than 600 s at 100 Hz is trimmed to its highest-variance window, a coarse pass at a tenth of the rate ranks the candidate pairs, and at most five pairs are refined at full rate. FFT would pay off if that 600 s budget were raised or the search window widened. Short signals should keep the sliding window, where FFT overhead is not worth it.
 
@@ -20,7 +20,7 @@ The cost is bounded today. A signal longer than 600 s at 100 Hz is trimmed to it
 ### 2.2 Multi-Log Temporal Alignment
 Priority: Low. Complexity: High.
 
-Align several logs from the same event, such as practice runs, on a common time base, to compare autonomous attempts, track mechanism tuning, or find intermittent issues.
+Align several logs from the same event (the practice runs, say) on a common time base, to compare autonomous attempts, track mechanism tuning, or find intermittent issues.
 
 Today `compare_matches` compares one signal's statistics across two logs, each on its own clock. The only alignment between files is REV log to wpilog sync.
 
@@ -48,12 +48,12 @@ Report how a match used the battery:
 - Peak power events
 - Regenerative braking
 
-Nothing integrates power today. `power_analysis` reports each channel's peak, minimum, maximum, and average current.
+Nothing integrates power today. `power_analysis` reports each channel's minimum, maximum, and average current, with the times of the extremes.
 
 ### 3.4 CAN Bus Diagnostics
 Priority: Medium. Complexity: Medium.
 
-Partly done. `can_health` splits CAN error lines by the robot's enabled state and reads the bus counters. `analyze_can_bus` reports, per bus, utilization, TEC and REC levels with error-passive excursions, and bus-off and TX-full counts, overall and while enabled. It also counts increases in other entries named with CAN and error, fault, or timeout.
+Partly done. `can_health` splits CAN error lines by the robot's enabled state and reads the bus counters. `analyze_can_bus` reports, per bus, utilization, TEC and REC levels with error-passive excursions, and bus-off and TX-full counts, overall and while enabled. It also counts increases in any other entry whose name contains CAN together with error, fault, or timeout.
 
 Remaining:
 - Identify noisy devices by error rate (console text is not parsed for device IDs)
@@ -80,7 +80,7 @@ Priority: High. Complexity: Medium.
 
 Read PathPlanner `.path` and Choreo `.traj` files and compare the planned path with what the robot did, overlaying the two and marking problem segments.
 
-Following error from logged poses already exists. `analyze_auto` reports `path_following_error` between the logged setpoint and actual poses (`path_setpoint_entry`, `path_actual_entry`), and `compare_poses` gives the distance and the along-track and cross-track error between any two pose streams, with the times of the largest errors. What remains is reading the path files themselves.
+Following error from logged poses already exists. `analyze_auto` reports `path_following_error` between the logged setpoint and actual poses (`path_setpoint_entry`, `path_actual_entry`), and `compare_poses` gives, for any two pose streams, their distance, their along-track and cross-track error, and the times of the largest errors. What remains is reading the path files themselves.
 
 ### 4.2 AdvantageScope Integration
 Priority: Medium. Complexity: Medium.
@@ -91,7 +91,7 @@ Hand analysis results to AdvantageScope for visualization.
 
 Generate AdvantageScope layout files (`.json`) that set up the views an analysis calls for.
 
-Layout file structure (reverse-engineered from AdvantageScope source):
+Layout file structure (reverse-engineered from the AdvantageScope source):
 ```json
 {
   "version": "26.0.0",
@@ -139,15 +139,12 @@ Capabilities that would need an AdvantageScope feature request or pull request:
 - `POST /seek?timestamp=12345`: go to a timestamp
 - `POST /highlight?entry=/Power/Voltage&start=100&end=200`: highlight a time range
 
-Until then, a file-based handoff works:
-1. Write the layout to `~/.wpilog-mcp/advantagescope-layout.json`
-2. Launch AdvantageScope with the log file
-3. Tell the user to import the layout with **File > Import Layout**
+Until then, the file-based handoff of §4.2.1 and §4.2.2 works: write the layout (say, to `~/.wpilog-mcp/advantagescope-layout.json`), launch AdvantageScope with the log file, and tell the user to import the layout.
 
 #### 4.2.4 Data Export Formats
 
 Export analysis results in formats AdvantageScope can open:
-- MCAP: native AdvantageScope format, includes metadata
+- MCAP, AdvantageScope's native format, with metadata
 - An annotated wpilog: the original log with analysis markers as new entries
 - JSON, for web-based visualization or other tools
 
@@ -184,7 +181,7 @@ Priority: Medium. Complexity: Low (the LLM does most of the work).
 
 Make tool descriptions and errors easier for an LLM to act on.
 
-Partly done. Every result has a `status` (`ok`, `partial`, `not_applicable`, `no_match`, or `error`), with a `reason`, `looked_for`, and a `hint` where they apply, and a misspelled entry or tool name gets suggestions.
+Partly done. Every result has a `status` (`ok`, `partial`, `not_applicable`, `no_match`, or `error`), with `reason`, `looked_for`, and `hint` where they apply; a misspelled entry or tool name gets suggestions.
 
 Remaining:
 - Machine-readable codes on errors (an `error` result carries only a message)
@@ -197,7 +194,7 @@ Priority: Medium. Complexity: Medium.
 
 `generate_report` returns a JSON summary. This idea is a human-readable report built from the analysis:
 - Formats: Markdown, HTML with embedded charts, or PDF for printing
-- Content: a summary (match outcome, key issues), findings by category, and recommendations ranked by impact, worded as evidence the way the tools word their results
+- Content: a summary (match outcome, key issues), findings by category, and recommendations ranked by impact; all of it worded as evidence, as the tools word their results
 
 ### 5.4 Batch Tool Execution
 Priority: Medium. Complexity: Low.
@@ -207,8 +204,8 @@ Accept a list of tool calls and return all the results in one response, to save 
 Design:
 - A new tool (say, `run_workflow`) takes an ordered list of `{tool, arguments}` pairs
 - Results come back as an array in the same order
-- The first error stops the run, and the results so far are returned
-- It complements §5.1 (Analysis Presets) but is more flexible
+- The first error stops the run and returns the results so far
+- It complements §5.1 (Analysis Presets): a preset is a fixed workflow, a batch is whatever the caller lists
 
 The HTTP transport already accepts JSON-RPC batch arrays; stdio does not.
 
@@ -217,19 +214,19 @@ Priority: Medium. Complexity: Medium.
 
 Teams name entries very differently: `/Robot/Drive/FrontLeft/Velocity`, `/Swerve/Module0/DriveVelocity`, `/SmartDashboard/FL Drive Speed`. A configurable alias map, or fuzzy matching, would let the tools work across teams without exact entry names.
 
-Partly covered by `resolve_signals`: built-in roles (battery voltage, robot pose, module states, gyro yaw, and others) resolve with a basis, ranked candidates, and an ambiguity flag, and most roles can be passed explicitly to the tools that use them (some, such as `brownout_flag`, cannot). Entry lookups that fail suggest names by substring. A team-configurable alias map is still open.
+Partly covered by `resolve_signals`: built-in roles (battery voltage, robot pose, module states, gyro yaw, and others) resolve with a basis, ranked candidates, and an ambiguity flag; most roles can be passed explicitly to the tools that use them (some, such as `brownout_flag`, cannot). A failed entry lookup suggests names that contain the one asked for. A team-configurable alias map is still open.
 
 Approach:
 - A configurable alias file mapping roles to name patterns
 - Fuzzy search ranked by edit distance and structural similarity
 - "Did you mean?" suggestions with confidence scores
 
-Fuzzy or heuristic matches must be offered to the LLM as candidates to confirm, never used to pick an entry on the server's own authority (see §6.8). A team's alias map would count as the team's own conventions.
+Fuzzy or heuristic matches must be offered to the LLM as candidates to confirm, never used to pick an entry on the server's own authority (§6.8, which also says how a team's alias map fits the rule).
 
 ### 5.6 Auto-Organize Log Directory
 Priority: Medium. Complexity: Medium.
 
-A tool that sorts the files in a log directory into a readable structure. Robots write `.wpilog`, `.revlog`, and `.hoot` files into one flat directory, or into per-session subdirectories with opaque names.
+Robots write `.wpilog`, `.revlog`, and `.hoot` files into one flat directory, or into per-session subdirectories with opaque names. This idea is a tool that sorts the files in a log directory into a readable structure.
 
 Possible structure:
 ```
@@ -245,7 +242,7 @@ logdir/
 ```
 
 Features:
-- Group by event and match type and number, parsed from file names and log metadata
+- Group by event, then by match type and number, both parsed from file names and log metadata
 - Put each `.wpilog` next to its `.revlog` files, matched by time
 - Move files, or link them (a non-destructive mode creates symlinks)
 - A dry run that shows what would change
@@ -283,7 +280,7 @@ Prompt structure:
 4. Correlation: check for relationships with other variables
 5. Conclusion: state the findings with appropriate uncertainty
 
-Such prompts would require multi-match analysis before conclusions, build statistical practice into the workflow, and keep the agent from concluding from a single data point.
+Such prompts would build statistical practice into the workflow and require several matches before any conclusion.
 
 ### 6.6 Comparative Framing
 Priority: Medium. Complexity: Low.
@@ -312,7 +309,7 @@ Nothing builds baselines today. `compare_matches` compares two logs, and `get_ga
 ### 6.7 Uncertainty Propagation
 Priority: Low. Complexity: High.
 
-Carry uncertainty through derived results. `moi_regression` returns `J_kg_m2`, `B_Nm_s_per_rad`, `r_squared`, `rmse_nm`, and sample counts, but no standard error, confidence interval, or degrees of freedom, and `predict_battery_health`'s `load_line` has the same gap. `time_correlate`'s `effective_sample_size` is a precedent.
+Carry uncertainty through derived results. `moi_regression` returns `J_kg_m2`, `B_Nm_s_per_rad`, `r_squared`, `rmse_nm`, and sample counts, but no standard error, confidence interval, or degrees of freedom; `predict_battery_health`'s `load_line` has the same gap. `time_correlate`'s `effective_sample_size` is a precedent.
 
 Example (moment of inertia):
 ```json
@@ -335,13 +332,13 @@ Example (moment of inertia):
 With this, an LLM can report bounds instead of point estimates, see which inputs limit accuracy, and say "I don't know" when it should.
 
 ### 6.8 Don't Guess What Entries Mean
-Done (unreleased; see the CHANGELOG). This section records the rule, which the code and doc/ROBUSTNESS_PLAN.md refer to.
+Done in 0.9.0 (see the CHANGELOG). This section records the rule, which the code and `doc/ROBUSTNESS_PLAN.md` refer to.
 
 Apart from well-known logging conventions, the server does not infer what an entry represents from its name or from the shape of its data. A role resolves only to an explicit entry, a convention (AdvantageKit, WPILib, CTRE, PathPlanner, YAGSL, Limelight, and PhotonVision names), or the only entry of the role's type. Entries that match by name or content alone are candidates (`resolve_signals`: `match: heuristic`, `needs_confirmation`), and the tools list them in `candidates`, `skipped`, or `no_match` with the parameter to pass (`voltage_entry`, `entry`, `pose_entry`, `chooser_entry`, `path_setpoint_entry`, `path_actual_entry`, `total_current_entry`, `measured_entry`, `setpoint_entry`, `vision_entries`, and `profile_mechanism`'s role entries). `doc/TOOLS.md` tabulates the conventions ("The server does not guess").
 
-What an entry measures is settled by the robot code that logs it, so the server's guidance sends the agent there to confirm a candidate, and to call a mapping taken from a name an assumption when the code is not at hand.
+What an entry measures is settled by the robot code that logs it, so the server's guidance sends the agent there to confirm a candidate. When the code is not at hand, a role taken from a name is to be stated as an assumption.
 
-Revlog sync follows the same rule: names only nominate candidate pairs (by leaf name, for applied output, velocity, current, and bus voltage), correlation chooses among them, and `sync_status`'s `signal_pairs` shows the choice. A team's alias map (§5.5) would count as the team's own conventions.
+REV log sync follows the same rule: names only nominate candidate pairs (by leaf name, for applied output, velocity, current, and bus voltage), correlation chooses among them, and `sync_status`'s `signal_pairs` shows the choice. A team's alias map (§5.5) would count as the team's own conventions.
 
 ---
 
@@ -355,7 +352,7 @@ Let teams add their own analysis tools and data sources (such as team-specific C
 ### 7.2 Reference Test Data
 Priority: High. Complexity: Low.
 
-Mostly done. The fixture corpus (`src/test/java/org/triplehelix/wpilogmcp/fixtures/FixtureLogs.java`) generates 22 fixtures per run: AdvantageKit match and practice logs, plain WPILib logs (one with records before time zero), swerve arrays and per-module entries, three vision conventions, custom and mismatched structs, brownouts on roboRIO 1 and 2, CANivore counters, alerts, replay with and without divergence, a log without DriverStation data and one with both `DS:` and `/DriverStation/` entries, a truncated log, an empty one, and a wpilog with its REV log. The revlog tests also cover REV logs in several directories, decoy REV logs, and a REV log from a neighboring session.
+Mostly done. The fixture corpus (`src/test/java/org/triplehelix/wpilogmcp/fixtures/FixtureLogs.java`) generates a fixture per logging convention and failure mode: AdvantageKit match and practice logs, plain WPILib logs (one with records before time zero), swerve arrays and per-module entries, three vision conventions, custom and mismatched structs, brownouts on roboRIO 1 and 2, CANivore counters, alerts, replay with and without divergence, a log without DriverStation data and one with both `DS:` and `/DriverStation/` entries, a truncated log, an empty one, and a wpilog with its REV log. The REV log tests also cover REV logs in several directories, decoy REV logs, and a REV log from a neighboring session.
 
 Remaining:
 - An end-to-end fixture in which two REV logs (for example, rio and CANivore) attach to one wpilog and both sync by data
@@ -381,8 +378,10 @@ Approach:
 - Detect gzip and zip by magic bytes (both are in the JDK); give an explained error for xz, zstd, bzip2, 7z, and tar.
 - Decompress into the cache directory and memory-map the copy as today, rather than into heap (`DataLogReader` maps the whole file).
 - Address zip members as `archive.zip!/name.wpilog` when an archive holds more than one log; skip macOS `__MACOSX/` and `._*` entries.
-- Read a cut-off gzip as a truncated log. Discover `.revlog` files inside archives too, so REV sync still works.
-- Code that assumes plain `.wpilog`/`.revlog` names or paths: the discovery filters in `LogDirectory`, the file-name patterns, `LogScan.of` (reads the header length from the path), and `RevLogParser.parse`.
+- Read a cut-off gzip as a truncated log.
+- Discover `.revlog` files inside archives too, so REV log sync still works.
+
+Code that assumes plain `.wpilog` and `.revlog` names or paths: the discovery filters in `LogDirectory`, the file-name patterns, `LogScan.of` (which reads the header length from the path), and `RevLogParser.parse`.
 
 ### 8.5 Logs That Change After Loading
 Priority: High. Complexity: Medium.
@@ -391,11 +390,17 @@ A loaded log keeps answering from its first load after the file changes on disk,
 - Renamed into place (rsync's default): results stay stale.
 - Overwritten in place (`cp` keeps the inode): old byte offsets are applied to new bytes, so new records are invisible, or a different log copied over the name decodes as garbage, with no warning.
 - Read during an in-place copy: reading the truncated mapping throws `java.lang.InternalError`, which nothing in the call path catches; in stdio mode it ends the server loop.
-- On Windows: the file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). CI's Windows run hit this when test classes regenerated fixture logs an earlier class had loaded.
+- On Windows: the file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). CI's Windows run hit this when a test class regenerated fixture logs that an earlier class had loaded.
 
 REV logs too: sync runs once at load, so a REV log copied in later is never found.
 
-Approach: record each file's size, modification time, and file key at load; re-check on every `getOrLoad` and reload when they differ; re-check after each call and discard a result read while the file changed; catch `InternalError` from mapped reads as an explained error; tell each session once when a log it used was reloaded; re-run REV discovery and sync when REV files change.
+Approach:
+- Record each file's size, modification time, and file key at load
+- Re-check on every `getOrLoad` and reload when they differ
+- Re-check after each call and discard a result read while the file changed
+- Turn an `InternalError` from a mapped read into an explained error
+- Tell each session once when a log it used was reloaded
+- Re-run REV discovery and sync when REV files change
 
 ---
 

@@ -8,16 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- The VS Code extension is on the Visual Studio Marketplace. The release workflow publishes every release without a suffix there (the Marketplace refuses suffixed versions, so test builds stay on GitHub) when the `VSCE_PAT` secret holds a Marketplace token, and says what to do when it does not. The package carries the license file and the manifest links the issue tracker and the README.
+- The VS Code extension is on the Visual Studio Marketplace; it was only a `.vsix` on the releases page. When the `VSCE_PAT` secret holds a Marketplace token, the release workflow publishes every release without a version suffix there (the Marketplace refuses suffixed versions, so test builds stay on GitHub); without the token, the workflow says how to add one. The package carries the license file; the manifest links the issue tracker and the README.
 
 ### Testing
-- CI checks that every Java file carries the license header (`./gradlew license`); it ran the check only locally, as part of `./gradlew build`.
+- CI checks that every Java file carries the license header (`./gradlew license`); the check used to run only locally, as part of `./gradlew build`.
 
 ### Documentation
-- The READMEs install the extension from the Marketplace, with the `.vsix` on the releases page as the way to a particular build. The README's header links the Marketplace listing, and the installation section says most people want the extension.
+- The READMEs now send readers to the Marketplace to install the extension; the `.vsix` on the releases page remains the way to a particular build. The README's header links the Marketplace listing.
 - `doc/STANDALONE.md` says why the TBA key belongs in the configuration file or the environment rather than on the command line, where the process list shows it.
-- The README is reorganized. The example questions follow "How It Works" instead of repeating the header's questions a paragraph later, the installation section says once that most people want the extension, the agents the server works with are named (Claude, GitHub Copilot, Gemini, ChatGPT over the HTTP transport, and others), and a new section on supporting Triple Helix links the Intentional Innovation Foundation's donation page. The prose got an editorial pass.
-- `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date: the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension, with season-specific detail left to the documents that own it.
+- The README is reorganized. The example questions follow "How It Works" instead of repeating the header's questions a paragraph later; the installation section says once that most people want the extension; the agents the server works with are named (Claude, GitHub Copilot, Gemini, ChatGPT over the HTTP transport, and others); and a new section on supporting Triple Helix links the Intentional Innovation Foundation's donation page. The prose was edited throughout.
+- The other documents got the same editorial pass: pronoun references and wrong words fixed; chained clauses broken up; the standalone guide's `-debug` flag back in its table, the HTTP transport and containerization sections placed as sections of their own, and the command-line notes gathered under the flags; the extension README's requirements moved ahead of installation and its upgrading section covering the Marketplace; the tools reference's REV log reference material, troubleshooting, and workflow gathered in the section's introduction, with one "When to use it" heading for every tool that has one; the development guide's test suites as paragraphs, its extension build beside the server build, and its releasing step split from what the workflow does; the ideas file's stale references and duplicated hand-off removed.
+- `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date. It now covers the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension; season-specific detail is left to the documents that own it.
 
 ## [0.9.0] - 2026-10-02
 
