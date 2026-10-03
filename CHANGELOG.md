@@ -138,6 +138,7 @@ Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBU
 - `-tba-key` takes precedence over `TBA_API_KEY`, as the usage text says.
 - The stress tests use the configured TBA key (they ran every TBA call as "not configured"), build the test classes before running, and fail the build when a test fails.
 - A tool can be added without the logs `doc/TOOL_RESPONSES.md` is generated from: the checks accept a generated file that does not hold the tool yet, and require a call for it in the scenarios file.
+- A REV log synchronization read from the disk cache lists devices and signals in the order the REV log shows them, as a fresh one does. It listed them in no fixed order, so `list_revlog_signals` answered in a different order after the server restarted.
 - `power_analysis` returns `no_match`, naming the scope, when there is nothing to measure in it: the scope holds no time (`enabled` on a log where the robot was never enabled, or a `start_time`/`end_time` outside the data), or no finite voltage or current sample falls in it and no brownout flag is logged. It returned a success with every section skipped. When amperage entries exist but have no finite samples in the scope, `power_analysis` and `generate_report` say so; they reported that the log had none.
 
 ### Security

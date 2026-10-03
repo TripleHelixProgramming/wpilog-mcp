@@ -289,13 +289,14 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | The Blue Alliance responses | Memory | 24 hours; "not found" for 5 minutes; failures are not cached; 200 entries of each kind |
 | Game data | Memory | The life of the server |
 
-The disk cache saves the expensive part of loading a log that has REV logs: parsing them and correlating their signals. Its key covers what a result depends on: a fingerprint of each file, both file names (the time in a REV log's name feeds the alignment), and a hash of the CAN database used to decode the frames. The key does not cover the code. So the cache has a format version that is raised with any change to parsing, decoding, or synchronization, and entries of another version are deleted. Before that rule, results computed by older, wrong code were served indefinitely.
+The disk cache saves the expensive part of loading a log that has REV logs: parsing them and correlating their signals. Its key covers what a result depends on: a fingerprint of each file, both file names (the time in a REV log's name feeds the alignment), and a hash of the CAN database used to decode the frames. The key does not cover the code. So the cache has a format version that is raised with any change to parsing, decoding, or synchronization, and entries of another version are deleted. Before that rule, results computed by older, wrong code were served indefinitely. The server's own version is not part of the key: a release changes the server for many reasons, and rebuilding the cache with each one would make every user wait for synchronizations that come out the same.
 
 Other choices in the disk cache:
 
 - The fingerprint is a SHA-256 over the file's size and three 64 KB samples (its start, middle, and end), not the whole file. That is a trade of certainty for speed: a change confined to another part of a file would go unnoticed.
 - Each file ends with a CRC-32, which catches accidental corruption. A file that fails it is deleted and its result recomputed.
 - Files are written under a temporary name and moved into place, so a reader never sees half a file.
+- A result read back must give the same answers as the one computed, down to the order of devices and signals, which is the order the REV log first shows them. The in-process stress test compares the two.
 - At startup, unless the disk cache is disabled, files of an old format, temporary files more than an hour old, and the oldest files beyond the size limit are removed.
 
 [STANDALONE.md](STANDALONE.md#config-fields) says where the cache directory is and how to change it or its size limit. The VS Code extension's servers use a cache directory of their own, so the extension and a standalone install never delete each other's files when their versions differ.

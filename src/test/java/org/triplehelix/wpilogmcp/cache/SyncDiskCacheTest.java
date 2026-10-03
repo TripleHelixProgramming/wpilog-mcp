@@ -120,4 +120,33 @@ class SyncDiskCacheTest {
       assertFalse(Files.exists(corruptFile));
     }
   }
+
+  @Nested @DisplayName("Format version") class FormatVersion {
+    @Test @DisplayName("a sound entry of an older format is deleted on load, and saved again in the current one")
+    void olderFormatIsRebuilt() throws IOException {
+      cache.save(createTestRevLog(), createTestSyncResult(), "fp_a", "fp_b");
+      Path file = tempDir.resolve(SyncDiskCache.combinedFingerprint("fp_a", "fp_b") + "-sync.msgpack");
+      // Rewrite it as the previous version wrote it: the format version is the first value (a
+      // one-byte MessagePack integer), and the last four bytes are a CRC32 of the rest, so the
+      // entry stays sound and only its version is old
+      byte[] bytes = Files.readAllBytes(file);
+      assertEquals(SyncCacheSerializer.CURRENT_FORMAT_VERSION, bytes[0]);
+      bytes[0] = (byte) (SyncCacheSerializer.CURRENT_FORMAT_VERSION - 1);
+      var crc = new java.util.zip.CRC32();
+      crc.update(bytes, 0, bytes.length - 4);
+      java.nio.ByteBuffer.wrap(bytes, bytes.length - 4, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+          .putInt((int) crc.getValue());
+      Files.write(file, bytes);
+      var serializer = new SyncCacheSerializer();
+      assertEquals(SyncCacheSerializer.CURRENT_FORMAT_VERSION - 1, serializer.readFormatVersion(file));
+
+      // Raising the version is all a fix needs: every user's old entry is a miss and is deleted,
+      // and the result computed again is saved in the current version
+      assertTrue(cache.load("fp_a", "fp_b").isEmpty());
+      assertFalse(Files.exists(file));
+      cache.save(createTestRevLog(), createTestSyncResult(), "fp_a", "fp_b");
+      assertEquals(SyncCacheSerializer.CURRENT_FORMAT_VERSION, serializer.readFormatVersion(file));
+      assertTrue(cache.load("fp_a", "fp_b").isPresent());
+    }
+  }
 }

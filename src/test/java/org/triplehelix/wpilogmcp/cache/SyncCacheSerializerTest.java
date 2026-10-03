@@ -55,6 +55,31 @@ class SyncCacheSerializerTest {
       assertEquals(1, loaded.revlog().signals().size());
     }
 
+    @Test @DisplayName("devices and signals come back in the order the parser gave them")
+    void orderKept() throws IOException {
+      // The parser's order is the order the REV log first shows each; the tools list them so,
+      // and a result read from the cache must list them the same way
+      var devices = new java.util.LinkedHashMap<Integer, RevLogDevice>();
+      for (int id : new int[]{17, 3, 12, 40, 1, 25, 8}) {
+        devices.put(id, new RevLogDevice(id, "SPARK MAX", "v26.1.5"));
+      }
+      var signals = new java.util.LinkedHashMap<String, RevLogSignal>();
+      for (var key : List.of("SparkMax_17/Velocity", "SparkMax_3/AppliedOutput",
+          "SparkMax_12/Current", "SparkMax_40/Position", "SparkMax_1/Temperature",
+          "SparkMax_25/BusVoltage", "SparkMax_8/Faults")) {
+        var device = key.substring(0, key.indexOf('/'));
+        signals.put(key, new RevLogSignal(key.substring(key.indexOf('/') + 1), device,
+            List.of(new TimestampedValue(0.0, 1.0)), null));
+      }
+      var revlog = new ParsedRevLog("/logs/REV_20260321_103045.revlog", "20260321_103045",
+          devices, signals, 0.0, 1.0, 14);
+      Path file = tempDir.resolve("order.msgpack");
+      serializer.write(new CachedSyncEntry(revlog, createTestSyncResult(), "fp1", "fp2", 0L), file);
+      var loaded = serializer.read(file).revlog();
+      assertEquals(List.copyOf(devices.keySet()), List.copyOf(loaded.devices().keySet()));
+      assertEquals(List.copyOf(signals.keySet()), List.copyOf(loaded.signals().keySet()));
+    }
+
     @Test @DisplayName("null fields preserved") void nullFields() throws IOException {
       var revlog = new ParsedRevLog(null, null, Map.of(), Map.of(), 0, 0, 0);
       var entry = new CachedSyncEntry(revlog, SyncResult.failed("x"), "a", "b", 0L);

@@ -13,7 +13,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.CRC32;
@@ -161,7 +161,9 @@ public class SyncCacheSerializer {
     double maxTs = u.unpackDouble();
     long recordCount = u.unpackLong();
     int deviceCount = u.unpackInt();
-    Map<Integer, RevLogDevice> devices = new HashMap<>();
+    // In the order written, which is the parser's (the order the REV log first shows each), so
+    // a cached result lists devices and signals in the same order as a fresh one
+    Map<Integer, RevLogDevice> devices = new LinkedHashMap<>();
     for (int i = 0; i < deviceCount; i++) {
       int key = u.unpackInt();
       int canId = u.unpackInt();
@@ -170,7 +172,7 @@ public class SyncCacheSerializer {
       devices.put(key, new RevLogDevice(canId, deviceType, firmware));
     }
     int signalCount = u.unpackInt();
-    Map<String, RevLogSignal> signals = new HashMap<>();
+    Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (int i = 0; i < signalCount; i++) {
       String sigKey = u.unpackString();
       String name = u.unpackString();
