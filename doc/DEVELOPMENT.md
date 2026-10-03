@@ -42,7 +42,7 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 - Version checks: the extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
 - Build file check: the stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails.
 
-CI runs `./gradlew test shadowJar` on Linux and Windows, and builds and tests the extension. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
+CI runs `./gradlew test shadowJar license` on Linux and Windows (`license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one), and builds and tests the extension. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
 ### Tests on real logs
 
