@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-04
+
+This release puts the corrected extension README on the Marketplace listing, whose Overview still said the extension was not there: the 0.9.0 package was built before the README changed, and the Marketplace shows the README inside the package. It also reorganizes the README, edits every document, and makes a loaded log follow its file.
+
 ### Added
 - The VS Code extension is on the Visual Studio Marketplace; it was only a `.vsix` on the releases page. When the `VSCE_PAT` secret holds a Marketplace token, the release workflow publishes every release without a version suffix there (the Marketplace refuses suffixed versions, so test builds stay on GitHub); without the token, the workflow says how to add one. The package carries the license file; the manifest links the issue tracker and the README.
 
@@ -729,6 +733,7 @@ Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBU
 - Usage examples (EXAMPLE.md)
 - Configuration guide for VS Code, Claude Code CLI, and Claude Desktop
 
+[0.9.1]: https://github.com/TripleHelixProgramming/wpilog-mcp/compare/v0.9.0...v0.9.1
 [0.8.0]: https://github.com/TripleHelixProgramming/wpilog-mcp/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/TripleHelixProgramming/wpilog-mcp/compare/v0.7.0...v0.7.2
 [0.7.0]: https://github.com/TripleHelixProgramming/wpilog-mcp/compare/v0.6.1...v0.7.0

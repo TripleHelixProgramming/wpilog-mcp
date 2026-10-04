@@ -97,6 +97,7 @@ public class LogManager {
    * @param generation How many times this has happened to the path, starting at 1
    * @param at When
    * @param change What changed, as {@link FileSnapshot#describeChange} words it
+   * @since 0.9.1
    */
   public record Reload(int generation, java.time.Instant at, String change) {}
 
@@ -461,6 +462,7 @@ public class LogManager {
    *
    * @param path The log's path
    * @param log The instance the caller holds
+   * @since 0.9.1
    */
   public FileSnapshot snapshotOf(String path, LogData log) {
     var entry = loaded.get(Path.of(path).toAbsolutePath().normalize().toString());
@@ -478,6 +480,7 @@ public class LogManager {
    * @param log The instance the call read
    * @param before Its snapshot from {@link #snapshotOf}, or null when it has none
    * @return What changed, or null when the file is as it was
+   * @since 0.9.1
    */
   public String changeDuringCall(String path, LogData log, FileSnapshot before) {
     if (before == null) return null;
@@ -502,6 +505,7 @@ public class LogManager {
    * @param before Its snapshot from {@link #snapshotOf}, or null when it has none
    * @param fault The fault's message
    * @return What changed, never null
+   * @since 0.9.1
    */
   public String faultDuringCall(String path, LogData log, FileSnapshot before, String fault) {
     String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
@@ -522,6 +526,7 @@ public class LogManager {
    * @param path The log's path
    * @param log The instance read from the old file
    * @param change What changed, for the sessions that used the log
+   * @since 0.9.1
    */
   public void fileChanged(String path, LogData log, String change) {
     String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
@@ -539,6 +544,7 @@ public class LogManager {
    * @param sessionKey The session (the stdio client counts as one session)
    * @param path The log's path
    * @return The reload to report, or null
+   * @since 0.9.1
    */
   public Reload reloadNoticeFor(String sessionKey, String path) {
     String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
@@ -559,6 +565,7 @@ public class LogManager {
    *
    * @param wpilogPath The wpilog's path
    * @return Whether a new synchronization was started
+   * @since 0.9.1
    */
   public boolean refreshRevLogsIfChanged(String wpilogPath) {
     String normalizedPath = Path.of(wpilogPath).toAbsolutePath().normalize().toString();

@@ -163,6 +163,7 @@ public class LogCache {
    * discard after the file changed must not remove a newer instance another call loaded since.
    *
    * @return Whether the instance was removed
+   * @since 0.9.1
    */
   public boolean remove(String path, LogData log) {
     return cache.asMap().remove(path, log);
