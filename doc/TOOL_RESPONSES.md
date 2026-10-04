@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Response Reference
 
-The JSON every tool of **wpilog-mcp 0.9.0** returns, captured from real logs by running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate (see [DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):
+The JSON every tool of **wpilog-mcp 0.9.1** returns, captured from real logs by running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate (see [DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):
 
 ```
 ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/riologs
@@ -103,7 +103,7 @@ Response:
   "status": "ok",
   "overview": {
     "server_name": "wpilog-mcp",
-    "version": "0.9.0",
+    "version": "0.9.1",
     "total_tools": 49,
     "purpose": "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)"
   },
@@ -941,7 +941,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 30,
+    "heap_used_mb": 29,
     "heap_max_mb": 512
   }
 }
@@ -1468,17 +1468,17 @@ Response:
 {
   "success": true,
   "status": "ok",
-  "server_version": "0.9.0",
+  "server_version": "0.9.1",
   "loaded_logs": 2,
   "tba_available": false,
   "revlog_sync_in_progress": true,
   "jvm_memory": {
-    "used_mb": 282,
-    "total_mb": 317,
+    "used_mb": 288,
+    "total_mb": 344,
     "max_mb": 512,
-    "free_mb": 34
+    "free_mb": 55
   },
-  "jvm_heap_used_mb": 282,
+  "jvm_heap_used_mb": 288,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
