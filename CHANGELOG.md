@@ -19,7 +19,7 @@ This release puts the corrected extension README on the Marketplace listing, who
 - The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when a REV log appeared, grew, or went: a REV log copied off the robot after the wpilog is found without reloading the wpilog, and an offset set with `set_revlog_offset` is kept for a REV log whose file did not change. Before, REV logs were found only when the wpilog was loaded.
 
 ### Testing
-- CI checks that every Java file carries the license header (`./gradlew license`); the check used to run only locally, as part of `./gradlew build`.
+- CI checks that every Java file carries the license header (`./gradlew license`); the check used to run only locally, as part of `./gradlew build`. A build-file test fails if the workflow stops running it.
 
 ### Documentation
 - The READMEs now send readers to the Marketplace to install the extension; the `.vsix` on the releases page remains the way to a particular build. The README's header links the Marketplace listing.
@@ -27,6 +27,7 @@ This release puts the corrected extension README on the Marketplace listing, who
 - The README is reorganized. The example questions follow "How It Works" instead of repeating the header's questions a paragraph later; the installation section says once that most people want the extension; the agents the server works with are named (Claude, GitHub Copilot, Gemini, ChatGPT over the HTTP transport, and others); and a new section on supporting Triple Helix links the Intentional Innovation Foundation's donation page. The prose was edited throughout.
 - The other documents got the same editorial pass: pronoun references and wrong words fixed; chained clauses broken up; the standalone guide's `-debug` flag back in its table, the HTTP transport and containerization sections placed as sections of their own, and the command-line notes gathered under the flags; the extension README's requirements moved ahead of installation and its upgrading section covering the Marketplace; the tools reference's REV log reference material, troubleshooting, and workflow gathered in the section's introduction, with one "When to use it" heading for every tool that has one; the development guide's test suites as paragraphs, its extension build beside the server build, and its releasing step split from what the workflow does; the ideas file's stale references and duplicated hand-off removed.
 - `CLAUDE.md`, the guidance for AI agents working on the code, is brought up to date. It now covers the result contract, the no-guessing rule, the testing rules, the source conventions, the disk cache, and the VS Code extension; season-specific detail is left to the documents that own it.
+- `doc/DEVELOPMENT.md` says how to keep tests passing on Windows, where CI runs them too, and that no value from another team's log goes into the repository unless the log's license allows it; it said neither.
 
 ## [0.9.0] - 2026-10-02
 
@@ -106,7 +107,6 @@ Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBU
 - VS Code extension: requires VS Code 1.101 or later (`engines.vscode` is `^1.101.0`). On 1.100 it installed but failed on activation.
 - VS Code extension: relative links and images in the packaged README work.
 - VS Code extension: on Windows, a log folder named twice, such as `logs` inside the project and `C:/robot/logs`, or with a trailing slash or in another case, is passed to the server once; it was passed twice, and its logs were listed twice.
-- VS Code extension: `npm test` runs the tests on Node 21 and later, where it failed because `node --test` no longer accepts a directory, and CI runs them on Linux and Windows (it only compiled the extension, so the failure went unseen).
 - VS Code extension: a project's configuration file, which holds the TBA key, is written only once the project's `.mcp.json` can take the entry, and **Clear The Blue Alliance API Key** removes the key from every configuration file in the extension's storage. A `.mcp.json` that was not valid JSON left a file with the key behind, which Clear did not reach.
 - Revlog sync on recordings longer than 600 s no longer reports an offset off by up to tens of seconds at a correlation near 1.0. The sub-sample refinement now moves toward the correlation peak, and a clock-drift estimate beyond 1000 ppm is rejected and reported.
 - Revlog sync pairs signals by data: names only nominate candidates by leaf name (applied output, velocity, current, bus voltage), correlation ranks them, and pairs that disagree are set aside instead of averaged. High confidence needs at least two pairs whose offsets have a standard deviation of 5 ms or less.
@@ -159,18 +159,22 @@ Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBU
 - The `measureMemory` Gradle task is gone; it passed a flag the server never had.
 - `-debug`, `WPILOG_DEBUG=true`, and `debug: true` in `servers.yaml` turn on debug logging; they had no effect.
 - `-tba-key` takes precedence over `TBA_API_KEY`, as the usage text says.
-- The stress tests use the configured TBA key (they ran every TBA call as "not configured"), build the test classes before running, and fail the build when a test fails.
-- A tool can be added without the logs `doc/TOOL_RESPONSES.md` is generated from: the checks accept a generated file that does not hold the tool yet, and require a call for it in the scenarios file.
 - A REV log synchronization read from the disk cache lists devices and signals in the order the REV log shows them, as a fresh one does. It listed them in no fixed order, so `list_revlog_signals` answered in a different order after the server restarted.
-- The stress tests use their own disk cache, emptied before each run, instead of the user's: they read REV log synchronizations that other code had saved, and saved theirs there. `-PtestCacheDir=<folder>` gives every test task a folder that is kept between runs. The in-process stress test checks that a synchronization read from the disk cache gives the same answers as one computed with the cache off, and both stress tests run the REV log tools on a log that has a REV log; they ran them on a log without one. They list every log, page by page; they read only the first 500.
-- The real-log conformance sweep searches six folder levels below the log directory, as the differential check does; it searched five. The claims check reads the simulated logs and their manifest from `-PsimLogDir`.
-- The differential check recomputes domain answers from the raw records of the entries each tool names: loop-time statistics, roboRIO brownouts, CAN bus figures, swerve module speeds, and the modes of enabled segments, on the fixtures and on real logs. A second golden set (`-PgoldenMatchLog`) checks a 2026 championship elimination match that another team published under the MIT license.
 - `power_analysis` returns `no_match`, naming the scope, when there is nothing to measure in it: the scope holds no time (`enabled` on a log where the robot was never enabled, or a `start_time`/`end_time` outside the data), or no finite voltage or current sample falls in it and no brownout flag is logged. It returned a success with every section skipped. When amperage entries exist but have no finite samples in the scope, `power_analysis` and `generate_report` say so; they reported that the log had none.
 
 ### Security
 - msgpack-core is 0.9.12 (was 0.9.8), which fixes CVE-2026-21452 (GHSA-cw39-r4h6-8j3x, high): a payload header could declare up to 2 GB that the library allocated before reading any of it. The server reads such payloads from its parsed-log disk cache, which is not on the load path, and only from its own checksummed files, so the exposure was small; a crafted cache file of a few dozen bytes made the reader fail with an `OutOfMemoryError` instead of rejecting the file. A test now checks that such a file is rejected while allocating almost nothing.
 - The VS Code extension's development dependencies, which are used to build and package it and are not part of the `.vsix`, are updated within their existing version ranges, clearing all 42 Dependabot alerts (21 high, 16 medium, 5 low). All of them came through `@vscode/vsce`: `undici`, `fast-uri`, `js-yaml`, `brace-expansion`, `markdown-it`, `linkify-it`, `form-data`, `tmp`, `qs`, `uuid`, and `lodash`.
 - CI submits the server's Gradle dependencies to GitHub's dependency graph on every push to `main`. GitHub does not read `build.gradle`, so Dependabot never saw the libraries in the server JAR, msgpack-core among them; it now alerts on them as it does on the extension's npm packages.
+
+### Testing
+- Tests check the server against an independent WPILOG reader, compare each tool's schema with the parameters its code reads and its description with real output, and cover the revlog and TBA success paths. `-PconformanceLogDir=<dir>` runs the independent-reader check, a conformance sweep, and a check of documented claims on a directory of real logs.
+- VS Code extension: `npm test` runs the tests on Node 21 and later, where it failed because `node --test` no longer accepts a directory, and CI runs them on Linux and Windows (it only compiled the extension, so the failure went unseen).
+- The stress tests use the configured TBA key (they ran every TBA call as "not configured"), build the test classes before running, and fail the build when a test fails.
+- A tool can be added without the logs `doc/TOOL_RESPONSES.md` is generated from: the checks accept a generated file that does not hold the tool yet, and require a call for it in the scenarios file.
+- The stress tests use their own disk cache, emptied before each run, instead of the user's: they read REV log synchronizations that other code had saved, and saved theirs there. `-PtestCacheDir=<folder>` gives every test task a folder that is kept between runs. The in-process stress test checks that a synchronization read from the disk cache gives the same answers as one computed with the cache off, and both stress tests run the REV log tools on a log that has a REV log; they ran them on a log without one. They list every log, page by page; they read only the first 500.
+- The real-log conformance sweep searches six folder levels below the log directory, as the differential check does; it searched five. The claims check reads the simulated logs and their manifest from `-PsimLogDir`.
+- The differential check recomputes domain answers from the raw records of the entries each tool names: loop-time statistics, roboRIO brownouts, CAN bus figures, swerve module speeds, and the modes of enabled segments, on the fixtures and on real logs. A second golden set (`-PgoldenMatchLog`) checks a 2026 championship elimination match that another team published under the MIT license.
 
 ### Documentation
 - `doc/STANDALONE.md` registers the server with Claude Code correctly: `claude mcp add --scope user wpilog -- ~/.wpilog-mcp/bin/wpilog-mcp`, or a project `.mcp.json` written with `${HOME}`. It used to say `~/.claude/settings.json`, which Claude Code does not read for MCP servers.
@@ -181,7 +185,6 @@ Most of this release is robustness work from [doc/ROBUSTNESS_REVIEW.md](doc/ROBU
 - `doc/DEVELOPMENT.md` covers building, every test suite and how to run it, a checklist for adding or changing a tool, and releasing.
 - `doc/STANDALONE.md` documents the one-line installers.
 - `doc/ARCHITECTURE.md` is new. It gives the project's goals, its design principles and the failures that led to them, a map of the code, and how the server reads logs, manages memory, caches results, synchronizes REV logs, and handles concurrent clients.
-- Tests check the server against an independent WPILOG reader, compare each tool's schema with the parameters its code reads and its description with real output, and cover the revlog and TBA success paths. `-PconformanceLogDir=<dir>` runs the independent-reader check, a conformance sweep, and a check of documented claims on a directory of real logs.
 
 ## [0.8.2] - 2026-03-26
 

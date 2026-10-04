@@ -41,6 +41,8 @@ This runs every test that needs nothing outside the repository, in about a minut
 - A test of a number checks the number, against an answer worked out independently of the server. That a call succeeded proves nothing about what it returned.
 - When you change a check, plant the bug it is meant to catch and see the check fail.
 
+The tests run on Windows in CI too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
+
 ### What `./gradlew test` covers
 
 Tests are in `src/test/java`, in the same packages as the code they test, plus a few test-only packages: `fixtures`, `conformance`, `golden`, `docs`, and `integration`.
@@ -61,7 +63,7 @@ The output must also be deterministic: each call on a log is repeated with the l
 
 **Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
 
-**Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails.
+**Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails. The CI workflow must run the license check, which neither `test` nor `shadowJar` includes.
 
 CI runs `./gradlew test shadowJar license` on Linux and Windows, and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
@@ -86,7 +88,7 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 
 With `-PconformanceLogDir`, the tests run with a 4 GB heap (the launcher's default) instead of the usual test heap; `-PconformanceHeap=8g` changes it.
 
-Use your own team's logs. Logs that another team has deliberately published can be used for testing on your own computer, but keep them there: publishing a log is not permission to redistribute it, and no log belongs in this repository.
+Use your own team's logs. Logs that another team has deliberately published can be used for testing on your own computer, but keep them there: publishing a log is not permission to redistribute it, and no log belongs in this repository. Nor does a value taken from another team's log: a number copied into a test is a copy too. The exception is a log whose license allows the copy, with the license's notice kept beside the values, as the golden checks do for Team 4065's MIT-licensed match.
 
 ### Stress tests
 

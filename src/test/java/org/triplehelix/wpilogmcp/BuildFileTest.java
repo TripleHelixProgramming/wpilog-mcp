@@ -19,6 +19,10 @@ import org.junit.jupiter.api.Test;
  * whatever classes an earlier build had left, and both tasks ignored the test run's exit code, so
  * a failing stress test ended in BUILD SUCCESSFUL. A third: they used the user's own disk cache, so
  * they read REV log synchronizations that other code had saved, and saved theirs there.
+ *
+ * <p>The CI workflow has the same weakness: when a check is left out of it, nothing fails. CI ran
+ * {@code ./gradlew test shadowJar}, which does not include the license check, so until 0.9.1 a
+ * Java file without the license header could reach main.
  */
 class BuildFileTest {
 
@@ -44,6 +48,18 @@ class BuildFileTest {
       assertTrue(onFailure.contains("throw new GradleException"),
           name + " reports failing stress tests without failing the build: " + onFailure);
     }
+  }
+
+  @Test
+  @DisplayName("CI runs ./gradlew license, which neither test nor shadowJar includes")
+  void ciChecksLicenseHeaders() throws IOException {
+    var ci = Files.readString(Path.of(".github", "workflows", "ci.yml"));
+    // A step's command, whether on its run: line or in a run: | block
+    boolean runsLicense = ci.lines()
+        .map(line -> line.strip().replaceFirst("^run:\\s*", ""))
+        .filter(command -> command.startsWith("./gradlew "))
+        .anyMatch(command -> List.of(command.split("\\s+")).contains("license"));
+    assertTrue(runsLicense, "no step of the CI workflow runs ./gradlew license");
   }
 
   @Test
