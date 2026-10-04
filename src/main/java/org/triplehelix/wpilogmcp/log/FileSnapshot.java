@@ -31,6 +31,7 @@ import java.time.format.DateTimeFormatter;
  * @param size The file's size in bytes
  * @param modified Its last modification time
  * @param fileKey Its identity, or null where the file system reports none
+ * @since 0.9.1
  */
 public record FileSnapshot(long size, FileTime modified, Object fileKey) {
 

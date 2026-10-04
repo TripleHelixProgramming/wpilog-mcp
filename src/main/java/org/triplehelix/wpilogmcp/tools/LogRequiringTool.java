@@ -69,6 +69,7 @@ public abstract class LogRequiringTool extends ToolBase {
    * does: a test can give it a log manager of its own.
    *
    * @param deps The dependency container
+   * @since 0.9.1
    */
   protected LogRequiringTool(ToolDependencies deps) {
     super(deps);
