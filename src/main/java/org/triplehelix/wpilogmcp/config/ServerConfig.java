@@ -32,11 +32,33 @@ public record ServerConfig(
     Boolean diskcachedisable,
     Boolean debug,
     String exportdir,
-    Integer scandepth
+    Integer scandepth,
+    Integer idleExitMinutes
 ) {
 
   public ServerConfig {
     logdirs = logdirs == null ? null : List.copyOf(logdirs);
+  }
+
+  /** A configuration without an idle exit, as every configuration was before the idle exit existed. */
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, null);
+  }
+
+  /**
+   * How long an {@code http} server started in the background runs with no MCP session and no
+   * request before it exits on its own, or null for never. Meant for the server the VS Code
+   * extension manages, which nobody started by hand and nobody would think to stop; a server
+   * someone started with {@code start} stays until {@code stop} unless its configuration says
+   * otherwise.
+   */
+  public java.util.Optional<java.time.Duration> idleExit() {
+    return idleExitMinutes == null || idleExitMinutes <= 0
+        ? java.util.Optional.empty()
+        : java.util.Optional.of(java.time.Duration.ofMinutes(idleExitMinutes));
   }
 
   /** Returns true if this config uses HTTP transport. */
@@ -72,7 +94,8 @@ public record ServerConfig(
         diskcachedisable != null ? diskcachedisable : defaults.diskcachedisable(),
         debug != null ? debug : defaults.debug(),
         exportdir != null ? exportdir : defaults.exportdir(),
-        scandepth != null ? scandepth : defaults.scandepth()
+        scandepth != null ? scandepth : defaults.scandepth(),
+        idleExitMinutes != null ? idleExitMinutes : defaults.idleExitMinutes()
     );
   }
 }

@@ -16,6 +16,7 @@ import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.StdioBridge;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
@@ -29,6 +30,11 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  *   <li><b>Legacy CLI:</b> {@code java -jar wpilog-mcp.jar [options]}</li>
  *   <li><b>Named config:</b> {@code java -jar wpilog-mcp.jar start <name> [--config <path>]}</li>
  * </ul>
+ *
+ * <p>Two more verbs serve a named {@code http} server started in the background: {@code stop
+ * <name>} ends it, and {@code connect <name>} (or {@code connect --url <url>}) relays a stdio
+ * client to it, starting it first when it is not running, so that every client on a machine
+ * shares one server (see {@link StdioBridge}).
  */
 public class Main {
   private static final String VERSION = Version.VERSION;
@@ -66,6 +72,14 @@ public class Main {
     // Check for "start" subcommand
     if (args.length >= 2 && "start".equals(args[0])) {
       handleStartCommand(args);
+      return;
+    }
+    if (args.length >= 2 && "stop".equals(args[0])) {
+      System.exit(runStop(args[1]));
+      return;
+    }
+    if (args.length >= 2 && "connect".equals(args[0])) {
+      System.exit(runConnect(args));
       return;
     }
 
@@ -137,7 +151,7 @@ public class Main {
         // Stdio transport: run in foreground
         logger().info("Starting wpilog-mcp server (config: {})...", configName);
         applyConfig(config);
-        initializeAndRun(false, 2363, null, null, null);
+        initializeAndRun(false, 2363, null, null, null, null, null);
       }
     } catch (ConfigException e) {
       logger().error("{}", e.getMessage());
@@ -166,11 +180,91 @@ public class Main {
       var daemonBind = System.getenv("WPILOG_HTTP_BIND");
       var daemonPath = System.getenv("WPILOG_HTTP_PATH");
       var daemonOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
-      initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath, daemonOrigins);
+      // The stop token comes from the start that spawned this daemon, in the environment
+      var stopToken = System.getenv(DaemonManager.STOP_TOKEN_ENV);
+      initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
+          daemonOrigins, stopToken, config.idleExit().orElse(null));
     } catch (ConfigException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
     }
+  }
+
+  /**
+   * {@code stop <name>}: ends the named server started in the background.
+   *
+   * @return The exit code
+   */
+  static int runStop(String configName) {
+    return new DaemonManager().stopDaemon(configName) ? 0 : 1;
+  }
+
+  /**
+   * {@code connect <name> [--config <path>]} or {@code connect --url <url>}: relays standard
+   * input and output to an HTTP server, as {@link StdioBridge} does. With a name, the server is
+   * started first if it is not running, exactly as {@code start} would; with a URL, nothing is
+   * started.
+   *
+   * @return The exit code: 0 when the client closed its end, 1 when the server could not be
+   *     started or reached, 2 for a bad command line
+   */
+  static int runConnect(String[] args) {
+    String url = null;
+    String configName = null;
+    Path configPath = null;
+    for (int i = 1; i < args.length; i++) {
+      if ("--url".equals(args[i]) && i + 1 < args.length) {
+        url = args[++i];
+      } else if ("--config".equals(args[i]) && i + 1 < args.length) {
+        configPath = Path.of(args[++i]);
+      } else if (configName == null && !args[i].startsWith("-")) {
+        configName = args[i];
+      } else {
+        logger().error("Usage: wpilog-mcp connect <name> [--config <path>] | connect --url <url>");
+        return 2;
+      }
+    }
+    if ((url == null) == (configName == null)) {
+      logger().error("Usage: wpilog-mcp connect <name> [--config <path>] | connect --url <url>");
+      return 2;
+    }
+
+    java.net.URI endpoint;
+    if (url != null) {
+      endpoint = StdioBridge.endpointFor(url);
+    } else {
+      try {
+        var config = loadConfig(configName, configPath);
+        if (!config.isHttp()) {
+          logger().error("Server '{}' uses the stdio transport; connect needs an http server. "
+              + "Set transport: http in its configuration, or run it directly.", configName);
+          return 1;
+        }
+        if (!new DaemonManager().spawnDaemon(configName, config.effectivePort(), configPath)) {
+          logger().error("Server '{}' could not be started", configName);
+          return 1;
+        }
+        var path = System.getenv("WPILOG_HTTP_PATH");
+        endpoint = java.net.URI.create("http://127.0.0.1:" + config.effectivePort()
+            + (path == null || path.isEmpty() ? "/mcp" : path));
+      } catch (ConfigException e) {
+        logger().error("{}", e.getMessage());
+        return 1;
+      }
+    }
+    return connectTo(endpoint, System.in);
+  }
+
+  /**
+   * Runs a bridge from {@code input} to the endpoint on this process's standard output, which is
+   * taken for the protocol: the JVM's {@code System.out} is sent to standard error first, as the
+   * stdio server does, so nothing else can print on it.
+   */
+  static int connectTo(java.net.URI endpoint, java.io.InputStream input) {
+    var protocolOut = System.out;
+    System.setOut(System.err);
+    logger().info("Connecting standard input and output to {}", endpoint);
+    return new StdioBridge(endpoint, input, protocolOut).run();
   }
 
   /**
@@ -440,16 +534,22 @@ public class Main {
 
     // The TBA key is -tba-key when given, else TBA_API_KEY: initializeAndRun applies it, filling
     // it from the environment only when no key was set.
-    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, null, null);
   }
 
   // ==================== Shared Startup ====================
 
   /**
    * Initializes subsystems and starts the server. Called by both CLI and config modes.
+   *
+   * @param stopToken The token {@code POST /stop} must carry, or null when the server cannot be
+   *     stopped over HTTP (a server not spawned by {@code start})
+   * @param idleExit How long with no session and no request before the server exits, or null
+   *     for never
    */
   private static void initializeAndRun(boolean httpMode, int httpPort,
-      String httpBind, String httpPath, java.util.Set<String> allowedOrigins) {
+      String httpBind, String httpPath, java.util.Set<String> allowedOrigins,
+      String stopToken, java.time.Duration idleExit) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -481,6 +581,18 @@ public class Main {
 
     if (httpMode) {
       var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
+      // A stop request and the idle exit end the server as a signal would: the transport
+      // finishes the calls in flight, then the shutdown hook closes the logs
+      Runnable exit = () -> {
+        httpTransport.stop();
+        System.exit(0);
+      };
+      if (stopToken != null && !stopToken.isBlank()) {
+        httpTransport.setStop(stopToken, exit);
+      }
+      if (idleExit != null) {
+        httpTransport.setIdleExit(idleExit, exit);
+      }
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
         logger().info("Shutdown signal received");
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
@@ -519,11 +631,17 @@ public class Main {
   private static void printUsage() {
     logger().info("Usage: wpilog-mcp [options]");
     logger().info("       wpilog-mcp start <config-name> [--config <path>]");
+    logger().info("       wpilog-mcp stop <config-name>");
+    logger().info("       wpilog-mcp connect <config-name> [--config <path>]");
+    logger().info("       wpilog-mcp connect --url <url>");
     logger().info("");
     logger().info("With no arguments, starts the \"default\" server configuration.");
     logger().info("");
     logger().info("Commands:");
     logger().info("  start <name>        Start a named server from servers.yaml");
+    logger().info("  stop <name>         Stop a named http server started in the background");
+    logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
+    logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");

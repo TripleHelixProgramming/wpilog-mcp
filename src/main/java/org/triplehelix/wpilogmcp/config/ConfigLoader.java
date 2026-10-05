@@ -346,7 +346,8 @@ public class ConfigLoader {
         getBoolean(block, "diskcachedisable"),
         getBoolean(block, "debug"),
         expandPath(interpolate(getString(block, "exportdir"), warnings)),
-        getInteger(block, "scandepth")
+        getInteger(block, "scandepth"),
+        getInteger(block, "idle_exit_minutes")
     );
   }
 
@@ -365,6 +366,11 @@ public class ConfigLoader {
               + "'. Must be between 1 and 65535.");
     }
 
+    if (config.idleExitMinutes() != null && config.idleExitMinutes() < 0) {
+      throw new ConfigException(
+          "Invalid idle_exit_minutes " + config.idleExitMinutes() + " in configuration '"
+              + config.name() + "'. Must be 0 (never) or a number of minutes.");
+    }
   }
 
   /**

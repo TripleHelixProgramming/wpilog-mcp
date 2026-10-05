@@ -18,6 +18,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -28,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.Version;
 
 /**
  * MCP server using Streamable HTTP transport.
@@ -39,6 +41,12 @@ import org.slf4j.LoggerFactory;
  * <p>Each client gets a session (via {@link SessionManager}) with independent active-log state.
  * Parsed logs are shared across sessions via the global {@link
  * org.triplehelix.wpilogmcp.log.LogManager} cache.
+ *
+ * <p>Beside the MCP endpoint, {@code GET /health} says the server is up, with its version and
+ * process ID, so a {@code start} can tell a daemon of another version from one of its own, and a
+ * stranger on the port from either; and {@code POST /stop} ends the server when it is enabled
+ * (see {@link #setStop}). A daemon can also end itself when nothing has used it for a while
+ * (see {@link #setIdleExit}).
  */
 public class HttpTransport {
   private static final Logger logger = LoggerFactory.getLogger(HttpTransport.class);
@@ -46,6 +54,8 @@ public class HttpTransport {
   private static final Duration SESSION_IDLE_TIMEOUT = Duration.ofHours(1);
   private static final long CLEANUP_INTERVAL_MINUTES = 5;
   private static final AtomicInteger SSE_THREAD_COUNTER = new AtomicInteger(0);
+  /** The header that carries the token a {@code POST /stop} must present. */
+  public static final String STOP_TOKEN_HEADER = "X-Wpilog-Stop-Token";
   /** How long {@link #stop} lets requests in flight finish before closing their connections. */
   private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(5);
   private static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(20);
@@ -64,6 +74,15 @@ public class HttpTransport {
   /** Handlers running right now. An SSE stream is not one: its handler returns at once. */
   private final AtomicInteger inFlightRequests = new AtomicInteger();
   private final AtomicBoolean stopped = new AtomicBoolean();
+  /** The token {@code POST /stop} must carry, or null when stopping over HTTP is not enabled. */
+  private volatile String stopToken;
+  private volatile Runnable onStop;
+  /** How long with no session and no MCP request before {@link #onIdle} runs; null for never. */
+  private volatile Duration idleExit;
+  private volatile Runnable onIdle;
+  private final AtomicBoolean idleExitRun = new AtomicBoolean();
+  /** When the MCP endpoint was last asked for anything, or a session last removed. */
+  private volatile long lastMcpActivityNanos = System.nanoTime();
 
   public HttpTransport(ToolRegistry toolRegistry, int port) {
     this(toolRegistry, port, "127.0.0.1", null, null);
@@ -81,10 +100,40 @@ public class HttpTransport {
         ? allowedOriginHosts : java.util.Set.of();
   }
 
+  /**
+   * Enables {@code POST /stop}: a request over a loopback connection carrying {@code token} in
+   * the {@value #STOP_TOKEN_HEADER} header is answered, and then {@code onStop} runs on a thread
+   * of its own, so that it may call {@link #stop}, which waits for the request to finish.
+   *
+   * <p>The token is how a {@code stop} command proves it may end the server: the start that
+   * spawned the daemon wrote it to a file beside the PID file that only the user can read, and
+   * gave it to the daemon in its environment, never on its command line, where every user's
+   * process list would show it. Loopback only, because a server bound to every interface for a
+   * container must not be stoppable from the network. Call before {@link #start()}.
+   */
+  public void setStop(String token, Runnable onStop) {
+    this.stopToken = token;
+    this.onStop = onStop;
+  }
+
+  /**
+   * Makes the server end itself, by {@code onIdle}, once {@code idle} has passed with no MCP
+   * session open and no request to the MCP endpoint; a health check does not count, since a
+   * start's probe would otherwise keep a server alive. The clock starts when the server starts
+   * and again when its last session is removed, so a server that was used and then left exits
+   * {@code idle} after its last client went, and one started and never used exits {@code idle}
+   * after it started. Call before {@link #start()}.
+   */
+  public void setIdleExit(Duration idle, Runnable onIdle) {
+    this.idleExit = idle;
+    this.onIdle = onIdle;
+  }
+
   public void start() throws IOException {
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, counted(this::handleRequest));
     server.createContext("/health", counted(this::handleHealthCheck));
+    server.createContext("/stop", counted(this::handleStop));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
@@ -108,8 +157,43 @@ public class HttpTransport {
     scheduler.scheduleAtFixedRate(
         () -> sessionManager.cleanupExpired(SESSION_IDLE_TIMEOUT),
         CLEANUP_INTERVAL_MINUTES, CLEANUP_INTERVAL_MINUTES, TimeUnit.MINUTES);
+    lastMcpActivityNanos = System.nanoTime();
+    var idle = idleExit;
+    if (idle != null && onIdle != null) {
+      // Checked often enough that the exit comes within a quarter of the idle time after it is
+      // due, and at least every 30 seconds for a long idle time
+      long checkMillis = Math.max(10, Math.min(idle.toMillis() / 4, 30_000));
+      scheduler.scheduleAtFixedRate(this::exitIfIdle, checkMillis, checkMillis,
+          TimeUnit.MILLISECONDS);
+      logger.info("The server exits after {} with no session and no request", idle);
+    }
 
     logger.info("MCP HTTP server listening on http://{}:{}{}", this.bindAddress, getPort(), this.mcpPath);
+  }
+
+  /** The number of MCP sessions open now. */
+  public int sessionCount() {
+    return sessionManager.size();
+  }
+
+  private void noteMcpActivity() {
+    lastMcpActivityNanos = System.nanoTime();
+  }
+
+  /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
+  private void exitIfIdle() {
+    var idle = idleExit;
+    if (idle == null || sessionManager.size() > 0) return;
+    long idleFor = System.nanoTime() - lastMcpActivityNanos;
+    if (idleFor < idle.toNanos()) return;
+    if (!idleExitRun.compareAndSet(false, true)) return;
+    logger.info("No session and no request for {}: exiting", idle);
+    try {
+      onIdle.run();
+    } catch (RuntimeException e) {
+      logger.error("The idle exit failed: {}", e.toString());
+      idleExitRun.set(false);
+    }
   }
 
   public int getPort() {
@@ -191,6 +275,7 @@ public class HttpTransport {
   }
 
   private void handleRequest(HttpExchange exchange) throws IOException {
+    noteMcpActivity();
     try {
       // Validate Origin header to prevent DNS rebinding
       var origin = exchange.getRequestHeaders().getFirst("Origin");
@@ -416,6 +501,8 @@ public class HttpTransport {
       sendError(exchange, 404, "Session not found");
       return;
     }
+    // The idle clock runs from the last session's end, not from its last request
+    noteMcpActivity();
 
     exchange.sendResponseHeaders(200, -1);
     exchange.close();
@@ -477,12 +564,59 @@ public class HttpTransport {
     var health = new JsonObject();
     health.addProperty("status", "ok");
     health.addProperty("sessions", sessionManager.size());
+    // A start compares the version with its own JAR's, and records the process ID of a server
+    // it finds on the port without a PID file
+    health.addProperty("version", Version.VERSION);
+    health.addProperty("pid", ProcessHandle.current().pid());
     var bytes = gson.toJson(health).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", "application/json");
     exchange.sendResponseHeaders(200, bytes.length);
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }
+  }
+
+  /**
+   * {@code POST /stop}: ends the server when {@link #setStop} enabled it, the connection is from
+   * this machine, and the token matches. Every refusal is 403 and says why, except that a
+   * wrong token is not told apart from a missing one.
+   */
+  private void handleStop(HttpExchange exchange) throws IOException {
+    if (!"POST".equals(exchange.getRequestMethod())) {
+      exchange.sendResponseHeaders(405, -1);
+      exchange.close();
+      return;
+    }
+    var token = stopToken;
+    if (token == null) {
+      sendError(exchange, 403, "Stopping over HTTP is not enabled for this server; end its "
+          + "process instead");
+      return;
+    }
+    if (!isLoopback(exchange.getRemoteAddress())) {
+      sendError(exchange, 403, "Stop requests are accepted only from this machine");
+      return;
+    }
+    var presented = exchange.getRequestHeaders().getFirst(STOP_TOKEN_HEADER);
+    if (presented == null || !MessageDigest.isEqual(
+        presented.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8))) {
+      sendError(exchange, 403, "Stop token missing or wrong");
+      return;
+    }
+    logger.info("Stop requested from {}", exchange.getRemoteAddress());
+    var body = new JsonObject();
+    body.addProperty("status", "stopping");
+    sendJsonResponse(exchange, 200, body, null);
+    // On its own thread: onStop may call stop(), which waits for this handler to return
+    var stopper = new Thread(onStop, "stop-request");
+    stopper.setDaemon(false);
+    stopper.start();
+  }
+
+  /** Whether a connection comes from this machine: the loopback interface, by address. */
+  static boolean isLoopback(InetSocketAddress remote) {
+    return remote != null && remote.getAddress() != null
+        && remote.getAddress().isLoopbackAddress();
   }
 
   private boolean isAllowedOrigin(String origin) {

@@ -2132,4 +2132,83 @@ class ConfigLoaderTest {
       assertEquals("stdio", config.effectiveTransport());
     }
   }
+
+  @Nested
+  @DisplayName("idle_exit_minutes")
+  class IdleExitTests {
+
+    @Test
+    @DisplayName("is read from a server block, in YAML and JSON")
+    void isRead() throws Exception {
+      var yaml = writeYaml("""
+          servers:
+            vscode:
+              transport: http
+              idle_exit_minutes: 30
+          """);
+      assertEquals(30, new ConfigLoader().load("vscode", yaml).idleExitMinutes());
+      assertEquals(java.time.Duration.ofMinutes(30),
+          new ConfigLoader().load("vscode", yaml).idleExit().orElseThrow());
+
+      var json = writeJson("""
+          { "servers": { "vscode": { "transport": "http", "idle_exit_minutes": 5 } } }
+          """);
+      assertEquals(5, new ConfigLoader().load("vscode", json).idleExitMinutes());
+    }
+
+    @Test
+    @DisplayName("is unset by default, and 0 means never: a hand-started server stays")
+    void unsetMeansNever() throws Exception {
+      var file = writeYaml("""
+          servers:
+            http:
+              transport: http
+            never:
+              transport: http
+              idle_exit_minutes: 0
+          """);
+      var http = new ConfigLoader().load("http", file);
+      assertNull(http.idleExitMinutes());
+      assertTrue(http.idleExit().isEmpty());
+      assertTrue(new ConfigLoader().load("never", file).idleExit().isEmpty());
+    }
+
+    @Test
+    @DisplayName("falls through from the defaults")
+    void fallsThroughFromDefaults() throws Exception {
+      var file = writeYaml("""
+          idle_exit_minutes: 15
+          servers:
+            a:
+              transport: http
+            b:
+              transport: http
+              idle_exit_minutes: 45
+          """);
+      assertEquals(15, new ConfigLoader().load("a", file).idleExitMinutes());
+      assertEquals(45, new ConfigLoader().load("b", file).idleExitMinutes());
+    }
+
+    @Test
+    @DisplayName("rejects a negative value")
+    void rejectsNegative() throws Exception {
+      var file = writeYaml("""
+          servers:
+            x:
+              transport: http
+              idle_exit_minutes: -1
+          """);
+      var ex = assertThrows(ConfigException.class, () -> new ConfigLoader().load("x", file));
+      assertTrue(ex.getMessage().contains("idle_exit_minutes"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("the twelve-field constructor leaves it unset")
+    void oldConstructor() {
+      var config = new ServerConfig("s", null, null, null, "http",
+          null, null, null, null, null, null, null);
+      assertNull(config.idleExitMinutes());
+      assertTrue(config.idleExit().isEmpty());
+    }
+  }
 }

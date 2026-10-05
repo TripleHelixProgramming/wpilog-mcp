@@ -103,6 +103,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
 | `exportdir` | Directory for CSV exports | `wpilog-export` in the system's temporary directory |
 | `scandepth` | How many directory levels to search for `.wpilog` and `.revlog` files | `5` |
+| `idle_exit_minutes` | For an `http` server started in the background: minutes with no MCP session and no request after which it exits on its own; `0` means never. Meant for a server a program manages, such as the one the VS Code extension starts; a server you start by hand stays until `stop` | `0` |
 | `debug` | Debug logging | `false` |
 
 `logdir`, `tba_key`, `diskcachedir`, and `exportdir` can include environment variables, written `${NAME}`. A variable that is not set is left as written, and the server warns about it at startup; in `tba_key` the key then counts as not set.
@@ -140,7 +141,7 @@ The server reads the first configuration file it finds:
 
 A JSON file uses the same keys as the YAML one.
 
-After `start <name>`, the server reads only `--config` and `-debug` from the command line and ignores other flags. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
+After `start <name>` (and `stop <name>` or `connect <name>`, which take the same `--config`), the server reads only `--config` and `-debug` from the command line and ignores other flags. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
 - `TBA_API_KEY`, when the file sets no `tba_key`
 - `WPILOG_DISK_CACHE_DIR`, when the file sets no `diskcachedir`
 - `WPILOG_DEBUG`
@@ -213,6 +214,11 @@ Written this way, the entry holds nothing specific to your computer: it works fo
 
 Beyond the command, the server reads everything from `~/.wpilog-mcp/servers.yaml`, the TBA key (`tba_key`) included, so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It Alongside the Standalone Install](../vscode-extension/README.md#using-it-alongside-the-standalone-install): once the server is registered for all projects as above, turn off the extension's own Claude Code entries, or Claude Code starts both servers.
 
+Registered this way, each Claude Code session runs a server of its own. To have every client on the machine share one, register `connect` with the name of an `http` server instead (see [One Server for Every Client](#one-server-for-every-client)):
+```bash
+claude mcp add --scope user wpilog -- ~/.wpilog-mcp/bin/wpilog-mcp connect http
+```
+
 ### Claude Desktop
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows). Give the launcher's full path, because Claude Desktop does not search your shell's `PATH`:
@@ -236,7 +242,24 @@ For browser-based or multi-client access, start the `http` server from `servers.
 wpilog-mcp start http
 ```
 
-The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. Running `start http` while it is up reports the running server rather than starting another. To stop it, end that process (`kill <pid>` on macOS and Linux, `taskkill /PID <pid>` on Windows). `GET /health` answers as soon as the server is up.
+The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version and process ID.
+
+Running `start http` while it is up reports the running server rather than starting another. If the running server is another version, because you upgraded since it started, `start` stops it and starts the new version in its place, so an upgrade never leaves an old server serving. If something that is not wpilog-mcp holds the port, `start` says so and starts nothing; choose another port.
+
+To stop the server:
+```bash
+wpilog-mcp stop http
+```
+It finishes the calls in progress, then exits, and `stop` returns once it has. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read, so no one else on the machine can stop it, and nothing on the network can; a server that does not answer the request within the start timeout is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
+
+### One Server for Every Client
+
+An `http` server can serve every MCP client on the machine at once, where a stdio server serves the one client that started it. A client that takes a URL (Claude Code's `.mcp.json` does, with `"type": "http"`) connects to `http://127.0.0.1:2363/mcp` directly. A client whose configuration takes only a command to run (Claude Desktop's file is one) uses `connect`, which relays the client's standard input and output to the server:
+```bash
+wpilog-mcp connect http                      # the "http" server, started first if it is not running
+wpilog-mcp connect --url http://pit:2363     # any server, by URL, started by nobody
+```
+`connect <name>` does what `start <name>` does first, so a client started with it gets a server whether or not one was running, and a client started beside a running one shares it; `connect --url` starts nothing. Each connected client gets a session of its own, ended when the client closes its end. With `idle_exit_minutes` set (see [Config Fields](#config-fields)), the server exits on its own once every client has gone and the time has passed, so a server that is started on demand need never be stopped by hand.
 
 The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
 
@@ -304,11 +327,11 @@ git pull
 ./gradlew install
 ```
 
-Either installer adds the new version's JAR and launcher, points `wpilog-mcp` at them, and leaves `servers.yaml` alone. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until you stop it and start it again.
+Either installer adds the new version's JAR and launcher, points `wpilog-mcp` at them, and leaves `servers.yaml` alone. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until the next `start` or `connect` of its name, which stops it and starts the new version, or until you `stop` it.
 
 ## Uninstalling
 
-Stop any running HTTP server, then delete the install directory (on Windows, the `.wpilog-mcp` folder in your user folder):
+Stop any running HTTP server (`wpilog-mcp stop <name>`), then delete the install directory (on Windows, the `.wpilog-mcp` folder in your user folder):
 ```bash
 rm -rf ~/.wpilog-mcp
 ```
@@ -325,7 +348,7 @@ Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your s
   - Server: `~/.wpilog-mcp/servers.yaml`, or a `.wpilog-mcp.yaml` in the directory the server starts in
   - Claude Code: `~/.claude.json` (user scope) or the project's `.mcp.json`
   - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
-  - HTTP server log: `~/.wpilog-mcp/logs/<name>.log`
+  - HTTP server log: `~/.wpilog-mcp/logs/<name>.log`; its process ID and port: `~/.wpilog-mcp/run/<name>.pid`; the token `stop` presents: `~/.wpilog-mcp/run/<name>.token`
 - **Server times out**: usually the Java version or a wrong path. The launcher needs Java 17 or newer; [Requirements](#requirements) gives the order in which it looks. Check the one it would use:
   ```bash
   ~/wpilib/2026/jdk/bin/java -version   # or: java -version

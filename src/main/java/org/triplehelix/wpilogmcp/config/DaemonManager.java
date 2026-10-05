@@ -4,7 +4,10 @@
  */
 package org.triplehelix.wpilogmcp.config;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.file.AccessDeniedException;
@@ -15,14 +18,19 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.channels.FileChannel;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.Version;
+import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 
 /**
  * Manages daemon lifecycle for HTTP transport server instances.
@@ -48,6 +56,19 @@ import org.slf4j.LoggerFactory;
  * another start was reading it failed there. A write refused because some other program has the
  * file open (a virus scanner, someone displaying it) is tried again for half a second.
  *
+ * <p>The health check reads what the server says of itself, not only that something answered.
+ * A start that took any answer for its daemon once mistook a daemon of an older version for its
+ * own, so an update left the old JAR running until someone noticed; and it took any program on
+ * the port for the daemon. Now {@code /health} carries the version and the process ID: a daemon
+ * of another version is stopped and started again ({@value #STOPPING_MARKER} on the record's
+ * third line while that happens), a program that does not answer as this server is reported as
+ * holding the port, and a daemon that answers on the port with no record is recorded.
+ *
+ * <p>A daemon is stopped by {@code POST /stop} with a token the start that spawned it wrote to a
+ * file beside the PID file that only the user can read ({@code {name}.token}) and gave the
+ * daemon in its environment: so a process that can read the file may stop the daemon, and no
+ * other. A daemon too old to have that endpoint is ended as a process.
+ *
  * @since 0.8.0
  */
 public class DaemonManager {
@@ -57,6 +78,10 @@ public class DaemonManager {
   static final String STARTING_MARKER = "starting";
   /** Third line of a PID file whose daemon was spawned and has not answered yet. */
   static final String BOOTING_MARKER = "booting";
+  /** Third line of a PID file whose daemon is being stopped, for a restart or a {@code stop}. */
+  static final String STOPPING_MARKER = "stopping";
+  /** The environment variable that gives a spawned daemon its stop token. */
+  public static final String STOP_TOKEN_ENV = "WPILOG_STOP_TOKEN";
   /** How long a start waits for the daemon (or a concurrent start's daemon) to answer. */
   private static final Duration DEFAULT_START_TIMEOUT = Duration.ofSeconds(10);
   private static final Duration HEALTH_POLL_INTERVAL = Duration.ofMillis(250);
@@ -74,13 +99,18 @@ public class DaemonManager {
     void destroy();
   }
 
-  /** Starts the daemon process, its output appended to a log file. Tests substitute their own. */
+  /**
+   * Starts the daemon process with extra environment variables, its output appended to a log
+   * file. Tests substitute their own.
+   */
   interface Launcher {
-    Launched launch(List<String> command, java.io.File logFile) throws IOException;
+    Launched launch(List<String> command, Map<String, String> environment, java.io.File logFile)
+        throws IOException;
   }
 
-  private static final Launcher PROCESS_LAUNCHER = (command, logFile) -> {
+  private static final Launcher PROCESS_LAUNCHER = (command, environment, logFile) -> {
     var pb = new ProcessBuilder(command);
+    pb.environment().putAll(environment);
     pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
     pb.redirectErrorStream(true);
     var process = pb.start();
@@ -129,7 +159,38 @@ public class DaemonManager {
     }
   };
 
-  /** A booting record this many start timeouts old whose daemon still does not answer is stale. */
+  /** The processes a record names, by ID. Tests substitute their own. */
+  interface Processes {
+    boolean isAlive(long pid);
+
+    /** Asks the process to end, as a signal does; returns false when it cannot be asked. */
+    boolean destroy(long pid);
+
+    /** Ends the process without asking. */
+    boolean destroyForcibly(long pid);
+  }
+
+  static final Processes SYSTEM_PROCESSES = new Processes() {
+    @Override
+    public boolean isAlive(long pid) {
+      return ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
+    }
+
+    @Override
+    public boolean destroy(long pid) {
+      return ProcessHandle.of(pid).map(ProcessHandle::destroy).orElse(false);
+    }
+
+    @Override
+    public boolean destroyForcibly(long pid) {
+      return ProcessHandle.of(pid).map(ProcessHandle::destroyForcibly).orElse(false);
+    }
+  };
+
+  /**
+   * A booting record this many start timeouts old whose daemon still does not answer is stale,
+   * and so is a stopping record this old whose daemon still answers: its stopper is gone.
+   */
   private static final int BOOTING_GRACE_TIMEOUTS = 3;
 
   /** Tries of a write to the PID file that is refused because the file is open elsewhere. */
@@ -147,6 +208,9 @@ public class DaemonManager {
   private final Duration startTimeout;
   private final Launcher launcher;
   private final PidFileWriter files;
+  private final Processes processes;
+  /** The version a daemon must report to be this start's own. */
+  private final String ownVersion;
 
   public DaemonManager() {
     this(Path.of(System.getProperty("user.home"), "." + APP_NAME, "run"), DEFAULT_START_TIMEOUT);
@@ -165,14 +229,41 @@ public class DaemonManager {
   }
 
   DaemonManager(Path runDir, Duration startTimeout, Launcher launcher, PidFileWriter files) {
+    this(runDir, startTimeout, launcher, files, SYSTEM_PROCESSES, Version.VERSION);
+  }
+
+  DaemonManager(Path runDir, Duration startTimeout, Launcher launcher, PidFileWriter files,
+      Processes processes, String ownVersion) {
     this.runDir = runDir;
     this.startTimeout = startTimeout;
     this.launcher = launcher;
     this.files = files;
+    this.processes = processes;
+    this.ownVersion = ownVersion;
   }
 
-  /** A daemon recorded in a PID file whose process is alive and answers the health check. */
-  public record RunningDaemon(long pid, int port) {}
+  /**
+   * A daemon recorded in a PID file whose process is alive and answers the health check as this
+   * server, with the version it reports (null for a server from before the version was
+   * reported, which is to say an older one).
+   */
+  public record RunningDaemon(long pid, int port, String version) {}
+
+  /** Who answers on a port. */
+  enum Holder {
+    /** Nothing: the connection is refused. */
+    NOBODY,
+    /** A wpilog-mcp server: {@code /health} answers as one. */
+    THIS_SERVER,
+    /** Something else: a connection is accepted, but {@code /health} is not answered as ours. */
+    STRANGER
+  }
+
+  /** What a probe of a port found: who holds it, and for this server its version and PID. */
+  record PortProbe(Holder holder, String version, Long pid) {
+    static final PortProbe NOBODY = new PortProbe(Holder.NOBODY, null, null);
+    static final PortProbe STRANGER = new PortProbe(Holder.STRANGER, null, null);
+  }
 
   /**
    * Checks if a named server is already running on the given port.
@@ -254,8 +345,8 @@ public class DaemonManager {
       return true;
     }
     logger.error("Server '{}' is running on port {} (PID {}), not the configured port {}. "
-        + "Stop it first (kill {}), then start it again.",
-        name, daemon.port(), daemon.pid(), port, daemon.pid());
+        + "Stop it first (wpilog-mcp stop {}), then start it again.",
+        name, daemon.port(), daemon.pid(), port, name);
     return false;
   }
 
@@ -267,7 +358,11 @@ public class DaemonManager {
    * health check is removed. A claim by a start still in progress (its process alive) is kept
    * and reported as not running, and so is the record of a daemon that was spawned and does not
    * answer yet; that record becomes the daemon's plain one when it answers, and is removed if
-   * it still does not after {@value #BOOTING_GRACE_TIMEOUTS} start timeouts.
+   * it still does not after {@value #BOOTING_GRACE_TIMEOUTS} start timeouts. The record of a
+   * daemon being stopped is kept and reported as not running while its process lives, so that
+   * no start reports a daemon on its way out as running, and no start claims the file before
+   * the port is free; a stopping record that old whose daemon still answers has lost its
+   * stopper, and counts as running again.
    */
   Optional<RunningDaemon> findRunning(String name) {
     var pidFile = pidFilePath(name);
@@ -285,12 +380,13 @@ public class DaemonManager {
 
       long pid = Long.parseLong(lines.get(0).trim());
       int port = Integer.parseInt(lines.get(1).trim());
-      boolean starting = lines.size() > 2 && STARTING_MARKER.equals(lines.get(2).trim());
-      boolean booting = lines.size() > 2 && BOOTING_MARKER.equals(lines.get(2).trim());
+      var marker = lines.size() > 2 ? lines.get(2).trim() : "";
+      boolean starting = STARTING_MARKER.equals(marker);
+      boolean booting = BOOTING_MARKER.equals(marker);
+      boolean stopping = STOPPING_MARKER.equals(marker);
 
       // Check if process is alive
-      var handle = ProcessHandle.of(pid);
-      if (handle.isEmpty() || !handle.get().isAlive()) {
+      if (!processes.isAlive(pid)) {
         logger.debug("Stale PID file (process {} is dead): {}", pid, pidFile);
         deletePidFile(name);
         return Optional.empty();
@@ -301,10 +397,16 @@ public class DaemonManager {
         return Optional.empty();
       }
 
+      if (stopping && !olderThanBootingGrace(pidFile)) {
+        logger.debug("Server '{}' (PID {}) is being stopped", name, pid);
+        return Optional.empty();
+      }
+
       // Process is alive — verify it's actually our server via health check
-      if (healthCheck(port)) {
-        if (booting) settleRecord(name, pid, port); // it answers: no longer booting
-        return Optional.of(new RunningDaemon(pid, port));
+      var probe = probe(port);
+      if (probe.holder() == Holder.THIS_SERVER) {
+        if (booting || stopping) settleRecord(name, pid, port); // it answers: a plain record
+        return Optional.of(new RunningDaemon(pid, port, probe.version()));
       }
 
       if (booting && !olderThanBootingGrace(pidFile)) {
@@ -332,36 +434,107 @@ public class DaemonManager {
    * <p>Re-launches the current JAR with {@code --internal-daemon <name>} and optional
    * {@code --config <path>}. The child process stdout/stderr are redirected to a log file.
    *
+   * <p>A daemon that is running and reports this JAR's version is left as it is. One that
+   * reports another version (or none, being older than the version in {@code /health}) is
+   * stopped and started again, so that an update never leaves an old JAR serving. A port held
+   * by something that does not answer as this server is reported, and nothing is spawned; a
+   * daemon of this version answering on the port with no record (its PID file removed) is
+   * recorded rather than started again.
+   *
    * @param name The server configuration name
    * @param port The HTTP port
    * @param configPath Optional explicit config file path, or null
-   * @return true if the daemon is running on {@code port} when this returns: started by this
-   *     call, already running, or started by a concurrent call; false if it could not be
-   *     started, or a daemon of this name is running on another port
+   * @return true if a daemon of this version is running on {@code port} when this returns:
+   *     started by this call, already running, started by a concurrent call, or restarted;
+   *     false if it could not be started, a daemon of this name is running on another port, or
+   *     another program holds the port
    */
   public boolean spawnDaemon(String name, int port, Path configPath) {
-    // One start decides at a time: a daemon is running, another start has the file, or this
-    // start claims it. Of concurrent starts, only the one that claims the file spawns; the
-    // others wait for its daemon.
-    record Decision(Optional<RunningDaemon> running, boolean claimed) {}
-    Decision decision;
-    try {
-      decision = locked(name, () -> {
-        var running = findRunning(name);
-        return new Decision(running, running.isEmpty() && claimPidFile(name, port));
-      });
-    } catch (java.io.UncheckedIOException e) {
-      logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());
+    // Once, and once more after stopping a daemon of another version
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      // One start decides at a time: a daemon is running, another start has the file, or this
+      // start claims it. Of concurrent starts, only the one that claims the file spawns; the
+      // others wait for its daemon.
+      record Decision(Optional<RunningDaemon> running, boolean claimed) {}
+      Decision decision;
+      try {
+        decision = locked(name, () -> {
+          var running = findRunning(name);
+          return new Decision(running, running.isEmpty() && claimPidFile(name, port));
+        });
+      } catch (java.io.UncheckedIOException e) {
+        logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());
+        return false;
+      }
+      if (decision.running().isPresent()) {
+        var running = decision.running().get();
+        if (ownVersion.equals(running.version())) {
+          return reportRunning(name, port, running);
+        }
+        if (attempt == 2) {
+          logger.error("Server '{}' is running version {} (PID {}) again after the restart; "
+              + "something else starts that version", name, versionName(running.version()),
+              running.pid());
+          return false;
+        }
+        logger.info("Server '{}' is running version {} (PID {}); this is version {}: "
+            + "restarting it", name, versionName(running.version()), running.pid(), ownVersion);
+        if (!endDaemon(name, running)) {
+          logger.error("Server '{}' (PID {}) could not be stopped for the restart", name,
+              running.pid());
+          return false;
+        }
+        continue;
+      }
+      if (!decision.claimed()) {
+        // The other start may be restarting a daemon of another version, which takes a stop
+        // and a boot: wait for as long as a booting record is given
+        logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);
+        if (!waitForHealth(port, null, startTimeout.multipliedBy(BOOTING_GRACE_TIMEOUTS))) {
+          return false;
+        }
+        logger.info("Server '{}' is running on port {} (started by the other start)", name, port);
+        return true;
+      }
+      return launchClaimed(name, port, configPath);
+    }
+    return false;
+  }
+
+  private static String versionName(String version) {
+    return version == null ? "an older version, from before /health said" : version;
+  }
+
+  /**
+   * Spawns the daemon for a start that holds the claim, once the port is known to be free.
+   */
+  private boolean launchClaimed(String name, int port, Path configPath) {
+    // The port: free, ours without a record, or a stranger's
+    var probe = probe(port);
+    if (probe.holder() == Holder.STRANGER) {
+      logger.error("Port {} is in use by another program, which does not answer as wpilog-mcp. "
+          + "Choose another port for server '{}'.", port, name);
+      releaseRecord(name);
       return false;
     }
-    if (decision.running().isPresent()) {
-      return reportRunning(name, port, decision.running().get());
-    }
-    if (!decision.claimed()) {
-      logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);
-      if (!waitForHealth(port, null)) return false;
-      logger.info("Server '{}' is running on port {} (started by the other start)", name, port);
-      return true;
+    if (probe.holder() == Holder.THIS_SERVER) {
+      if (ownVersion.equals(probe.version()) && probe.pid() != null) {
+        try {
+          recordDaemon(name, probe.pid(), port, null);
+          logger.info("Server '{}' was already running on port {} (PID {}) without a record; "
+              + "recorded it", name, port, probe.pid());
+          return true;
+        } catch (IOException e) {
+          logger.error("Failed to record the running server '{}': {}", name, e.toString());
+          releaseRecord(name);
+          return false;
+        }
+      }
+      logger.error("Port {} is served by a wpilog-mcp server (version {}{}) that is not "
+          + "recorded as server '{}'. Stop it, or choose another port.", port,
+          versionName(probe.version()), probe.pid() == null ? "" : ", PID " + probe.pid(), name);
+      releaseRecord(name);
+      return false;
     }
 
     Launched process = null;
@@ -380,15 +553,19 @@ public class DaemonManager {
       var command = daemonCommand(javaCmd, maxHeap, System.getProperty(LOG_LEVEL_PROPERTY),
           jarPath, name, configPath);
 
+      // The stop token: in a file only the user can read, and in the daemon's environment
+      var token = newToken();
+      writeToken(name, token);
+
       logger.debug("Spawning daemon: {}", command);
-      process = launcher.launch(command, logFile);
+      process = launcher.launch(command, Map.of(STOP_TOKEN_ENV, token), logFile);
 
       // Replace the claim with the daemon's record, marked as booting until it answers: a
       // plain record of a live process that does not answer reads as a reused PID
       recordDaemon(name, process.pid(), port, BOOTING_MARKER);
       recorded = true;
 
-      if (waitForHealth(port, process)) {
+      if (waitForHealth(port, process, startTimeout)) {
         try {
           recordDaemon(name, process.pid(), port, null);
         } catch (IOException e) {
@@ -426,6 +603,169 @@ public class DaemonManager {
         releaseRecord(name);
       }
     }
+  }
+
+  /**
+   * Stops the named server: asks the daemon to finish its calls and exit, waits for it, and
+   * removes its record. A daemon that is not running is reported, and that is success: the
+   * point of {@code stop} is that nothing runs afterwards.
+   *
+   * @return true when no daemon of this name runs afterwards
+   */
+  public boolean stopDaemon(String name) {
+    Optional<RunningDaemon> running;
+    try {
+      running = locked(name, () -> findRunning(name));
+    } catch (java.io.UncheckedIOException e) {
+      logger.error("Failed to read the PID file for '{}': {}", name, e.getCause().getMessage());
+      return false;
+    }
+    if (running.isEmpty()) {
+      logger.info("Server '{}' is not running", name);
+      deleteToken(name);
+      return true;
+    }
+    var daemon = running.get();
+    if (endDaemon(name, daemon)) {
+      logger.info("Server '{}' stopped (PID {})", name, daemon.pid());
+      return true;
+    }
+    logger.error("Server '{}' (PID {}) did not stop", name, daemon.pid());
+    return false;
+  }
+
+  /**
+   * Ends a running daemon: marks its record as stopping under the lock and asks it to stop
+   * (by {@code POST /stop} with the token, or, for a daemon too old to have that endpoint, as
+   * a process), waits for the process to exit, ends it without asking if it has not after the
+   * start timeout (the transport finishes its calls within half that), and removes its record
+   * and token under the lock. The lock is not held while waiting.
+   */
+  private boolean endDaemon(String name, RunningDaemon daemon) {
+    try {
+      locked(name, () -> {
+        writePidFile(name, daemon.pid(), daemon.port(), STOPPING_MARKER);
+        var token = readToken(name);
+        if (token != null && requestStop(daemon.port(), token)) {
+          logger.debug("Server '{}' (PID {}) accepted the stop request", name, daemon.pid());
+        } else {
+          logger.info("Server '{}' (PID {}) takes no stop request{}; ending its process", name,
+              daemon.pid(), token == null ? " (no token file)" : "");
+          processes.destroy(daemon.pid());
+        }
+        return null;
+      });
+    } catch (java.io.UncheckedIOException e) {
+      logger.error("Failed to mark server '{}' as stopping: {}", name, e.getCause().getMessage());
+      return false;
+    }
+    if (!waitForExit(daemon.pid(), startTimeout)) {
+      logger.warn("Server '{}' (PID {}) did not exit within {} ms; ending it", name, daemon.pid(),
+          startTimeout.toMillis());
+      processes.destroyForcibly(daemon.pid());
+      if (!waitForExit(daemon.pid(), Duration.ofSeconds(2))) {
+        return false;
+      }
+    }
+    locked(name, () -> {
+      // Only this daemon's record: a start may have recorded a new one meanwhile
+      if (recordedPid(name) == daemon.pid()) deletePidFile(name);
+      deleteToken(name);
+      return null;
+    });
+    return true;
+  }
+
+  private boolean waitForExit(long pid, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (processes.isAlive(pid)) {
+      if (System.nanoTime() >= deadline) return false;
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** The process ID on the first line of the named server's PID file, or -1. */
+  private long recordedPid(String name) {
+    try {
+      var lines = Files.readAllLines(pidFilePath(name));
+      return lines.isEmpty() ? -1 : Long.parseLong(lines.get(0).trim());
+    } catch (IOException | NumberFormatException e) {
+      return -1;
+    }
+  }
+
+  /** Asks the server on {@code port} to stop, with the token. */
+  boolean requestStop(int port, String token) {
+    try {
+      var url = URI.create("http://127.0.0.1:" + port + "/stop").toURL();
+      var conn = (HttpURLConnection) url.openConnection();
+      conn.setRequestMethod("POST");
+      conn.setRequestProperty(HttpTransport.STOP_TOKEN_HEADER, token);
+      conn.setConnectTimeout(2000);
+      conn.setReadTimeout(5000);
+      conn.setDoOutput(true);
+      conn.getOutputStream().close();
+      int status = conn.getResponseCode();
+      conn.disconnect();
+      if (status != 200) {
+        logger.debug("Stop request to port {} answered {}", port, status);
+      }
+      return status == 200;
+    } catch (IOException e) {
+      logger.debug("Stop request to port {} failed: {}", port, e.toString());
+      return false;
+    }
+  }
+
+  /** A fresh stop token: 32 random bytes, as hex. */
+  private static String newToken() {
+    var bytes = new byte[32];
+    new SecureRandom().nextBytes(bytes);
+    return HexFormat.of().formatHex(bytes);
+  }
+
+  /**
+   * Writes the named server's stop token to {@code {name}.token}, readable by the user alone
+   * where the file system has permissions (the user's home folder is private on Windows).
+   */
+  void writeToken(String name, String token) throws IOException {
+    Files.createDirectories(runDir);
+    var path = tokenPath(name);
+    Files.deleteIfExists(path);
+    if (Files.getFileStore(runDir).supportsFileAttributeView("posix")) {
+      // Created with its permissions, so there is no moment at which others can read it
+      Files.createFile(path, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+          java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
+    }
+    Files.writeString(path, token + "\n");
+  }
+
+  /** The named server's stop token, or null when there is no token file. */
+  String readToken(String name) {
+    try {
+      var lines = Files.readAllLines(tokenPath(name));
+      return lines.isEmpty() || lines.get(0).isBlank() ? null : lines.get(0).trim();
+    } catch (IOException e) {
+      return null;
+    }
+  }
+
+  private void deleteToken(String name) {
+    try {
+      Files.deleteIfExists(tokenPath(name));
+    } catch (IOException e) {
+      logger.debug("Failed to delete the token file for '{}': {}", name, e.getMessage());
+    }
+  }
+
+  Path tokenPath(String name) {
+    return runDir.resolve(name + ".token");
   }
 
   /**
@@ -537,16 +877,18 @@ public class DaemonManager {
   }
 
   /**
-   * Polls the health endpoint until it answers, the process (when given) dies, or the start
-   * timeout passes.
+   * Polls the health endpoint until a server of this version answers, the process (when given)
+   * dies, or the start timeout passes. A server of another version answering meanwhile is one
+   * on its way out, being restarted by another start.
    */
-  private boolean waitForHealth(int port, Launched process) {
-    long deadline = System.nanoTime() + startTimeout.toNanos();
+  private boolean waitForHealth(int port, Launched process, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
     while (true) {
       if (process != null && !process.isAlive()) {
         return false;
       }
-      if (healthCheck(port)) {
+      var probe = probe(port);
+      if (probe.holder() == Holder.THIS_SERVER && ownVersion.equals(probe.version())) {
         return true;
       }
       if (System.nanoTime() >= deadline) {
@@ -631,28 +973,60 @@ public class DaemonManager {
   }
 
   /**
-   * Performs an HTTP health check against the server.
+   * Whether a wpilog-mcp server answers on the port, whatever its version.
    *
    * @param port The HTTP port to check
-   * @return true if the server responds (any HTTP status indicates it's alive)
    */
   boolean healthCheck(int port) {
+    return probe(port).holder() == Holder.THIS_SERVER;
+  }
+
+  /**
+   * Asks {@code /health} on the port who holds it. A refused connection is nobody. A 200 with a
+   * JSON body that says {@code status: ok} and counts sessions is this server, with the version
+   * and process ID it reports (absent from a server older than the one that first said them). Anything else that
+   * accepts the connection is a stranger: another program, or a server of ours that is not a
+   * wpilog-mcp server answering as one.
+   */
+  PortProbe probe(int port) {
     try {
-      // Use the dedicated /health endpoint which returns immediately,
-      // instead of /mcp GET which opens a long-lived SSE stream.
+      // The dedicated /health endpoint returns at once; a GET of /mcp would open a stream
       var url = URI.create("http://127.0.0.1:" + port + "/health").toURL();
       var conn = (HttpURLConnection) url.openConnection();
       conn.setRequestMethod("GET");
       conn.setConnectTimeout(2000);
       conn.setReadTimeout(2000);
-      conn.connect();
-      int status = conn.getResponseCode();
-      conn.disconnect();
-      // Any response means the server is alive
-      return true;
-    } catch (IOException e) {
-      return false;
+      try {
+        int status = conn.getResponseCode();
+        if (status != 200) return PortProbe.STRANGER;
+        String body;
+        try (var in = conn.getInputStream()) {
+          body = new String(in.readNBytes(4096), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        var parsed = JsonParser.parseString(body);
+        if (!parsed.isJsonObject()) return PortProbe.STRANGER;
+        var health = parsed.getAsJsonObject();
+        if (!"ok".equals(stringOrNull(health, "status")) || !health.has("sessions")) {
+          return PortProbe.STRANGER;
+        }
+        Long pid = health.has("pid") && health.get("pid").isJsonPrimitive()
+            ? health.get("pid").getAsLong() : null;
+        return new PortProbe(Holder.THIS_SERVER, stringOrNull(health, "version"), pid);
+      } finally {
+        conn.disconnect();
+      }
+    } catch (ConnectException e) {
+      return PortProbe.NOBODY;
+    } catch (IOException | RuntimeException e) {
+      // Accepted the connection but did not answer as this server: a timeout, no HTTP, no JSON
+      logger.debug("Port {} answered the health check as a stranger: {}", port, e.toString());
+      return PortProbe.STRANGER;
     }
+  }
+
+  private static String stringOrNull(JsonObject object, String field) {
+    return object.has(field) && object.get(field).isJsonPrimitive()
+        ? object.get(field).getAsString() : null;
   }
 
   private String resolveJarPath() {

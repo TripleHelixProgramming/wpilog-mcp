@@ -692,4 +692,199 @@ class HttpTransportTest {
       assertTrue(response.body().isEmpty(), "A notification must not be answered");
     }
   }
+
+  // ==================== /health, /stop, and the idle exit ====================
+
+  @Nested
+  @DisplayName("the version in /health, POST /stop, and the idle exit")
+  class ControlTests {
+    private final java.util.List<HttpTransport> started = new java.util.ArrayList<>();
+
+    private HttpTransport startWith(java.util.function.Consumer<HttpTransport> configure)
+        throws IOException {
+      var t = new HttpTransport(registry, 0);
+      configure.accept(t);
+      t.start();
+      started.add(t);
+      return t;
+    }
+
+    @AfterEach
+    void stopAll() {
+      started.forEach(HttpTransport::stop);
+    }
+
+    private HttpResponse<String> request(HttpTransport t, String method, String path,
+        String token) throws IOException, InterruptedException {
+      var builder = HttpRequest.newBuilder()
+          .uri(URI.create("http://127.0.0.1:" + t.getPort() + path))
+          .method(method, HttpRequest.BodyPublishers.noBody());
+      if (token != null) builder.header(HttpTransport.STOP_TOKEN_HEADER, token);
+      return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> postTo(HttpTransport t, String body, String sessionId)
+        throws IOException, InterruptedException {
+      var builder = HttpRequest.newBuilder()
+          .uri(URI.create("http://127.0.0.1:" + t.getPort() + "/mcp"))
+          .header("Content-Type", "application/json")
+          .header("Accept", "application/json, text/event-stream")
+          .POST(HttpRequest.BodyPublishers.ofString(body));
+      if (sessionId != null) builder.header("Mcp-Session-Id", sessionId);
+      return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String initialize(HttpTransport t) throws IOException, InterruptedException {
+      var response = postTo(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", null);
+      assertEquals(200, response.statusCode());
+      return response.headers().firstValue("Mcp-Session-Id").orElseThrow();
+    }
+
+    @Test
+    @DisplayName("/health reports the version and the process ID, so a start can tell its own")
+    void healthReportsVersionAndPid() throws Exception {
+      var response = request(transport, "GET", "/health", null);
+      assertEquals(200, response.statusCode());
+      var health = JsonParser.parseString(response.body()).getAsJsonObject();
+      assertEquals("ok", health.get("status").getAsString());
+      assertEquals(0, health.get("sessions").getAsInt());
+      assertEquals(org.triplehelix.wpilogmcp.Version.VERSION, health.get("version").getAsString());
+      assertEquals(ProcessHandle.current().pid(), health.get("pid").getAsLong());
+    }
+
+    @Test
+    @DisplayName("/stop is refused when it is not enabled, and the server goes on serving")
+    void stopNotEnabled() throws Exception {
+      var response = request(transport, "POST", "/stop", "anything");
+      assertEquals(403, response.statusCode());
+      assertTrue(response.body().contains("not enabled"), response.body());
+      assertEquals(200, request(transport, "GET", "/health", null).statusCode());
+    }
+
+    @Test
+    @DisplayName("/stop needs the token, and only POST")
+    void stopNeedsTheToken() throws Exception {
+      var stopped = new CountDownLatch(1);
+      var t = startWith(x -> x.setStop("secret", stopped::countDown));
+      assertEquals(403, request(t, "POST", "/stop", null).statusCode(), "no token");
+      assertEquals(403, request(t, "POST", "/stop", "wrong").statusCode(), "wrong token");
+      assertEquals(405, request(t, "GET", "/stop", "secret").statusCode(), "not a POST");
+      assertEquals(1, stopped.getCount(), "nothing above may stop the server");
+      assertEquals(200, request(t, "GET", "/health", null).statusCode());
+
+      var response = request(t, "POST", "/stop", "secret");
+      assertEquals(200, response.statusCode());
+      assertEquals("stopping",
+          JsonParser.parseString(response.body()).getAsJsonObject().get("status").getAsString());
+      assertTrue(stopped.await(5, TimeUnit.SECONDS), "the stop action did not run");
+    }
+
+    @Test
+    @DisplayName("a stop lets the call in flight finish before the server stops")
+    void stopLetsCallsFinish() throws Exception {
+      var slow = new ToolRegistry();
+      var toolDone = new java.util.concurrent.atomic.AtomicLong();
+      slow.registerTool(new ToolRegistry.Tool() {
+        @Override public String name() { return "slow"; }
+        @Override public String description() { return "Sleeps"; }
+        @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+        @Override public com.google.gson.JsonElement execute(JsonObject arguments) {
+          try {
+            Thread.sleep(700);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+          toolDone.set(System.nanoTime());
+          var result = new JsonObject();
+          result.addProperty("slept", true);
+          return result;
+        }
+      });
+      var t = new HttpTransport(slow, 0);
+      var stopReturned = new java.util.concurrent.atomic.AtomicLong();
+      var stopDone = new CountDownLatch(1);
+      t.setStop("secret", () -> {
+        t.stop();
+        stopReturned.set(System.nanoTime());
+        stopDone.countDown();
+      });
+      t.start();
+      started.add(t);
+      var session = initialize(t);
+
+      var call = java.util.concurrent.Executors.newSingleThreadExecutor().submit(() -> postTo(t,
+          "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"slow\",\"arguments\":{}}}",
+          session));
+      Thread.sleep(150);
+      assertEquals(200, request(t, "POST", "/stop", "secret").statusCode());
+
+      var response = call.get(10, TimeUnit.SECONDS);
+      assertEquals(200, response.statusCode(), "the call in flight must be answered");
+      assertTrue(response.body().contains("slept"), response.body());
+      assertTrue(stopDone.await(10, TimeUnit.SECONDS));
+      assertTrue(stopReturned.get() >= toolDone.get(), "the server stopped before the call ended");
+    }
+
+    @Test
+    @DisplayName("only a loopback connection may stop the server")
+    void onlyLoopbackMayStop() throws Exception {
+      assertTrue(HttpTransport.isLoopback(
+          new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 1)));
+      assertTrue(HttpTransport.isLoopback(new java.net.InetSocketAddress("127.0.0.1", 1)));
+      assertFalse(HttpTransport.isLoopback(
+          new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(
+              new byte[] {10, 23, 63, 2}), 1)));
+      assertFalse(HttpTransport.isLoopback(null));
+    }
+
+    @Test
+    @DisplayName("with no session and no request, the server exits after the idle time")
+    void idleExitFires() throws Exception {
+      var exited = new CountDownLatch(1);
+      startWith(x -> x.setIdleExit(java.time.Duration.ofMillis(300), exited::countDown));
+      assertTrue(exited.await(5, TimeUnit.SECONDS), "the idle exit did not run");
+    }
+
+    @Test
+    @DisplayName("a session keeps the server up; its end starts the idle clock")
+    void sessionHoldsTheServer() throws Exception {
+      var exited = new CountDownLatch(1);
+      var t = startWith(x -> x.setIdleExit(java.time.Duration.ofMillis(300), exited::countDown));
+      var session = initialize(t);
+      assertFalse(exited.await(1200, TimeUnit.MILLISECONDS),
+          "the server exited while a session was open");
+      assertEquals(1, t.sessionCount());
+
+      var delete = HttpRequest.newBuilder()
+          .uri(URI.create("http://127.0.0.1:" + t.getPort() + "/mcp"))
+          .header("Mcp-Session-Id", session)
+          .method("DELETE", HttpRequest.BodyPublishers.noBody())
+          .build();
+      assertEquals(200, client.send(delete, HttpResponse.BodyHandlers.ofString()).statusCode());
+      assertTrue(exited.await(5, TimeUnit.SECONDS), "the idle exit did not run after the session");
+    }
+
+    @Test
+    @DisplayName("MCP requests reset the idle clock; health checks do not")
+    void requestsResetTheClock() throws Exception {
+      var exited = new CountDownLatch(1);
+      var t = startWith(x -> x.setIdleExit(java.time.Duration.ofMillis(500), exited::countDown));
+      // Requests to the MCP endpoint every 100 ms (a notification without a session is still
+      // a request) keep it up well past the idle time
+      long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1500);
+      while (System.nanoTime() < until) {
+        postTo(t, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", null);
+        Thread.sleep(100);
+      }
+      assertEquals(1, exited.getCount(), "the server exited while it was being used");
+
+      // Health checks alone do not: a start's probe must not keep a server alive
+      until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1500);
+      while (System.nanoTime() < until && exited.getCount() > 0) {
+        request(t, "GET", "/health", null);
+        Thread.sleep(100);
+      }
+      assertTrue(exited.await(3, TimeUnit.SECONDS), "health checks kept the server up");
+    }
+  }
 }
