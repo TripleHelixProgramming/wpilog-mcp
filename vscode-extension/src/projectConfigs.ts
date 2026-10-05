@@ -2,8 +2,9 @@
  * The configuration files the extension keeps for Claude Code's server, one per project, in its
  * global storage. A file holds the TBA API key, so it is written only for a project whose
  * `.mcp.json` ends up with the entry that starts the server with it, and clearing the key
- * reaches every file in the directory, remembered project or not. No VS Code API, so this can be
- * tested on its own.
+ * reaches every file in the directory, remembered project or not. The servers' configuration
+ * files (see projectServers.ts) are written with the same care, by writeConfigFile. No VS Code
+ * API, so this can be tested on its own.
  */
 import * as fs from "fs";
 import * as path from "path";

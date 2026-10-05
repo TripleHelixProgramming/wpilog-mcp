@@ -1,18 +1,18 @@
 /**
- * Runs the one server (see oneServer.ts): writes its configuration, chooses its port, starts it
- * with the server's own `start`, which is idempotent and restarts a daemon of another version,
- * restarts it when its configuration changes, and tries again with backoff when a start fails.
- * This is the VS Code side; the decisions it makes are the pure functions in oneServer.ts.
+ * Runs the servers the projects use (see projectServers.ts): writes each daemon's configuration,
+ * chooses its port, starts it with the server's own `start`, which is idempotent and restarts a
+ * daemon of another version, restarts it when its configuration changes, and tries again with
+ * backoff when a start fails. This is the VS Code side; the decisions it makes are the pure
+ * functions in projectServers.ts.
  */
 import { execFile } from "child_process";
+import * as fs from "fs";
 import * as http from "http";
 import * as net from "net";
 import * as os from "os";
-import * as path from "path";
 import * as vscode from "vscode";
 import {
   Backoff,
-  CONFIG_FILE_NAME,
   HealthVerdict,
   MAX_START_ATTEMPTS,
   buildDaemonConfig,
@@ -20,14 +20,28 @@ import {
   daemonIsCurrent,
   healthUrl,
   keepPort,
+  portInConfig,
   serverLogPath,
   serverUrl,
   startCommand,
   stopCommand,
-} from "./oneServer";
+} from "./projectServers";
 import { writeConfigFile } from "./projectConfigs";
 
-/** What the daemon is started from: the JVM, the JAR, and the configuration's values. */
+/** A daemon: its name, the server it runs, its configuration file, and the projects it serves. */
+export interface DaemonSpec {
+  /** The daemon's name, as `start`, `stop`, and `connect` know it (see daemonNameFor). */
+  name: string;
+  /** The server's name as the user defined it (`default`, or an entry of `wpilog-mcp.servers`). */
+  serverName: string;
+  configPath: string;
+  /** What VS Code shows for it. */
+  label: string;
+  /** The projects using the server; none for a window with no folder. */
+  folderPaths: string[];
+}
+
+/** What a daemon is started from: the JVM, the JAR, and the configuration's values. */
 export interface DaemonInputs {
   javaPath: string;
   jarPath: string;
@@ -41,183 +55,227 @@ export interface DaemonInputs {
   version: string;
 }
 
-/** Remembers the port chosen for this user. */
-const PORT_KEY = "wpilog-mcp.serverPort";
+/** Remembers the port chosen for each daemon, by name. */
+const PORTS_KEY = "wpilog-mcp.serverPorts";
 
 /** How long a `start` or `stop` may take: a JVM to boot and a daemon to answer, or to drain. */
 const COMMAND_TIMEOUT_MS = 120_000;
 
+/** What the manager keeps per daemon. */
+interface DaemonState {
+  backoff: Backoff;
+  retryTimer?: ReturnType<typeof setTimeout>;
+  inFlight?: Promise<string | undefined>;
+  lastUrl?: string;
+  lastInputs?: DaemonInputs;
+  errorShown: boolean;
+}
+
 export class ServerManager implements vscode.Disposable {
-  private readonly backoff = new Backoff();
-  private retryTimer: ReturnType<typeof setTimeout> | undefined;
-  private inFlight: Promise<string | undefined> | undefined;
-  private lastUrl: string | undefined;
-  private lastInputs: DaemonInputs | undefined;
-  private errorShown = false;
+  private readonly states = new Map<string, DaemonState>();
 
   /**
-   * @param resolveInputs what to start the daemon from, or undefined when it cannot be started
+   * @param resolveInputs what to start a daemon from, or undefined when it cannot be started
    *     (no Java, no JAR), which the resolver has already reported
-   * @param onChanged called when the daemon's URL changes, so VS Code's agents are re-registered
+   * @param onChanged called when a daemon's URL changes, so VS Code's agents are re-registered
    */
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
-    private readonly resolveInputs: (prompt: boolean) => Promise<DaemonInputs | undefined>,
+    private readonly resolveInputs: (spec: DaemonSpec, prompt: boolean) => Promise<DaemonInputs | undefined>,
     private readonly onChanged: () => void
   ) {}
 
-  /** The daemon's configuration file, in the extension's global storage. */
-  get configPath(): string {
-    return path.join(this.context.globalStorageUri.fsPath, CONFIG_FILE_NAME);
+  private state(name: string): DaemonState {
+    let state = this.states.get(name);
+    if (!state) {
+      state = { backoff: new Backoff(), errorShown: false };
+      this.states.set(name, state);
+    }
+    return state;
   }
 
-  /** The port chosen for this user, once one has been. */
-  get port(): number | undefined {
-    return this.context.globalState.get<number>(PORT_KEY);
+  /** The port chosen for a daemon, from the extension's state, else from its configuration file. */
+  async portFor(spec: DaemonSpec): Promise<number | undefined> {
+    const ports = this.context.globalState.get<Record<string, number>>(PORTS_KEY) ?? {};
+    if (ports[spec.name] !== undefined) return ports[spec.name];
+    const text = await fs.promises.readFile(spec.configPath, "utf8").catch(() => undefined);
+    return portInConfig(text, spec.name);
   }
 
-  /** The daemon's MCP endpoint, once a port has been chosen. */
-  url(): string | undefined {
-    const port = this.port;
+  private async rememberPort(name: string, port: number) {
+    const ports = this.context.globalState.get<Record<string, number>>(PORTS_KEY) ?? {};
+    if (ports[name] !== port) {
+      await this.context.globalState.update(PORTS_KEY, { ...ports, [name]: port });
+    }
+  }
+
+  /** A daemon's MCP endpoint, once a port has been chosen. */
+  async urlFor(spec: DaemonSpec): Promise<string | undefined> {
+    const port = await this.portFor(spec);
     return port === undefined ? undefined : serverUrl(port);
   }
 
-  /** Where the daemon writes its log. */
-  logPath(): string {
-    return serverLogPath(os.homedir());
+  /** Where a daemon writes its log. */
+  logPath(spec: DaemonSpec): string {
+    return serverLogPath(os.homedir(), spec.name);
   }
 
   /**
    * Makes sure a daemon of this version runs with the current configuration, and returns its
    * URL; undefined when it could not be started, in which case a retry is scheduled with
-   * backoff. Calls made while one is in progress share its outcome.
+   * backoff. Calls made for one daemon while one is in progress share its outcome.
    *
    * @param prompt whether a missing log directory may be asked for (not in the background)
    */
-  ensure(prompt = false): Promise<string | undefined> {
-    if (!this.inFlight) {
-      this.inFlight = this.doEnsure(prompt).finally(() => {
-        this.inFlight = undefined;
+  ensure(spec: DaemonSpec, prompt = false): Promise<string | undefined> {
+    const state = this.state(spec.name);
+    if (!state.inFlight) {
+      state.inFlight = this.doEnsure(spec, state, prompt).finally(() => {
+        state.inFlight = undefined;
       });
     }
-    return this.inFlight;
+    return state.inFlight;
   }
 
-  /** Writes the configuration file from the current settings without starting anything. */
-  async writeConfig(): Promise<boolean> {
-    const inputs = await this.resolveInputs(false);
+  /**
+   * Writes a daemon's configuration file from the current settings without starting anything;
+   * true when the file changed. The port is kept, or chosen when there is none yet.
+   */
+  async writeConfig(spec: DaemonSpec): Promise<boolean> {
+    const inputs = await this.resolveInputs(spec, false);
     if (!inputs) return false;
-    this.lastInputs = inputs;
-    const port = this.port ?? (await this.choosePort());
-    await this.context.globalState.update(PORT_KEY, port);
-    return writeConfigFile(this.configPath, buildDaemonConfig({ ...inputs, port }));
+    this.state(spec.name).lastInputs = inputs;
+    const port = (await this.portFor(spec)) ?? (await this.choosePort());
+    await this.rememberPort(spec.name, port);
+    return writeConfigFile(spec.configPath, buildDaemonConfig({ ...inputs, name: spec.name, port }));
   }
 
-  /** Stops the daemon and starts it again from the current configuration. */
-  async restart(): Promise<string | undefined> {
-    this.cancelRetry();
-    this.backoff.reset();
-    this.errorShown = false;
-    const inputs = this.lastInputs ?? (await this.resolveInputs(false));
+  /**
+   * Stops a daemon if one answers on its port: for a project whose configuration changed while
+   * it was closed, so that whoever needs it next starts it with the new configuration.
+   */
+  async stopIfRunning(spec: DaemonSpec): Promise<void> {
+    const port = await this.portFor(spec);
+    if (port === undefined) return;
+    if ((await this.probe(port)).kind !== "ours") return;
+    const inputs = this.state(spec.name).lastInputs ?? (await this.resolveInputs(spec, false));
+    if (!inputs) return;
+    this.output.appendLine(`${spec.label}: the configuration changed; stopping its server.`);
+    await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
+  }
+
+  /** Stops a daemon and starts it again from the current configuration. */
+  async restart(spec: DaemonSpec): Promise<string | undefined> {
+    const state = this.state(spec.name);
+    this.cancelRetry(state);
+    state.backoff.reset();
+    state.errorShown = false;
+    const inputs = state.lastInputs ?? (await this.resolveInputs(spec, false));
     if (inputs) {
-      await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath));
+      await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
     }
-    return this.ensure();
+    return this.ensure(spec);
   }
 
-  private async doEnsure(prompt: boolean): Promise<string | undefined> {
-    this.cancelRetry();
-    const inputs = await this.resolveInputs(prompt);
+  private async doEnsure(spec: DaemonSpec, state: DaemonState, prompt: boolean): Promise<string | undefined> {
+    this.cancelRetry(state);
+    const inputs = await this.resolveInputs(spec, prompt);
     if (!inputs) return undefined;
-    this.lastInputs = inputs;
+    state.lastInputs = inputs;
 
     // The port: the one chosen before, unless something else has taken it
-    let port = this.port;
+    let port = await this.portFor(spec);
     let verdict: HealthVerdict = { kind: "free" };
     for (let attempt = 0; attempt < 3; attempt++) {
       if (port === undefined) port = await this.choosePort();
       verdict = await this.probe(port);
       if (keepPort(port, verdict)) break;
-      this.output.appendLine(`Port ${port} is held by another program; choosing another.`);
+      this.output.appendLine(`${spec.label}: port ${port} is held by another program; choosing another.`);
       port = undefined;
     }
     if (port === undefined) {
-      this.output.appendLine("ERROR: no free port could be found for the server.");
+      this.output.appendLine(`ERROR: no free port could be found for ${spec.label}.`);
       return undefined;
     }
-    await this.context.globalState.update(PORT_KEY, port);
+    await this.rememberPort(spec.name, port);
 
-    const changed = await writeConfigFile(this.configPath, buildDaemonConfig({ ...inputs, port }));
+    const changed = await writeConfigFile(
+      spec.configPath,
+      buildDaemonConfig({ ...inputs, name: spec.name, port })
+    );
     if (verdict.kind === "ours" && !changed && daemonIsCurrent(verdict, inputs.version)) {
-      return this.started(port);
+      return this.started(spec, state, port);
     }
     if (verdict.kind === "ours" && changed) {
-      this.output.appendLine("The server's configuration changed; restarting it.");
-      await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath));
+      this.output.appendLine(`${spec.label}: the configuration changed; restarting its server.`);
+      await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
     }
 
-    const result = await this.run(inputs, startCommand(inputs.maxHeap, inputs.jarPath, this.configPath));
+    const result = await this.run(
+      inputs,
+      startCommand(inputs.maxHeap, inputs.jarPath, spec.name, spec.configPath)
+    );
     if (result.code === 0) {
-      return this.started(port);
+      return this.started(spec, state, port);
     }
-    this.output.appendLine(`ERROR: the server did not start (exit ${result.code}).`);
-    this.scheduleRetry();
+    this.output.appendLine(`ERROR: the server for ${spec.label} did not start (exit ${result.code}).`);
+    this.scheduleRetry(spec, state);
     return undefined;
   }
 
-  private started(port: number): string {
-    this.backoff.reset();
-    this.errorShown = false;
+  private started(spec: DaemonSpec, state: DaemonState, port: number): string {
+    state.backoff.reset();
+    state.errorShown = false;
     const url = serverUrl(port);
-    if (url !== this.lastUrl) {
-      this.lastUrl = url;
-      this.output.appendLine(`Server: ${url} (log: ${this.logPath()})`);
+    if (url !== state.lastUrl) {
+      state.lastUrl = url;
+      this.output.appendLine(`${spec.label}: server at ${url} (log: ${this.logPath(spec)})`);
       this.onChanged();
     }
     return url;
   }
 
   /** Tries again after a failure, with the backoff's delay, up to the attempt limit. */
-  private scheduleRetry() {
-    if (this.backoff.attempts >= MAX_START_ATTEMPTS) {
-      if (!this.errorShown) {
-        this.errorShown = true;
+  private scheduleRetry(spec: DaemonSpec, state: DaemonState) {
+    if (state.backoff.attempts >= MAX_START_ATTEMPTS) {
+      if (!state.errorShown) {
+        state.errorShown = true;
         void vscode.window
           .showErrorMessage(
-            "WPILog Analyzer: the server could not be started. The output shows why; " +
-              "the server's own log may say more.",
+            `WPILog Analyzer: the server for ${spec.label} could not be started. The output ` +
+              "shows why; the server's own log may say more.",
             "Show Output",
             "Show Server Log"
           )
           .then((choice) => {
             if (choice === "Show Output") this.output.show();
-            if (choice === "Show Server Log") void this.showLog();
+            if (choice === "Show Server Log") void this.showLog(spec);
           });
       }
       return;
     }
-    const delay = this.backoff.next();
-    this.output.appendLine(`Trying again in ${Math.round(delay / 1000)} s.`);
-    this.retryTimer = setTimeout(() => void this.ensure(), delay);
+    const delay = state.backoff.next();
+    this.output.appendLine(`${spec.label}: trying again in ${Math.round(delay / 1000)} s.`);
+    state.retryTimer = setTimeout(() => void this.ensure(spec), delay);
   }
 
-  private cancelRetry() {
-    if (this.retryTimer !== undefined) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = undefined;
+  private cancelRetry(state: DaemonState) {
+    if (state.retryTimer !== undefined) {
+      clearTimeout(state.retryTimer);
+      state.retryTimer = undefined;
     }
   }
 
-  /** Opens the daemon's log in an editor. */
-  async showLog(): Promise<void> {
-    const file = this.logPath();
+  /** Opens a daemon's log in an editor. */
+  async showLog(spec: DaemonSpec): Promise<void> {
+    const file = this.logPath(spec);
     try {
       const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
       await vscode.window.showTextDocument(document, { preview: false });
     } catch {
       vscode.window.showInformationMessage(
-        `WPILog Analyzer: no server log at ${file} yet; the server has not been started.`
+        `WPILog Analyzer: no server log at ${file} yet; the server for ${spec.label} has not been started.`
       );
     }
   }
@@ -282,6 +340,6 @@ export class ServerManager implements vscode.Disposable {
   }
 
   dispose(): void {
-    this.cancelRetry();
+    for (const state of this.states.values()) this.cancelRetry(state);
   }
 }

@@ -17,12 +17,12 @@ import {
 } from "../mcpJson";
 
 const entry = buildServerEntry("/jdk/bin/java", "/storage/server/wpilog-mcp-all.jar", "4g",
-  "/storage/servers.json");
+  "team", "/storage/servers.json");
 
-test("the entry only runs the bridge to the one server with its configuration file: no settings, no key", () => {
+test("the entry only runs the bridge to the project's server with its configuration file: no settings, no key", () => {
   assert.equal(entry.command, "/jdk/bin/java");
   assert.deepEqual(entry.args, ["-Xmx4g", "-jar", "/storage/server/wpilog-mcp-all.jar", "connect",
-    "vscode", "--config", "/storage/servers.json"]);
+    "team", "--config", "/storage/servers.json"]);
   assert.equal(entry.env, undefined);
   assert.ok(!JSON.stringify(entry).includes("tba"));
 });

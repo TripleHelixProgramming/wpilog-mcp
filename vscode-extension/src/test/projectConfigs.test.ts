@@ -14,7 +14,7 @@ import {
 } from "../projectConfigs";
 
 const entry = buildServerEntry("/jdk/bin/java", "/storage/server/wpilog-mcp-all.jar", "4g",
-  "/storage/projects/abc.json");
+  "vscode-default", "/storage/servers/vscode-default.json");
 
 const withKey = buildServerConfig({
   logDirs: ["/logs"],

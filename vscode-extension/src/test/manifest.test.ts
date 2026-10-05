@@ -41,6 +41,8 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.teamNumber",
     "wpilog-mcp.tbaApiKey",
     "wpilog-mcp.enableForClaudeCode",
+    "wpilog-mcp.servers",
+    "wpilog-mcp.serverName",
     "wpilog-mcp.javaPath",
     "wpilog-mcp.wpiLibYear",
     "wpilog-mcp.maxHeap",
@@ -98,4 +100,34 @@ test("the idle exit is a whole number of minutes, thirty by default, and zero tu
   assert.equal(idle.type, "integer");
   assert.equal(idle.default, 30);
   assert.equal(idle.minimum, 0);
+});
+
+test("a server name is a Workspace setting that names a file and a daemon, so its shape is checked", () => {
+  const name = settings["wpilog-mcp.serverName"];
+  assert.equal(name.type, "string");
+  assert.equal(name.default, "");
+  assert.equal(name.scope, "resource");
+  const pattern = new RegExp(name.pattern);
+  for (const good of ["", "team", "Rebuilt2026", "a.b-c_d"]) assert.ok(pattern.test(good), good);
+  for (const bad of ["-x", "a b", "../x", "x/y", "a".repeat(65)]) assert.ok(!pattern.test(bad), bad);
+});
+
+test("the servers are a User setting: a list of named servers, each name shaped as a server name is", () => {
+  const servers = settings["wpilog-mcp.servers"];
+  assert.equal(servers.type, "array");
+  assert.deepEqual(servers.default, [], "one server, the default, until the user adds another");
+  assert.equal(servers.scope, "application", "defined once per user, not per workspace");
+  const item = servers.items;
+  assert.equal(item.type, "object");
+  assert.deepEqual(item.required, ["name"]);
+  assert.deepEqual(Object.keys(item.properties), ["name", "logDirectory", "teamNumber"]);
+  assert.equal(item.additionalProperties, false);
+  assert.equal(item.properties.teamNumber.minimum, 1);
+  // The same shape the Server Name setting accepts, so a name typed in one matches the other
+  const namePattern = new RegExp(item.properties.name.pattern);
+  const projectPattern = new RegExp(settings["wpilog-mcp.serverName"].pattern);
+  for (const name of ["team", "Rebuilt2026", "a.b-c_d", "-x", "a b", "../x", "a".repeat(65)]) {
+    assert.equal(namePattern.test(name), projectPattern.test(name), name);
+  }
+  assert.ok(!namePattern.test(""), "a server must have a name; a project's blank name means the default");
 });
