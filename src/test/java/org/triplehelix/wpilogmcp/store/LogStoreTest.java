@@ -160,6 +160,20 @@ class LogStoreTest {
         }
       }
     }
+    var tree = listing();
+    assertEquals(root.toString(), tree.getAsJsonArray("stores").get(0).getAsJsonObject().get("path").getAsString());
+    assertEquals(2, tree.getAsJsonArray("stores").get(0).getAsJsonObject().getAsJsonArray("robots").size());
+    for (var value : tree.getAsJsonArray("logs")) {
+      var row = value.getAsJsonObject();
+      assertEquals(root.toString(), row.get("store").getAsString());
+      var companions = row.getAsJsonArray("revlogs");
+      assertEquals(1, companions.size());
+      var companion = companions.get(0).getAsJsonObject();
+      var file = Path.of(companion.get("path").getAsString());
+      assertEquals("REV_20260110_150005.revlog", companion.get("filename").getAsString());
+      assertEquals(Files.size(file), companion.get("size_bytes").getAsLong());
+      assertEquals(Path.of(row.get("path").getAsString()).getParent(), file.getParent());
+    }
     assertEquals(2, catalog().robots().size());
   }
 

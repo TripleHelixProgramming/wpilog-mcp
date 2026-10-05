@@ -61,6 +61,13 @@ final class StoreFiles {
     return parent.relativize(file).toString().replace(File.separatorChar, '/');
   }
 
+  static String robotName(String name) {
+    if (name == null || !name.matches("[A-Za-z0-9._-]+")) {
+      throw new IllegalArgumentException("Robot names use only letters, digits, dots, hyphens, and underscores");
+    }
+    return component(name);
+  }
+
   static String component(String name) {
     if (name == null || name.isBlank() || name.equals(".") || name.equals("..")
         || name.endsWith(".") || name.endsWith(" ")

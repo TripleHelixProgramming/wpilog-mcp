@@ -260,6 +260,159 @@ class StoreInboxTest {
     assertTrue(store.inbox().listing().get(0).reason().contains("Could not write inbox/imported.log"));
   }
 
+  @Test void idleExitAlsoWaitsForInboxImportsWithoutAnHttpJob() throws Exception {
+    var file = ImportFixture.write(root.resolve("inbox").resolve("idle.wpilog"), 21);
+    var exited = new CountDownLatch(1);
+    var transport = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0);
+    transport.setIdleExit(Duration.ofMillis(200), exited::countDown);
+    try {
+      try (var reader = org.triplehelix.wpilogmcp.log.LogFileAccess.read(file)) {
+        store.inbox().poll(0);
+        store.inbox().poll(LOOK);
+        transport.start();
+        assertEquals(0, transport.sessionCount());
+        assertFalse(exited.await(700, TimeUnit.MILLISECONDS), "Inbox work keeps the daemon alive past idle");
+      }
+      store.awaitImports();
+      assertFalse(Files.exists(file));
+      assertTrue(exited.await(2, TimeUnit.SECONDS));
+    } finally {
+      transport.stop();
+    }
+  }
+
+  @Test void batchIdentityIsListedAndAppliedButALooseDropHasNone() throws Exception {
+    var batch = root.resolve("inbox").resolve("batch-fixture");
+    var named = ImportFixture.write(batch.resolve("named.wpilog"), 22);
+    Files.writeString(batch.resolve("batch.json"), "{\"stated_robot\":\"practice\"}");
+    var loose = ImportFixture.write(root.resolve("inbox").resolve("loose.wpilog"), 23);
+    var entries = listing().getAsJsonArray("inbox");
+    assertEquals(2, entries.size(), "The sidecar is metadata, not a log");
+    for (var value : entries) {
+      var entry = value.getAsJsonObject();
+      if (Path.of(entry.get("path").getAsString()).equals(named)) {
+        assertEquals("practice", entry.get("stated_robot").getAsString());
+      } else {
+        assertTrue(entry.get("stated_robot").isJsonNull());
+      }
+    }
+    store.inbox().poll(0);
+    store.inbox().poll(LOOK);
+    store.awaitImports();
+    assertFalse(Files.exists(named));
+    assertFalse(Files.exists(loose));
+    for (var receipt : receipts()) {
+      var entry = JsonParser.parseString(receipt).getAsJsonObject();
+      var destination = Path.of(entry.get("path").getAsString());
+      assertTrue(destination.startsWith(entry.get("original_path").getAsString().equals(named.toString())
+          ? root.resolve("robots").resolve("practice") : root.resolve("unassigned")), receipt);
+    }
+    assertEquals(2, receipts().size());
+  }
+
+  @Test void malformedBatchRefusesEveryFileOnceAndChangingTheSidecarRetries() throws Exception {
+    var batch = root.resolve("inbox").resolve("batch-bad");
+    var file = ImportFixture.write(batch.resolve("one.wpilog"), 24);
+    var sidecar = Files.writeString(batch.resolve("batch.json"), "{not json PRIVATE}");
+    store.inbox().poll(0);
+    store.inbox().poll(LOOK);
+    store.awaitImports();
+    assertTrue(Files.exists(file));
+    assertEquals("refused", inboxEntry().get("state").getAsString());
+    assertTrue(inboxEntry().get("reason").getAsString().contains("Invalid inbox batch.json"));
+    assertTrue(receipts().get(0).contains("Invalid inbox batch.json"));
+    assertFalse(receipts().get(0).contains("PRIVATE"));
+    store.inbox().poll(2 * LOOK);
+    store.awaitImports();
+    assertEquals(1, receipts().size());
+    Files.writeString(sidecar, "{\"stated_robot\":\"fixed\"}");
+    store.inbox().poll(3 * LOOK);
+    store.inbox().poll(4 * LOOK);
+    store.awaitImports();
+    assertFalse(Files.exists(file));
+    assertEquals(2, receipts().size());
+  }
+
+  @Test void failedTransferIsHiddenRemovedOnNextPollAndReceiptedButAnActiveOneIsKept() throws Exception {
+    var source = ImportFixture.write(temp.resolve("usb").resolve("outside.wpilog"), 25);
+    var security = new org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator();
+    security.addAllowedDirectory(temp);
+    var entered = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var transfer = java.util.concurrent.CompletableFuture.runAsync(() -> {
+      assertThrows(java.io.IOException.class, () -> InboxTransfer.stage(root, List.of(source), false,
+          "practice", security, System.out, (from, to) -> {
+            Files.copy(from, to);
+            entered.countDown();
+            try { release.await(10, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { throw new java.io.IOException(e); }
+            throw new java.io.IOException("planted copy failure");
+          }));
+    });
+    try {
+      assertTrue(entered.await(10, TimeUnit.SECONDS));
+      store.inbox().poll(0);
+      assertTrue(listing().getAsJsonArray("unmanaged").isEmpty());
+      assertTrue(listing().getAsJsonArray("inbox").isEmpty());
+      assertFalse(Files.exists(root.resolve("inbox").resolve("imported.log")));
+      try (var children = Files.list(root.resolve("inbox"))) {
+        assertEquals(1, children.filter(Files::isDirectory).count(), "The active copy remains");
+      }
+    } finally {
+      release.countDown();
+    }
+    transfer.get(10, TimeUnit.SECONDS);
+    store.inbox().poll(LOOK);
+    assertTrue(Files.exists(source));
+    try (var children = Files.list(root.resolve("inbox"))) {
+      assertEquals(List.of("imported.log"), children.map(p -> p.getFileName().toString()).toList());
+    }
+    assertTrue(receipts().get(0).contains("Removed incomplete inbox transfer"));
+    assertTrue(listing().getAsJsonArray("unmanaged").isEmpty());
+    assertTrue(listing().getAsJsonArray("inbox").isEmpty());
+    store.inbox().poll(2 * LOOK);
+    assertEquals(1, receipts().size());
+  }
+
+  @Test void hiddenInboxEntriesAreNotWalkedOrListed() throws Exception {
+    ImportFixture.write(root.resolve("inbox").resolve(".hidden").resolve("one.wpilog"), 26);
+    ImportFixture.write(root.resolve("inbox").resolve(".two.wpilog"), 27);
+    store.inbox().poll(0);
+    store.inbox().poll(LOOK);
+    store.awaitImports();
+    assertTrue(listing().getAsJsonArray("inbox").isEmpty());
+    assertFalse(Files.exists(root.resolve("inbox").resolve("imported.log")));
+  }
+
+  @Test void listingDiscoversANewStoreBeforeTheNextMinuteWalk() throws Exception {
+    long now = System.nanoTime();
+    manager.stores().poll(now);
+    var otherRoot = temp.resolve("another-store");
+    var security = new org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator();
+    security.addAllowedDirectory(temp);
+    try (var other = new StoreRegistry(security)) {
+      other.store(otherRoot).importPaths(new LogStore.Request(List.of(), false, null), p -> {}).get();
+    }
+    var file = ImportFixture.write(otherRoot.resolve("inbox").resolve("new.wpilog"), 31);
+    LogDirectory.getInstance().scanLogs(); // No tool-level registry lookup should be needed.
+    manager.stores().poll(now + LOOK);
+    manager.stores().poll(now + 2 * LOOK);
+    manager.stores().awaitImports();
+    assertFalse(Files.exists(file), "The listing's discovery is watched immediately");
+  }
+
+  @Test void robotNamesMatchThePortableAsciiRuleUsedByClients() {
+    for (var valid : List.of("practice", "Robot_2-A.b", "123")) assertEquals(valid, StoreFiles.robotName(valid));
+    for (var invalid : List.of("", "two words", "robot/child", "café")) {
+      assertEquals("Robot names use only letters, digits, dots, hyphens, and underscores",
+          assertThrows(IllegalArgumentException.class, () -> StoreFiles.robotName(invalid)).getMessage());
+    }
+    for (var invalid : List.of(".", "..", "tail.", "CON", "lpt9.txt")) {
+      assertEquals("Not a portable robot or file name: " + invalid,
+          assertThrows(IllegalArgumentException.class, () -> StoreFiles.robotName(invalid)).getMessage());
+    }
+  }
+
   private boolean lockHeld() {
     try (var channel = java.nio.channels.FileChannel.open(root.resolve("store.lock"), StandardOpenOption.WRITE)) {
       try (var lock = channel.tryLock()) { return lock == null; }

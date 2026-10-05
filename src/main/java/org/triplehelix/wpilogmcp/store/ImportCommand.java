@@ -12,15 +12,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import org.triplehelix.wpilogmcp.config.DaemonManager;
 import org.triplehelix.wpilogmcp.config.ServerConfig;
+import org.triplehelix.wpilogmcp.log.LogFileException;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
 /**
@@ -34,7 +32,8 @@ public final class ImportCommand {
   public record Options(String server, Path config, Path store, boolean move, String robot,
       List<Path> paths) {}
 
-  private ImportCommand() {}
+  private ImportCommand() {
+  }
 
   public static Options parse(String[] args) {
     String server = "default";
@@ -46,8 +45,14 @@ public final class ImportCommand {
     var paths = new ArrayList<Path>();
     for (int i = 1; i < args.length; i++) {
       String arg = args[i];
-      if (!positional && arg.equals("--")) { positional = true; continue; }
-      if (!positional && arg.equals("--move")) { move = true; continue; }
+      if (!positional && arg.equals("--")) {
+        positional = true;
+        continue;
+      }
+      if (!positional && arg.equals("--move")) {
+        move = true;
+        continue;
+      }
       if (!positional && arg.startsWith("-")) {
         if (!List.of("--server", "--config", "--store", "--robot").contains(arg)
             || i + 1 == args.length || args[i + 1].startsWith("--")) {
@@ -58,7 +63,7 @@ public final class ImportCommand {
           case "--server" -> server = value;
           case "--config" -> config = Path.of(value);
           case "--store" -> store = Path.of(value);
-          case "--robot" -> robot = StoreFiles.component(value);
+          case "--robot" -> robot = StoreFiles.robotName(value);
           default -> throw new IllegalArgumentException(USAGE);
         }
       } else {
@@ -82,8 +87,12 @@ public final class ImportCommand {
     var inside = new ArrayList<Path>();
     var outside = new ArrayList<Path>();
     for (var path : options.paths()) {
-      try { security.validate(path); inside.add(path); }
-      catch (org.triplehelix.wpilogmcp.log.LogFileException e) { outside.add(path); }
+      try {
+        security.validate(path);
+        inside.add(path);
+      } catch (LogFileException e) {
+        outside.add(path);
+      }
     }
     var running = daemon.runningDaemon(options.server());
     if (running.isPresent()) {
@@ -93,11 +102,8 @@ public final class ImportCommand {
       int code = remote(base, selected, new LogStore.Request(inside, options.move(), options.robot()), out);
       if (!outside.isEmpty()) {
         if (!StoreCatalog.isStore(selected)) return 1;
-        stage(selected.toRealPath(), outside, options.move(), security, out);
-        if (options.robot() != null) {
-          out.println("--robot applies to direct imports only. Inbox files use logged identity "
-              + "and otherwise remain unassigned.");
-        }
+        InboxTransfer.stage(selected.toRealPath(), outside, options.move(), options.robot(), security, out);
+
       }
       return code;
     }
@@ -109,7 +115,7 @@ public final class ImportCommand {
       out.println("result " + StoreJson.JSON.toJson(result));
       int code = refused(result) ? 1 : 0;
       if (!outside.isEmpty()) {
-        var staged = stage(store.root(), outside, options.move(), security, out);
+        var staged = InboxTransfer.stage(store.root(), outside, options.move(), options.robot(), security, out);
         var imported = store.inbox().importReady(staged, options.robot(),
             p -> out.println("progress " + StoreJson.JSON.toJson(p))).get();
         out.println("result " + StoreJson.JSON.toJson(imported));
@@ -144,7 +150,10 @@ public final class ImportCommand {
           HttpResponse.BodyHandlers.ofString());
       if (status.statusCode() != 200) throw new IOException("Import poll HTTP " + status.statusCode() + ": " + status.body());
       var job = JsonParser.parseString(status.body()).getAsJsonObject();
-      if (!status.body().equals(previous)) { out.println("progress " + job); previous = status.body(); }
+      if (!status.body().equals(previous)) {
+        out.println("progress " + job);
+        previous = status.body();
+      }
       switch (job.get("state").getAsString()) {
         case "done" -> {
           var result = job.getAsJsonObject("result");
@@ -160,59 +169,4 @@ public final class ImportCommand {
     }
   }
 
-  /** Publish only complete transfers: two quiet polls during a slow copy must not adopt it. */
-  private static List<Path> stage(Path root, List<Path> sources, boolean move,
-      SecurityValidator security, PrintStream out) throws IOException {
-    var io = new StoreFiles(root, security);
-    var inbox = io.check(root.resolve("inbox"));
-    Files.createDirectories(inbox);
-    var staged = new ArrayList<Path>();
-    for (var source : sources) {
-      var real = source.toRealPath();
-      var local = new SecurityValidator();
-      local.addAllowedDirectory(Files.isDirectory(real) ? real : real.getParent());
-      List<Path> files;
-      if (Files.isDirectory(real)) {
-        try (var walk = Files.walk(real)) {
-          files = walk.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).sorted().toList();
-        }
-      } else { files = List.of(real); }
-      var transfer = Files.createTempDirectory(io.check(root), ".inbox-transfer-");
-      var batch = io.check(inbox.resolve("batch-" + UUID.randomUUID()));
-      var snapshots = new java.util.HashMap<Path, org.triplehelix.wpilogmcp.log.FileSnapshot>();
-      var hashes = new java.util.HashMap<Path, String>();
-      for (var file : files) {
-        local.validate(file);
-        snapshots.put(file, org.triplehelix.wpilogmcp.log.FileSnapshot.of(file));
-        var relative = Files.isDirectory(real) ? real.relativize(file) : file.getFileName();
-        var destination = io.check(transfer.resolve(relative));
-        Files.createDirectories(destination.getParent());
-        io.check(destination);
-        Files.copy(file, destination, StandardCopyOption.COPY_ATTRIBUTES);
-        String hash = StoreFiles.hash(file);
-        hashes.put(file, hash);
-        if (!hash.equals(StoreFiles.hash(destination))
-            || !snapshots.get(file).sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(file))) {
-          throw new IOException("Inbox transfer verification failed; retained at " + transfer);
-        }
-      }
-      Files.move(transfer, batch, StandardCopyOption.ATOMIC_MOVE);
-      for (var file : files) {
-        var relative = Files.isDirectory(real) ? real.relativize(file) : file.getFileName();
-        var destination = batch.resolve(relative);
-        if (move) {
-          local.validate(file);
-          if (!snapshots.get(file).sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(file))
-              || !hashes.get(file).equals(StoreFiles.hash(file))) {
-            throw new IOException("Source changed after inbox transfer; original retained: " + file);
-          }
-          Files.delete(file);
-        }
-        staged.add(destination);
-        out.println((move ? "Moved" : "Copied") + " to inbox: " + destination
-            + "; result in " + inbox.resolve("imported.log"));
-      }
-    }
-    return List.copyOf(staged);
-  }
 }

@@ -24,6 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
@@ -49,7 +50,7 @@ public final class LogStore implements AutoCloseable {
   public record Request(List<Path> paths, boolean move, String statedRobot) {
     public Request {
       paths = List.copyOf(paths);
-      if (statedRobot != null) StoreFiles.component(statedRobot);
+      if (statedRobot != null) StoreFiles.robotName(statedRobot);
     }
   }
   public record Progress(String phase, Path path, int completed, int total) {}
@@ -67,7 +68,7 @@ public final class LogStore implements AutoCloseable {
   private final LogManager logManager;
   private final CatalogReader catalogReader;
   private final StoreInbox inbox;
-  private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
+  private final AtomicInteger pending = new AtomicInteger();
 
   @FunctionalInterface
   interface CatalogReader {
@@ -82,6 +83,7 @@ public final class LogStore implements AutoCloseable {
     Header header;
     final Map<String, Robot> robots = new LinkedHashMap<>();
     final Map<String, StoredFile> files = new LinkedHashMap<>();
+    final Map<String, StoredFile> assigning = new LinkedHashMap<>();
 
     ImportCatalog(StoreCatalog.Snapshot snapshot) {
       header = snapshot.header();
@@ -132,11 +134,19 @@ public final class LogStore implements AutoCloseable {
     return inbox;
   }
 
-  public boolean importing() { return pending.get() > 0; }
+  public boolean importing() {
+    return pending.get() > 0;
+  }
 
   /** A second caller queues behind the first, including its inspection and identity changes. */
   public CompletableFuture<Result> importPaths(Request request, Consumer<Progress> progress) {
     return importPrepared(request, progress, r -> r, result -> {});
+  }
+
+  /** Assignment is explicit: a duplicate elsewhere must never silently move a stored file. */
+  public CompletableFuture<Result> assignPaths(List<Path> paths, String robot, Consumer<Progress> progress) {
+    StoreFiles.robotName(robot);
+    return enqueue(new Request(paths, true, robot), progress, r -> r, result -> {}, true);
   }
 
   @FunctionalInterface
@@ -147,6 +157,11 @@ public final class LogStore implements AutoCloseable {
   /** An inbox file can change while queued; recheck its observed stamp when its turn arrives. */
   CompletableFuture<Result> importPrepared(Request request, Consumer<Progress> progress,
       Preparation preparation, Consumer<Result> beforeUnlock) {
+    return enqueue(request, progress, preparation, beforeUnlock, false);
+  }
+
+  private CompletableFuture<Result> enqueue(Request request, Consumer<Progress> progress,
+      Preparation preparation, Consumer<Result> beforeUnlock, boolean assignment) {
     Objects.requireNonNull(request);
     Objects.requireNonNull(progress);
     var result = new CompletableFuture<Result>();
@@ -157,7 +172,7 @@ public final class LogStore implements AutoCloseable {
           Result imported;
           try (var lock = StoreLock.acquire(root, security)) {
             notify(progress, new Progress("starting", root, 0, request.paths().size()));
-            imported = run(preparation.prepare(request), progress);
+            imported = run(preparation.prepare(request), progress, assignment);
             beforeUnlock.accept(imported);
           }
           result.complete(imported);
@@ -188,8 +203,8 @@ public final class LogStore implements AutoCloseable {
     drained.join();
   }
 
-  private Result run(Request request, Consumer<Progress> progress) throws IOException {
-    if (request.statedRobot() != null) StoreFiles.component(request.statedRobot());
+  private Result run(Request request, Consumer<Progress> progress, boolean assignment) throws IOException {
+    if (request.statedRobot() != null) StoreFiles.robotName(request.statedRobot());
     var io = new StoreFiles(root, security);
     var outcomes = new ArrayList<Outcome>();
     var sameRobots = new ArrayList<SameRobot>();
@@ -214,6 +229,15 @@ public final class LogStore implements AutoCloseable {
         StoreFiles.component(source.getFileName().toString());
         // Hash first: a duplicate requires neither decoding nor a robot assignment.
         var hash = StoreFiles.hash(source);
+        if (assignment) {
+          var held = catalog.files.get(hash);
+          if (held == null || held.session() != null || !held.path().equals(source)) {
+            throw new IOException("Assignment requires an unassigned file in this store");
+          }
+          catalog.assigning.put(hash, held);
+          catalog.files.remove(hash);
+          known.remove(hash);
+        }
         if (known.containsKey(hash)) {
           if (!hash.equals(StoreFiles.hash(known.get(hash)))) {
             throw new IOException("Stored content no longer matches its manifest: " + known.get(hash));
@@ -403,6 +427,11 @@ public final class LogStore implements AutoCloseable {
       Robot robot, Map<Path, Pair> pairs, boolean move, RevLogParser parser,
       List<Outcome> outcomes, Consumer<Progress> progress) throws IOException {
     if (robot == null || primary.start() == null) {
+      if (inputs.stream().anyMatch(input -> catalog.assigning.containsKey(input.hash()))) {
+        for (var input : inputs) outcomes.add(new Outcome(input.path(), "refused", input.path(),
+            "Assignment needs a robot and session time, or a unique correlated wpilog for a REV log"));
+        return;
+      }
       for (var input : inputs) {
         var directory = root.resolve("unassigned").resolve(input.hash().substring(0, 16));
         placeGroup(io, catalog, List.of(input), directory.resolve("import.json"), null, null, pairs,
@@ -488,9 +517,11 @@ public final class LogStore implements AutoCloseable {
       String now = Instant.now().toString();
       for (var placement : placements) {
         var input = placement.input();
+        var previous = catalog.assigning.get(input.hash());
+        var provenance = previous == null ? new Provenance("imported", input.path().toString(),
+            input.path().getFileName().toString(), now, move) : previous.file().provenance();
         records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
-            input.hash(), input.size(), input.kind(), new Provenance("imported", input.path().toString(),
-            input.path().getFileName().toString(), now, move), true, input.min(), input.max(),
+            input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
             input.start() == null ? null : input.start().toString(),
             input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
             placement.matching()));
@@ -537,6 +568,14 @@ public final class LogStore implements AutoCloseable {
       var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves);
       io.write(root.resolve("store.json"), updated);
       catalog.header = updated;
+    }
+    for (var placement : placements) {
+      var old = catalog.assigning.remove(placement.input().hash());
+      if (old != null) {
+        // Commit the new manifest first; until then the old manifest is the source of truth.
+        Files.delete(io.check(old.manifestPath()));
+        rewriteMoves(io, catalog, old.path(), placement.destination());
+      }
     }
     for (var placement : placements) outcomes.add(new Outcome(placement.input().path(),
         session == null ? "unassigned" : "imported", placement.destination(), session == null

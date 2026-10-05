@@ -99,6 +99,56 @@ class StoreImportEndpointTest {
     return null;
   }
 
+  @Test void idleExitWaitsForAnHttpImportWithoutAnySession() throws Exception {
+    transport.stop();
+    var exited = new CountDownLatch(1);
+    transport = new HttpTransport(new ToolRegistry(), 0);
+    transport.setIdleExit(Duration.ofMillis(400), exited::countDown);
+    transport.start();
+    var input = ImportFixture.write(temp.resolve("idle.wpilog"), 15);
+    String url;
+    try (var reader = LogFileAccess.read(input)) {
+      url = submit(root, true, input);
+      await(url, "running");
+      assertEquals(0, transport.sessionCount());
+      assertFalse(exited.await(900, TimeUnit.MILLISECONDS), "An import outlives the idle deadline");
+      assertEquals(200, request("/health", null).statusCode());
+    }
+    var job = await(url, "done");
+    assertEquals("imported", job.getAsJsonObject("result").getAsJsonArray("files").get(0)
+        .getAsJsonObject().get("status").getAsString());
+    assertTrue(exited.await(2, TimeUnit.SECONDS), "The daemon exits once its import finishes");
+  }
+
+  @Test void assignmentMovesOnlyUnassignedFilesAndKeepsOriginalProvenance() throws Exception {
+    var original = ImportFixture.write(temp.resolve("unassigned.wpilog"), 20);
+    var store = manager.stores().store(root);
+    var unassigned = store.importPaths(new LogStore.Request(List.of(original), true, null), p -> {}).get()
+        .files().get(0).path();
+    var payload = body(root, true, unassigned);
+    payload.remove("move");
+    var response = request("/store/assign", payload.toString());
+    assertEquals(202, response.statusCode(), response.body());
+    var job = await(JsonParser.parseString(response.body()).getAsJsonObject().get("url").getAsString(), "done");
+    var file = job.getAsJsonObject("result").getAsJsonArray("files").get(0).getAsJsonObject();
+    assertEquals("imported", file.get("status").getAsString(), job.toString());
+    var destination = Path.of(file.get("path").getAsString());
+    assertTrue(destination.startsWith(root.resolve("robots").resolve("practice")));
+    assertFalse(Files.exists(unassigned));
+    assertFalse(Files.exists(unassigned.getParent().resolve("import.json")));
+    var manifest = JsonParser.parseString(Files.readString(destination.getParent().getParent().resolve("session.json")))
+        .getAsJsonObject().getAsJsonArray("files").get(0).getAsJsonObject();
+    assertEquals(original.toString(), manifest.getAsJsonObject("provenance").get("original_path").getAsString());
+    var denied = request("/store/assign", body(root, true, destination).toString());
+    var refused = await(JsonParser.parseString(denied.body()).getAsJsonObject().get("url").getAsString(), "done");
+    assertEquals("refused", refused.getAsJsonObject("result").getAsJsonArray("files").get(0)
+        .getAsJsonObject().get("status").getAsString());
+    assertTrue(Files.exists(destination));
+    var missingRobot = payload.deepCopy(); missingRobot.remove("stated_robot");
+    assertEquals(400, request("/store/assign", missingRobot.toString()).statusCode());
+    assertEquals(403, request("/store/assign", payload.toString(), "Origin", "https://untrusted.example").statusCode());
+  }
+
   @Test void fullResultAndFinalProgressEqualTheJavaImporter() throws Exception {
     var input = ImportFixture.write(temp.resolve("one.wpilog"), 1);
     var reference = temp.resolve("reference");

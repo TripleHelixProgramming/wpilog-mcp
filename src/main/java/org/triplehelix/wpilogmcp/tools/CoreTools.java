@@ -8,6 +8,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.Comparator;
+import java.nio.file.Path;
+import org.triplehelix.wpilogmcp.store.StoreJson;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
@@ -76,8 +78,10 @@ public final class CoreTools {
           + "match it came from: an 'Elimination N' log is read as double-elimination bracket "
           + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
           + "this tool first to find logs and get match results, then pass the path to other "
-          + "tools. Stores add robot (serial_number, comments, basis) and session metadata to logs; "
-          + "inbox lists waiting or importing files (path, size in bytes), or refused files with their reason; "
+          + "tools. stores lists each store's path and robots; store on a log names its root. "
+          + "Stores add robot (serial_number, comments, basis), session metadata, and revlogs companions to logs; "
+          + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
+          + "or refused files with their reason; "
           + "unmanaged lists files absent from manifests outside the inbox, unassigned lists imported files awaiting "
           + "assignment, and moved_to gives original paths and their destinations for seven days.";
     }
@@ -197,6 +201,18 @@ public final class CoreTools {
         logObj.addProperty("last_modified", log.lastModified());
         if (log.stored() != null) {
           var stored = log.stored();
+          var owner = scan.stores().stream().filter(s -> Path.of(log.path()).startsWith(s.root())).findFirst().orElseThrow();
+          logObj.addProperty("store", owner.root().toString());
+          var revlogs = new JsonArray();
+          owner.files().stream().filter(f -> f.file().matching() != null
+              && f.file().matching().wpilogSha256().equals(stored.file().sha256())).forEach(f -> {
+                var rev = new JsonObject();
+                rev.addProperty("path", f.path().toString());
+                rev.addProperty("filename", f.path().getFileName().toString());
+                rev.addProperty("size_bytes", f.file().sizeBytes());
+                revlogs.add(rev);
+              });
+          logObj.add("revlogs", revlogs);
           var robot = new JsonObject();
           robot.addProperty("id", stored.robot().id());
           robot.addProperty("serial_number", stored.robot().serialNumber());
@@ -254,17 +270,25 @@ public final class CoreTools {
       }
       result.add("metadata_cache", cacheStats);
       if (!scan.stores().isEmpty()) {
+        var stores = new JsonArray();
         var unmanaged = new JsonArray();
         var inbox = new JsonArray();
         var unassigned = new JsonArray();
         var moved = new JsonArray();
         for (var store : scan.stores()) {
+          var summary = new JsonObject();
+          summary.addProperty("path", store.root().toString());
+          summary.add("robots", StoreJson.JSON.toJsonTree(store.robots().stream().map(r -> r.robot()).toList()));
+          stores.add(summary);
           for (var entry : logManager.stores().store(store.root()).inbox().listing()) {
-            inbox.add(org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(entry));
+            var item = StoreJson.JSON.toJsonTree(entry).getAsJsonObject();
+            item.addProperty("store", store.root().toString());
+            inbox.add(item);
           }
           for (var path : store.unmanaged()) {
             var item = new JsonObject();
             item.addProperty("path", path.toString());
+            item.addProperty("store", store.root().toString());
             item.addProperty("reason", "Not listed by a manifest; import this file to assign it");
             unmanaged.add(item);
           }
@@ -272,6 +296,7 @@ public final class CoreTools {
             if (file.session() != null) continue;
             var item = new JsonObject();
             item.addProperty("path", file.path().toString());
+            item.addProperty("store", store.root().toString());
             item.addProperty("kind", file.file().kind());
             item.addProperty("sha256", file.file().sha256());
             unassigned.add(item);
@@ -284,6 +309,7 @@ public final class CoreTools {
             moved.add(item);
           }
         }
+        result.add("stores", stores);
         result.add("inbox", inbox);
         result.add("unmanaged", unmanaged);
         result.add("unassigned", unassigned);

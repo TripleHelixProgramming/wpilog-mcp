@@ -172,12 +172,12 @@ class MainImportTest {
       for (boolean move : List.of(false, true)) {
         var outside = ImportFixture.write(temp.resolve("usb").resolve("outside-" + move + ".wpilog"), move ? 8 : 7);
         byte[] bytes = Files.readAllBytes(outside);
-        var args = new ArrayList<>(List.of("--server", "pit", "--robot", "ignored", outside.toString()));
+        var args = new ArrayList<>(List.of("--server", "pit", "--robot", "inbox_robot", outside.toString()));
         if (move) args.add("--move");
         var staged = run(config, args.toArray(String[]::new));
         assertEquals(0, staged.code(), staged.output());
         assertTrue(staged.output().contains(move ? "Moved to inbox:" : "Copied to inbox:"), staged.output());
-        assertTrue(staged.output().contains("Inbox files use logged identity and otherwise remain unassigned."));
+        assertFalse(staged.output().contains("--robot applies to direct imports only"));
         assertEquals(!move, Files.exists(outside));
         var receiptPath = root.resolve("inbox").resolve("imported.log");
         int count = move ? 2 : 1;
@@ -185,7 +185,8 @@ class MainImportTest {
         while ((!Files.exists(receiptPath) || Files.readAllLines(receiptPath).size() < count)
             && System.nanoTime() < deadline) Thread.sleep(30);
         var receipt = JsonParser.parseString(Files.readAllLines(receiptPath).get(count - 1)).getAsJsonObject();
-        assertEquals("unassigned", receipt.get("status").getAsString());
+        assertEquals("imported", receipt.get("status").getAsString());
+        assertTrue(Path.of(receipt.get("path").getAsString()).startsWith(root.resolve("robots").resolve("inbox_robot")));
         assertArrayEquals(bytes, Files.readAllBytes(Path.of(receipt.get("path").getAsString())));
         assertFalse(Files.exists(Path.of(receipt.get("original_path").getAsString())));
       }

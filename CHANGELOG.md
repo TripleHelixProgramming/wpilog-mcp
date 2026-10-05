@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Store assignment (`POST /store/assign`) moves unassigned files while retaining provenance. Inbox batches now carry `stated_robot` in `batch.json`, including batches from `import --robot`; malformed metadata gets an explained refusal. Store roots and correlated REV companions are exposed for the explorer.
 - Imports now run as HTTP jobs (`POST /store/import` and polling), from a store's inbox with receipts in `inbox/imported.log`, or through `wpilog-mcp import`. Previously only the Java pipeline could organize files. The command posts to the named running daemon or imports offline; both take the same store file lock. HTTP sources must be inside configured log directories; outside sources go through the inbox. The listing reports waiting, importing, and refused inbox files separately from unmanaged files.
 - Store manifests and a queued Java import pipeline organize existing WPILOG and REV files by robot and session, preserving names and provenance, verifying copies, deduplicating by SHA-256, and pairing REV logs by correlation before moving them. Previously a folder had only its filenames to describe its organization; `list_available_logs` now reads a store's manifests, reports robot and session facts, leaves hand-copied files unmanaged, and reports moved paths for seven days. Serial numbers promote stated robot names without merging existing histories. Extension controls remain for later work.
 
 ### Fixed
+- Inbox polling now reuses known stores, discovers at startup and from listings, and walks configured directories at most once a minute. Hidden, locked inbox staging keeps partial copies out of listings; abandoned transfers are removed with receipts. Real-transport checks now guard idle exit during both HTTP and inbox imports.
 - Store moves now evict the shared manager's mapping and wait up to three seconds for active readers, so a log already viewed in the explorer can be organized without restarting the server; eviction keeps mappings alive until tools, data streams, and background synchronization finish reading them.
 - Imports read the store catalog once per batch and nominate REV candidates by robot and a generous clock window before correlation, replacing repeated whole-store scans and correlations against a season's unrelated sessions; unknown REV clocks still consider every session of the stated robot, and only the signal data establishes a match.
 

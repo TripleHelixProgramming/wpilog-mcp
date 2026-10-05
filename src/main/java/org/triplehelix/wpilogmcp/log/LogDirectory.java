@@ -15,9 +15,11 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -82,7 +84,8 @@ public class LogDirectory {
   private volatile int scanDepth = 5;
 
   /** Private constructor for singleton pattern. */
-  private LogDirectory() {}
+  private LogDirectory() {
+  }
 
   /**
    * Gets the singleton instance of LogDirectory.
@@ -227,11 +230,11 @@ public class LogDirectory {
 
   /** Cache size, hits, and misses, in that order (Map.of's order changes from run to run). */
   public Map<String, Long> getCacheStats() {
-    var stats = new java.util.LinkedHashMap<String, Long>();
+    var stats = new LinkedHashMap<String, Long>();
     stats.put("size", (long) metadataCache.size());
     stats.put("hits", cacheHits.sum());
     stats.put("misses", cacheMisses.sum());
-    return java.util.Collections.unmodifiableMap(stats);
+    return Collections.unmodifiableMap(stats);
   }
 
   public void clearCache() {
@@ -310,6 +313,7 @@ public class LogDirectory {
           if (!seenStores.add(root)) continue;
           var store = StoreCatalog.read(root, security);
           stores.add(store);
+          LogManager.getInstance().stores().discovered(root);
           for (var file : store.files()) {
             if (!file.file().kind().equals("wpilog") || file.session() == null) continue;
             var session = file.session();

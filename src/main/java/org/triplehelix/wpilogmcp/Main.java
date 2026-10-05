@@ -4,21 +4,38 @@
  */
 package org.triplehelix.wpilogmcp;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.function.IntConsumer;
+import java.util.function.LongConsumer;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.config.ConfigException;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 import org.triplehelix.wpilogmcp.config.DaemonManager;
 import org.triplehelix.wpilogmcp.config.ServerConfig;
+import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.StdioBridge;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.store.ImportCommand;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
+import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
@@ -100,7 +117,7 @@ public class Main {
 
   /** Whether {@code -debug} is among the arguments or {@code WPILOG_DEBUG} is {@code true}. */
   static boolean debugRequested(String[] args, String wpilogDebug) {
-    return java.util.Arrays.asList(args).contains("-debug")
+    return Arrays.asList(args).contains("-debug")
         || "true".equalsIgnoreCase(wpilogDebug);
   }
 
@@ -205,14 +222,14 @@ public class Main {
 
   static int runImport(String[] args) {
     try {
-      var options = org.triplehelix.wpilogmcp.store.ImportCommand.parse(args);
-      return org.triplehelix.wpilogmcp.store.ImportCommand.run(options,
+      var options = ImportCommand.parse(args);
+      return ImportCommand.run(options,
           loadConfig(options.server(), options.config()), new DaemonManager(), System.out);
     } catch (IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       return 2;
     } catch (Exception e) {
-      var cause = e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
+      var cause = e instanceof ExecutionException ? e.getCause() : e;
       logger().error("Import failed: {}", cause.getMessage());
       if (e instanceof InterruptedException) Thread.currentThread().interrupt();
       return 1;
@@ -249,7 +266,7 @@ public class Main {
       return 2;
     }
 
-    java.net.URI endpoint;
+    URI endpoint;
     if (url != null) {
       endpoint = StdioBridge.endpointFor(url);
     } else {
@@ -265,7 +282,7 @@ public class Main {
           return 1;
         }
         var path = System.getenv("WPILOG_HTTP_PATH");
-        endpoint = java.net.URI.create("http://127.0.0.1:" + config.effectivePort()
+        endpoint = URI.create("http://127.0.0.1:" + config.effectivePort()
             + (path == null || path.isEmpty() ? "/mcp" : path));
       } catch (ConfigException e) {
         logger().error("{}", e.getMessage());
@@ -280,7 +297,7 @@ public class Main {
    * taken for the protocol: the JVM's {@code System.out} is sent to standard error first, as the
    * stdio server does, so nothing else can print on it.
    */
-  static int connectTo(java.net.URI endpoint, java.io.InputStream input) {
+  static int connectTo(URI endpoint, InputStream input) {
     var protocolOut = System.out;
     System.setOut(System.err);
     logger().info("Connecting standard input and output to {}", endpoint);
@@ -350,14 +367,14 @@ public class Main {
    * Sets the directories logs are listed from and may be loaded from, warning about any that does
    * not exist (yet: a drive may be mounted later).
    */
-  static void configureLogDirectories(java.util.List<String> dirs) {
+  static void configureLogDirectories(List<String> dirs) {
     var logDirectory = LogDirectory.getInstance();
     logDirectory.setLogDirectories(dirs);
     var logManager = LogManager.getInstance();
     for (var dir : logDirectory.getLogDirectories()) {
       logger().info("Configuring log directory: {}", dir);
       logManager.addAllowedDirectory(dir);
-      if (!java.nio.file.Files.isDirectory(dir)) {
+      if (!Files.isDirectory(dir)) {
         logger().warn("Log directory {} does not exist; its logs are listed once it does", dir);
       }
     }
@@ -372,7 +389,7 @@ public class Main {
     var logManager = LogManager.getInstance();
 
     // Read environment variable defaults (CLI flags override these)
-    var logDirs = new java.util.ArrayList<>(splitPathList(System.getenv("WPILOG_DIR")));
+    var logDirs = new ArrayList<>(splitPathList(System.getenv("WPILOG_DIR")));
     boolean logDirsFromCli = false;
     boolean httpMode = "true".equalsIgnoreCase(System.getenv("WPILOG_HTTP"));
     int httpPort = parseEnvInt("WPILOG_HTTP_PORT", 2363);
@@ -568,8 +585,8 @@ public class Main {
    *     for never
    */
   private static void initializeAndRun(boolean httpMode, int httpPort,
-      String httpBind, String httpPath, java.util.Set<String> allowedOrigins,
-      String stopToken, java.time.Duration idleExit) {
+      String httpBind, String httpPath, Set<String> allowedOrigins,
+      String stopToken, Duration idleExit) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -587,7 +604,7 @@ public class Main {
     }
 
     // Verify bundled game data is accessible
-    var currentGame = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance().getCurrentGame();
+    var currentGame = GameKnowledgeBase.getInstance().getCurrentGame();
     if (currentGame != null) {
       logger().info("Game data loaded: {} {}", currentGame.season(), currentGame.gameName());
     } else {
@@ -623,7 +640,7 @@ public class Main {
       try {
         httpTransport.start();
         // The guide tells an agent with shell access where to get every sample of an entry
-        org.triplehelix.wpilogmcp.tools.DiscoveryTools.setDataEndpoint(
+        DiscoveryTools.setDataEndpoint(
             httpTransport.dataEndpointUrl());
         Thread.currentThread().join();
       } catch (IOException e) {
@@ -658,7 +675,7 @@ public class Main {
     logger().info("       wpilog-mcp stop <config-name>");
     logger().info("       wpilog-mcp connect <config-name> [--config <path>]");
     logger().info("       wpilog-mcp connect --url <url>");
-    logger().info("       {}", org.triplehelix.wpilogmcp.store.ImportCommand.USAGE);
+    logger().info("       {}", ImportCommand.USAGE);
     logger().info("");
     logger().info("With no arguments, starts the \"default\" server configuration.");
     logger().info("");
@@ -687,7 +704,7 @@ public class Main {
     logger().info("");
     logger().info("Environment variables (CLI flags override these):");
     logger().info("  WPILOG_DIR             Directories of log files, separated by '{}'",
-        java.io.File.pathSeparator);
+        File.pathSeparator);
     logger().info("  WPILOG_TEAM            Default team number for logs missing metadata");
     logger().info("  TBA_API_KEY            The Blue Alliance API key");
     logger().info("  WPILOG_DISK_CACHE_DIR     Directory for persistent disk cache");
@@ -712,29 +729,29 @@ public class Main {
    * The directories in a path list such as {@code WPILOG_DIR}, separated as in {@code PATH}: by
    * {@code :}, or {@code ;} on Windows. Entries are trimmed and blank ones dropped.
    */
-  static java.util.List<String> splitPathList(String value) {
-    return splitPathList(value, java.io.File.pathSeparator);
+  static List<String> splitPathList(String value) {
+    return splitPathList(value, File.pathSeparator);
   }
 
   /** As {@link #splitPathList(String)}, with the separator given (for testing). */
-  static java.util.List<String> splitPathList(String value, String separator) {
-    if (value == null) return java.util.List.of();
-    return java.util.Arrays.stream(value.split(java.util.regex.Pattern.quote(separator)))
+  static List<String> splitPathList(String value, String separator) {
+    if (value == null) return List.of();
+    return Arrays.stream(value.split(Pattern.quote(separator)))
         .map(String::strip)
         .filter(entry -> !entry.isEmpty())
         .toList();
   }
 
-  private static java.util.Set<String> parseAllowedOrigins(String value) {
-    if (value == null || value.isEmpty()) return java.util.Set.of();
-    var origins = new java.util.HashSet<String>();
+  private static Set<String> parseAllowedOrigins(String value) {
+    if (value == null || value.isEmpty()) return Set.of();
+    var origins = new HashSet<String>();
     for (var part : value.split(",")) {
       var trimmed = part.trim();
       if (!trimmed.isEmpty()) {
         origins.add(trimmed);
       }
     }
-    return java.util.Set.copyOf(origins);
+    return Set.copyOf(origins);
   }
 
   private static int parseEnvInt(String name, int defaultValue) {
@@ -748,7 +765,7 @@ public class Main {
     }
   }
 
-  private static void applyEnvInt(String name, java.util.function.IntConsumer setter) {
+  private static void applyEnvInt(String name, IntConsumer setter) {
     var value = System.getenv(name);
     if (value == null || value.isEmpty()) return;
     try {
@@ -762,7 +779,7 @@ public class Main {
     }
   }
 
-  private static void applyEnvLong(String name, java.util.function.LongConsumer setter) {
+  private static void applyEnvLong(String name, LongConsumer setter) {
     var value = System.getenv(name);
     if (value == null || value.isEmpty()) return;
     try {

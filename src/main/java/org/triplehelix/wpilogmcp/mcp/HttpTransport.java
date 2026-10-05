@@ -144,6 +144,7 @@ public class HttpTransport {
     server.createContext("/stop", counted(this::handleStop));
     server.createContext(DATA_PATH, counted(this::handleData));
     server.createContext(StoreImportEndpoint.PATH, counted(this::handleImport));
+    server.createContext(StoreImportEndpoint.ASSIGN_PATH, counted(this::handleImport));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
