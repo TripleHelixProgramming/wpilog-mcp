@@ -10,7 +10,7 @@ Today wpilog-mcp reads log files. A robot writes a `.wpilog` file while it runs;
 
 The pit server closes that gap. It is one program, running on a laptop or a small computer on the robot's network in the shop, and on the Driver Station laptop in the pit. While the robot is on, the pit server subscribes to the robot's NetworkTables, the live stream of values the robot publishes, and records every change to a log file of its own. When the robot reboots, a new session begins. Nobody has to remember anything: if the robot ran, the data exists.
 
-Because the pit server is the same program as wpilog-mcp, every tool the assistant already has works on those recordings, including the one still being written. "What is the battery voltage right now?" and "what happened in that run twenty minutes ago?" are answered from the same place. Logs pulled from the robot are still imported, and where they overlap a recording they take precedence, since the robot's own log sees more than the network does.
+Because the pit server is the same program as wpilog-mcp, every tool the assistant already has works on those recordings, including the one still being written. The process that writes the recording is the process that answers questions about it, so it never has to read its own file back: the index and the values are already in memory as they arrive, and a question about the last ten seconds is answered as fast as one about a file read an hour ago. "What is the battery voltage right now?" and "what happened in that run twenty minutes ago?" are answered from the same place. Logs pulled from the robot are still imported, and where they overlap a recording they take precedence, since the robot's own log sees more than the network does.
 
 ### Why
 
@@ -49,7 +49,7 @@ The gateway is what lets a dashboard or a visualizer point at the pit server ins
 
 ### Where it stands
 
-Much of this exists. wpilog-mcp already runs as a background HTTP server with a lock and a PID file; it already reads a file that changes on disk and shows a caller the latest contents; it already reads event, match, and team from a log's own data; and it already aligns two recordings of the same session by their data, which is how REV logs are synchronized today. The new pieces are the NetworkTables client, the session writer, the gateway, a handful of live tools, and authentication for the HTTP server, which has none because until now it has only listened on the local machine.
+Much of this exists. wpilog-mcp already runs as a background HTTP server with a lock and a PID file; it already reads a file that changes on disk and shows a caller the latest contents, which is how a laptop reads a recording it did not write; it already reads event, match, and team from a log's own data; and it already aligns two recordings of the same session by their data, which is how REV logs are synchronized today. The new pieces are the NetworkTables client, the session writer, the gateway, a handful of live tools, and authentication for the HTTP server, which has none because until now it has only listened on the local machine.
 
 ## Part II: Specification
 
@@ -74,6 +74,7 @@ These are settled; the sections after them follow from them.
 6. **Live data has one source: the pit server.** The VS Code extension's local server reads files on its own laptop; live sessions and the team's recordings are reached by registering the pit server as a second MCP server. No per-laptop subscription to the robot.
 7. **Authentication precedes exposure.** The HTTP transport refuses to bind beyond the local machine until a bearer token is configured.
 8. **Context is written into the capture**, as JSON entries, not into sidecar files. One file holds the data and what gives it meaning, timestamped when it was taken.
+9. **The writer builds the index.** The process writing a capture is the process reading it, and it knows each record's byte offset as it writes it and holds each value already decoded. So an open session is served from an in-memory log the writer extends with every record, never by reading the file back; the file is the durable copy. Reading a growing file written by another process stays possible through an incremental rescan, as a secondary path.
 
 ### 3. Architecture
 
@@ -84,7 +85,7 @@ Code map additions, following the existing package layout:
 | `nt4` | The NT4 wire protocol: message records, the MessagePack value codec, type codes, the time-sync arithmetic. Shared by client and server; no I/O |
 | `nt4/client` | The client: connection, subscription, reconnection, the latest-value table |
 | `nt4/server` | The gateway: the WebSocket server, per-client subscriptions, announcement and value fan-out |
-| `capture` | Session detection, the session writer (DataLog), topic cost accounting, exclusion and thinning policy |
+| `capture` | Session detection, the session writer (DataLog) and the live log it extends as it writes, topic cost accounting, exclusion and thinning policy |
 | `capture/context` | Context providers: PhotonVision first |
 | `mcp` | Bearer-token authentication on the HTTP transport (existing package) |
 | `tools` | The live tools (existing package, a new module `LiveTools`) |
@@ -135,15 +136,20 @@ The type string in the `announce` is authoritative; the code in a value frame on
 
 **Context entries.** Providers write JSON entries under `/Daemon/<provider>/...` (see §8), with the server timestamp at which the snapshot was taken.
 
-### 6. Reading a growing capture: incremental rescan
+### 6. The live log: indexed as it is written
 
-The reload path treats a grown file as a change and loads it again, which re-indexes the whole file on every call while a session is open. For captures that is too slow. The change:
+The writer and the reader are one process, so an open session is a `LogData` the writer extends, not a file the server re-reads. The `LiveLog` holds what a `LazyParsedLog` holds after its scan, built incrementally:
 
-- `LogScan` gains `resume(LogScan previous, DataLogReader reader, Path path)`: it starts at the byte offset where the previous scan stopped, keeps the previous entries and offsets, and appends. A file that ends inside a record (the writer mid-flush) stops the scan there, as today, but records that position as the resume point and does not count it as damage.
-- `LogManager` reloads a file that grew, with the same identity and an unchanged prefix (the previous scan's last fully read record is still intact at its offset), by resuming; any other change loads afresh.
-- A `LazyParsedLog` built by resuming carries forward the previous instance's decoded values for entries that gained no records; entries that grew are decoded again on demand.
+- **Entries** in announcement order, with the WPILOG entry id the writer assigned, the type string, and the metadata; an `unannounce` marks the entry finished but keeps it.
+- **Offsets**: the byte position of every record, known at the moment the writer serializes it, appended per entry.
+- **Time range**: the earliest and latest server timestamp accepted, updated per record.
+- **Values**: the decoded value of each record is the value the client received, so no record is ever decoded from the file. Each entry keeps its values in an append-only array with a volatile length; a hot window (configurable, default the last 10 minutes) stays in memory, and older values are read from the file through their offsets, as a lazily parsed log reads any value, with the file mapped read-only beside the write channel and remapped as it grows.
 
-A test writes a capture in steps, resumes between steps, and compares the resumed scan with a fresh scan of the final file: identical entries, offsets, time range, and sample counts.
+**Readers see a consistent prefix.** A tool call takes each entry's length at the moment it first touches the entry, and the `values()` list it gets is a view bounded by that length, so a statistic is computed over a fixed set of records while the writer keeps appending. The single writer publishes a record by writing it, then advancing the length; readers never lock. The result's `inputs` carries the session's time range as the call saw it, so two calls a second apart can say why they differ.
+
+**The log manager serves it directly.** The capture's path maps to the `LiveLog` while the session is open: `getOrLoad` returns the instance without a file check, since the file changes constantly by design, and the after-call check that discards a result read across a change does not apply, since the call read a fixed prefix. When the session ends, the instance stays in the cache as a finished log until it is evicted; a later load of the path reads the file like any other log, and the two must agree, which a test checks by comparing the live instance's answers with a fresh load of the finished file.
+
+**Incremental rescan, the secondary path.** A process that is not the writer, such as a laptop's local server pointed at a capture on a shared folder, sees a file that grows. For it, `LogScan` gains `resume(LogScan previous, DataLogReader reader, Path path)`: it starts at the byte offset where the previous scan stopped, keeps the previous entries and offsets, and appends; a file that ends inside a record (the writer mid-flush) stops the scan there, records that position as the resume point, and does not count it as damage. The log manager reloads a file that grew with the same identity and an unchanged prefix by resuming, and anything else afresh. This is milestone 7, useful on its own and not needed by the pit server itself.
 
 ### 7. The gateway
 
@@ -174,7 +180,7 @@ The vision tools then read the settings entry of the session they analyze and re
 
 ### 9. Live tools
 
-Three tools, in a `LiveTools` module registered only when capture is enabled, and listed in the catalog under a new `Live` category. They read the latest-value table and the session registry; they open no file.
+Three tools, in a `LiveTools` module registered only when capture is enabled, and listed in the catalog under a new `Live` category. They read the latest-value table, the live log, and the session registry; they open no file. Every other tool reaches a live session through its path, as any log, and gets the live log's in-memory index and values (§6).
 
 **`list_sessions`**: `sessions[]`, newest first, each with `path` (the capture), `started_at`, `ended_at` (null while open), `robot` (address), `connected`, `topic_count`, `records`, `bytes`, `bytes_per_sec` (last minute, open sessions), `event`, `match` (when known), `cost[]` (the ten most expensive topics with `records` and `bytes_per_sec`), `thinned[]` and `excluded[]` from configuration, and `imports[]`: pulled logs matched to this session with the method (`by_time_overlap`, `by_correlation`) and the offset. `limits.sessions` when cut. `not_applicable` with a reason when capture is not enabled.
 
@@ -206,20 +212,21 @@ A pulled log of the same boot is matched to a session by the machinery REV synch
 
 Each leaves the project working and tested on its own.
 
-1. **Incremental rescan** (§6). Needed by everything that follows, useful today for any growing file.
-2. **NT4 protocol and client** (§4), with the gateway's core as its test fixture.
-3. **Session writer** (§5): captures appear in the log directory and every existing tool works on them. Stress test on a real robot in the shop.
-4. **Authentication** (§11) and the live tools (§9).
-5. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
-6. **PhotonVision provider** (§8) and the vision tools' `camera_settings`.
-7. **Session manifests and import matching** (§10), and the extension's pit server settings (§12).
+1. **NT4 protocol and client** (§4), with the gateway's core as its test fixture.
+2. **Session writer and live log** (§5, §6): captures appear in the log directory, and every existing tool works on an open session from memory and on a finished one from its file. Stress test on a real robot in the shop.
+3. **Authentication** (§11) and the live tools (§9).
+4. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
+5. **PhotonVision provider** (§8) and the vision tools' `camera_settings`.
+6. **Session manifests and import matching** (§10), and the extension's pit server settings (§12).
+7. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
 
 ### 14. Testing
 
 - **Protocol**: the client and the gateway against each other in-process, over a loopback WebSocket, on every fixture log replayed as a robot would publish it. Message encoding is checked against hand-encoded frames taken from the protocol document.
 - **Capture fidelity**: a replayed fixture captured through the client and the writer must pass the differential reader against the fixture it came from: same entries, same values, same timestamps.
 - **Sessions**: reconnection with continuing timestamps resumes; with restarted timestamps begins a new session; the capture is renamed when event and match arrive.
-- **Growing files**: the resumed scan equals a fresh scan (§6).
+- **Live log**: a session replayed through the writer answers every tool the same as a fresh load of the finished file (entries, sample counts, statistics, time range); a reader that starts mid-session sees a consistent prefix while the writer appends from another thread, checked under the stress test's concurrent calls; values past the hot window read from the file equal the values that were in memory.
+- **Growing files** (§6, secondary path): the resumed scan equals a fresh scan.
 - **Gateway**: a client with `all` receives every change; one without receives the latest per period; a `publish` from a client changes nothing upstream; the time-sync answer is robot time within the measured offset's error.
 - **Authentication**: a request without the token is refused; with it, served; a bind beyond loopback without a token fails at startup.
 - **Live tools**: the claim checks, the conformance sweep (with capture enabled on a replayed fixture), and determinism.
