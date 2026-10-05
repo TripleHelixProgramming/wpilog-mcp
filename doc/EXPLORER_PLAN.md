@@ -1,14 +1,14 @@
 # WPILog Explorer: Looking at the Data Without an Agent
 
-A proposal for a second VS Code extension in this repository: a viewer for the logs wpilog-mcp reads, for the people who want to look at the data themselves. The first half is for anyone on the team; the second half specifies the work for the developers who will build it, in the form [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) uses.
+A proposal for a viewer inside the WPILog Analyzer extension: a way to look at the logs wpilog-mcp reads, for the people who want to see the data themselves. The first half is for anyone on the team; the second half specifies the work for the developers who will build it, in the form [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) uses.
 
 ## Part I: The Idea
 
 ### What it is
 
-WPILog Analyzer gives an AI assistant the tools to analyze a robot's logs. WPILog Explorer gives a person the same view, in the same editor, with no assistant in between. Open a `.wpilog` file in VS Code and it opens as a log: the entries on the left, a plot in the middle, the match phases shaded behind the plot, the statistics of what is on screen beside it, and the robot's console below. Click an entry and it plots; drag across the plot and the statistics follow the selection; type in the console pane and the matching lines appear with their time on the plot.
+WPILog Analyzer gives an AI assistant the tools to analyze a robot's logs. WPILog Explorer, inside the same extension, gives a person the same view, in the same editor, with no assistant in between. Open a `.wpilog` file in VS Code and it opens as a log: the entries on the left, a plot in the middle, the match phases shaded behind the plot, the statistics of what is on screen beside it, and the robot's console below. Click an entry and it plots; drag across the plot and the statistics follow the selection; type in the console pane and the matching lines appear with their time on the plot.
 
-It is built from the same server the analyzer bundles, and it calls the same tools the assistant calls. So the number a student reads off the statistics panel is the number the assistant would have reported, computed by the same code from the same file, with the same data quality beside it. A question that starts by looking can continue by asking: with the analyzer installed, a selection becomes a prompt, already naming the file, the entry, and the time window, so nothing has to be retyped.
+It is built on the server the extension already bundles, and it calls the same tools the assistant calls. So the number a student reads off the statistics panel is the number the assistant would have reported, computed by the same code from the same file, with the same data quality beside it. A question that starts by looking can continue by asking: a selection becomes a prompt, already naming the file, the entry, and the time window, so nothing has to be retyped. And it needs no assistant to be useful: install the extension, open a log, and look.
 
 It reads REV logs beside the robot's log, on the robot's clock, as the server already synchronizes them. With a pit server on the team's network (see the pit server plan), it lists the team's sessions, follows a live session as it is recorded, and shows which sessions are mirrored on this laptop for the trip home.
 
@@ -18,68 +18,69 @@ It reads REV logs beside the robot's log, on the robot's clock, as the server al
 - **Looking and asking belong together.** Today the look happens in another program and the question in VS Code, and the file, the entry, and the time window are carried between them by hand. Here the plot and the prompt share a selection.
 - **One set of numbers.** A viewer with its own statistics and its own notion of a match phase disagrees with the assistant in small ways that cost an afternoon. The explorer shows what the server computes, so there is one answer.
 - **The code is in the same window.** The log explains the code and the code explains the log, and VS Code already holds the code.
+- **One extension, not two.** A viewer and an analyzer that share a server, a configuration, and a selection belong in one install. A team member with no interest in assistants installs the same extension and uses the viewer; the MCP server it registers costs nothing until an assistant asks for it.
 
 ### What it is not
 
 - **Not AdvantageScope.** No 3D field, no video synchronization, no live connection to the robot of its own, no replay. AdvantageScope is excellent at those and stays the tool for them. The explorer is a log reader that lives where the code and the assistant live, and that shows the assistant's numbers.
 - **Not a dashboard.** It reads logs. It does not talk to the robot and cannot change anything on it.
-- **Not a second analyzer.** It adds no analysis of its own. Every number it shows comes from a tool the assistant can call, and anything it needs that the tools lack is added to the server as a tool, so the assistant gains it too.
+- **Not a second analysis.** It adds no analysis of its own. Every number it shows comes from a tool the assistant can call, and anything it needs that the tools lack is added to the server as a tool, so the assistant gains it too.
 
 ### How it works, in one picture
 
 ```
   VS Code
   ┌───────────────────────────────────────────────────────────────────────┐
-  │  WPILog Explorer (extension host, TypeScript)                         │
-  │    tree views: logs, entries, pit server sessions                     │
-  │    custom editor for .wpilog and .revlog: the webview                 │
-  │    the MCP client: calls tools, hands results to the webview          │
+  │  WPILog Analyzer (extension host, TypeScript)                         │
+  │    today: registers the server for assistants, writes .mcp.json       │
+  │    explorer: tree views (logs, entries, pit server sessions),         │
+  │      a custom editor for .wpilog and .revlog (the webview),           │
+  │      the MCP client that calls tools and hands results to the webview,│
+  │      and "ask about this selection"                                   │
   │        │ stdio                              │ HTTP (extension host)   │
   │        ▼                                    ▼                         │
   │  wpilog-mcp server (bundled JAR)       pit server (by URL)            │
-  │                                                                       │
-  │  WPILog Analyzer (optional, beside it): "ask about this selection"    │
   └───────────────────────────────────────────────────────────────────────┘
 ```
 
-The webview draws; it never opens a network connection. The extension host is the only MCP client, and it talks to the bundled server over stdio exactly as the analyzer does, or to a pit server over HTTP.
+The webview draws; it never opens a network connection. The extension host is the only MCP client, and it talks to the bundled server over stdio exactly as the assistants' server is launched, or to a pit server over HTTP.
 
 ### Where it stands
 
-The server has nearly everything the viewer needs: the listing, entries with struct field paths, values over a time window, statistics with data quality, match phases, the Driver Station timeline, console search, and REV signals synchronized to the robot's clock. Two things are missing on the server side and are added as tools, so the assistant gets them too: reading an entry at screen resolution (a bucketed read, with the extremes kept), and rendering a chart. The extension itself is new, and the build, the version check, CI, and the release workflow each learn that the repository holds two extensions.
+The server has nearly everything the viewer needs: the listing, entries with struct field paths, values over a time window, statistics with data quality, match phases, the Driver Station timeline, console search, and REV signals synchronized to the robot's clock. Two things are missing on the server side and are added as tools, so the assistant gets them too: reading an entry at screen resolution (a bucketed read, with the extremes kept), and rendering a chart. The extension gains its first views, its first webview, and its first MCP client of its own; the build, the version check, CI, and the release workflow are unchanged, since the extension is the one they already know.
 
 ## Part II: Specification
 
-What follows is for the developers. It follows `CLAUDE.md` and the design principles in [ARCHITECTURE.md](ARCHITECTURE.md), and the extension conventions the analyzer established: TypeScript against the VS Code API, no runtime npm dependencies, logic that needs no VS Code API in pure modules with tests on Node's test runner, and `extension.ts` as the glue.
+What follows is for the developers. It follows `CLAUDE.md` and the design principles in [ARCHITECTURE.md](ARCHITECTURE.md), and the extension's conventions: TypeScript against the VS Code API, no runtime npm dependencies, logic that needs no VS Code API in pure modules with tests on Node's test runner, and `extension.ts` as the glue.
 
 ### 1. Decisions
 
-1. **Two extensions, one repository, one version.** The explorer lives in `vscode-explorer/` beside `vscode-extension/` (the analyzer), with its own `package.json`, README, icon, and Marketplace listing (`TripleHelixProgramming.wpilog-explorer`, display name "WPILog Explorer"). Both carry the project version; `syncExtensionVersion` writes it into both, `ExtensionVersionTest` checks both, and the release workflow packages and publishes both. Each bundles the server JAR (under 3 MB) and stands alone: neither declares the other as a dependency.
-2. **The webview never touches the network.** The extension host is the MCP client. It launches the bundled server over stdio, as the analyzer does, and reaches a pit server over HTTP. The webview receives results by `postMessage` and sends requests the same way. This keeps the server's `Origin` check as it is (a webview's origin is `vscode-webview://<id>`, which the check rightly refuses), needs no CORS beyond what exists, and keeps the server unchanged for the viewer.
+1. **One extension.** The explorer is part of WPILog Analyzer (`TripleHelixProgramming.wpilog-analyzer`), in `vscode-extension/`, under the same version, build, tests, CI, and release. The Marketplace identifier cannot change without becoming a new listing, so it stays; the display name and the README say that the extension analyzes logs with an assistant and shows them without one. "WPILog Explorer" names the viewer inside it: the custom editor, the views, and their commands.
+2. **The webview never touches the network.** The extension host is the MCP client. It launches the bundled server over stdio, from the same command line the extension gives the assistants, and reaches a pit server over HTTP. The webview receives results by `postMessage` and sends requests the same way. This keeps the server's `Origin` check as it is (a webview's origin is `vscode-webview://<id>`, which the check rightly refuses), needs no CORS beyond what exists, and keeps the server unchanged for the viewer.
 3. **Every number on screen comes from a tool.** The explorer computes no statistic, no phase, no synchronization of its own. What the tools lack is added to the server as a tool, with the tool checklist, the description tests, the conformance sweep, and the differential check, so the assistant can call it too. The first two are `read_entry` at screen resolution and `render_chart` (§6).
-4. **Shared code is shared source.** TypeScript the two extensions both need (finding Java, finding the JAR, log directories, the stdio MCP client) lives in `vscode-common/src/` and is compiled into each extension by its own `tsconfig`, which includes the common directory. No shared package, no runtime dependency, no copying step. The analyzer's modules move there in the same change, with their tests.
-5. **Settings are the explorer's, with the analyzer's as the fallback.** The explorer contributes `wpilog-explorer.*` settings for the log directories, team number, Java path, WPILib year, heap, and pit server URL. Where one is unset and the analyzer is installed, the analyzer's `wpilog-mcp.*` value is used, so a laptop with both set up once has the explorer configured. The resolution is a pure function with tests.
-6. **One server process per explorer, for now.** The explorer runs its own stdio server for the life of the extension, as the analyzer runs one per MCP client. A shared daemon for every client on a laptop (IDEAS 9.2) is a later milestone (§10), once the explorer exists to share it.
-7. **A chart is drawn by a library bundled as a static asset.** The rule against runtime npm dependencies is about the Node side of the extension, which stays dependency-free; the webview bundles one charting library as a file under `media/`, with its license, chosen for size and for drawing hundreds of thousands of points without strain (§5). Its version is pinned in the repository, not fetched at build.
-8. **Opening a log opens the explorer.** The extension registers a read-only custom editor for `*.wpilog` and `*.revlog`, so a double-click in the Explorer pane opens the viewer; "Open With" still offers the hex editor. Nothing the explorer does writes to a log or to a log directory.
+4. **One configuration.** The explorer reads the settings the extension has (`wpilog-mcp.logDirectory`, the additional directories, the team number, the Java path, the WPILib year, the heap) and the pit server URL the pit server plan adds. It contributes no second set. The server it launches is built from the same resolved configuration the assistants' server gets, by the same code, so the viewer and the assistant read the same directories.
+5. **The explorer's server is its own process, for now.** The extension today launches no server itself: VS Code's MCP registry and Claude Code each spawn one from the definition it provides. The explorer needs a client of its own, so the extension starts one stdio server for the life of the viewer, from the same command line. A shared daemon for every client on a laptop (IDEAS 9.2) is a later milestone (§10), chosen once the viewer's use has shown what it needs.
+6. **A chart is drawn by a library bundled as a static asset.** The rule against runtime npm dependencies is about the Node side of the extension, which stays dependency-free; the webview bundles one charting library as a file under `media/`, with its license, chosen for size and for drawing hundreds of thousands of points without strain (§5). Its version is pinned in the repository, not fetched at build.
+7. **Opening a log opens the explorer.** The extension registers a read-only custom editor for `*.wpilog` and `*.revlog`, so a double-click in the Explorer pane opens the viewer; "Open With" still offers the hex editor. Nothing the explorer does writes to a log or to a log directory.
 
 ### 2. Layout and wiring
 
+Everything is under `vscode-extension/`, in the layout the extension has:
+
 | Path | What it holds |
 |---|---|
-| `vscode-explorer/package.json` | `wpilog-explorer`: the custom editor, the views, the commands, the settings with their `order` |
-| `vscode-explorer/src/extension.ts` | The VS Code glue: activation, the server process, the views, the editor provider, the commands |
-| `vscode-explorer/src/*.ts` | Pure modules: settings resolution, the tree models, the request planner for the plot, the chart specification, the prompt builder, CSV formatting |
-| `vscode-explorer/media/` | The webview: its HTML, CSS, scripts, and the bundled charting library with its license |
-| `vscode-explorer/server/` | The bundled JAR, copied by `bundleExtension`; ignored by git as the analyzer's is |
-| `vscode-common/src/` | Shared modules: `javaFinder`, `jarManager`, `logDirectories`, the stdio MCP client, result parsing |
-| `vscode-common/src/test/` | Their tests, run by either extension's `npm test` |
+| `package.json` | Gains the custom editor, the views container and views, the explorer's commands (`wpilog-mcp.explorer.*`), and the pit server URL setting, with `order` values the manifest test pins |
+| `src/extension.ts` | Gains the explorer's glue: the server process for the viewer, the views, the editor provider, the URI handler, the commands |
+| `src/explorer/*.ts` | Pure modules: the tree models, the request planner for the plot, the chart specification, the prompt builder, CSV formatting |
+| `src/mcpClient.ts` | The stdio MCP client (§3), and its HTTP counterpart for a pit server |
+| `media/` | The webview: its HTML, CSS, scripts, and the bundled charting library with its license; `.vscodeignore` keeps it in the package |
+| `src/test/` | The tests, run by `npm test` as today |
 
-Gradle: `syncExtensionVersion` edits both package files; `bundleExtension` copies the JAR into both `server/` directories; `buildExtension` packages both `.vsix` files, each named by its extension; `installExtension` installs both. The CI workflow runs `npm ci && npm test` in both extension directories on Linux and Windows. The release workflow packages both, attaches both to the release, and publishes both to the Marketplace with the one `VSCE_PAT`, under the same rules (never a suffixed version, never a version twice). `doc/DEVELOPMENT.md` gains the second extension in its extension, test, and release sections.
+Nothing changes in Gradle, CI, or the release workflow: the one extension they build, test, and publish is the one that grows. `doc/DEVELOPMENT.md` describes the viewer's modules and the real-VS-Code test (§9) in its extension sections, and `vscode-extension/README.md` describes the viewer beside the assistant setup.
 
 ### 3. The MCP client in the extension host
 
-A small stdio client in `vscode-common`: start the JVM with the arguments the analyzer builds (`-Xmx`, the JAR, the log directories, `-team`, `-diskcachedir` under the explorer's own global storage), send `initialize`, then `tools/call` requests with ids, read newline-delimited responses, and surface a tool's result as the parsed JSON of its text content, with `isError` turned into a rejected promise. Requests are serialized per connection, as the stdio transport expects one message at a time; the client queues. The server is started on first use and restarted on crash with backoff, and its stderr goes to an output channel "WPILog Explorer". For a pit server, the same interface over HTTP with the `Mcp-Session-Id` header, from the extension host, where the response headers are readable.
+A small stdio client in the extension: start the JVM with the arguments `resolveServerConfig` already builds for the assistants (`-Xmx`, the JAR, the log directories, `-team`, `-diskcachedir` under the extension's global storage, the same cache the assistants' server uses, so a REV synchronization computed for one serves the other), send `initialize`, then `tools/call` requests with ids, read newline-delimited responses, and surface a tool's result as the parsed JSON of its text content, with `isError` turned into a rejected promise. Requests are serialized per connection, as the stdio transport expects one message at a time; the client queues. The server is started on first use and restarted on crash with backoff, and its stderr goes to the extension's output channel. For a pit server, the same interface over HTTP with the `Mcp-Session-Id` header, from the extension host, where the response headers are readable.
 
 ### 4. Views
 
@@ -92,7 +93,7 @@ A small stdio client in `vscode-common`: start the JVM with the arguments the an
   - a **console pane**, from `search_strings`: a pattern, a level filter, collapsed repeats, each match with its time, where clicking a line moves the cursor to it and matches in the window are marked on the timeline;
   - a **REV pane**, from `list_revlog_signals` and `get_revlog_data`: the signals by device, each with its synchronization method and confidence, plotted on the robot's clock in the same panes as the log's entries, with the offset shown and a note when a REV log is not synchronized;
   - a **field view**, when the log has a robot pose the signal resolver finds or the user picks: a top-down plot of the pose over the window on an outline drawn from the bundled game data's field geometry (length, width, zones), with no field image, since none is bundled.
-- **Status**: the server's state in the status bar (starting, ready, restarting), and for a pit server its reachability and the mirror's age, as the pit server plan's extension section specifies.
+- **Status**: the viewer's server state in the status bar (starting, ready, restarting), and for a pit server its reachability and the mirror's age, as the pit server plan's extension section specifies.
 
 ### 5. The plot and its data
 
@@ -110,41 +111,40 @@ Two tools, each through the tool checklist in `doc/DEVELOPMENT.md`, documented i
 
 **`read_entry` at screen resolution.** A new optional parameter `max_points`. When the samples in the window number no more than it, the result is as today, exact. When they do, the window is divided into that many buckets of equal duration, and each bucket with samples returns `timestamp_sec` (its start), `count`, `min`, `max`, `mean`, `first`, and `last`; the result says `bucketed: true` with `bucket_sec`, and `total_in_range` stays the true count. The extremes are kept because a spike that a mean would hide is the thing a person is looking for. For a change-only entry, `first` and `last` let the viewer draw the holds correctly across a bucket. Struct fields and array elements go through the field paths as the exact read does; a non-numeric entry is read exactly and `max_points` is reported in `skipped` with the reason. The differential check recomputes `min`, `max`, and `mean` per bucket from the raw records of the entry the result names.
 
-**`render_chart`.** Takes what `read_entry` takes, plus `entries[]` for several series, a `kind` (`time_series`, `histogram`, `scatter`, `field`), and a `width` and `height`. Returns MCP image content (a PNG drawn with the JDK's headless imaging and written by `ImageIO`, with no dependency; skipped with a note where the runtime lacks the headless toolkit), the chart specification as JSON (series, axes with units from the names, the phases, the window), and the numeric summary of what was drawn (per series the count, min, max, mean, and the window) with `inputs`, so a model that describes the chart describes numbers the tool returned. A change-only series is drawn as steps; the phases come from the Driver Station data; axes carry the unit the name states and nothing the name does not. The specification is what the explorer draws from, so the picture the assistant gets and the picture a person sees come from the same description; the specification carries a `vscode://TripleHelixProgramming.wpilog-explorer/open?...` link that the explorer's URI handler opens as the same chart, interactive, when the explorer is installed.
+**`render_chart`.** Takes what `read_entry` takes, plus `entries[]` for several series, a `kind` (`time_series`, `histogram`, `scatter`, `field`), and a `width` and `height`. Returns MCP image content (a PNG drawn with the JDK's headless imaging and written by `ImageIO`, with no dependency; skipped with a note where the runtime lacks the headless toolkit), the chart specification as JSON (series, axes with units from the names, the phases, the window), and the numeric summary of what was drawn (per series the count, min, max, mean, and the window) with `inputs`, so a model that describes the chart describes numbers the tool returned. A change-only series is drawn as steps; the phases come from the Driver Station data; axes carry the unit the name states and nothing the name does not. The specification is what the explorer draws from, so the picture the assistant gets and the picture a person sees come from the same description; the specification carries a `vscode://TripleHelixProgramming.wpilog-analyzer/open?...` link that the extension's URI handler opens as the same chart, interactive, when the extension is installed.
 
 ### 7. Looking to asking
 
-With the analyzer installed (`vscode.extensions.getExtension` finds it), the editor offers "Ask about this selection": the current log's path, the selected entries, the window or selection, and the pane's kind become a prompt that names them and the tool the assistant would call first, and the prompt opens in the chat the user has. VS Code's own chat accepts a prefilled query through `workbench.action.chat.open`; for other assistants the prompt is copied to the clipboard with a message saying so. Which assistants can be opened with a prompt is an open question (§11); the clipboard always works. Without the analyzer, the command is absent, and the viewer stands alone.
+The editor offers "Ask about this selection": the current log's path, the selected entries, the window or selection, and the pane's kind become a prompt that names them and the tool the assistant would call first, and the prompt opens in the chat the user has. VS Code's own chat accepts a prefilled query through `workbench.action.chat.open`; for other assistants the prompt is copied to the clipboard with a message saying so. Which assistants can be opened with a prompt is an open question (§11); the clipboard always works. With no assistant configured, the command still produces the prompt, and the viewer is complete without it.
 
 ### 8. Pit server and live sessions
 
-With `wpilog-explorer.pitServerUrl` set (falling back to the analyzer's), the Logs view lists the pit server's sessions and the editor opens one by path through the pit server's tools, as it opens a local log through the local server's. An open session has a **follow** toggle: the window tracks the latest time, and the webview polls `read_entry` for each visible series from the last timestamp it holds, once a second, appending; the console pane polls `search_strings` the same way. Mirrored sessions (pit server plan §11) open from the mirror when the pit server is unreachable, and the editor says which copy it is reading. Nothing here subscribes to the robot: the pit server is the one listener, by its own decision 6.
+With `wpilog-mcp.pitServerUrl` set (the pit server plan's setting), the Logs view lists the pit server's sessions and the editor opens one by path through the pit server's tools, as it opens a local log through the local server's. An open session has a **follow** toggle: the window tracks the latest time, and the webview polls `read_entry` for each visible series from the last timestamp it holds, once a second, appending; the console pane polls `search_strings` the same way. Mirrored sessions (pit server plan §11) open from the mirror when the pit server is unreachable, and the editor says which copy it is reading. Nothing here subscribes to the robot: the pit server is the one listener, by its own decision 6.
 
 ### 9. Testing
 
-- **Pure modules**, on Node's test runner, in both the common directory and the explorer: settings resolution with and without the analyzer's values; the tree models from recorded tool results, with struct leaves and filters; the request planner (window and pixel width to `max_points`, debounce and cache keys, the step rule from the sampling class); the chart specification builder; the prompt builder's text; CSV formatting with NaN and infinities as the tools report them; the manifest test pinning the settings' `order`, that every command a description links to exists, and the custom editor's selectors.
+- **Pure modules**, on Node's test runner, beside the extension's existing tests: the tree models from recorded tool results, with struct leaves and filters; the request planner (window and pixel width to `max_points`, debounce and cache keys, the step rule from the sampling class); the chart specification builder; the prompt builder's text; CSV formatting with NaN and infinities as the tools report them; the manifest test, extended to pin the new settings' `order`, the explorer's commands, the views, and the custom editor's selectors.
 - **The stdio client** against the real server JAR: initialize, a listing, a read, an error result, a crash and restart, on Linux and Windows in CI, since the JAR is built there first.
 - **Server tools**: `read_entry` with `max_points` against fixtures whose values are functions of time, so each bucket's min, max, and mean are known exactly, at the boundaries (a window shorter than one bucket, a bucket with one sample, `max_points` of 1), on change-only fixtures for `first` and `last`, and through the conformance sweep and the differential check; `render_chart` for a decodable PNG of the requested size, a specification that names every series drawn, and a summary equal to `get_statistics` over the same window.
-- **The webview in a real VS Code**: a smoke test with `@vscode/test-electron` (a development dependency), run in CI on Linux under `xvfb`, on the oldest supported VS Code and the current one: open a fixture log through the custom editor, wait for the webview to report ready, check that the entries tree lists the fixture's entries and that plotting one produces a request with the expected `max_points`. This is the first automated check of either extension inside VS Code; `doc/DEVELOPMENT.md` describes it and the `F5` development host beside it.
+- **The webview in a real VS Code**: a smoke test with `@vscode/test-electron` (a development dependency), run in CI on Linux under `xvfb`, on the oldest supported VS Code and the current one: open a fixture log through the custom editor, wait for the webview to report ready, check that the entries tree lists the fixture's entries and that plotting one produces a request with the expected `max_points`. This is the first automated check of the extension inside VS Code; `doc/DEVELOPMENT.md` describes it and the `F5` development host beside it.
 - **Windows**: paths built with the path API, the JAR found under both layouts, and the smoke test run on Windows once it is stable on Linux.
 
 ### 10. Milestones
 
 Each leaves the repository building, tested, and releasable.
 
-1. **Scaffold** (§1, §2, §3): the second extension, the common directory with the analyzer's modules moved into it, the version sync and its test, CI, and the release workflow for two extensions; the settings and their resolution; the stdio client; the Logs and Entries trees; a custom editor that opens a log and shows its entries and time range. Published as a pre-release.
+1. **Foundation** (§1, §2, §3): the stdio client from the existing server configuration; the Logs and Entries trees; a custom editor that opens a log and shows its entries and time range; the manifest test extended. Published as a pre-release.
 2. **Plot** (§5, §6): `read_entry` with `max_points` in the server; the plot panes with the bundled library, the timeline with phases and events, the cursor and readout, zoom and pan, and the statistics panel.
 3. **Console, structs, field** (§4): the console pane with marks on the timeline; struct fields and array elements in the tree and the panes; the field view.
 4. **REV** (§4): the REV pane and signals in the panes, with synchronization shown.
 5. **Pit server** (§8): sessions in the Logs view, opening by path through the pit server, follow for an open session, the mirror's state.
 6. **Charts for the assistant** (§6, §7): `render_chart`, the URI handler that opens its specification, and "Ask about this selection".
 7. **A real VS Code in CI** (§9): the smoke test under `xvfb`, on both supported versions.
-8. **One server per laptop** (decision 6): the analyzer and the explorer share one server process when both are installed, through an API the analyzer exports or the server's named daemon, chosen when the explorer's use has shown which fits.
+8. **One server per laptop** (decision 5): the viewer, VS Code's MCP registry, and Claude Code share one server process, through the server's named daemon or an HTTP definition the extension provides, chosen when the viewer's use has shown which fits.
 
 ### 11. Open questions
 
 - Which assistants accept a prefilled prompt (§7). VS Code's chat does through its command; whether the Claude Code extension exposes an equivalent, and what Cursor's is, are to be checked, with the clipboard as the floor.
 - uPlot against drawing on a canvas directly for the plot panes (§5). The library's cursor, bands, and axes are a lot to rewrite; a hand-drawn plot would be smaller and entirely ours. The proposal is the library, revisited if its bundle or its API gets in the way.
-- Whether the custom editor should claim `.revlog` on its own, or only open one beside its wpilog (§1, decision 8). The proposal claims both and shows a REV log alone with its signals on its own clock, marked as not synchronized.
-- Whether the explorer's disk cache should be shared with the analyzer's, so a REV synchronization computed by one serves the other. The cache is keyed by content, so sharing is safe; the directory is the question. The proposal is separate caches until milestone 8 brings one server.
+- Whether the custom editor should claim `.revlog` on its own, or only open one beside its wpilog (§1, decision 7). The proposal claims both and shows a REV log alone with its signals on its own clock, marked as not synchronized.
 - How much of the pit server's live data belongs here (§8) against in the pit server's own future web view. The proposal is follow and the console only, with the latest values and `wait_for_change` left to the assistant.
