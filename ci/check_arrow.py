@@ -93,6 +93,11 @@ def check(arrow_path: Path) -> list[str]:
     problems = []
     schema, metadata, batches = read_stream(arrow_path)
     csv_path = arrow_path.with_suffix(".csv")
+    if not csv_path.exists():
+        # A stream with no CSV (the writer's own round-trip sample): readable, every batch opened
+        for _tag, batch in batches:
+            batch.validate(full=True)
+        return problems
     sections = read_csv(csv_path)
     for key in ("server_version", "inputs", "entries", "time_range_sec", "bucketed"):
         if key not in metadata:

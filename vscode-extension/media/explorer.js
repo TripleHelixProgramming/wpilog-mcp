@@ -1,9 +1,31 @@
 // The explorer editor's script. It draws what the extension host sends and asks the host for
 // what it needs; it never opens a connection of its own (EXPLORER_PLAN.md decision 2). Messages
-// from the host: loading, log, error, entryInfo, selectEntry. To the host: ready, entryInfo.
+// from the host: loading, log, error, entryInfo, selectEntry, plotEntry, and the plot's data,
+// dataError, timeline, statistics. To the host: ready, entryInfo, and the plot's fetch, timeline,
+// statistics (see plot.js).
 (function () {
   "use strict";
   const vscode = acquireVsCodeApi();
+  const plot = typeof Plot === "function" ? new Plot({ post: (m) => vscode.postMessage(m) }, document.getElementById("plot")) : null;
+
+  /** Whether an entry's type can be plotted as it is: a number or a boolean. */
+  function plottable(type) {
+    return type === "double" || type === "float" || type === "int64" || type === "boolean";
+  }
+
+  function plotButton(name, enabled, title) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "row-plot";
+    button.textContent = "plot";
+    button.title = title || "Plot this entry in the active pane";
+    button.disabled = !enabled || !plot;
+    button.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (plot) plot.addSeries(name);
+    });
+    return button;
+  }
   const byId = (id) => document.getElementById(id);
   const els = {
     title: byId("title"),
@@ -56,7 +78,12 @@
         const row = document.createElement("tr");
         row.dataset.name = entry.name;
         if (entry.name === selected) row.classList.add("selected");
+        const cell = document.createElement("td");
+        cell.className = "plot-cell";
+        cell.append(plotButton(entry.name, plottable(entry.type),
+          plottable(entry.type) ? "Plot this entry in the active pane" : "A struct or array is plotted by its numeric fields: pick one in its details"));
         row.append(
+          cell,
           text("td", entry.name, "name"),
           text("td", entry.type, "type"),
           text("td", count(entry.sample_count), "num")
@@ -119,7 +146,8 @@
       ul.className = "paths";
       for (const path of info.numeric_leaf_paths) {
         const li = document.createElement("li");
-        li.append(text("code", name + path));
+        li.append(plotButton(name + path, !path.includes("[*]"), path.includes("[*]")
+          ? "A [*] path pools every element; plot one element by its index instead" : "Plot this field in the active pane"), text("span", " "), text("code", name + path));
         ul.append(li);
       }
       body.append(ul);
@@ -151,6 +179,16 @@
     entries = Array.isArray(listing.entries) ? listing.entries : [];
     drawRows();
     show(els.main, true);
+    if (plot && Number.isFinite(range.start) && Number.isFinite(range.end)) {
+      plot.setLog({
+        path: message.path,
+        name: message.name,
+        start: range.start,
+        end: range.end,
+        entries: new Map(entries.map((e) => [e.name, e.sample_count])),
+      });
+      show(document.getElementById("plot"), true);
+    }
     if (selected && !entries.some((e) => e.name === selected)) {
       selected = null;
       show(els.details, false);
@@ -181,6 +219,21 @@
         break;
       case "selectEntry":
         if (entries.some((e) => e.name === message.name)) select(message.name);
+        break;
+      case "plotEntry":
+        if (plot) plot.addSeries(message.name);
+        break;
+      case "data":
+        if (plot) plot.onData(message);
+        break;
+      case "dataError":
+        if (plot) plot.onDataError(message);
+        break;
+      case "timeline":
+        if (plot) plot.onTimeline(message);
+        break;
+      case "statistics":
+        if (plot) plot.onStatistics(message);
         break;
       default:
         break;

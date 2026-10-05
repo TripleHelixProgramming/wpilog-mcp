@@ -11,6 +11,8 @@ export interface PageAssets {
   cspSource: string;
   styleUri: string;
   scriptUri: string;
+  /** The plot's assets: uPlot's style and script (vendor/), the Arrow reader, the arithmetic, the plot. */
+  plot?: { styleUri: string; scriptUris: string[] };
   /** A random value per page, so only this page's script may run. */
   nonce: string;
 }
@@ -34,7 +36,7 @@ export function explorerPage(assets: PageAssets): string {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy(assets)}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="${assets.styleUri}">
+${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : ""}  <link rel="stylesheet" href="${assets.styleUri}">
   <title>WPILog Explorer</title>
 </head>
 <body>
@@ -51,6 +53,7 @@ export function explorerPage(assets: PageAssets): string {
   </section>
   <div id="warning" class="warning hidden"></div>
   <div id="error" class="error hidden"></div>
+  <section id="plot" class="hidden"></section>
   <main id="main" class="hidden">
     <section id="entries">
       <div class="toolbar">
@@ -58,7 +61,7 @@ export function explorerPage(assets: PageAssets): string {
         <span id="filter-count" class="muted"></span>
       </div>
       <table id="table">
-        <thead><tr><th>Entry</th><th>Type</th><th class="num">Samples</th></tr></thead>
+        <thead><tr><th></th><th>Entry</th><th>Type</th><th class="num">Samples</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </section>
@@ -67,7 +70,7 @@ export function explorerPage(assets: PageAssets): string {
       <div id="details-body"></div>
     </aside>
   </main>
-  <script nonce="${assets.nonce}" src="${assets.scriptUri}"></script>
+${(assets.plot?.scriptUris ?? []).map((uri) => `  <script nonce="${assets.nonce}" src="${uri}"></script>\n`).join("")}  <script nonce="${assets.nonce}" src="${assets.scriptUri}"></script>
 </body>
 </html>
 `;

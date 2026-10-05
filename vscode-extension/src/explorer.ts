@@ -9,6 +9,7 @@
 import * as crypto from "crypto";
 import * as path from "path";
 import * as vscode from "vscode";
+import { DataClient, DataError, TooLargeError } from "./dataClient";
 import { McpClient, ToolError } from "./mcpClient";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes } from "./explorer/entriesTree";
@@ -34,6 +35,8 @@ interface OpenLog {
 /** The explorer: owns the clients, the views, and the editor, and wires them together. */
 export class Explorer implements vscode.Disposable {
   private readonly clients = new Map<string, { url: string; client: McpClient }>();
+  /** The data endpoint's client: one memory of streams for every editor. */
+  readonly data = new DataClient();
   readonly logs: LogsProvider;
   readonly entries: EntriesProvider;
   readonly editor: ExplorerEditorProvider;
@@ -72,7 +75,10 @@ export class Explorer implements vscode.Disposable {
       vscode.commands.registerCommand("wpilog-mcp.explorer.copyLogPath", (item?: LogItem) => {
         if (item?.resourceUri) void vscode.env.clipboard.writeText(item.resourceUri.fsPath);
       }),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.showEntry", (name: string) => this.editor.selectEntry(name)),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.showEntry", (nameOrItem: string | EntryItem) =>
+        this.editor.selectEntry(entryNameOf(nameOrItem))),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.plotEntry", (nameOrItem: string | EntryItem) =>
+        this.editor.plotEntry(entryNameOf(nameOrItem))),
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLog", () => this.editor.reloadActive())
     );
   }
@@ -104,7 +110,11 @@ export class Explorer implements vscode.Disposable {
     }
     const existing = this.clients.get(spec.name);
     if (existing && existing.url === url) return existing.client;
-    if (existing) void existing.client.dispose();
+    if (existing) {
+      void existing.client.dispose();
+      // A server at a new URL was started again, perhaps with other directories: its streams are new
+      this.data.clear();
+    }
     const client = new McpClient(url, this.extensionVersion);
     this.clients.set(spec.name, { url, client });
     return client;
@@ -137,6 +147,15 @@ export class Explorer implements vscode.Disposable {
 /** The message of an error, for a note in a tree or the editor. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The entry (with its field path, for a field) a command was given: a name, or a tree item. */
+function entryNameOf(nameOrItem: string | EntryItem): string {
+  if (typeof nameOrItem === "string") return nameOrItem;
+  const node = nameOrItem.node;
+  if (node.kind === "entry") return node.entry.name;
+  if (node.kind === "field") return node.entry.name + node.fieldPath;
+  return "";
 }
 
 /** A tree item that remembers the model node it draws. */
@@ -279,14 +298,19 @@ class EntryItem extends vscode.TreeItem {
         this.tooltip = node.tooltip;
         this.iconPath = new vscode.ThemeIcon(node.expandable ? "symbol-structure" : "symbol-field");
         this.contextValue = "wpilogEntry";
-        this.command = { command: "wpilog-mcp.explorer.showEntry", title: "Show Entry", arguments: [node.entry.name] };
+        // A click plots a number; a struct or array has fields to plot beneath it, so a click shows it
+        this.command = node.expandable || !plottable(node.entry.type)
+          ? { command: "wpilog-mcp.explorer.showEntry", title: "Show Entry", arguments: [node.entry.name] }
+          : { command: "wpilog-mcp.explorer.plotEntry", title: "Plot Entry", arguments: [node.entry.name] };
         break;
       case "field":
         this.description = node.description;
         this.tooltip = node.entry.name + node.fieldPath;
         this.iconPath = new vscode.ThemeIcon("symbol-number");
         this.contextValue = "wpilogField";
-        this.command = { command: "wpilog-mcp.explorer.showEntry", title: "Show Entry", arguments: [node.entry.name] };
+        this.command = node.fieldPath.includes("[*]")
+          ? { command: "wpilog-mcp.explorer.showEntry", title: "Show Entry", arguments: [node.entry.name] }
+          : { command: "wpilog-mcp.explorer.plotEntry", title: "Plot Field", arguments: [node.entry.name + node.fieldPath] };
         break;
       case "note":
         this.iconPath = new vscode.ThemeIcon("info");
@@ -294,6 +318,11 @@ class EntryItem extends vscode.TreeItem {
         break;
     }
   }
+}
+
+/** Whether an entry's type is plotted as it is: a number or a boolean. */
+function plottable(type: string): boolean {
+  return type === "double" || type === "float" || type === "int64" || type === "boolean";
 }
 
 /** The Entries view: the active log's entries as entriesTree.ts decides, with a filter. */
@@ -408,6 +437,16 @@ class LogDocument implements vscode.CustomDocument {
   dispose(): void {}
 }
 
+/** A message from the webview. */
+interface WebviewMessage {
+  type?: string;
+  name?: string;
+  requestId?: number;
+  startTime?: number;
+  endTime?: number;
+  maxPoints?: number;
+}
+
 /** One editor: its panel and the log it shows. */
 interface Editor {
   panel: vscode.WebviewPanel;
@@ -436,20 +475,39 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     const key = panel.webview.toString() + document.uri.toString();
     const media = vscode.Uri.joinPath(this.explorer.extensionUri, "media");
     panel.webview.options = { enableScripts: true, localResourceRoots: [media] };
+    const asset = (...segments: string[]) => panel.webview.asWebviewUri(vscode.Uri.joinPath(media, ...segments)).toString();
     panel.webview.html = explorerPage({
       cspSource: panel.webview.cspSource,
-      styleUri: panel.webview.asWebviewUri(vscode.Uri.joinPath(media, "explorer.css")).toString(),
-      scriptUri: panel.webview.asWebviewUri(vscode.Uri.joinPath(media, "explorer.js")).toString(),
+      styleUri: asset("explorer.css"),
+      scriptUri: asset("explorer.js"),
+      plot: {
+        styleUri: asset("vendor", "uPlot.min.css"),
+        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("plot.js")],
+      },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
     const editor: Editor = { panel, log: { path: document.uri.fsPath }, ready: false };
     this.editors.set(key, editor);
-    panel.webview.onDidReceiveMessage((message: { type?: string; name?: string }) => {
-      if (message.type === "ready") {
-        editor.ready = true;
-        void this.load(editor);
-      } else if (message.type === "entryInfo" && typeof message.name === "string") {
-        void this.sendInfo(editor, message.name);
+    panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+      switch (message.type) {
+        case "ready":
+          editor.ready = true;
+          void this.load(editor);
+          break;
+        case "entryInfo":
+          if (typeof message.name === "string") void this.sendInfo(editor, message.name);
+          break;
+        case "fetch":
+          void this.sendData(editor, message);
+          break;
+        case "timeline":
+          void this.sendTimeline(editor);
+          break;
+        case "statistics":
+          void this.sendStatistics(editor, message);
+          break;
+        default:
+          break;
       }
     });
     panel.onDidChangeViewState(() => {
@@ -513,6 +571,88 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
   private async sendInfo(editor: Editor, name: string): Promise<void> {
     const info = await this.explorer.entries.info({ name, type: "", sample_count: 0 });
     void editor.panel.webview.postMessage({ type: "entryInfo", name, info });
+  }
+
+  /**
+   * The plot's data: the stream's bytes from the data endpoint of the server that read the log,
+   * handed to the webview as they came. A refusal keeps the server's words; over the size cap,
+   * the plot asks again for buckets.
+   */
+  private async sendData(editor: Editor, message: WebviewMessage): Promise<void> {
+    const { requestId, name } = message;
+    if (typeof requestId !== "number" || typeof name !== "string") return;
+    const post = (reply: Record<string, unknown>) => void editor.panel.webview.postMessage(reply);
+    const spec = editor.log.spec;
+    if (!spec) {
+      post({ type: "dataError", requestId, name, message: "The log is not loaded" });
+      return;
+    }
+    try {
+      const client = await this.explorer.clientFor(spec);
+      const response = await this.explorer.data.fetch(client.endpoint, {
+        path: editor.log.path,
+        names: [name],
+        startTime: typeof message.startTime === "number" ? message.startTime : undefined,
+        endTime: typeof message.endTime === "number" ? message.endTime : undefined,
+        maxPoints: typeof message.maxPoints === "number" ? message.maxPoints : undefined,
+      });
+      post({ type: "data", requestId, name, bytes: response.bytes, fromCache: response.fromCache });
+    } catch (error) {
+      this.explorer.log(`Explorer: ${name} from ${editor.log.path}: ${messageOf(error)}`);
+      post({
+        type: "dataError",
+        requestId,
+        name,
+        message: messageOf(error),
+        tooLarge: error instanceof TooLargeError,
+        status: error instanceof DataError ? error.status : undefined,
+      });
+    }
+  }
+
+  /** The timeline's phases and events, each from its tool; one that fails is sent as its result. */
+  private async sendTimeline(editor: Editor): Promise<void> {
+    const spec = editor.log.spec;
+    if (!spec) return;
+    const call = async (tool: string): Promise<Record<string, unknown> | null> => {
+      try {
+        const client = await this.explorer.clientFor(spec);
+        return await client.callTool(tool, { path: editor.log.path });
+      } catch (error) {
+        if (error instanceof ToolError && error.result) return error.result;
+        this.explorer.log(`Explorer: ${tool} on ${editor.log.path}: ${messageOf(error)}`);
+        return null;
+      }
+    };
+    const [phases, ds] = await Promise.all([call("get_match_phases"), call("get_ds_timeline")]);
+    void editor.panel.webview.postMessage({ type: "timeline", phases, ds });
+  }
+
+  /** get_statistics over the visible window, as the server states it. */
+  private async sendStatistics(editor: Editor, message: WebviewMessage): Promise<void> {
+    const { requestId, name } = message;
+    if (typeof requestId !== "number" || typeof name !== "string") return;
+    const spec = editor.log.spec;
+    if (!spec) return;
+    let result: Record<string, unknown>;
+    try {
+      const client = await this.explorer.clientFor(spec);
+      const args: Record<string, unknown> = { path: editor.log.path, name };
+      if (typeof message.startTime === "number") args.start_time = message.startTime;
+      if (typeof message.endTime === "number") args.end_time = message.endTime;
+      result = await client.callTool("get_statistics", args);
+    } catch (error) {
+      result = error instanceof ToolError && error.result ? error.result : { status: "error", error: messageOf(error) };
+    }
+    void editor.panel.webview.postMessage({ type: "statistics", requestId, name, result });
+  }
+
+  /** Plots an entry in the active editor: the Entries view's click. */
+  plotEntry(name: string): void {
+    const editor = this.editors.get(this.activeKey ?? "");
+    if (!editor || name === "") return;
+    editor.panel.reveal(undefined, true);
+    void editor.panel.webview.postMessage({ type: "plotEntry", name });
   }
 
   /** Shows an entry in the active editor: the Entries view's click. */

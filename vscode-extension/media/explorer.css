@@ -87,3 +87,42 @@ pre {
 }
 code { font-family: var(--vscode-editor-font-family); }
 ul.paths { margin: 4px 0; padding-left: 20px; }
+
+/* ---- the plot ---- */
+#plot { margin: 8px 0 12px; }
+.plot-bar { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+.plot-button, .pane-remove, .chip-remove {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: none; border-radius: 2px; padding: 3px 8px; cursor: pointer; font-family: inherit; font-size: inherit;
+}
+.plot-button:hover, .pane-remove:hover, .chip-remove:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.timeline { display: block; width: 100%; height: 44px; cursor: crosshair; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 3px; margin: 4px 0 8px; }
+.plot-body { display: flex; gap: 12px; align-items: flex-start; }
+.panes { flex: 1 1 auto; min-width: 0; }
+.pane { position: relative; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 4px; padding: 6px 8px 4px; margin-bottom: 8px; }
+.pane.active { border-color: var(--vscode-focusBorder); }
+.pane-remove { position: absolute; top: 4px; right: 4px; padding: 0 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 28px 4px 0; min-height: 22px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid; border-radius: 12px; padding: 1px 6px 1px 4px; }
+.chip.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.chip-name { cursor: pointer; font-family: var(--vscode-editor-font-family); font-size: 0.9em; }
+.chip-state { font-size: 0.85em; }
+.chip-remove { padding: 0 4px; line-height: 1; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.error-text { color: var(--vscode-editorError-foreground); }
+.stats { flex: 0 0 300px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 4px; padding: 8px 12px; position: sticky; top: 8px; max-height: calc(100vh - 32px); overflow: auto; }
+.stats h2 { font-size: 1em; margin: 0; word-break: break-all; }
+.stats h3 { font-size: 0.95em; margin: 10px 0 4px; }
+.stats .confidence { margin-top: 8px; font-weight: 600; }
+.stats .small { font-size: 0.9em; white-space: pre-wrap; }
+.stats ul.reasons { margin: 4px 0; padding-left: 18px; font-size: 0.9em; }
+/* uPlot in the editor's colors */
+.uplot { font-family: var(--vscode-font-family); }
+.uplot .u-legend { color: var(--vscode-foreground); font-size: 0.9em; text-align: left; }
+.uplot .u-legend .u-series th { font-weight: 500; }
+.uplot .u-select { background: rgba(128, 128, 255, 0.2); }
+td.plot-cell { width: 28px; padding: 0 4px; }
+button.row-plot { background: none; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); color: var(--vscode-foreground); border-radius: 3px; cursor: pointer; padding: 0 6px; font-size: 0.85em; }
+button.row-plot:hover { background: var(--vscode-button-secondaryHoverBackground); }
+button.row-plot:disabled { opacity: 0.4; cursor: default; }

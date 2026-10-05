@@ -163,7 +163,12 @@
       },
       {
         "command": "wpilog-mcp.explorer.showEntry",
-        "title": "Show Entry",
+        "title": "Show Entry Details",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.plotEntry",
+        "title": "Plot Entry",
         "category": "WPILog Explorer"
       },
       {
@@ -211,6 +216,16 @@
           "command": "wpilog-mcp.explorer.copyLogPath",
           "when": "view == wpilog-mcp.logs && viewItem == wpilogLog",
           "group": "navigation@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.plotEntry",
+          "when": "view == wpilog-mcp.entries && viewItem == wpilogEntry",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.showEntry",
+          "when": "view == wpilog-mcp.entries && (viewItem == wpilogEntry || viewItem == wpilogField)",
+          "group": "navigation@2"
         }
       ],
       "editor/title": [
@@ -235,6 +250,10 @@
         },
         {
           "command": "wpilog-mcp.explorer.showEntry",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.plotEntry",
           "when": "false"
         },
         {

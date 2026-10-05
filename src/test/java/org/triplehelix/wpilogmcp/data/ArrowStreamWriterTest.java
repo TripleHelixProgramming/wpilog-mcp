@@ -97,6 +97,11 @@ class ArrowStreamWriterTest {
     writer.finish();
     byte[] bytes = out.toByteArray();
     assertEquals(bytes.length, writer.bytesWritten());
+    // Left for the other readers: pyarrow (ci/check_arrow.py) opens it, and the webview's reader
+    // (vscode-extension, arrowStream.test.ts) checks its nulls of every type against this test's data
+    var samples = java.nio.file.Path.of("build", "arrow-samples");
+    java.nio.file.Files.createDirectories(samples);
+    java.nio.file.Files.write(samples.resolve("writer_roundtrip.arrow"), bytes);
 
     var stream = ArrowSpecReader.read(bytes);
     assertTrue(stream.endMarker());
