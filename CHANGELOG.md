@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 - `doc/PIT_SERVER_PLAN.md` proposes the pit server: a daemon that records the robot's NetworkTables stream as captures, serves it as a read-only gateway and over the HTTP MCP transport on the team's private network, pulls the robot's own logs and the roboRIO's system logs while it sits disabled, follows the program's console and other configured files into the capture as they are written, records the roboRIO's system stats and the robot program's JVM activity beside the data, serves its latest values for Prometheus and Grafana, and keeps the long-term record in a store it owns, by robot and session, which the extension mirrors to a laptop for analysis offline. The first part is for the team, the second a specification with milestones for the developers; `doc/IDEAS.md` lists it as 9.1.
+- `doc/EXPLORER_PLAN.md` proposes WPILog Explorer, a second VS Code extension in this repository that shows the logs to a person without an assistant: a custom editor with plots, phases, statistics, console, REV signals, and a field view, every number from the same tools the assistant calls, with a selection that becomes a prompt when the analyzer is installed. It specifies two server additions the assistant gains too, a bucketed `read_entry` and `render_chart`, and how the build, CI, and release learn a second extension; `doc/IDEAS.md` lists it as 9.2.
 
 ## [0.9.1] - 2026-10-04
 

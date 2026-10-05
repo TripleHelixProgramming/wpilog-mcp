@@ -401,7 +401,7 @@ A daemon in the shop and the pit that subscribes once to the robot's NetworkTabl
 ### 9.2 Data Browser and Charts
 Priority: High. Complexity: Medium.
 
-Direct access to the data without an agent, and real data in an agent's answers. Decided: the browser is a second VS Code extension in this repository, with its own Marketplace listing, for people with no interest in agentic work; it bundles the same server JAR, and the build, the version sync and its test, and the release workflow each learn a second extension.
+Direct access to the data without an agent, and real data in an agent's answers. [EXPLORER_PLAN.md](EXPLORER_PLAN.md) is the proposal and the specification, with milestones; the notes below are what it grew from. Decided: the browser is a second VS Code extension in this repository, with its own Marketplace listing, for people with no interest in agentic work; it bundles the same server JAR, and the build, the version sync and its test, and the release workflow each learn a second extension.
 
 - **A data browser extension**: a webview that is an MCP client of the server it starts on loopback, or of a pit server by URL. It shows the logs from the listing, entries with types and counts, a plot of an entry or a struct field over a window with the match phases shaded behind it, statistics beside the plot, searchable console text, REV signals on the wpilog's clock, and a pit server's live session as a tail that follows. With the analyzer extension also installed, a selection (an entry and a window) becomes a prefilled chat prompt, so a person moves from looking to asking without retyping; without it, the browser stands alone. Charts in the webview use a small time-series library bundled as a static asset; the extension's rule against runtime npm dependencies is about the Node side and should say so.
 - **One server per laptop**, when both extensions are installed: one HTTP server on loopback that the analyzer registers with VS Code's MCP registry and in `.mcp.json` for Claude Code, and that the browser uses too, instead of one JVM per client.
@@ -414,7 +414,7 @@ Direct access to the data without an agent, and real data in an agent's answers.
 | ID | Feature | Impact | Effort | Priority |
 |----|---------|--------|--------|----------|
 | 9.1 | The pit server (see PIT_SERVER_PLAN.md) | High | High | **P1** |
-| 9.2 | Data browser and charts | High | Medium | **P1** |
+| 9.2 | WPILog Explorer: data browser and charts (see EXPLORER_PLAN.md) | High | Medium | **P1** |
 | 4.1 | PathPlanner integration | High | Medium | **P2** |
 | 4.2 | AdvantageScope integration | Medium | Medium | **P2** |
 | 5.1 | Analysis presets | Medium | Low | **P2** |

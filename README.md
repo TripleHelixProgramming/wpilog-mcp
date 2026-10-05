@@ -119,6 +119,7 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 | [IDEAS.md](doc/IDEAS.md) | Planned and proposed work |
 | [PIT_SERVER_PLAN.md](doc/PIT_SERVER_PLAN.md) | The proposal for a pit server that records the robot's NetworkTables stream, serves it to dashboards and assistants, and keeps the long-term record: the idea for everyone, the specification for developers |
+| [EXPLORER_PLAN.md](doc/EXPLORER_PLAN.md) | The proposal for WPILog Explorer, a second extension that shows the logs to a person: the same server's numbers, plotted, with a path from looking to asking |
 | [ROBUSTNESS_REVIEW.md](doc/ROBUSTNESS_REVIEW.md), [ROBUSTNESS_PLAN.md](doc/ROBUSTNESS_PLAN.md) | The review of the server's accuracy on real logs and the plan that answered it, behind most of version 0.9.0 (historical) |
 | [VAALE event analysis](doc/VAALE_EVENT_ANALYSIS.md), [VACHE power analysis](doc/VACHE_POWER_ANALYSIS.md) | Two example analyses of real robot logs, made with earlier versions (March 2026, before v0.3.0, and v0.8.0). They are historical: the current server reports some of the same logs differently |
 
