@@ -51,7 +51,7 @@ The gateway is what lets a dashboard or a visualizer point at the pit server ins
 
 ### Where it stands
 
-Much of this exists. wpilog-mcp already runs as a background HTTP server with a lock and a PID file; it already reads a file that changes on disk and shows a caller the latest contents, which is how a laptop reads a recording it did not write; it already reads event, match, and team from a log's own data; and it already aligns two recordings of the same session by their data, which is how REV logs are synchronized today. The new pieces are the NetworkTables client, the session writer, the gateway, a handful of live tools, and authentication for the HTTP server, which has none because until now it has only listened on the local machine.
+Much of this exists. wpilog-mcp already runs as a background HTTP server with a lock and a PID file; it already reads a file that changes on disk and shows a caller the latest contents, which is how a laptop reads a recording it did not write; it already reads event, match, and team from a log's own data; and it already aligns two recordings of the same session by their data, which is how REV logs are synchronized today. The new pieces are the NetworkTables client, the session writer, the log puller, the gateway, and a handful of live tools.
 
 ## Part II: Specification
 
@@ -74,7 +74,7 @@ These are settled; the sections after them follow from them.
 4. **The gateway is read-only.** It re-publishes the robot's topics and accepts subscriptions. A `publish` from a gateway client is answered as the protocol requires but never forwarded to the robot, and the server log says so once per client.
 5. **The gateway mirrors the robot's clock.** Its answers to the time-sync handshake are the robot's time, shifted by the offset the pit server measured, so a value's timestamp means the same thing through the gateway as from the robot, and the same as in the capture and in a pulled log.
 6. **Live data has one source: the pit server.** The VS Code extension's local server reads files on its own laptop; live sessions and the team's recordings are reached by registering the pit server as a second MCP server. No per-laptop subscription to the robot.
-7. **Authentication precedes exposure.** The HTTP transport refuses to bind beyond the local machine until a bearer token is configured.
+7. **The pit server trusts its network.** It runs on the team's private network, in the shop and the pit, and has no authentication of its own, as the HTTP transport has none today. Binding it beyond the local machine is the deliberate configuration it already is (`WPILOG_HTTP_BIND`). A team that wants TLS or a login puts a reverse proxy such as nginx in front of it; the documentation says how, and the server does not grow a security layer of its own.
 8. **Context is written into the capture**, as JSON entries, not into sidecar files. One file holds the data and what gives it meaning, timestamped when it was taken.
 9. **The writer builds the index.** The process writing a capture is the process reading it, and it knows each record's byte offset as it writes it and holds each value already decoded. So an open session is served from an in-memory log the writer extends with every record, never by reading the file back; the file is the durable copy. Reading a growing file written by another process stays possible through an incremental rescan, as a secondary path.
 10. **The robot's logs are pulled only while it is disabled, throttled, and never deleted from the robot.** The pit server reads the robot's state from the stream it already receives; a transfer runs only while that state has been disabled for a few seconds, pauses the moment it is not, and is capped to a configured rate. Removing a log from the robot is a later, opt-in step with verification, never a side effect of pulling.
@@ -91,7 +91,6 @@ Code map additions, following the existing package layout:
 | `capture` | Session detection, the session writer (DataLog) and the live log it extends as it writes, topic cost accounting, exclusion and thinning policy |
 | `capture/context` | Context providers: PhotonVision first |
 | `capture/pull` | The log puller: the robot-state gate, the remote listing and transfer over SFTP, resume, throttling, the pull manifest |
-| `mcp` | Bearer-token authentication on the HTTP transport (existing package) |
 | `tools` | The live tools (existing package, a new module `LiveTools`) |
 
 The pit server is `wpilog-mcp start <name>` for a server whose configuration enables capture. One process holds the client, the writer, the gateway, and the HTTP transport. The capture thread, the gateway's fan-out, and the MCP request pool are separate; they share the latest-value table and the session registry, both concurrent structures, and nothing else.
@@ -208,18 +207,15 @@ Every result carries `inputs.session` (the capture path). Descriptions say what 
 
 **Matching.** A pulled log of the same boot is matched to a session by the machinery REV synchronization uses: names nominate (a Driver Station entry both carry, a battery voltage, a loop count), the data decides (cross-correlation), and the offset must be near zero since both are on the FPGA clock. A match is recorded in a manifest beside the capture (`<capture>.session.json`: the session's facts and its imports) that `list_sessions` reads and the listing shows as `session`. The pulled log is the authoritative record of its session; the capture stands in where no pulled log exists and fills the gap where the pulled log is truncated. No database: manifests are files, in keeping with the project's "nothing to operate" goal; a catalog over many seasons is a later decision, made when the files are many.
 
-### 11. Authentication
+### 11. Network exposure
 
-- Configuration gains `token` (top level or per server). With a token set, every request to the MCP endpoint must carry `Authorization: Bearer <token>`; `GET /health` stays open.
-- Without a token, the HTTP transport refuses `WPILOG_HTTP_BIND` other than loopback at startup, with a message that says why.
-- The token never appears in a log line or a result. Comparison is constant-time.
-- TLS is out of scope for the first version; the documentation says to put the server behind a reverse proxy or a tunnel where the network is not trusted.
+The pit server binds to an address on the team's network (`WPILOG_HTTP_BIND`, as today) and serves the MCP endpoint, the gateway, and `GET /health` without authentication. The `Origin` check stays: it protects a browser on the network from being used against the server by a web page, and costs non-browser clients nothing.
+
+The standalone guide gains a short section for teams that want more: an nginx configuration that terminates TLS and asks for a password in front of the MCP endpoint, with the pit server itself bound to loopback behind it. The gateway's NT4 port is a separate matter; a dashboard cannot present a password to it, and the protocol has no place for one, so it is exposed on the private network or not at all.
 
 ### 12. The VS Code extension
 
-- A setting `wpilog-mcp.pitServerUrl` (order after the TBA key) and a command **WPILog Analyzer: Set Pit Server Token**, with the token in secret storage, never in a settings file.
-- With a URL set, the extension registers the pit server with VS Code's MCP registry as an HTTP server with the bearer header, beside the local one.
-- For Claude Code, the open question is how the token reaches a `.mcp.json` entry without a secret in a project file. The candidate is a per-user registration the extension offers to run (`claude mcp add --transport http --scope user`), which keeps the token in the user's own configuration; the decision is made when the extension work starts, and the rule that no secret enters a project file holds either way.
+- A setting `wpilog-mcp.pitServerUrl` (order after the TBA key). With it set, the extension registers the pit server with VS Code's MCP registry as an HTTP server, beside the local one, and adds an HTTP entry for it to a robot project's `.mcp.json` for Claude Code, under the same rules as the local entry. The entry holds a URL and nothing secret, so a team may commit it: every teammate's Claude Code then finds the pit server from the project.
 - Both servers' instructions and `get_server_guide` say which server is which: the local one for files on this laptop, the pit server for the team's sessions and for anything live.
 
 ### 13. Milestones
@@ -229,10 +225,10 @@ Each leaves the project working and tested on its own.
 1. **NT4 protocol and client** (§4), with the gateway's core as its test fixture.
 2. **Session writer and live log** (§5, §6): captures appear in the log directory, and every existing tool works on an open session from memory and on a finished one from its file. Stress test on a real robot in the shop.
 3. **Log puller** (§10): the robot's logs arrive on their own; tested against a real roboRIO in the shop before it is on by default.
-4. **Authentication** (§11) and the live tools (§9).
+4. **Live tools** (§9), and the extension's pit server setting (§12).
 5. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
 6. **PhotonVision provider** (§8) and the vision tools' `camera_settings`.
-7. **Session manifests and import matching** (§10), and the extension's pit server settings (§12).
+7. **Session manifests and import matching** (§10).
 8. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
 
 ### 14. Testing
@@ -244,7 +240,6 @@ Each leaves the project working and tested on its own.
 - **Growing files** (§6, secondary path): the resumed scan equals a fresh scan.
 - **Gateway**: a client with `all` receives every change; one without receives the latest per period; a `publish` from a client changes nothing upstream; the time-sync answer is robot time within the measured offset's error.
 - **Puller**: the gate, the listing comparison, resume offsets, the rename-by-prefix rule, the throttle's pacing, and the manifest are pure logic tested against a fake remote in memory: a file that grew is fetched from its old size; a file that shrank is a new file; a transfer in progress pauses within one block of the state leaving disabled and resumes at the same offset; the manifest round-trips. The SFTP client itself is covered by an opt-in test against a real roboRIO, named by a property, like the real-log suites.
-- **Authentication**: a request without the token is refused; with it, served; a bind beyond loopback without a token fails at startup.
 - **Live tools**: the claim checks, the conformance sweep (with capture enabled on a replayed fixture), and determinism.
 - **Windows**: the capture file is open for writing while the server reads it; the tests cover that on Windows, where a mapped file cannot be replaced but can be appended to and read.
 
@@ -252,7 +247,6 @@ Each leaves the project working and tested on its own.
 
 - The AdvantageKit topic layout versus its log layout (§5): verify on a real capture before adding resolver conventions.
 - Whether thinning should ever be on by default for known high-rate topics, or stay a configured choice. The proposal is configured only.
-- The Claude Code token path (§12).
 - Whether a capture's `_cap` marker should instead be a directory convention. The marker keeps the listing's name parsing unchanged.
 - When a catalog beyond manifest files is warranted (§10).
 - The SSH library for the puller (§10): the maintained JSch fork is small; Apache MINA SSHD is large but has a test server. The choice weighs the standalone install's size against testability.
