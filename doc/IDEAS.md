@@ -398,6 +398,15 @@ Priority: High. Complexity: High.
 
 A daemon in the shop and the pit that subscribes once to the robot's NetworkTables, records every change of every topic as a `.wpilog` capture per robot boot, re-publishes the stream as a read-only NetworkTables gateway so the robot has one client, pulls the robot's own log files whenever it sits disabled, answers the existing tools and a few live ones over the HTTP MCP transport on the team's private network, and records vision coprocessor settings beside the data. The process that writes a capture is the process that answers questions about it, so an open session is served from the index and values the writer builds as it writes, never by reading the file back. [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) is the proposal and the specification, with milestones.
 
+### 9.2 Data Browser and Charts
+Priority: High. Complexity: Medium.
+
+Direct access to the data without an agent, and real data in an agent's answers.
+
+- **A data browser in the VS Code extension**: a webview that is an MCP client of the extension's own server. It shows the logs from the listing, entries with types and counts, a plot of an entry or a struct field over a window with the match phases shaded behind it, statistics beside the plot, searchable console text, REV signals on the wpilog's clock, and a pit server's live session as a tail that follows. A selection (an entry and a window) becomes a prefilled chat prompt, so a person moves from looking to asking without retyping. Charts in the webview use a small time-series library bundled as a static asset; the extension's rule against runtime npm dependencies is about the Node side and should say so.
+- **One server per laptop**: the extension runs one HTTP server on loopback, registers its URL with VS Code's MCP registry and in `.mcp.json` for Claude Code, and the browser talks to the same process, instead of one JVM per client.
+- **A `render_chart` tool**: takes what `read_entry` takes plus a chart kind (time series, overlaid series, histogram, scatter, pose on the field from the bundled field geometry) and returns the chart as MCP image content (a PNG, rasterized with the JDK's headless imaging; skipped with a note where a runtime lacks it), a chart specification the browser renders interactively with a link that opens it there, and the numeric summary of what was plotted with `inputs`, so a model describing the chart describes numbers the tool returned. Axes carry the unit from the entry's name; a change-only series is drawn as steps, never interpolated; phases come from the Driver Station data. The MCP Apps extension, where a server returns an interactive view the host renders, is the longer-term path for the chat side; image content works everywhere today.
+
 ---
 
 ## Implementation Priority Matrix
@@ -405,6 +414,7 @@ A daemon in the shop and the pit that subscribes once to the robot's NetworkTabl
 | ID | Feature | Impact | Effort | Priority |
 |----|---------|--------|--------|----------|
 | 9.1 | The pit server (see PIT_SERVER_PLAN.md) | High | High | **P1** |
+| 9.2 | Data browser and charts | High | Medium | **P1** |
 | 4.1 | PathPlanner integration | High | Medium | **P2** |
 | 4.2 | AdvantageScope integration | Medium | Medium | **P2** |
 | 5.1 | Analysis presets | Medium | Low | **P2** |
