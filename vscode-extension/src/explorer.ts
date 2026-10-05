@@ -7,6 +7,7 @@
  * `explorer/*.ts` and tested there; this file is the glue.
  */
 import * as crypto from "crypto";
+import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { DataClient, DataError, TooLargeError } from "./dataClient";
@@ -14,6 +15,9 @@ import { McpClient, ToolError } from "./mcpClient";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
 import { LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
+import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError } from "./explorer/organize";
+import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
+import { organizeSources } from "./explorer/organizeSources";
 import { explorerPage } from "./explorer/webviewHtml";
 
 /** The custom editor's view type, as package.json declares it. */
@@ -21,8 +25,7 @@ export const EDITOR_VIEW_TYPE = "wpilog-mcp.explorer";
 export const LOGS_VIEW = "wpilog-mcp.logs";
 export const ENTRIES_VIEW = "wpilog-mcp.entries";
 
-/** The most logs one listing asks for: the server's page limit. */
-const LISTING_LIMIT = 500;
+const NEVER_ORGANIZE_KEY = "wpilog-mcp.neverOrganizeFolders";
 /** How many of an array's elements "Plot Every Element" plots: a pane can hold that many. */
 const ELEMENTS_PLOTTED = 16;
 /** How many console matches one request lists. */
@@ -44,6 +47,8 @@ export class Explorer implements vscode.Disposable {
   readonly entries: EntriesProvider;
   readonly editor: ExplorerEditorProvider;
   private readonly disposables: vscode.Disposable[] = [];
+  private choices: Choices;
+  private offering = false;
 
   /**
    * @param windowSpec the server, with the projects it serves, as extension.ts computes it
@@ -52,8 +57,10 @@ export class Explorer implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly serverManager: ServerManager,
-    private readonly windowSpec: () => DaemonSpec
+    private readonly windowSpec: () => DaemonSpec,
+    private readonly windowDirectories: () => string[] | undefined = () => undefined
   ) {
+    this.choices = { never: context.globalState.get<string[]>(NEVER_ORGANIZE_KEY) ?? [], deferred: [], offered: {} };
     this.logs = new LogsProvider(this);
     this.entries = new EntriesProvider(this);
     this.editor = new ExplorerEditorProvider(this);
@@ -64,6 +71,9 @@ export class Explorer implements vscode.Disposable {
         webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false,
       }),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.organizeLogs", () => this.organizeOnDemand()),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.importLogs", (item?: LogItem) => this.importItem(item)),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.assignRobot", (item?: LogItem) => this.importItem(item, true)),
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLogs", () => this.logs.refresh()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.filterLogs", () => this.logs.askFilter()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearLogFilter", () => this.logs.setFilter("")),
@@ -91,6 +101,146 @@ export class Explorer implements vscode.Disposable {
       }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLog", () => this.editor.reloadActive())
     );
+  }
+
+  /** Automatic offers are serialized, including across a refresh while a picker is open. */
+  async offerOrganizing(listing?: LogListing): Promise<void> {
+    if (this.offering) return;
+    this.offering = true;
+    try {
+      const current = listing ?? await this.logs.listing(this.spec());
+      for (const folder of this.foldersForWindow(current)) {
+        const offer = offerFor(current, folder, this.choices);
+        if (offer) await this.showOffer(offer, current);
+      }
+    } catch (error) {
+      this.reportImportError(error);
+    } finally {
+      this.offering = false;
+    }
+  }
+
+  private foldersForWindow(listing: LogListing): string[] {
+    const wanted = this.spec().kind === "standalone" ? undefined : this.windowDirectories();
+    return organizeFolders(listing).filter(folder => !wanted?.length || wanted.some(w => containsPath(w, folder)));
+  }
+
+  private async organizeOnDemand(): Promise<void> {
+    if (this.offering) return;
+    this.offering = true;
+    try {
+      const listing = await this.logs.listing(this.spec());
+      const folders = this.foldersForWindow(listing);
+      const folder = folders.length === 1 ? folders[0] : (await vscode.window.showQuickPick(
+        folders.map(folder => ({ label: path.basename(folder), description: folder, folder })),
+        { title: "Organize logs", placeHolder: "Choose the log directory" }))?.folder;
+      if (!folder) return;
+      const offer = offerFor(listing, folder, this.choices, true);
+      if (offer) await this.showOffer(offer, listing);
+      else void vscode.window.showInformationMessage(`No logs need organizing in ${folder}.`);
+    } catch (error) {
+      this.reportImportError(error);
+    } finally {
+      this.offering = false;
+    }
+  }
+
+  private async showOffer(offer: OrganizeOffer, listing: LogListing): Promise<void> {
+    const choice = await vscode.window.showInformationMessage(`${offer.message}\n${offer.folder}`, ...ORGANIZE_CHOICES);
+    this.choices = rememberChoice(this.choices, offer, choice);
+    await this.context.globalState.update(NEVER_ORGANIZE_KEY, this.choices.never);
+    if (choice !== "Organize") return;
+    const mode = await vscode.window.showQuickPick(MOVE_CHOICES, { title: "Organize logs", placeHolder: "Move (default) or copy the originals?" });
+    if (!mode) return;
+    const robot = await this.pickRobot(listing, offer.folder);
+    const plan = importPlan(offer, choice, mode.move, robot);
+    if (!plan) return;
+    const paths = await organizeSources(offer, (listing.stores ?? []).map(s => s.path), async folder =>
+      (await fs.promises.readdir(folder, { withFileTypes: true })).map(entry => ({ name: entry.name,
+        directory: entry.isDirectory(), file: entry.isFile(), symlink: entry.isSymbolicLink() })));
+    await this.importBatch(plan.store, paths, plan.move, plan.stated_robot);
+  }
+
+  private async pickRobot(listing: LogListing, store: string, assigning = false): Promise<string | null | undefined> {
+    const picks = robotItems(listing, store).filter(p => !assigning || p.action !== "later");
+    const choice = await vscode.window.showQuickPick(picks, { title: "Which robot?", placeHolder: "Use logged identity when available; otherwise this choice applies" });
+    if (!choice) return undefined;
+    if (choice.action === "later") return null;
+    if (choice.action === "robot") return choice.robot;
+    return vscode.window.showInputBox({ title: "New robot", prompt: "Letters, digits, dots, hyphens, and underscores",
+      validateInput: robotNameError, ignoreFocusOut: true });
+  }
+
+  /** Inline group actions and assignment use the same explicit robot/move choices as an offer. */
+  private async importItem(item?: LogItem, assigning = false): Promise<void> {
+    if (!item) return;
+    try {
+      const node = item.node;
+      if (node.kind === "log" && !node.log.store || node.kind === "directory") {
+        const listing = await this.logs.listing(item.spec);
+        const stores = listing.stores ?? [];
+        const target = stores.length === 1 ? stores[0].path : (await vscode.window.showQuickPick(
+          stores.map(s => ({ label: path.basename(s.path), description: s.path, store: s.path })),
+          { title: "Import a copy into a store", placeHolder: "Choose the destination store" }))?.store;
+        if (!target) {
+          if (!stores.length) void vscode.window.showInformationMessage("Use Organize Logs to create a store first.");
+          return;
+        }
+        const robot = await this.pickRobot(listing, target);
+        if (robot === undefined) return;
+        const offer = node.kind === "directory" ? offerFor(listing, node.folder, this.choices, true) : undefined;
+        const files = node.kind === "log" ? [node.log.path] : offer ? await organizeSources(offer,
+          stores.map(s => s.path), async folder => (await fs.promises.readdir(folder, { withFileTypes: true }))
+            .map(e => ({ name: e.name, directory: e.isDirectory(), file: e.isFile(), symlink: e.isSymbolicLink() }))) : [];
+        if (files.length) await this.importBatch(target, files, false, robot);
+        return;
+      }
+      if (node.kind === "store") {
+        const listing = await this.logs.listing(item.spec);
+        const offer = offerFor(listing, node.folder, this.choices, true);
+        if (offer) await this.showOffer(offer, listing);
+        return;
+      }
+      if (node.kind !== "imports" && node.kind !== "importFile") return;
+      const files = node.kind === "imports" ? node.files : [node.file];
+      const paths = files.filter(f => f.state !== "importing").map(f => f.path);
+      if (!paths.length) {
+        void vscode.window.showInformationMessage("There are no files ready for this action. Inbox files import automatically after they stop growing.");
+        return;
+      }
+      const store = node.kind === "imports" ? node.store : node.file.store;
+      const assignment = assigning || node.group === "unassigned";
+      const listing = await this.logs.listing(item.spec);
+      const robot = await this.pickRobot(listing, store, assignment);
+      if (robot === undefined) return;
+      const mode = assignment ? { move: true } : await vscode.window.showQuickPick(MOVE_CHOICES,
+        { title: "Import files", placeHolder: "Move (default) or copy the originals?" });
+      if (!mode) return;
+      await this.importBatch(store, paths, mode.move, robot, assignment);
+    } catch (error) {
+      this.reportImportError(error);
+    }
+  }
+
+  private async importBatch(store: string, paths: string[], move: boolean, robot: string | null, assignment = false): Promise<void> {
+    const client = await this.clientFor(this.spec());
+    try {
+      const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+        title: assignment ? "Assigning logs" : "Organizing logs", cancellable: false }, progress =>
+        runImport(client.endpoint, { store, paths, move, stated_robot: robot }, job => {
+          progress.report({ message: progressText(job) });
+        }, assignment));
+      resultDetails(result).forEach(line => this.output.appendLine(line));
+      void vscode.window.showInformationMessage(resultSummary(result));
+      for (const message of sameRobotMessages(result)) void vscode.window.showInformationMessage(message);
+    } finally {
+      this.logs.refresh();
+    }
+  }
+
+  private reportImportError(error: unknown): void {
+    this.log(messageOf(error));
+    void vscode.window.showErrorMessage(messageOf(error));
   }
 
   get extensionVersion(): string {
@@ -167,6 +317,31 @@ class LogItem extends vscode.TreeItem {
   ) {
     super(node.label, collapsibleState);
     switch (node.kind) {
+      case "store":
+      case "directory":
+        this.iconPath = vscode.ThemeIcon.Folder;
+        this.tooltip = node.folder;
+        this.contextValue = "wpilogDirectory";
+        break;
+      case "robot":
+      case "session":
+        this.iconPath = new vscode.ThemeIcon(node.kind === "robot" ? "circuit-board" : "history");
+        this.tooltip = node.tooltip;
+        break;
+      case "imports":
+        this.iconPath = new vscode.ThemeIcon(node.group === "inbox" ? "inbox" : "folder");
+        this.description = String(node.files.length);
+        this.contextValue = node.group === "unassigned" ? "wpilogUnassignedGroup" : "wpilogImportGroup";
+        break;
+      case "importFile":
+        this.resourceUri = vscode.Uri.file(node.file.path);
+        this.description = node.description;
+        this.tooltip = node.tooltip;
+        this.contextValue = node.group === "unassigned" ? "wpilogUnassigned" : "wpilogImportFile";
+        if (node.file.kind === "wpilog" || path.extname(node.file.path).toLowerCase() === ".wpilog") {
+          this.command = { command: "wpilog-mcp.explorer.openLog", title: "Open in WPILog Explorer", arguments: [node.file.path] };
+        }
+        break;
       case "event":
         this.iconPath = new vscode.ThemeIcon("calendar");
         break;
@@ -177,11 +352,11 @@ class LogItem extends vscode.TreeItem {
         this.resourceUri = vscode.Uri.file(node.log.path);
         this.description = node.description;
         this.tooltip = node.tooltip;
-        this.contextValue = "wpilogLog";
+        this.contextValue = node.log.store || node.log.kind === "revlog" ? "wpilogLog" : "wpilogPlainLog";
         this.command = {
           command: "wpilog-mcp.explorer.openLog",
           title: "Open in WPILog Explorer",
-          arguments: [node.log.path],
+          arguments: [node.log.wpilog ?? node.log.path],
         };
         break;
       case "note":
@@ -249,7 +424,7 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   }
 
   /** The server's listing, fetched once until the next refresh; a failure is a listing that says so. */
-  private listing(spec: DaemonSpec): Promise<LogListing> {
+  listing(spec: DaemonSpec): Promise<LogListing> {
     let pending = this.listings.get(spec.name);
     if (!pending) {
       pending = this.fetch(spec);
@@ -261,7 +436,10 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   private async fetch(spec: DaemonSpec): Promise<LogListing> {
     try {
       const client = await this.explorer.clientFor(spec);
-      return (await client.callTool("list_available_logs", { limit: LISTING_LIMIT })) as LogListing;
+      const listing = await completeListing(args => client.callTool("list_available_logs", args) as Promise<LogListing>);
+      // Do not hold up the tree while the person considers an offer.
+      void this.explorer.offerOrganizing(listing);
+      return listing;
     } catch (error) {
       if (error instanceof ToolError && error.result) return error.result as LogListing;
       this.explorer.log(`Logs view: ${messageOf(error)}`);

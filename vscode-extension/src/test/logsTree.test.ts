@@ -134,3 +134,73 @@ test("a listing cut by its page says so after the logs", () => {
   assert.equal(tree.at(-1)?.kind, "note");
   assert.equal(tree.at(-1)?.label, "Showing 1 of 88 logs; narrow with the filter");
 });
+
+// Store rows are the same shape as the server fixture's recorded manifest listing.
+import { listing as storeListing, one as storedOne, plain, plainLog, store } from "./fixtures/organizing";
+import * as path from "path";
+
+test("a store groups robots, dates and sessions, with the wpilog before REV companions and import groups last", () => {
+  const tree = buildLogTree(storeListing);
+  assert.deepEqual(labels(tree), [
+    { Practice: [{ "2026-01-10": [{ "15:00:00 UTC · TEST · Qualification 2": ["TEST Qualification 2", "REV.revlog"] }] }] },
+    { "Competition · SERIAL42": [{ "2026-01-11": [{ "16:00:00 UTC · TEST · Qualification 3": ["TEST Qualification 3"] }] }] },
+    { Unassigned: ["loose.wpilog"] }, { Inbox: ["waiting.wpilog", "running.wpilog", "bad.txt"] }, { Unmanaged: ["stray.wpilog"] },
+  ]);
+  assert.equal(tree[0].kind, "robot");
+  assert.ok(tree[0].kind === "robot" && tree[0].tooltip.includes("stated"));
+  assert.ok(tree[1].kind === "robot" && tree[1].tooltip.includes("logged"));
+  const flat = (nodes: LogNode[]): LogNode[] => nodes.flatMap(n => [n, ...("children" in n ? flat(n.children) : [])]);
+  const all = flat(tree);
+  const rev = all.find(n => n.kind === "log" && n.log.kind === "revlog");
+  assert.ok(rev?.kind === "log");
+  assert.equal(rev.log.wpilog, storedOne.path, "REV opens beside its wpilog in the existing viewer");
+  assert.equal(rev.description, "1.0 KB");
+  const inbox = tree[3];
+  assert.ok(inbox.kind === "imports");
+  assert.equal(inbox.store, store);
+  assert.equal(inbox.group, "inbox");
+  assert.deepEqual(inbox.children.map(n => n.kind === "importFile" ? n.description : ""),
+    ["waiting · 40 B", "importing · Practice · 80 B", "refused · 5 B"]);
+  assert.ok(inbox.children[2].kind === "importFile" && inbox.children[2].tooltip.includes("Unsupported file content"));
+  const unassigned = tree[2];
+  assert.ok(unassigned.kind === "imports" && unassigned.children[0].kind === "importFile");
+  assert.equal(unassigned.children[0].file.path, path.join(store, "unassigned", "hash", "loose.wpilog"));
+});
+
+test("a plain directory keeps its event/date tree and a mixed window adds store and directory roots", () => {
+  assert.deepEqual(labels(buildLogTree({ log_directories: [plain], logs: [plainLog] })),
+    [{ "No event": [{ "2026-01-09": ["Shop"] }] }]);
+  const tree = buildLogTree({ ...storeListing, log_directories: [store, plain], logs: [...storeListing.logs!, plainLog] });
+  assert.deepEqual(tree.map(n => [n.kind, n.label]), [["store", path.basename(store)], ["directory", path.basename(plain)]]);
+  assert.ok(tree[0].kind === "store" && tree[0].folder === store);
+  assert.ok(tree[1].kind === "directory");
+  assert.deepEqual(labels(tree[1].children), [{ "No event": [{ "2026-01-09": ["Shop"] }] }]);
+});
+
+test("store filters reach REV companions and inbox refusals; empty stores keep their import groups", () => {
+  const rev = buildLogTree(storeListing, "REV.revlog");
+  assert.deepEqual(labels(rev), [
+    { Practice: [{ "2026-01-10": [{ "15:00:00 UTC · TEST · Qualification 2": ["REV.revlog"] }] }] },
+    { Unassigned: [] }, { Inbox: [] }, { Unmanaged: [] },
+  ]);
+  assert.deepEqual(labels(buildLogTree(storeListing, "unsupported")), [
+    { Unassigned: [] }, { Inbox: ["bad.txt"] }, { Unmanaged: [] },
+  ]);
+  assert.deepEqual(labels(buildLogTree({ stores: [{ path: store }], log_directories: [store] })),
+    [{ Unassigned: [] }, { Inbox: [] }, { Unmanaged: [] }]);
+  const partial = buildLogTree({ ...storeListing, skipped: [{ directory: plain, reason: "not mounted" }], has_more: true });
+  assert.equal(partial[0].label, `Could not read ${plain}`);
+  assert.equal(partial.at(-1)?.label, "Showing 2 of 2 logs; narrow with the filter");
+});
+
+test("store sessions sort by their actual clocks, including fractional seconds, within newest dates first", () => {
+  const make = (id: string, started_at: string) => ({ ...storedOne, friendly_name: id, filename: `${id}.wpilog`,
+    path: path.join(store, id), revlogs: [], session: { ...storedOne.session!, id, started_at, ended_at: started_at } });
+  const tree = buildLogTree({ stores: [{ path: store }], logs: [
+    make("early", "2026-01-10T15:00:00Z"), make("fraction", "2026-01-10T15:00:00.123Z"), make("next", "2026-01-11T14:00:00Z"),
+  ] });
+  assert.deepEqual(labels(tree), [{ Practice: [
+    { "2026-01-11": [{ "14:00:00 UTC · TEST · Qualification 2": ["next"] }] },
+    { "2026-01-10": [{ "15:00:00.123 UTC · TEST · Qualification 2": ["fraction"] }, { "15:00:00 UTC · TEST · Qualification 2": ["early"] }] },
+  ] }, { Unassigned: [] }, { Inbox: [] }, { Unmanaged: [] }]);
+});

@@ -6,6 +6,24 @@
  * draws the nodes.
  */
 
+import * as path from "path";
+
+export interface ListedRobot {
+  id: string;
+  name?: string | null;
+  serial_number?: string | null;
+  basis: string;
+}
+export interface StoreFile {
+  store: string;
+  path: string;
+  kind?: string;
+  size?: number;
+  state?: "waiting" | "importing" | "refused";
+  reason?: string | null;
+  stated_robot?: string | null;
+}
+
 /** A log as `list_available_logs` lists it; other fields are passed through untouched. */
 export interface ListedLog {
   friendly_name: string;
@@ -18,14 +36,26 @@ export interface ListedLog {
   size_bytes?: number;
   last_modified?: number;
   tba?: Record<string, unknown>;
+  store?: string;
+  robot?: ListedRobot;
+  session?: { id: string; path: string; started_at: string; ended_at: string; start_basis: string };
+  revlogs?: { path: string; filename: string; size_bytes?: number }[];
+  kind?: "wpilog" | "revlog";
+  wpilog?: string;
 }
 
 /** What `list_available_logs` returned, as the model reads it. */
 export interface LogListing {
   status?: string;
   logs?: ListedLog[];
+  stores?: { path: string; robots?: ListedRobot[] }[];
+  unassigned?: StoreFile[];
+  inbox?: StoreFile[];
+  unmanaged?: StoreFile[];
   log_directories?: string[];
   log_count?: number;
+  returned?: number;
+  offset?: number;
   has_more?: boolean;
   skipped?: { section?: string; directory?: string; reason?: string }[];
   error?: string;
@@ -34,6 +64,10 @@ export interface LogListing {
 
 /** A node of the tree. */
 export type LogNode =
+  | { kind: "store" | "directory"; label: string; folder: string; children: LogNode[] }
+  | { kind: "robot" | "session"; label: string; tooltip: string; children: LogNode[] }
+  | { kind: "imports"; label: string; group: "unassigned" | "inbox" | "unmanaged"; store: string; files: StoreFile[]; children: LogNode[] }
+  | { kind: "importFile"; label: string; description: string; tooltip: string; group: "unassigned" | "inbox" | "unmanaged"; file: StoreFile }
   /** An event (or "No event" for logs that name none), holding its dates. */
   | { kind: "event"; label: string; children: LogNode[] }
   /** A date, holding its logs. */
@@ -132,7 +166,7 @@ function logNode(log: ListedLog): LogNode {
  * drive is seen, not inferred from an empty tree; a listing that failed is one note, with the
  * server's error and hint; a listing with nothing in it says so.
  */
-export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
+function plainLogTree(listing: LogListing, filter = ""): LogNode[] {
   const nodes: LogNode[] = [];
   if (listing.status === "error") {
     nodes.push({
@@ -190,4 +224,72 @@ export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
     });
   }
   return nodes;
+}
+
+
+/** Stores use manifest identities and clocks. Plain folders retain their event/date grouping. */
+export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
+  if (listing.status === "error" || !listing.stores?.length) return plainLogTree(listing, filter);
+  const roots: LogNode[] = [];
+  for (const store of listing.stores) {
+    const children: LogNode[] = [];
+    const logs = (listing.logs ?? []).filter(l => l.store === store.path);
+    const robots = new Map<string, ListedRobot>();
+    for (const robot of store.robots ?? []) robots.set(robot.id, robot);
+    for (const log of logs) if (log.robot) robots.set(log.robot.id, log.robot);
+    for (const robot of robots.values()) {
+      const sessions = new Map<string, ListedLog[]>();
+      for (const log of logs.filter(l => l.robot?.id === robot.id && l.session)) {
+        const files = [log, ...(log.revlogs ?? []).map(rev => ({ ...rev, friendly_name: rev.filename,
+          kind: "revlog" as const, wpilog: log.path }))];
+        const visible = files.filter(l => logMatches(l, filter));
+        if (visible.length) sessions.set(log.session!.id, [...(sessions.get(log.session!.id) ?? []), log]);
+      }
+      const dates = new Map<string, LogNode[]>();
+      for (const files of [...sessions.values()].sort((a, b) => Date.parse(b[0].session!.started_at) - Date.parse(a[0].session!.started_at))) {
+        const first = files[0];
+        const session = first.session!;
+        const date = session.started_at.slice(0, 10);
+        const time = session.started_at.slice(11).replace(/Z$/, " UTC");
+        const nodes: LogNode[] = [];
+        for (const log of files) {
+          const family: ListedLog[] = [log, ...(log.revlogs ?? []).map(rev => ({ ...rev, friendly_name: rev.filename,
+            kind: "revlog" as const, wpilog: log.path }))];
+          nodes.push(...family.filter(l => logMatches(l, filter)).map(logNode));
+        }
+        const node: LogNode = { kind: "session", label: [time, first.event, matchOf(first)].filter(Boolean).join(" · "),
+          tooltip: `${session.path}\nTime basis: ${session.start_basis}`, children: nodes };
+        dates.set(date, [...(dates.get(date) ?? []), node]);
+      }
+      if (dates.size || !filter.trim()) children.push({ kind: "robot",
+        label: [robot.name || robot.id, robot.serial_number].filter((v, i, a) => v && a.indexOf(v) === i).join(" · "),
+        tooltip: `Identity basis: ${robot.basis}\n${robot.serial_number ? `Serial: ${robot.serial_number}` : "Serial not logged"}`,
+        children: [...dates.entries()].map(([label, children]) => ({ kind: "date", label, children })) });
+    }
+    for (const [group, label] of [["unassigned", "Unassigned"], ["inbox", "Inbox"], ["unmanaged", "Unmanaged"]] as const) {
+      const files = (listing[group] ?? []).filter(f => f.store === store.path)
+        .filter(f => !filter.trim() || `${f.path} ${f.state ?? ""} ${f.reason ?? ""}`.toLowerCase().includes(filter.trim().toLowerCase()));
+      children.push({ kind: "imports", label, group, store: store.path, files,
+        children: files.map(file => ({ kind: "importFile", label: path.basename(file.path), group, file,
+          description: [file.state, file.stated_robot, formatSize(file.size)].filter(Boolean).join(" · "),
+          tooltip: [file.path, file.reason, file.stated_robot ? `Stated robot: ${file.stated_robot}` : undefined].filter(Boolean).join("\n") })) });
+    }
+    roots.push({ kind: "store", label: path.basename(store.path), folder: store.path, children });
+  }
+  const plain = (listing.logs ?? []).filter(l => !l.store);
+  const used = new Set<string>();
+  for (const folder of listing.log_directories ?? []) {
+    if (listing.stores.some(s => s.path === folder)) continue;
+    const logs = plain.filter(l => {
+      const relative = path.relative(folder, l.path);
+      return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative) && !used.has(l.path);
+    });
+    logs.forEach(l => used.add(l.path));
+    if (logs.length) roots.push({ kind: "directory", label: path.basename(folder), folder,
+      children: plainLogTree({ logs, log_directories: [folder] }, filter) });
+  }
+  const skipped = (listing.skipped ?? []).filter(s => s.directory).map(s => ({ kind: "note" as const,
+    label: `Could not read ${s.directory}`, tooltip: s.reason }));
+  if (listing.has_more) roots.push({ kind: "note", label: `Showing ${(listing.logs ?? []).length} of ${listing.log_count ?? "more"} logs; narrow with the filter` });
+  return [...skipped, ...(roots.length === 1 && roots[0].kind === "store" ? roots[0].children : roots)];
 }

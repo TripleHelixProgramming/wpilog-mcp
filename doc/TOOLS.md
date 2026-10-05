@@ -249,7 +249,7 @@ Store listings additionally return:
 - `unassigned`: imported files awaiting robot assignment or a unique REV pairing, each with `store`, `path`, `kind`, and `sha256`.
 - `moved_to`: notices with `original_path`, `moved_to`, and `moved_at`, retained in the listing for seven days after a move. Copy imports create no notice.
 
-An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. The standalone [import command and inbox](STANDALONE.md#importing-logs) and [HTTP jobs](STANDALONE.md#the-import-endpoint) organize files; extension controls are not yet exposed.
+An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. The standalone [import command and inbox](STANDALONE.md#importing-logs) and [HTTP jobs](STANDALONE.md#the-import-endpoint) organize files; the extension's [organizing controls](../vscode-extension/README.md#organizing-your-logs) offer the same pipeline and explicit assignment.
 
 ### `list_loaded_logs`
 List the log files currently loaded in the server's cache, and the cache status. Logs load on demand, so an empty list is normal.

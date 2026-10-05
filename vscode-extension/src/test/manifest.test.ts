@@ -90,6 +90,9 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.addToClaudeCode",
     "wpilog-mcp.showServerLog",
     "wpilog-mcp.restartServer",
+    "wpilog-mcp.explorer.organizeLogs",
+    "wpilog-mcp.explorer.importLogs",
+    "wpilog-mcp.explorer.assignRobot",
     "wpilog-mcp.explorer.refreshLogs",
     "wpilog-mcp.explorer.filterLogs",
     "wpilog-mcp.explorer.clearLogFilter",
@@ -157,6 +160,8 @@ test("every menu names a declared command, and every view-title button has an ic
   // Commands that take a tree item or a path are not in the palette, where nothing supplies one
   const hidden = menus.commandPalette.filter((m) => m.when === "false").map((m) => m.command);
   assert.deepEqual(hidden, [
+    "wpilog-mcp.explorer.importLogs",
+    "wpilog-mcp.explorer.assignRobot",
     "wpilog-mcp.explorer.openLog",
     "wpilog-mcp.explorer.revealLog",
     "wpilog-mcp.explorer.copyLogPath",
@@ -213,4 +218,18 @@ test("there is one server per computer: no setting defines more, and no project 
     const text = JSON.stringify(setting);
     assert.ok(!/wpilog-mcp\.servers|serverName|Server Name/.test(text), `${key} refers to a servers setting`);
   }
+});
+
+
+test("organizing has a palette/title command, inline import groups, and unassigned assignment actions", () => {
+  const menus = manifest.contributes.menus;
+  assert.ok(menus["view/title"].some((m: { command: string; when: string; group: string }) =>
+    m.command === "wpilog-mcp.explorer.organizeLogs" && m.when === "view == wpilog-mcp.logs" && m.group === "navigation@3"));
+  assert.ok(!menus.commandPalette.some((m: { command: string; when: string }) => m.command === "wpilog-mcp.explorer.organizeLogs" && m.when === "false"));
+  assert.deepEqual(menus["view/item/context"].filter((m: { command: string }) =>
+    ["wpilog-mcp.explorer.importLogs", "wpilog-mcp.explorer.assignRobot"].includes(m.command)), [
+    { command: "wpilog-mcp.explorer.importLogs", when: "view == wpilog-mcp.logs && (viewItem == wpilogImportGroup || viewItem == wpilogImportFile || viewItem == wpilogDirectory || viewItem == wpilogPlainLog)", group: "inline@1" },
+    { command: "wpilog-mcp.explorer.assignRobot", when: "view == wpilog-mcp.logs && viewItem == wpilogUnassignedGroup", group: "inline@1" },
+    { command: "wpilog-mcp.explorer.assignRobot", when: "view == wpilog-mcp.logs && viewItem == wpilogUnassigned", group: "navigation@1" },
+  ]);
 });

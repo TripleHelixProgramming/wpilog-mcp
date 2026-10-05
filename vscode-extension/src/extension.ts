@@ -149,7 +149,10 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(serverManager);
 
   // ---- WPILog Explorer: the views and the editor, a client of the same server ----
-  const explorer = new Explorer(context, outputChannel, serverManager, () => serverSpec(context));
+  const explorer = new Explorer(context, outputChannel, serverManager, () => serverSpec(context), () =>
+    resolveServer(userSettings(), (vscode.workspace.workspaceFolders ?? []).map(folder => ({
+      folderPath: folder.uri.fsPath, own: projectSettings(folder),
+    }))).logDirs);
   context.subscriptions.push(explorer);
   function restartServerForSettings() {
     void serverManager.ensure(serverSpec(context), false).then((url) => {
@@ -324,6 +327,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Start the server now, so the first agent to ask finds it up, then add or update Claude
     // Code's entry in .mcp.json (robot projects, by default)
     await serverManager.ensure(serverSpec(context), false);
+    void explorer.offerOrganizing();
     scheduleMcpJsonUpdate();
   })();
 

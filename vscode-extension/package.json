@@ -117,6 +117,24 @@
         "category": "WPILog Analyzer"
       },
       {
+        "command": "wpilog-mcp.explorer.organizeLogs",
+        "title": "Organize Logs\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.importLogs",
+        "title": "Import\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.assignRobot",
+        "title": "Assign to Robot\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(circuit-board)"
+      },
+      {
         "command": "wpilog-mcp.explorer.refreshLogs",
         "title": "Refresh Logs",
         "category": "WPILog Explorer",
@@ -209,17 +227,22 @@
           "command": "wpilog-mcp.explorer.clearEntryFilter",
           "when": "view == wpilog-mcp.entries && wpilog-mcp.entryFilter",
           "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.organizeLogs",
+          "when": "view == wpilog-mcp.logs",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
           "command": "wpilog-mcp.explorer.revealLog",
-          "when": "view == wpilog-mcp.logs && viewItem == wpilogLog",
+          "when": "view == wpilog-mcp.logs && (viewItem == wpilogLog || viewItem == wpilogPlainLog)",
           "group": "navigation@1"
         },
         {
           "command": "wpilog-mcp.explorer.copyLogPath",
-          "when": "view == wpilog-mcp.logs && viewItem == wpilogLog",
+          "when": "view == wpilog-mcp.logs && (viewItem == wpilogLog || viewItem == wpilogPlainLog)",
           "group": "navigation@2"
         },
         {
@@ -236,6 +259,21 @@
           "command": "wpilog-mcp.explorer.showEntry",
           "when": "view == wpilog-mcp.entries && (viewItem == wpilogEntry || viewItem == wpilogField)",
           "group": "navigation@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.importLogs",
+          "when": "view == wpilog-mcp.logs && (viewItem == wpilogImportGroup || viewItem == wpilogImportFile || viewItem == wpilogDirectory || viewItem == wpilogPlainLog)",
+          "group": "inline@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.assignRobot",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogUnassignedGroup",
+          "group": "inline@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.assignRobot",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogUnassigned",
+          "group": "navigation@1"
         }
       ],
       "editor/title": [
@@ -246,6 +284,14 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "wpilog-mcp.explorer.importLogs",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.assignRobot",
+          "when": "false"
+        },
         {
           "command": "wpilog-mcp.explorer.openLog",
           "when": "false"
