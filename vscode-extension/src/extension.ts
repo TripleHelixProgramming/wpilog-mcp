@@ -5,12 +5,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { findJava } from "./javaFinder";
 import { findLogDirectories, logDirectoriesFor } from "./logFinder";
-import {
-  LogSettings,
-  addLogDirectories,
-  overlaySettings,
-  projectConfigName,
-} from "./logDirectories";
+import { LogSettings, overlaySettings, projectConfigName } from "./logDirectories";
 import { findJar } from "./jarManager";
 import {
   GitStatus,
@@ -25,7 +20,9 @@ import {
   scrubTbaKey,
   shouldWriteEntry,
 } from "./mcpJson";
+import { DEFAULT_IDLE_EXIT_MINUTES, entryUsesConnect, unionLogDirectories } from "./oneServer";
 import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
+import { DaemonInputs, ServerManager } from "./serverManager";
 import {
   TBA_KEY_QUIET_MS,
   TBA_KEY_SETTING,
@@ -49,13 +46,13 @@ export function activate(context: vscode.ExtensionContext) {
   const didChangeEmitter = new vscode.EventEmitter<void>();
 
   /**
-   * Resolves the MCP server command and args from VS Code settings. The TBA API key is passed
-   * only in the environment (TBA_API_KEY): a command-line argument is visible to other users of
-   * the machine in the process list.
+   * What the one server is started from (see oneServer.ts): Java, the JAR copy that survives
+   * updates, and the configuration's values. The log directories are the union of the window's
+   * and every known project's, since one daemon serves them all. The TBA API key goes into the
+   * configuration file, which only this user can read, never on a command line, which the
+   * process list shows to every user of the machine.
    */
-  async function resolveServerConfig(): Promise<
-    { command: string; args: string[]; env: Record<string, string> } | undefined
-  > {
+  async function resolveDaemonInputs(prompt: boolean): Promise<DaemonInputs | undefined> {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     const maxHeap = config.get<string>("maxHeap") || "4g";
 
@@ -87,63 +84,61 @@ export function activate(context: vscode.ExtensionContext) {
       return undefined;
     }
 
+    const jar = await stableJar(context, jarPath, outputChannel);
     outputChannel.appendLine(`Java: ${javaPath}`);
-    outputChannel.appendLine(`JAR: ${jarPath}`);
+    outputChannel.appendLine(`JAR: ${jar}`);
 
-    const logDirs = await findLogDirectories();
+    const logDirs = unionLogDirectories([
+      await findLogDirectories(prompt),
+      ...knownProjectDirectories(context),
+    ]);
     outputChannel.appendLine(
       `Log directories: ${logDirs.length > 0 ? logDirs.join(", ") : "(none)"}`
     );
 
-    const teamNumber = config.get<number>("teamNumber") || 0;
-    const tbaKey = (await context.secrets.get(TBA_SECRET)) || "";
-
-    // The server reads WPILOG_DIR, WPILOG_TEAM, and TBA_API_KEY from its environment and also
-    // accepts -logdir and -team; the key goes only in the environment.
-    const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
-    const env: Record<string, string> = {};
-
-    addLogDirectories(args, env, logDirs);
-    if (teamNumber > 0) {
-      args.push("-team", String(teamNumber));
-      env["WPILOG_TEAM"] = String(teamNumber);
-    }
-    if (tbaKey) {
-      env["TBA_API_KEY"] = tbaKey;
-    }
-    args.push("-diskcachedir", extensionCacheDir(context));
-
-    return { command: javaPath, args, env };
+    return {
+      javaPath,
+      jarPath: jar,
+      maxHeap,
+      logDirs,
+      teamNumber: config.get<number>("teamNumber") || 0,
+      tbaKey: (await context.secrets.get(TBA_SECRET)) || undefined,
+      cacheDir: extensionCacheDir(context),
+      idleExitMinutes: config.get<number>("idleExitMinutes") ?? DEFAULT_IDLE_EXIT_MINUTES,
+      version: context.extension.packageJSON.version,
+    };
   }
 
-  // ---- VS Code MCP provider ----
+  // ---- The one server, and VS Code's MCP provider ----
+
+  // One HTTP server on the loopback address serves VS Code's agents, Claude Code (through the
+  // bridge in .mcp.json), and the extension itself. VS Code is told to look again whenever its
+  // URL changes, and after a restart, whose sessions it must open again.
+  const serverManager = new ServerManager(context, outputChannel, resolveDaemonInputs, () =>
+    didChangeEmitter.fire()
+  );
+  context.subscriptions.push(serverManager);
+  function restartServerForSettings() {
+    void serverManager.ensure().then((url) => {
+      if (url) didChangeEmitter.fire();
+    });
+  }
 
   const provider: vscode.McpServerDefinitionProvider = {
     onDidChangeMcpServerDefinitions: didChangeEmitter.event,
 
     provideMcpServerDefinitions: async () => {
-      const resolved = await resolveServerConfig();
-      if (!resolved) {
+      // VS Code asks when it needs the server: make sure it runs, then hand over its URL
+      const url = await serverManager.ensure(true);
+      if (!url) {
         return [];
       }
-
-      outputChannel.appendLine(
-        `Starting: ${resolved.command} ${resolved.args.join(" ")}`
-      );
-      const envKeys = Object.keys(resolved.env);
-      if (envKeys.length > 0) {
-        outputChannel.appendLine(
-          `Env: ${envKeys.map(k => k === "TBA_API_KEY" ? "TBA_API_KEY=(set)" : `${k}=${resolved.env[k]}`).join(", ")}`
-        );
-      }
-
       return [
-        new vscode.McpStdioServerDefinition(
+        new vscode.McpHttpServerDefinition(
           "WPILog Analyzer",
-          resolved.command,
-          resolved.args,
-          resolved.env,
-          context.extension.packageJSON.version,
+          vscode.Uri.parse(url),
+          undefined,
+          context.extension.packageJSON.version
         ),
       ];
     },
@@ -154,7 +149,15 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   context.subscriptions.push(
-    vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider)
+    vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
+    vscode.commands.registerCommand("wpilog-mcp.showServerLog", () => serverManager.showLog()),
+    vscode.commands.registerCommand("wpilog-mcp.restartServer", async () => {
+      const url = await serverManager.restart();
+      if (url) {
+        didChangeEmitter.fire();
+        vscode.window.showInformationMessage(`WPILog Analyzer: the server is running at ${url}.`);
+      }
+    })
   );
 
   // ---- The TBA API key ----
@@ -194,10 +197,11 @@ export function activate(context: vscode.ExtensionContext) {
         "WPILog Analyzer: TBA API key removed. The server restarts without it."
       );
     }),
-    // A stored or removed key restarts the server, and rewrites Claude Code's configuration file
+    // A stored or removed key restarts the server, whose configuration holds the key, and
+    // rewrites the configuration files of projects whose entries still run their own server
     context.secrets.onDidChange((e) => {
       if (e.key === TBA_SECRET) {
-        didChangeEmitter.fire();
+        restartServerForSettings();
         scheduleMcpJsonUpdate();
       }
     })
@@ -205,11 +209,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- Claude Code's .mcp.json ----
 
-  // One update at a time, so overlapping triggers neither race on the files nor repeat a notice
+  // One update at a time, so overlapping triggers neither race on the files nor repeat a notice.
+  // A project given the entry joins the one server's log directories, so the server is looked
+  // at again afterwards: it restarts when its configuration changed, and does nothing otherwise
   let mcpJsonUpdate: Promise<void> = Promise.resolve();
   function scheduleMcpJsonUpdate(requested?: vscode.WorkspaceFolder) {
     mcpJsonUpdate = mcpJsonUpdate
-      .then(() => updateMcpJsonFiles(context, outputChannel, requested))
+      .then(() => updateMcpJsonFiles(context, outputChannel, serverManager, requested))
+      .then(() => restartServerForSettings())
       .catch((e) => outputChannel.appendLine(`Failed to update .mcp.json: ${e}`));
     return mcpJsonUpdate;
   }
@@ -263,18 +270,24 @@ export function activate(context: vscode.ExtensionContext) {
         scheduleTbaKeyMove();
       }
       if (serverSettings.some((key) => e.affectsConfiguration(key))) {
-        outputChannel.appendLine("Settings changed, restarting MCP server...");
-        didChangeEmitter.fire();
+        outputChannel.appendLine("Settings changed, restarting the server...");
+        restartServerForSettings();
         scheduleMcpJsonUpdate();
       }
     }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => scheduleMcpJsonUpdate())
+    // The window's folders are among the server's log directories
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      restartServerForSettings();
+      scheduleMcpJsonUpdate();
+    })
   );
 
   void (async () => {
     await moveTbaKeyNow();
     await removeTbaKeyFromMcpJson(outputChannel);
-    // Add or update Claude Code's entry in .mcp.json (robot projects, by default)
+    // Start the server now, so the first agent to ask finds it up, then add or update Claude
+    // Code's entry in .mcp.json (robot projects, by default)
+    await serverManager.ensure(false);
     scheduleMcpJsonUpdate();
   })();
 
@@ -498,6 +511,19 @@ function projectSettings(folder: vscode.WorkspaceFolder): LogSettings {
   };
 }
 
+/**
+ * Every known project's log directories (the user's settings with the project's own on top,
+ * relative paths inside that project), for the one server, which serves them all and so lists
+ * them all. A project is known once its .mcp.json has the entry (see rememberProject).
+ */
+function knownProjectDirectories(context: vscode.ExtensionContext): string[][] {
+  const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
+  const user = userSettings();
+  return Object.entries(known).map(([folderPath, own]) =>
+    logDirectoriesFor(overlaySettings(user, own), folderPath)
+  );
+}
+
 /** Where the projects' configuration files are, in the extension's storage. */
 function projectsDir(context: vscode.ExtensionContext): string {
   return path.join(context.globalStorageUri.fsPath, "projects");
@@ -518,12 +544,12 @@ function extensionCacheDir(context: vscode.ExtensionContext): string {
 }
 
 /**
- * Writes one project's configuration file, which its .mcp.json entry starts the server with, as
- * the standalone install's servers.yaml does for it: the log directories (relative ones inside
- * the project), the team number, the TBA key, and the extension's own disk cache. The server
- * Claude Code starts runs outside VS Code and cannot read its settings or secret storage; this
- * file, which only this user can read, is where it finds them, so the user sets nothing. Written
- * only when its contents change.
+ * Writes one project's configuration file for an entry written before the one server, which
+ * starts a stdio server of its own with it, as the standalone install's servers.yaml does: the
+ * log directories (relative ones inside the project), the team number, the TBA key, and the
+ * extension's own disk cache. Such an entry keeps working, with its settings kept current, until
+ * the project is opened in VS Code and the entry rewritten to use the one server, when the file
+ * is removed. Written only when its contents change.
  */
 async function writeProjectConfig(
   context: vscode.ExtensionContext,
@@ -553,10 +579,12 @@ async function rememberProject(
 }
 
 /**
- * Rewrites the configuration file of every known project except `skip` (those just written),
- * from the user's settings and the project's own as last seen; a project's own settings changed
- * while it was closed are picked up when it is next opened. A project whose .mcp.json no longer
- * has the entry is forgotten and its file removed.
+ * Looks after every known project except `skip` (those just written). A project whose .mcp.json
+ * no longer has the entry is forgotten and its per-project file removed. A project whose entry
+ * uses the one server needs no file of its own, so any left from an earlier entry is removed. A
+ * project whose entry still runs its own server (written before the one server, and not yet
+ * opened in VS Code since) gets its file rewritten from the user's settings and the project's
+ * own as last seen, so that entry keeps working until it is rewritten.
  */
 async function refreshKnownProjects(context: vscode.ExtensionContext, skip: Set<string>) {
   const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
@@ -570,6 +598,10 @@ async function refreshKnownProjects(context: vscode.ExtensionContext, skip: Set<
     if (!hasServerEntry(text)) {
       delete known[folderPath];
       forgotten = true;
+      await fs.promises.rm(projectConfigPath(context, folderPath), { force: true });
+      continue;
+    }
+    if (entryUsesConnect(text)) {
       await fs.promises.rm(projectConfigPath(context, folderPath), { force: true });
       continue;
     }
@@ -673,6 +705,7 @@ async function offerToIgnore(
 async function updateMcpJsonFiles(
   context: vscode.ExtensionContext,
   outputChannel: vscode.OutputChannel,
+  serverManager: ServerManager,
   requested?: vscode.WorkspaceFolder
 ) {
   const config = vscode.workspace.getConfiguration("wpilog-mcp");
@@ -693,7 +726,7 @@ async function updateMcpJsonFiles(
       targets.push({ folder, uri, text, asked: isRequested(folder) });
     }
   }
-  const written = await writeEntries(context, outputChannel, targets);
+  const written = await writeEntries(context, outputChannel, serverManager, targets);
   if (enabled) {
     await refreshKnownProjects(context, written);
   }
@@ -708,15 +741,18 @@ interface McpJsonTarget {
 }
 
 /**
- * Writes each target folder's configuration file and its .mcp.json entry, which only starts the
- * server (from a JAR path that survives extension updates) with that file. Every other entry in
- * .mcp.json is kept. The entry holds this computer's paths, so a .mcp.json that git tracks (the
- * repository shares it) is left alone, and one git would pick up comes with an offer to ignore
- * it. Returns the folders written.
+ * Writes each target folder's .mcp.json entry, which runs the bridge to the one server (from a
+ * JAR path that survives extension updates) with the server's configuration file, written first
+ * so the entry never points at a file that is not there. Every other entry in .mcp.json is
+ * kept. The entry holds this computer's paths, so a .mcp.json that git tracks (the repository
+ * shares it) is left alone, and one git would pick up comes with an offer to ignore it. A
+ * per-project configuration file left by an earlier entry is removed once the entry is
+ * rewritten. Returns the folders written.
  */
 async function writeEntries(
   context: vscode.ExtensionContext,
   outputChannel: vscode.OutputChannel,
+  serverManager: ServerManager,
   targets: McpJsonTarget[]
 ): Promise<Set<string>> {
   const written = new Set<string>();
@@ -727,7 +763,6 @@ async function writeEntries(
   if (!bundled) return written;
   const jar = await stableJar(context, bundled, outputChannel);
   const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap") || "4g";
-  const user = userSettings();
 
   for (const { folder, uri, text, asked } of targets) {
     // A folder the user asked for hears the outcome now; any other, once at most
@@ -763,19 +798,20 @@ async function writeEntries(
       continue;
     }
 
-    // This project's settings: the user's, with the project's own on top. Its configuration
-    // file holds the TBA key, so it is written only once .mcp.json can take the entry, and
-    // does not outlive an entry that could not be written.
+    // This project's own settings are remembered so that its directories are among the one
+    // server's. The server's configuration file is shared, so it is never removed here; the
+    // per-project file an earlier entry used is, once the new entry is in place.
     const own = projectSettings(folder);
-    const configPath = projectConfigPath(context, folder.uri.fsPath);
+    const oldConfigPath = projectConfigPath(context, folder.uri.fsPath);
+    await rememberProject(context, folder.uri.fsPath, own);
     const outcome = await writeEntry(
       text,
-      buildServerEntry(javaPath, jar, maxHeap, configPath),
+      buildServerEntry(javaPath, jar, maxHeap, serverManager.configPath),
       {
         writeConfig: async () => {
-          await writeProjectConfig(context, folder.uri.fsPath, overlaySettings(user, own));
+          await serverManager.writeConfig();
         },
-        removeConfig: () => fs.promises.rm(configPath, { force: true }),
+        removeConfig: async () => {},
         writeMcpJson: async (updated) => {
           await vscode.workspace.fs.writeFile(uri, Buffer.from(updated));
         },
@@ -805,7 +841,7 @@ async function writeEntries(
     if (outcome.changed) {
       outputChannel.appendLine(`Updated the wpilog-analyzer entry in ${uri.fsPath}`);
     }
-    await rememberProject(context, folder.uri.fsPath, own);
+    await fs.promises.rm(oldConfigPath, { force: true });
     written.add(folder.uri.fsPath);
     // A Claude Code session that is already running does not see a new entry. The folder the user
     // asked for always hears how to restart; a folder the entry was added to by itself, once

@@ -112,7 +112,7 @@ npm ci
 npm test
 ```
 
-These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, removing the TBA key from those files, what happens to a key entered in the settings, and the settings' order and declarations. `npm test` compiles the extension and runs every compiled `*.test.js` through `src/test/runTests.ts`, which works with Node 20 and later on any platform; a new test file is picked up by its name.
+These cover the extension's logic that needs no running VS Code: resolving log directories and settings, the one server's configuration, commands, port, health verdict, and backoff (`oneServer.ts`), writing the Claude Code entry (the bridge to that server) and the configuration files, removing the TBA key from those files, what happens to a key entered in the settings, and the settings' order, the commands, and the declarations. What runs the server in VS Code (`serverManager.ts`) and the rest of `extension.ts` are driven in a real VS Code by hand: the server starts on activation and appears in VS Code's MCP server list at its URL, its log opens from the Show Server Log command, a settings change restarts it, and Claude Code's `.mcp.json` entry runs `connect vscode`. The server's log is `~/.wpilog-mcp/logs/vscode.log`, beside its PID file under `~/.wpilog-mcp/run/`. `npm test` compiles the extension and runs every compiled `*.test.js` through `src/test/runTests.ts`, which works with Node 20 and later on any platform; a new test file is picked up by its name.
 
 ## Changing or Adding a Tool
 

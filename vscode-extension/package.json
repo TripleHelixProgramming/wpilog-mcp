@@ -61,6 +61,16 @@
         "command": "wpilog-mcp.addToClaudeCode",
         "title": "Add to Claude Code in This Folder",
         "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.showServerLog",
+        "title": "Show Server Log",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.restartServer",
+        "title": "Restart Server",
+        "category": "WPILog Analyzer"
       }
     ],
     "configuration": [
@@ -125,6 +135,13 @@
             "default": "4g",
             "order": 8,
             "markdownDescription": "Maximum JVM heap size. Examples: `2g`, `4g`, `8g`."
+          },
+          "wpilog-mcp.idleExitMinutes": {
+            "type": "integer",
+            "default": 30,
+            "minimum": 0,
+            "order": 9,
+            "markdownDescription": "How many minutes the shared server keeps running with no client connected before it exits on its own. `0` keeps it running until [Restart Server](command:wpilog-mcp.restartServer) or the next update. VS Code's agents, Claude Code, and the extension start it again whenever they need it, so a short time costs only a few seconds' wait the next time."
           }
         }
       }

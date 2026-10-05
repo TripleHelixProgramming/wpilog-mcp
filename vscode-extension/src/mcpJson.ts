@@ -5,9 +5,11 @@
  * As with the standalone install, configuration lives in one file and each project's `.mcp.json`
  * entry only starts the server with it: the extension writes its settings into a configuration
  * file in its global storage (the format of the standalone's `servers.yaml`, as JSON), and the
- * entry runs `start default --config <that file>`. A settings change rewrites that one file and
- * reaches every project; entries are the same in every project and change only with the Java
- * path or heap size. The entry holds this computer's paths, so it belongs in a `.mcp.json` that
+ * entry runs `connect vscode --config <that file>`, the server's stdio bridge to the one HTTP
+ * server every client shares (see oneServer.ts). A settings change rewrites that one file and
+ * restarts the server; entries are the same in every project and change only with the Java path
+ * or heap size. Entries written before the one server ran `start default` with a configuration
+ * file per project; those files are kept until each project's entry is rewritten. The entry holds this computer's paths, so it belongs in a `.mcp.json` that
  * git ignores, not in one the repository shares, where it would be no use to others and each
  * person's extension would rewrite it. It never holds the TBA API key, which is in the
  * configuration file. Only the `wpilog-analyzer` entry is written; every other server and key in
@@ -56,7 +58,13 @@ export function claudeCodeRestartNotice(
   };
 }
 
-/** Builds the entry: the JVM, its heap, the JAR, and the configuration file to start with. */
+/**
+ * Builds the entry: the JVM, its heap, the JAR, and the bridge to the one server (`connect
+ * vscode`, see oneServer.ts) with the daemon's configuration file. The bridge starts the daemon
+ * when none is running and joins it when one is, so Claude Code in a terminal with VS Code
+ * closed gets a server, and Claude Code beside VS Code shares its server. The heap is the
+ * daemon's, which inherits it from the JVM that starts it; the bridge itself uses little.
+ */
 export function buildServerEntry(
   javaPath: string,
   jarPath: string,
@@ -65,7 +73,7 @@ export function buildServerEntry(
 ): ServerEntry {
   return {
     command: javaPath,
-    args: [`-Xmx${maxHeap}`, "-jar", jarPath, "start", "default", "--config", configPath],
+    args: [`-Xmx${maxHeap}`, "-jar", jarPath, "connect", "vscode", "--config", configPath],
   };
 }
 

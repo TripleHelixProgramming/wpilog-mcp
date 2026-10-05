@@ -49,7 +49,9 @@ The WPILib VS Code distribution works the same way, from its own Extensions view
 
 ## How It Works
 
-The extension starts once VS Code has finished starting up, and registers the server with VS Code through its MCP server provider API. When VS Code asks for the server, the extension finds Java, the server JAR, and your log directories (see [Auto-Detection](#auto-detection)), and gives VS Code a stdio server to run. Changing a `wpilog-mcp` setting or the TBA key restarts the server with the new values.
+The extension starts once VS Code has finished starting up. It finds Java, the server JAR, and your log directories (see [Auto-Detection](#auto-detection)), writes them into a configuration file in its own storage, and starts one server in the background on this computer, listening on the loopback address on a port chosen once for you. It registers that server with VS Code through the MCP server provider API, as an HTTP server at its URL, and gives Claude Code a bridge to the same server (see [Using It with Claude Code](#using-it-with-claude-code)). So VS Code's agents, Claude Code, and anything else on this computer share one server: a log loaded for one is loaded for all, and one JVM serves them all. Changing a `wpilog-mcp` setting or the TBA key rewrites the configuration and restarts the server with the new values.
+
+The server runs as long as something uses it. With no client connected for thirty minutes (the `wpilog-mcp.idleExitMinutes` setting), it exits on its own; whoever needs it next, VS Code's agents, Claude Code, or the extension, starts it again, which takes a few seconds. After an update, the next start replaces a server of the old version. **WPILog Analyzer: Restart Server** restarts it by hand, and **WPILog Analyzer: Show Server Log** opens its log, `~/.wpilog-mcp/logs/vscode.log`; the **WPILog Analyzer** output channel shows what the extension did to start it.
 
 Keep your robot project open in VS Code while you analyze logs. The agent can then read your code too: it can match logged entry names to the subsystems that write them, compare PID constants with the behavior in the log, and fit its analysis to your robot. The server tells the agent to do so: an entry's name does not say for certain what it measures; the code that logs it does.
 
@@ -63,9 +65,9 @@ In a folder that is not a robot project (a folder of logs, say), run **WPILog An
 
 Claude Code reads `.mcp.json` only when a session starts; a running session, a new conversation in it, and `/clear` don't pick up a new server. So when the extension adds the entry to a project, it tells you, once per project, that a Claude Code session already running there needs a restart. If the Claude Code extension for VS Code is installed, the notice offers **Reload Window**, which restarts Claude Code's sessions. In a terminal, exit Claude Code and run `claude --continue`, which starts a new session with your conversation. **Don't Show Again** turns the notice off, for those who use only Copilot or other VS Code agents.
 
-As in the [standalone install](../doc/STANDALONE.md), the entry holds only what starts the server (Java, heap size, and JAR) and the path of a configuration file; the configuration itself lives in that file. The extension keeps one such file per project in its storage, in the format of the standalone install's `servers.yaml`. It holds the project's log directories, team number, and TBA key, so Claude Code in a project gets the same settings VS Code uses there (see [Settings](#settings)).
+The entry does not start a server of its own: it runs the server's bridge (`connect vscode`), which joins the one server the extension runs and starts it first when it is not running, as when Claude Code runs in a terminal with VS Code closed (see [How It Works](#how-it-works)). As in the [standalone install](../doc/STANDALONE.md), the entry holds only what runs the bridge (Java, heap size, and JAR) and the path of the server's configuration file, which the extension keeps in its storage in the format of the standalone install's `servers.yaml`: the log directories, team number, TBA key, and port. One server serves every project, so its log directories are your User settings' together with every project's own (its Workspace settings, relative paths inside that project) for the projects that have the entry.
 
-When you change a User setting (or the TBA key), the extension rewrites the configuration file of every project that has the entry, open or not. Changing a project's own setting rewrites only that project's file. Claude Code picks up the change the next time it starts the server: in a new session, or when you reconnect the server in `/mcp`. The entry itself changes only with the Java path or heap size and is updated the next time the project is opened in VS Code. A project's own setting edited outside VS Code is also picked up then.
+When you change a setting, the TBA key, or a project's own settings, the extension rewrites that file and restarts the server, and Claude Code's next request reaches the new one; a Claude Code session whose connection was lost in the restart reconnects when you ask it to in `/mcp`, or in its next session. The entry itself changes only with the Java path or heap size and is updated the next time the project is opened in VS Code. An entry written by an earlier version, which started a stdio server of its own with a configuration file per project, keeps working with that file until the project is next opened in VS Code, when the entry is rewritten to use the one server and the file removed.
 
 Keep `.mcp.json` out of git. Nothing in the entry is secret, but it holds this computer's Java, JAR, and configuration paths, which don't exist on a teammate's computer; each teammate's extension would rewrite it with their own. So the extension doesn't write into a `.mcp.json` that git already tracks (it tells you how to stop tracking it), and when git would pick the file up, it offers once to add `.mcp.json` to `.gitignore`.
 
@@ -93,6 +95,7 @@ The Settings editor lists the settings in this order: where your logs are, your 
 | `wpilog-mcp.javaPath` | Path to the `java` executable | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib installation year whose JDK to use (e.g., `2026`) | latest installed |
 | `wpilog-mcp.maxHeap` | JVM heap size, such as `2g`, `4g`, or `8g` | `4g` |
+| `wpilog-mcp.idleExitMinutes` | Minutes the shared server keeps running with no client connected before it exits on its own; `0` keeps it running (see [How It Works](#how-it-works)) | `30` |
 
 ## The Blue Alliance API Key
 
@@ -100,7 +103,7 @@ Match data from The Blue Alliance needs a free read API key from [theblueallianc
 
 The field shows no key even when one is stored; to replace the key, paste a new one. To enter the key without it showing on screen, run **WPILog Analyzer: Set The Blue Alliance API Key** from the Command Palette (`Ctrl+Shift+P`) instead. **WPILog Analyzer: Clear The Blue Alliance API Key**, also linked from the field's description, removes the key.
 
-The server VS Code starts gets the key in its environment, and Claude Code's server reads it from the configuration file the extension writes for it, which only you can read (see [Using It with Claude Code](#using-it-with-claude-code)). You set no environment variables. Clearing the key removes it from that file too.
+The server VS Code starts reads the key from the configuration file the extension writes for it, which only you can read (see [Using It with Claude Code](#using-it-with-claude-code)). You set no environment variables. Clearing the key removes it from that file too.
 
 A key in a project's own settings (its `.vscode/settings.json`) is moved out of that file the same way, but it never replaces a key you already stored, because it may be a teammate's that was committed with the project. The extension tells you to revoke it if the file was committed or shared.
 
@@ -130,15 +133,18 @@ Besides its install directory, the extension writes:
 
 - the `wpilog-analyzer` entry in robot projects' `.mcp.json` (delete the entry, or the file, if you no longer want it), and a `.mcp.json` line in a project's `.gitignore` if you accepted that offer;
 - in VS Code's storage for the extension (`globalStorage/triplehelixprogramming.wpilog-analyzer`): its servers' disk cache (`cache/`, REV log sync results), a copy of the server JAR (`server/`), and, under `projects/`, a configuration file for each project with the entry, holding its settings and the TBA key for Claude Code;
+- the server's own files outside VS Code: its log, PID file, and stop token under `~/.wpilog-mcp/logs/` and `~/.wpilog-mcp/run/` (named `vscode`), beside any standalone install's; a server still running exits on its own after the idle time, or at once when ended as a process
 - your `wpilog-mcp` settings, which stay in VS Code's settings as any extension's do, and the `~/riologs` folder if you had the extension create it.
 
 To remove the stored TBA API key, including from the projects' configuration files, run **WPILog Analyzer: Clear The Blue Alliance API Key** before uninstalling.
 
 ## Troubleshooting
 
-- **Server not starting:** open the Output panel (`Ctrl+Shift+U`) and select **WPILog Analyzer** from the dropdown. It shows the Java path, the JAR path, the log directories, and any error messages.
+- **Server not starting:** open the Output panel (`Ctrl+Shift+U`) and select **WPILog Analyzer** from the dropdown. It shows the Java path, the JAR path, the log directories, the command that started the server and what it printed, and any error messages. **WPILog Analyzer: Show Server Log** opens the server's own log. The extension tries again with growing pauses after a failed start and gives up after a few; a settings change or **WPILog Analyzer: Restart Server** makes it try again.
+- **Port in use:** the server's port is chosen once for you and kept. If another program takes it, the extension chooses another the next time it starts the server, and VS Code's agents are told the new address; Claude Code's bridge reads the port from the configuration file, so its entry needs no change.
 - **Java not found:** in WPILib VS Code the extension should find the bundled JDK by itself. Otherwise, set `wpilog-mcp.javaPath` to a JDK 17+ `java` executable.
 - **Tools not appearing:** restart VS Code completely (quit and relaunch, not just reload the window).
+- **Claude Code reports the server as failed after a settings change:** the server was restarted with the new settings, and the session's connection ended with the old one. Reconnect it in `/mcp`, or start a new session.
 - **Claude Code doesn't list `wpilog-analyzer`:** check that **Enable For Claude Code** is on. The extension adds the entry only in robot projects; elsewhere, run **WPILog Analyzer: Add to Claude Code in This Folder**. It also leaves alone a `.mcp.json` that git tracks, that already runs wpilog-mcp, or that isn't valid JSON, and the **WPILog Analyzer** output says so when it does. In Claude Code, run `/mcp`: a server waiting for approval is listed as pending. A Claude Code session started before the entry was written needs restarting.
 - **Out of memory with large logs:** set `wpilog-mcp.maxHeap` to `8g`.
 - **A log looks corrupted:** a log cut short (by a power loss, for example) still loads. The server reads it up to the damage, marks it as truncated, and says what it skipped.

@@ -44,6 +44,7 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.javaPath",
     "wpilog-mcp.wpiLibYear",
     "wpilog-mcp.maxHeap",
+    "wpilog-mcp.idleExitMinutes",
   ]);
   const orders = byOrder.map((s) => s.order);
   assert.ok(orders.every((o) => Number.isInteger(o)), "every setting has an order");
@@ -79,3 +80,22 @@ test("every command a setting's description links to is one the extension declar
   }
 });
 
+
+test("the commands are the ones the README names, each under the extension's category", () => {
+  const commands = manifest.contributes.commands as { command: string; title: string; category: string }[];
+  assert.deepEqual(commands.map((c) => c.command), [
+    "wpilog-mcp.setTbaApiKey",
+    "wpilog-mcp.clearTbaApiKey",
+    "wpilog-mcp.addToClaudeCode",
+    "wpilog-mcp.showServerLog",
+    "wpilog-mcp.restartServer",
+  ]);
+  assert.ok(commands.every((c) => c.category === "WPILog Analyzer" && c.title.length > 0));
+});
+
+test("the idle exit is a whole number of minutes, thirty by default, and zero turns it off", () => {
+  const idle = settings["wpilog-mcp.idleExitMinutes"];
+  assert.equal(idle.type, "integer");
+  assert.equal(idle.default, 30);
+  assert.equal(idle.minimum, 0);
+});
