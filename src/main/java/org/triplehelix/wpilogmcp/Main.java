@@ -602,6 +602,9 @@ public class Main {
       }, "shutdown-hook"));
       try {
         httpTransport.start();
+        // The guide tells an agent with shell access where to get every sample of an entry
+        org.triplehelix.wpilogmcp.tools.DiscoveryTools.setDataEndpoint(
+            httpTransport.dataEndpointUrl());
         Thread.currentThread().join();
       } catch (IOException e) {
         logger().error("Fatal HTTP server error: {}", e.getMessage(), e);

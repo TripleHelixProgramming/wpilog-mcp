@@ -505,7 +505,14 @@ public final class CoreTools {
           + "(degrees; roll, pitch, yaw). A NaN or infinite value is returned as the string "
           + "'NaN', 'Infinity', or '-Infinity'. Records that could not be decoded are reported in "
           + "warnings. One page is not the whole signal: use get_statistics, find_condition, or "
-          + "find_peaks for claims about a window.";
+          + "find_peaks for claims about a window. max_points reads a numeric entry or field at "
+          + "a resolution: when the window holds more samples than max_points, it is divided "
+          + "into that many buckets of equal duration (bucketed is true, bucket_sec their "
+          + "length), and each bucket with samples gives timestamp_sec (its start), count, min, "
+          + "max, mean (null when no sample is finite), first, and last, so a spike one sample "
+          + "wide is still seen in min or max; with no more samples than max_points the read is "
+          + "exact (bucketed false). A non-numeric entry is read exactly and max_points is "
+          + "reported in skipped.";
     }
 
     @Override
@@ -517,6 +524,11 @@ public final class CoreTools {
           .addIntegerProperty("limit", "Maximum number of samples to return (default: 100, "
               + "max: " + ReadEntryTool.MAX_SAMPLES + ")", false, 100)
           .addIntegerProperty("offset", "Number of samples to skip", false, 0)
+          .addIntegerProperty("max_points", "Read at a resolution: at most this many buckets "
+              + "of equal duration over the window, each with count, min, max, mean, first, and "
+              + "last (a numeric entry, or an entry with a field path appended, as get_statistics "
+              + "takes); a window with no more samples than this is read exactly (max: "
+              + ReadEntryTool.MAX_SAMPLES + ")", false, null)
           .build();
     }
 
@@ -525,6 +537,18 @@ public final class CoreTools {
       validateTimeRange(getOptDouble(arguments, "start_time"),
           getOptDouble(arguments, "end_time"));
       var name = getRequiredString(arguments, "name");
+      Integer maxPoints = arguments.has("max_points") && !arguments.get("max_points").isJsonNull()
+          ? getOptInt(arguments, "max_points", 0) : null;
+      if (maxPoints != null) {
+        if (maxPoints <= 0) {
+          throw new IllegalArgumentException("Parameter 'max_points' must be positive, got "
+              + maxPoints);
+        }
+        maxPoints = Math.min(MAX_SAMPLES, maxPoints);
+        var bucketed = readAtResolution(log, name, maxPoints, arguments);
+        if (bucketed != null) return bucketed;
+        // Not numeric: read exactly below, saying why the resolution was not applied
+      }
       var allValues = requireEntry(log, name); // not found: error with suggestions
       var problem = log.decodeProblem(name);
       if (allValues.isEmpty() && problem.isPresent()) {
@@ -573,6 +597,105 @@ public final class CoreTools {
       result.addProperty("has_more", offset + paged.size() < totalInRange);
       ResultContract.addLimitedList(result, "samples", samples, Math.max(0, totalInRange - offset),
           limit);
+      if (maxPoints != null) {
+        // The entry exists and is not numeric: the read is exact, and the result says so
+        result.addProperty("bucketed", false);
+        result.addProperty("status", "partial");
+        var skipped = new JsonArray();
+        var section = new JsonObject();
+        section.addProperty("section", "max_points");
+        section.addProperty("reason", "Entry " + name + " is " + result.get("type").getAsString()
+            + ", which has no numeric value to bucket; every sample in the page is returned "
+            + "as logged.");
+        skipped.add(section);
+        result.add("skipped", skipped);
+      }
+      return result;
+    }
+
+    /**
+     * The read at a resolution (see {@link Buckets}): the numeric samples of the entry, or of
+     * the field the name's path names, over the window, exact when they number no more than
+     * {@code maxPoints}, else bucketed. Returns null when the entry exists but is not numeric,
+     * for the exact read to handle; an entry that does not exist is an error with suggestions.
+     */
+    private JsonObject readAtResolution(LogData log, String name, int maxPoints,
+        JsonObject arguments) {
+      NumericSignal signal;
+      try {
+        signal = NumericSignal.resolve(log, name, null);
+      } catch (IllegalArgumentException e) {
+        if (log.entries().containsKey(name)) return null;
+        throw e;
+      }
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      int offset = getOptInt(arguments, "offset", 0);
+      if (offset < 0) {
+        throw new IllegalArgumentException("Parameter 'offset' must be non-negative, got " + offset);
+      }
+      var filtered = signal.values().stream()
+          .filter(tv -> startTime == null || tv.timestamp() >= startTime)
+          .filter(tv -> endTime == null || tv.timestamp() <= endTime)
+          .toList();
+      int totalInRange = filtered.size();
+
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("name", name);
+      result.addProperty("type", signal.type());
+      result.addProperty("total_in_range", totalInRange);
+      result.addProperty("max_points", maxPoints);
+      if (totalInRange <= maxPoints) {
+        // Exact: the page is the samples, as the plain read gives them
+        int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", maxPoints));
+        if (limit <= 0) {
+          throw new IllegalArgumentException("Parameter 'limit' must be positive, got " + limit);
+        }
+        var paged = filtered.stream().skip(offset).limit(limit).toList();
+        var samples = new JsonArray();
+        for (var tv : paged) {
+          var sample = new JsonObject();
+          sample.addProperty("timestamp_sec", tv.timestamp());
+          sample.add("value", sampleToJson(tv.value()));
+          samples.add(sample);
+        }
+        result.addProperty("bucketed", false);
+        result.addProperty("returned_count", paged.size());
+        result.addProperty("offset", offset);
+        result.addProperty("limit", limit);
+        result.addProperty("has_more", offset + paged.size() < totalInRange);
+        ResultContract.addLimitedList(result, "samples", samples,
+            Math.max(0, totalInRange - offset), limit);
+        return result;
+      }
+      var bucketed = Buckets.of(filtered, startTime, endTime, maxPoints);
+      int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", maxPoints));
+      if (limit <= 0) {
+        throw new IllegalArgumentException("Parameter 'limit' must be positive, got " + limit);
+      }
+      var paged = bucketed.buckets().stream().skip(offset).limit(limit).toList();
+      var samples = new JsonArray();
+      for (var b : paged) {
+        var sample = new JsonObject();
+        sample.addProperty("timestamp_sec", b.start());
+        sample.addProperty("count", b.count());
+        sample.add("min", sampleToJson(b.min()));
+        sample.add("max", sampleToJson(b.max()));
+        sample.add("mean", sampleToJson(b.mean()));
+        sample.add("first", sampleToJson(b.first()));
+        sample.add("last", sampleToJson(b.last()));
+        samples.add(sample);
+      }
+      result.addProperty("bucketed", true);
+      result.addProperty("bucket_sec", bucketed.bucketSec());
+      result.addProperty("bucket_count", bucketed.buckets().size());
+      result.addProperty("returned_count", paged.size());
+      result.addProperty("offset", offset);
+      result.addProperty("limit", limit);
+      result.addProperty("has_more", offset + paged.size() < bucketed.buckets().size());
+      ResultContract.addLimitedList(result, "samples", samples,
+          Math.max(0, bucketed.buckets().size() - offset), limit);
       return result;
     }
   }

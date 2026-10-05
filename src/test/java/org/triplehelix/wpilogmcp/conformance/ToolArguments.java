@@ -115,6 +115,12 @@ final class ToolArguments {
                 .resolve(fixture.id() + "-" + kind.label() + ".csv").toString());
           }
           variants.add(new Variant(kind.label(), args));
+          if (toolName.equals("read_entry") && (kind == Kind.NUMERIC || kind == Kind.STRING)) {
+            // At a resolution: bucketed for a numeric entry, skipped for a string one
+            var atResolution = args.deepCopy();
+            atResolution.addProperty("max_points", 5);
+            variants.add(new Variant(kind.label() + "-max_points", atResolution));
+          }
         }
         if (variants.isEmpty()) {
           var args = base.deepCopy();

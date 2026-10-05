@@ -58,6 +58,8 @@ public class HttpTransport {
   public static final String STOP_TOKEN_HEADER = "X-Wpilog-Stop-Token";
   /** How long {@link #stop} lets requests in flight finish before closing their connections. */
   private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(5);
+  /** The data endpoint's path, beside the MCP endpoint and /health. */
+  public static final String DATA_PATH = "/data/entries";
   private static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(20);
 
   private final Gson gson;
@@ -81,6 +83,9 @@ public class HttpTransport {
   private volatile Duration idleExit;
   private volatile Runnable onIdle;
   private final AtomicBoolean idleExitRun = new AtomicBoolean();
+  /** {@code GET /data/entries} (see {@link DataEndpoint}). */
+  private final DataEndpoint dataEndpoint =
+      new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance());
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
   private volatile long lastMcpActivityNanos = System.nanoTime();
 
@@ -134,6 +139,7 @@ public class HttpTransport {
     server.createContext(this.mcpPath, counted(this::handleRequest));
     server.createContext("/health", counted(this::handleHealthCheck));
     server.createContext("/stop", counted(this::handleStop));
+    server.createContext(DATA_PATH, counted(this::handleData));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
@@ -553,6 +559,30 @@ public class HttpTransport {
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }
+  }
+
+  /**
+   * The data endpoint, behind the same {@code Origin} check as the MCP endpoint: a web page
+   * must not be able to fetch a log's samples any more than it can call a tool. It serves only
+   * the files the log manager's validator allows, as every tool does.
+   */
+  private void handleData(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin");
+      return;
+    }
+    dataEndpoint.handle(exchange);
+  }
+
+  /** The size cap of a data response, in bytes (see {@link DataEndpoint}). */
+  public void setDataMaxBytes(long maxBytes) {
+    dataEndpoint.setMaxBytes(maxBytes);
+  }
+
+  /** The data endpoint's URL, once the server has started. */
+  public String dataEndpointUrl() {
+    return DataEndpoint.url(bindAddress, getPort());
   }
 
   private void handleHealthCheck(HttpExchange exchange) throws IOException {

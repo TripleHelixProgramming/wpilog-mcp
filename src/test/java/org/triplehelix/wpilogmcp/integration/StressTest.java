@@ -278,6 +278,15 @@ class StressTest {
         int returned = result.has("samples") ? result.getAsJsonArray("samples").size() : 0;
         System.out.println("  read_entry (limit 10): " + returned + " samples");
       });
+      var resolutionArgs = new JsonObject();
+      resolutionArgs.addProperty("path", logPath);
+      resolutionArgs.addProperty("name", loadedEntryNames.get(0));
+      resolutionArgs.addProperty("max_points", 20);
+      testTool("read_entry", resolutionArgs, result -> {
+        int returned = result.has("samples") ? result.getAsJsonArray("samples").size() : 0;
+        System.out.println("  read_entry (max_points 20): " + returned + " samples/buckets, bucketed="
+            + (result.has("bucketed") ? result.get("bucketed") : "n/a"));
+      });
     }
 
     testTool("list_loaded_logs", new JsonObject(), result -> {

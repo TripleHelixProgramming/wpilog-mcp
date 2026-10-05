@@ -438,6 +438,19 @@ public final class DiscoveryTools {
   /**
    * Provides a comprehensive overview of all server capabilities.
    */
+  /** The data endpoint's URL when the transport is HTTP, else null (see setDataEndpoint). */
+  private static volatile String dataEndpointUrl;
+
+  /**
+   * Tells the guide where the data endpoint is: {@code GET /data/entries} on the HTTP transport,
+   * which hands a script every sample of an entry in one request, as an Arrow stream or CSV.
+   * Set once at startup by the HTTP transport's owner; a stdio server has no endpoint, and the
+   * guide then says nothing of one, since the CSV export tool is the way there.
+   */
+  public static void setDataEndpoint(String url) {
+    dataEndpointUrl = url;
+  }
+
   static class GetServerGuideTool extends ToolBase {
 
     @Override
@@ -535,6 +548,26 @@ public final class DiscoveryTools {
           "Logs are loaded on demand when referenced by path. No 'active log' concept — each tool call is self-contained. "
           + "Idle logs are evicted after 30 minutes. Under heap pressure, least-recently-used logs are evicted automatically.");
       result.add("architecture", architecture);
+
+      // The data endpoint: every sample of an entry in one request, for a script or a notebook,
+      // when the transport is HTTP (a stdio server has none, and export_csv is the way)
+      var endpointUrl = dataEndpointUrl;
+      if (endpointUrl != null) {
+        var endpoint = new JsonObject();
+        endpoint.addProperty("url", endpointUrl);
+        endpoint.addProperty("description", "GET every sample of one or more entries over a "
+            + "window, as an Apache Arrow IPC stream (format=arrow, the default: pyarrow.ipc."
+            + "open_stream or polars.read_ipc_stream read it in one line) or as CSV (format=csv), "
+            + "for a script, a notebook, or curl, where a tool result cannot carry a hundred "
+            + "thousand samples. Reads only files inside the configured log directories.");
+        endpoint.addProperty("parameters", "path (the log), names (entries or entry+field "
+            + "paths, comma separated; one Arrow stream has one value type, so request entries "
+            + "of different types separately), start_time, end_time (seconds), max_points "
+            + "(buckets, as read_entry's), format (arrow or csv)");
+        endpoint.addProperty("example", endpointUrl + "?path=<log>&names=/SystemStats/"
+            + "BatteryVoltage&start_time=20&end_time=40&format=csv");
+        result.add("data_endpoint", endpoint);
+      }
 
       // Categories section
       var categoriesArray = new JsonArray();

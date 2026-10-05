@@ -329,8 +329,30 @@ Read an entry's values in time order, one page at a time, optionally within a ti
 - `end_time` (optional): End timestamp in seconds
 - `limit` (optional): Max samples to return (default 100; larger values are cut to 10000; zero or less is an error)
 - `offset` (optional): Samples to skip (default 0; negative is an error)
+- `max_points` (optional): Read at a resolution: at most this many buckets over the window (see below; 1 to 10000, zero or less is an error)
 
 **Returns:** `name`, `type`, `total_in_range` (the true count), `returned_count`, `offset`, `limit`, `has_more`, `samples` (each `timestamp_sec` and `value`), and `limits.samples` (total after `offset` vs returned). An unknown entry name is an error with suggestions.
+
+**At a resolution (`max_points`):** for a numeric entry, or an entry with a [field path](#field-paths) appended as `get_statistics` takes it. When the window holds no more samples than `max_points`, the read is exact, as above, with `bucketed: false`. When it holds more, the window (`start_time` to `end_time`, or the samples' own span where a bound is not given) is divided into `max_points` buckets of equal duration, `bucket_sec` long, the last one including the window's end, and `samples` holds one object per bucket that has samples: `timestamp_sec` (the bucket's start), `count`, `min`, `max`, `mean` (over the finite samples; `null` when none is finite), `first`, and `last` (the first and last samples as logged). The extremes are kept because a spike one sample wide is what a person looks for, and a mean would hide it; `first` and `last` let a change-only entry's holds be drawn across a bucket. Buckets with no samples are left out: a gap in a change-only entry is a hold, not missing data. `bucketed: true`, `bucket_count` is how many buckets have samples, `total_in_range` stays the true sample count, and `offset`/`limit` page the buckets (`limit` defaults to `max_points`). A non-numeric entry is read exactly, with `max_points` in `skipped` and the status `partial`. The data endpoint of the HTTP transport (see [STANDALONE.md](STANDALONE.md#the-data-endpoint)) buckets by the same rule.
+
+**Example Response (bucketed):**
+```json
+{
+  "success": true,
+  "status": "ok",
+  "name": "/SystemStats/BatteryVoltage",
+  "type": "double",
+  "total_in_range": 1001,
+  "max_points": 4,
+  "bucketed": true,
+  "bucket_sec": 5.0,
+  "bucket_count": 4,
+  "samples": [
+    {"timestamp_sec": 20.0, "count": 250, "min": 11.08, "max": 12.2, "mean": 11.46, "first": 12.2, "last": 11.08},
+    "..."
+  ]
+}
+```
 
 **Struct values** are decoded by the log's own schema for the type; [Structs](#structs) shows what a decoded value looks like. An entry none of whose records can be decoded is an error that says why; records that fail among others are reported in `warnings` and `_metadata.decode_problems`.
 

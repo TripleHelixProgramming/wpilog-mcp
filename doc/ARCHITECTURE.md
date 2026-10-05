@@ -114,6 +114,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | MessagePack | The disk cache of REV log sync results: whole objects written once and read back, which needs a compact file format and not a database. |
 | SLF4J with its simple logger | Logging, to stderr. |
 | The JDK's built-in HTTP server | The HTTP transport. It is enough for local use by a few clients and adds no dependency. |
+| Arrow's format library (`arrow-format`, with the Flatbuffers runtime) | The Flatbuffers schema and message headers of the Arrow IPC stream the data endpoint writes. Only the generated format classes: the arrays' layout is the server's own, on the heap. |
 | The JDK's HTTP client | The Blue Alliance API. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
@@ -200,6 +201,7 @@ The HTTP transport serves the MCP Streamable HTTP shape on one endpoint (`/mcp` 
 - `DELETE` ends a session.
 - `GET /health` answers as soon as the server is up, with the version and the process ID. `start` uses it to tell whether a background server is running, and which.
 - `POST /stop` ends the server, when it was started in the background: from this machine only, with the token the start gave it (above).
+- `GET /data/entries` serves every sample of one or more entries over a window, as an Apache Arrow IPC stream or as CSV (doc/STANDALONE.md, "The Data Endpoint"), for the extension's viewer, a script, or a dashboard, which MCP's JSON messages are the wrong shape for. It goes through the log manager's validator and the `Origin` check as the MCP endpoint does, and reads nothing it would not. The Arrow stream is written at the format level: `arrow-format` gives the Flatbuffers metadata, and the server lays out each batch's validity bitmaps, offsets, and data in byte arrays on the heap, so nothing leaves the garbage collector's care, as arrow-vector's off-heap allocator would. The tests read the streams back with a reader written from the specification, and CI reads them with pyarrow. The entries' samples are resolved, typed, classed by sampling, and flattened for CSV by the same code the tools use (`EntryData` in the tools package); the buckets are `read_entry`'s (`Buckets`).
 
 A server started in the background may also end itself: with `idle_exit_minutes` in its configuration, it exits once that long has passed with no session open and no request to the MCP endpoint, counting from its start or from the end of its last session. A health check does not count, so a start's probe cannot keep a server alive. The flag is off unless set, so a server someone started by hand stays until `stop`; the VS Code extension sets it on the server it manages.
 

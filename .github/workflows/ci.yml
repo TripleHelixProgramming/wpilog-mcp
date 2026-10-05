@@ -63,6 +63,37 @@ jobs:
   # GitHub's dependency graph does not read build.gradle, so Dependabot cannot see the libraries in
   # the server JAR on its own. This submits the dependencies Gradle resolves on main (runtime, test,
   # and build plugins), and Dependabot then alerts on them as it does on the extension's npm packages.
+  # The data endpoint's Arrow streams, read by the reference implementation: the server writes
+  # Arrow with no Arrow library, and its own tests read the streams with a reader written from
+  # the specification, which could share a misreading with the writer; pyarrow cannot. The Java
+  # test leaves its streams and CSVs under build/arrow-samples, and the script compares them.
+  arrow-crosscheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Produce the sample streams
+        run: ./gradlew test --tests '*DataEndpointTest*'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read them with pyarrow
+        run: |
+          pip install pyarrow
+          python ci/check_arrow.py build/arrow-samples
+
   dependency-submission:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest

@@ -14,6 +14,7 @@
     {"tool": "list_entries", "title": "Filtered by pattern", "args": {"path": "${q10}", "pattern": "SystemStats/Battery"}},
     {"tool": "get_entry_info", "title": "A struct array: schema, source, leaf paths", "args": {"path": "${review}", "name": "/Vision/Camera3/PoseObservations"}},
     {"tool": "read_entry", "title": "A schema-decoded PoseObservation", "args": {"path": "${review}", "name": "/Vision/Camera3/PoseObservations", "start_time": 370, "limit": 1}},
+    {"tool": "read_entry", "title": "At a resolution: five buckets of the battery voltage", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "start_time": 20, "end_time": 40, "max_points": 5}},
     {"tool": "list_struct_types", "title": "A log's struct types", "args": {"path": "${q10}"}},
     {"tool": "resolve_signals", "title": "Every role", "args": {"path": "${q10}"}},
     {"tool": "health_check", "title": "Server status", "args": {}},

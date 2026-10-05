@@ -94,6 +94,10 @@ dependencies {
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
 
+    // Arrow's IPC format (the Flatbuffers schema and message headers) for the data endpoint,
+    // written at the format level: no arrow-vector, no off-heap allocator (see ARCHITECTURE.md)
+    implementation 'org.apache.arrow:arrow-format:18.1.0'
+
     // YAML configuration support
     implementation 'org.yaml:snakeyaml:2.6'
 

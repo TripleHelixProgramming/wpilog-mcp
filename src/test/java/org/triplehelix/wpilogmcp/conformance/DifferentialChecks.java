@@ -244,6 +244,9 @@ final class DifferentialChecks {
           findings.add(name + " " + e.getKey() + ": " + got + ", independently " + e.getValue());
         }
       }
+      // read_entry at a resolution: each bucket's count, extremes, mean, first, and last from
+      // the raw records, by the same division of the entry's own span
+      statisticsCompared += compareBuckets(registry, log, s, findings);
       // The quality block must describe the same samples: all of them, less the non-finite
       var quality = stats.getAsJsonObject("data_quality");
       if (quality != null) {
@@ -315,6 +318,94 @@ final class DifferentialChecks {
     }
     return new Outcome(survey.series.size(), survey.dataRecords, countsCompared,
         statisticsCompared, windowsCompared, domainCompared, findings, notes);
+  }
+
+  /** How many buckets read_entry is asked for in the differential check. */
+  static final int BUCKETS = 50;
+
+  /**
+   * Calls read_entry with max_points on the whole entry and recomputes every bucket from the
+   * independent reader's times and values: the window is the entry's own span divided into
+   * equal buckets, the last one closed. Returns how many bucket fields were compared.
+   */
+  static int compareBuckets(ToolRegistry registry, Path log, IndependentLog.Series s,
+      List<String> findings) throws Exception {
+    if (s.n < 2) return 0;
+    var read = call(registry, "read_entry", log, "name", s.name, "max_points", BUCKETS);
+    if (!"ok".equals(status(read))) {
+      findings.add("read_entry(" + s.name + ", max_points) is " + status(read) + ": " + read);
+      return 0;
+    }
+    double start = s.times[0];
+    double end = s.times[s.n - 1];
+    boolean bucketed = read.get("bucketed").getAsBoolean();
+    if (bucketed != (s.n > BUCKETS)) {
+      findings.add(s.name + ": bucketed is " + bucketed + " for " + s.n + " samples and max_points "
+          + BUCKETS);
+      return 0;
+    }
+    if (!bucketed) return 0;
+    double bucketSec = (end - start) / BUCKETS;
+    if (!close(read.get("bucket_sec").getAsDouble(), bucketSec)) {
+      findings.add(s.name + " bucket_sec: " + read.get("bucket_sec") + ", independently " + bucketSec);
+    }
+    // Expected buckets, by index
+    var expected = new java.util.TreeMap<Integer, double[]>(); // count, min, max, sum, finite, first, last
+    for (int i = 0; i < s.n; i++) {
+      int index = bucketSec > 0 ? (int) Math.min(BUCKETS - 1, Math.floor((s.times[i] - start) / bucketSec)) : 0;
+      var b = expected.computeIfAbsent(index, k -> new double[] {0, Double.POSITIVE_INFINITY,
+          Double.NEGATIVE_INFINITY, 0, 0, Double.NaN, Double.NaN});
+      double v = s.values[i];
+      if (b[0] == 0) b[5] = v;
+      b[0]++;
+      b[6] = v;
+      if (Double.isFinite(v)) {
+        b[4]++;
+        b[3] += v;
+        if (v < b[1]) b[1] = v;
+        if (v > b[2]) b[2] = v;
+      }
+    }
+    var samples = read.getAsJsonArray("samples");
+    if (samples.size() != expected.size()) {
+      findings.add(s.name + ": " + samples.size() + " buckets, independently " + expected.size());
+      return 0;
+    }
+    int compared = 0;
+    int shown = 0;
+    var indices = new ArrayList<>(expected.keySet());
+    for (int k = 0; k < indices.size(); k++) {
+      var got = samples.get(k).getAsJsonObject();
+      var b = expected.get(indices.get(k));
+      var problems = new ArrayList<String>();
+      if (!close(got.get("timestamp_sec").getAsDouble(), start + indices.get(k) * bucketSec)) {
+        problems.add("start " + got.get("timestamp_sec"));
+      }
+      if (got.get("count").getAsInt() != (int) b[0]) problems.add("count " + got.get("count") + " vs " + (int) b[0]);
+      if (b[4] > 0) {
+        if (!close(got.get("min").getAsDouble(), b[1])) problems.add("min " + got.get("min") + " vs " + b[1]);
+        if (!close(got.get("max").getAsDouble(), b[2])) problems.add("max " + got.get("max") + " vs " + b[2]);
+        if (!close(got.get("mean").getAsDouble(), b[3] / b[4])) problems.add("mean " + got.get("mean") + " vs " + b[3] / b[4]);
+      } else if (!got.get("mean").isJsonNull() || !got.get("min").isJsonNull()) {
+        problems.add("no finite sample, yet min/mean are " + got.get("min") + "/" + got.get("mean"));
+      }
+      if (!sameLogged(got.get("first"), b[5])) problems.add("first " + got.get("first") + " vs " + b[5]);
+      if (!sameLogged(got.get("last"), b[6])) problems.add("last " + got.get("last") + " vs " + b[6]);
+      compared += 7;
+      if (!problems.isEmpty() && shown++ < MISMATCHES_SHOWN) {
+        findings.add(s.name + " bucket " + indices.get(k) + ": " + String.join(", ", problems));
+      }
+    }
+    return compared;
+  }
+
+  /** A logged value as read_entry reports it: a number, or the string "NaN"/"Infinity"/"-Infinity". */
+  private static boolean sameLogged(com.google.gson.JsonElement got, double expected) {
+    if (got == null || got.isJsonNull()) return false;
+    if (got.isJsonPrimitive() && got.getAsJsonPrimitive().isString()) {
+      return String.valueOf(expected).equals(got.getAsString());
+    }
+    return close(got.getAsDouble(), expected);
   }
 
   static List<String> describe(String id, Outcome o) {
