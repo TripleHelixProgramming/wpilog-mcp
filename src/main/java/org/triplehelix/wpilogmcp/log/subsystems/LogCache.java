@@ -24,8 +24,9 @@ import org.triplehelix.wpilogmcp.log.LogData;
  *       LRU entries are evicted one at a time, with a collection after each, until it recovers
  * </ul>
  *
- * <p>When a log is evicted, its {@link org.triplehelix.wpilogmcp.log.LazyParsedLog} is closed
- * to release memory-mapped file resources, and an optional eviction callback is invoked.
+   * <p>When a log is evicted, its {@link org.triplehelix.wpilogmcp.log.LazyParsedLog} is retired:
+   * cached values are dropped, but its mapping stays alive until its final acquired use closes.
+   * An eviction callback cleans up the manager's other records for that instance.
  *
  * <p>No configuration is needed — the cache automatically adapts to available heap. Users
  * control total capacity via {@code WPILOG_MAX_HEAP} (JVM heap size).

@@ -937,62 +937,64 @@ public final class CoreTools {
         return result;
       }
 
-      var log = logManager.getOrLoad(path);
-      var schemas = log.structSchemas();
-      // Declaration (entry id) order, whatever order the entry map iterates in
-      var usedBy = new java.util.LinkedHashMap<String, java.util.List<String>>();
-      var byId = log.entries().values().stream()
-          .sorted(Comparator.comparingInt(EntryInfo::id)).toList();
-      for (var entry : byId) {
-        var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(entry.type());
-        if (struct != null) usedBy.computeIfAbsent(struct, k -> new java.util.ArrayList<>())
-            .add(entry.name());
-      }
-      var names = new java.util.LinkedHashSet<>(schemas.loggedStructs());
-      names.addAll(usedBy.keySet());
-      if (names.isEmpty()) {
-        // An empty list is not a listing: the log has no struct types
-        var none = ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
-                + "struct:<Name> type and no /.schema/struct: schema is logged.")
-            .hint("list_entries shows the types the log has; list_struct_types without path "
-                + "lists the built-in WPILib struct layouts.")
-            .addProperty("log_path", log.path())
-            .build();
-        ToolUtils.noteTruncation(none, log);
-        return none;
-      }
-
-      var types = new JsonArray();
-      var warnings = new JsonArray();
-      for (var name : names) {
-        var info = schemas.info(name);
-        var o = info.map(i -> StructDescriptions.describe(schemas, i))
-            .orElseGet(() -> StructDescriptions.missing(name));
-        var entries = usedBy.getOrDefault(name, java.util.List.of());
-        var listed = new JsonArray();
-        entries.stream().limit(ENTRY_LIMIT).forEach(listed::add);
-        o.addProperty("entry_count", entries.size());
-        ResultContract.addLimitedList(o, "entries", listed, entries.size(), ENTRY_LIMIT);
-        types.add(o);
-        if (entries.isEmpty()) continue;
-        if (info.isEmpty() || !info.get().valid()) {
-          warnings.add(entries.size() + " entries of struct " + name + " cannot be decoded: "
-              + o.get("error").getAsString());
-        } else if (info.get().source()
-            == org.triplehelix.wpilogmcp.log.struct.StructSchemas.Source.ASSUMED) {
-          warnings.add(entries.size() + " entries of struct " + name + " are decoded by an "
-              + "assumed template layout; the log records no schema for it.");
+      try (var use = logManager.acquire(path)) {
+        var log = use.log();
+        var schemas = log.structSchemas();
+        // Declaration (entry id) order, whatever order the entry map iterates in
+        var usedBy = new java.util.LinkedHashMap<String, java.util.List<String>>();
+        var byId = log.entries().values().stream()
+            .sorted(Comparator.comparingInt(EntryInfo::id)).toList();
+        for (var entry : byId) {
+          var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(entry.type());
+          if (struct != null) usedBy.computeIfAbsent(struct, k -> new java.util.ArrayList<>())
+              .add(entry.name());
         }
+        var names = new java.util.LinkedHashSet<>(schemas.loggedStructs());
+        names.addAll(usedBy.keySet());
+        if (names.isEmpty()) {
+          // An empty list is not a listing: the log has no struct types
+          var none = ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
+                  + "struct:<Name> type and no /.schema/struct: schema is logged.")
+              .hint("list_entries shows the types the log has; list_struct_types without path "
+                  + "lists the built-in WPILib struct layouts.")
+              .addProperty("log_path", log.path())
+              .build();
+          ToolUtils.noteTruncation(none, log);
+          return none;
+        }
+
+        var types = new JsonArray();
+        var warnings = new JsonArray();
+        for (var name : names) {
+          var info = schemas.info(name);
+          var o = info.map(i -> StructDescriptions.describe(schemas, i))
+              .orElseGet(() -> StructDescriptions.missing(name));
+          var entries = usedBy.getOrDefault(name, java.util.List.of());
+          var listed = new JsonArray();
+          entries.stream().limit(ENTRY_LIMIT).forEach(listed::add);
+          o.addProperty("entry_count", entries.size());
+          ResultContract.addLimitedList(o, "entries", listed, entries.size(), ENTRY_LIMIT);
+          types.add(o);
+          if (entries.isEmpty()) continue;
+          if (info.isEmpty() || !info.get().valid()) {
+            warnings.add(entries.size() + " entries of struct " + name + " cannot be decoded: "
+                + o.get("error").getAsString());
+          } else if (info.get().source()
+              == org.triplehelix.wpilogmcp.log.struct.StructSchemas.Source.ASSUMED) {
+            warnings.add(entries.size() + " entries of struct " + name + " are decoded by an "
+                + "assumed template layout; the log records no schema for it.");
+          }
+        }
+        result.addProperty("log_path", log.path());
+        var inputs = new JsonObject();
+        inputs.addProperty("log", log.path());
+        result.add("inputs", inputs);
+        result.addProperty("struct_type_count", types.size());
+        result.add("struct_types", types);
+        if (!warnings.isEmpty()) result.add("warnings", warnings);
+        ToolUtils.noteTruncation(result, log);
+        return result;
       }
-      result.addProperty("log_path", log.path());
-      var inputs = new JsonObject();
-      inputs.addProperty("log", log.path());
-      result.add("inputs", inputs);
-      result.addProperty("struct_type_count", types.size());
-      result.add("struct_types", types);
-      if (!warnings.isEmpty()) result.add("warnings", warnings);
-      ToolUtils.noteTruncation(result, log);
-      return result;
     }
   }
 

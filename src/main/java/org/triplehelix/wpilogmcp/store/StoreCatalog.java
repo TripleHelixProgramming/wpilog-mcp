@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.store.StoreManifest.Header;
 import org.triplehelix.wpilogmcp.store.StoreManifest.LogFile;
@@ -21,7 +22,8 @@ import org.triplehelix.wpilogmcp.store.StoreManifest.Session;
 
 /** Read-only catalog. A directory name cannot adopt a stray into a robot's history. */
 public final class StoreCatalog {
-  private StoreCatalog() {}
+  private StoreCatalog() {
+  }
 
   public static final Duration MOVE_NOTICE_LIFETIME = Duration.ofDays(7);
 
@@ -35,18 +37,21 @@ public final class StoreCatalog {
   }
 
   /** Store membership follows the file's directory ancestry, not its extension or filename. */
-  public static java.util.Optional<Path> containing(Path file) {
+  public static Optional<Path> containing(Path file) {
     var parent = file.toAbsolutePath().normalize().getParent();
     while (parent != null) {
-      if (isStore(parent)) return java.util.Optional.of(parent);
+      if (isStore(parent)) return Optional.of(parent);
       parent = parent.getParent();
     }
-    return java.util.Optional.empty();
+    return Optional.empty();
   }
 
   public static Snapshot read(Path directory, SecurityValidator security) throws IOException {
-    try { return readValidated(directory, security); }
-    catch (RuntimeException e) { throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e); }
+    try {
+      return readValidated(directory, security);
+    } catch (RuntimeException e) {
+      throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e);
+    }
   }
 
   private static Snapshot readValidated(Path directory, SecurityValidator security) throws IOException {
@@ -135,7 +140,9 @@ public final class StoreCatalog {
   }
 
   private static List<Path> children(Path path) throws IOException {
-    try (var entries = Files.list(path)) { return entries.sorted().toList(); }
+    try (var entries = Files.list(path)) {
+      return entries.sorted().toList();
+    }
   }
 
   private static void validate(Session session, Path path) throws IOException {

@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.store;
 import com.google.gson.FieldNamingPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -57,7 +58,7 @@ final class StoreFiles {
   }
 
   static String relative(Path parent, Path file) {
-    return parent.relativize(file).toString().replace(java.io.File.separatorChar, '/');
+    return parent.relativize(file).toString().replace(File.separatorChar, '/');
   }
 
   static String component(String name) {

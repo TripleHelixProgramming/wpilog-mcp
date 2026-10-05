@@ -16,13 +16,17 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.log.LogFileAccess;
+import org.triplehelix.wpilogmcp.log.ScopedLogReader;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.revlog.dbc.CanDecoder;
 import org.triplehelix.wpilogmcp.revlog.dbc.DbcDatabase;
+import org.triplehelix.wpilogmcp.revlog.dbc.DbcSignal;
 
 /**
  * Parser for REV .revlog binary files.
@@ -89,7 +93,7 @@ public class RevLogParser {
   public ParsedRevLog parse(String pathStr) throws IOException {
     Path path = Path.of(pathStr);
 
-    try (var lease = org.triplehelix.wpilogmcp.log.LogFileAccess.read(path, false)) {
+    try (var lease = LogFileAccess.read(path)) {
       return parseFile(path);
     }
   }
@@ -102,7 +106,7 @@ public class RevLogParser {
       return parseNativeFormat(path);
     }
 
-    try (var scoped = new org.triplehelix.wpilogmcp.log.ScopedLogReader(path)) {
+    try (var scoped = new ScopedLogReader(path)) {
       return parseWpilog(path, scoped.reader());
     }
   }
@@ -573,8 +577,8 @@ public class RevLogParser {
   private String getSignalUnit(String signalName) {
     return decoder.getDatabase().messages().values().stream()
         .map(m -> m.getSignal(signalName))
-        .filter(java.util.Objects::nonNull)
-        .map(org.triplehelix.wpilogmcp.revlog.dbc.DbcSignal::unit)
+        .filter(Objects::nonNull)
+        .map(DbcSignal::unit)
         .findFirst().orElse("");
   }
 

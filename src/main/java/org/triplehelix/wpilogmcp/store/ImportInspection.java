@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
@@ -28,7 +29,9 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     var before = FileSnapshot.of(path);
     if (before == null) throw new IOException("File no longer exists: " + path);
     byte[] header;
-    try (var input = Files.newInputStream(path)) { header = input.readNBytes(16); }
+    try (var input = Files.newInputStream(path)) {
+      header = input.readNBytes(16);
+    }
     String kind;
     LogMetadata metadata = null;
     double min;
@@ -50,24 +53,23 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
         if (kind.equals("wpilog")) {
           metadata = LogMetadata.read(log);
           if (metadata.serialNumber() != null) StoreFiles.component(metadata.serialNumber());
-          var clock = WallClock.first(log);
-          if (clock.isPresent()) {
-            var reading = clock.get();
-            start = Instant.ofEpochSecond(Math.floorDiv(reading.epochMicros(), 1_000_000),
-                Math.floorMod(reading.epochMicros(), 1_000_000) * 1000)
-                .plusNanos(Math.round((min - reading.logTime()) * 1e9));
-            basis = "logged:" + WallClock.entry(log).orElseThrow();
+        }
+        var clock = WallClock.first(log);
+        if (clock.isPresent()) {
+          var reading = clock.get();
+          start = Instant.ofEpochSecond(Math.floorDiv(reading.epochMicros(), 1_000_000),
+              Math.floorMod(reading.epochMicros(), 1_000_000) * 1000)
+              .plusNanos(Math.round((min - reading.logTime()) * 1e9));
+          basis = "logged:" + WallClock.entry(log).orElseThrow();
+        } else if (kind.equals("wpilog")) {
+          Long time = LogDirectory.getInstance().extractCreationTime(path.getFileName().toString());
+          if (time != null) {
+            start = Instant.ofEpochMilli(time);
+            basis = "filename";
           } else {
-            Long time = LogDirectory.getInstance().extractCreationTime(path.getFileName().toString());
-            if (time != null) {
-              start = Instant.ofEpochMilli(time);
-              basis = "filename";
-            } else {
-              start = before.modified().toInstant().minusNanos(Math.round((max - min) * 1e9));
-              basis = "modification_time";
-            }
+            start = before.modified().toInstant().minusNanos(Math.round((max - min) * 1e9));
+            basis = "modification_time";
           }
-          end = start.plusNanos(Math.round((max - min) * 1e9));
         }
       }
     } else if (nativeHeader(header, before.size())) {
@@ -79,6 +81,14 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     } else {
       throw new IOException("Refused " + path.getFileName() + ": no WPILOG or REV record header");
     }
+    if (kind.equals("revlog") && start == null) {
+      var filename = path.getFileName().toString();
+      if (filename.startsWith("REV_")) {
+        start = WallClock.filenameTime(filename).map(t -> t.toInstant(ZoneOffset.UTC)).orElse(null);
+        if (start != null) basis = "filename";
+      }
+    }
+    if (start != null) end = start.plusNanos(Math.round((max - min) * 1e9));
     String hash = StoreFiles.hash(path);
     if (!before.sameAs(FileSnapshot.of(path))) throw new IOException("File changed during inspection: " + path);
     return new ImportInspection(path, hash, before.size(), kind, metadata, min, max,

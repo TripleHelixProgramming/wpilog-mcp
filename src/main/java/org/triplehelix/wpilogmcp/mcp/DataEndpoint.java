@@ -194,108 +194,111 @@ final class DataEndpoint {
       EntryData.RevSync rev) {}
 
   private void serve(HttpExchange exchange, Request request) throws IOException, Refusal {
-    LogData log;
+    LogManager.LogUse use;
     try {
-      log = logManager.getOrLoad(request.path());
+      use = logManager.acquire(request.path());
     } catch (LogFileException e) {
       throw new Refusal(e.getMessage().startsWith("File not found") ? 404 : 403, e.getMessage(),
           "Pass a log file inside the configured log directories, as list_available_logs lists them");
     } catch (IOException e) {
       throw new Refusal(400, "The log could not be read: " + e.getMessage(), null);
     }
-    var before = logManager.snapshotOf(request.path(), log);
+    try (use) {
+      var log = use.log();
+      var before = use.snapshot();
 
-    var prepared = new ArrayList<Prepared>();
-    long estimatedBytes = 0;
-    long rows = 0;
-    for (var name : request.names()) {
-      EntryData.Series series;
-      EntryData.RevSync rev = null;
-      if (name.startsWith(EntryData.REV_PREFIX)) {
-        // A REV log signal, on the wpilog's clock, as get_revlog_data reads it
-        try {
-          var resolved = EntryData.resolveRev(logManager, log, name);
-          series = resolved.series();
-          rev = resolved.sync();
-        } catch (EntryData.RevUnavailable e) {
-          var refusal = new Refusal(e.status, e.getMessage(), e.hint);
-          throw refusal;
+      var prepared = new ArrayList<Prepared>();
+      long estimatedBytes = 0;
+      long rows = 0;
+      for (var name : request.names()) {
+        EntryData.Series series;
+        EntryData.RevSync rev = null;
+        if (name.startsWith(EntryData.REV_PREFIX)) {
+          // A REV log signal, on the wpilog's clock, as get_revlog_data reads it
+          try {
+            var resolved = EntryData.resolveRev(logManager, log, name);
+            series = resolved.series();
+            rev = resolved.sync();
+          } catch (EntryData.RevUnavailable e) {
+            var refusal = new Refusal(e.status, e.getMessage(), e.hint);
+            throw refusal;
+          }
+        } else {
+          try {
+            series = EntryData.resolve(log, name);
+          } catch (IllegalArgumentException e) {
+            throw new Refusal(404, e.getMessage(), "list_entries lists the log's entries; get_entry_info "
+                + "lists an entry's numeric field paths");
+          }
         }
-      } else {
-        try {
-          series = EntryData.resolve(log, name);
-        } catch (IllegalArgumentException e) {
-          throw new Refusal(404, e.getMessage(), "list_entries lists the log's entries; get_entry_info "
-              + "lists an entry's numeric field paths");
+        var values = series.inWindow(request.startTime(), request.endTime());
+        Buckets.Result buckets = null;
+        ArrowType valueType;
+        if (request.maxPoints() != null) {
+          if (!series.numeric() && !"boolean".equals(series.type())) {
+            throw new Refusal(400, "max_points buckets numeric entries; " + name + " is "
+                + series.type(), "Ask for a numeric field inside it (get_entry_info lists them), "
+                + "or leave max_points out to read every sample");
+          }
+          var numeric = series.numeric() ? values : asNumbers(values);
+          buckets = numeric.size() > request.maxPoints()
+              ? Buckets.of(numeric, request.startTime(), request.endTime(), request.maxPoints())
+              : null;
+          valueType = series.numeric() ? EntryData.arrowType(log, series) : new ArrowType.Float64();
+          if (!series.numeric()) values = numeric;
+        } else {
+          valueType = EntryData.arrowType(log, series);
+        }
+        long count = buckets != null ? buckets.buckets().size() : values.size();
+        rows += count;
+        estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
+        prepared.add(new Prepared(series, values, valueType, buckets,
+            EntryData.sampling(series.values()),
+            rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev));
+      }
+      if (estimatedBytes > maxBytes) {
+        var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
+            + rows + " rows), over the cap of " + maxBytes,
+            "Narrow the window with start_time and end_time, or pass max_points to bucket");
+        refusal.body.addProperty("rows", rows);
+        refusal.body.addProperty("bytes", estimatedBytes);
+        refusal.body.addProperty("max_bytes", maxBytes);
+        throw refusal;
+      }
+      boolean bucketed = request.maxPoints() != null;
+      if (request.format().equals("arrow") && !bucketed) {
+        var first = prepared.get(0).valueType();
+        for (var p : prepared) {
+          if (!p.valueType().equals(first)) {
+            throw new Refusal(400, "An Arrow stream has one schema, and " + p.series().name()
+                + " (" + describe(p.valueType()) + ") does not share the value type of "
+                + prepared.get(0).series().name() + " (" + describe(first) + ")",
+                "Request entries of different types separately, or pass max_points, whose "
+                    + "buckets have one shape for every numeric entry");
+          }
         }
       }
-      var values = series.inWindow(request.startTime(), request.endTime());
-      Buckets.Result buckets = null;
-      ArrowType valueType;
-      if (request.maxPoints() != null) {
-        if (!series.numeric() && !"boolean".equals(series.type())) {
-          throw new Refusal(400, "max_points buckets numeric entries; " + name + " is "
-              + series.type(), "Ask for a numeric field inside it (get_entry_info lists them), "
-              + "or leave max_points out to read every sample");
-        }
-        var numeric = series.numeric() ? values : asNumbers(values);
-        buckets = numeric.size() > request.maxPoints()
-            ? Buckets.of(numeric, request.startTime(), request.endTime(), request.maxPoints())
-            : null;
-        valueType = series.numeric() ? EntryData.arrowType(log, series) : new ArrowType.Float64();
-        if (!series.numeric()) values = numeric;
-      } else {
-        valueType = EntryData.arrowType(log, series);
-      }
-      long count = buckets != null ? buckets.buckets().size() : values.size();
-      rows += count;
-      estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
-      prepared.add(new Prepared(series, values, valueType, buckets,
-          EntryData.sampling(series.values()),
-          rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev));
-    }
-    if (estimatedBytes > maxBytes) {
-      var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
-          + rows + " rows), over the cap of " + maxBytes,
-          "Narrow the window with start_time and end_time, or pass max_points to bucket");
-      refusal.body.addProperty("rows", rows);
-      refusal.body.addProperty("bytes", estimatedBytes);
-      refusal.body.addProperty("max_bytes", maxBytes);
-      throw refusal;
-    }
-    boolean bucketed = request.maxPoints() != null;
-    if (request.format().equals("arrow") && !bucketed) {
-      var first = prepared.get(0).valueType();
-      for (var p : prepared) {
-        if (!p.valueType().equals(first)) {
-          throw new Refusal(400, "An Arrow stream has one schema, and " + p.series().name()
-              + " (" + describe(p.valueType()) + ") does not share the value type of "
-              + prepared.get(0).series().name() + " (" + describe(first) + ")",
-              "Request entries of different types separately, or pass max_points, whose "
-                  + "buckets have one shape for every numeric entry");
-        }
-      }
-    }
 
-    var etag = etag(before, exchange.getRequestURI().getRawQuery());
-    var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
-    if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {
-      exchange.getResponseHeaders().set("ETag", etag);
-      exchange.sendResponseHeaders(304, -1);
-      exchange.close();
-      return;
-    }
+      var etag = etag(before, exchange.getRequestURI().getRawQuery());
+      var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
+      if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {
+        exchange.getResponseHeaders().set("ETag", etag);
+        exchange.sendResponseHeaders(304, -1);
+        exchange.close();
+        return;
+      }
 
-    var headers = exchange.getResponseHeaders();
-    headers.set("Content-Type", request.format().equals("arrow") ? ARROW_TYPE : "text/csv; charset=utf-8");
-    headers.set("Cache-Control", "private, max-age=0, must-revalidate");
-    if (etag != null) headers.set("ETag", etag);
-    exchange.sendResponseHeaders(200, 0);
-    try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
-      if (request.format().equals("arrow")) {
-        writeArrow(out, log, request, prepared, before);
-      } else {
-        writeCsv(out, log, request, prepared, before);
+      var headers = exchange.getResponseHeaders();
+      headers.set("Content-Type", request.format().equals("arrow") ? ARROW_TYPE : "text/csv; charset=utf-8");
+      headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+      if (etag != null) headers.set("ETag", etag);
+      exchange.sendResponseHeaders(200, 0);
+      try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
+        if (request.format().equals("arrow")) {
+          writeArrow(out, log, request, prepared, before);
+        } else {
+          writeCsv(out, log, request, prepared, before);
+        }
       }
     }
   }

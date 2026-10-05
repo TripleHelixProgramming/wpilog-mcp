@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -309,7 +310,7 @@ public class LogDirectory {
                 session.event(), session.matchType(), session.matchNumber(),
                 session.teamNumber() != null ? session.teamNumber() : defaultTeamNumber,
                 getLastModified(file.path()), file.file().sizeBytes(),
-                java.time.Instant.parse(session.startedAt()).toEpochMilli(), file));
+                Instant.parse(session.startedAt()).toEpochMilli(), file));
           }
         } catch (IOException e) {
           unavailable.add(new UnavailableDirectory(dir, e.getMessage()));
@@ -323,7 +324,8 @@ public class LogDirectory {
     var logs = found.stream().filter(l -> seen.add(realPath(Path.of(l.path()))))
         .sorted(NEWEST_LOG_FIRST).toList();
     unavailable.forEach(u -> logger.warn("Log directory {} skipped: {}", u.directory(), u.reason()));
-    logger.info("Found {} log files in {} directories", logs.size(), dirs.size());
+    logger.info("Found {} log files in {} of {} directories. Cache hits: {}, misses: {}",
+        logs.size(), dirs.size() - unavailable.size(), dirs.size(), cacheHits.sum(), cacheMisses.sum());
     return new DirectoryScan(dirs, logs, List.copyOf(unavailable), List.copyOf(stores));
   }
 

@@ -1223,150 +1223,153 @@ public final class RobotAnalysisTools {
         throw new IllegalArgumentException("path and compare_path must be different log files");
       }
 
-      var logs = new java.util.LinkedHashMap<String, LogData>();
-      logs.put(path1, new AccessTrackingLogData(logManager.getOrLoad(path1)));
-      logs.put(path2, new AccessTrackingLogData(logManager.getOrLoad(path2)));
+      try (var first = logManager.acquire(path1);
+           var second = logManager.acquire(path2)) {
+        var logs = new java.util.LinkedHashMap<String, LogData>();
+        logs.put(path1, new AccessTrackingLogData(first.log()));
+        logs.put(path2, new AccessTrackingLogData(second.log()));
 
-      var comparisons = new JsonArray();
-      var warnings = new ArrayList<String>();
-      var found = new ArrayList<JsonObject>();
-      DataQuality worst = null;
-      for (var entry : logs.entrySet()) {
-        var logPath = entry.getKey();
-        var log = entry.getValue();
-        var filename = Path.of(logPath).getFileName().toString();
-        var stats = new JsonObject();
-        stats.addProperty("log_path", logPath);
-        stats.addProperty("log_filename", filename);
-        if (log.truncated() && log.truncationMessage() != null) {
-          // This log was not read to its end; a warning only when more than a cut-off final
-          // record was lost (see ToolUtils.noteTruncation)
-          stats.addProperty("log_truncation", log.truncationMessage());
-          if (log.damaged()) warnings.add(filename + ": " + log.truncationMessage());
-        }
-        NumericSignal signal;
-        try {
-          signal = StatisticsTools.signal(log, arguments, "name", "field", null);
-        } catch (IllegalArgumentException e) {
-          // present but not a number here (e.g. an array without an index), or not logged
-          boolean exists = log.entries().containsKey(name)
-              || NumericSignal.longestEntryPrefix(log, name) != null;
-          stats.addProperty("entry_found", exists);
-          stats.addProperty("reason", e.getMessage());
-          warnings.add(filename + ": " + e.getMessage());
-          comparisons.add(stats);
-          continue;
-        }
-        stats.addProperty("entry_found", true);
-        stats.addProperty("signal", signal.label());
-        TimeScope scope;
-        try {
-          scope = TimeScope.fromArguments(log, null, arguments);
-        } catch (IllegalArgumentException e) {
-          // this log cannot be scoped (e.g. no DriverStation data): report it, compare the rest
-          stats.addProperty("reason", e.getMessage());
-          warnings.add(filename + ": " + e.getMessage());
-          comparisons.add(stats);
-          continue;
-        }
-        if (!scope.isAll()) stats.add("scope", scope.toJson());
-        var windows = StatisticsTools.finiteWindows(signal, scope,
-            signal.isAngle() && !signal.multiValued());
-        var values = StatisticsTools.flatten(windows);
-        stats.addProperty("sample_count", values.size());
-        if (values.isEmpty()) {
-          warnings.add(filename + ": no finite values of " + signal.label()
-              + StatisticsTools.scopeText(scope) + ".");
-          comparisons.add(stats);
-          continue;
-        }
-        var data = values.stream().mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-            .toArray();
-        var sorted = data.clone();
-        java.util.Arrays.sort(sorted);
-        int maxIndex = 0;
-        int minIndex = 0;
-        for (int i = 1; i < data.length; i++) {
-          if (data[i] > data[maxIndex]) maxIndex = i;
-          if (data[i] < data[minIndex]) minIndex = i;
-        }
-        double mean = java.util.Arrays.stream(data).average().orElse(0);
-        double ss = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
-        var sObj = new JsonObject();
-        sObj.addProperty("min", sorted[0]);
-        sObj.addProperty("min_at_sec", values.get(minIndex).timestamp());
-        sObj.addProperty("max", sorted[sorted.length - 1]);
-        sObj.addProperty("max_at_sec", values.get(maxIndex).timestamp());
-        sObj.addProperty("mean", mean);
-        sObj.addProperty("std_dev", data.length > 1 ? Math.sqrt(ss / (data.length - 1)) : 0.0);
-        sObj.addProperty("median", percentile(sorted, 0.5));
-        sObj.addProperty("p5", percentile(sorted, 0.05));
-        sObj.addProperty("p25", percentile(sorted, 0.25));
-        sObj.addProperty("p75", percentile(sorted, 0.75));
-        sObj.addProperty("p95", percentile(sorted, 0.95));
-        if (signal.isAngle()) sObj.addProperty("angle_unit", signal.angle().wire());
-        stats.add("statistics", sObj);
-        for (var extreme : List.of("max", "min")) {
-          double at = sObj.get(extreme + "_at_sec").getAsDouble();
-          if (at - log.minTimestamp() < BOOT_SECONDS) {
-            stats.addProperty(extreme + "_likely_boot_transient", true);
-            warnings.add(filename + ": the " + extreme + " of " + signal.label() + " is at "
-                + String.format("%.2f", at) + " s, within " + (int) BOOT_SECONDS + " s of the "
-                + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
+        var comparisons = new JsonArray();
+        var warnings = new ArrayList<String>();
+        var found = new ArrayList<JsonObject>();
+        DataQuality worst = null;
+        for (var entry : logs.entrySet()) {
+          var logPath = entry.getKey();
+          var log = entry.getValue();
+          var filename = Path.of(logPath).getFileName().toString();
+          var stats = new JsonObject();
+          stats.addProperty("log_path", logPath);
+          stats.addProperty("log_filename", filename);
+          if (log.truncated() && log.truncationMessage() != null) {
+            // This log was not read to its end; a warning only when more than a cut-off final
+            // record was lost (see ToolUtils.noteTruncation)
+            stats.addProperty("log_truncation", log.truncationMessage());
+            if (log.damaged()) warnings.add(filename + ": " + log.truncationMessage());
           }
+          NumericSignal signal;
+          try {
+            signal = StatisticsTools.signal(log, arguments, "name", "field", null);
+          } catch (IllegalArgumentException e) {
+            // present but not a number here (e.g. an array without an index), or not logged
+            boolean exists = log.entries().containsKey(name)
+                || NumericSignal.longestEntryPrefix(log, name) != null;
+            stats.addProperty("entry_found", exists);
+            stats.addProperty("reason", e.getMessage());
+            warnings.add(filename + ": " + e.getMessage());
+            comparisons.add(stats);
+            continue;
+          }
+          stats.addProperty("entry_found", true);
+          stats.addProperty("signal", signal.label());
+          TimeScope scope;
+          try {
+            scope = TimeScope.fromArguments(log, null, arguments);
+          } catch (IllegalArgumentException e) {
+            // this log cannot be scoped (e.g. no DriverStation data): report it, compare the rest
+            stats.addProperty("reason", e.getMessage());
+            warnings.add(filename + ": " + e.getMessage());
+            comparisons.add(stats);
+            continue;
+          }
+          if (!scope.isAll()) stats.add("scope", scope.toJson());
+          var windows = StatisticsTools.finiteWindows(signal, scope,
+              signal.isAngle() && !signal.multiValued());
+          var values = StatisticsTools.flatten(windows);
+          stats.addProperty("sample_count", values.size());
+          if (values.isEmpty()) {
+            warnings.add(filename + ": no finite values of " + signal.label()
+                + StatisticsTools.scopeText(scope) + ".");
+            comparisons.add(stats);
+            continue;
+          }
+          var data = values.stream().mapToDouble(tv -> ((Number) tv.value()).doubleValue())
+              .toArray();
+          var sorted = data.clone();
+          java.util.Arrays.sort(sorted);
+          int maxIndex = 0;
+          int minIndex = 0;
+          for (int i = 1; i < data.length; i++) {
+            if (data[i] > data[maxIndex]) maxIndex = i;
+            if (data[i] < data[minIndex]) minIndex = i;
+          }
+          double mean = java.util.Arrays.stream(data).average().orElse(0);
+          double ss = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
+          var sObj = new JsonObject();
+          sObj.addProperty("min", sorted[0]);
+          sObj.addProperty("min_at_sec", values.get(minIndex).timestamp());
+          sObj.addProperty("max", sorted[sorted.length - 1]);
+          sObj.addProperty("max_at_sec", values.get(maxIndex).timestamp());
+          sObj.addProperty("mean", mean);
+          sObj.addProperty("std_dev", data.length > 1 ? Math.sqrt(ss / (data.length - 1)) : 0.0);
+          sObj.addProperty("median", percentile(sorted, 0.5));
+          sObj.addProperty("p5", percentile(sorted, 0.05));
+          sObj.addProperty("p25", percentile(sorted, 0.25));
+          sObj.addProperty("p75", percentile(sorted, 0.75));
+          sObj.addProperty("p95", percentile(sorted, 0.95));
+          if (signal.isAngle()) sObj.addProperty("angle_unit", signal.angle().wire());
+          stats.add("statistics", sObj);
+          for (var extreme : List.of("max", "min")) {
+            double at = sObj.get(extreme + "_at_sec").getAsDouble();
+            if (at - log.minTimestamp() < BOOT_SECONDS) {
+              stats.addProperty(extreme + "_likely_boot_transient", true);
+              warnings.add(filename + ": the " + extreme + " of " + signal.label() + " is at "
+                  + String.format("%.2f", at) + " s, within " + (int) BOOT_SECONDS + " s of the "
+                  + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
+            }
+          }
+          var quality = DataQuality.fromSegments(scope.split(signal.values()));
+          stats.add("data_quality", quality.toJson());
+          if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
+          found.add(sObj);
+          comparisons.add(stats);
         }
-        var quality = DataQuality.fromSegments(scope.split(signal.values()));
-        stats.add("data_quality", quality.toJson());
-        if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
-        found.add(sObj);
-        comparisons.add(stats);
-      }
 
-      var result = new JsonObject();
-      result.addProperty("success", !found.isEmpty());
-      if (found.isEmpty()) {
-        result.addProperty("status", "no_match");
-        result.addProperty("reason", "Neither log has finite values of " + name + ".");
-      } else if (found.size() < logs.size()) {
-        result.addProperty("status", "partial");
-        var skipped = new JsonArray();
-        var item = new JsonObject();
-        item.addProperty("section", "differences");
-        item.addProperty("reason", "Only one log has values to compare.");
-        skipped.add(item);
-        result.add("skipped", skipped);
-      }
-      result.addProperty("entry", name);
-      var inputs = new JsonObject();
-      var inputLogs = new JsonArray();
-      logs.keySet().forEach(inputLogs::add);
-      inputs.add("logs", inputLogs);
-      inputs.addProperty("entry", name);
-      result.add("inputs", inputs);
-      result.addProperty("logs_compared", logs.size());
-      result.add("comparisons", comparisons);
-      if (found.size() == 2) {
-        var differences = new JsonObject();
-        for (var key : List.of("mean", "median", "p95")) {
-          differences.addProperty(key, found.get(1).get(key).getAsDouble()
-              - found.get(0).get(key).getAsDouble());
+        var result = new JsonObject();
+        result.addProperty("success", !found.isEmpty());
+        if (found.isEmpty()) {
+          result.addProperty("status", "no_match");
+          result.addProperty("reason", "Neither log has finite values of " + name + ".");
+        } else if (found.size() < logs.size()) {
+          result.addProperty("status", "partial");
+          var skipped = new JsonArray();
+          var item = new JsonObject();
+          item.addProperty("section", "differences");
+          item.addProperty("reason", "Only one log has values to compare.");
+          skipped.add(item);
+          result.add("skipped", skipped);
         }
-        differences.addProperty("note", "Second log minus first. Two logs are two samples: a "
-            + "difference may reflect battery, field, opponents, or code changes "
-            + "(get_code_metadata), not only the robot.");
-        result.add("differences", differences);
+        result.addProperty("entry", name);
+        var inputs = new JsonObject();
+        var inputLogs = new JsonArray();
+        logs.keySet().forEach(inputLogs::add);
+        inputs.add("logs", inputLogs);
+        inputs.addProperty("entry", name);
+        result.add("inputs", inputs);
+        result.addProperty("logs_compared", logs.size());
+        result.add("comparisons", comparisons);
+        if (found.size() == 2) {
+          var differences = new JsonObject();
+          for (var key : List.of("mean", "median", "p95")) {
+            differences.addProperty(key, found.get(1).get(key).getAsDouble()
+                - found.get(0).get(key).getAsDouble());
+          }
+          differences.addProperty("note", "Second log minus first. Two logs are two samples: a "
+              + "difference may reflect battery, field, opponents, or code changes "
+              + "(get_code_metadata), not only the robot.");
+          result.add("differences", differences);
+        }
+        if (!warnings.isEmpty()) {
+          result.add("warnings", GSON.toJsonTree(warnings));
+        }
+        if (worst != null) {
+          var directives = AnalysisDirectives.fromQuality(worst)
+              .addGuidance("Cross-match comparisons require consistent logging configurations for "
+                  + "valid comparison");
+          result.add("server_analysis_directives", directives.toJson());
+        }
+        for (var log : logs.values()) ((AccessTrackingLogData) log).annotate(result);
+        return result;
       }
-      if (!warnings.isEmpty()) {
-        result.add("warnings", GSON.toJsonTree(warnings));
-      }
-      if (worst != null) {
-        var directives = AnalysisDirectives.fromQuality(worst)
-            .addGuidance("Cross-match comparisons require consistent logging configurations for "
-                + "valid comparison");
-        result.add("server_analysis_directives", directives.toJson());
-      }
-      for (var log : logs.values()) ((AccessTrackingLogData) log).annotate(result);
-      return result;
     }
   }
 

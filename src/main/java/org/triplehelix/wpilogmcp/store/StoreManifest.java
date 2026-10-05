@@ -8,7 +8,8 @@ import java.util.List;
 
 /** Durable facts, with portable relative paths; clocks and identity always retain their basis. */
 public final class StoreManifest {
-  private StoreManifest() {}
+  private StoreManifest() {
+  }
 
   public static final int FORMAT_VERSION = 1;
 

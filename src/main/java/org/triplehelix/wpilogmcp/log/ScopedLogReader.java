@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.log;
 import edu.wpi.first.util.datalog.DataLogReader;
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
@@ -30,11 +31,11 @@ public final class ScopedLogReader implements AutoCloseable {
       var field = type.getDeclaredField("theUnsafe");
       field.setAccessible(true);
       cleaner = field.get(null);
-      clean = type.getMethod("invokeCleaner", java.nio.ByteBuffer.class);
+      clean = type.getMethod("invokeCleaner", ByteBuffer.class);
     } catch (ReflectiveOperationException | RuntimeException e) {
       throw new IOException("This JVM cannot release a log mapping before an import moves it", e);
     }
-    lease = LogFileAccess.read(path, false);
+    lease = LogFileAccess.read(path);
     try (var channel = FileChannel.open(path)) {
       long size = channel.size();
       if (size < 12 || size > Integer.MAX_VALUE) throw LogFileException.invalid(path);

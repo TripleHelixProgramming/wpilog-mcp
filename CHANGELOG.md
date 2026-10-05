@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Store manifests and a queued Java import pipeline organize existing WPILOG and REV files by robot and session, preserving names and provenance, verifying copies, deduplicating by SHA-256, and pairing REV logs by correlation before moving them. Previously a folder had only its filenames to describe its organization; `list_available_logs` now reads a store's manifests, reports robot and session facts, leaves hand-copied files unmanaged, and reports moved paths for seven days. Serial numbers promote stated robot names without merging existing histories. The HTTP import job, command, inbox, and extension controls remain for later work.
 
+### Fixed
+- Store moves now evict the shared manager's mapping and wait up to three seconds for active readers, so a log already viewed in the explorer can be organized without restarting the server; eviction keeps mappings alive until tools, data streams, and background synchronization finish reading them.
+- Imports read the store catalog once per batch and nominate REV candidates by robot and a generous clock window before correlation, replacing repeated whole-store scans and correlations against a season's unrelated sessions; unknown REV clocks still consider every session of the stated robot, and only the signal data establishes a match.
+
+### Testing
+- Store fixtures now pin serial-first identity for new named robots, separate non-overlapping sessions, and widening only the overlapping session; mapping-lifetime and import-scaling checks guard the review gaps with synthetic files and planted production bugs.
+
 ## [0.9.1] - 2026-10-04
 
 This release puts the corrected extension README on the Marketplace listing, whose Overview still said the extension was not there: the 0.9.0 package was built before the README changed, and the Marketplace shows the README inside the package. It also reorganizes the README, edits every document, and makes a loaded log follow its file.

@@ -8,6 +8,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.mcp.SessionContext;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
 
@@ -22,7 +24,8 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
  * <ul>
  *   <li>Injects a required {@code path} parameter into the tool schema</li>
  *   <li>Extracts the path from arguments and auto-loads the log via
- *       {@link org.triplehelix.wpilogmcp.log.LogManager#getOrLoad(String)}</li>
+ *       {@link LogManager#acquire(String)}, retaining its mapping
+ *       until the result and its input annotations are complete</li>
  *   <li>Passes the loaded log to {@link #executeWithLog(LogData, JsonObject)}</li>
  * </ul>
  *
@@ -130,36 +133,38 @@ public abstract class LogRequiringTool extends ToolBase {
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
     var path = getRequiredString(arguments, "path");
-    var loaded = logManager.getOrLoad(path);
-    // The file as the log was read from it, taken now so that an eviction during the call does
-    // not lose it; the call's result is trusted only if the file is still that file afterwards
-    var before = logManager.snapshotOf(path, loaded);
-    var log = new AccessTrackingLogData(loaded);
-    JsonElement result;
-    try {
-      result = executeWithLog(log, arguments);
-    } catch (InternalError e) {
-      // A read of the memory-mapped file faulted: the file was truncated or rewritten in place
-      // under the mapping. The attributes may or may not show it, so the fault itself counts
-      return changedDuringCall(logManager.faultDuringCall(path, loaded, before, e.getMessage()));
-    }
-    var change = logManager.changeDuringCall(path, loaded, before);
-    if (change != null) return changedDuringCall(change);
-    if (result != null && result.isJsonObject()) {
-      var object = result.getAsJsonObject();
-      // Never compute silently from partly undecodable entries: say which ones and why
-      log.annotate(object);
-      // Nor from a log that was not read to its end
-      ToolUtils.noteTruncation(object, log);
-      // Every successful result says what it was computed from (rule R3)
-      if (!object.has("success") || object.get("success").getAsBoolean()) {
-        log.recordInputs(object);
+    try (var use = logManager.acquire(path)) {
+      var loaded = use.log();
+      // The file as the log was read from it, taken now so that an eviction during the call does
+      // not lose it; the call's result is trusted only if the file is still that file afterwards
+      var before = use.snapshot();
+      var log = new AccessTrackingLogData(loaded);
+      JsonElement result;
+      try {
+        result = executeWithLog(log, arguments);
+      } catch (InternalError e) {
+        // A read of the memory-mapped file faulted: the file was truncated or rewritten in place
+        // under the mapping. The attributes may or may not show it, so the fault itself counts
+        return changedDuringCall(logManager.faultDuringCall(path, loaded, before, e.getMessage()));
       }
-      // A session that used this log before its file changed is told once that it was reloaded
-      var reload = logManager.reloadNoticeFor(sessionKey(), path);
-      if (reload != null) noteReload(object, reload);
+      var change = logManager.changeDuringCall(path, loaded, before);
+      if (change != null) return changedDuringCall(change);
+      if (result != null && result.isJsonObject()) {
+        var object = result.getAsJsonObject();
+        // Never compute silently from partly undecodable entries: say which ones and why
+        log.annotate(object);
+        // Nor from a log that was not read to its end
+        ToolUtils.noteTruncation(object, log);
+        // Every successful result says what it was computed from (rule R3)
+        if (!object.has("success") || object.get("success").getAsBoolean()) {
+          log.recordInputs(object);
+        }
+        // A session that used this log before its file changed is told once that it was reloaded
+        var reload = logManager.reloadNoticeFor(sessionKey(), path);
+        if (reload != null) noteReload(object, reload);
+      }
+      return result;
     }
-    return result;
   }
 
   /**
@@ -178,7 +183,7 @@ public abstract class LogRequiringTool extends ToolBase {
    * session for the life of the process.
    */
   private static String sessionKey() {
-    var session = org.triplehelix.wpilogmcp.mcp.SessionContext.current();
+    var session = SessionContext.current();
     return session == null ? "stdio" : session.getId();
   }
 
@@ -187,7 +192,7 @@ public abstract class LogRequiringTool extends ToolBase {
    * {@code _metadata.log_reloaded} with when and what changed, and a warning, since results the
    * session holds from earlier calls came from the file as it was.
    */
-  static void noteReload(JsonObject result, org.triplehelix.wpilogmcp.log.LogManager.Reload reload) {
+  static void noteReload(JsonObject result, LogManager.Reload reload) {
     var metadata = result.has("_metadata") && result.get("_metadata").isJsonObject()
         ? result.getAsJsonObject("_metadata") : new JsonObject();
     var note = new JsonObject();

@@ -43,13 +43,14 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *     {@literal @}Override
  *     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
  *         var path = getRequiredString(arguments, "path");
- *         var log = logManager.getOrLoad(path);
- *         var name = getRequiredString(arguments, "name");
- *         var values = requireEntry(log, name);
+ *         try (var use = logManager.acquire(path)) {
+ *           var name = getRequiredString(arguments, "name");
+ *           var values = requireEntry(use.log(), name);
  *
- *         return success()
- *             .addProperty("count", values.size())
- *             .build();
+ *           return success()
+ *               .addProperty("count", values.size())
+ *               .build();
+ *         }
  *     }
  * }
  * }</pre>

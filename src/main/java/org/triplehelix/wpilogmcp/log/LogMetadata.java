@@ -42,10 +42,18 @@ public record LogMetadata(String serialNumber, String comments, String event,
           }
           if (text != null) serial = text;
         }
-        case COMMENTS -> { if (text != null) comments = text; }
-        case EVENT -> { if (text != null) event = text; }
-        case MATCH_TYPE -> { if (integer != null) currentType = integer; }
-        case MATCH_NUMBER -> { if (integer != null) currentNumber = integer; }
+        case COMMENTS -> {
+          if (text != null) comments = text;
+        }
+        case EVENT -> {
+          if (text != null) event = text;
+        }
+        case MATCH_TYPE -> {
+          if (integer != null) currentType = integer;
+        }
+        case MATCH_NUMBER -> {
+          if (integer != null) currentNumber = integer;
+        }
         case TEAM -> {
           if (integer != null && integer > 0 && integer <= Integer.MAX_VALUE) team = integer.intValue();
         }

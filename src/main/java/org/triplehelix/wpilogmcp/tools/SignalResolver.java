@@ -9,6 +9,8 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.Optional;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -60,9 +62,9 @@ public final class SignalResolver {
       this.names = List.of(names);
     }
 
-    public static java.util.Optional<MetadataRole> of(String name, String type) {
+    public static Optional<MetadataRole> of(String name, String type) {
       var lower = name.toLowerCase(Locale.ROOT);
-      return java.util.Arrays.stream(values())
+      return Arrays.stream(values())
           .filter(r -> r.type.equals(type) && r.names.stream().anyMatch(lower::endsWith))
           .findFirst();
     }
@@ -124,7 +126,7 @@ public final class SignalResolver {
         if (r.wire().equals(wire.toLowerCase(Locale.ROOT))) return r;
       }
       throw new IllegalArgumentException("Unknown role '" + wire + "'. Roles: "
-          + String.join(", ", java.util.Arrays.stream(values()).map(Role::wire).toList()));
+          + String.join(", ", Arrays.stream(values()).map(Role::wire).toList()));
     }
   }
 
@@ -162,9 +164,9 @@ public final class SignalResolver {
       boolean ambiguous, Double value, Tier tier) {
 
     /** The chosen entry, if any. */
-    java.util.Optional<String> chosen() {
-      return entries.isEmpty() ? java.util.Optional.empty()
-          : java.util.Optional.of(entries.get(0));
+    Optional<String> chosen() {
+      return entries.isEmpty() ? Optional.empty()
+          : Optional.of(entries.get(0));
     }
 
     /** Only candidates that match by name: the caller must confirm one and pass it. */
@@ -824,7 +826,7 @@ public final class SignalResolver {
       new ModuleStateConvention("YAGSL telemetry", "swerve/advantagescope/currentStates",
           List.of("swerve/advantagescope/desiredStates")));
 
-  private static java.util.Optional<ModuleStateConvention> moduleConvention(String name) {
+  private static Optional<ModuleStateConvention> moduleConvention(String name) {
     return MODULE_STATE_CONVENTIONS.stream().filter(c -> c.tableOf(name) != null).findFirst();
   }
 

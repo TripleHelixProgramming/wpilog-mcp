@@ -6,24 +6,29 @@ package org.triplehelix.wpilogmcp.log;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import edu.wpi.first.util.datalog.DataLogAccess;
 import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.AbstractMap;
+import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import edu.wpi.first.util.datalog.DataLogAccess;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
+import org.triplehelix.wpilogmcp.log.struct.StructMap;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
 
@@ -66,6 +71,62 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final Cache<String, List<TimestampedValue>> valueCache;
   private final LazyValuesMap valuesView;
   private volatile boolean closed = false;
+  private ScopedLogReader ownedReader;
+  private int holders;
+  private boolean unmapping;
+  private volatile boolean unmapped;
+
+  /**
+   * The manager owns this mapping until eviction and the last in-flight use have both ended.
+   * Construction failures close it too: a failed scan must not keep a Windows file immovable.
+   */
+  static LazyParsedLog open(Path path, long maxCacheWeightBytes) throws IOException {
+    var reader = new ScopedLogReader(path);
+    try {
+      var log = new LazyParsedLog(path.toString(), reader.reader(), maxCacheWeightBytes);
+      log.ownedReader = reader;
+      return log;
+    } catch (Throwable e) {
+      try {
+        reader.close();
+      } catch (IOException close) {
+        e.addSuppressed(close);
+      }
+      throw e;
+    }
+  }
+
+  /** Retaining and retiring are one decision, so an evicted mapping cannot acquire a new user. */
+  synchronized boolean retain() {
+    if (closed && ownedReader != null) return false;
+    holders++;
+    return true;
+  }
+
+  void releaseUse() {
+    boolean release;
+    synchronized (this) {
+      if (--holders < 0) throw new IllegalStateException("Log use released twice");
+      release = claimUnmap();
+    }
+    if (release) unmap();
+  }
+
+  private boolean claimUnmap() {
+    if (!closed || holders != 0 || ownedReader == null || unmapping) return false;
+    unmapping = true;
+    return true;
+  }
+
+  private void unmap() {
+    unmapped = true;
+    try {
+      ownedReader.close();
+    } catch (IOException e) {
+      // Its file-access claim stays held on failure, so an import reports it instead of moving.
+      logger.warn("Could not release log mapping for {}: {}", path, e.getMessage());
+    }
+  }
 
   /**
    * Creates a LazyParsedLog by scanning the file once.
@@ -82,7 +143,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   public LazyParsedLog(String path, DataLogReader reader, long maxCacheWeightBytes)
       throws IOException {
     if (!reader.isValid()) {
-      throw LogFileException.invalid(java.nio.file.Path.of(path));
+      throw LogFileException.invalid(Path.of(path));
     }
 
     this.path = path;
@@ -93,7 +154,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     // a valid log (a damaged tail is not read; see LogScan)
     logger.debug("Scanning log: {}", path);
     long startTime = System.nanoTime();
-    var scan = LogScan.of(reader, java.nio.file.Path.of(path));
+    var scan = LogScan.of(reader, Path.of(path));
     var entriesByName = scan.entries();
     var offsetLists = scan.offsets();
     int totalDataRecords = scan.dataRecords();
@@ -154,7 +215,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     long offsetMemoryKb = (long) totalDataRecords * 4 / 1024;
     logger.info("Scanned {}: {} entries, {} records, {} KB offsets in {}ms",
-        java.nio.file.Path.of(path).getFileName(), entries.size(),
+        Path.of(path).getFileName(), entries.size(),
         totalDataRecords, offsetMemoryKb, elapsedMs);
 
     // Configure Caffeine cache
@@ -171,19 +232,46 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     this.valuesView = new LazyValuesMap();
   }
 
-  @Override public String path() { return path; }
-  @Override public Map<String, EntryInfo> entries() { return entries; }
-  @Override public double minTimestamp() { return minTimestamp; }
-  @Override public double maxTimestamp() { return maxTimestamp; }
-  @Override public boolean truncated() { return truncated; }
-  @Override public boolean damaged() { return damaged; }
+  @Override
+  public String path() {
+    return path;
+  }
+
+  @Override
+  public Map<String, EntryInfo> entries() {
+    return entries;
+  }
+
+  @Override
+  public double minTimestamp() {
+    return minTimestamp;
+  }
+
+  @Override
+  public double maxTimestamp() {
+    return maxTimestamp;
+  }
+
+  @Override
+  public boolean truncated() {
+    return truncated;
+  }
+
+  @Override
+  public boolean damaged() {
+    return damaged;
+  }
 
   @Override
   public int sampleCount(String entryName) {
     int[] offsets = recordOffsets.get(entryName);
     return offsets != null ? offsets.length : 0;
   }
-  @Override public String truncationMessage() { return truncationMessage; }
+
+  @Override
+  public String truncationMessage() {
+    return truncationMessage;
+  }
 
   @Override
   public Map<String, List<TimestampedValue>> values() {
@@ -210,15 +298,19 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   }
 
   /**
-   * Releases the cached values. A closed log still reads correctly: a tool call that obtained it
-   * before it was evicted (heap pressure, idle expiry, replacement) decodes what it asks for
-   * again, without caching, instead of silently getting empty values. The memory-mapped file is
-   * released by the garbage collector once nothing references this log.
+   * Eviction stops caching immediately but leaves the mapping alive for its current holders.
+   * The last holder releases it deterministically. Readers supplied by a caller belong to that
+   * caller instead, so closing this view only drops its decoded values.
    */
   @Override
   public void close() {
-    closed = true;
+    boolean release;
+    synchronized (this) {
+      closed = true;
+      release = claimUnmap();
+    }
     valueCache.invalidateAll();
+    if (release) unmap();
     logger.debug("Closed LazyParsedLog: {}", path);
   }
 
@@ -227,6 +319,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    * No file re-scan — reads only the records for the requested entry.
    */
   private List<TimestampedValue> decodeEntry(String entryName) {
+    if (unmapped) throw new IllegalStateException("Log mapping has been released: " + path);
     var info = entries.get(entryName);
     if (info == null) return null;
 
@@ -290,7 +383,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   /**
    * Approximate heap size of one decoded value, following nested maps and lists. Slightly
-   * generous: decoded structs are {@link org.triplehelix.wpilogmcp.log.struct.StructMap}s
+   * generous: decoded structs are {@link StructMap}s
    * (a shared key array and one values array) and immutable lists; enum labels are shared.
    */
   static long estimateValueBytes(Object value, int depth) {
@@ -309,7 +402,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       return size;
     }
     if (depth > 8) return 64;
-    if (value instanceof org.triplehelix.wpilogmcp.log.struct.StructMap m) {
+    if (value instanceof StructMap m) {
       long size = 48 + 8L * m.size(); // the map and its values array
       for (var v : m.values()) size += estimateValueBytes(v, depth + 1);
       return size;
@@ -369,11 +462,11 @@ public class LazyParsedLog implements LogData, AutoCloseable {
      */
     @Override
     public Set<Entry<String, List<TimestampedValue>>> entrySet() {
-      return new java.util.AbstractSet<>() {
+      return new AbstractSet<>() {
         @Override
-        public java.util.Iterator<Entry<String, List<TimestampedValue>>> iterator() {
+        public Iterator<Entry<String, List<TimestampedValue>>> iterator() {
           var names = entries.keySet().iterator();
-          return new java.util.Iterator<>() {
+          return new Iterator<>() {
             @Override
             public boolean hasNext() {
               return names.hasNext();
@@ -420,12 +513,12 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     @Override
     public boolean equals(Object o) {
       return o instanceof Map.Entry<?, ?> e && name.equals(e.getKey())
-          && java.util.Objects.equals(getValue(), e.getValue());
+          && Objects.equals(getValue(), e.getValue());
     }
 
     @Override
     public int hashCode() {
-      return name.hashCode() ^ java.util.Objects.hashCode(getValue());
+      return name.hashCode() ^ Objects.hashCode(getValue());
     }
   }
 }

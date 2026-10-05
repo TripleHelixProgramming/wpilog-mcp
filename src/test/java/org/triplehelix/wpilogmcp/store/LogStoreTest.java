@@ -8,14 +8,23 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.triplehelix.wpilogmcp.fixtures.WpilogWriter.*;
 
 import com.google.gson.JsonObject;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +33,7 @@ import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogFileAccess;
+import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.ScopedLogReader;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
@@ -36,6 +46,7 @@ class LogStoreTest {
   SecurityValidator security;
   StoreRegistry registry;
   List<Path> previousDirectories;
+  Set<Path> previousAllowed;
   static final Instant START = Instant.parse("2026-01-10T15:00:00Z");
 
   @BeforeEach
@@ -45,6 +56,8 @@ class LogStoreTest {
     security = new SecurityValidator();
     security.addAllowedDirectory(temp);
     registry = new StoreRegistry(security);
+    previousAllowed = LogManager.getInstance().getAllowedDirectories();
+    LogManager.getInstance().addAllowedDirectory(temp);
     previousDirectories = LogDirectory.getInstance().getLogDirectories();
     LogDirectory.getInstance().setLogDirectory(root.toString());
   }
@@ -52,6 +65,8 @@ class LogStoreTest {
   @AfterEach
   void cleanup() {
     registry.close();
+    LogManager.getInstance().clearAllowedDirectories();
+    previousAllowed.forEach(LogManager.getInstance()::addAllowedDirectory);
     LogDirectory.getInstance().setLogDirectories(previousDirectories.stream().map(Path::toString).toList());
     LogDirectory.getInstance().clearCache();
   }
@@ -89,7 +104,9 @@ class LogStoreTest {
         .get(60, TimeUnit.SECONDS);
   }
 
-  private StoreCatalog.Snapshot catalog() throws Exception { return StoreCatalog.read(root, security); }
+  private StoreCatalog.Snapshot catalog() throws Exception {
+    return StoreCatalog.read(root, security);
+  }
 
   private JsonObject listing() throws Exception {
     var tools = new ToolRegistry();
@@ -122,8 +139,10 @@ class LogStoreTest {
         }
       }
       List<Path> originals;
-      try (var files = Files.list(incoming)) { originals = files.sorted().toList(); }
-      var hashes = new java.util.HashMap<Path, byte[]>();
+      try (var files = Files.list(incoming)) {
+        originals = files.sorted().toList();
+      }
+      var hashes = new HashMap<Path, byte[]>();
       for (var path : originals) hashes.put(path, Files.readAllBytes(path));
       var result = run(List.of(incoming), true, robot);
       assertEquals(List.of("imported", "imported"), result.files().stream().map(LogStore.Outcome::status).toList(), result.toString());
@@ -161,14 +180,52 @@ class LogStoreTest {
   @Test
   void lateRevUsesExistingSession() throws Exception {
     var incoming = Files.createDirectory(temp.resolve("incoming"));
-    var wpi = FixtureLogs.writeRevlogPair(incoming, "pair.wpilog", java.time.ZoneOffset.UTC, "systemTime");
+    var wpi = FixtureLogs.writeRevlogPair(incoming, "pair.wpilog", ZoneOffset.UTC, "systemTime");
     Path rev;
-    try (var paths = Files.list(incoming)) { rev = paths.filter(p -> !p.equals(wpi)).findFirst().orElseThrow(); }
+    try (var paths = Files.list(incoming)) {
+      rev = paths.filter(p -> !p.equals(wpi)).findFirst().orElseThrow();
+    }
     var first = run(List.of(wpi), true, "practice").files().get(0);
     var later = run(List.of(rev), true, null).files().get(0);
     assertEquals("imported", later.status(), later.toString());
     assertEquals(first.path().getParent(), later.path().getParent());
     assertEquals(2, catalog().files().get(0).session().files().size());
+  }
+
+  @Test
+  void newNamedRobotUsesLoggedSerialAsItsDirectory() throws Exception {
+    var source = log(temp.resolve("serial-first.wpilog"), "SERIAL42", START, 1);
+    var imported = run(List.of(source), true, "practice").files().get(0);
+    var robotDirectory = root.resolve("robots").resolve("SERIAL42");
+    assertTrue(imported.path().startsWith(robotDirectory), imported.toString());
+    assertFalse(Files.exists(root.resolve("robots").resolve("practice")));
+    var robot = catalog().robots().get(0).robot();
+    assertEquals("SERIAL42", robot.id());
+    assertEquals("SERIAL42", robot.serialNumber());
+    assertEquals("practice", robot.name());
+    assertEquals("logged", robot.basis());
+  }
+
+  @Test
+  void separatedRangesStaySeparateAndOverlapWidensOnlyItsSession() throws Exception {
+    var first = log(temp.resolve("first.wpilog"), null, START, 1);
+    var later = log(temp.resolve("later.wpilog"), null, START.plusSeconds(60), 2);
+    var overlap = log(temp.resolve("overlap.wpilog"), null, START.plusSeconds(5), 3);
+    var outcomes = run(List.of(first, later, overlap), false, "practice").files();
+    var a = outcomes.stream().filter(f -> f.originalPath().equals(first)).findFirst().orElseThrow();
+    var b = outcomes.stream().filter(f -> f.originalPath().equals(later)).findFirst().orElseThrow();
+    var c = outcomes.stream().filter(f -> f.originalPath().equals(overlap)).findFirst().orElseThrow();
+    assertNotEquals(a.path().getParent(), b.path().getParent());
+    assertEquals(a.path().getParent(), c.path().getParent());
+    var sessions = catalog().files().stream().map(StoreCatalog.StoredFile::session).distinct().toList();
+    assertEquals(2, sessions.size());
+    var early = sessions.stream().filter(s -> s.startedAt().equals(START.toString())).findFirst().orElseThrow();
+    var late = sessions.stream().filter(s -> s.startedAt().equals(START.plusSeconds(60).toString())).findFirst().orElseThrow();
+    // Each fixture spans ten seconds, so the third extends only the first from +10 to +15.
+    assertEquals(START.plusSeconds(15).toString(), early.endedAt());
+    assertEquals(START.plusSeconds(70).toString(), late.endedAt());
+    assertEquals(2, early.files().size());
+    assertEquals(1, late.files().size());
   }
 
   @Test
@@ -236,10 +293,10 @@ class LogStoreTest {
     header.addProperty("format_version", StoreManifest.FORMAT_VERSION + 1);
     Files.writeString(path, header.toString());
     byte[] before = Files.readAllBytes(path);
-    var error = assertThrows(java.io.IOException.class, this::catalog);
+    var error = assertThrows(IOException.class, this::catalog);
     assertTrue(error.getMessage().contains("newer"));
     assertEquals("error", listing().get("status").getAsString());
-    assertThrows(java.util.concurrent.ExecutionException.class,
+    assertThrows(ExecutionException.class,
         () -> run(List.of(log(temp.resolve("new.wpilog"), null, START, 1)), true, "practice"));
     assertArrayEquals(before, Files.readAllBytes(path));
   }
@@ -308,8 +365,12 @@ class LogStoreTest {
     var a = store.importPaths(new LogStore.Request(List.of(first), false, "practice"), p -> {
       if (p.phase().equals("inspecting")) {
         entered.countDown();
-        try { if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("test timed out"); }
-        catch (InterruptedException e) { throw new IllegalStateException(e); }
+        try {
+          if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("test timed out");
+        }
+        catch (InterruptedException e) {
+          throw new IllegalStateException(e);
+        }
       }
     });
     assertTrue(entered.await(10, TimeUnit.SECONDS));
@@ -344,8 +405,8 @@ class LogStoreTest {
       assertTrue(Files.exists(outside));
     }
     var io = new StoreFiles(root, security);
-    assertThrows(java.io.IOException.class, () -> io.resolve(root, "../outside.wpilog"));
-    assertThrows(java.io.IOException.class, () -> io.resolve(root, "..\\outside.wpilog"));
+    assertThrows(IOException.class, () -> io.resolve(root, "../outside.wpilog"));
+    assertThrows(IOException.class, () -> io.resolve(root, "..\\outside.wpilog"));
     assertThrows(IllegalArgumentException.class, () -> StoreFiles.component("CON"));
     assertThrows(IllegalArgumentException.class, () -> StoreFiles.component("../practice"));
   }
@@ -355,7 +416,7 @@ class LogStoreTest {
     var input = log(temp.resolve("mapped.wpilog"), null, START, 1);
     var reader = new ScopedLogReader(input);
     try {
-      assertThrows(java.io.IOException.class, () -> LogFileAccess.move(List.of(input)));
+      assertThrows(IOException.class, () -> LogFileAccess.move(List.of(input)));
     } finally { reader.close(); }
     assertThrows(IllegalStateException.class, reader::reader);
     var result = run(List.of(input), true, "practice");
@@ -379,8 +440,12 @@ class LogStoreTest {
     byte[] original = Files.readAllBytes(input);
     var result = registry.store(root).importPaths(new LogStore.Request(List.of(input), false, "practice"), p -> {
       if (p.phase().equals("verifying")) {
-        try { Files.writeString(p.path(), "not a log"); }
-        catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        try {
+          Files.writeString(p.path(), "not a log");
+        }
+        catch (IOException e) {
+          throw new IllegalStateException(e);
+        }
       }
     }).get();
     assertEquals("refused", result.files().get(0).status());
@@ -390,23 +455,10 @@ class LogStoreTest {
   }
 
   @Test
-  void sharedMappingRefusesMoveButAllowsCopy() throws Exception {
-    var input = log(temp.resolve("one.wpilog"), null, START, 1);
-    // Shared mappings can outlive eviction; copy is available without ending active readers.
-    LogFileAccess.read(input, true);
-    var moved = run(List.of(input), true, "practice").files().get(0);
-    assertEquals("refused", moved.status());
-    assertTrue(moved.reason().contains("restart"));
-    assertTrue(Files.exists(input));
-    assertTrue(catalog().files().isEmpty());
-    assertEquals("imported", run(List.of(input), false, "practice").files().get(0).status());
-  }
-
-  @Test
   void nativeRevHeaderAcceptedWithoutTrustingExtension() throws Exception {
     var nativeLog = temp.resolve("controller.data");
     // One native firmware record: id 1, ten-byte payload, REV SPARK device 4.
-    var bytes = java.nio.ByteBuffer.allocate(13).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+    var bytes = ByteBuffer.allocate(13).order(ByteOrder.LITTLE_ENDIAN);
     bytes.put((byte) 0).put((byte) 1).put((byte) 10).putInt(0x02050004)
         .put(new byte[] {26, 1, 0, 5, 0, 0});
     Files.write(nativeLog, bytes.array());
@@ -420,21 +472,90 @@ class LogStoreTest {
   void ambiguousRevPairStaysUnassigned() throws Exception {
     var a = Files.createDirectory(temp.resolve("a"));
     var b = Files.createDirectory(temp.resolve("b"));
-    var first = FixtureLogs.writeRevlogPair(a, "one.wpilog", java.time.ZoneOffset.UTC, "systemTime");
-    var second = FixtureLogs.writeRevlogPair(b, "two.wpilog", java.time.ZoneOffset.UTC, "systemTime");
+    var first = FixtureLogs.writeRevlogPair(a, "one.wpilog", ZoneOffset.UTC, "systemTime");
+    var second = FixtureLogs.writeRevlogPair(b, "two.wpilog", ZoneOffset.UTC, "systemTime");
     // Valid extra header bytes change content identity but cannot distinguish the signal evidence.
     byte[] bytes = Files.readAllBytes(second);
-    int extraLength = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(8);
-    var different = java.nio.ByteBuffer.allocate(bytes.length + 1).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+    int extraLength = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(8);
+    var different = ByteBuffer.allocate(bytes.length + 1).order(ByteOrder.LITTLE_ENDIAN);
     different.put(bytes, 0, 8).putInt(extraLength + 1).put((byte) 'X').put(bytes, 12, bytes.length - 12);
     Files.write(second, different.array());
     run(List.of(first), false, "practice");
     run(List.of(second), false, "competition");
     Path rev;
-    try (var paths = Files.list(a)) { rev = paths.filter(p -> p.toString().endsWith(".revlog")).findFirst().orElseThrow(); }
+    try (var paths = Files.list(a)) {
+      rev = paths.filter(p -> p.toString().endsWith(".revlog")).findFirst().orElseThrow();
+    }
     var result = run(List.of(rev), false, null).files().get(0);
     assertEquals("unassigned", result.status());
     assertNull(catalog().files().stream().filter(f -> f.path().equals(result.path())).findFirst().orElseThrow().session());
+  }
+
+  @Test
+  void catalogIsReadOncePerImportAndPlacementKeepsItCurrent() throws Exception {
+    var reads = new AtomicInteger();
+    try (var importer = new LogStore(root, security, LogManager.getInstance(), (path, validator) -> {
+      reads.incrementAndGet();
+      return StoreCatalog.read(path, validator);
+    })) {
+      var sources = new ArrayList<Path>();
+      for (int i = 0; i < 12; i++) sources.add(log(temp.resolve("input" + i + ".wpilog"), null, START, i));
+      var first = importer.importPaths(new LogStore.Request(sources, false, "practice"), p -> {}).get();
+      assertEquals(1, reads.get(), "a batch must not re-walk the store for each placement");
+      assertEquals(12, first.files().size());
+      assertTrue(first.files().stream().allMatch(f -> f.status().equals("imported")));
+      assertEquals(12, catalog().files().get(0).session().files().size());
+      var another = log(temp.resolve("another.wpilog"), null, START.plusSeconds(5), 50);
+      var second = importer.importPaths(new LogStore.Request(List.of(sources.get(0), another), false, "practice"), p -> {}).get();
+      assertEquals(2, reads.get(), "the next import refreshes the catalog exactly once");
+      assertEquals(1, second.files().stream().filter(f -> f.status().equals("present")).count());
+      assertEquals(13, catalog().files().get(0).session().files().size());
+      assertEquals(START.plusSeconds(15).toString(), catalog().files().get(0).session().endedAt());
+    }
+  }
+
+  private Path rev(Path path, Instant clock) throws Exception {
+    try (var w = new WpilogWriter(path, path.getFileName().toString())) {
+      int output = w.start("CAN/3/Periodic Status 0", "raw", "", 0);
+      if (clock != null) {
+        int system = w.start("systemTime", "int64", "", 0);
+        w.append(system, 0, encodeInt64(clock.toEpochMilli() * 1000));
+      }
+      for (int i = 0; i <= 500; i++) {
+        double t = i * 0.1;
+        w.append(output, Math.round(t * 1e6), FixtureLogs.sparkStatus0(
+            FixtureLogs.revlogPairOutput(t + 15.3), 12, 20, 30, false));
+      }
+    }
+    return path;
+  }
+
+  private List<Path> nominated(Path rev, String robot) throws Exception {
+    var paths = new ArrayList<Path>();
+    var result = registry.store(root).importPaths(new LogStore.Request(List.of(rev), false, robot), p -> {
+      if (p.phase().equals("correlating")) paths.add(p.path());
+    }).get();
+    // The clock finds candidates, but their two-sample signals cannot establish a REV pairing.
+    assertEquals("unassigned", result.files().get(0).status());
+    return paths;
+  }
+
+  @Test
+  void revClockNominatesNearbySessionsOfStatedRobotButNeverDecides() throws Exception {
+    var near = run(List.of(log(temp.resolve("near.wpilog"), null, START, 1)), false, "practice").files().get(0).path();
+    run(List.of(log(temp.resolve("far.wpilog"), null, START.plusSeconds(7 * 86400), 2)), false, "practice");
+    run(List.of(log(temp.resolve("other.wpilog"), null, START, 3)), false, "competition");
+    assertEquals(List.of(near), nominated(rev(temp.resolve("REV_20260110_150005.revlog"), null), "practice"));
+    // A conflicting filename cannot overrule the REV file's own recorded wall clock.
+    assertEquals(List.of(near), nominated(rev(temp.resolve("REV_20260117_150005.revlog"), START), "practice"));
+  }
+
+  @Test
+  void revWithoutClockConsidersAllSessionsOfOnlyTheStatedRobot() throws Exception {
+    var near = run(List.of(log(temp.resolve("near.wpilog"), null, START, 1)), false, "practice").files().get(0).path();
+    var far = run(List.of(log(temp.resolve("far.wpilog"), null, START.plusSeconds(7 * 86400), 2)), false, "practice").files().get(0).path();
+    run(List.of(log(temp.resolve("other.wpilog"), null, START, 3)), false, "competition");
+    assertEquals(List.of(near, far), nominated(rev(temp.resolve("clockless.revlog"), null), "practice"));
   }
 
   @Test
@@ -444,7 +565,7 @@ class LogStoreTest {
     var header = catalog().header();
     var original = header.moves().get(0);
     var expired = new StoreManifest.Move(original.originalPath(), original.movedTo(),
-        Instant.now().minus(java.time.Duration.ofDays(8)).toString());
+        Instant.now().minus(Duration.ofDays(8)).toString());
     io.write(root.resolve("store.json"), new StoreManifest.Header(header.formatVersion(),
         header.createdAt(), header.id(), List.of(expired)));
     assertTrue(catalog().moved().isEmpty());
@@ -454,14 +575,14 @@ class LogStoreTest {
   @Test
   void storedRevDiscoveryExcludesOtherRobotsAndUnmanagedFiles() throws Exception {
     var incoming = Files.createDirectory(temp.resolve("incoming"));
-    var wpi = FixtureLogs.writeRevlogPair(incoming, "pair.wpilog", java.time.ZoneOffset.UTC, "systemTime");
+    var wpi = FixtureLogs.writeRevlogPair(incoming, "pair.wpilog", ZoneOffset.UTC, "systemTime");
     run(List.of(incoming), true, "practice");
     var catalog = catalog();
     var log = catalog.files().stream().filter(f -> f.file().kind().equals("wpilog")).findFirst().orElseThrow();
     var rev = catalog.files().stream().filter(f -> f.file().kind().equals("revlog")).findFirst().orElseThrow();
     var stray = rev.path().getParent().resolve("stray.revlog");
     Files.copy(rev.path(), stray);
-    var manager = org.triplehelix.wpilogmcp.log.LogManager.getInstance();
+    var manager = LogManager.getInstance();
     var allowed = manager.getAllowedDirectories();
     manager.addAllowedDirectory(root);
     try {
