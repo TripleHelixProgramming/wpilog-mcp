@@ -110,6 +110,7 @@ final class DataEndpoint {
       var request = parse(exchange.getRequestURI().getRawQuery());
       serve(exchange, request);
     } catch (Refusal r) {
+      if (r.status == 503) exchange.getResponseHeaders().set("Retry-After", "2");
       sendJson(exchange, r.status, r.body);
     } catch (RuntimeException e) {
       logger.error("Data endpoint failed: {}", e.getMessage(), e);
@@ -187,9 +188,10 @@ final class DataEndpoint {
 
   // ---- the response ----
 
-  /** A series with what the response says about it. */
+  /** A series with what the response says about it; {@code rev} for a REV log signal. */
   private record Prepared(EntryData.Series series, List<TimestampedValue> values,
-      ArrowType valueType, Buckets.Result buckets, String sampling, String unit) {}
+      ArrowType valueType, Buckets.Result buckets, String sampling, String unit,
+      EntryData.RevSync rev) {}
 
   private void serve(HttpExchange exchange, Request request) throws IOException, Refusal {
     LogData log;
@@ -208,11 +210,24 @@ final class DataEndpoint {
     long rows = 0;
     for (var name : request.names()) {
       EntryData.Series series;
-      try {
-        series = EntryData.resolve(log, name);
-      } catch (IllegalArgumentException e) {
-        throw new Refusal(404, e.getMessage(), "list_entries lists the log's entries; get_entry_info "
-            + "lists an entry's numeric field paths");
+      EntryData.RevSync rev = null;
+      if (name.startsWith(EntryData.REV_PREFIX)) {
+        // A REV log signal, on the wpilog's clock, as get_revlog_data reads it
+        try {
+          var resolved = EntryData.resolveRev(logManager, log, name);
+          series = resolved.series();
+          rev = resolved.sync();
+        } catch (EntryData.RevUnavailable e) {
+          var refusal = new Refusal(e.status, e.getMessage(), e.hint);
+          throw refusal;
+        }
+      } else {
+        try {
+          series = EntryData.resolve(log, name);
+        } catch (IllegalArgumentException e) {
+          throw new Refusal(404, e.getMessage(), "list_entries lists the log's entries; get_entry_info "
+              + "lists an entry's numeric field paths");
+        }
       }
       var values = series.inWindow(request.startTime(), request.endTime());
       Buckets.Result buckets = null;
@@ -236,7 +251,8 @@ final class DataEndpoint {
       rows += count;
       estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
       prepared.add(new Prepared(series, values, valueType, buckets,
-          EntryData.sampling(series.values()), EntryData.unitFromName(name)));
+          EntryData.sampling(series.values()),
+          rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev));
     }
     if (estimatedBytes > maxBytes) {
       var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
@@ -410,6 +426,18 @@ final class DataEndpoint {
       if (p.buckets() != null) {
         e.addProperty("bucket_sec", p.buckets().bucketSec());
         e.addProperty("bucket_count", p.buckets().buckets().size());
+      }
+      if (p.rev() != null) {
+        // How the REV timestamps were put on the wpilog's clock: the offset's basis
+        var rev = new JsonObject();
+        rev.addProperty("device", p.rev().device());
+        rev.addProperty("signal", p.rev().signal());
+        rev.addProperty("can_bus", p.rev().canBus());
+        rev.addProperty("sync_method", p.rev().method());
+        rev.addProperty("timestamps_aligned", p.rev().aligned());
+        if (p.rev().offsetSeconds() != null) rev.addProperty("offset_seconds", p.rev().offsetSeconds());
+        rev.addProperty("sync_confidence", p.rev().confidence());
+        e.add("rev", rev);
       }
       entries.add(e);
     }

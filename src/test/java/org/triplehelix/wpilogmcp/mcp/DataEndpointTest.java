@@ -52,6 +52,7 @@ class DataEndpointTest {
   private static HttpTransport transport;
   private static HttpClient client;
   private static Path match;
+  private static Path revlogPair;
   private static int port;
 
   @BeforeAll
@@ -59,8 +60,10 @@ class DataEndpointTest {
     var dir = FixtureLogs.defaultDirectory();
     for (var f : FixtureLogs.generateAll(dir)) {
       if (f.id().equals("akit_match")) match = f.path();
+      if (f.id().equals("revlog_pair")) revlogPair = f.path();
     }
     assertNotNull(match);
+    assertNotNull(revlogPair);
     LogManager.getInstance().addAllowedDirectory(dir);
     registry = new ToolRegistry();
     WpilogTools.registerAll(registry);
@@ -430,5 +433,69 @@ class DataEndpointTest {
     } finally {
       org.triplehelix.wpilogmcp.tools.DiscoveryTools.setDataEndpoint(null);
     }
+  }
+
+  // ---- REV log signals ----
+
+  private static Map<String, String> revParams(String... keyValues) {
+    var map = params(keyValues);
+    map.put("path", revlogPair.toString());
+    return map;
+  }
+
+  @Test
+  @DisplayName("a REV signal streams on the wpilog's clock, with how it got there in the metadata")
+  void revSignal() throws Exception {
+    // The synchronization runs in the background when the log is loaded: wait for it, as a client does
+    var waitArgs = new JsonObject();
+    waitArgs.addProperty("path", revlogPair.toString());
+    waitArgs.addProperty("timeout_ms", 30_000);
+    var waited = registry.getTool("wait_for_sync").execute(waitArgs).getAsJsonObject();
+    assertTrue(waited.get("completed").getAsBoolean(), waited.toString());
+
+    var key = "REV/SparkMax_3/AppliedOutput";
+    var response = get(revParams("names", key, "start_time", "30", "end_time", "31"));
+    assertEquals(200, response.statusCode(), new String(response.body(), StandardCharsets.UTF_8));
+    var stream = ArrowSpecReader.read(response.body());
+    assertEquals("float64", stream.fields().get(1).type());
+    int n = 0;
+    for (var batch : stream.batches()) {
+      assertEquals(key, batch.metadata().get("entry"));
+      for (int i = 0; i < batch.rows(); i++) {
+        double t = (Long) batch.columns().get(0).get(i) / 1e6;
+        double v = (Double) batch.columns().get(1).get(i);
+        assertTrue(t >= 30.0 && t <= 31.0, "FPGA time " + t);
+        // The wpilog logged the same output at that FPGA time (see RevLogSyncFixtureTest)
+        assertEquals(FixtureLogs.revlogPairOutput(t), v, 0.05, "at " + t);
+        n++;
+      }
+    }
+    assertTrue(n >= 90, "100 Hz for one second: " + n);
+    var entries = JsonParser.parseString(stream.metadata().get("entries")).getAsJsonArray();
+    var entry = entries.get(0).getAsJsonObject();
+    assertEquals("revlog", entry.get("type").getAsString());
+    assertEquals("duty_cycle", entry.get("unit").getAsString());
+    var rev = entry.getAsJsonObject("rev");
+    assertEquals("CROSS_CORRELATION", rev.get("sync_method").getAsString());
+    assertEquals(FixtureLogs.REVLOG_PAIR_OFFSET_SEC, rev.get("offset_seconds").getAsDouble(), 0.02);
+    assertTrue(rev.get("timestamps_aligned").getAsBoolean());
+    assertEquals("SparkMax_3", rev.get("device").getAsString());
+    assertEquals("AppliedOutput", rev.get("signal").getAsString());
+    assertTrue(rev.has("sync_confidence"));
+    save("rev_applied_output", response, get(revParams("names", key, "start_time", "30", "end_time", "31", "format", "csv")));
+    // Bucketed, and beside a wpilog entry of the same type in one request
+    var bucketed = get(revParams("names", key, "max_points", "20"));
+    assertEquals(200, bucketed.statusCode());
+    assertEquals("true", ArrowSpecReader.read(bucketed.body()).metadata().get("bucketed"));
+    var both = get(revParams("names", "/Drive/FrontLeft/AppliedOutput," + key, "start_time", "30", "end_time", "30.2"));
+    assertEquals(200, both.statusCode(), new String(both.body(), StandardCharsets.UTF_8));
+    assertEquals(2, JsonParser.parseString(ArrowSpecReader.read(both.body()).metadata().get("entries")).getAsJsonArray().size());
+    // A key nobody has, and a REV key on a log with no REV log
+    var missing = get(revParams("names", "REV/SparkMax_9/Nothing"));
+    assertEquals(404, missing.statusCode());
+    assertTrue(json(missing).get("error").getAsString().contains("REV/SparkMax_9/Nothing"));
+    var none = get(params("names", key));
+    assertEquals(404, none.statusCode(), new String(none.body(), StandardCharsets.UTF_8));
+    assertTrue(json(none).get("error").getAsString().contains("No REV log"));
   }
 }

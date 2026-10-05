@@ -499,7 +499,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       scriptUri: asset("explorer.js"),
       plot: {
         styleUri: asset("vendor", "uPlot.min.css"),
-        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("plot.js"), asset("console.js"), asset("field.js")],
+        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("plot.js"), asset("console.js"), asset("field.js"), asset("rev.js")],
       },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
@@ -528,6 +528,9 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
           break;
         case "field":
           void this.sendField(editor);
+          break;
+        case "rev":
+          void this.sendRev(editor);
           break;
         default:
           break;
@@ -722,6 +725,29 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       season: typeof season === "number" ? season : (game?.season as number | undefined),
       game: game ? { game_name: game.game_name, source: game.source, manual_version: game.manual_version, field_geometry: game.field_geometry, status: game.status, error: game.error } : null,
     });
+  }
+
+  /**
+   * The REV pane's listing: the synchronization runs in the background when a log is loaded, so
+   * wait for it as a client does (wait_for_sync, bounded), then list the signals with how each
+   * bus was aligned; a log with no REV log gets the server's reason.
+   */
+  private async sendRev(editor: Editor): Promise<void> {
+    const spec = editor.log.spec;
+    if (!spec) return;
+    let result: Record<string, unknown>;
+    try {
+      const client = await this.explorer.clientFor(spec);
+      try {
+        await client.callTool("wait_for_sync", { path: editor.log.path, timeout_ms: 30_000 });
+      } catch (error) {
+        this.explorer.log(`Explorer: wait_for_sync on ${editor.log.path}: ${messageOf(error)}`);
+      }
+      result = await client.callTool("list_revlog_signals", { path: editor.log.path });
+    } catch (error) {
+      result = error instanceof ToolError && error.result ? error.result : { status: "error", error: messageOf(error) };
+    }
+    void editor.panel.webview.postMessage({ type: "rev", result });
   }
 
   /** Plots an entry in the active editor: the Entries view's click. */

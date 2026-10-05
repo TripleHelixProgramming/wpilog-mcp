@@ -11,6 +11,7 @@ import java.util.TreeSet;
 import org.triplehelix.wpilogmcp.data.ArrowType;
 import org.triplehelix.wpilogmcp.data.ArrowType.Field;
 import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
@@ -68,6 +69,85 @@ public final class EntryData {
         signal.values(), true);
   }
 
+  /** The prefix of a REV log signal's key, as {@code list_revlog_signals} gives it. */
+  public static final String REV_PREFIX = "REV/";
+
+  /**
+   * How a REV signal's timestamps were put on the wpilog's clock, as {@code list_revlog_signals}
+   * reports it, for the stream's metadata: a reader must know an offset's basis before trusting
+   * a REV sample's time beside a wpilog sample's.
+   */
+  public record RevSync(String device, String signal, String unit, String canBus, String method,
+      Double offsetSeconds, String confidence, boolean aligned) {}
+
+  /** A REV signal resolved: its samples on the wpilog's clock, and how they got there. */
+  public record RevSeries(Series series, RevSync sync) {}
+
+  /** Why a REV key could not be served, with the status a request gets. */
+  public static final class RevUnavailable extends Exception {
+    public final int status;
+    public final String hint;
+
+    RevUnavailable(int status, String message, String hint) {
+      super(message);
+      this.status = status;
+      this.hint = hint;
+    }
+  }
+
+  /**
+   * Resolves a REV signal key ({@code REV/<device>/<signal>}, or with the bus) to its samples on
+   * the wpilog's clock, exactly as {@code get_revlog_data} reads them: through the synchronized
+   * logs the manager keeps for the wpilog. A key whose REV log could not be synchronized is
+   * refused, since its timestamps would be on the REV log's own clock; so is one asked for while
+   * the synchronization is still running, with the hint to wait.
+   */
+  public static RevSeries resolveRev(LogManager manager, LogData log, String key)
+      throws RevUnavailable {
+    manager.refreshRevLogsIfChanged(log.path());
+    var syncLogs = manager.getSynchronizedLogs(log.path());
+    if (syncLogs == null || syncLogs.revlogCount() == 0) {
+      if (manager.isRevLogSyncInProgress(log.path())) {
+        throw new RevUnavailable(503, "REV log synchronization for this log is still in "
+            + "progress, so " + key + " is not available yet", "Call wait_for_sync, then ask again");
+      }
+      throw new RevUnavailable(404, "No REV log (.revlog) is synchronized with this log, so "
+          + key + " is not available", "list_revlog_signals says which REV logs the server found");
+    }
+    var synced = syncLogs.revlogFor(key);
+    var values = synced == null ? null : syncLogs.getValues(key);
+    if (values == null) {
+      throw new RevUnavailable(404, "Signal not found: " + key,
+          "list_revlog_signals lists the keys");
+    }
+    var result = synced.syncResult();
+    var failed = result.method() == org.triplehelix.wpilogmcp.sync.SyncMethod.FAILED;
+    var signal = synced.revlog().getSignal(stripBus(key, synced.canBusName()));
+    var sync = new RevSync(
+        signal != null ? signal.deviceKey() : null,
+        signal != null ? signal.name() : null,
+        signal != null ? signal.unit() : null,
+        synced.canBusName(),
+        result.method().name(),
+        failed ? null : result.offsetSeconds(),
+        result.confidenceLevel().getLabel(),
+        !failed);
+    if (failed) {
+      throw new RevUnavailable(409, "The REV log holding " + key + " (bus '" + synced.canBusName()
+          + "') could not be synchronized to the wpilog's clock, so its timestamps are on its "
+          + "own clock", "set_revlog_offset gives the bus an offset; sync_status says why it failed");
+    }
+    return new RevSeries(
+        new Series(key, key, null, "revlog", values, true), sync);
+  }
+
+  /** The key inside the REV log: without the {@code REV/} prefix and, when present, the bus. */
+  private static String stripBus(String key, String bus) {
+    var inner = key.startsWith(REV_PREFIX) ? key.substring(REV_PREFIX.length()) : key;
+    if (bus != null && inner.startsWith(bus + "/")) inner = inner.substring(bus.length() + 1);
+    return inner;
+  }
+
   /** The sampling class of the values, as {@code data_quality.sampling} reports it. */
   public static String sampling(List<TimestampedValue> values) {
     return DataQuality.fromValues(values).sampling().name().toLowerCase(java.util.Locale.ROOT);
@@ -122,7 +202,7 @@ public final class EntryData {
     if (series.field() != null) return new ArrowType.Float64();
     var type = series.type();
     switch (type) {
-      case "double", "float" -> {
+      case "double", "float", "revlog" -> {
         return new ArrowType.Float64();
       }
       case "int64" -> {

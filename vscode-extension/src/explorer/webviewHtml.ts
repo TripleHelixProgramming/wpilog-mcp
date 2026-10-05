@@ -58,6 +58,10 @@ ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : "
     <summary>Field</summary>
     <div id="field"></div>
   </details>
+  <details id="rev-section" class="hidden">
+    <summary>REV logs</summary>
+    <div id="rev"></div>
+  </details>
   <details id="console-section" class="hidden" open>
     <summary>Console</summary>
     <div id="console"></div>

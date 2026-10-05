@@ -149,3 +149,12 @@ details > summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
 .field-bar { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
 .field-canvas { display: block; width: 100%; height: 300px; border-radius: 3px; }
 .small { font-size: 0.9em; }
+
+/* ---- REV logs ---- */
+.rev-bar { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.rev-bus { margin: 6px 0; }
+.rev-bus-head { font-weight: 600; margin: 4px 0; }
+.rev-device { margin: 2px 0 6px 12px; }
+.rev-device-head { font-family: var(--vscode-editor-font-family); margin: 2px 0; }
+.rev-signal { display: flex; align-items: center; gap: 8px; padding: 1px 0 1px 12px; }
+.rev-count { margin-left: auto; }

@@ -111,6 +111,12 @@
       this.root.append(bar, this.timelineCanvas, body);
     }
 
+    /** Sample counts of series the listing does not hold (REV signals), for the fetch plan. */
+    setEntryCounts(counts) {
+      if (!this.log) return;
+      for (const [name, count] of counts) this.log.entries.set(name, count);
+    }
+
     /** Registers a listener for the window: called with {start, end} after each change. */
     onViewChanged(listener) {
       this.viewListeners.push(listener);
@@ -261,6 +267,13 @@
         else if (series.error) { state.textContent = series.error; state.classList.add("error-text"); }
         else if (series.bucketed) state.textContent = "bucketed";
         else if (series.sampling === "change_only") state.textContent = "steps";
+        if (series.rev) {
+          const rev = series.rev;
+          state.textContent = (state.textContent ? state.textContent + ", " : "") + "REV " + (rev.sync_method || "").toLowerCase().replace(/_/g, " ")
+            + (Number.isFinite(rev.offset_seconds) ? " " + (rev.offset_seconds >= 0 ? "+" : "") + rev.offset_seconds.toFixed(3) + " s" : "")
+            + (rev.sync_confidence ? ", " + rev.sync_confidence : "");
+          state.title = "The REV log's timestamps were put on the robot's clock by " + (rev.sync_method || "?") + " (bus " + (rev.can_bus || "?") + ")";
+        }
         const remove = el("button", "chip-remove", "×");
         remove.type = "button";
         remove.title = "Remove this series";
@@ -325,6 +338,7 @@
         series.bucketed = opened.bucketed;
         series.sampling = info.sampling;
         series.unit = info.unit;
+        series.rev = info.rev || null;
         if (series.sampleCount === Infinity && Number.isFinite(info.sample_count)) series.sampleCount = info.sample_count;
       } catch (e) {
         series.error = String(e.message || e);

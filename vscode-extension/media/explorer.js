@@ -10,6 +10,7 @@
   const plot = typeof Plot === "function" ? new Plot(host, document.getElementById("plot")) : null;
   const consolePane = plot && typeof ConsolePane === "function" ? new ConsolePane(host, plot, document.getElementById("console")) : null;
   const fieldView = plot && typeof FieldView === "function" ? new FieldView(host, plot, document.getElementById("field")) : null;
+  const revPane = plot && typeof RevPane === "function" ? new RevPane(host, plot, document.getElementById("rev")) : null;
   /** How many of an array's elements "plot all" plots: a pane can hold that many. */
   const ELEMENTS_PLOTTED = 16;
 
@@ -225,6 +226,10 @@
         show(document.getElementById("console-section"), true);
         consolePane.reset();
       }
+      if (revPane) {
+        show(document.getElementById("rev-section"), true);
+        revPane.reset();
+      }
     }
     if (selected && !entries.some((e) => e.name === selected)) {
       selected = null;
@@ -277,6 +282,9 @@
         break;
       case "field":
         if (fieldView) fieldView.onField(message);
+        break;
+      case "rev":
+        if (revPane) revPane.onResult(message);
         break;
       default:
         break;
