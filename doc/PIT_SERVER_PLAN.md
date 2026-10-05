@@ -21,6 +21,8 @@ Because the pit server is the same program as wpilog-mcp, every tool the assista
 - **Questions can be asked while the robot is running.** A student tuning a mechanism asks the assistant what the last ten seconds looked like, without stopping to pull a file.
 - **The robot sees one listener.** Every laptop in the shop that wants live data today connects to the robot itself, and the robot sends each one its own copy of everything. The pit server subscribes once and serves everyone else, so the robot's network link carries one stream however many people are watching.
 - **The data gets its context.** A vision camera's detections mean little without knowing how the camera was configured. The pit server can ask the camera's coprocessor directly and record its calibration and pipeline settings beside the data.
+- **The robot's computer is watched too.** The roboRIO is a Linux computer, and the robot program is a Java virtual machine. The pit server can ask the first how busy its processor is and how full its disk, and the second when it paused to collect garbage, and record both beside the data, so a loop that ran long can be laid against the pause that made it.
+- **The shop gets a wall display.** The pit server exposes its latest values for Prometheus to scrape, so a Grafana dashboard on the shop wall shows the battery, the processor, the disk, and whether a recording is running, without anyone asking.
 - **It is the foundation of a long-term record.** Once every session is captured and cataloged, questions across a season become possible: how a mechanism's current draw drifted over the year, whether a fix held.
 
 ### What it is not
@@ -28,30 +30,35 @@ Because the pit server is the same program as wpilog-mcp, every tool the assista
 - **Not for the field.** At competition the only team device on the robot's network is the Driver Station laptop, and the field caps the robot's bandwidth. The pit server runs in the shop, on the practice-field network, and in the pit over a tether. It does not run during a match.
 - **Not a replacement for the robot's log.** The robot's own log records what the code saw at loop rate; NetworkTables carries the subset the code chose to publish. The recording stands in for a missing log and fills gaps; a pulled log remains the record of truth where one exists.
 - **Not a way to control the robot.** The pit server reads. Dashboards that write to the robot, to choose an autonomous routine or tune a value, keep talking to the robot directly.
+- **Not a monitoring system.** It exposes its numbers for Prometheus to read and runs neither Prometheus nor Grafana; a team that wants the wall display runs those beside it.
 
 ### How it works, in one picture
 
 ```
-  robot (NetworkTables server)
-        │  one subscription, every change
-        ▼
+  robot (NetworkTables server)         roboRIO Linux, and the robot program's JVM
+        │  one subscription,                  │  SSH: its logs and system stats
+        │  every change                       │  JMX: garbage collection, profiling
+        ▼                                     ▼
   pit server ─────────────────────────────────────────────────────┐
     │ records each session as a .wpilog file          (the record) │
+    │ copies the robot's own logs while it is disabled (the puller)│
     │ re-publishes what it hears as a NetworkTables   (the gateway)│
     │   server of its own                                          │
     │ answers MCP tool calls over HTTP                (the server) │
+    │ serves its latest values for scraping          (the metrics) │
     └──────────────────────────────────────────────────────────────┘
-        ▲                                   ▲
-        │ NetworkTables                     │ MCP over HTTP
-  AdvantageScope, Elastic,            VS Code extension, Claude Code,
-  any dashboard                       Cursor, any MCP client
+        ▲                        ▲                        ▲
+        │ NetworkTables          │ MCP over HTTP          │ GET /metrics
+  AdvantageScope, Elastic,  VS Code extension,       Prometheus, and
+  any dashboard             Claude Code, Cursor,     Grafana reading it
+                            any MCP client
 ```
 
 The gateway is what lets a dashboard or a visualizer point at the pit server instead of the robot, so the robot has one client. The MCP server is what the assistants talk to; it offers every tool wpilog-mcp has today, pointed at the recordings, plus a few for live data.
 
 ### Where it stands
 
-Much of this exists. wpilog-mcp already runs as a background HTTP server with a lock and a PID file; it already reads a file that changes on disk and shows a caller the latest contents, which is how a laptop reads a recording it did not write; it already reads event, match, and team from a log's own data; and it already aligns two recordings of the same session by their data, which is how REV logs are synchronized today. The new pieces are the NetworkTables client, the session writer, the log puller, the gateway, and a handful of live tools.
+Much of this exists. wpilog-mcp already runs as a background HTTP server with a lock and a PID file; it already reads a file that changes on disk and shows a caller the latest contents, which is how a laptop reads a recording it did not write; it already reads event, match, and team from a log's own data; and it already aligns two recordings of the same session by their data, which is how REV logs are synchronized today. The new pieces are the NetworkTables client, the session writer, the log puller, the gateway, a handful of live tools, the context providers, and the metrics endpoint.
 
 ## Part II: Specification
 
@@ -62,7 +69,7 @@ What follows is for the developers. It follows the project's rules in `CLAUDE.md
 - **Session**: one robot boot as the pit server saw it, from the first value received after connecting to the last before the connection dropped. The roboRIO's FPGA clock resets on boot, so a session is also one continuous timebase.
 - **Capture**: the `.wpilog` file the pit server writes for a session.
 - **Gateway**: the pit server's own NetworkTables server, re-publishing the robot's topics.
-- **Context provider**: a module that asks a device other than the robot (a vision coprocessor) for its configuration during a session.
+- **Context provider**: a module that asks something other than the robot's NetworkTables (a vision coprocessor, the roboRIO's operating system, the robot program's JVM) for what the stream does not carry, during a session.
 
 ### 2. Decisions already made
 
@@ -78,6 +85,9 @@ These are settled; the sections after them follow from them.
 8. **Context is written into the capture**, as JSON entries, not into sidecar files. One file holds the data and what gives it meaning, timestamped when it was taken.
 9. **The writer builds the index.** The process writing a capture is the process reading it, and it knows each record's byte offset as it writes it and holds each value already decoded. So an open session is served from an in-memory log the writer extends with every record, never by reading the file back; the file is the durable copy. Reading a growing file written by another process stays possible through an incremental rescan, as a secondary path.
 10. **The robot's logs are pulled only while it is disabled, throttled, and never deleted from the robot.** The pit server reads the robot's state from the stream it already receives; a transfer runs only while that state has been disabled for a few seconds, pauses the moment it is not, and is capped to a configured rate. Removing a log from the robot is a later, opt-in step with verification, never a side effect of pulling.
+11. **A sampled series says so.** A provider that polls at a period, rather than receiving changes, marks its entries' metadata as sampled with the period, and timestamps each sample as the pit server's time of asking, mapped to the robot's clock. The data quality scoring then classifies the series as periodic, and no tool reads a two-second sample as a change-only hold, or a provider's timestamp as the robot's.
+12. **The robot program is instrumented only by its owners.** Observing the JVM needs the robot program launched with JMX enabled, and that launch is the team's `build.gradle`, never something the pit server changes on the robot. A robot that does not answer is reported, not worked around.
+13. **Prometheus and Grafana are views, not the record.** The pit server serves a metrics endpoint for Prometheus to scrape and runs neither. What a scrape sees is the latest value at that moment; the capture remains the record of every change.
 
 ### 3. Architecture
 
@@ -89,8 +99,9 @@ Code map additions, following the existing package layout:
 | `nt4/client` | The client: connection, subscription, reconnection, the latest-value table |
 | `nt4/server` | The gateway: the WebSocket server, per-client subscriptions, announcement and value fan-out |
 | `capture` | Session detection, the session writer (DataLog) and the live log it extends as it writes, topic cost accounting, exclusion and thinning policy |
-| `capture/context` | Context providers: PhotonVision first |
-| `capture/pull` | The log puller: the robot-state gate, the remote listing and transfer over SFTP, resume, throttling, the pull manifest |
+| `capture/context` | Context providers: PhotonVision; the roboRIO's operating system over SSH; the robot program's JVM over JMX and Flight Recorder |
+| `capture/pull` | The log puller: the robot-state gate, the remote listing and transfer over SFTP, resume, throttling, the pull manifest; the one SSH connection per robot, which the system-stats provider shares |
+| `mcp` | The metrics endpoint (`GET /metrics`), rendered from the latest-value table and the server's counters, beside the existing HTTP transport |
 | `tools` | The live tools (existing package, a new module `LiveTools`) |
 
 The pit server is `wpilog-mcp start <name>` for a server whose configuration enables capture. One process holds the client, the writer, the gateway, and the HTTP transport. The capture thread, the gateway's fan-out, and the MCP request pool are separate; they share the latest-value table and the session registry, both concurrent structures, and nothing else.
@@ -167,7 +178,11 @@ An NT4 server on the pit server's own port 5810 (configurable), serving every to
 
 The gateway doubles as the test fixture for the client: the test suite runs a gateway fed from a fixture log and connects the client to it, so the whole path is exercised without a robot, on every platform CI runs.
 
-### 8. Context providers: PhotonVision first
+### 8. Context providers
+
+A context provider asks something other than the robot's NetworkTables for what the stream does not carry, and writes it into the capture as entries under `/Daemon/<provider>/...`, timestamped in the robot's clock. Three are planned, and they share two rules. A provider that cannot reach its device, or finds a device of a version it was not written against, logs why and stands down for the session: it never guesses at a shape, and never retries in a way the device would feel. And a provider that samples at a period says so in its entries' metadata (`"sampled":true`, `"period_sec":2`), so the data quality scoring classifies the series as periodic and a tool never reads a two-second sample as a change-only hold (decision 11).
+
+#### 8.1 PhotonVision
 
 PhotonVision publishes its results to the robot's NetworkTables under `/photonvision/<camera>/`, so detections, latency, and the raw result packet are already in the capture. What is not on the wire is the configuration that gives them meaning, which lives only on the coprocessor:
 
@@ -180,6 +195,37 @@ The provider connects to the coprocessor's web UI backend on port 5800, requests
 Coprocessor addresses come from configuration (`context.photonvision: [host, ...]`), or from the `/photonvision/<camera>/` topics' presence, which prompts a log line suggesting the configuration. Limelight follows the same shape later, from its HTTP API on port 5807.
 
 The vision tools then read the settings entry of the session they analyze and report calibration error and pipeline mode as stated context, under their own field (`camera_settings`), never as inference.
+
+#### 8.2 The roboRIO's operating system
+
+What the robot publishes is in the capture already: a robot running AdvantageKit publishes its CPU temperature, CAN utilization, and rail voltages under `/SystemStats/`, and a tool reads those as any topic. What nothing publishes is the state of the roboRIO as a Linux computer: how busy its processor is, how much memory is free, how full the storage the logs go to is, how much the network interface carries, how long it has been up, and whether the robot program is the same process it was a minute ago. Each explains something a log alone cannot: loop overruns that line up with processor saturation, a log that stopped because the disk filled, a program that restarted because the kernel killed it for memory.
+
+The provider reads them over the SSH connection the puller holds (one connection per robot, with the puller's SFTP channel and the provider's shell channel on it), with one shell command per sample that prints `/proc/loadavg`, `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, `/proc/net/dev`, the free space of the log file systems, and the robot program's `/proc/<pid>/stat` (the process found by its JAR name): a few kilobytes of text, parsed on the pit server. Unlike the puller, it runs whether the robot is enabled or not, since the enabled robot is the interesting one, and the cost of that is the one point to be careful about. The roboRIO 1's processor is small, and a sample is a shell command and a few reads, cheap but not free. So the period is configured (default 2 s); the provider measures the round trip of each sample and the processor time the robot spent between samples, reports both in the session's cost accounting beside the topics, and doubles its period, up to 30 s, while a sample's round trip exceeds a budget (default 100 ms). The numbers for a roboRIO 1 and a roboRIO 2 are measured before the provider is on by default.
+
+Entries, each with its unit in its name:
+
+| Entry under `/Daemon/roboRIO/` | From |
+|---|---|
+| `cpu_busy_fraction` | `/proc/stat`: the busy share of the interval since the previous sample (none for the first) |
+| `load_1min`, `load_5min`, `load_15min`, `runnable_tasks` | `/proc/loadavg` |
+| `mem_available_bytes`, `mem_free_bytes` | `/proc/meminfo` |
+| `disk/<mount>/free_bytes`, for `/home/lvuser`, `/u`, and `/U` where present | `df` |
+| `net/<interface>/rx_bytes_per_sec`, `tx_bytes_per_sec` | `/proc/net/dev`, as rates over the interval |
+| `uptime_sec` | `/proc/uptime` |
+| `program/cpu_fraction`, `program/rss_bytes`, `program/threads`, `program/pid` | the robot program's `/proc/<pid>/stat`; a change of `pid` is a program restart |
+
+Each sample is timestamped in the robot's clock as the pit server's time of sending the command, mapped through the NT4 time offset; a sample is not an event the robot timestamped, and the metadata says so: `{"source":"ssh","host":"<address>","sampled":true,"period_sec":<period>}`.
+
+#### 8.3 The robot program's JVM
+
+The robot program is a JVM, and the JVM's own state explains a class of mystery no robot log records: a loop overrun that is a garbage collection pause, a slow first cycle that is class loading, a heap climbing across a match. The JVM reports all of it through two mechanisms the JDK carries, which the pit server consumes without a dependency:
+
+- **JMX** (`java.lang:type=Memory`, `GarbageCollector`, `Threading`, `ClassLoading`, `OperatingSystem`), polled at a period (default 1 s): heap used and committed, collections and their total time per collector, thread count, loaded classes, the process's CPU time. Sampled, like the system stats, and marked so.
+- **Flight Recorder (JFR)**, streamed over the same JMX connection with `jdk.management.jfr`'s `RemoteRecordingStream` (JDK 16 and later): the JVM's own events, timestamped by the JVM, which make the record exact where polling only suggests. The default set is small and chosen for what a robot team can act on: `jdk.GarbageCollection` (each pause with its duration), `jdk.GCPhasePause`, `jdk.SafepointBegin`, `jdk.ThreadStart` and `jdk.ThreadEnd`, `jdk.ExecutionSample` at a low rate (every 20 ms) for a profile of where the program spends its time, `jdk.ObjectAllocationSample`, and `jdk.SocketRead` and `jdk.FileWrite` above a duration threshold. Each becomes entries under `/Daemon/JVM/<event>/...` with the event's fields; an execution sample becomes a string entry of the top frame and a JSON entry of the stack, from which a profiling tool later builds the usual summary (time by method, by thread). JFR is designed to cost a percent or two; the pit server measures it on a real roboRIO before the default set is settled, and the set is configured.
+
+Two things are not the pit server's to do. **It does not instrument the robot program** (decision 12). JMX remote is off in a JVM unless its launch asks for it, and the launch is the team's: the robot project's `build.gradle` adds the arguments to the deployed program (`jvmArgs` on the deploy artifact in GradleRIO), and the standalone guide gives them (`-Dcom.sun.management.jmxremote.port=<port>`, the RMI port set to the same so one port serves, `java.rmi.server.hostname` set to the robot's address on the team's network, authentication and SSL off, which is the trust model of decision 7 and belongs on the private network only). The provider is on only when a robot's configuration names the port, and a robot that does not answer there is reported in `list_sessions`, not worked around. **It does not map clocks by guessing.** JFR events and JMX samples are on the JVM's wall clock, and the capture is on the FPGA clock. The offset between the two is measured on the same connection: the `Runtime` MBean's start time plus its uptime is the robot's wall clock now, within a round trip, and the NT4 time sync gives the FPGA clock now, within another; their difference maps one to the other. It is remeasured each period, because the Driver Station sets the robot's wall clock when it connects and the offset jumps by years at that moment; a jump is recorded as a note entry, and events before it keep the mapping that held when they were stamped. Where a pulled log of the same session carries the `systemTime` entry DataLogManager writes, which records the wall clock against the FPGA clock from inside the robot program, the import matching prefers it, and the metadata of every JVM entry says which mapping it got (`"clock":"measured"` or `"clock":"systemTime"`).
+
+A JFR recording to a file on the robot (`-XX:StartFlightRecording` with a file under the log directory) is the counterpart of the robot's own log: it survives the pit server's absence, costs the network nothing during the run, and is pulled by the puller like any other log once `.jfr` is in its patterns. Reading it is `jdk.jfr.consumer.RecordingFile`, in the JDK, and importing it makes the same entries the stream would have, with the file's own timestamps and the `systemTime` mapping. That import is a later milestone, after the stream has shown which events matter.
 
 ### 9. Live tools
 
@@ -197,7 +243,7 @@ Every result carries `inputs.session` (the capture path). Descriptions say what 
 
 **Pulling.** The robot writes its own logs to its storage: DataLogManager to `/home/lvuser/logs`, or to `/u/logs` when a USB drive is present; AdvantageKit to the USB drive's `/U/logs`; REVLib's status logger wherever it is configured. The puller copies those directories to the pit server's log directory, under `pulled/<robot>/`, keeping the robot's file names, which encode the time, event, and match that the listing reads. It behaves as `rsync` would, without the tool:
 
-- **Transport**: SFTP over SSH to the roboRIO, as the `lvuser` account (no password by default; a key or a password may be configured). The host key is pinned on first contact per robot and a change is reported, since a reimaged roboRIO has a new one. The SSH client is a library dependency, the smallest maintained one that serves; the choice is an open question (§15).
+- **Transport**: SFTP over SSH to the roboRIO, as the `lvuser` account (no password by default; a key or a password may be configured). The host key is pinned on first contact per robot and a change is reported, since a reimaged roboRIO has a new one. The SSH client is a library dependency, the smallest maintained one that serves; the choice is an open question (§16).
 - **The gate**: a transfer step runs only while the robot has been disabled for at least a configured settle time (default 5 s), read from the control word the robot publishes (`/FMSInfo/FMSControlData`, the enabled bit), and while the pit server's NT4 connection is up, so the state is current. The moment the state is anything else, the step in progress finishes its current block and the transfer pauses; it resumes from where it stopped when the gate reopens. With no NT4 connection the puller does nothing: it will not guess that a robot it cannot hear is idle.
 - **What to copy**: the remote listing (name, size, modification time) against a manifest of what has been pulled (`pulled/<robot>/.pull-manifest.json`: remote name, size, modification time, bytes copied, verified). A file not in the manifest is new; one whose size grew is fetched from the bytes already copied, since the logs are append-only, but only once the robot has confirmed that those bytes are the ones the puller holds (below); one whose size shrank, whose modification time went backward, or whose content does not match is a different file under the same name, and the local copy is kept under a disambiguated name while the new file is fetched from the start. The file the robot is writing now is copied like any other and grows across passes; the reload path handles the local copy's growth. When DataLogManager renames an open log once the Driver Station supplies the time and match, the old name disappears and a new name appears with the same content; the puller recognizes it by the same content check over the whole partial copy and renames the local copy rather than copying again.
 - **Identity is content, never a name.** A name on the robot does not identify a file. REVLib names its log by the roboRIO's clock, which reads the same default date on every boot until the Driver Station sets it, so the same `REV_<date>_<time>.revlog` name recurs boot after boot, with the same modification time; and two boots of the same code declare the same entries in the same order, so the first tens of kilobytes of two different logs can be byte-identical. A resume that trusted the name would append one boot's log to another's and produce a file that loads with timestamps running backward in the middle. So before resuming or renaming, the puller asks the robot for the hash of exactly the bytes it already holds (`head -c <N> <file> | sha256sum` over the SSH session, which costs the robot a few seconds of reading and the network nothing) and compares it with the local copy; only a match resumes. Where command execution is unavailable, the fallback fetches the last 64 KB of the known range and compares that, where the microsecond timestamps of two boots have long since diverged.
@@ -208,31 +254,49 @@ Every result carries `inputs.session` (the capture path). Descriptions say what 
 
 **Matching.** A pulled log of the same boot is matched to a session by the machinery REV synchronization uses: names nominate (a Driver Station entry both carry, a battery voltage, a loop count), the data decides (cross-correlation), and the offset must be near zero since both are on the FPGA clock. A match is recorded in a manifest beside the capture (`<capture>.session.json`: the session's facts and its imports) that `list_sessions` reads and the listing shows as `session`. The pulled log is the authoritative record of its session; the capture stands in where no pulled log exists and fills the gap where the pulled log is truncated. No database: manifests are files, in keeping with the project's "nothing to operate" goal; a catalog over many seasons is a later decision, made when the files are many.
 
-### 11. Network exposure
+### 11. Metrics: Prometheus and Grafana
+
+Some of what the pit server knows is wanted on a wall, not in a conversation: is the robot on, what is the battery at, is the roboRIO's disk filling, is a capture running. Prometheus is the ordinary way to put numbers on a wall and Grafana the ordinary way to draw them, and both consume a format that costs nothing to serve. So the pit server exposes `GET /metrics` in the Prometheus text exposition format, rendered on each scrape from the latest-value table and the server's own counters, with no dependency and no state of its own.
+
+What it carries:
+
+- **Every numeric topic**, as one metric with the topic as a label, `nt_value{topic="/SmartDashboard/Battery Voltage"}`, so a topic keeps its exact name and a dashboard query is a label match. A boolean is 0 or 1; an array is one sample per element with an `index` label, up to a configured length (default 16, enough for the swerve module arrays and not for a vision frame); a struct is expanded by its schema into one sample per numeric field with a `field` label, through the field paths the tools use; strings are not carried, since Prometheus has no strings. Beside each, `nt_age_seconds{topic}`: how long since the topic last changed, in the robot's clock, so a dashboard shows staleness instead of a frozen number. A topic filter in configuration (`metrics.include` prefixes) narrows this where a robot publishes thousands of topics; the default is everything numeric, which Prometheus handles comfortably at a scrape per second for a few thousand series.
+- **The providers' entries** (§8), which are topics in the latest-value table like any other, so the roboRIO's processor, its disk, and the JVM's heap arrive with no further work.
+- **The pit server itself**: whether the NT4 connection is up and to which address, the session's topic count, records, and bytes written, the measured time offset and its round trip, the gateway's client count, the puller's bytes and files per robot and the files waiting at the gate, each provider's sample cost, and the pit server JVM's own memory and collections from the platform MBeans, under `wpilog_...` names in Prometheus's conventions (base units, the unit in the name: `wpilog_capture_bytes_total`, `wpilog_nt_time_offset_seconds`). `GET /health` stays the one-line answer; `/metrics` is the detailed one.
+
+What it does not do. **It is a view, not the record** (decision 13). A scrape sees the latest value at the moment of the scrape, and a value that changed twice between two scrapes is seen once; Prometheus at its default 15 s, or at 1 s, is a sampled view of a 50 Hz signal. The capture remains the record of every change, and the documentation says so where a team is tempted to analyze a dashboard. Samples carry no timestamp in the exposition, since the robot's clock is not the wall clock and Prometheus drops a stale one; staleness is `nt_age_seconds`. **It runs neither Prometheus nor Grafana**, in keeping with the "nothing to operate" goal: a team that wants the wall display runs the two beside the pit server, and the standalone guide gives a compose file with Prometheus scraping the pit server and Grafana provisioned with a starter dashboard (battery, CAN, loop time, processor, disk, heap, session state), which is the whole setup. **It has no authentication**, as decision 7 says: the endpoint is on the same port as the MCP transport, and behind the same proxy if a team adds one.
+
+A later step, when a dashboard wants the record and not its samples: an HTTP query endpoint over a capture's values, which Grafana's JSON data source plugins read, returning an entry's values over a range, reduced to a requested number of points by the minimum, maximum, and mean per bucket, through the code `read_entry` uses. That is a thin face over the reading code, worth adding when someone needs full-resolution history in Grafana rather than in the data browser (IDEAS 9.2) or a tool. Prometheus first.
+
+### 12. Network exposure
 
 The pit server binds to an address on the team's network (`WPILOG_HTTP_BIND`, as today) and serves the MCP endpoint, the gateway, and `GET /health` without authentication. The `Origin` check stays: it protects a browser on the network from being used against the server by a web page, and costs non-browser clients nothing.
 
 The standalone guide gains a short section for teams that want more: an nginx configuration that terminates TLS and asks for a password in front of the MCP endpoint, with the pit server itself bound to loopback behind it. The gateway's NT4 port is a separate matter; a dashboard cannot present a password to it, and the protocol has no place for one, so it is exposed on the private network or not at all.
 
-### 12. The VS Code extension
+### 13. The VS Code extension
 
 - A setting `wpilog-mcp.pitServerUrl` (order after the TBA key). With it set, the extension registers the pit server with VS Code's MCP registry as an HTTP server, beside the local one, and adds an HTTP entry for it to a robot project's `.mcp.json` for Claude Code, under the same rules as the local entry. The entry holds a URL and nothing secret, so a team may commit it: every teammate's Claude Code then finds the pit server from the project.
 - Both servers' instructions and `get_server_guide` say which server is which: the local one for files on this laptop, the pit server for the team's sessions and for anything live.
 
-### 13. Milestones
+### 14. Milestones
 
 Each leaves the project working and tested on its own.
 
 1. **NT4 protocol and client** (§4), with the gateway's core as its test fixture.
 2. **Session writer and live log** (§5, §6): captures appear in the log directory, and every existing tool works on an open session from memory and on a finished one from its file. Stress test on a real robot in the shop.
 3. **Log puller** (§10): the robot's logs arrive on their own; tested against a real roboRIO in the shop before it is on by default.
-4. **Live tools** (§9), and the extension's pit server setting (§12).
-5. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
-6. **PhotonVision provider** (§8) and the vision tools' `camera_settings`.
-7. **Session manifests and import matching** (§10).
-8. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
+4. **Live tools** (§9), and the extension's pit server setting (§13).
+5. **Metrics endpoint** (§11): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
+6. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
+7. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings`.
+8. **roboRIO system stats** (§8.2), on the puller's SSH connection; its cost measured on a roboRIO 1 and a roboRIO 2 before it is on by default.
+9. **JVM provider** (§8.3): JMX polling first, then the Flight Recorder stream, each gated on what the roboRIO's JRE turns out to carry (§16).
+10. **Session manifests and import matching** (§10).
+11. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
+12. **JFR file import** (§8.3) and the Grafana query endpoint (§11), each when a need shows.
 
-### 14. Testing
+### 15. Testing
 
 - **Protocol**: the client and the gateway against each other in-process, over a loopback WebSocket, on every fixture log replayed as a robot would publish it. Message encoding is checked against hand-encoded frames taken from the protocol document.
 - **Capture fidelity**: a replayed fixture captured through the client and the writer must pass the differential reader against the fixture it came from: same entries, same values, same timestamps.
@@ -242,13 +306,21 @@ Each leaves the project working and tested on its own.
 - **Gateway**: a client with `all` receives every change; one without receives the latest per period; a `publish` from a client changes nothing upstream; the time-sync answer is robot time within the measured offset's error.
 - **Puller**: the gate, the listing comparison, resume offsets, the content check, the rename rule, the throttle's pacing, and the manifest are pure logic tested against a fake remote in memory: a file that grew with matching content is fetched from its old size; a file that shrank is a new file; a larger file under a seen name whose content does not match is fetched from the start and never concatenated with the old copy, which is kept, both for a REV log named by an unset clock and for two logs of the same code that share a prefix; the DataLogManager rename is recognized by content; a transfer in progress pauses within one block of the state leaving disabled and resumes at the same offset; the manifest round-trips. The SFTP client itself is covered by an opt-in test against a real roboRIO, named by a property, like the real-log suites.
 - **Live tools**: the claim checks, the conformance sweep (with capture enabled on a replayed fixture), and determinism.
+- **System stats**: the parser against `/proc` text and `df` output captured from a real roboRIO and kept as text fixtures (not a robot log, so they may be committed); the busy fraction and the rates against values worked out by hand from two samples; the back-off from a planted slow round trip; a missing mount or a restarted program (a new pid) handled without a gap in the other entries.
+- **JVM provider**: against the test JVM itself, with a JMX connector server started in-process on loopback and a Flight Recorder stream from it, so collections the test provokes arrive as entries with the fields the provider promises; the clock mapping against a planted offset, and a planted jump of years in the wall clock recorded as a note with the earlier events unchanged; a JVM without `jdk.jfr` simulated, with the provider standing down to JMX polling and saying so.
+- **Metrics**: the exposition text checked line by line against the format (a `# TYPE` line per metric; label values escaped for quotes, backslashes, and newlines, which topic names can hold); every numeric topic of a replayed fixture present with its latest value, and no string topic; an array beyond the configured length excluded; the server counters against what the session registry says; and a scrape during capture under the stress test's concurrent calls.
 - **Windows**: the capture file is open for writing while the server reads it; the tests cover that on Windows, where a mapped file cannot be replaced but can be appended to and read.
 
-### 15. Open questions
+### 16. Open questions
 
 - The AdvantageKit topic layout versus its log layout (§5): verify on a real capture before adding resolver conventions.
 - Whether thinning should ever be on by default for known high-rate topics, or stay a configured choice. The proposal is configured only.
 - Whether a capture's `_cap` marker should instead be a directory convention. The marker keeps the listing's name parsing unchanged.
 - When a catalog beyond manifest files is warranted (§10).
 - The SSH library for the puller (§10): the maintained JSch fork is small; Apache MINA SSHD is large but has a test server. The choice weighs the standalone install's size against testability.
-- Whether the puller should also copy files the server does not read, such as CTRE's `.hoot` signal logs, so that the robot's storage holds nothing the pit server lacks. The proposal is a configured list of patterns, with `.wpilog` and `.revlog` by default.
+- Whether the puller should also copy files the server does not read, such as CTRE's `.hoot` signal logs, so that the robot's storage holds nothing the pit server lacks. The proposal is a configured list of patterns, with `.wpilog` and `.revlog` by default, and `.jfr` added when the JVM provider is configured.
+- Whether the roboRIO's JRE, which WPILib builds with `jlink` from a chosen set of modules, carries `jdk.management.agent` (needed for JMX remote) and `jdk.jfr` with `jdk.management.jfr` (needed for the Flight Recorder stream). The first thing to check on a real roboRIO; if either is absent, the provider does what the present modules allow, and the question of adding them goes to WPILib.
+- The JMX port. The field's allowed port ranges do not bind the pit server, which does not run there, but a team that leaves the flags in its deployed code carries them to competition; the guide proposes a port in the team-usable range (5800 to 5810), so nothing changes between the shop and the field, and says the listener is harmless there.
+- The system-stats period and budget on a roboRIO 1: measured, not chosen.
+- Whether `nt_value` with a topic label or a metric name derived from each topic serves Grafana better. The label keeps names exact and the cardinality is the same; derived names read better in a query editor. The proposal is the label, with a sanitized `name` label beside it if that turns out to matter.
+- Whether the Grafana query endpoint (§11) is worth building before the data browser (IDEAS 9.2) covers the same need inside VS Code.
