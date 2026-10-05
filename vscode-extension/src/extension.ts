@@ -38,6 +38,7 @@ import {
 } from "./projectServers";
 import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
 import { DaemonInputs, DaemonSpec, ServerManager } from "./serverManager";
+import { Explorer } from "./explorer";
 import {
   TBA_KEY_QUIET_MS,
   TBA_KEY_SETTING,
@@ -153,10 +154,15 @@ export function activate(context: vscode.ExtensionContext) {
   // background on the loopback address and serves VS Code's agents, Claude Code (through the
   // bridge in .mcp.json), and the extension itself. VS Code is told to look again whenever a
   // URL changes, and after a restart, whose sessions it must open again.
-  const serverManager = new ServerManager(context, outputChannel, resolveInputsFor, () =>
-    didChangeEmitter.fire()
-  );
+  const serverManager = new ServerManager(context, outputChannel, resolveInputsFor, () => {
+    didChangeEmitter.fire();
+    explorer.serversChanged();
+  });
   context.subscriptions.push(serverManager);
+
+  // ---- WPILog Explorer: the views and the editor, clients of the same servers ----
+  const explorer = new Explorer(context, outputChannel, serverManager, () => windowSpecs(context));
+  context.subscriptions.push(explorer);
   async function ensureWindowServers(prompt: boolean): Promise<{ spec: DaemonSpec; url: string }[]> {
     const up: { spec: DaemonSpec; url: string }[] = [];
     for (const spec of windowSpecs(context)) {
@@ -326,12 +332,14 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine("Settings changed, restarting the server...");
         restartServerForSettings();
         scheduleMcpJsonUpdate();
+        explorer.serversChanged();
       }
     }),
-    // The window's folders are among the server's log directories
+    // The window's folders are among the server's log directories, and decide its servers
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       restartServerForSettings();
       scheduleMcpJsonUpdate();
+      explorer.serversChanged();
     })
   );
 

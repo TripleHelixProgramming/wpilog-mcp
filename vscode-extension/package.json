@@ -46,6 +46,50 @@
         "label": "WPILog Analyzer"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wpilog-explorer",
+          "title": "WPILog Explorer",
+          "icon": "images/explorer.svg"
+        }
+      ]
+    },
+    "views": {
+      "wpilog-explorer": [
+        {
+          "id": "wpilog-mcp.logs",
+          "name": "Logs",
+          "icon": "images/explorer.svg",
+          "contextualTitle": "WPILog Explorer"
+        },
+        {
+          "id": "wpilog-mcp.entries",
+          "name": "Entries",
+          "icon": "images/explorer.svg",
+          "contextualTitle": "WPILog Explorer"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "wpilog-mcp.entries",
+        "contents": "Open a log in WPILog Explorer to list its entries: click one in the Logs view, or double-click a `.wpilog` file.",
+        "when": "!wpilog-mcp.hasActiveLog"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "wpilog-mcp.explorer",
+        "displayName": "WPILog Explorer",
+        "selector": [
+          {
+            "filenamePattern": "*.wpilog"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "wpilog-mcp.setTbaApiKey",
@@ -71,8 +115,142 @@
         "command": "wpilog-mcp.restartServer",
         "title": "Restart Server",
         "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.refreshLogs",
+        "title": "Refresh Logs",
+        "category": "WPILog Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.filterLogs",
+        "title": "Filter Logs",
+        "category": "WPILog Explorer",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.clearLogFilter",
+        "title": "Clear Log Filter",
+        "category": "WPILog Explorer",
+        "icon": "$(filter-filled)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.filterEntries",
+        "title": "Filter Entries",
+        "category": "WPILog Explorer",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.clearEntryFilter",
+        "title": "Clear Entry Filter",
+        "category": "WPILog Explorer",
+        "icon": "$(filter-filled)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.openLog",
+        "title": "Open in WPILog Explorer",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.revealLog",
+        "title": "Reveal in File Explorer",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.copyLogPath",
+        "title": "Copy Path",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.showEntry",
+        "title": "Show Entry",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.refreshLog",
+        "title": "Reload Log",
+        "category": "WPILog Explorer",
+        "icon": "$(refresh)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "wpilog-mcp.explorer.filterLogs",
+          "when": "view == wpilog-mcp.logs && !wpilog-mcp.logFilter",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearLogFilter",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.logFilter",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.refreshLogs",
+          "when": "view == wpilog-mcp.logs",
+          "group": "navigation@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.filterEntries",
+          "when": "view == wpilog-mcp.entries && wpilog-mcp.hasActiveLog && !wpilog-mcp.entryFilter",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearEntryFilter",
+          "when": "view == wpilog-mcp.entries && wpilog-mcp.entryFilter",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "wpilog-mcp.explorer.revealLog",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogLog",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.copyLogPath",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogLog",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "wpilog-mcp.explorer.refreshLog",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "wpilog-mcp.explorer.openLog",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.revealLog",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.copyLogPath",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.showEntry",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearLogFilter",
+          "when": "wpilog-mcp.logFilter"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearEntryFilter",
+          "when": "wpilog-mcp.entryFilter"
+        },
+        {
+          "command": "wpilog-mcp.explorer.refreshLog",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer"
+        }
+      ]
+    },
     "configuration": [
       {
         "title": "WPILog Analyzer",

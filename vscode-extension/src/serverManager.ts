@@ -116,6 +116,11 @@ export class ServerManager implements vscode.Disposable {
     return port === undefined ? undefined : serverUrl(port);
   }
 
+  /** The log directories a daemon was last started or configured with; none before then. */
+  logDirsOf(spec: DaemonSpec): string[] {
+    return this.states.get(spec.name)?.lastInputs?.logDirs ?? [];
+  }
+
   /** Where a daemon writes its log. */
   logPath(spec: DaemonSpec): string {
     return serverLogPath(os.homedir(), spec.name);
