@@ -391,10 +391,20 @@ Remaining:
 
 ---
 
+## 9. The Pit Server
+
+### 9.1 Live Capture, Gateway, and the Long-Term Record
+Priority: High. Complexity: High.
+
+A daemon in the shop and the pit that subscribes once to the robot's NetworkTables, records every change of every topic as a `.wpilog` capture per robot boot, re-publishes the stream as a read-only NetworkTables gateway so the robot has one client, answers the existing tools and a few live ones over an authenticated HTTP MCP transport, and records vision coprocessor settings beside the data. [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) is the proposal and the specification, with milestones; the first milestone, an incremental rescan of a growing log, is useful on its own.
+
+---
+
 ## Implementation Priority Matrix
 
 | ID | Feature | Impact | Effort | Priority |
 |----|---------|--------|--------|----------|
+| 9.1 | The pit server (see PIT_SERVER_PLAN.md) | High | High | **P1** |
 | 4.1 | PathPlanner integration | High | Medium | **P2** |
 | 4.2 | AdvantageScope integration | Medium | Medium | **P2** |
 | 5.1 | Analysis presets | Medium | Low | **P2** |

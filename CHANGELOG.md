@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- `doc/PIT_SERVER_PLAN.md` proposes the pit server: a daemon that records the robot's NetworkTables stream as captures, serves it as a read-only gateway and over an authenticated HTTP MCP transport, and keeps the long-term record. The first part is for the team, the second a specification with milestones for the developers; `doc/IDEAS.md` lists it as 9.1.
+
 ## [0.9.1] - 2026-10-04
 
 This release puts the corrected extension README on the Marketplace listing, whose Overview still said the extension was not there: the 0.9.0 package was built before the README changed, and the Marketplace shows the README inside the package. It also reorganizes the README, edits every document, and makes a loaded log follow its file.
