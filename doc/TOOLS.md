@@ -240,6 +240,16 @@ Match type codes are `p`, `q` or `qm`, `qf`, `sf`, `f`, and `e`. A file whose na
 
 The file-name time is read as UTC (the roboRIO's default zone, and the zone DataLogManager always uses), or in the server's local zone for a `_sim` log. It orders the listing (newest first; the file's modification time when the name carries no time), and it is the time the `since` filter and TBA's `nearest_time` lookup use.
 
+For a store (a configured directory with `store.json`), `logs` comes from session manifests, including files beyond the ordinary directory scan depth. Each row also carries `robot` (`id`, `name`, `serial_number`, `comments` when known, `basis`: `logged`, `device`, or `stated`) and `session` (`id`, `path`, `started_at`, `ended_at`, `start_basis`). Two directories with the same serial describe one robot but remain separate histories. Store facts override filenames. Plain directories retain the fields and behavior above.
+
+Store listings additionally return:
+
+- `unmanaged`: files absent from every manifest, each with `path` and `reason`; they are never indexed into a session, even if placed inside its directory.
+- `unassigned`: imported files awaiting robot assignment or a unique REV pairing, each with `path`, `kind`, and `sha256`.
+- `moved_to`: notices with `original_path`, `moved_to`, and `moved_at`, retained in the listing for seven days after a move. Copy imports create no notice.
+
+An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. Import transport and user controls are not yet exposed.
+
 ### `list_loaded_logs`
 List the log files currently loaded in the server's cache, and the cache status. Logs load on demand, so an empty list is normal.
 

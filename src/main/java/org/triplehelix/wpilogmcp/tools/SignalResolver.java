@@ -39,9 +39,34 @@ import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
  *
  * @since 0.9.0
  */
-final class SignalResolver {
+public final class SignalResolver {
 
   private SignalResolver() {}
+
+  /** Metadata names are shared with the directory scanner; suggestive leaf names do not count. */
+  public enum MetadataRole {
+    SERIAL("string", "/systemstats/serialnumber"),
+    COMMENTS("string", "/systemstats/comments"),
+    EVENT("string", "/driverstation/eventname", "/fmsinfo/eventname"),
+    MATCH_TYPE("int64", "/driverstation/matchtype", "/fmsinfo/matchtype"),
+    MATCH_NUMBER("int64", "/driverstation/matchnumber", "/fmsinfo/matchnumber"),
+    TEAM("int64", "/systemstats/teamnumber");
+
+    private final String type;
+    private final List<String> names;
+
+    MetadataRole(String type, String... names) {
+      this.type = type;
+      this.names = List.of(names);
+    }
+
+    public static java.util.Optional<MetadataRole> of(String name, String type) {
+      var lower = name.toLowerCase(Locale.ROOT);
+      return java.util.Arrays.stream(values())
+          .filter(r -> r.type.equals(type) && r.names.stream().anyMatch(lower::endsWith))
+          .findFirst();
+    }
+  }
 
   /** Roles tools consume. */
   enum Role {

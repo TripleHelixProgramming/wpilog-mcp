@@ -50,7 +50,7 @@ public class SyncCacheSerializer {
    * 3: SPARK devices labeled and keyed by the model their status 0 frames report, and the DBC's
    * hash is part of the cache key (0.9.0).
    */
-  public static final int CURRENT_FORMAT_VERSION = 3;
+  public static final int CURRENT_FORMAT_VERSION = 4;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(

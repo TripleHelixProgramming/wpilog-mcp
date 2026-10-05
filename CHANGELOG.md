@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Store manifests and a queued Java import pipeline organize existing WPILOG and REV files by robot and session, preserving names and provenance, verifying copies, deduplicating by SHA-256, and pairing REV logs by correlation before moving them. Previously a folder had only its filenames to describe its organization; `list_available_logs` now reads a store's manifests, reports robot and session facts, leaves hand-copied files unmanaged, and reports moved paths for seven days. Serial numbers promote stated robot names without merging existing histories. The HTTP import job, command, inbox, and extension controls remain for later work.
+
 ## [0.9.1] - 2026-10-04
 
 This release puts the corrected extension README on the Marketplace listing, whose Overview still said the extension was not there: the 0.9.0 package was built before the README changed, and the Marketplace shows the README inside the package. It also reorganizes the README, edits every document, and makes a loaded log follow its file.

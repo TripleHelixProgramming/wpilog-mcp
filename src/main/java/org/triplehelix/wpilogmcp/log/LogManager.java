@@ -362,6 +362,7 @@ public class LogManager {
         // file — no data copying, no value decoding). Values are decoded on demand
         // when tools access specific entries via the Caffeine-backed cache.
         LogData log;
+        LogFileAccess.read(filePath, true);
         try {
           long perLogBudgetBytes = getPerLogCacheBudgetBytes();
           var reader = new edu.wpi.first.util.datalog.DataLogReader(filePath.toString());
@@ -1141,6 +1142,23 @@ public class LogManager {
    * which would match by time.
    */
   private List<RevLogFileInfo> findMatchingRevLogs(LogData wpilog) {
+    var storeRoot = org.triplehelix.wpilogmcp.store.StoreCatalog.containing(Path.of(wpilog.path()));
+    if (storeRoot.isPresent()) {
+      try {
+        var store = org.triplehelix.wpilogmcp.store.StoreCatalog.read(storeRoot.get(), securityValidator);
+        var real = Path.of(wpilog.path()).toRealPath();
+        var source = store.files().stream().filter(f -> f.path().equals(real)).findFirst();
+        if (source.isEmpty() || source.get().session() == null) return List.of();
+        return store.files().stream()
+            .filter(f -> f.manifestPath().equals(source.get().manifestPath()))
+            .filter(f -> f.file().kind().equals("revlog") && f.file().matching() != null
+                && f.file().matching().wpilogSha256().equals(source.get().file().sha256()))
+            .map(f -> LogDirectory.getInstance().extractRevLogInfo(f.path())).toList();
+      } catch (IOException e) {
+        logger.warn("Cannot read store REV associations: {}", e.getMessage());
+        return List.of();
+      }
+    }
     // A wall clock never seen being set may read the roboRIO's default date, which every boot
     // shares: REV logs named with it would match every such log
     var unconfirmed = WallClock.unconfirmedReason(wpilog);

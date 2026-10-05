@@ -76,7 +76,9 @@ public final class CoreTools {
           + "match it came from: an 'Elimination N' log is read as double-elimination bracket "
           + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
           + "this tool first to find logs and get match results, then pass the path to other "
-          + "tools.";
+          + "tools. Stores add robot (serial_number, comments, basis) and session metadata to logs; "
+          + "unmanaged lists files absent from manifests, unassigned lists imported files awaiting "
+          + "assignment, and moved_to gives original paths and their destinations for seven days.";
     }
 
     static final int DEFAULT_LIMIT = 50;
@@ -192,6 +194,23 @@ public final class CoreTools {
         if (log.teamNumber() != null) logObj.addProperty("team_number", log.teamNumber());
         logObj.addProperty("size_bytes", log.fileSize());
         logObj.addProperty("last_modified", log.lastModified());
+        if (log.stored() != null) {
+          var stored = log.stored();
+          var robot = new JsonObject();
+          robot.addProperty("id", stored.robot().id());
+          robot.addProperty("serial_number", stored.robot().serialNumber());
+          robot.addProperty("name", stored.robot().name());
+          if (stored.robot().comments() != null) robot.addProperty("comments", stored.robot().comments());
+          robot.addProperty("basis", stored.robot().basis());
+          logObj.add("robot", robot);
+          var session = new JsonObject();
+          session.addProperty("id", stored.session().id());
+          session.addProperty("path", stored.manifestPath().getParent().toString());
+          session.addProperty("started_at", stored.session().startedAt());
+          session.addProperty("ended_at", stored.session().endedAt());
+          session.addProperty("start_basis", stored.session().startBasis());
+          logObj.add("session", session);
+        }
 
         if (tbaAvailable && tbaFailure == null && tbaEnrichment.isEligibleForEnrichment(log)) {
           try {
@@ -233,6 +252,37 @@ public final class CoreTools {
         cacheStats.addProperty(entry.getKey(), entry.getValue());
       }
       result.add("metadata_cache", cacheStats);
+      if (!scan.stores().isEmpty()) {
+        var unmanaged = new JsonArray();
+        var unassigned = new JsonArray();
+        var moved = new JsonArray();
+        for (var store : scan.stores()) {
+          for (var path : store.unmanaged()) {
+            var item = new JsonObject();
+            item.addProperty("path", path.toString());
+            item.addProperty("reason", "Not listed by a manifest; import this file to assign it");
+            unmanaged.add(item);
+          }
+          for (var file : store.files()) {
+            if (file.session() != null) continue;
+            var item = new JsonObject();
+            item.addProperty("path", file.path().toString());
+            item.addProperty("kind", file.file().kind());
+            item.addProperty("sha256", file.file().sha256());
+            unassigned.add(item);
+          }
+          for (var move : store.moved()) {
+            var item = new JsonObject();
+            item.addProperty("original_path", move.originalPath());
+            item.addProperty("moved_to", move.movedTo());
+            item.addProperty("moved_at", move.movedAt());
+            moved.add(item);
+          }
+        }
+        result.add("unmanaged", unmanaged);
+        result.add("unassigned", unassigned);
+        result.add("moved_to", moved);
+      }
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);
       // A directory that could not be read leaves its logs out of the list: said, not silent

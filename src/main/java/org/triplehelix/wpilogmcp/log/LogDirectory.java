@@ -5,7 +5,6 @@
 package org.triplehelix.wpilogmcp.log;
 
 import edu.wpi.first.util.datalog.DataLogAccess;
-import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -15,7 +14,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,6 +28,9 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
+import org.triplehelix.wpilogmcp.store.StoreCatalog;
+import org.triplehelix.wpilogmcp.tools.SignalResolver.MetadataRole;
 
 /**
  * Manages the configured directories of WPILOG files for browsing and discovery.
@@ -257,7 +258,7 @@ public class LogDirectory {
    * @since 0.9.0
    */
   public record DirectoryScan(List<Path> directories, List<LogFileInfo> logs,
-      List<UnavailableDirectory> unavailable) {
+      List<UnavailableDirectory> unavailable, List<StoreCatalog.Snapshot> stores) {
 
     /** Whether no configured directory could be scanned. */
     public boolean noneReadable() {
@@ -292,17 +293,38 @@ public class LogDirectory {
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();
-    var logs = findFiles(dirs, WPILOG_FILE, unavailable).stream()
-        .map(this::getOrExtractLogInfo)
-        .sorted(NEWEST_LOG_FIRST)
-        .toList();
-    unavailable.forEach(u -> logger.warn("Log directory {} skipped: it {}", u.directory(),
-        u.reason()));
-
-    logger.info("Found {} log files in {} of {} directories. Cache hits: {}, misses: {}",
-        logs.size(), dirs.size() - unavailable.size(), dirs.size(), cacheHits.sum(),
-        cacheMisses.sum());
-    return new DirectoryScan(dirs, logs, List.copyOf(unavailable));
+    var stores = new ArrayList<StoreCatalog.Snapshot>();
+    var found = new ArrayList<LogFileInfo>();
+    var security = new SecurityValidator();
+    dirs.forEach(security::addAllowedDirectory);
+    for (var dir : dirs) {
+      if (StoreCatalog.isStore(dir)) {
+        try {
+          var store = StoreCatalog.read(dir, security);
+          stores.add(store);
+          for (var file : store.files()) {
+            if (!file.file().kind().equals("wpilog") || file.session() == null) continue;
+            var session = file.session();
+            found.add(new LogFileInfo(file.path().toString(), file.path().getFileName().toString(),
+                session.event(), session.matchType(), session.matchNumber(),
+                session.teamNumber() != null ? session.teamNumber() : defaultTeamNumber,
+                getLastModified(file.path()), file.file().sizeBytes(),
+                java.time.Instant.parse(session.startedAt()).toEpochMilli(), file));
+          }
+        } catch (IOException e) {
+          unavailable.add(new UnavailableDirectory(dir, e.getMessage()));
+        }
+      } else {
+        findFiles(List.of(dir), WPILOG_FILE, unavailable).stream()
+            .map(this::getOrExtractLogInfo).forEach(found::add);
+      }
+    }
+    var seen = new HashSet<Path>();
+    var logs = found.stream().filter(l -> seen.add(realPath(Path.of(l.path()))))
+        .sorted(NEWEST_LOG_FIRST).toList();
+    unavailable.forEach(u -> logger.warn("Log directory {} skipped: {}", u.directory(), u.reason()));
+    logger.info("Found {} log files in {} directories", logs.size(), dirs.size());
+    return new DirectoryScan(dirs, logs, List.copyOf(unavailable), List.copyOf(stores));
   }
 
   /**
@@ -354,14 +376,26 @@ public class LogDirectory {
         continue;
       }
       List<Path> files;
-      try (var paths = Files.walk(dir, scanDepth)) {
-        files = paths.filter(Files::isRegularFile).filter(wanted).toList();
+      try {
+        Path storeRoot = dir.toAbsolutePath().normalize();
+        while (storeRoot != null && !StoreCatalog.isStore(storeRoot)) storeRoot = storeRoot.getParent();
+        if (storeRoot != null) {
+          var security = new SecurityValidator();
+          logDirectories.forEach(security::addAllowedDirectory);
+          var store = StoreCatalog.read(storeRoot, security);
+          var realDir = realPath(dir);
+          files = store.files().stream().filter(f -> f.session() != null)
+              .filter(f -> wanted == REVLOG_FILE ? f.file().kind().equals("revlog") : f.file().kind().equals("wpilog"))
+              .map(StoreCatalog.StoredFile::path).filter(p -> p.startsWith(realDir)).toList();
+        } else {
+          try (var paths = Files.walk(dir, scanDepth)) {
+            files = paths.filter(Files::isRegularFile).filter(wanted)
+                .filter(p -> StoreCatalog.containing(p).isEmpty()).toList();
+          }
+        }
       } catch (IOException | UncheckedIOException e) {
-        // Files.walk stops at the first subdirectory it cannot read
         var cause = e instanceof UncheckedIOException u ? u.getCause() : e;
-        var reason = "could not be read (" + cause.getClass().getSimpleName() + ": "
-            + cause.getMessage() + ")";
-        unavailable.add(new UnavailableDirectory(dir, reason));
+        unavailable.add(new UnavailableDirectory(dir, "could not be read (" + cause.getMessage() + ")"));
         continue;
       }
       for (var file : files) {
@@ -405,44 +439,13 @@ public class LogDirectory {
   }
 
   /**
-   * The entries that carry a log's event, match, and team by convention: AdvantageKit's
-   * {@code /DriverStation/} and {@code /SystemStats/} tables, and NetworkTables' {@code FMSInfo}
-   * table as DataLogManager records it ({@code NT:/FMSInfo/...}). An entry is one of them by
-   * its table, its leaf name, and its type. A name that only contains "MatchType" or
-   * "TeamNumber" is some team's own entry, and is not read: the listing's event, match, and team
-   * choose the Blue Alliance data shown for the log.
-   */
-  private enum MatchFact {
-    EVENT("string", "/driverstation/eventname", "/fmsinfo/eventname"),
-    MATCH_TYPE("int64", "/driverstation/matchtype", "/fmsinfo/matchtype"),
-    MATCH_NUMBER("int64", "/driverstation/matchnumber", "/fmsinfo/matchnumber"),
-    TEAM("int64", "/systemstats/teamnumber");
-
-    private final String type;
-    private final List<String> names;
-
-    MatchFact(String type, String... names) {
-      this.type = type;
-      this.names = List.of(names);
-    }
-
-    static Optional<MatchFact> of(String entryName, String entryType) {
-      var lower = entryName.toLowerCase(Locale.ROOT);
-      return Arrays.stream(values())
-          .filter(f -> f.type.equals(entryType) && f.names.stream().anyMatch(lower::endsWith))
-          .findFirst();
-    }
-  }
-
-  /**
    * Extracts metadata from a log file by reading the first few records, then its file name for
    * what the records leave unset (see {@link LogFileName}). Robot code starts logging before the
    * Driver Station has connected, so the first records usually hold no event or match yet, and
    * the name the logging framework gave the file later is what carries them.
    *
-   * <p>Note: WPILib's DataLogReader does not implement AutoCloseable, so we cannot use
-   * try-with-resources. The reader uses memory-mapped buffers internally which are released
-   * when the reader is garbage collected. We rely on the JVM's GC to clean up these resources.
+   * <p>The reader releases its mapping before returning, so browsing a folder does not prevent
+   * a later import from moving those files on Windows.
    */
   private LogFileInfo extractLogInfo(Path path) {
     var filename = path.getFileName().toString();
@@ -456,10 +459,10 @@ public class LogDirectory {
     long currentType = 0;
     long currentNumber = 0;
 
-    try {
-      var reader = new DataLogReader(path.toString());
+    try (var scoped = new ScopedLogReader(path)) {
+      var reader = scoped.reader();
       if (reader.isValid()) {
-        var facts = new HashMap<Integer, MatchFact>();
+        var facts = new HashMap<Integer, MetadataRole>();
         int recordCount = 0;
         // Walk records by their own bounds, as the log scan does: WPILib's iterator skips a
         // short final record
@@ -474,7 +477,7 @@ public class LogDirectory {
 
           if (record.isStart()) {
             var startData = record.getStartData();
-            MatchFact.of(startData.name, startData.type)
+            MetadataRole.of(startData.name, startData.type)
                 .ifPresent(fact -> facts.put(startData.entry, fact));
           } else if (!record.isFinish() && !record.isSetMetadata()) {
             var fact = facts.get(record.getEntry());
@@ -493,6 +496,7 @@ public class LogDirectory {
                 var v = integerOf(record);
                 if (v != null) currentNumber = v;
               }
+              case SERIAL, COMMENTS -> { }
               case TEAM -> {
                 var v = integerOf(record);
                 if (v != null && v > 0 && v <= Integer.MAX_VALUE) teamNumber = v.intValue();
@@ -575,7 +579,13 @@ public class LogDirectory {
 
   public record LogFileInfo(String path, String filename, String eventName, String matchType,
                             Integer matchNumber, Integer teamNumber, long lastModified, long fileSize,
-                            Long logCreationTime) {
+                            Long logCreationTime, StoreCatalog.StoredFile stored) {
+
+    public LogFileInfo(String path, String filename, String eventName, String matchType,
+        Integer matchNumber, Integer teamNumber, long lastModified, long fileSize, Long logCreationTime) {
+      this(path, filename, eventName, matchType, matchNumber, teamNumber, lastModified, fileSize,
+          logCreationTime, null);
+    }
 
     /** Overloaded constructor for backwards compatibility with tests. */
     public LogFileInfo(String path, String filename, String eventName, String matchType,

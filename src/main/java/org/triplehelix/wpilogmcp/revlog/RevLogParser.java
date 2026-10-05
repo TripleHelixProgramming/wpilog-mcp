@@ -89,23 +89,26 @@ public class RevLogParser {
   public ParsedRevLog parse(String pathStr) throws IOException {
     Path path = Path.of(pathStr);
 
-    // Check for WPILOG magic header ("WPILOG") before creating a DataLogReader.
-    // DataLogReader memory-maps the file without a close() method, so on Windows
-    // the file handle persists until GC finalizes the MappedByteBuffer (JDK limitation:
-    // JDK-4724038). This prevents file deletion/moves until GC runs. Skip it for
-    // non-WPILOG files to minimize the impact.
+    try (var lease = org.triplehelix.wpilogmcp.log.LogFileAccess.read(path, false)) {
+      return parseFile(path);
+    }
+  }
+
+  private ParsedRevLog parseFile(Path path) throws IOException {
+    String pathStr = path.toString();
+    // Native files have no WPILOG header, so they never acquire a file mapping.
     if (!hasWpilogMagic(path)) {
       logger.debug("File lacks WPILOG magic header, trying REV native binary: {}", pathStr);
       return parseNativeFormat(path);
     }
 
-    DataLogReader reader = new DataLogReader(pathStr);
-
-    if (!reader.isValid()) {
-      // Has magic header but DataLogReader rejects it — try native format as fallback
-      logger.debug("File has WPILOG header but is not valid, trying REV native binary: {}", pathStr);
-      return parseNativeFormat(path);
+    try (var scoped = new org.triplehelix.wpilogmcp.log.ScopedLogReader(path)) {
+      return parseWpilog(path, scoped.reader());
     }
+  }
+
+  private ParsedRevLog parseWpilog(Path path, DataLogReader reader) {
+    String pathStr = path.toString();
 
     // Extract timestamp from filename
     String filenameTimestamp = extractFilenameTimestamp(path.getFileName().toString());

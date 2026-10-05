@@ -1,0 +1,161 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.store;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
+import org.triplehelix.wpilogmcp.store.StoreManifest.Header;
+import org.triplehelix.wpilogmcp.store.StoreManifest.LogFile;
+import org.triplehelix.wpilogmcp.store.StoreManifest.Move;
+import org.triplehelix.wpilogmcp.store.StoreManifest.Robot;
+import org.triplehelix.wpilogmcp.store.StoreManifest.Session;
+
+/** Read-only catalog. A directory name cannot adopt a stray into a robot's history. */
+public final class StoreCatalog {
+  private StoreCatalog() {}
+
+  public static final Duration MOVE_NOTICE_LIFETIME = Duration.ofDays(7);
+
+  public record StoredFile(Path path, Path manifestPath, Robot robot, Session session, LogFile file) {}
+  public record RobotDirectory(Path path, Robot robot) {}
+  public record Snapshot(Path root, Header header, List<RobotDirectory> robots,
+      List<StoredFile> files, List<Path> unmanaged, List<Move> moved) {}
+
+  public static boolean isStore(Path directory) {
+    return Files.exists(directory.resolve("store.json"));
+  }
+
+  /** Store membership follows the file's directory ancestry, not its extension or filename. */
+  public static java.util.Optional<Path> containing(Path file) {
+    var parent = file.toAbsolutePath().normalize().getParent();
+    while (parent != null) {
+      if (isStore(parent)) return java.util.Optional.of(parent);
+      parent = parent.getParent();
+    }
+    return java.util.Optional.empty();
+  }
+
+  public static Snapshot read(Path directory, SecurityValidator security) throws IOException {
+    try { return readValidated(directory, security); }
+    catch (RuntimeException e) { throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e); }
+  }
+
+  private static Snapshot readValidated(Path directory, SecurityValidator security) throws IOException {
+    var root = directory.toRealPath();
+    var io = new StoreFiles(root, security);
+    var headerPath = root.resolve("store.json");
+    var header = io.read(headerPath, Header.class);
+    if (header.formatVersion() != StoreManifest.FORMAT_VERSION) {
+      throw new IOException("Store format version " + header.formatVersion() + " at " + root
+          + (header.formatVersion() > StoreManifest.FORMAT_VERSION
+              ? " is newer than this server supports; upgrade the server."
+              : " requires an explicit migration; it will not be changed automatically."));
+    }
+    if (header.id() == null || header.createdAt() == null || header.moves() == null) {
+      throw new IOException("Incomplete store manifest: " + headerPath);
+    }
+    var managed = new HashSet<Path>();
+    managed.add(headerPath);
+    var robots = new ArrayList<RobotDirectory>();
+    var files = new ArrayList<StoredFile>();
+    var robotsRoot = io.check(root.resolve("robots"));
+    if (Files.isDirectory(robotsRoot)) {
+      for (var robotDir : children(robotsRoot)) {
+        io.check(robotDir);
+        var robotPath = robotDir.resolve("robot.json");
+        if (!Files.isDirectory(robotDir) || !Files.isRegularFile(robotPath)) continue;
+        var robot = io.read(robotPath, Robot.class);
+        if (robot.id() == null || !robot.id().equals(robotDir.getFileName().toString())
+            || !List.of("logged", "device", "stated").contains(robot.basis())) {
+          throw new IOException("Invalid robot manifest: " + robotPath);
+        }
+        managed.add(robotPath);
+        robots.add(new RobotDirectory(robotDir, robot));
+        var sessions = io.check(robotDir.resolve("sessions"));
+        if (!Files.isDirectory(sessions)) continue;
+        for (var day : children(sessions)) {
+          io.check(day);
+          if (!Files.isDirectory(day)) continue;
+          for (var sessionDir : children(day)) {
+            io.check(sessionDir);
+            var manifest = sessionDir.resolve("session.json");
+            if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) continue;
+            var session = io.read(manifest, Session.class);
+            validate(session, manifest);
+            managed.add(manifest);
+            for (var file : session.files()) {
+              var path = io.resolve(sessionDir, file.path());
+              validate(file, path);
+              if (!managed.add(path)) throw new IOException("File listed twice: " + path);
+              files.add(new StoredFile(path, manifest, robot, session, file));
+            }
+          }
+        }
+      }
+    }
+    var unassigned = io.check(root.resolve("unassigned"));
+    if (Files.isDirectory(unassigned)) {
+      for (var bucket : children(unassigned)) {
+        io.check(bucket);
+        var manifest = bucket.resolve("import.json");
+        if (!Files.isDirectory(bucket) || !Files.isRegularFile(manifest)) continue;
+        var file = io.read(manifest, LogFile.class);
+        var path = io.resolve(bucket, file.path());
+        validate(file, path);
+        managed.add(manifest);
+        if (!managed.add(path)) throw new IOException("File listed twice: " + path);
+        files.add(new StoredFile(path, manifest, null, null, file));
+      }
+    }
+    var unmanaged = new ArrayList<Path>();
+    try (var walk = Files.walk(root)) {
+      for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
+        io.check(path);
+        if (!managed.contains(path)) unmanaged.add(path);
+      }
+    }
+    var moved = new ArrayList<Move>();
+    for (var move : header.moves()) {
+      var target = io.resolve(root, move.movedTo());
+      if (Instant.parse(move.movedAt()).plus(MOVE_NOTICE_LIFETIME).isAfter(Instant.now())) {
+        moved.add(new Move(move.originalPath(), target.toString(), move.movedAt()));
+      }
+    }
+    return new Snapshot(root, header, List.copyOf(robots), List.copyOf(files),
+        List.copyOf(unmanaged), List.copyOf(moved));
+  }
+
+  private static List<Path> children(Path path) throws IOException {
+    try (var entries = Files.list(path)) { return entries.sorted().toList(); }
+  }
+
+  private static void validate(Session session, Path path) throws IOException {
+    try {
+      if (session.id() == null || session.files() == null || session.startBasis() == null
+          || Instant.parse(session.startedAt()).isAfter(Instant.parse(session.endedAt()))) {
+        throw new IllegalArgumentException("Missing or inverted session facts");
+      }
+    } catch (RuntimeException e) {
+      throw new IOException("Invalid session manifest: " + path, e);
+    }
+  }
+
+  private static void validate(LogFile file, Path path) throws IOException {
+    if (file.sha256() == null || !file.sha256().matches("[0-9a-f]{64}") || file.sizeBytes() < 0
+        || !List.of("wpilog", "revlog").contains(file.kind()) || file.provenance() == null
+        || !file.verified() || !Files.isRegularFile(path) || Files.size(path) != file.sizeBytes()
+        || !Double.isFinite(file.minTimestampSec()) || !Double.isFinite(file.maxTimestampSec())
+        || file.minTimestampSec() > file.maxTimestampSec()) {
+      throw new IOException("Invalid or missing manifested log: " + path);
+    }
+  }
+}
