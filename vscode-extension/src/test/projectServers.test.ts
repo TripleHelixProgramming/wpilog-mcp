@@ -1,26 +1,20 @@
-// Tests for the servers' decisions (no VS Code needed): npm test
+// Tests for the server's decisions (no VS Code needed): npm test
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as path from "path";
 import {
   Backoff,
-  DEFAULT_SERVER,
+  DAEMON_NAME,
   MAX_START_ATTEMPTS,
-  SERVER_NAME_PATTERN,
-  ServerDefinition,
   buildDaemonConfig,
   classifyHealth,
   daemonIsCurrent,
-  daemonNameFor,
-  definedServers,
   entryUsesConnect,
   healthUrl,
   keepPort,
   portInConfig,
   resolveServer,
-  serverFor,
   serverLogPath,
-  serverNameFor,
   serverUrl,
   startCommand,
   stopCommand,
@@ -28,86 +22,21 @@ import {
 } from "../projectServers";
 import { buildServerEntry, mergeServerEntry } from "../mcpJson";
 
-test("a server's daemon is named for it, apart from a standalone install's servers", () => {
-  assert.equal(daemonNameFor("default"), "vscode-default");
-  assert.equal(daemonNameFor("team"), "vscode-team");
-  assert.equal(DEFAULT_SERVER, "default");
+test("the one daemon is named apart from a standalone install's servers", () => {
+  assert.equal(DAEMON_NAME, "vscode-default");
+  assert.match(DAEMON_NAME, /^vscode-/, "never the standalone install's default");
 });
 
-test("a project asks for the server its setting names, or the default when the setting is blank or unusable", () => {
-  assert.equal(serverNameFor("team"), "team");
-  assert.equal(serverNameFor("  team  "), "team");
-  assert.equal(serverNameFor("Team"), "Team", "case is kept: another server");
-  assert.equal(serverNameFor(""), "default");
-  assert.equal(serverNameFor(undefined), "default");
-  assert.equal(serverNameFor(42), "default");
-  assert.equal(serverNameFor("../escape"), "default", "a name is a file name");
-  assert.equal(serverNameFor("with space"), "default");
-  assert.equal(serverNameFor("-leading"), "default");
-  assert.equal(serverNameFor("a".repeat(65)), "default");
-  assert.equal(serverNameFor("a".repeat(64)), "a".repeat(64));
-  assert.ok(SERVER_NAME_PATTERN.test("Rebuilt2026.v2_x-y"));
-});
-
-test("the servers defined are the default, from the User settings, and the setting's usable entries", () => {
-  const { servers, skipped } = definedServers(
-    { logDirectory: "~/riologs", additionalLogDirectories: ["/archive", "", 7], teamNumber: 2363 },
-    [
-      { name: "team", logDirectory: "/team/logs", teamNumber: 2363 },
-      { name: " practice ", logDirectory: "/practice" },
-      { name: "nodir" },
-      { name: "bad name" },
-      { logDirectory: "/no/name" },
-      { name: "team", logDirectory: "/again" },
-      null,
-      "team",
-      { name: "zero", teamNumber: 0 },
-    ]
-  );
-  assert.deepEqual([...servers.keys()], ["default", "team", "practice", "nodir", "zero"]);
-  assert.deepEqual(servers.get("default"), {
-    name: "default",
-    logDirectory: ["~/riologs", "/archive"].join(path.delimiter),
-    teamNumber: 2363,
-  });
-  assert.deepEqual(servers.get("team"), { name: "team", logDirectory: "/team/logs", teamNumber: 2363 },
-    "the first of two entries with one name wins");
-  assert.deepEqual(servers.get("practice"), { name: "practice", logDirectory: "/practice", teamNumber: undefined });
-  assert.deepEqual(servers.get("nodir"), { name: "nodir", logDirectory: undefined, teamNumber: undefined });
-  assert.deepEqual(servers.get("zero"), { name: "zero", logDirectory: undefined, teamNumber: undefined });
-  assert.deepEqual(skipped, ['"bad name"', "{\"logDirectory\":\"/no/name\"}", '"team"', "null", '"team"']);
-});
-
-test("with nothing set there is one server, the default, with no directory and no team", () => {
-  const { servers, skipped } = definedServers({ teamNumber: null as unknown as number }, undefined);
-  assert.deepEqual([...servers.values()], [{ name: "default", logDirectory: undefined, teamNumber: undefined }]);
-  assert.deepEqual(skipped, []);
-  assert.deepEqual([...definedServers({}, "not a list").servers.keys()], ["default"]);
-});
-
-test("an entry named default replaces the default server's definition", () => {
-  const { servers } = definedServers({ logDirectory: "/user" }, [{ name: "default", logDirectory: "/other", teamNumber: 1 }]);
-  assert.deepEqual([...servers.keys()], ["default"]);
-  assert.deepEqual(servers.get("default"), { name: "default", logDirectory: "/other", teamNumber: 1 });
-});
-
-test("a project gets the server it asks for when defined, else the default, and says when the name is unknown", () => {
-  const { servers } = definedServers({ logDirectory: "/user" }, [{ name: "team", logDirectory: "/team" }]);
-  assert.deepEqual(serverFor("team", servers), { server: servers.get("team"), unknown: false });
-  assert.deepEqual(serverFor("default", servers), { server: servers.get("default"), unknown: false });
-  assert.deepEqual(serverFor("nobody", servers), { server: servers.get("default"), unknown: true });
-});
-
-test("a server's directories are its own and its projects', each project's resolved as its own settings say", () => {
-  const server: ServerDefinition = { name: "team", logDirectory: "/team/logs:/archive", teamNumber: 2363 };
+test("the server's directories are the user's and its projects', each project's resolved as its own settings say", () => {
+  const user = { logDirectory: "/team/logs", additionalLogDirectories: ["/archive", "", 7], teamNumber: 2363 };
   const resolved = resolveServer(
-    server,
+    user,
     [
-      // A project with no settings of its own: the server's directories, which are absolute, once
+      // A project with no settings of its own: the user's directories, which are absolute, once
       { folderPath: "/th/Rebuilt", own: {} },
       // One with its own main directory and additional list: relative paths inside it
       { folderPath: "/th/Practice", own: { logDirectory: "/practice", additionalLogDirectories: ["logs", "/archive/"] } },
-      // One with only a team number: the server's directories
+      // One with only a team number: the user's directories
       { folderPath: "/th/Other", own: { teamNumber: 9999 } },
     ],
     path.posix
@@ -116,31 +45,44 @@ test("a server's directories are its own and its projects', each project's resol
   assert.equal(resolved.teamNumber, 9999, "the first team a project sets");
 });
 
-test("a project's own additional list replaces the server's additional directories, as a Workspace list does", () => {
-  const server: ServerDefinition = { name: "team", logDirectory: "/team/logs:/archive" };
-  const resolved = resolveServer(server, [{ folderPath: "/p", own: { additionalLogDirectories: [] } }], path.posix);
-  assert.deepEqual(resolved.logDirs, ["/team/logs", "/archive"], "the server's own stay; the project adds none");
-  const main = resolveServer(server, [{ folderPath: "/p", own: { logDirectory: "/mine" } }], path.posix);
+test("a project's own additional list replaces the user's, as a Workspace list does", () => {
+  const user = { logDirectory: "/team/logs", additionalLogDirectories: ["/archive"] };
+  const resolved = resolveServer(user, [{ folderPath: "/p", own: { additionalLogDirectories: [] } }], path.posix);
+  assert.deepEqual(resolved.logDirs, ["/team/logs", "/archive"], "the user's own stay; the project adds none");
+  const main = resolveServer(user, [{ folderPath: "/p", own: { logDirectory: "/mine" } }], path.posix);
   assert.deepEqual(main.logDirs, ["/team/logs", "/archive", "/mine"]);
   assert.equal(main.teamNumber, 0, "no team anywhere");
 });
 
-test("a server's own relative directory names nothing; a project's names a folder inside it", () => {
-  const server: ServerDefinition = { name: "x", logDirectory: "logs" };
-  assert.deepEqual(resolveServer(server, [], path.posix).logDirs, []);
-  assert.deepEqual(resolveServer(server, [{ folderPath: "/p", own: {} }], path.posix).logDirs, ["/p/logs"],
-    "the project resolves the server's relative main directory inside itself");
+test("a relative directory in the User settings names nothing on its own, and a folder inside each project", () => {
+  const user = { logDirectory: "logs" };
+  assert.deepEqual(resolveServer(user, [], path.posix).logDirs, []);
+  assert.deepEqual(resolveServer(user, [{ folderPath: "/p", own: {} }], path.posix).logDirs, ["/p/logs"],
+    "the project resolves the user's relative main directory inside itself");
+  assert.deepEqual(
+    resolveServer({ additionalLogDirectories: ["sim"] }, [{ folderPath: "/p", own: {} }, { folderPath: "/q", own: {} }], path.posix).logDirs,
+    ["/p/sim", "/q/sim"]);
 });
 
-test("a server's directories are split as PATH is, on Windows too, and the team is the server's when no project sets one", () => {
-  const server: ServerDefinition = { name: "w", logDirectory: "C:\\robot\\logs;D:\\archive", teamNumber: 2363 };
-  const resolved = resolveServer(server, [{ folderPath: "C:\\th\\Rebuilt", own: { additionalLogDirectories: ["c:/robot/logs/"] } }], path.win32);
-  assert.deepEqual(resolved.logDirs, ["C:\\robot\\logs", "D:\\archive"], "one folder under two names counts once");
+test("a blank or whitespace project directory falls back to the user's, and ~ is the home folder", () => {
+  const user = { logDirectory: "~/riologs", teamNumber: 2363 };
+  const resolved = resolveServer(user, [{ folderPath: "/p", own: { logDirectory: "  " } }], path.posix);
+  assert.equal(resolved.logDirs.length, 1);
+  assert.ok(resolved.logDirs[0].endsWith("/riologs") && path.posix.isAbsolute(resolved.logDirs[0]));
+  assert.equal(resolved.teamNumber, 2363, "the user's team when no project sets one");
+});
+
+test("on Windows, one folder under two names counts once, and the team is the user's when no project sets one", () => {
+  const user = { logDirectory: "C:\\robot\\logs", additionalLogDirectories: ["D:\\archive"], teamNumber: 2363 };
+  const resolved = resolveServer(user, [{ folderPath: "C:\\th\\Rebuilt", own: { additionalLogDirectories: ["c:/robot/logs/"] } }], path.win32);
+  assert.deepEqual(resolved.logDirs, ["C:\\robot\\logs", "D:\\archive"]);
   assert.equal(resolved.teamNumber, 2363);
 });
 
-test("a server with no directory and no projects lists nothing", () => {
-  assert.deepEqual(resolveServer({ name: "empty" }, [], path.posix), { logDirs: [], teamNumber: 0 });
+test("with nothing set and no project, the server lists nothing and has no team", () => {
+  assert.deepEqual(resolveServer({}, [], path.posix), { logDirs: [], teamNumber: 0 });
+  assert.deepEqual(resolveServer({ teamNumber: null as unknown as number, additionalLogDirectories: "not a list" }, [], path.posix),
+    { logDirs: [], teamNumber: 0 });
 });
 
 test("a server's configuration is one http server under its daemon's name, in the standalone's format", () => {

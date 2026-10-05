@@ -196,7 +196,7 @@
     const listing = message.listing;
     els.title.textContent = message.name;
     els.path.textContent = message.path;
-    els.state.textContent = message.server ? "Served by " + message.server : "";
+    els.state.textContent = "";
     const range = listing.time_range_sec || {};
     els.start.textContent = seconds(range.start);
     els.end.textContent = seconds(range.end);

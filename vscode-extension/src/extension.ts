@@ -26,15 +26,11 @@ import {
   shouldWriteEntry,
 } from "./mcpJson";
 import {
+  DAEMON_NAME,
   DEFAULT_IDLE_EXIT_MINUTES,
-  ServerDefinition,
   ServerProject,
-  daemonNameFor,
-  definedServers,
   entryUsesConnect,
   resolveServer,
-  serverFor,
-  serverNameFor,
 } from "./projectServers";
 import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
 import { DaemonInputs, DaemonSpec, ServerManager } from "./serverManager";
@@ -57,33 +53,19 @@ const TBA_SECRET = "wpilog-mcp.tbaApiKey";
 
 const TBA_ACCOUNT_URL = "https://www.thebluealliance.com/account";
 
-/** The extension's output, for notes written outside activate (see noteOnce). */
-let output: vscode.OutputChannel | undefined;
-const noted = new Set<string>();
-
-/** Writes a note to the output once per activation: for a setting that is wrong on every look. */
-function noteOnce(message: string) {
-  if (noted.has(message)) return;
-  noted.add(message);
-  output?.appendLine(message);
-}
-
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("WPILog Analyzer");
-  output = outputChannel;
-  noted.clear();
   const didChangeEmitter = new vscode.EventEmitter<void>();
 
   /**
-   * What a server is started from (see projectServers.ts): Java, the JAR copy that survives
-   * updates, and the configuration's values. The log directories are the server's own as the
-   * user defined it, together with those of every project that uses it, each project's resolved
-   * with its own settings on top of the server's; the team number is the first a project sets,
-   * else the server's. A server defined without a directory lists what auto-detection finds (the
-   * user's log directory setting, else a well-known folder, else, when asked in the foreground,
-   * the folder the user picks), as the default server does. The TBA API key goes into the
-   * configuration file, which only this user can read, never on a command line, which the
-   * process list shows to every user of the machine.
+   * What the server is started from (see projectServers.ts): Java, the JAR copy that survives
+   * updates, and the configuration's values. The log directories are the User settings',
+   * together with those of every project, open or remembered, each project's resolved with its
+   * own settings on top of the user's; the team number is the first a project sets, else the
+   * user's. With no directory set at all, the server lists what auto-detection finds (a
+   * well-known folder, else, when asked in the foreground, the folder the user picks). The TBA
+   * API key goes into the configuration file, which only this user can read, never on a command
+   * line, which the process list shows to every user of the machine.
    */
   async function resolveInputsFor(spec: DaemonSpec, prompt: boolean): Promise<DaemonInputs | undefined> {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
@@ -121,17 +103,20 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(`Java: ${javaPath}`);
     outputChannel.appendLine(`JAR: ${jar}`);
 
-    const defined = definedServer(spec.serverName);
-    const server: ServerDefinition = defined.logDirectory
-      ? defined
-      : { ...defined, logDirectory: await findLogDirectory(prompt) };
+    const user = userSettings();
+    const additional = Array.isArray(user.additionalLogDirectories)
+      ? user.additionalLogDirectories.filter((d) => typeof d === "string" && d.trim() !== "")
+      : [];
+    if (!user.logDirectory?.trim() && additional.length === 0) {
+      user.logDirectory = await findLogDirectory(prompt);
+    }
     const projects: ServerProject[] = spec.folderPaths.map((folderPath) => ({
       folderPath,
       own: settingsOf(context, folderPath),
     }));
-    const { logDirs, teamNumber } = resolveServer(server, projects);
+    const { logDirs, teamNumber } = resolveServer(user, projects);
     outputChannel.appendLine(
-      `${spec.label}: log directories ${logDirs.length > 0 ? logDirs.join(", ") : "(none)"}`
+      `${spec.name}: log directories ${logDirs.length > 0 ? logDirs.join(", ") : "(none)"}`
     );
 
     return {
@@ -147,33 +132,24 @@ export function activate(context: vscode.ExtensionContext) {
     };
   }
 
-  // ---- The projects' servers, and VS Code's MCP provider ----
+  // ---- The server, and VS Code's MCP provider ----
 
-  // Each server the window's projects use (the default, or one the user defined and the
-  // project's setting names, shared with every project that names the same) runs in the
-  // background on the loopback address and serves VS Code's agents, Claude Code (through the
-  // bridge in .mcp.json), and the extension itself. VS Code is told to look again whenever a
-  // URL changes, and after a restart, whose sessions it must open again.
+  // One server, shared by every project, runs in the background on the loopback address and
+  // serves VS Code's agents, Claude Code (through the bridge in .mcp.json), and the extension
+  // itself. VS Code is told to look again whenever its URL changes, and after a restart, whose
+  // sessions it must open again.
   const serverManager = new ServerManager(context, outputChannel, resolveInputsFor, () => {
     didChangeEmitter.fire();
     explorer.serversChanged();
   });
   context.subscriptions.push(serverManager);
 
-  // ---- WPILog Explorer: the views and the editor, clients of the same servers ----
-  const explorer = new Explorer(context, outputChannel, serverManager, () => windowSpecs(context));
+  // ---- WPILog Explorer: the views and the editor, a client of the same server ----
+  const explorer = new Explorer(context, outputChannel, serverManager, () => serverSpec(context));
   context.subscriptions.push(explorer);
-  async function ensureWindowServers(prompt: boolean): Promise<{ spec: DaemonSpec; url: string }[]> {
-    const up: { spec: DaemonSpec; url: string }[] = [];
-    for (const spec of windowSpecs(context)) {
-      const url = await serverManager.ensure(spec, prompt);
-      if (url) up.push({ spec, url });
-    }
-    return up;
-  }
   function restartServerForSettings() {
-    void ensureWindowServers(false).then((up) => {
-      if (up.length > 0) didChangeEmitter.fire();
+    void serverManager.ensure(serverSpec(context), false).then((url) => {
+      if (url) didChangeEmitter.fire();
     });
   }
 
@@ -181,18 +157,18 @@ export function activate(context: vscode.ExtensionContext) {
     onDidChangeMcpServerDefinitions: didChangeEmitter.event,
 
     provideMcpServerDefinitions: async () => {
-      // VS Code asks when it needs the servers: make sure each runs, then hand over its URL.
-      // One definition per server, so two folders that share a server share the definition
-      const up = await ensureWindowServers(true);
-      return up.map(
-        ({ spec, url }) =>
-          new vscode.McpHttpServerDefinition(
-            up.length === 1 ? "WPILog Analyzer" : `WPILog Analyzer (${spec.serverName})`,
-            vscode.Uri.parse(url),
-            undefined,
-            context.extension.packageJSON.version
-          )
-      );
+      // VS Code asks when it needs the server: make sure it runs, then hand over its URL. One
+      // definition, whatever the window's folders: they all share the server
+      const url = await serverManager.ensure(serverSpec(context), true);
+      if (!url) return [];
+      return [
+        new vscode.McpHttpServerDefinition(
+          "WPILog Analyzer",
+          vscode.Uri.parse(url),
+          undefined,
+          context.extension.packageJSON.version
+        ),
+      ];
     },
 
     resolveMcpServerDefinition: async (server) => {
@@ -202,19 +178,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
-    vscode.commands.registerCommand("wpilog-mcp.showServerLog", async () => {
-      const spec = await pickWindowServer(context, "Server whose log to show");
-      if (spec) await serverManager.showLog(spec);
-    }),
+    vscode.commands.registerCommand("wpilog-mcp.showServerLog", () =>
+      serverManager.showLog(serverSpec(context))
+    ),
     vscode.commands.registerCommand("wpilog-mcp.restartServer", async () => {
-      const spec = await pickWindowServer(context, "Server to restart");
-      if (!spec) return;
-      const url = await serverManager.restart(spec);
+      const url = await serverManager.restart(serverSpec(context));
       if (url) {
         didChangeEmitter.fire();
-        vscode.window.showInformationMessage(
-          `WPILog Analyzer: the server ${spec.serverName} is running at ${url}.`
-        );
+        vscode.window.showInformationMessage(`WPILog Analyzer: the server is running at ${url}.`);
       }
     })
   );
@@ -269,8 +240,8 @@ export function activate(context: vscode.ExtensionContext) {
   // ---- Claude Code's .mcp.json ----
 
   // One update at a time, so overlapping triggers neither race on the files nor repeat a notice.
-  // A project given the entry joins its server's log directories, so the window's servers are
-  // looked at again afterwards: one restarts when its configuration changed, else nothing
+  // A project given the entry joins the server's log directories, so the server is looked at
+  // again afterwards: it restarts when its configuration changed, else nothing
   let mcpJsonUpdate: Promise<void> = Promise.resolve();
   function scheduleMcpJsonUpdate(requested?: vscode.WorkspaceFolder) {
     mcpJsonUpdate = mcpJsonUpdate
@@ -335,7 +306,7 @@ export function activate(context: vscode.ExtensionContext) {
         explorer.serversChanged();
       }
     }),
-    // The window's folders are among the server's log directories, and decide its servers
+    // The window's folders are among the server's log directories
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       restartServerForSettings();
       scheduleMcpJsonUpdate();
@@ -346,9 +317,9 @@ export function activate(context: vscode.ExtensionContext) {
   void (async () => {
     await moveTbaKeyNow();
     await removeTbaKeyFromMcpJson(outputChannel);
-    // Start the window's servers now, so the first agent to ask finds them up, then add or
-    // update Claude Code's entry in .mcp.json (robot projects, by default)
-    await ensureWindowServers(false);
+    // Start the server now, so the first agent to ask finds it up, then add or update Claude
+    // Code's entry in .mcp.json (robot projects, by default)
+    await serverManager.ensure(serverSpec(context), false);
     scheduleMcpJsonUpdate();
   })();
 
@@ -542,13 +513,17 @@ async function stableJar(
  * change to the user's settings rewrites their configuration files too, open or not.
  */
 const PROJECTS_KEY = "wpilog-mcp.claudeCodeProjects";
-/**
- * A project's own settings as last seen, and the server its setting asked for (none for an entry
- * from before the shared servers), resolved again at each look, so a server defined or removed
- * since changes which one the project uses.
- */
-type KnownProject = LogSettings & { server?: string };
-type KnownProjects = Record<string, KnownProject>;
+/** A project's own settings as last seen. */
+type KnownProjects = Record<string, LogSettings>;
+
+/** The settings a remembered project holds, and nothing else an earlier version stored with them. */
+function ownSettings(known: LogSettings | undefined): LogSettings {
+  const own: LogSettings = {};
+  if (known?.logDirectory !== undefined) own.logDirectory = known.logDirectory;
+  if (known?.additionalLogDirectories !== undefined) own.additionalLogDirectories = known.additionalLogDirectories;
+  if (known?.teamNumber !== undefined) own.teamNumber = known.teamNumber;
+  return own;
+}
 
 /** A project's own settings: the open folder's, else as last seen when it had the entry. */
 function settingsOf(context: vscode.ExtensionContext, folderPath: string): LogSettings {
@@ -557,101 +532,27 @@ function settingsOf(context: vscode.ExtensionContext, folderPath: string): LogSe
   );
   if (open) return projectSettings(open);
   const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
-  const { server: _server, ...own } = known[folderPath] ?? {};
-  return own;
+  return ownSettings(known[folderPath]);
+}
+
+/** The daemon's configuration file, in the extension's storage. */
+function serverConfigPath(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "servers", `${DAEMON_NAME}.json`);
 }
 
 /**
- * The servers the user defined (see definedServers): the default, from the User settings, and
- * the `wpilog-mcp.servers` setting's. An entry that cannot be used is noted once.
+ * The server, with every project it serves: the window's folders, and the known projects, open
+ * or not, since the server lists its projects' logs whether or not they are open (Claude Code
+ * in a terminal reaches it through their entries with VS Code closed).
  */
-function serversDefined(): Map<string, ServerDefinition> {
-  const setting = vscode.workspace.getConfiguration("wpilog-mcp").get<unknown>("servers");
-  const { servers, skipped } = definedServers(userSettings(), setting);
-  for (const entry of skipped) {
-    noteOnce(`The wpilog-mcp.servers entry ${entry} has no usable name, or repeats one, and is skipped.`);
-  }
-  return servers;
-}
-
-/** A server as the user defined it, by name; the default's definition for a name not defined. */
-function definedServer(name: string): ServerDefinition {
-  return serverFor(name, serversDefined()).server;
-}
-
-/**
- * The server a name asks for, as a project's setting or its remembered setting gives it: the
- * server of that name when the user defined one, else the default, with a note for a name
- * nobody defined, which the setting's author will want to know.
- */
-function serverNamed(asked: unknown, where: string): string {
-  const name = serverNameFor(asked);
-  const { server, unknown } = serverFor(name, serversDefined());
-  if (unknown) {
-    noteOnce(
-      `${where} names the server "${name}", which wpilog-mcp.servers does not define; ` +
-        "it uses the default server until it is defined."
-    );
-  }
-  return server.name;
-}
-
-/** The server a folder uses: the one its Workspace setting names, when defined, else the default. */
-function serverNameOf(folder: vscode.WorkspaceFolder): string {
-  const setting = vscode.workspace.getConfiguration("wpilog-mcp", folder.uri).get<unknown>("serverName");
-  return serverNamed(setting, folder.uri.fsPath);
-}
-
-/** A daemon's configuration file, in the extension's storage. */
-function serverConfigPath(context: vscode.ExtensionContext, daemonName: string): string {
-  return path.join(context.globalStorageUri.fsPath, "servers", `${daemonName}.json`);
-}
-
-/**
- * A server, with every project that uses it: the window's folders that resolve to it, and the
- * known projects that do, open or not, since a server lists its projects' logs whether or not
- * they are open. The daemon is named for the server (see daemonNameFor).
- */
-function specFor(context: vscode.ExtensionContext, serverName: string): DaemonSpec {
+function serverSpec(context: vscode.ExtensionContext): DaemonSpec {
   const folders = new Set<string>();
   for (const folder of (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === "file")) {
-    if (serverNameOf(folder) === serverName) folders.add(folder.uri.fsPath);
+    folders.add(folder.uri.fsPath);
   }
   const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
-  for (const [folderPath, project] of Object.entries(known)) {
-    if (project.server !== undefined && serverNamed(project.server, folderPath) === serverName) {
-      folders.add(folderPath);
-    }
-  }
-  const name = daemonNameFor(serverName);
-  return {
-    name,
-    serverName,
-    configPath: serverConfigPath(context, name),
-    label: serverName,
-    folderPaths: [...folders],
-  };
-}
-
-/** The window's servers: one per distinct server among its folders, or the default with no folder. */
-function windowSpecs(context: vscode.ExtensionContext): DaemonSpec[] {
-  const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === "file");
-  const names = folders.length === 0 ? [serverNamed(undefined, "")] : [...new Set(folders.map(serverNameOf))];
-  return names.map((name) => specFor(context, name));
-}
-
-/** The window's one server, or the one the user picks when there are several. */
-async function pickWindowServer(
-  context: vscode.ExtensionContext,
-  placeHolder: string
-): Promise<DaemonSpec | undefined> {
-  const specs = windowSpecs(context);
-  if (specs.length === 1) return specs[0];
-  const picked = await vscode.window.showQuickPick(
-    specs.map((spec) => ({ label: spec.serverName, description: spec.folderPaths.join(", "), spec })),
-    { placeHolder }
-  );
-  return picked?.spec;
+  for (const folderPath of Object.keys(known)) folders.add(folderPath);
+  return { name: DAEMON_NAME, configPath: serverConfigPath(context), folderPaths: [...folders] };
 }
 
 /** The user's values: User settings, else the defaults. */
@@ -729,29 +630,22 @@ async function writeProjectConfig(
   return file;
 }
 
-/** Remembers a project that has the entry, with its own settings as they are now and the server it asks for. */
-async function rememberProject(
-  context: vscode.ExtensionContext,
-  folderPath: string,
-  own: LogSettings,
-  server: string
-) {
+/** Remembers a project that has the entry, with its own settings as they are now. */
+async function rememberProject(context: vscode.ExtensionContext, folderPath: string, own: LogSettings) {
   const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
-  known[folderPath] = { ...own, server };
+  known[folderPath] = ownSettings(own);
   await context.globalState.update(PROJECTS_KEY, known);
 }
 
 /**
  * Looks after every known project except `skip` (those just written). A project whose .mcp.json
  * no longer has the entry is forgotten and its per-project file removed. A project whose entry
- * uses a shared server needs no file of its own, so any left from an earlier entry is removed,
- * and its server's configuration (the server it asks for, as now defined) is rewritten from
- * every project that uses it; a server not in
- * this window whose configuration changed is stopped, so whoever needs it next starts it with
- * the new one (the window's own are restarted after this). A project whose entry still runs a
- * server of its own (written before the shared servers, and not yet opened in VS Code since)
- * gets its file rewritten from the user's settings and the project's own as last seen, so that
- * entry keeps working until it is rewritten.
+ * uses the shared server needs no file of its own, so any left from an earlier entry is removed.
+ * A project whose entry still runs a server of its own (written before the shared server, and
+ * not yet opened in VS Code since) gets its file rewritten from the user's settings and the
+ * project's own as last seen, so that entry keeps working until it is rewritten. The shared
+ * server's configuration is then rewritten from every project, since a project forgotten here
+ * leaves its directories; the server is restarted after this when the configuration changed.
  */
 async function refreshKnownProjects(
   context: vscode.ExtensionContext,
@@ -761,12 +655,8 @@ async function refreshKnownProjects(
   const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
   const user = userSettings();
   let forgotten = false;
-  const servers = new Set<string>();
   for (const [folderPath, project] of Object.entries(known)) {
-    if (skip.has(folderPath)) {
-      if (project.server !== undefined) servers.add(serverNamed(project.server, folderPath));
-      continue;
-    }
+    if (skip.has(folderPath)) continue;
     const text = await fs.promises
       .readFile(path.join(folderPath, ".mcp.json"), "utf8")
       .catch(() => undefined);
@@ -776,25 +666,16 @@ async function refreshKnownProjects(
       await fs.promises.rm(projectConfigPath(context, folderPath), { force: true });
       continue;
     }
-    if (entryUsesConnect(text) && project.server !== undefined) {
+    if (entryUsesConnect(text)) {
       await fs.promises.rm(projectConfigPath(context, folderPath), { force: true });
-      servers.add(serverNamed(project.server, folderPath));
       continue;
     }
-    const { server: _server, ...own } = project;
-    await writeProjectConfig(context, folderPath, overlaySettings(user, own));
+    await writeProjectConfig(context, folderPath, overlaySettings(user, ownSettings(project)));
   }
   if (forgotten) {
     await context.globalState.update(PROJECTS_KEY, known);
   }
-  const inWindow = new Set(windowSpecs(context).map((spec) => spec.serverName));
-  for (const name of servers) {
-    const spec = specFor(context, name);
-    const changed = await serverManager.writeConfig(spec);
-    if (changed && !inWindow.has(name)) {
-      await serverManager.stopIfRunning(spec);
-    }
-  }
+  await serverManager.writeConfig(serverSpec(context));
   // A configuration file of no remembered project never holds the key: nothing refreshes it
   // when the key changes or is cleared
   const remembered = new Set(
@@ -983,18 +864,14 @@ async function writeEntries(
       continue;
     }
 
-    // This project's own settings and the server it asks for are remembered first, so that its
-    // directories are in the server's configuration, which is written before the entry. The
-    // server's file may be shared, so it is never removed here; the per-project file an earlier
-    // entry used is, once the new entry is in place. The entry connects to the daemon by the
-    // daemon's name.
+    // This project's own settings are remembered first, so that its directories are in the
+    // server's configuration, which is written before the entry. The server's file is shared,
+    // so it is never removed here; the per-project file an earlier entry used is, once the new
+    // entry is in place. The entry connects to the daemon by the daemon's name.
     const own = projectSettings(folder);
-    const askedServer = serverNameFor(
-      vscode.workspace.getConfiguration("wpilog-mcp", folder.uri).get<unknown>("serverName")
-    );
     const oldConfigPath = projectConfigPath(context, folder.uri.fsPath);
-    await rememberProject(context, folder.uri.fsPath, own, askedServer);
-    const spec = specFor(context, serverNameOf(folder));
+    await rememberProject(context, folder.uri.fsPath, own);
+    const spec = serverSpec(context);
     const outcome = await writeEntry(
       text,
       buildServerEntry(javaPath, jar, maxHeap, spec.name, spec.configPath),

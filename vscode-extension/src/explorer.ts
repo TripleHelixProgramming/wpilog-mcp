@@ -1,5 +1,5 @@
 /**
- * WPILog Explorer's VS Code side (EXPLORER_PLAN.md §3, §4): the clients to the window's servers,
+ * WPILog Explorer's VS Code side (EXPLORER_PLAN.md §3, §4): the client to the shared server,
  * the Logs and Entries views, and the custom editor that opens a log and shows its entries and
  * time range. Every number shown comes from a tool (decision 3): the listing, the entries, and an
  * entry's description are the results of `list_available_logs`, `list_entries`, and
@@ -14,7 +14,6 @@ import { McpClient, ToolError } from "./mcpClient";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
 import { LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
-import { rankServersForFile } from "./explorer/serverChoice";
 import { explorerPage } from "./explorer/webviewHtml";
 
 /** The custom editor's view type, as package.json declares it. */
@@ -47,13 +46,13 @@ export class Explorer implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
 
   /**
-   * @param windowSpecs the servers the window's folders use, as extension.ts computes them
+   * @param windowSpec the server, with the projects it serves, as extension.ts computes it
    */
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly serverManager: ServerManager,
-    private readonly windowSpecs: () => DaemonSpec[]
+    private readonly windowSpec: () => DaemonSpec
   ) {
     this.logs = new LogsProvider(this);
     this.entries = new EntriesProvider(this);
@@ -102,22 +101,20 @@ export class Explorer implements vscode.Disposable {
     return this.context.extensionUri;
   }
 
-  /** The window's servers, in the window's order. */
-  specs(): DaemonSpec[] {
-    return this.windowSpecs();
+  /** The server, with the projects it serves as they are now. */
+  spec(): DaemonSpec {
+    return this.windowSpec();
   }
 
   /**
-   * A client to a server, which is started first when it is not running. One client per server,
-   * replaced when the server's URL changes (a port taken by another program), so a session is
-   * never aimed at a port nobody answers on.
+   * A client to the server, which is started first when it is not running. One client, replaced
+   * when the server's URL changes (a port taken by another program), so a session is never
+   * aimed at a port nobody answers on.
    */
   async clientFor(spec: DaemonSpec): Promise<McpClient> {
     const url = await this.serverManager.ensure(spec);
     if (!url) {
-      throw new Error(
-        `The server ${spec.serverName} could not be started; the WPILog Analyzer output says why.`
-      );
+      throw new Error("The server could not be started; the WPILog Analyzer output says why.");
     }
     const existing = this.clients.get(spec.name);
     if (existing && existing.url === url) return existing.client;
@@ -131,15 +128,7 @@ export class Explorer implements vscode.Disposable {
     return client;
   }
 
-  /** The servers to try for a file: those whose directories hold it first (serverChoice.ts). */
-  serversForFile(filePath: string): DaemonSpec[] {
-    return rankServersForFile(
-      filePath,
-      this.specs().map((spec) => ({ server: spec, logDirs: this.serverManager.logDirsOf(spec) }))
-    );
-  }
-
-  /** Called when a server was started again or its URL changed: listings may have changed. */
+  /** Called when the server was started again or its URL changed: listings may have changed. */
   serversChanged(): void {
     this.logs.refresh();
   }
@@ -172,20 +161,12 @@ function entryNameOf(nameOrItem: string | EntryItem): string {
 /** A tree item that remembers the model node it draws. */
 class LogItem extends vscode.TreeItem {
   constructor(
-    readonly node: LogNode | { kind: "server"; spec: DaemonSpec },
+    readonly node: LogNode,
     readonly spec: DaemonSpec,
     collapsibleState: vscode.TreeItemCollapsibleState
   ) {
-    super(
-      node.kind === "server" ? node.spec.serverName : node.label,
-      collapsibleState
-    );
+    super(node.label, collapsibleState);
     switch (node.kind) {
-      case "server":
-        this.iconPath = new vscode.ThemeIcon("server");
-        this.contextValue = "wpilogServer";
-        this.tooltip = `The server ${node.spec.serverName} (${node.spec.name})`;
-        break;
       case "event":
         this.iconPath = new vscode.ThemeIcon("calendar");
         break;
@@ -211,7 +192,7 @@ class LogItem extends vscode.TreeItem {
   }
 }
 
-/** The Logs view: each server's listing, grouped as logsTree.ts decides, with a filter. */
+/** The Logs view: the server's listing, grouped as logsTree.ts decides, with a filter. */
 export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   private readonly changed = new vscode.EventEmitter<LogItem | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
@@ -245,14 +226,7 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   }
 
   async getChildren(element?: LogItem): Promise<LogItem[]> {
-    if (!element) {
-      const specs = this.explorer.specs();
-      if (specs.length === 1) return this.nodesOf(specs[0]);
-      return specs.map(
-        (spec) => new LogItem({ kind: "server", spec }, spec, vscode.TreeItemCollapsibleState.Expanded)
-      );
-    }
-    if (element.node.kind === "server") return this.nodesOf(element.spec);
+    if (!element) return this.nodesOf(this.explorer.spec());
     if ("children" in element.node) {
       return element.node.children.map(
         (child, index) =>
@@ -474,9 +448,8 @@ interface Editor {
 /**
  * The custom editor for `.wpilog` files: a webview that shows the log's time range and entries
  * from `list_entries`, and an entry's description from `get_entry_info` when one is picked, in
- * the editor or in the Entries view. The log is read by the first of the window's servers whose
- * directories hold it (a server reads only inside them); when none can, the editor says what
- * the server said, with its hint.
+ * the editor or in the Entries view. The log is read by the server, which reads only inside its
+ * log directories; when it cannot, the editor says what the server said, with its hint.
  */
 export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvider<LogDocument> {
   private readonly editors = new Map<string, Editor>();
@@ -555,32 +528,29 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     this.explorer.entries.setActive(editor?.log);
   }
 
-  /** Lists the log through the first server that can read it, and shows the result. */
+  /**
+   * Lists the log through the server and shows the result. A file outside the server's log
+   * directories is refused by the server itself, with its own words and hint.
+   */
   private async load(editor: Editor): Promise<void> {
     const { path: logPath } = editor.log;
     const name = path.basename(logPath);
     const post = (message: Record<string, unknown>) => void editor.panel.webview.postMessage(message);
     post({ type: "loading", name, path: logPath, text: "Starting the server…" });
-    const specs = this.explorer.serversForFile(logPath);
-    if (specs.length === 0) {
-      post({ type: "error", name, path: logPath, message: "No server is configured for this window." });
-      return;
-    }
+    const spec = this.explorer.spec();
     let firstError: { message: string; hint?: string } | undefined;
-    for (const spec of specs) {
-      try {
-        const client = await this.explorer.clientFor(spec);
-        post({ type: "loading", name, path: logPath, text: `Reading the log with the server ${spec.serverName}…` });
-        const listing = (await client.callTool("list_entries", { path: logPath })) as EntryListing;
-        editor.log = { path: logPath, spec, listing };
-        post({ type: "log", name, path: logPath, listing, server: spec.serverName });
-        if (this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
-        return;
-      } catch (error) {
-        const hint = error instanceof ToolError ? (error.result?.hint as string | undefined) : undefined;
-        firstError ??= { message: messageOf(error), hint };
-        this.explorer.log(`Explorer: ${spec.serverName} could not read ${logPath}: ${messageOf(error)}`);
-      }
+    try {
+      const client = await this.explorer.clientFor(spec);
+      post({ type: "loading", name, path: logPath, text: "Reading the log…" });
+      const listing = (await client.callTool("list_entries", { path: logPath })) as EntryListing;
+      editor.log = { path: logPath, spec, listing };
+      post({ type: "log", name, path: logPath, listing });
+      if (this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
+      return;
+    } catch (error) {
+      const hint = error instanceof ToolError ? (error.result?.hint as string | undefined) : undefined;
+      firstError = { message: messageOf(error), hint };
+      this.explorer.log(`Explorer: the server could not read ${logPath}: ${messageOf(error)}`);
     }
     post({
       type: "error",

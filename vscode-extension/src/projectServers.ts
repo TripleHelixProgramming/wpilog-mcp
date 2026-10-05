@@ -1,21 +1,24 @@
 /**
- * The servers the user defines and projects share: the server's named background daemons, on
- * HTTP on the loopback address, each on a port of its own, which VS Code's agents reach by URL,
- * Claude Code reaches through the server's stdio bridge (`connect <name>`), and the extension
- * itself will reach for the explorer. There is one server by default, `default`, with the log
- * directories and team number of the user's settings; the `wpilog-mcp.servers` setting adds
- * more, each with a name, its directories, and its team. A project uses the default server
- * unless its `wpilog-mcp.serverName` Workspace setting names another, and a project's own
- * settings (relative paths inside it, its team) join the server it uses, so a server's
- * configuration is its own definition together with that of every project using it. Each
- * server exits on its own when unused. Pure functions (no VS Code API) so they can be tested on
- * their own; `serverManager.ts` is the glue.
+ * The one server the extension runs on this computer: a named background daemon of the server
+ * JAR, on HTTP on the loopback address, on a port of its own, which VS Code's agents reach by
+ * URL, Claude Code reaches through the server's stdio bridge (`connect`), and the extension
+ * itself reaches for the explorer. Its log directories and team number are the User settings',
+ * and each project's own settings (relative paths inside it, its team) join them, so the
+ * server's configuration is the user's together with that of every project, open or
+ * remembered. There is no second server: a user who wants some logs kept apart keeps them in
+ * another directory (see doc/IDEAS.md for a team number per directory). The server exits on its
+ * own when unused. Pure functions (no VS Code API) so they can be tested on their own;
+ * `serverManager.ts` is the glue.
  */
 import * as path from "path";
 import { LogSettings, combineLogDirectories } from "./logDirectories";
 
-/** The server every project uses unless it names another. */
-export const DEFAULT_SERVER = "default";
+/**
+ * The daemon's name, as `start`, `stop`, and `connect` know it: `vscode-default`, so the
+ * extension's server is never the standalone install's `default` under `~/.wpilog-mcp/` (its
+ * PID file, token, and log), and the name says whose it is beside a standalone install's servers.
+ */
+export const DAEMON_NAME = "vscode-default";
 
 /** How long a daemon runs with no client before it exits, unless a setting says otherwise. */
 export const DEFAULT_IDLE_EXIT_MINUTES = 30;
@@ -23,134 +26,44 @@ export const DEFAULT_IDLE_EXIT_MINUTES = 30;
 /** Starts that fail in a row before the extension stops trying until something changes. */
 export const MAX_START_ATTEMPTS = 6;
 
-/**
- * A server's daemon name: `vscode-` and the server's name, so the extension's `default` is never
- * the standalone install's `default` under `~/.wpilog-mcp/` (its PID file, token, and log), and
- * the names say whose they are beside a standalone install's servers.
- */
-export function daemonNameFor(serverName: string): string {
-  return `vscode-${serverName}`;
-}
-
-/** What a server's name may be: it names a file and a daemon. */
-export const SERVER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
-/**
- * The server a project asks for: the name its setting gives, when it is a usable name, else
- * the default. The setting's trim and case are kept as written, so `Team` and `team` are two
- * servers. Whether a server of that name is defined is the next question (see serverFor).
- */
-export function serverNameFor(setting: unknown): string {
-  if (typeof setting === "string") {
-    const name = setting.trim();
-    if (SERVER_NAME_PATTERN.test(name)) return name;
-  }
-  return DEFAULT_SERVER;
-}
-
-/** A server as the user defines it: its name, its directories, and its team. */
-export interface ServerDefinition {
-  name: string;
-  /** One directory, or several separated as `PATH` is (`;` on Windows, `:` elsewhere). */
-  logDirectory?: string;
-  teamNumber?: number;
-}
-
-/**
- * The servers defined: `default`, from the user's log directory, additional directories, and
- * team number settings, and each usable entry of the `wpilog-mcp.servers` setting (which may
- * hold anything a user typed into settings.json), an entry named `default` replacing the
- * default's definition. Entries without a usable name, or whose name was already taken, are
- * skipped and named in `skipped`, so the output can say so.
- */
-export function definedServers(
-  user: LogSettings,
-  serversSetting: unknown
-): { servers: Map<string, ServerDefinition>; skipped: string[] } {
-  const servers = new Map<string, ServerDefinition>();
-  const skipped: string[] = [];
-  const additional = Array.isArray(user.additionalLogDirectories)
-    ? user.additionalLogDirectories.filter((d): d is string => typeof d === "string" && d.trim() !== "")
-    : [];
-  servers.set(DEFAULT_SERVER, {
-    name: DEFAULT_SERVER,
-    logDirectory: [user.logDirectory ?? "", ...additional].filter((d) => d.trim() !== "").join(path.delimiter) || undefined,
-    teamNumber: user.teamNumber || undefined,
-  });
-  const entries = Array.isArray(serversSetting) ? serversSetting : [];
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    const raw = entry as { name?: unknown; logDirectory?: unknown; teamNumber?: unknown } | null;
-    const name = typeof raw?.name === "string" ? raw.name.trim() : "";
-    if (!SERVER_NAME_PATTERN.test(name) || seen.has(name)) {
-      skipped.push(JSON.stringify(raw?.name ?? entry));
-      continue;
-    }
-    seen.add(name);
-    servers.set(name, {
-      name,
-      logDirectory: typeof raw?.logDirectory === "string" && raw.logDirectory.trim() !== ""
-        ? raw.logDirectory : undefined,
-      teamNumber: typeof raw?.teamNumber === "number" && raw.teamNumber > 0 ? raw.teamNumber : undefined,
-    });
-  }
-  return { servers, skipped };
-}
-
-/**
- * The server a project uses: the one it asks for when it is defined, else the default, with
- * whether it fell back, so the output can say the name is unknown.
- */
-export function serverFor(
-  asked: string,
-  servers: Map<string, ServerDefinition>
-): { server: ServerDefinition; unknown: boolean } {
-  const server = servers.get(asked);
-  if (server) return { server, unknown: false };
-  return { server: servers.get(DEFAULT_SERVER)!, unknown: asked !== DEFAULT_SERVER };
-}
-
-/** A project that uses a server: its folder, and its own settings. */
+/** A project the server serves: its folder, and its own settings. */
 export interface ServerProject {
   folderPath: string;
   own: LogSettings;
 }
 
 /**
- * A server's log directories and team: its definition's directories (absolute ones; a server is
- * in no project, so a relative one names nothing), then each project's, resolved as a project's
- * are (the project's own main and additional directories where it sets them, else the server's,
- * relative paths inside the project), each once. The team is the first a project sets, else the
- * server's.
+ * The server's log directories and team: the user's directories (absolute ones; the User
+ * settings belong to no project, so a relative one names nothing there), then each project's,
+ * resolved as VS Code applies a project's settings (the project's own main and additional
+ * directories where it sets them, else the user's, relative paths inside the project), each
+ * once. The team is the first a project sets, else the user's.
  *
+ * @param user the User settings (the main directory auto-detected when the setting is blank)
  * @param pathApi the platform's path rules; tests pass `path.win32` or `path.posix`
  */
 export function resolveServer(
-  server: ServerDefinition,
+  user: LogSettings,
   projects: ServerProject[],
   pathApi: path.PlatformPath = path
 ): { logDirs: string[]; teamNumber: number } {
-  const serverDirs = (server.logDirectory ?? "")
-    .split(pathApi.delimiter)
-    .map((d) => d.trim())
-    .filter((d) => d !== "");
-  const lists: string[][] = [combineLogDirectories(undefined, serverDirs, [], pathApi)];
+  const lists: string[][] = [combineLogDirectories(user.logDirectory, user.additionalLogDirectories, [], pathApi)];
   let teamNumber = 0;
   for (const project of projects) {
-    const main = project.own.logDirectory?.trim() ? project.own.logDirectory : serverDirs[0];
-    const additional = project.own.additionalLogDirectories ?? serverDirs.slice(1);
+    const main = project.own.logDirectory?.trim() ? project.own.logDirectory : user.logDirectory;
+    const additional = project.own.additionalLogDirectories ?? user.additionalLogDirectories;
     lists.push(combineLogDirectories(main, additional, [project.folderPath], pathApi));
     if (teamNumber === 0 && project.own.teamNumber) teamNumber = project.own.teamNumber;
   }
   return {
     logDirs: unionLogDirectories(lists, pathApi),
-    teamNumber: teamNumber || server.teamNumber || 0,
+    teamNumber: teamNumber || user.teamNumber || 0,
   };
 }
 
 /**
- * A shared server's log directories: every project's, each once, in order, two paths that name
- * the same folder counting once, as a window's own list is built. Absolute paths only: each
+ * The shared server's log directories: the user's and every project's, each once, in order, two
+ * paths that name the same folder counting once, as a window's own list is built. Absolute paths only: each
  * list was resolved against its own project already.
  */
 export function unionLogDirectories(

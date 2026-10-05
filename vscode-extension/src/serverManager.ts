@@ -1,9 +1,11 @@
 /**
- * Runs the servers the projects use (see projectServers.ts): writes each daemon's configuration,
- * chooses its port, starts it with the server's own `start`, which is idempotent and restarts a
- * daemon of another version, restarts it when its configuration changes, and tries again with
- * backoff when a start fails. This is the VS Code side; the decisions it makes are the pure
- * functions in projectServers.ts.
+ * Runs the server the extension shares with every client (see projectServers.ts): writes the
+ * daemon's configuration, chooses its port, starts it with the server's own `start`, which is
+ * idempotent and restarts a daemon of another version, restarts it when its configuration
+ * changes, and tries again with backoff when a start fails. This is the VS Code side; the
+ * decisions it makes are the pure functions in projectServers.ts. The manager keeps its state
+ * per daemon name, so a second daemon would cost nothing here; there is one because the
+ * extension found no use for more (doc/EXPLORER_PLAN.md, decision 5).
  */
 import { execFile } from "child_process";
 import * as fs from "fs";
@@ -28,16 +30,12 @@ import {
 } from "./projectServers";
 import { writeConfigFile } from "./projectConfigs";
 
-/** A daemon: its name, the server it runs, its configuration file, and the projects it serves. */
+/** A daemon: its name, its configuration file, and the projects it serves. */
 export interface DaemonSpec {
-  /** The daemon's name, as `start`, `stop`, and `connect` know it (see daemonNameFor). */
+  /** The daemon's name, as `start`, `stop`, and `connect` know it (see DAEMON_NAME). */
   name: string;
-  /** The server's name as the user defined it (`default`, or an entry of `wpilog-mcp.servers`). */
-  serverName: string;
   configPath: string;
-  /** What VS Code shows for it. */
-  label: string;
-  /** The projects using the server; none for a window with no folder. */
+  /** The projects the server lists the logs of, open or remembered; none when there is no project. */
   folderPaths: string[];
 }
 
@@ -166,7 +164,7 @@ export class ServerManager implements vscode.Disposable {
     if ((await this.probe(port)).kind !== "ours") return;
     const inputs = this.state(spec.name).lastInputs ?? (await this.resolveInputs(spec, false));
     if (!inputs) return;
-    this.output.appendLine(`${spec.label}: the configuration changed; stopping its server.`);
+    this.output.appendLine(`${spec.name}: the configuration changed; stopping the server.`);
     await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
   }
 
@@ -196,11 +194,11 @@ export class ServerManager implements vscode.Disposable {
       if (port === undefined) port = await this.choosePort();
       verdict = await this.probe(port);
       if (keepPort(port, verdict)) break;
-      this.output.appendLine(`${spec.label}: port ${port} is held by another program; choosing another.`);
+      this.output.appendLine(`${spec.name}: port ${port} is held by another program; choosing another.`);
       port = undefined;
     }
     if (port === undefined) {
-      this.output.appendLine(`ERROR: no free port could be found for ${spec.label}.`);
+      this.output.appendLine(`ERROR: no free port could be found for ${spec.name}.`);
       return undefined;
     }
     await this.rememberPort(spec.name, port);
@@ -213,7 +211,7 @@ export class ServerManager implements vscode.Disposable {
       return this.started(spec, state, port);
     }
     if (verdict.kind === "ours" && changed) {
-      this.output.appendLine(`${spec.label}: the configuration changed; restarting its server.`);
+      this.output.appendLine(`${spec.name}: the configuration changed; restarting the server.`);
       await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
     }
 
@@ -224,7 +222,7 @@ export class ServerManager implements vscode.Disposable {
     if (result.code === 0) {
       return this.started(spec, state, port);
     }
-    this.output.appendLine(`ERROR: the server for ${spec.label} did not start (exit ${result.code}).`);
+    this.output.appendLine(`ERROR: the server ${spec.name} did not start (exit ${result.code}).`);
     this.scheduleRetry(spec, state);
     return undefined;
   }
@@ -235,7 +233,7 @@ export class ServerManager implements vscode.Disposable {
     const url = serverUrl(port);
     if (url !== state.lastUrl) {
       state.lastUrl = url;
-      this.output.appendLine(`${spec.label}: server at ${url} (log: ${this.logPath(spec)})`);
+      this.output.appendLine(`${spec.name}: server at ${url} (log: ${this.logPath(spec)})`);
       this.onChanged();
     }
     return url;
@@ -248,7 +246,7 @@ export class ServerManager implements vscode.Disposable {
         state.errorShown = true;
         void vscode.window
           .showErrorMessage(
-            `WPILog Analyzer: the server for ${spec.label} could not be started. The output ` +
+            `WPILog Analyzer: the server ${spec.name} could not be started. The output ` +
               "shows why; the server's own log may say more.",
             "Show Output",
             "Show Server Log"
@@ -261,7 +259,7 @@ export class ServerManager implements vscode.Disposable {
       return;
     }
     const delay = state.backoff.next();
-    this.output.appendLine(`${spec.label}: trying again in ${Math.round(delay / 1000)} s.`);
+    this.output.appendLine(`${spec.name}: trying again in ${Math.round(delay / 1000)} s.`);
     state.retryTimer = setTimeout(() => void this.ensure(spec), delay);
   }
 
@@ -280,7 +278,7 @@ export class ServerManager implements vscode.Disposable {
       await vscode.window.showTextDocument(document, { preview: false });
     } catch {
       vscode.window.showInformationMessage(
-        `WPILog Analyzer: no server log at ${file} yet; the server for ${spec.label} has not been started.`
+        `WPILog Analyzer: no server log at ${file} yet; the server ${spec.name} has not been started.`
       );
     }
   }

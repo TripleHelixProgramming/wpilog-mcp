@@ -329,68 +329,29 @@
             "order": 5,
             "markdownDescription": "**Claude Code only** (Copilot and other VS Code agents always have the server). Make WPILog Analyzer available to Claude Code, which finds servers in a project's `.mcp.json` rather than in VS Code: the extension adds a `wpilog-analyzer` entry to the `.mcp.json` of each WPILib robot project you open, and keeps any existing entry up to date. For a folder that is not a robot project, run **WPILog Analyzer: Add to Claude Code in This Folder**. The entry holds this computer's paths, so it is never written into a `.mcp.json` that git tracks, and the extension offers to add `.mcp.json` to `.gitignore`. The TBA API key is never written into it."
           },
-          "wpilog-mcp.servers": {
-            "type": "array",
-            "default": [],
-            "order": 6,
-            "scope": "application",
-            "items": {
-              "type": "object",
-              "required": [
-                "name"
-              ],
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-                  "description": "The server's name, which a project's Server Name setting refers to. Letters, digits, dots, hyphens, and underscores."
-                },
-                "logDirectory": {
-                  "type": "string",
-                  "description": "The directory of .wpilog files this server lists, or several separated as PATH is (; on Windows, : elsewhere). ~/ is your home folder."
-                },
-                "teamNumber": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "description": "The team number for logs that do not record one."
-                }
-              },
-              "additionalProperties": false
-            },
-            "markdownDescription": "Servers beside the default one, which **Log Directory**, **Additional Log Directories**, and **Team Number** above describe; a User setting. Each has a name, the directory (or directories) it lists, and its team number; one defined without a directory lists what the default server lists. A project uses the default server unless its **Server Name** (Workspace) setting names one of these; projects that name the same server share it, and a project's own directories join the server it uses. Each server runs in the background on this computer on a port of its own, serves VS Code's agents and Claude Code alike, and exits on its own when unused (see **Idle Exit Minutes**). An entry named `default` replaces the default server's definition."
-          },
-          "wpilog-mcp.serverName": {
-            "type": "string",
-            "default": "",
-            "order": 7,
-            "scope": "resource",
-            "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-            "patternErrorMessage": "Letters, digits, dots, hyphens, and underscores, starting with a letter or digit.",
-            "markdownDescription": "The server this project uses, as a **Workspace** setting: the name of one of the **Servers** above, or blank for the default server. Projects that name the same server share it, and it lists all their logs. A server's log is `~/.wpilog-mcp/logs/vscode-<name>.log`, which [Show Server Log](command:wpilog-mcp.showServerLog) opens."
-          },
           "wpilog-mcp.javaPath": {
             "type": "string",
             "default": "",
-            "order": 8,
+            "order": 6,
             "markdownDescription": "Path to the `java` executable. Leave blank to auto-detect the WPILib JDK."
           },
           "wpilog-mcp.wpiLibYear": {
             "type": "string",
             "default": "",
-            "order": 9,
+            "order": 7,
             "markdownDescription": "WPILib installation year (e.g., `2026`). Leave blank to auto-detect the latest installed year."
           },
           "wpilog-mcp.maxHeap": {
             "type": "string",
             "default": "4g",
-            "order": 10,
+            "order": 8,
             "markdownDescription": "Maximum JVM heap size. Examples: `2g`, `4g`, `8g`."
           },
           "wpilog-mcp.idleExitMinutes": {
             "type": "integer",
             "default": 30,
             "minimum": 0,
-            "order": 11,
+            "order": 9,
             "markdownDescription": "How many minutes a server keeps running with no client connected before it exits on its own. `0` keeps it running until [Restart Server](command:wpilog-mcp.restartServer) or the next update. VS Code's agents, Claude Code, and the extension start a server again whenever they need it, so a short time costs only a few seconds' wait the next time."
           }
         }
