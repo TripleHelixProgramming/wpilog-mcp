@@ -26,6 +26,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open 
 
 A log viewer such as AdvantageScope shows you the data, but only if you know where to look. With wpilog-mcp you ask an engineering or strategy question; the model finds the relevant entries, proposes an explanation, and tests it against the data with further tool calls.
 
+The standalone [import command and inbox](doc/STANDALONE.md#importing-logs) can organize a log folder as a store by robot and session. Imports preserve filenames and provenance, and the listing reports files awaiting assignment or refused by the inbox.
+
 ### What You Can Ask
 
 Start broad; the model finds the logs and the entries. Then get as specific as the data allows:

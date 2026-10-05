@@ -49,6 +49,7 @@ public final class LogStore implements AutoCloseable {
   public record Request(List<Path> paths, boolean move, String statedRobot) {
     public Request {
       paths = List.copyOf(paths);
+      if (statedRobot != null) StoreFiles.component(statedRobot);
     }
   }
   public record Progress(String phase, Path path, int completed, int total) {}
@@ -65,6 +66,8 @@ public final class LogStore implements AutoCloseable {
   private final ExecutorService queue;
   private final LogManager logManager;
   private final CatalogReader catalogReader;
+  private final StoreInbox inbox;
+  private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
 
   @FunctionalInterface
   interface CatalogReader {
@@ -113,6 +116,7 @@ public final class LogStore implements AutoCloseable {
     this.security = security;
     this.logManager = logManager;
     this.catalogReader = catalogReader;
+    this.inbox = new StoreInbox(this, security);
     queue = Executors.newSingleThreadExecutor(task -> {
       var thread = new Thread(task, "store-import");
       thread.setDaemon(true);
@@ -124,26 +128,64 @@ public final class LogStore implements AutoCloseable {
     return root;
   }
 
+  public StoreInbox inbox() {
+    return inbox;
+  }
+
+  public boolean importing() { return pending.get() > 0; }
+
   /** A second caller queues behind the first, including its inspection and identity changes. */
   public CompletableFuture<Result> importPaths(Request request, Consumer<Progress> progress) {
+    return importPrepared(request, progress, r -> r, result -> {});
+  }
+
+  @FunctionalInterface
+  interface Preparation {
+    Request prepare(Request request) throws IOException;
+  }
+
+  /** An inbox file can change while queued; recheck its observed stamp when its turn arrives. */
+  CompletableFuture<Result> importPrepared(Request request, Consumer<Progress> progress,
+      Preparation preparation, Consumer<Result> beforeUnlock) {
     Objects.requireNonNull(request);
     Objects.requireNonNull(progress);
     var result = new CompletableFuture<Result>();
-    queue.execute(() -> {
-      try {
-        result.complete(run(request, progress));
-      } catch (Exception e) {
-        result.completeExceptionally(e);
-      } catch (OutOfMemoryError e) {
-        result.completeExceptionally(new IOException("Not enough heap to inspect this import", e));
-      }
-    });
+    pending.incrementAndGet();
+    try {
+      queue.execute(() -> {
+        try {
+          Result imported;
+          try (var lock = StoreLock.acquire(root, security)) {
+            notify(progress, new Progress("starting", root, 0, request.paths().size()));
+            imported = run(preparation.prepare(request), progress);
+            beforeUnlock.accept(imported);
+          }
+          result.complete(imported);
+        } catch (Exception e) {
+          result.completeExceptionally(e);
+        } catch (OutOfMemoryError e) {
+          result.completeExceptionally(new IOException("Not enough heap to inspect this import", e));
+        } finally {
+          pending.decrementAndGet();
+        }
+      });
+    } catch (RuntimeException e) {
+      pending.decrementAndGet();
+      throw e;
+    }
     return result;
   }
 
   @Override
   public void close() {
     queue.shutdown();
+  }
+
+  /** A barrier for transport shutdown, before the log manager closes its readers. */
+  public void awaitImports() {
+    var drained = new CompletableFuture<Void>();
+    queue.execute(() -> drained.complete(null));
+    drained.join();
   }
 
   private Result run(Request request, Consumer<Progress> progress) throws IOException {
@@ -157,6 +199,7 @@ public final class LogStore implements AutoCloseable {
           Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
     }
     var catalog = new ImportCatalog(catalogReader.read(root, security));
+    Files.createDirectories(io.check(root.resolve("inbox")));
     var known = new HashMap<String, Path>();
     catalog.files.values().forEach(f -> known.put(f.file().sha256(), f.path()));
     var inspected = new ArrayList<ImportInspection>();
@@ -262,7 +305,7 @@ public final class LogStore implements AutoCloseable {
           try (var walk = Files.walk(real)) {
             for (var file : walk.filter(Files::isRegularFile).toList()) {
               security.validate(file);
-              found.add(file.toRealPath());
+              if (!storeControlFile(file)) found.add(file.toRealPath());
             }
           }
         } else {
@@ -273,6 +316,11 @@ public final class LogStore implements AutoCloseable {
       }
     }
     return List.copyOf(found);
+  }
+
+  private boolean storeControlFile(Path path) {
+    return path.equals(root.resolve("store.lock")) || path.equals(root.resolve("store.json"))
+        || path.equals(root.resolve("inbox").resolve("imported.log"));
   }
 
   private Robot robotFor(StoreFiles io, ImportCatalog catalog, ImportInspection input, String stated,

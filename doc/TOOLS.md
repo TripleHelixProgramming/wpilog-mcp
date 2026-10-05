@@ -244,11 +244,12 @@ For a store (a configured directory with `store.json`), `logs` comes from sessio
 
 Store listings additionally return:
 
-- `unmanaged`: files absent from every manifest, each with `path` and `reason`; they are never indexed into a session, even if placed inside its directory.
+- `inbox`: files in a store's drop folder, each with `path`, `size` in bytes, and `state` (`waiting`, `importing`, or `refused` with `reason`). They belong to no session until imported. Receipts are in `inbox/imported.log`; the receipt file itself is not listed.
+- `unmanaged`: files outside the inbox absent from every manifest, each with `path` and `reason`; they are never indexed into a session, even if placed inside its directory.
 - `unassigned`: imported files awaiting robot assignment or a unique REV pairing, each with `path`, `kind`, and `sha256`.
 - `moved_to`: notices with `original_path`, `moved_to`, and `moved_at`, retained in the listing for seven days after a move. Copy imports create no notice.
 
-An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. Import transport and user controls are not yet exposed.
+An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. The standalone [import command and inbox](STANDALONE.md#importing-logs) and [HTTP jobs](STANDALONE.md#the-import-endpoint) organize files; extension controls are not yet exposed.
 
 ### `list_loaded_logs`
 List the log files currently loaded in the server's cache, and the cache status. Logs load on demand, so an empty list is normal.

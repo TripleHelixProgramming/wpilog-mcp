@@ -283,6 +283,11 @@ public class DaemonManager {
         .map(daemon -> reportRunning(name, port, daemon)).orElse(false);
   }
 
+  /** Find the owner for an import without starting or restarting a daemon. */
+  public Optional<RunningDaemon> runningDaemon(String name) {
+    return locked(name, () -> findRunning(name));
+  }
+
   /** An action on the named server's PID file that may fail to read or write it. */
   @FunctionalInterface
   private interface PidFileAction<T> {

@@ -84,6 +84,7 @@ public class LogManager {
 
   // Subsystems (initialized in constructor)
   private final SecurityValidator securityValidator;
+  private final org.triplehelix.wpilogmcp.store.StoreRegistry stores;
   private final LogParser logParser;
   private final LogCache logCache;
 
@@ -162,6 +163,7 @@ public class LogManager {
   LogManager(LogSynchronizer synchronizer) {
     // Initialize subsystems
     this.securityValidator = new SecurityValidator();
+    this.stores = new org.triplehelix.wpilogmcp.store.StoreRegistry(securityValidator, this);
     this.logParser = new LogParser();
     this.logCache = new LogCache();
 
@@ -231,6 +233,7 @@ public class LogManager {
    */
   public void shutdown() {
     logger.info("Shutting down LogManager");
+    stores.close();
     evictionScheduler.shutdownNow();
     syncExecutor.shutdownNow();
     try {
@@ -242,6 +245,11 @@ public class LogManager {
     }
     diskCache.shutdown();
     logCache.clear();
+  }
+
+  /** One owner for HTTP, inbox, command, and listing access to each store. */
+  public org.triplehelix.wpilogmcp.store.StoreRegistry stores() {
+    return stores;
   }
 
   /**

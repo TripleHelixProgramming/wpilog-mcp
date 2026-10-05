@@ -298,10 +298,17 @@ public class LogDirectory {
     var found = new ArrayList<LogFileInfo>();
     var security = new SecurityValidator();
     dirs.forEach(security::addAllowedDirectory);
+    var seenStores = new HashSet<Path>();
     for (var dir : dirs) {
-      if (StoreCatalog.isStore(dir)) {
-        try {
-          var store = StoreCatalog.read(dir, security);
+      var problem = unavailableReason(dir);
+      if (problem.isPresent()) {
+        unavailable.add(new UnavailableDirectory(dir, problem.get()));
+        continue;
+      }
+      try {
+        for (var root : StoreCatalog.discover(dir)) {
+          if (!seenStores.add(root)) continue;
+          var store = StoreCatalog.read(root, security);
           stores.add(store);
           for (var file : store.files()) {
             if (!file.file().kind().equals("wpilog") || file.session() == null) continue;
@@ -312,12 +319,13 @@ public class LogDirectory {
                 getLastModified(file.path()), file.file().sizeBytes(),
                 Instant.parse(session.startedAt()).toEpochMilli(), file));
           }
-        } catch (IOException e) {
-          unavailable.add(new UnavailableDirectory(dir, e.getMessage()));
         }
-      } else {
-        findFiles(List.of(dir), WPILOG_FILE, unavailable).stream()
-            .map(this::getOrExtractLogInfo).forEach(found::add);
+        if (!StoreCatalog.isStore(dir)) {
+          findFiles(List.of(dir), WPILOG_FILE, unavailable).stream()
+              .map(this::getOrExtractLogInfo).forEach(found::add);
+        }
+      } catch (IOException e) {
+        unavailable.add(new UnavailableDirectory(dir, "could not be read (" + e.getMessage() + ")"));
       }
     }
     var seen = new HashSet<Path>();

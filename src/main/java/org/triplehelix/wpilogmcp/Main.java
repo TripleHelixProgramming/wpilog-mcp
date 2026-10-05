@@ -82,6 +82,10 @@ public class Main {
       System.exit(runConnect(args));
       return;
     }
+    if (args.length >= 1 && "import".equals(args[0])) {
+      System.exit(runImport(args));
+      return;
+    }
 
     // No args or CLI flags: default to "start default"
     // CLI flags (e.g., -logdir, -team) still go through handleLegacyCli for backwards compatibility
@@ -197,6 +201,22 @@ public class Main {
    */
   static int runStop(String configName) {
     return new DaemonManager().stopDaemon(configName) ? 0 : 1;
+  }
+
+  static int runImport(String[] args) {
+    try {
+      var options = org.triplehelix.wpilogmcp.store.ImportCommand.parse(args);
+      return org.triplehelix.wpilogmcp.store.ImportCommand.run(options,
+          loadConfig(options.server(), options.config()), new DaemonManager(), System.out);
+    } catch (IllegalArgumentException e) {
+      logger().error("{}", e.getMessage());
+      return 2;
+    } catch (Exception e) {
+      var cause = e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
+      logger().error("Import failed: {}", cause.getMessage());
+      if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      return 1;
+    }
   }
 
   /**
@@ -615,6 +635,7 @@ public class Main {
       }
     } else {
       var finalLogManager = logManager;
+      logManager.stores().startWatching();
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
         logger().debug("Stdio shutdown: shutting down LogManager");
         finalLogManager.shutdown();
@@ -637,6 +658,7 @@ public class Main {
     logger().info("       wpilog-mcp stop <config-name>");
     logger().info("       wpilog-mcp connect <config-name> [--config <path>]");
     logger().info("       wpilog-mcp connect --url <url>");
+    logger().info("       {}", org.triplehelix.wpilogmcp.store.ImportCommand.USAGE);
     logger().info("");
     logger().info("With no arguments, starts the \"default\" server configuration.");
     logger().info("");
@@ -645,6 +667,7 @@ public class Main {
     logger().info("  stop <name>         Stop a named http server started in the background");
     logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
     logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
+    logger().info("  import <path>...   Import logs into the configured store, using its daemon when running");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");

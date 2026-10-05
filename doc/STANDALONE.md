@@ -147,6 +147,22 @@ After `start <name>` (and `stop <name>` or `connect <name>`, which take the same
 - `WPILOG_DEBUG`
 - `WPILOG_HTTP_BIND`, `WPILOG_HTTP_PATH`, and `WPILOG_HTTP_ALLOWED_ORIGINS`, for an `http` server (see [HTTP Transport](#http-transport))
 
+### Importing Logs
+
+```bash
+wpilog-mcp import [--server <name>] [--config <path>] [--store <dir>] [--move] [--robot <name>] <path>...
+wpilog-mcp import --robot practice ~/riologs/downloads
+wpilog-mcp import --server pit /media/usb/logs
+```
+
+`import` loads the named configuration (default `default`) using the same discovery as `start`. The destination is the first configured directory that is already a store, or the first configured directory if none is yet. `--store` chooses another directory inside the configured log directories. The first import creates the store and its `inbox/`. Files and directories are accepted; content identifies WPILOG and REV logs, and unsupported files are refused with a reason. Copies are the default; `--move` moves the originals. `--robot` states a robot name when the log supplies no serial number. Duplicates are reported with their stored path and left at their source.
+
+When the named daemon is running, the command posts sources inside configured directories to its import endpoint and prints the job's progress and complete result. Outside sources, such as a USB stick, are copied (or moved with `--move`) into the store's inbox for the daemon to import. The command says where it placed them; their eventual results are in `inbox/imported.log`. For these inbox files, `--robot` has no effect: the command prints a notice that logged identity is used and files otherwise remain unassigned. A failed HTTP request is reported, without starting a second importer.
+
+When no daemon is running, the command imports in its own process, staging outside files through the inbox as needed, with `--robot` applied to that import. It holds a `FileChannel` lock on `store.lock` for each whole import, as the daemon does. If another process holds it, the import fails promptly with a retry message. Do not delete `store.lock`: the persistent file lets every process lock the same object. Exit codes are 0 for completed imports or accepted inbox transfers, 1 for a failure or a refused direct file, and 2 for command-line errors. An accepted inbox transfer may later be refused; check its receipt.
+
+You can also drop files directly into a store's `inbox/`. The owning server polls every three seconds, importing by move after size and modification time match across two looks at least three seconds apart. A file changed while waiting in the queue returns to waiting. Only `inbox/imported.log` is written in the inbox by the server: one JSON object per line, with the time, original path, status, destination, and reason. A refused file remains there and is not retried until it changes or the server restarts. A duplicate also stays, with its existing destination explained. `list_available_logs` reports these files under `inbox`, with size and waiting/importing/refused state, rather than under `unmanaged`. Symbolic links and special files are refused. Plain directories are never turned into stores just because the watcher sees them.
+
 ### Command-Line Flags
 
 Started with flags instead of `start <name>`, the server reads no configuration file. It takes its settings from the flags and from environment variables, and a flag overrides its variable:
@@ -285,6 +301,23 @@ curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16
 ```
 
 The endpoint reads only files inside the configured log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`, never cut. A missing entry is an error naming it, with the tools that list entries and field paths. A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, so a repeated request for an unchanged file with `If-None-Match` is a `304`. `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
+
+### The Import Endpoint
+
+The HTTP transport accepts imports beside the data endpoint:
+
+```http
+POST /store/import
+Content-Type: application/json
+
+{"store":"/home/user/riologs","paths":["/home/user/riologs/download.wpilog"],"move":true,"stated_robot":"practice"}
+```
+
+`store` and every source in `paths` must be inside configured log directories, with symlinks resolved. With no configured directory, the endpoint refuses all imports. Outside paths go through the user's inbox; an unauthenticated HTTP server cannot offer a move-anything operation. `move` is required; `stated_robot` is optional or null. An empty `paths` array creates an empty store under the same lock. The body is limited to 1 MiB.
+
+A `202` response contains `job_id` and a relative `url` such as `/store/import/<job>` (also in `Location`). `GET` that URL to poll. The job has `state` (`queued`, `running`, `done`, or `failed`), its latest `progress` (`phase`, `path`, `completed`, `total`, or null before it starts), `result` on completion, and `error` on failure. `result` is the Java importer's complete result: `files` with `original_path`, `status`, `path`, and `reason`, plus `same_robots` with `serial_number` and `directories`. A done job can contain refused files: inspect their statuses. Progress counts apply to the named phase; the final phase is `complete`. A second import to the same store queues behind the first.
+
+At most 100 jobs are retained in memory. Completed jobs are evicted first when a new job needs room; if all slots are active, admission returns `503` with `Retry-After`. History disappears at restart. Refusals are JSON with `error` and `hint`: `400` for malformed input, `403` for paths outside configured directories (with the inbox hint), and `404` for an unknown or expired job. The endpoint shares `/mcp`'s Origin refusal and the transport's loopback default. The server log records job IDs and outcomes, never uploaded file contents; this endpoint accepts paths, not uploaded bytes.
 
 ## Containerization
 

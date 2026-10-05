@@ -36,6 +36,22 @@ public final class StoreCatalog {
     return Files.exists(directory.resolve("store.json"));
   }
 
+  /** Find nested stores too, but never walk a store's own session tree looking for another. */
+  public static List<Path> discover(Path directory) throws IOException {
+    if (!Files.isDirectory(directory)) return List.of();
+    var roots = new ArrayList<Path>();
+    Files.walkFileTree(directory.toRealPath(), new java.nio.file.SimpleFileVisitor<>() {
+      @Override
+      public java.nio.file.FileVisitResult preVisitDirectory(Path dir,
+          java.nio.file.attribute.BasicFileAttributes attrs) {
+        if (!isStore(dir)) return java.nio.file.FileVisitResult.CONTINUE;
+        roots.add(dir);
+        return java.nio.file.FileVisitResult.SKIP_SUBTREE;
+      }
+    });
+    return roots.stream().sorted().toList();
+  }
+
   /** Store membership follows the file's directory ancestry, not its extension or filename. */
   public static Optional<Path> containing(Path file) {
     var parent = file.toAbsolutePath().normalize().getParent();
@@ -124,6 +140,7 @@ public final class StoreCatalog {
     var unmanaged = new ArrayList<Path>();
     try (var walk = Files.walk(root)) {
       for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
+        if (path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))) continue;
         io.check(path);
         if (!managed.contains(path)) unmanaged.add(path);
       }

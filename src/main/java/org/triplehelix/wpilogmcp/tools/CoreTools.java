@@ -77,7 +77,8 @@ public final class CoreTools {
           + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
           + "this tool first to find logs and get match results, then pass the path to other "
           + "tools. Stores add robot (serial_number, comments, basis) and session metadata to logs; "
-          + "unmanaged lists files absent from manifests, unassigned lists imported files awaiting "
+          + "inbox lists waiting or importing files (path, size in bytes), or refused files with their reason; "
+          + "unmanaged lists files absent from manifests outside the inbox, unassigned lists imported files awaiting "
           + "assignment, and moved_to gives original paths and their destinations for seven days.";
     }
 
@@ -254,9 +255,13 @@ public final class CoreTools {
       result.add("metadata_cache", cacheStats);
       if (!scan.stores().isEmpty()) {
         var unmanaged = new JsonArray();
+        var inbox = new JsonArray();
         var unassigned = new JsonArray();
         var moved = new JsonArray();
         for (var store : scan.stores()) {
+          for (var entry : logManager.stores().store(store.root()).inbox().listing()) {
+            inbox.add(org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(entry));
+          }
           for (var path : store.unmanaged()) {
             var item = new JsonObject();
             item.addProperty("path", path.toString());
@@ -279,6 +284,7 @@ public final class CoreTools {
             moved.add(item);
           }
         }
+        result.add("inbox", inbox);
         result.add("unmanaged", unmanaged);
         result.add("unassigned", unassigned);
         result.add("moved_to", moved);

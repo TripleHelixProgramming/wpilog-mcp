@@ -86,6 +86,9 @@ public class HttpTransport {
   /** {@code GET /data/entries} (see {@link DataEndpoint}). */
   private final DataEndpoint dataEndpoint =
       new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance());
+  private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
+      org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
+  private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores);
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
   private volatile long lastMcpActivityNanos = System.nanoTime();
 
@@ -140,10 +143,12 @@ public class HttpTransport {
     server.createContext("/health", counted(this::handleHealthCheck));
     server.createContext("/stop", counted(this::handleStop));
     server.createContext(DATA_PATH, counted(this::handleData));
+    server.createContext(StoreImportEndpoint.PATH, counted(this::handleImport));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
     server.start();
+    stores.startWatching();
 
     // Separate bounded thread pool for SSE streams — these block indefinitely and must not
     // starve the main request handler pool. Capped at 64 concurrent SSE connections.
@@ -189,7 +194,7 @@ public class HttpTransport {
   /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
   private void exitIfIdle() {
     var idle = idleExit;
-    if (idle == null || sessionManager.size() > 0) return;
+    if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active()) return;
     long idleFor = System.nanoTime() - lastMcpActivityNanos;
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
@@ -249,6 +254,8 @@ public class HttpTransport {
     if (scheduler != null) {
       scheduler.shutdownNow();
     }
+    stores.stopWatching();
+    stores.awaitImports();
   }
 
   /** Wraps a handler so that {@link #stop} can wait for the requests being handled. */
@@ -573,6 +580,17 @@ public class HttpTransport {
       return;
     }
     dataEndpoint.handle(exchange);
+  }
+
+  /** The import write surface has exactly the same Origin gate as MCP and data reads. */
+  private void handleImport(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin");
+      return;
+    }
+    noteMcpActivity();
+    importEndpoint.handle(exchange);
   }
 
   /** The size cap of a data response, in bytes (see {@link DataEndpoint}). */
