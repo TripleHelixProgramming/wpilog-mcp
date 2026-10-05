@@ -1,6 +1,7 @@
 import { execFile } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { findJava } from "./javaFinder";
@@ -33,7 +34,9 @@ import {
   resolveServer,
 } from "./projectServers";
 import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
-import { DaemonInputs, DaemonSpec, ServerManager } from "./serverManager";
+import { DaemonInputs, DaemonSpec, OwnDaemonSpec, ServerManager, StandaloneDaemonSpec } from "./serverManager";
+import { STANDALONE_SERVER, buildStandaloneEntry, findStandaloneInstall } from "./standaloneServer";
+import { ServerEntry } from "./mcpJson";
 import { Explorer } from "./explorer";
 import {
   TBA_KEY_QUIET_MS,
@@ -67,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
    * API key goes into the configuration file, which only this user can read, never on a command
    * line, which the process list shows to every user of the machine.
    */
-  async function resolveInputsFor(spec: DaemonSpec, prompt: boolean): Promise<DaemonInputs | undefined> {
+  async function resolveInputsFor(spec: OwnDaemonSpec, prompt: boolean): Promise<DaemonInputs | undefined> {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     const maxHeap = config.get<string>("maxHeap") || "4g";
 
@@ -136,7 +139,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // One server, shared by every project, runs in the background on the loopback address and
   // serves VS Code's agents, Claude Code (through the bridge in .mcp.json), and the extension
-  // itself. VS Code is told to look again whenever its URL changes, and after a restart, whose
+  // itself: the extension's own daemon, or the standalone install's server when the setting says
+  // so. VS Code is told to look again whenever its URL changes, and after a restart, whose
   // sessions it must open again.
   const serverManager = new ServerManager(context, outputChannel, resolveInputsFor, () => {
     didChangeEmitter.fire();
@@ -541,18 +545,38 @@ function serverConfigPath(context: vscode.ExtensionContext): string {
 }
 
 /**
- * The server, with every project it serves: the window's folders, and the known projects, open
- * or not, since the server lists its projects' logs whether or not they are open (Claude Code
- * in a terminal reaches it through their entries with VS Code closed).
+ * The server: the standalone install's when the `wpilog-mcp.useStandaloneServer` setting is on
+ * (standaloneServer.ts; the install's configuration then decides what it lists), else the
+ * extension's own daemon with every project it serves: the window's folders, and the known
+ * projects, open or not, since the server lists its projects' logs whether or not they are open
+ * (Claude Code in a terminal reaches it through their entries with VS Code closed).
  */
 function serverSpec(context: vscode.ExtensionContext): DaemonSpec {
+  if (useStandaloneServer()) return standaloneSpec();
   const folders = new Set<string>();
   for (const folder of (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === "file")) {
     folders.add(folder.uri.fsPath);
   }
   const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
   for (const folderPath of Object.keys(known)) folders.add(folderPath);
-  return { name: DAEMON_NAME, configPath: serverConfigPath(context), folderPaths: [...folders] };
+  return { kind: "own", name: DAEMON_NAME, configPath: serverConfigPath(context), folderPaths: [...folders] };
+}
+
+/** Whether the standalone install's server is to be used instead of the extension's own. */
+function useStandaloneServer(): boolean {
+  return vscode.workspace.getConfiguration("wpilog-mcp").get<boolean>("useStandaloneServer", false);
+}
+
+/** The standalone install's server, as the install is laid out now (looked for at each call). */
+function standaloneSpec(): StandaloneDaemonSpec {
+  const isFile = (file: string) => {
+    try {
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  return { kind: "standalone", name: STANDALONE_SERVER, ...findStandaloneInstall(os.homedir(), process.platform, isFile) };
 }
 
 /** The user's values: User settings, else the defaults. */
@@ -823,12 +847,25 @@ async function writeEntries(
 ): Promise<Set<string>> {
   const written = new Set<string>();
   if (targets.length === 0) return written;
-  const javaPath = await findJava();
-  if (!javaPath) return written;
-  const bundled = findJar(context.extensionPath);
-  if (!bundled) return written;
-  const jar = await stableJar(context, bundled, outputChannel);
-  const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap") || "4g";
+  // The entry runs the bridge to the server: the extension's own daemon from the stable JAR, or
+  // the standalone install's server through the install's launcher
+  const spec = serverSpec(context);
+  let entry: ServerEntry;
+  if (spec.kind === "standalone") {
+    if (spec.missing !== undefined) {
+      outputChannel.appendLine(`Claude Code's entry was not written: the standalone install cannot be used (${spec.missing}).`);
+      return written;
+    }
+    entry = buildStandaloneEntry(spec.launcher, spec.configPath, process.platform);
+  } else {
+    const javaPath = await findJava();
+    if (!javaPath) return written;
+    const bundled = findJar(context.extensionPath);
+    if (!bundled) return written;
+    const jar = await stableJar(context, bundled, outputChannel);
+    const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap") || "4g";
+    entry = buildServerEntry(javaPath, jar, maxHeap, spec.name, spec.configPath);
+  }
 
   for (const { folder, uri, text, asked } of targets) {
     // A folder the user asked for hears the outcome now; any other, once at most
@@ -865,16 +902,17 @@ async function writeEntries(
     }
 
     // This project's own settings are remembered first, so that its directories are in the
-    // server's configuration, which is written before the entry. The server's file is shared,
-    // so it is never removed here; the per-project file an earlier entry used is, once the new
-    // entry is in place. The entry connects to the daemon by the daemon's name.
+    // server's configuration, which is written before the entry (the extension's own server;
+    // the standalone server's configuration is the user's, and the project's directories do
+    // not join it). The server's file is shared, so it is never removed here; the per-project
+    // file an earlier entry used is, once the new entry is in place. The entry connects to the
+    // server by its name.
     const own = projectSettings(folder);
     const oldConfigPath = projectConfigPath(context, folder.uri.fsPath);
     await rememberProject(context, folder.uri.fsPath, own);
-    const spec = serverSpec(context);
     const outcome = await writeEntry(
       text,
-      buildServerEntry(javaPath, jar, maxHeap, spec.name, spec.configPath),
+      entry,
       {
         writeConfig: async () => {
           await serverManager.writeConfig(spec);

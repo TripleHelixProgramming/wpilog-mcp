@@ -1,11 +1,14 @@
 /**
- * Runs the server the extension shares with every client (see projectServers.ts): writes the
- * daemon's configuration, chooses its port, starts it with the server's own `start`, which is
- * idempotent and restarts a daemon of another version, restarts it when its configuration
- * changes, and tries again with backoff when a start fails. This is the VS Code side; the
- * decisions it makes are the pure functions in projectServers.ts. The manager keeps its state
- * per daemon name, so a second daemon would cost nothing here; there is one because the
- * extension found no use for more (doc/EXPLORER_PLAN.md, decision 5).
+ * Runs the server the extension shares with every client: its own daemon (see
+ * projectServers.ts), whose configuration it writes, whose port it chooses, which it starts
+ * with the server's own `start` (idempotent, and restarting a daemon of another version),
+ * restarts when its configuration changes, and tries again with backoff when a start fails; or
+ * the standalone install's server (see standaloneServer.ts), which it only starts with the
+ * install's launcher and asks for its port, since the install's configuration and version are
+ * the user's. This is the VS Code side; the decisions it makes are the pure functions in those
+ * two modules. The manager keeps its state per daemon name, so a second daemon would cost
+ * nothing here; there is one at a time because the extension found no use for more
+ * (doc/EXPLORER_PLAN.md, decision 5).
  */
 import { execFile } from "child_process";
 import * as fs from "fs";
@@ -29,15 +32,35 @@ import {
   stopCommand,
 } from "./projectServers";
 import { writeConfigFile } from "./projectConfigs";
+import {
+  STANDALONE_GUIDE_URL,
+  StandaloneInstall,
+  launcherCommand,
+  olderVersion,
+  portInPidFile,
+  standaloneStartArgs,
+  standaloneStopArgs,
+} from "./standaloneServer";
 
-/** A daemon: its name, its configuration file, and the projects it serves. */
-export interface DaemonSpec {
+/** The extension's own daemon: its name, its configuration file, and the projects it serves. */
+export interface OwnDaemonSpec {
+  kind: "own";
   /** The daemon's name, as `start`, `stop`, and `connect` know it (see DAEMON_NAME). */
   name: string;
   configPath: string;
   /** The projects the server lists the logs of, open or remembered; none when there is no project. */
   folderPaths: string[];
 }
+
+/** The standalone install's server: where the install is, and the server's name there. */
+export interface StandaloneDaemonSpec extends StandaloneInstall {
+  kind: "standalone";
+  /** The server's name in the install's configuration file (see STANDALONE_SERVER). */
+  name: string;
+}
+
+/** The server the extension runs: its own daemon, or the standalone install's server. */
+export type DaemonSpec = OwnDaemonSpec | StandaloneDaemonSpec;
 
 /** What a daemon is started from: the JVM, the JAR, and the configuration's values. */
 export interface DaemonInputs {
@@ -80,7 +103,7 @@ export class ServerManager implements vscode.Disposable {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
-    private readonly resolveInputs: (spec: DaemonSpec, prompt: boolean) => Promise<DaemonInputs | undefined>,
+    private readonly resolveInputs: (spec: OwnDaemonSpec, prompt: boolean) => Promise<DaemonInputs | undefined>,
     private readonly onChanged: () => void
   ) {}
 
@@ -93,8 +116,14 @@ export class ServerManager implements vscode.Disposable {
     return state;
   }
 
-  /** The port chosen for a daemon, from the extension's state, else from its configuration file. */
+  /**
+   * The port chosen for the extension's daemon, from the extension's state, else from its
+   * configuration file; the standalone server's, from the PID file its start wrote.
+   */
   async portFor(spec: DaemonSpec): Promise<number | undefined> {
+    if (spec.kind === "standalone") {
+      return portInPidFile(await fs.promises.readFile(spec.pidFile, "utf8").catch(() => undefined));
+    }
     const ports = this.context.globalState.get<Record<string, number>>(PORTS_KEY) ?? {};
     if (ports[spec.name] !== undefined) return ports[spec.name];
     const text = await fs.promises.readFile(spec.configPath, "utf8").catch(() => undefined);
@@ -114,12 +143,7 @@ export class ServerManager implements vscode.Disposable {
     return port === undefined ? undefined : serverUrl(port);
   }
 
-  /** The log directories a daemon was last started or configured with; none before then. */
-  logDirsOf(spec: DaemonSpec): string[] {
-    return this.states.get(spec.name)?.lastInputs?.logDirs ?? [];
-  }
-
-  /** Where a daemon writes its log. */
+  /** Where a daemon writes its log; the standalone server's is under the same folder, by its name. */
   logPath(spec: DaemonSpec): string {
     return serverLogPath(os.homedir(), spec.name);
   }
@@ -142,10 +166,12 @@ export class ServerManager implements vscode.Disposable {
   }
 
   /**
-   * Writes a daemon's configuration file from the current settings without starting anything;
-   * true when the file changed. The port is kept, or chosen when there is none yet.
+   * Writes the extension's daemon's configuration file from the current settings without
+   * starting anything; true when the file changed. The port is kept, or chosen when there is
+   * none yet. The standalone server's configuration is the user's file: nothing is written.
    */
   async writeConfig(spec: DaemonSpec): Promise<boolean> {
+    if (spec.kind === "standalone") return false;
     const inputs = await this.resolveInputs(spec, false);
     if (!inputs) return false;
     this.state(spec.name).lastInputs = inputs;
@@ -154,35 +180,29 @@ export class ServerManager implements vscode.Disposable {
     return writeConfigFile(spec.configPath, buildDaemonConfig({ ...inputs, name: spec.name, port }));
   }
 
-  /**
-   * Stops a daemon if one answers on its port: for a project whose configuration changed while
-   * it was closed, so that whoever needs it next starts it with the new configuration.
-   */
-  async stopIfRunning(spec: DaemonSpec): Promise<void> {
-    const port = await this.portFor(spec);
-    if (port === undefined) return;
-    if ((await this.probe(port)).kind !== "ours") return;
-    const inputs = this.state(spec.name).lastInputs ?? (await this.resolveInputs(spec, false));
-    if (!inputs) return;
-    this.output.appendLine(`${spec.name}: the configuration changed; stopping the server.`);
-    await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
-  }
-
   /** Stops a daemon and starts it again from the current configuration. */
   async restart(spec: DaemonSpec): Promise<string | undefined> {
     const state = this.state(spec.name);
     this.cancelRetry(state);
     state.backoff.reset();
     state.errorShown = false;
+    if (spec.kind === "standalone") {
+      if (spec.missing === undefined) {
+        const stop = launcherCommand(spec.launcher, standaloneStopArgs(spec.configPath), process.platform);
+        await this.run(stop.command, stop.args, stop.windowsVerbatimArguments);
+      }
+      return this.ensure(spec);
+    }
     const inputs = state.lastInputs ?? (await this.resolveInputs(spec, false));
     if (inputs) {
-      await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
+      await this.run(inputs.javaPath, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
     }
     return this.ensure(spec);
   }
 
   private async doEnsure(spec: DaemonSpec, state: DaemonState, prompt: boolean): Promise<string | undefined> {
     this.cancelRetry(state);
+    if (spec.kind === "standalone") return this.ensureStandalone(spec, state);
     const inputs = await this.resolveInputs(spec, prompt);
     if (!inputs) return undefined;
     state.lastInputs = inputs;
@@ -212,11 +232,11 @@ export class ServerManager implements vscode.Disposable {
     }
     if (verdict.kind === "ours" && changed) {
       this.output.appendLine(`${spec.name}: the configuration changed; restarting the server.`);
-      await this.run(inputs, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
+      await this.run(inputs.javaPath, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
     }
 
     const result = await this.run(
-      inputs,
+      inputs.javaPath,
       startCommand(inputs.maxHeap, inputs.jarPath, spec.name, spec.configPath)
     );
     if (result.code === 0) {
@@ -225,6 +245,66 @@ export class ServerManager implements vscode.Disposable {
     this.output.appendLine(`ERROR: the server ${spec.name} did not start (exit ${result.code}).`);
     this.scheduleRetry(spec, state);
     return undefined;
+  }
+
+  /**
+   * Makes sure the standalone install's server runs, with the install's own launcher: `start`
+   * returns at once when it is running, else starts it, and the PID file then holds its port.
+   * Nothing is written and nothing is chosen, since the install's configuration is the user's;
+   * a start that fails, or an install that is not there, is reported once, and tried again
+   * whenever something next needs the server, not with backoff, since what is wrong is in the
+   * install for the user to fix. An older server is not replaced, as the extension's own would
+   * be (the install upgrades with its own installer); the output says so, since the explorer
+   * needs what newer servers have.
+   */
+  private async ensureStandalone(spec: StandaloneDaemonSpec, state: DaemonState): Promise<string | undefined> {
+    if (spec.missing !== undefined) {
+      this.output.appendLine(`ERROR: the standalone install cannot be used: ${spec.missing}.`);
+      this.reportStandaloneOnce(
+        state,
+        `WPILog Analyzer: wpilog-mcp.useStandaloneServer is on, but the standalone install was not found (${spec.missing}). ` +
+          "Install it, or turn the setting off to use the extension's own server.",
+        "Open Settings",
+        () => vscode.commands.executeCommand("workbench.action.openSettings", "wpilog-mcp.useStandaloneServer")
+      );
+      return undefined;
+    }
+    const start = launcherCommand(spec.launcher, standaloneStartArgs(spec.configPath), process.platform);
+    const result = await this.run(start.command, start.args, start.windowsVerbatimArguments);
+    const port = result.code === 0 ? await this.portFor(spec) : undefined;
+    const verdict = port === undefined ? undefined : await this.probe(port);
+    if (port === undefined || verdict?.kind !== "ours") {
+      this.output.appendLine(
+        `ERROR: the standalone server ${spec.name} did not start` +
+          (result.code === 0 ? ` (no port recorded in ${spec.pidFile}).` : ` (exit ${result.code}).`)
+      );
+      this.reportStandaloneOnce(
+        state,
+        `WPILog Analyzer: the standalone install's server ${spec.name} could not be started. The output shows why; ` +
+          "the server's own log may say more.",
+        "Show Server Log",
+        () => this.showLog(spec)
+      );
+      return undefined;
+    }
+    const extensionVersion = this.context.extension.packageJSON.version as string;
+    if (olderVersion(verdict.version, extensionVersion)) {
+      this.output.appendLine(
+        `WARNING: the standalone server is version ${verdict.version ?? "unknown"}, older than the extension ` +
+          `(${extensionVersion}); WPILog Explorer may not work until the standalone install is upgraded (${STANDALONE_GUIDE_URL}).`
+      );
+    }
+    return this.started(spec, state, port);
+  }
+
+  /** Shows a standalone failure once per activation (until a restart), with the output offered. */
+  private reportStandaloneOnce(state: DaemonState, message: string, action: string, act: () => unknown) {
+    if (state.errorShown) return;
+    state.errorShown = true;
+    void vscode.window.showErrorMessage(message, "Show Output", action).then((choice) => {
+      if (choice === "Show Output") this.output.show();
+      if (choice === action) void act();
+    });
   }
 
   private started(spec: DaemonSpec, state: DaemonState, port: number): string {
@@ -283,17 +363,18 @@ export class ServerManager implements vscode.Disposable {
     }
   }
 
-  /** Runs the JAR with the arguments, logging what it prints; never throws. */
+  /** Runs a program with the arguments, logging what it prints; never throws. */
   private run(
-    inputs: DaemonInputs,
-    args: string[]
+    command: string,
+    args: string[],
+    windowsVerbatimArguments = false
   ): Promise<{ code: number | undefined; output: string }> {
-    this.output.appendLine(`Running: ${inputs.javaPath} ${args.join(" ")}`);
+    this.output.appendLine(`Running: ${command} ${args.join(" ")}`);
     return new Promise((resolve) => {
       execFile(
-        inputs.javaPath,
+        command,
         args,
-        { timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20 },
+        { timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20, windowsVerbatimArguments },
         (error, stdout, stderr) => {
           const output = `${stdout}${stderr}`.trim();
           if (output) this.output.appendLine(output);

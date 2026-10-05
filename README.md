@@ -66,7 +66,7 @@ Both take the same three settings: where your logs are (one directory or several
 
 Most people want the extension. The standalone install is for Claude Code or Claude Desktop without VS Code, for the HTTP transport, and for settings the extension doesn't offer: disk cache size, export directory, scan depth, and named server configurations in `servers.yaml`.
 
-You can install both. Each keeps its own settings and its own disk cache; the extension leaves alone any project that already runs the standalone server. [Using It Alongside the Standalone Install](vscode-extension/README.md#using-it-alongside-the-standalone-install) has the details, including what to turn off if you registered the standalone server for every project.
+You can install both. Each keeps its own settings and its own disk cache; the extension leaves alone any project that already runs the standalone server. [Using It Alongside the Standalone Install](vscode-extension/README.md#using-it-alongside-the-standalone-install) has the details, including what to turn off if you registered the standalone server for every project. Or have the extension use the standalone server: its **Use Standalone Server** setting makes the standalone install's `http` server, with that install's settings, the one every client on the computer shares, VS Code's agents and the extension's own viewer included ([details](vscode-extension/README.md#using-the-standalone-server)).
 
 ## Guardrails
 

@@ -261,6 +261,8 @@ wpilog-mcp connect --url http://pit:2363     # any server, by URL, started by no
 ```
 `connect <name>` does what `start <name>` does first, so a client started with it gets a server whether or not one was running, and a client started beside a running one shares it; `connect --url` starts nothing. Each connected client gets a session of its own, ended when the client closes its end. With `idle_exit_minutes` set (see [Config Fields](#config-fields)), the server exits on its own once every client has gone and the time has passed, so a server that is started on demand need never be stopped by hand.
 
+The VS Code extension can join in: with its **Use Standalone Server** setting on, it starts this `http` server with the launcher instead of running a server of its own, and VS Code's agents, its viewer, and Claude Code's entries in robot projects all use it, with this file's settings ([Using the Standalone Server](../vscode-extension/README.md#using-the-standalone-server)).
+
 The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
 
 Started with flags, `wpilog-mcp --http` runs the HTTP server in the foreground instead, as the Docker image below does.

@@ -41,6 +41,7 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.teamNumber",
     "wpilog-mcp.tbaApiKey",
     "wpilog-mcp.enableForClaudeCode",
+    "wpilog-mcp.useStandaloneServer",
     "wpilog-mcp.javaPath",
     "wpilog-mcp.wpiLibYear",
     "wpilog-mcp.maxHeap",
@@ -189,6 +190,18 @@ test("the idle exit is a whole number of minutes, thirty by default, and zero tu
   assert.equal(idle.type, "integer");
   assert.equal(idle.default, 30);
   assert.equal(idle.minimum, 0);
+});
+
+test("the standalone server is a checkbox in the User settings, off until the user has the install", () => {
+  const setting = settings["wpilog-mcp.useStandaloneServer"];
+  assert.equal(setting.type, "boolean");
+  assert.equal(setting.default, false);
+  assert.equal(setting.scope, "application", "one install per user, not per workspace");
+  assert.match(setting.markdownDescription, /STANDALONE\.md/, "says where the install is described");
+  assert.match(setting.markdownDescription, /servers\.yaml/, "says whose settings apply");
+  for (const overridden of ["Log Directory", "Team Number", "Max Heap", "Idle Exit Minutes"]) {
+    assert.ok(setting.markdownDescription.includes(`**${overridden}**`), `says ${overridden} does not apply`);
+  }
 });
 
 test("there is one server per computer: no setting defines more, and no project names one", () => {
