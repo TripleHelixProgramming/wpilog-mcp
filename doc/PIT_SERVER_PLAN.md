@@ -10,11 +10,13 @@ Today wpilog-mcp reads log files. A robot writes a `.wpilog` file while it runs;
 
 The pit server closes that gap. It is one program, running on a laptop or a small computer on the robot's network in the shop, and on the Driver Station laptop in the pit. While the robot is on, the pit server subscribes to the robot's NetworkTables, the live stream of values the robot publishes, and records every change to a log file of its own. When the robot reboots, a new session begins. Nobody has to remember anything: if the robot ran, the data exists.
 
+It also fetches the robot's own log files. Whenever the robot is sitting disabled on the robot's network, the pit server copies any log it has not seen yet from the roboRIO, slowly enough not to get in anyone's way, and stops the moment the robot is enabled. The pulled log is the full record the robot wrote; the recording is what the pit server heard; the pit server keeps both and knows which is which.
+
 Because the pit server is the same program as wpilog-mcp, every tool the assistant already has works on those recordings, including the one still being written. The process that writes the recording is the process that answers questions about it, so it never has to read its own file back: the index and the values are already in memory as they arrive, and a question about the last ten seconds is answered as fast as one about a file read an hour ago. "What is the battery voltage right now?" and "what happened in that run twenty minutes ago?" are answered from the same place. Logs pulled from the robot are still imported, and where they overlap a recording they take precedence, since the robot's own log sees more than the network does.
 
 ### Why
 
-- **Logs stop getting lost.** The recording exists for every session, whether or not the file on the robot was ever copied.
+- **Logs stop getting lost.** The recording exists for every session, whether or not the file on the robot was ever copied, and the file on the robot is copied anyway, on its own, the next time the robot sits disabled.
 - **The robot can die and the data survives.** A robot that loses power mid-run leaves a truncated file on its own storage. The pit server has everything the robot published up to the moment it went quiet.
 - **Questions can be asked while the robot is running.** A student tuning a mechanism asks the assistant what the last ten seconds looked like, without stopping to pull a file.
 - **The robot sees one listener.** Every laptop in the shop that wants live data today connects to the robot itself, and the robot sends each one its own copy of everything. The pit server subscribes once and serves everyone else, so the robot's network link carries one stream however many people are watching.
@@ -75,6 +77,7 @@ These are settled; the sections after them follow from them.
 7. **Authentication precedes exposure.** The HTTP transport refuses to bind beyond the local machine until a bearer token is configured.
 8. **Context is written into the capture**, as JSON entries, not into sidecar files. One file holds the data and what gives it meaning, timestamped when it was taken.
 9. **The writer builds the index.** The process writing a capture is the process reading it, and it knows each record's byte offset as it writes it and holds each value already decoded. So an open session is served from an in-memory log the writer extends with every record, never by reading the file back; the file is the durable copy. Reading a growing file written by another process stays possible through an incremental rescan, as a secondary path.
+10. **The robot's logs are pulled only while it is disabled, throttled, and never deleted from the robot.** The pit server reads the robot's state from the stream it already receives; a transfer runs only while that state has been disabled for a few seconds, pauses the moment it is not, and is capped to a configured rate. Removing a log from the robot is a later, opt-in step with verification, never a side effect of pulling.
 
 ### 3. Architecture
 
@@ -87,6 +90,7 @@ Code map additions, following the existing package layout:
 | `nt4/server` | The gateway: the WebSocket server, per-client subscriptions, announcement and value fan-out |
 | `capture` | Session detection, the session writer (DataLog) and the live log it extends as it writes, topic cost accounting, exclusion and thinning policy |
 | `capture/context` | Context providers: PhotonVision first |
+| `capture/pull` | The log puller: the robot-state gate, the remote listing and transfer over SFTP, resume, throttling, the pull manifest |
 | `mcp` | Bearer-token authentication on the HTTP transport (existing package) |
 | `tools` | The live tools (existing package, a new module `LiveTools`) |
 
@@ -149,7 +153,7 @@ The writer and the reader are one process, so an open session is a `LogData` the
 
 **The log manager serves it directly.** The capture's path maps to the `LiveLog` while the session is open: `getOrLoad` returns the instance without a file check, since the file changes constantly by design, and the after-call check that discards a result read across a change does not apply, since the call read a fixed prefix. When the session ends, the instance stays in the cache as a finished log until it is evicted; a later load of the path reads the file like any other log, and the two must agree, which a test checks by comparing the live instance's answers with a fresh load of the finished file.
 
-**Incremental rescan, the secondary path.** A process that is not the writer, such as a laptop's local server pointed at a capture on a shared folder, sees a file that grows. For it, `LogScan` gains `resume(LogScan previous, DataLogReader reader, Path path)`: it starts at the byte offset where the previous scan stopped, keeps the previous entries and offsets, and appends; a file that ends inside a record (the writer mid-flush) stops the scan there, records that position as the resume point, and does not count it as damage. The log manager reloads a file that grew with the same identity and an unchanged prefix by resuming, and anything else afresh. This is milestone 7, useful on its own and not needed by the pit server itself.
+**Incremental rescan, the secondary path.** A process that is not the writer, such as a laptop's local server pointed at a capture on a shared folder, sees a file that grows. For it, `LogScan` gains `resume(LogScan previous, DataLogReader reader, Path path)`: it starts at the byte offset where the previous scan stopped, keeps the previous entries and offsets, and appends; a file that ends inside a record (the writer mid-flush) stops the scan there, records that position as the resume point, and does not count it as damage. The log manager reloads a file that grew with the same identity and an unchanged prefix by resuming, and anything else afresh. This is milestone 8, useful on its own and not needed by the pit server itself.
 
 ### 7. The gateway
 
@@ -190,9 +194,19 @@ Three tools, in a `LiveTools` module registered only when capture is enabled, an
 
 Every result carries `inputs.session` (the capture path). Descriptions say what the values are and are not: the latest published, not measured, values; a stale `age_ms` means the topic stopped publishing, not that the robot stopped. The claim checks apply as to every tool.
 
-### 10. Sessions and imported logs
+### 10. Imported logs: pulling from the robot, and matching to sessions
 
-A pulled log of the same boot is matched to a session by the machinery REV synchronization uses: names nominate (a Driver Station entry both carry, a battery voltage, a loop count), the data decides (cross-correlation), and the offset must be near zero since both are on the FPGA clock. A match is recorded in a manifest beside the capture (`<capture>.session.json`: the session's facts and its imports) that `list_sessions` reads and the listing shows as `session`. No database: manifests are files, in keeping with the project's "nothing to operate" goal; a catalog over many seasons is a later decision, made when the files are many.
+**Pulling.** The robot writes its own logs to its storage: DataLogManager to `/home/lvuser/logs`, or to `/u/logs` when a USB drive is present; AdvantageKit to the USB drive's `/U/logs`; REVLib's status logger wherever it is configured. The puller copies those directories to the pit server's log directory, under `pulled/<robot>/`, keeping the robot's file names, which encode the time, event, and match that the listing reads. It behaves as `rsync` would, without the tool:
+
+- **Transport**: SFTP over SSH to the roboRIO, as the `lvuser` account (no password by default; a key or a password may be configured). The host key is pinned on first contact per robot and a change is reported, since a reimaged roboRIO has a new one. The SSH client is a library dependency, the smallest maintained one that serves; the choice is an open question (§15).
+- **The gate**: a transfer step runs only while the robot has been disabled for at least a configured settle time (default 5 s), read from the control word the robot publishes (`/FMSInfo/FMSControlData`, the enabled bit), and while the pit server's NT4 connection is up, so the state is current. The moment the state is anything else, the step in progress finishes its current block and the transfer pauses; it resumes from where it stopped when the gate reopens. With no NT4 connection the puller does nothing: it will not guess that a robot it cannot hear is idle.
+- **What to copy**: the remote listing (name, size, modification time) against a manifest of what has been pulled (`pulled/<robot>/.pull-manifest.json`: remote name, size, modification time, bytes copied, verified). A file not in the manifest is new; one whose size grew is fetched from the bytes already copied, since the logs are append-only; one whose size shrank or whose modification time went backward is treated as a new file under the same name, kept beside the old copy. The file the robot is writing now is copied like any other and grows across passes; the reload path handles the local copy's growth. When DataLogManager renames an open log once the Driver Station supplies the time and match, the old name disappears and a new name appears with the same prefix bytes; the puller recognizes the prefix (the first 64 KB match) and renames the local copy rather than copying again.
+- **Throttle**: a configured rate cap (default 1 MB/s), enforced on the reading side by pacing block reads, and one transfer at a time. The roboRIO's processor is small and SSH encryption costs it; the cap protects the robot as much as the network.
+- **Verification**: after a file's size has been stable on the robot for one pass, the local copy is loaded through the normal path; a copy that loads, with its scan ending at the file's end, is marked verified in the manifest. A copy that does not is fetched again from the start, once.
+- **Deletion**: never, in this version. Freeing the robot's storage is a later, opt-in action that requires a verified copy and says what it removed.
+- **Reporting**: `list_sessions` gains `pulls[]` per robot: the last pass, files copied, bytes, and files waiting for the gate; the server log says when a pull starts, pauses, resumes, and completes.
+
+**Matching.** A pulled log of the same boot is matched to a session by the machinery REV synchronization uses: names nominate (a Driver Station entry both carry, a battery voltage, a loop count), the data decides (cross-correlation), and the offset must be near zero since both are on the FPGA clock. A match is recorded in a manifest beside the capture (`<capture>.session.json`: the session's facts and its imports) that `list_sessions` reads and the listing shows as `session`. The pulled log is the authoritative record of its session; the capture stands in where no pulled log exists and fills the gap where the pulled log is truncated. No database: manifests are files, in keeping with the project's "nothing to operate" goal; a catalog over many seasons is a later decision, made when the files are many.
 
 ### 11. Authentication
 
@@ -214,11 +228,12 @@ Each leaves the project working and tested on its own.
 
 1. **NT4 protocol and client** (§4), with the gateway's core as its test fixture.
 2. **Session writer and live log** (§5, §6): captures appear in the log directory, and every existing tool works on an open session from memory and on a finished one from its file. Stress test on a real robot in the shop.
-3. **Authentication** (§11) and the live tools (§9).
-4. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
-5. **PhotonVision provider** (§8) and the vision tools' `camera_settings`.
-6. **Session manifests and import matching** (§10), and the extension's pit server settings (§12).
-7. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
+3. **Log puller** (§10): the robot's logs arrive on their own; tested against a real roboRIO in the shop before it is on by default.
+4. **Authentication** (§11) and the live tools (§9).
+5. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
+6. **PhotonVision provider** (§8) and the vision tools' `camera_settings`.
+7. **Session manifests and import matching** (§10), and the extension's pit server settings (§12).
+8. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
 
 ### 14. Testing
 
@@ -228,6 +243,7 @@ Each leaves the project working and tested on its own.
 - **Live log**: a session replayed through the writer answers every tool the same as a fresh load of the finished file (entries, sample counts, statistics, time range); a reader that starts mid-session sees a consistent prefix while the writer appends from another thread, checked under the stress test's concurrent calls; values past the hot window read from the file equal the values that were in memory.
 - **Growing files** (§6, secondary path): the resumed scan equals a fresh scan.
 - **Gateway**: a client with `all` receives every change; one without receives the latest per period; a `publish` from a client changes nothing upstream; the time-sync answer is robot time within the measured offset's error.
+- **Puller**: the gate, the listing comparison, resume offsets, the rename-by-prefix rule, the throttle's pacing, and the manifest are pure logic tested against a fake remote in memory: a file that grew is fetched from its old size; a file that shrank is a new file; a transfer in progress pauses within one block of the state leaving disabled and resumes at the same offset; the manifest round-trips. The SFTP client itself is covered by an opt-in test against a real roboRIO, named by a property, like the real-log suites.
 - **Authentication**: a request without the token is refused; with it, served; a bind beyond loopback without a token fails at startup.
 - **Live tools**: the claim checks, the conformance sweep (with capture enabled on a replayed fixture), and determinism.
 - **Windows**: the capture file is open for writing while the server reads it; the tests cover that on Windows, where a mapped file cannot be replaced but can be appended to and read.
@@ -239,3 +255,5 @@ Each leaves the project working and tested on its own.
 - The Claude Code token path (§12).
 - Whether a capture's `_cap` marker should instead be a directory convention. The marker keeps the listing's name parsing unchanged.
 - When a catalog beyond manifest files is warranted (§10).
+- The SSH library for the puller (§10): the maintained JSch fork is small; Apache MINA SSHD is large but has a test server. The choice weighs the standalone install's size against testability.
+- Whether the puller should also copy files the server does not read, such as CTRE's `.hoot` signal logs, so that the robot's storage holds nothing the pit server lacks. The proposal is a configured list of patterns, with `.wpilog` and `.revlog` by default.
