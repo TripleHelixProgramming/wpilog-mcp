@@ -34,8 +34,8 @@ export type EntryNode =
   | { kind: "group"; label: string; path: string; children: EntryNode[] }
   /** An entry: its last segment, its type and count, and whether it has field paths to show. */
   | { kind: "entry"; label: string; description: string; tooltip: string; entry: ListedEntry; expandable: boolean }
-  /** A numeric field path inside an entry, as the numeric tools address it. */
-  | { kind: "field"; label: string; description: string; fieldPath: string; entry: ListedEntry }
+  /** A numeric field path inside an entry, as the numeric tools address it; a `[*]` path expands to its elements. */
+  | { kind: "field"; label: string; description: string; fieldPath: string; entry: ListedEntry; elements?: number }
   /** A line that is not an entry: nothing matched, or the listing failed. */
   | { kind: "note"; label: string; tooltip?: string };
 
@@ -128,17 +128,65 @@ export function buildFieldNodes(entry: ListedEntry, info: Record<string, unknown
   if (paths.length === 0) {
     return [{ kind: "note", label: "No numeric fields" }];
   }
+  const length = arrayLength(info);
   return paths.map((fieldPath) => {
     const first = /^(?:\[\*\])?\.?([^.[]+)/.exec(fieldPath)?.[1];
     const type = first ? types.get(first) : undefined;
+    const pooled = fieldPath.includes("[*]");
     return {
       kind: "field",
       label: fieldPath,
-      description: type ?? "",
+      description: pooled && length > 0 ? `${type ?? ""}${type ? " · " : ""}${length} elements` : type ?? "",
       fieldPath,
       entry,
+      ...(pooled && length > 0 ? { elements: length } : {}),
     };
   });
+}
+
+/** How many elements the tree shows for an array: a PDH has 24 channels, a camera a few tags. */
+export const MAX_ELEMENTS_SHOWN = 100;
+
+/**
+ * The length of an array entry's values, from the representative samples `get_entry_info`
+ * gives (`value_length` where a long array was cut, else the value's own length), the longest
+ * of them: a struct array that is sometimes empty still has elements to plot.
+ */
+export function arrayLength(info: Record<string, unknown>): number {
+  const samples = Array.isArray(info.sample_values) ? info.sample_values : [];
+  let longest = 0;
+  for (const sample of samples) {
+    const s = sample as { value?: unknown; value_length?: unknown };
+    const n = typeof s.value_length === "number" ? s.value_length : Array.isArray(s.value) ? s.value.length : 0;
+    if (n > longest) longest = n;
+  }
+  return longest;
+}
+
+/**
+ * The elements of a `[*]` field path, each a field node the tools take by index
+ * (`[3].speed`), up to the shown limit, with a note when the array is longer.
+ */
+export function elementNodes(field: { fieldPath: string; entry: ListedEntry; elements?: number }): EntryNode[] {
+  const length = field.elements ?? 0;
+  if (!field.fieldPath.includes("[*]") || length <= 0) return [];
+  const shown = Math.min(length, MAX_ELEMENTS_SHOWN);
+  const nodes: EntryNode[] = [];
+  for (let i = 0; i < shown; i++) {
+    const fieldPath = field.fieldPath.replace("[*]", `[${i}]`);
+    nodes.push({ kind: "field", label: fieldPath, description: "", fieldPath, entry: field.entry });
+  }
+  if (length > shown) {
+    nodes.push({ kind: "note", label: `${length - shown} more elements; address one as ${field.fieldPath.replace("[*]", `[${shown}]`)}` });
+  }
+  return nodes;
+}
+
+/** The element paths to plot for a `[*]` path: the first `limit` elements. */
+export function elementPaths(entryName: string, fieldPath: string, length: number, limit: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < Math.min(length, limit); i++) out.push(entryName + fieldPath.replace("[*]", `[${i}]`));
+  return out;
 }
 
 /** Seconds as the editor shows a time range: `12.658 s`. */

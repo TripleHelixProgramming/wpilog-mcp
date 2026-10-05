@@ -291,6 +291,13 @@ class DataEndpointTest {
     var entries = JsonParser.parseString(fieldStream.metadata().get("entries")).getAsJsonArray();
     assertEquals("/RealOutputs/Drive/Pose", entries.get(0).getAsJsonObject().get("entry").getAsString());
     assertEquals(".translation.x", entries.get(0).getAsJsonObject().get("field").getAsString());
+    // The pose's fields over a teleop stretch, for the extension's field view checks
+    for (var part : List.of("translation.x", "translation.y", "rotation.value")) {
+      var name = "/RealOutputs/Drive/Pose." + part;
+      save("pose_" + part.replace('.', '_'),
+          get(params("names", name, "start_time", "43", "end_time", "63")),
+          get(params("names", name, "start_time", "43", "end_time", "63", "format", "csv")));
+    }
 
     var array = get(params("names", "/PowerDistribution/ChannelCurrent", "start_time", "43", "end_time", "43.2"));
     assertEquals(200, array.statusCode());

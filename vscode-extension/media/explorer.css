@@ -126,3 +126,26 @@ td.plot-cell { width: 28px; padding: 0 4px; }
 button.row-plot { background: none; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); color: var(--vscode-foreground); border-radius: 3px; cursor: pointer; padding: 0 6px; font-size: 0.85em; }
 button.row-plot:hover { background: var(--vscode-button-secondaryHoverBackground); }
 button.row-plot:disabled { opacity: 0.4; cursor: default; }
+
+/* ---- the console and the field ---- */
+details { margin: 8px 0; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 4px; padding: 4px 8px; }
+details > summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+.console-bar { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.console-bar input[type="search"], .field-bar select, .console-bar select {
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent); padding: 3px 6px; font-family: inherit; font-size: inherit;
+}
+.console-bar input[type="search"] { flex: 1 1 240px; max-width: 420px; }
+.console-window { display: inline-flex; align-items: center; gap: 4px; }
+.console-list { max-height: 320px; overflow: auto; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
+.console-line { display: flex; gap: 8px; padding: 1px 4px; cursor: pointer; white-space: pre-wrap; word-break: break-word; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
+.console-line:hover { background: var(--vscode-list-hoverBackground); }
+.console-line.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.console-time { flex: 0 0 72px; text-align: right; font-variant-numeric: tabular-nums; }
+.console-level { flex: 0 0 66px; font-size: 0.85em; text-transform: uppercase; }
+.console-entry { flex: 0 0 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-text { flex: 1 1 auto; }
+.console-repeat, .console-alert { flex: 0 0 auto; font-size: 0.85em; }
+.field-bar { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.field-canvas { display: block; width: 100%; height: 300px; border-radius: 3px; }
+.small { font-size: 0.9em; }

@@ -173,9 +173,47 @@
     return i - 1;
   }
 
+  /**
+   * How the field is drawn on a canvas: the field's meters to pixels, the whole field fitted
+   * inside the canvas with a margin, the long side along the canvas's width, and y up, as the
+   * WPILib field coordinate system has it (the origin at the blue alliance's right corner, x
+   * along the field's length). Returns {scale, x0, y0, width, height}, with toX and toY.
+   */
+  function fieldTransform(lengthM, widthM, canvasW, canvasH, margin = 8) {
+    const scale = Math.min((canvasW - 2 * margin) / lengthM, (canvasH - 2 * margin) / widthM);
+    const width = lengthM * scale;
+    const height = widthM * scale;
+    const x0 = (canvasW - width) / 2;
+    const y0 = (canvasH - height) / 2;
+    return {
+      scale, x0, y0, width, height,
+      toX: (xM) => x0 + xM * scale,
+      toY: (yM) => y0 + height - yM * scale,
+    };
+  }
+
+  /**
+   * Times reduced to the pixel columns of a strip (the timeline's marks): at most one mark per
+   * column, so ten thousand console lines are a few hundred marks, each the column's first time.
+   */
+  function markColumns(times, t0, t1, widthPx) {
+    const span = t1 - t0;
+    const columns = new Set();
+    const out = [];
+    for (const t of times) {
+      if (!(t >= t0 && t <= t1) || span <= 0) continue;
+      const c = Math.min(widthPx - 1, Math.floor(((t - t0) / span) * widthPx));
+      if (!columns.has(c)) {
+        columns.add(c);
+        out.push(t);
+      }
+    }
+    return out;
+  }
+
   return {
     SAMPLE_BUDGET, MAX_BUCKETS, BUCKETS_PER_PIXEL, DEBOUNCE_MS, STATISTICS_DEBOUNCE_MS,
     planRequest, planCovers, requestKey, drawMode, lowerBound, visibleRange, reduce, zoom, pan,
-    indexAtOrBefore,
+    indexAtOrBefore, fieldTransform, markColumns,
   };
 });

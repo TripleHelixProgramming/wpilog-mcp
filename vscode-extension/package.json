@@ -172,6 +172,11 @@
         "category": "WPILog Explorer"
       },
       {
+        "command": "wpilog-mcp.explorer.plotElements",
+        "title": "Plot Every Element",
+        "category": "WPILog Explorer"
+      },
+      {
         "command": "wpilog-mcp.explorer.refreshLog",
         "title": "Reload Log",
         "category": "WPILog Explorer",
@@ -223,6 +228,11 @@
           "group": "navigation@1"
         },
         {
+          "command": "wpilog-mcp.explorer.plotElements",
+          "when": "view == wpilog-mcp.entries && viewItem == wpilogFieldPooled",
+          "group": "navigation@1"
+        },
+        {
           "command": "wpilog-mcp.explorer.showEntry",
           "when": "view == wpilog-mcp.entries && (viewItem == wpilogEntry || viewItem == wpilogField)",
           "group": "navigation@2"
@@ -254,6 +264,10 @@
         },
         {
           "command": "wpilog-mcp.explorer.plotEntry",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.plotElements",
           "when": "false"
         },
         {

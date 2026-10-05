@@ -4,8 +4,12 @@ import * as assert from "node:assert/strict";
 import {
   EntryNode,
   ListedEntry,
+  MAX_ELEMENTS_SHOWN,
+  arrayLength,
   buildEntryTree,
   buildFieldNodes,
+  elementNodes,
+  elementPaths,
   formatCount,
   formatSeconds,
   hasFieldPaths,
@@ -101,4 +105,37 @@ test("counts and seconds are shown as the views show them", () => {
   assert.equal(formatCount(NaN), "");
   assert.equal(formatSeconds(12.658122), "12.658 s");
   assert.equal(formatSeconds(undefined), "");
+});
+
+test("an array's length comes from the longest representative sample, cut or not", () => {
+  assert.equal(arrayLength({ sample_values: [{ value: [1, 2, 3] }, { value: [] }, { value: [1] }] }), 3);
+  assert.equal(arrayLength({ sample_values: [{ value: [1, 2], value_length: 24, value_truncated: true }] }), 24, "a cut array reports its full length");
+  assert.equal(arrayLength({ sample_values: [{ value: 1.5 }] }), 0, "a scalar has no length");
+  assert.equal(arrayLength({}), 0);
+});
+
+test("a [*] field path expands to its elements, each a path the tools take by index, with a note past the limit", () => {
+  const entry = entries[6]; // PoseObservations, struct array
+  const info = {
+    numeric_leaf_paths: ["[*].timestamp", "[*].tagCount"],
+    struct: { fields: [{ name: "timestamp", type: "double" }, { name: "tagCount", type: "int32" }], is_array: true },
+    sample_values: [{ value: [{}, {}, {}] }],
+  };
+  const fields = buildFieldNodes(entry, info);
+  assert.ok(fields[0].kind === "field" && fields[0].elements === 3 && fields[0].description === "double · 3 elements");
+  const children = elementNodes(fields[0] as { fieldPath: string; entry: ListedEntry; elements?: number });
+  assert.deepEqual(children.map((c) => c.label), ["[0].timestamp", "[1].timestamp", "[2].timestamp"]);
+  assert.ok(children.every((c) => c.kind === "field" && c.entry === entry));
+  // A plain path has no elements
+  assert.deepEqual(elementNodes({ fieldPath: ".translation.x", entry: entries[1] }), []);
+  // A long array is cut with a note that says how to address the rest
+  const long = elementNodes({ fieldPath: "[*]", entry: entries[7], elements: MAX_ELEMENTS_SHOWN + 5 });
+  assert.equal(long.length, MAX_ELEMENTS_SHOWN + 1);
+  assert.equal(long[MAX_ELEMENTS_SHOWN].kind, "note");
+  assert.ok(long[MAX_ELEMENTS_SHOWN].label.includes(`[${MAX_ELEMENTS_SHOWN}]`));
+  // A numeric array's leaf path is [*] itself
+  const currents = buildFieldNodes(entries[7], { numeric_leaf_paths: ["[*]"], sample_values: [{ value: [1, 2, 3, 4] }] });
+  assert.ok(currents[0].kind === "field" && currents[0].elements === 4);
+  assert.deepEqual(elementPaths("/PDH/Currents", "[*]", 4, 16), ["/PDH/Currents[0]", "/PDH/Currents[1]", "/PDH/Currents[2]", "/PDH/Currents[3]"]);
+  assert.deepEqual(elementPaths("/V/Obs", "[*].tagCount", 30, 2), ["/V/Obs[0].tagCount", "/V/Obs[1].tagCount"], "a plot takes the first few");
 });

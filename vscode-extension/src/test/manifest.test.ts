@@ -101,6 +101,7 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.explorer.copyLogPath",
     "wpilog-mcp.explorer.showEntry",
     "wpilog-mcp.explorer.plotEntry",
+    "wpilog-mcp.explorer.plotElements",
     "wpilog-mcp.explorer.refreshLog",
   ]);
   for (const c of commands) {
@@ -162,12 +163,13 @@ test("every menu names a declared command, and every view-title button has an ic
     "wpilog-mcp.explorer.copyLogPath",
     "wpilog-mcp.explorer.showEntry",
     "wpilog-mcp.explorer.plotEntry",
+    "wpilog-mcp.explorer.plotElements",
   ]);
 });
 
 test("the plot's libraries are bundled with their licenses, at the versions the vendor table pins", () => {
   const root = path.join(__dirname, "..", "..");
-  for (const asset of ["media/plot.js", "media/plotMath.js", "media/arrowStream.js", "media/vendor/uPlot.iife.min.js",
+  for (const asset of ["media/plot.js", "media/plotMath.js", "media/arrowStream.js", "media/console.js", "media/field.js", "media/vendor/uPlot.iife.min.js",
     "media/vendor/uPlot.min.css", "media/vendor/uPlot.LICENSE", "media/vendor/README.md"]) {
     assert.ok(fs.existsSync(path.join(root, asset)), asset);
   }
@@ -178,7 +180,7 @@ test("the plot's libraries are bundled with their licenses, at the versions the 
   assert.ok(banner.includes(`(v${pinned})`), `the bundled uPlot is v${pinned}: ${banner.split("\n")[0]}`);
   assert.ok(fs.readFileSync(path.join(root, "media", "vendor", "uPlot.LICENSE"), "utf8").includes("MIT License"));
   // The webview's scripts never fetch: no fetch, XMLHttpRequest, WebSocket, or import() in them
-  for (const script of ["media/explorer.js", "media/plot.js", "media/plotMath.js", "media/arrowStream.js"]) {
+  for (const script of ["media/explorer.js", "media/plot.js", "media/plotMath.js", "media/arrowStream.js", "media/console.js", "media/field.js"]) {
     const text = fs.readFileSync(path.join(root, script), "utf8");
     assert.ok(!/\b(fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(/.test(text), `${script} opens no connection`);
   }

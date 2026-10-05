@@ -17,6 +17,8 @@ const PlotMath = require(path.join(__dirname, "..", "..", "media", "plotMath.js"
   zoom(view: { start: number; end: number }, factor: number, about: number, logStart: number, logEnd: number): { start: number; end: number };
   pan(view: { start: number; end: number }, fraction: number, logStart: number, logEnd: number): { start: number; end: number };
   indexAtOrBefore(times: Float64Array, t: number): number;
+  fieldTransform(lengthM: number, widthM: number, canvasW: number, canvasH: number, margin?: number): { scale: number; x0: number; y0: number; width: number; height: number; toX(x: number): number; toY(y: number): number };
+  markColumns(times: number[], t0: number, t1: number, widthPx: number): number[];
 };
 
 test("a series within the budget is fetched whole; over it, the window exactly when it fits, else bucketed at a few per pixel", () => {
@@ -120,4 +122,23 @@ test("zoom keeps the point under the cursor in place and stays inside the log; p
   assert.deepEqual(PlotMath.pan({ start: 100, end: 200 }, 0.1, 0, 1000), { start: 110, end: 210 });
   assert.deepEqual(PlotMath.pan({ start: 950, end: 1000 }, 0.5, 0, 1000), { start: 950, end: 1000 });
   assert.deepEqual(PlotMath.pan({ start: 0, end: 50 }, -1, 0, 1000), { start: 0, end: 50 });
+});
+
+test("the field fits the canvas with its long side along the width, and y points up", () => {
+  const t = PlotMath.fieldTransform(16.54, 8.07, 800, 400, 0);
+  assert.ok(Math.abs(t.scale - 800 / 16.54) < 1e-9, "limited by the width");
+  assert.equal(t.toX(0), 0);
+  assert.ok(Math.abs(t.toX(16.54) - 800) < 1e-9);
+  assert.ok(Math.abs(t.toY(0) - (200 + 8.07 * t.scale / 2)) < 1e-9, "y = 0 is the bottom edge of the centered field");
+  assert.ok(t.toY(8.07) < t.toY(0), "y increases upward");
+  const tall = PlotMath.fieldTransform(16.54, 8.07, 200, 800, 0);
+  assert.ok(Math.abs(tall.scale - 200 / 16.54) < 1e-9, "still limited by the width");
+});
+
+test("timeline marks are at most one per pixel column, inside the window, in order", () => {
+  const times = [1, 1.01, 1.02, 5, 5.5, 9, 20];
+  assert.deepEqual(PlotMath.markColumns(times, 0, 10, 10), [1, 5, 9]);
+  assert.deepEqual(PlotMath.markColumns(times, 0, 10, 1000), [1, 1.01, 1.02, 5, 5.5, 9]);
+  assert.deepEqual(PlotMath.markColumns(times, 12, 30, 10), [20]);
+  assert.deepEqual(PlotMath.markColumns([], 0, 10, 10), []);
 });

@@ -54,6 +54,14 @@ ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : "
   <div id="warning" class="warning hidden"></div>
   <div id="error" class="error hidden"></div>
   <section id="plot" class="hidden"></section>
+  <details id="field-section" class="hidden" open>
+    <summary>Field</summary>
+    <div id="field"></div>
+  </details>
+  <details id="console-section" class="hidden" open>
+    <summary>Console</summary>
+    <div id="console"></div>
+  </details>
   <main id="main" class="hidden">
     <section id="entries">
       <div class="toolbar">

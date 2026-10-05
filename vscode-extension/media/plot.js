@@ -79,6 +79,10 @@
       this.statisticsRequest = 0;
       this.fetchTimer = null;
       this.statisticsTimer = null;
+      this.viewListeners = [];
+      this.cursorListeners = [];
+      this.marks = []; // the console's matches on the timeline: {time, level}
+      this.markedTime = null; // the time a console line put the cursor at
       this.build();
       window.addEventListener("resize", () => this.resize());
       document.addEventListener("keydown", (e) => this.onKey(e));
@@ -107,6 +111,16 @@
       this.root.append(bar, this.timelineCanvas, body);
     }
 
+    /** Registers a listener for the window: called with {start, end} after each change. */
+    onViewChanged(listener) {
+      this.viewListeners.push(listener);
+    }
+
+    /** Registers a listener for the cursor's time (null when the cursor leaves the panes). */
+    onCursor(listener) {
+      this.cursorListeners.push(listener);
+    }
+
     /** A new log: everything starts over. */
     setLog(log) {
       this.log = log;
@@ -119,9 +133,47 @@
       this.selected = null;
       this.statsRoot.classList.add("hidden");
       this.timeline = null;
+      this.marks = [];
+      this.markedTime = null;
       this.host.post({ type: "timeline" });
       this.drawTimeline();
       this.updateViewLabel();
+      for (const listener of this.viewListeners) listener(this.view);
+    }
+
+    /**
+     * Fetches a series for another view (the field view) by the plan the budget gives for the
+     * current window, and resolves with {timestamps, values, count, bucketed}: the samples, or
+     * the buckets' means. Rejects with the server's words.
+     */
+    fetchSeries(name) {
+      if (!this.log) return Promise.reject(new Error("no log"));
+      const plan = PlotMath.planRequest(
+        { sampleCount: this.sampleCountOf(name), logStart: this.log.start, logEnd: this.log.end },
+        { start: this.view.start, end: this.view.end, widthPx: this.paneWidth() }
+      );
+      return new Promise((resolve, reject) => {
+        const requestId = this.nextRequest++;
+        this.requests.set(requestId, { resolve, reject, plan });
+        const message = { type: "fetch", requestId, name };
+        if (plan.mode !== "full") {
+          message.startTime = plan.startTime;
+          message.endTime = plan.endTime;
+        }
+        if (plan.mode === "bucketed") message.maxPoints = plan.maxPoints;
+        this.host.post(message);
+      });
+    }
+
+    /** Opens a stream for an entry: {timestamps, values, count, bucketed}, values the samples or the buckets' means. */
+    static seriesOf(bytes, name) {
+      const stream = ArrowStream.read(bytes);
+      const changed = ArrowStream.fileChanged(stream);
+      if (changed) throw new Error("the file changed while it was read (" + changed + "); try again");
+      const metadata = ArrowStream.parsedMetadata(stream);
+      const data = ArrowStream.entrySeries(stream, name);
+      const bucketed = Boolean(metadata.bucketed);
+      return { timestamps: data.timestamps, values: bucketed ? data.columns.mean : data.columns.value, count: data.count, bucketed, data, metadata };
     }
 
     // ---- panes ----
@@ -253,18 +305,24 @@
       const request = this.requests.get(message.requestId);
       if (!request) return;
       this.requests.delete(message.requestId);
+      if (request.resolve) {
+        try {
+          request.resolve(Plot.seriesOf(message.bytes, message.name));
+        } catch (e) {
+          request.reject(e);
+        }
+        return;
+      }
       const { series, plan, key } = request;
       if (series.pending !== key) return; // superseded
       series.pending = null;
       try {
-        const stream = ArrowStream.read(message.bytes);
-        const changed = ArrowStream.fileChanged(stream);
-        if (changed) throw new Error("the file changed while it was read (" + changed + "); try again");
-        const metadata = ArrowStream.parsedMetadata(stream);
+        const opened = Plot.seriesOf(message.bytes, series.name);
+        const metadata = opened.metadata;
         const info = (metadata.entries || []).find((e) => e.name === series.name) || {};
-        series.data = ArrowStream.entrySeries(stream, series.name);
+        series.data = opened.data;
         series.plan = plan;
-        series.bucketed = Boolean(metadata.bucketed);
+        series.bucketed = opened.bucketed;
         series.sampling = info.sampling;
         series.unit = info.unit;
         if (series.sampleCount === Infinity && Number.isFinite(info.sample_count)) series.sampleCount = info.sample_count;
@@ -283,6 +341,10 @@
       const request = this.requests.get(message.requestId);
       if (!request) return;
       this.requests.delete(message.requestId);
+      if (request.reject) {
+        request.reject(new Error(message.message));
+        return;
+      }
       const { series, key } = request;
       if (series.pending !== key) return;
       series.pending = null;
@@ -393,6 +455,32 @@
               }
             },
           ],
+          setCursor: [
+            (u) => {
+              if (self.settingCursor) return;
+              const left = u.cursor.left;
+              const t = left != null && left >= 0 ? u.posToVal(left, "x") : null;
+              for (const listener of self.cursorListeners) listener(t);
+            },
+          ],
+          draw: [
+            (u) => {
+              // The time a console line put the cursor at, as a line through the pane
+              if (self.markedTime === null) return;
+              const x = u.valToPos(self.markedTime, "x", true);
+              if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) return;
+              const ctx = u.ctx;
+              ctx.save();
+              ctx.strokeStyle = "#edc948";
+              ctx.lineWidth = 1;
+              ctx.setLineDash([3, 3]);
+              ctx.beginPath();
+              ctx.moveTo(x, u.bbox.top);
+              ctx.lineTo(x, u.bbox.top + u.bbox.height);
+              ctx.stroke();
+              ctx.restore();
+            },
+          ],
         },
         plugins: [this.wheelPlugin()],
       };
@@ -469,6 +557,7 @@
       }
       this.drawTimeline();
       this.updateViewLabel();
+      for (const listener of this.viewListeners) listener(this.view);
       clearTimeout(this.fetchTimer);
       this.fetchTimer = setTimeout(() => {
         for (const pane of this.panes) for (const s of pane.series) this.fetchIfNeeded(s);
@@ -489,6 +578,37 @@
 
     resize() {
       for (const pane of this.panes) if (pane.chart) pane.chart.setSize({ width: this.paneWidth() + AXIS_WIDTH, height: PANE_HEIGHT });
+      this.drawTimeline();
+    }
+
+    // ---- the console's marks and cursor ----
+
+    /** The console's matches: marked on the timeline by level. */
+    setMarks(marks) {
+      this.marks = Array.isArray(marks) ? marks : [];
+      this.drawTimeline();
+    }
+
+    /** Puts the cursor at a time: the window pans to show it, and every pane's cursor moves there. */
+    markTime(t) {
+      if (!this.log || !Number.isFinite(t)) return;
+      if (t < this.view.start || t > this.view.end) {
+        const span = this.view.end - this.view.start;
+        const next = PlotMath.pan({ start: t - span / 2, end: t + span / 2 }, 0, this.log.start, this.log.end);
+        this.setView(next.start, next.end);
+      }
+      this.markedTime = t;
+      this.settingCursor = true;
+      try {
+        for (const pane of this.panes) {
+          if (!pane.chart) continue;
+          pane.chart.setCursor({ left: pane.chart.valToPos(t, "x"), top: 10 });
+          pane.chart.redraw(false);
+        }
+      } finally {
+        this.settingCursor = false;
+      }
+      for (const listener of this.cursorListeners) listener(t);
       this.drawTimeline();
     }
 
@@ -568,6 +688,19 @@
         const px = x(ev.timestamp);
         if (ev.category === "robot_state") ctx.fillRect(px, 2, 1, h - 4);
         else ctx.fillRect(px - 1, ev.category === "power" ? 2 : h - 10, 3, 8);
+      }
+      // The console's matches, one mark per pixel column, by level
+      const levels = { error: "#e15759", warning: "#edc948", info: "#76b7b2" };
+      for (const level of ["info", "warning", "error"]) {
+        const times = this.marks.filter((m) => (m.level || "info") === level).map((m) => m.time);
+        ctx.fillStyle = levels[level];
+        for (const t of PlotMath.markColumns(times, this.log.start, this.log.end, width)) {
+          ctx.fillRect(x(t), h - 7, 1, 5);
+        }
+      }
+      if (this.markedTime !== null) {
+        ctx.fillStyle = "#edc948";
+        ctx.fillRect(x(this.markedTime) - 1, 0, 2, h);
       }
       // The view
       ctx.strokeStyle = css("--vscode-focusBorder", "#09f");

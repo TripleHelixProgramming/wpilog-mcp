@@ -12,7 +12,7 @@ import * as vscode from "vscode";
 import { DataClient, DataError, TooLargeError } from "./dataClient";
 import { McpClient, ToolError } from "./mcpClient";
 import { DaemonSpec, ServerManager } from "./serverManager";
-import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes } from "./explorer/entriesTree";
+import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
 import { LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
 import { rankServersForFile } from "./explorer/serverChoice";
 import { explorerPage } from "./explorer/webviewHtml";
@@ -24,6 +24,10 @@ export const ENTRIES_VIEW = "wpilog-mcp.entries";
 
 /** The most logs one listing asks for: the server's page limit. */
 const LISTING_LIMIT = 500;
+/** How many of an array's elements "Plot Every Element" plots: a pane can hold that many. */
+const ELEMENTS_PLOTTED = 16;
+/** How many console matches one request lists. */
+const CONSOLE_LIMIT = 500;
 
 /** A log open in the editor: its file, the server that read it, and its listing. */
 interface OpenLog {
@@ -79,6 +83,13 @@ export class Explorer implements vscode.Disposable {
         this.editor.selectEntry(entryNameOf(nameOrItem))),
       vscode.commands.registerCommand("wpilog-mcp.explorer.plotEntry", (nameOrItem: string | EntryItem) =>
         this.editor.plotEntry(entryNameOf(nameOrItem))),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.plotElements", (item?: EntryItem) => {
+        const node = item?.node;
+        if (node?.kind !== "field" || !node.elements) return;
+        for (const name of elementPaths(node.entry.name, node.fieldPath, node.elements, ELEMENTS_PLOTTED)) {
+          this.editor.plotEntry(name);
+        }
+      }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLog", () => this.editor.reloadActive())
     );
   }
@@ -306,8 +317,9 @@ class EntryItem extends vscode.TreeItem {
       case "field":
         this.description = node.description;
         this.tooltip = node.entry.name + node.fieldPath;
-        this.iconPath = new vscode.ThemeIcon("symbol-number");
-        this.contextValue = "wpilogField";
+        this.iconPath = new vscode.ThemeIcon(node.elements ? "symbol-array" : "symbol-number");
+        // A [*] path pools every element: it expands to them, and a click shows the entry
+        this.contextValue = node.elements ? "wpilogFieldPooled" : "wpilogField";
         this.command = node.fieldPath.includes("[*]")
           ? { command: "wpilog-mcp.explorer.showEntry", title: "Show Entry", arguments: [node.entry.name] }
           : { command: "wpilog-mcp.explorer.plotEntry", title: "Plot Field", arguments: [node.entry.name + node.fieldPath] };
@@ -380,6 +392,9 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
     if (node.kind === "entry" && node.expandable) {
       return buildFieldNodes(node.entry, await this.info(node.entry)).map((child) => this.item(child, false));
     }
+    if (node.kind === "field" && node.elements) {
+      return elementNodes(node).map((child) => this.item(child, false));
+    }
     return [];
   }
 
@@ -387,7 +402,7 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
     const state =
       node.kind === "group"
         ? root ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed
-        : node.kind === "entry" && node.expandable
+        : (node.kind === "entry" && node.expandable) || (node.kind === "field" && node.elements)
           ? vscode.TreeItemCollapsibleState.Collapsed
           : vscode.TreeItemCollapsibleState.None;
     return new EntryItem(node, state);
@@ -445,6 +460,8 @@ interface WebviewMessage {
   startTime?: number;
   endTime?: number;
   maxPoints?: number;
+  pattern?: string;
+  level?: string;
 }
 
 /** One editor: its panel and the log it shows. */
@@ -482,7 +499,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       scriptUri: asset("explorer.js"),
       plot: {
         styleUri: asset("vendor", "uPlot.min.css"),
-        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("plot.js")],
+        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("plot.js"), asset("console.js"), asset("field.js")],
       },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
@@ -505,6 +522,12 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
           break;
         case "statistics":
           void this.sendStatistics(editor, message);
+          break;
+        case "console":
+          void this.sendConsole(editor, message);
+          break;
+        case "field":
+          void this.sendField(editor);
           break;
         default:
           break;
@@ -645,6 +668,60 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       result = error instanceof ToolError && error.result ? error.result : { status: "error", error: messageOf(error) };
     }
     void editor.panel.webview.postMessage({ type: "statistics", requestId, name, result });
+  }
+
+  /** The console pane's lines: search_strings over the window, repeats collapsed, as the server lists them. */
+  private async sendConsole(editor: Editor, message: WebviewMessage): Promise<void> {
+    const { requestId } = message;
+    if (typeof requestId !== "number") return;
+    const spec = editor.log.spec;
+    if (!spec) return;
+    let result: Record<string, unknown>;
+    try {
+      const client = await this.explorer.clientFor(spec);
+      const args: Record<string, unknown> = { path: editor.log.path, limit: CONSOLE_LIMIT, collapse_repeats: true };
+      if (typeof message.pattern === "string" && message.pattern.trim() !== "") args.pattern = message.pattern.trim();
+      if (typeof message.level === "string" && message.level !== "any") args.level = message.level;
+      if (typeof message.startTime === "number") args.start_time = message.startTime;
+      if (typeof message.endTime === "number") args.end_time = message.endTime;
+      result = await client.callTool("search_strings", args);
+    } catch (error) {
+      result = error instanceof ToolError && error.result ? error.result : { status: "error", error: messageOf(error) };
+    }
+    void editor.panel.webview.postMessage({ type: "console", requestId, result });
+  }
+
+  /**
+   * What the field view needs: the robot pose the signal resolver finds, with its candidates
+   * (the server does not guess: a heuristic match has no entry and the person picks), the
+   * season the log was recorded in, and that season's field geometry from the bundled game data.
+   */
+  private async sendField(editor: Editor): Promise<void> {
+    const spec = editor.log.spec;
+    if (!spec) return;
+    const call = async (tool: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+      try {
+        const client = await this.explorer.clientFor(spec);
+        return await client.callTool(tool, args);
+      } catch (error) {
+        if (error instanceof ToolError && error.result) return error.result;
+        this.explorer.log(`Explorer: ${tool} on ${editor.log.path}: ${messageOf(error)}`);
+        return null;
+      }
+    };
+    const [signals, phases] = await Promise.all([
+      call("resolve_signals", { path: editor.log.path, roles: ["robot_pose"] }),
+      call("get_match_phases", { path: editor.log.path }),
+    ]);
+    const season = (phases?.season as { year?: number } | undefined)?.year;
+    const game = await call("get_game_info", typeof season === "number" ? { season } : {});
+    const role = (signals?.roles as Record<string, unknown> | undefined)?.robot_pose ?? null;
+    void editor.panel.webview.postMessage({
+      type: "field",
+      pose: role,
+      season: typeof season === "number" ? season : (game?.season as number | undefined),
+      game: game ? { game_name: game.game_name, source: game.source, manual_version: game.manual_version, field_geometry: game.field_geometry, status: game.status, error: game.error } : null,
+    });
   }
 
   /** Plots an entry in the active editor: the Entries view's click. */

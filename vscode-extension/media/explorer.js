@@ -6,7 +6,22 @@
 (function () {
   "use strict";
   const vscode = acquireVsCodeApi();
-  const plot = typeof Plot === "function" ? new Plot({ post: (m) => vscode.postMessage(m) }, document.getElementById("plot")) : null;
+  const host = { post: (m) => vscode.postMessage(m) };
+  const plot = typeof Plot === "function" ? new Plot(host, document.getElementById("plot")) : null;
+  const consolePane = plot && typeof ConsolePane === "function" ? new ConsolePane(host, plot, document.getElementById("console")) : null;
+  const fieldView = plot && typeof FieldView === "function" ? new FieldView(host, plot, document.getElementById("field")) : null;
+  /** How many of an array's elements "plot all" plots: a pane can hold that many. */
+  const ELEMENTS_PLOTTED = 16;
+
+  /** An array's length from get_entry_info's representative samples: the longest of them. */
+  function arrayLength(info) {
+    let longest = 0;
+    for (const s of Array.isArray(info.sample_values) ? info.sample_values : []) {
+      const n = typeof s.value_length === "number" ? s.value_length : Array.isArray(s.value) ? s.value.length : 0;
+      if (n > longest) longest = n;
+    }
+    return longest;
+  }
 
   /** Whether an entry's type can be plotted as it is: a number or a boolean. */
   function plottable(type) {
@@ -22,7 +37,7 @@
     button.disabled = !enabled || !plot;
     button.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (plot) plot.addSeries(name);
+      if (plot && name) plot.addSeries(name);
     });
     return button;
   }
@@ -144,10 +159,24 @@
       body.append(text("div", "Numeric fields, as the tools address them:", "muted"));
       const ul = document.createElement("ul");
       ul.className = "paths";
+      const length = arrayLength(info);
       for (const path of info.numeric_leaf_paths) {
         const li = document.createElement("li");
-        li.append(plotButton(name + path, !path.includes("[*]"), path.includes("[*]")
-          ? "A [*] path pools every element; plot one element by its index instead" : "Plot this field in the active pane"), text("span", " "), text("code", name + path));
+        if (path.includes("[*]")) {
+          // A [*] path pools every element: the button plots each element, by its index
+          const all = plotButton("", length > 0, length > 0
+            ? "Plot the first " + Math.min(length, ELEMENTS_PLOTTED) + " of " + length + " elements, each by its index"
+            : "The array is empty in every representative sample");
+          all.textContent = "plot all";
+          all.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (!plot) return;
+            for (let i = 0; i < Math.min(length, ELEMENTS_PLOTTED); i++) plot.addSeries(name + path.replace("[*]", "[" + i + "]"));
+          }, true);
+          li.append(all, text("span", " "), text("code", name + path), text("span", length > 0 ? " · " + length + " elements" : "", "muted"));
+        } else {
+          li.append(plotButton(name + path, true, "Plot this field in the active pane"), text("span", " "), text("code", name + path));
+        }
         ul.append(li);
       }
       body.append(ul);
@@ -188,6 +217,14 @@
         entries: new Map(entries.map((e) => [e.name, e.sample_count])),
       });
       show(document.getElementById("plot"), true);
+      if (fieldView) {
+        show(document.getElementById("field-section"), true);
+        fieldView.reset();
+      }
+      if (consolePane) {
+        show(document.getElementById("console-section"), true);
+        consolePane.reset();
+      }
     }
     if (selected && !entries.some((e) => e.name === selected)) {
       selected = null;
@@ -234,6 +271,12 @@
         break;
       case "statistics":
         if (plot) plot.onStatistics(message);
+        break;
+      case "console":
+        if (consolePane) consolePane.onResult(message);
+        break;
+      case "field":
+        if (fieldView) fieldView.onField(message);
         break;
       default:
         break;
