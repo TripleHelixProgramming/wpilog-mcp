@@ -26,6 +26,18 @@ interface Stream { fields: Field[]; metadata: Record<string, string>; batches: B
 const samples = path.join(__dirname, "..", "..", "..", "build", "arrow-samples");
 const haveSamples = fs.existsSync(samples) && fs.readdirSync(samples).some((f) => f.endsWith(".arrow"));
 
+test("decode problems expose the failed and original counts beside surviving samples", { skip: !haveSamples && "run DataEndpointTest first" }, () => {
+  const stream = ArrowStream.read(new Uint8Array(fs.readFileSync(path.join(samples, "decode_problems.arrow"))));
+  const metadata = ArrowStream.parsedMetadata(stream) as { entries: Record<string, unknown>[] };
+  assert.equal(metadata.entries[0].total_records, 2);
+  assert.equal(metadata.entries[0].sample_count, 1);
+  assert.deepEqual(metadata.entries[0].decode_problem, {
+    entry: "/Value", failed_records: 1, total_records: 2, reason: "record of 1 bytes cannot be read as double",
+  });
+  assert.equal(metadata.entries[0].warning, "Entry /Value: 1 of 2 records could not be decoded (record of 1 bytes cannot be read as double); results use the rest.");
+  assert.deepEqual([...ArrowStream.entrySeries(stream, "/Value").columns.value], [7]);
+});
+
 test("an unnamed enum from the real endpoint retains its number and null label", { skip: !haveSamples && "run DataEndpointTest first" }, () => {
   const stream = ArrowStream.read(new Uint8Array(fs.readFileSync(path.join(samples, "unnamed_enum.arrow"))));
   assert.ok(stream.complete);

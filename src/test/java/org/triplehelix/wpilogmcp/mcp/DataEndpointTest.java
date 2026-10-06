@@ -159,6 +159,37 @@ class DataEndpointTest {
 
   // ---- the stream ----
 
+  @ParameterizedTest
+  @ValueSource(strings = {"arrow", "csv"})
+  void decodeProblemsKeepTheOriginalRecordCount(String format) throws Exception {
+    var file = FixtureLogs.defaultDirectory().resolve("decode-problem.wpilog");
+    try (var writer = new WpilogWriter(file, "synthetic malformed double")) {
+      int entry = writer.start("/Value", "double", "", 0);
+      writer.append(entry, 1_000_000, WpilogWriter.encodeDouble(7));
+      writer.append(entry, 2_000_000, new byte[] {42});
+    }
+    var p = params("path", file.toString(), "names", "/Value");
+    var arrow = get(p);
+    p.put("format", "csv");
+    var csv = get(p);
+    save("decode_problems", arrow, csv);
+    assertEquals(200, arrow.statusCode());
+    assertEquals(200, csv.statusCode());
+    String metadata = format.equals("arrow") ? ArrowSpecReader.read(arrow.body()).metadata().get("entries")
+        : new String(csv.body(), StandardCharsets.UTF_8).lines().filter(line -> line.startsWith("# entries: "))
+            .findFirst().orElseThrow().substring("# entries: ".length());
+    var entry = JsonParser.parseString(metadata).getAsJsonArray().get(0).getAsJsonObject();
+    assertTrue(entry.has("total_records"), "report the original count, not only decoded samples");
+    assertEquals(2, entry.get("total_records").getAsInt());
+    assertEquals(1, entry.get("sample_count").getAsInt());
+    assertEquals(JsonParser.parseString("""
+        {"entry":"/Value","failed_records":1,"total_records":2,
+         "reason":"record of 1 bytes cannot be read as double"}
+        """), entry.get("decode_problem"));
+    assertEquals("Entry /Value: 1 of 2 records could not be decoded (record of 1 bytes cannot be read as double); results use the rest.",
+        entry.get("warning").getAsString());
+  }
+
   @Test
   void unnamedEnumValueStreamsWithANullLabel() throws Exception {
     var file = FixtureLogs.defaultDirectory().resolve("unnamed-enum.wpilog");

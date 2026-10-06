@@ -279,7 +279,9 @@
         remove.title = "Remove this series";
         remove.addEventListener("click", (e) => { e.stopPropagation(); this.removeSeries(pane, series); });
         chip.classList.toggle("selected", series === this.selected);
-        chip.append(swatch, label, state, remove);
+        chip.append(swatch, label, state);
+        if (series.warning) chip.append(el("span", "chip-warning", series.warning));
+        chip.append(remove);
         pane.chips.append(chip);
       }
       if (pane.series.length === 0) pane.chips.append(el("span", "muted", "Click an entry's plot button, or an entry in the Entries view, to add it here."));
@@ -339,6 +341,7 @@
         series.sampling = info.sampling;
         series.unit = info.unit;
         series.rev = info.rev || null;
+        series.warning = info.warning || null;
         if (series.sampleCount === Infinity && Number.isFinite(info.sample_count)) series.sampleCount = info.sample_count;
       } catch (e) {
         series.error = String(e.message || e);

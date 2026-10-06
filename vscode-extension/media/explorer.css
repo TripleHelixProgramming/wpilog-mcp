@@ -108,6 +108,7 @@ ul.paths { margin: 4px 0; padding-left: 20px; }
 .chip.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 .chip-name { cursor: pointer; font-family: var(--vscode-editor-font-family); font-size: 0.9em; }
 .chip-state { font-size: 0.85em; }
+.chip-warning { color: var(--vscode-editorWarning-foreground); font-size: 0.85em; max-width: 32em; }
 .chip-remove { padding: 0 4px; line-height: 1; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .error-text { color: var(--vscode-editorError-foreground); }

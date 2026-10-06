@@ -191,7 +191,7 @@ final class DataEndpoint {
   /** A series with what the response says about it; {@code rev} for a REV log signal. */
   private record Prepared(EntryData.Series series, List<TimestampedValue> values,
       ArrowType valueType, Buckets.Result buckets, String sampling, String unit,
-      EntryData.RevSync rev) {}
+      EntryData.RevSync rev, JsonObject decoding) {}
 
   private void serve(HttpExchange exchange, Request request) throws IOException, Refusal {
     LogManager.LogUse use;
@@ -256,7 +256,8 @@ final class DataEndpoint {
         estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
         prepared.add(new Prepared(series, values, valueType, buckets,
             EntryData.sampling(series.values()),
-            rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev));
+            rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev,
+            EntryData.decodingMetadata(log, series)));
       }
       if (estimatedBytes > maxBytes) {
         var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
@@ -426,6 +427,7 @@ final class DataEndpoint {
       e.addProperty("sampling", p.sampling());
       if (p.unit() != null) e.addProperty("unit", p.unit());
       e.addProperty("sample_count", p.series().values().size());
+      p.decoding().entrySet().forEach(field -> e.add(field.getKey(), field.getValue()));
       e.addProperty("total_in_range", p.values().size());
       e.addProperty("bucketed", p.buckets() != null);
       if (p.buckets() != null) {

@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -71,6 +72,21 @@ public final class EntryData {
     var signal = NumericSignal.resolve(log, name, null);
     return new Series(name, signal.entry(), signal.path().toString(), signal.type(),
         signal.values(), true);
+  }
+
+  /** The stream must disclose records lost in decoding just as a tool using the same entry does. */
+  public static JsonObject decodingMetadata(LogData log, Series series) {
+    var metadata = new JsonObject();
+    boolean recorded = log.entries().containsKey(series.entry());
+    metadata.addProperty("total_records", recorded ? log.sampleCount(series.entry()) : series.values().size());
+    if (recorded) {
+      log.decodeProblem(series.entry()).ifPresent(problem -> {
+        metadata.addProperty("total_records", problem.totalRecords());
+        metadata.add("decode_problem", AccessTrackingLogData.toJson(series.entry(), problem));
+        metadata.addProperty("warning", AccessTrackingLogData.warning(series.entry(), problem));
+      });
+    }
+    return metadata;
   }
 
   /** The prefix of a REV log signal's key, as {@code list_revlog_signals} gives it. */
