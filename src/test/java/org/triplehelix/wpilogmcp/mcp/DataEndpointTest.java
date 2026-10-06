@@ -32,6 +32,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.data.ArrowSpecReader;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
+import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
@@ -150,6 +151,34 @@ class DataEndpointTest {
   }
 
   // ---- the stream ----
+
+  @Test
+  void unnamedEnumValueStreamsWithANullLabel() throws Exception {
+    var file = FixtureLogs.defaultDirectory().resolve("unnamed-enum.wpilog");
+    try (var writer = new WpilogWriter(file, "synthetic unnamed enum")) {
+      int schema = writer.start("/.schema/struct:Mode", "structschema", "", 0);
+      writer.append(schema, 0, "enum {OFF=0, ON=1} int8 state;".getBytes(StandardCharsets.UTF_8));
+      int entry = writer.start("/Mode", "struct:Mode", "", 0);
+      writer.append(entry, 1_000_000, new byte[] {2});
+    }
+    var p = params("path", file.toString(), "names", "/Mode");
+    var arrow = get(p);
+    p.put("format", "csv");
+    var csv = get(p);
+    save("unnamed_enum", arrow, csv);
+    assertEquals(200, arrow.statusCode());
+    assertEquals(200, csv.statusCode());
+    assertTrue(new String(csv.body(), StandardCharsets.UTF_8)
+        .contains("timestamp_sec,state,state.label\n1.0,2,\n"));
+    var stream = ArrowSpecReader.read(arrow.body());
+    assertTrue(stream.endMarker(), "an unnamed enum must not truncate the stream");
+    assertEquals(1, stream.batches().get(0).rows());
+    var row = (Map<?, ?>) stream.batches().get(0).columns().get(1).get(0);
+    var state = (Map<?, ?>) row.get("state");
+    assertEquals(2L, state.get("value"));
+    assertTrue(state.containsKey("label"));
+    assertNull(state.get("label"));
+  }
 
   @Test
   @DisplayName("every sample of a double entry over a window, timestamps exact, with the metadata a tool result carries")

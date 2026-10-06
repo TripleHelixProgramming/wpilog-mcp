@@ -164,6 +164,10 @@ def check(arrow_path: Path) -> list[str]:
                 if col in ("timestamp_sec", "index"):
                     continue
                 got = fields.get(col)
+                # CSV keeps an enum's number at the field name and its label at .label;
+                # Arrow represents both as children, including a null label for unnamed values.
+                if col not in fields and f"{col}.value" in fields and f"{col}.label" in fields:
+                    got = fields[f"{col}.value"]
                 if isinstance(got, bool):
                     got = str(got).lower()
                 if not same_number(cells[col], got) and str(cells[col]) != str(got):

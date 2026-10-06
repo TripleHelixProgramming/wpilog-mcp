@@ -26,6 +26,14 @@ interface Stream { fields: Field[]; metadata: Record<string, string>; batches: B
 const samples = path.join(__dirname, "..", "..", "..", "build", "arrow-samples");
 const haveSamples = fs.existsSync(samples) && fs.readdirSync(samples).some((f) => f.endsWith(".arrow"));
 
+test("an unnamed enum from the real endpoint retains its number and null label", { skip: !haveSamples && "run DataEndpointTest first" }, () => {
+  const stream = ArrowStream.read(new Uint8Array(fs.readFileSync(path.join(samples, "unnamed_enum.arrow"))));
+  assert.ok(stream.complete);
+  const series = ArrowStream.entrySeries(stream, "/Mode");
+  assert.equal(series.count, 1);
+  assert.deepEqual(series.columns.value, [{ state: { value: 2, label: null } }]);
+});
+
 /** The CSV's sections as the data endpoint writes them: entry to {columns, rows}. */
 function readCsv(file: string): { entry: string; columns: string[]; rows: string[][] }[] {
   const text = fs.readFileSync(file, "utf8");

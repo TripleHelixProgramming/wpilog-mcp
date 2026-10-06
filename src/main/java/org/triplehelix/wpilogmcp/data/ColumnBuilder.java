@@ -309,11 +309,12 @@ public abstract class ColumnBuilder {
 
     @Override
     protected void appendValue(Object value) {
-      // An enum field decodes as its number and label; as a struct it is the two of them
-      var map = value instanceof EnumValue e ? Map.of("value", e.value(), "label", e.label())
-          : (Map<?, ?>) value;
       for (int i = 0; i < names.size(); i++) {
-        children.get(i).append(map.get(names.get(i)));
+        // A number absent from the enum schema is still valid; only its label is null.
+        Object child = value instanceof EnumValue e
+            ? (names.get(i).equals("value") ? e.value() : e.label())
+            : ((Map<?, ?>) value).get(names.get(i));
+        children.get(i).append(child);
       }
     }
 
