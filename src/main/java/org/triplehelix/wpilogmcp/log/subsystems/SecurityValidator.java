@@ -128,9 +128,11 @@ public class SecurityValidator {
    * If not, walks up the ancestor chain to find the nearest existing directory, resolves
    * symlinks there, and appends the remaining relative portion. A dangling link still exists
    * for this walk: resolving it must fail, not authorize creating its outside target.
+   * Parent components are normalized only after resolving links: link/.. belongs to the
+   * target's parent, which need not be the link's own parent.
    */
   private Path resolvePath(Path filePath) throws IOException {
-    Path absPath = filePath.toAbsolutePath().normalize();
+    Path absPath = filePath.toAbsolutePath();
     if (Files.exists(absPath, LinkOption.NOFOLLOW_LINKS)) {
       return absPath.toRealPath();
     }
@@ -145,9 +147,9 @@ public class SecurityValidator {
     }
     if (current != null) {
       Path resolved = current.toRealPath();
-      return relative.toString().isEmpty() ? resolved : resolved.resolve(relative);
+      return relative.toString().isEmpty() ? resolved : resolved.resolve(relative).normalize();
     }
-    return absPath;
+    return absPath.normalize();
   }
 
   /**

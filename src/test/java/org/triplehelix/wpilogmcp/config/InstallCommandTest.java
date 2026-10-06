@@ -14,11 +14,14 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /** Scratch installs pin the ownership of files and the ordering that prevents a downgrade. */
@@ -32,6 +35,98 @@ class InstallCommandTest {
 
   private Path source() throws Exception {
     return Files.write(temp.resolve("source.jar"), new byte[]{0, 1, 2, -1, 42});
+  }
+
+  static Stream<Arguments> escapingPaths() {
+    return Stream.of("bin", "jars", "install.lock", "servers.yaml", "servers.json", "jar", "versioned", "current")
+        .flatMap(role -> Stream.of(false, true).flatMap(windows -> Stream.of(false, true)
+            .map(exists -> Arguments.of(role, windows, exists))));
+  }
+
+  @ParameterizedTest
+  @MethodSource("escapingPaths")
+  void refusesEveryEscapingInstallDestination(String role, boolean windows, boolean exists) throws Exception {
+    var root = Files.createDirectories(temp.resolve("install"));
+    var outside = Files.createDirectories(temp.resolve("outside"));
+    var sentinel = Files.writeString(outside.resolve("sentinel"), "untouched");
+    var target = outside.resolve("target");
+    boolean directory = role.equals("bin") || role.equals("jars");
+    if (exists) {
+      if (directory) Files.createDirectory(target);
+      else Files.writeString(target, "untouched target");
+    }
+    var link = switch (role) {
+      case "jar" -> root.resolve("jars").resolve("wpilog-mcp-1.0.0.jar");
+      case "versioned" -> root.resolve("bin").resolve("wpilog-mcp-1.0.0" + (windows ? ".bat" : ""));
+      case "current" -> root.resolve("bin").resolve(windows ? "wpilog-mcp.bat" : "wpilog-mcp");
+      default -> root.resolve(role);
+    };
+    Files.createDirectories(link.getParent());
+    try {
+      Files.createSymbolicLink(link, target);
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
+    var input = source();
+    List<Path> before;
+    try (var walk = Files.walk(outside)) {
+      before = walk.sorted().toList();
+    }
+    var error = assertThrows(IOException.class,
+        () -> InstallCommand.install(input, "1.0.0", options(root, true), windows, ""));
+    assertTrue(error.getMessage().contains(link.toString()), error.getMessage());
+    assertEquals("untouched", Files.readString(sentinel));
+    assertEquals(exists, Files.exists(target));
+    if (exists && !directory) assertEquals("untouched target", Files.readString(target));
+    try (var walk = Files.walk(outside)) {
+      assertEquals(before, walk.sorted().toList(), "no outside file or directory may be created");
+    }
+    if (!role.equals("install.lock")) {
+      assertFalse(Files.exists(root.resolve("install.lock")), "preflight precedes even the lock write");
+    }
+  }
+
+  @Test
+  void danglingCurrentLauncherInsideRootCanBeReplaced() throws Exception {
+    Assumptions.assumeFalse(WINDOWS, "The current launcher is a copy on Windows");
+    var root = Files.createDirectories(temp.resolve("install"));
+    var bin = Files.createDirectories(root.resolve("bin"));
+    var current = bin.resolve("wpilog-mcp");
+    Files.createSymbolicLink(current, Path.of("wpilog-mcp-deleted-version"));
+    var result = InstallCommand.install(source(), "1.0.0", options(root, false), false, "");
+    assertTrue(result.repointed());
+    assertNull(result.launcher_version_before());
+    assertEquals(Path.of("wpilog-mcp-1.0.0"), Files.readSymbolicLink(current));
+    assertEquals("1.0.0", InstallCommand.launcherVersion(Files.readString(current)));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void launcherTargetResolvesDirectoryLinksBeforeParentComponents(boolean exists) throws Exception {
+    var root = Files.createDirectories(temp.resolve("install"));
+    var bin = Files.createDirectories(root.resolve("bin"));
+    var outside = Files.createDirectories(temp.resolve("outside"));
+    var deeper = Files.createDirectory(outside.resolve("deeper"));
+    var target = outside.resolve("launcher");
+    Files.writeString(target, "# wpilog-mcp 9.0.0 launcher\n");
+    var bridge = bin.resolve("bridge");
+    var current = bin.resolve(WINDOWS ? "wpilog-mcp.bat" : "wpilog-mcp");
+    try {
+      Files.createSymbolicLink(bridge, deeper);
+      Files.createSymbolicLink(current, Path.of("bridge").resolve("..").resolve("launcher"));
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
+    Assumptions.assumeTrue(Files.exists(current) && Files.isSameFile(current, target),
+        "This filesystem does not resolve the symlink's parent component through its target");
+    if (!exists) Files.delete(target);
+    var input = source();
+    var error = assertThrows(IOException.class,
+        () -> InstallCommand.install(input, "1.0.0", options(root, false), WINDOWS, ""));
+    assertTrue(error.getMessage().contains(current.toString()), error.getMessage());
+    assertEquals(exists, Files.exists(target));
+    if (exists) assertEquals("# wpilog-mcp 9.0.0 launcher\n", Files.readString(target));
+    assertFalse(Files.exists(root.resolve("install.lock")));
   }
 
   @ParameterizedTest

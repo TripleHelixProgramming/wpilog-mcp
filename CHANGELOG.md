@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The shell, PowerShell, and Gradle installers now delegate the layout to the JAR's `install` verb instead of maintaining three copies of launcher scripts and configuration defaults. Release installers download to a temporary file; the Gradle task forces its development build current. Windows launchers now fall back to `JAVA_HOME` after WPILib, as the Unix launcher does.
 
 ### Fixed
+- Standalone installation validates the complete layout against the canonical install root before writing and rechecks each destination. Symlinked directories, locks, configuration files, JARs, or launchers that escape the root are refused with the path named, instead of overwriting outside files. The current Unix launcher may still point inside the install.
 - Store imports refuse symbolic-link lock files before HTTP job admission and open locks without following links. Containment checks now reject dangling links, preventing an import from creating a lock outside the store through a missing target.
 - Imports refuse to move a file listed by another store’s manifest and name that store in the refusal. Copies remain allowed, preserving the source store’s readable catalog instead of leaving it with a missing payload.
 - The extension retains pending daemon restarts after configuration writes and Java or heap changes, including removal of the TBA key. A failed stop/start or a configuration written during startup no longer silently leaves the old settings running.

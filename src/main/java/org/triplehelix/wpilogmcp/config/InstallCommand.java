@@ -24,6 +24,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.triplehelix.wpilogmcp.Version;
+import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
 /**
  * The release scripts, Gradle and the extension all install through this verb, so their layout,
@@ -36,9 +37,61 @@ public final class InstallCommand {
   private static final Pattern MARKER = Pattern.compile("(?m)^(?:#|REM) wpilog-mcp (\\S+) launcher\\r?$", Pattern.CASE_INSENSITIVE);
   private static final Pattern PART = Pattern.compile("[0-9]+|[A-Za-z]+");
 
-  private InstallCommand() {}
+  private InstallCommand() {
+  }
 
   public record Options(Path directory, List<String> logdirs, Integer team, boolean force, boolean json) {}
+
+  /** Plan every destination before the first write, so a bad link cannot leave a partial install. */
+  private record Layout(Path root, Path bin, Path jars, Path jar, Path launcher, Path current,
+      Path config, Path legacyConfig, Path lock) {
+    static Layout at(Path root, String version, boolean windows) {
+      var bin = root.resolve("bin");
+      var jars = root.resolve("jars");
+      return new Layout(root, bin, jars, jars.resolve("wpilog-mcp-" + version + ".jar"),
+          bin.resolve("wpilog-mcp-" + version + (windows ? ".bat" : "")),
+          bin.resolve(windows ? "wpilog-mcp.bat" : "wpilog-mcp"), root.resolve("servers.yaml"),
+          root.resolve("servers.json"), root.resolve("install.lock"));
+    }
+  }
+
+  /** Reuse the file-access containment rule, with this install's canonical root as its boundary. */
+  private static final class InstallFiles {
+    private final SecurityValidator containment = new SecurityValidator();
+
+    InstallFiles(Path root) throws IOException {
+      containment.addAllowedDirectory(root.toRealPath());
+    }
+
+    Path check(Path path) throws IOException {
+      try {
+        containment.validate(path);
+        return path;
+      } catch (IOException e) {
+        throw new IOException("Install path is outside the install directory or cannot be resolved: " + path, e);
+      }
+    }
+
+    /** A missing in-root launcher target still counts as older; an outside target never does. */
+    Path current(Path path) throws IOException {
+      check(path.getParent());
+      if (!Files.isSymbolicLink(path)) return check(path);
+      try {
+        check(path.getParent().resolve(Files.readSymbolicLink(path)));
+        return path;
+      } catch (IOException e) {
+        throw new IOException("Current launcher must point inside the install directory: " + path, e);
+      }
+    }
+
+    void preflight(Layout layout) throws IOException {
+      for (var path : List.of(layout.bin(), layout.jars(), layout.jar(), layout.launcher(),
+          layout.config(), layout.legacyConfig(), layout.lock())) {
+        check(path);
+      }
+      current(layout.current());
+    }
+  }
 
   /** Null fields are included so callers can distinguish a missing launcher from a bad response. */
   public record Summary(String install_dir, String installed_version, String launcher_version_before,
@@ -112,13 +165,16 @@ public final class InstallCommand {
     requireVersion(version);
     var root = options.directory().toAbsolutePath().normalize();
     Files.createDirectories(root);
-    try (var channel = FileChannel.open(root.resolve("install.lock"),
-        StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+    var layout = Layout.at(root, version, windows);
+    var io = new InstallFiles(root);
+    io.preflight(layout);
+    try (var channel = FileChannel.open(io.check(layout.lock()),
+        StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
       try (var lock = channel.tryLock()) {
         if (lock == null) {
           throw new IOException("Another installation is in progress in " + root);
         }
-        return writeLayout(source, version, options, windows, searchPath, root);
+        return writeLayout(source, version, options, windows, searchPath, layout, io);
       } catch (OverlappingFileLockException e) {
         throw new IOException("Another installation is in progress in " + root, e);
       }
@@ -126,10 +182,11 @@ public final class InstallCommand {
   }
 
   private static Summary writeLayout(Path source, String version, Options options, boolean windows,
-      String searchPath, Path root) throws IOException {
-    var jars = Files.createDirectories(root.resolve("jars"));
-    var bin = Files.createDirectories(root.resolve("bin"));
-    var current = bin.resolve(windows ? "wpilog-mcp.bat" : "wpilog-mcp");
+      String searchPath, Layout layout, InstallFiles io) throws IOException {
+    io.preflight(layout);
+    Files.createDirectories(io.check(layout.jars()));
+    var bin = Files.createDirectories(io.check(layout.bin()));
+    var current = io.current(layout.current());
     String before;
     try {
       before = launcherVersion(Files.readString(current));
@@ -137,36 +194,36 @@ public final class InstallCommand {
       before = null;
     }
     boolean repointed = options.force() || before == null || compareVersions(version, before) > 0;
-    var jar = jars.resolve("wpilog-mcp-" + version + ".jar");
-    copyChanged(source, jar);
-    var launcher = bin.resolve("wpilog-mcp-" + version + (windows ? ".bat" : ""));
+    copyChanged(source, io.check(layout.jar()), io);
+    var launcher = io.check(layout.launcher());
     var script = resource(windows ? "launcher.bat" : "launcher.sh").replace("@VERSION@", version);
     if (windows) {
       script = script.replace("\r\n", "\n").replace("\n", "\r\n");
     }
-    writeChanged(launcher, script);
-    if (!windows && !launcher.toFile().setExecutable(true, false)) {
+    writeChanged(launcher, script, io);
+    if (!windows && !io.check(launcher).toFile().setExecutable(true, false)) {
       throw new IOException("Cannot make launcher executable: " + launcher);
     }
     if (repointed) {
       if (windows) {
-        copyChanged(launcher, current);
+        copyChanged(launcher, current, io);
       } else {
-        var temporary = Files.createTempFile(bin, ".launcher-", ".tmp");
+        var temporary = Files.createTempFile(io.check(bin), ".launcher-", ".tmp");
         try {
-          Files.delete(temporary);
-          Files.createSymbolicLink(temporary, launcher.getFileName());
-          Files.move(temporary, current, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+          Files.delete(io.check(temporary));
+          Files.createSymbolicLink(io.check(temporary), launcher.getFileName());
+          Files.move(io.check(temporary), io.current(current),
+              StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } finally {
-          Files.deleteIfExists(temporary);
+          Files.deleteIfExists(io.check(temporary));
         }
       }
     }
 
-    var config = root.resolve("servers.yaml");
+    var config = io.check(layout.config());
     boolean configCreated = false;
-    if (!Files.exists(config, LinkOption.NOFOLLOW_LINKS) && Files.exists(root.resolve("servers.json"))) {
-      config = root.resolve("servers.json");
+    if (!Files.exists(config, LinkOption.NOFOLLOW_LINKS) && Files.exists(io.check(layout.legacyConfig()))) {
+      config = io.check(layout.legacyConfig());
     } else if (!Files.exists(config, LinkOption.NOFOLLOW_LINKS)) {
       var logdir = options.logdirs().isEmpty() ? "logdir: ~/riologs"
           : "logdir: " + JSON.toJson(options.logdirs());
@@ -174,40 +231,45 @@ public final class InstallCommand {
           .replace("@TEAM@", options.team() == null ? "# team: 1234" : "team: " + options.team())
           .replace("@LOGDIR@", logdir);
       try {
-        Files.writeString(config, contents, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        Files.writeString(io.check(config), contents,
+            StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
         configCreated = true;
       } catch (FileAlreadyExistsException e) {
         // A user creating their configuration while we install wins over the template.
       }
     }
-    return new Summary(root.toString(), version, before, repointed ? version : before, repointed,
+    return new Summary(layout.root().toString(), version, before, repointed ? version : before, repointed,
         configCreated, config.toString(), current.toString(), onPath(bin, searchPath, windows) ? null : bin.toString());
   }
 
   /** Replace whole files, never truncate a JAR a daemon may still have open. */
-  private static void copyChanged(Path source, Path target) throws IOException {
+  private static void copyChanged(Path source, Path target, InstallFiles io) throws IOException {
+    io.check(target);
     if (Files.isRegularFile(target) && Files.mismatch(source, target) == -1) {
       return;
     }
-    var temporary = Files.createTempFile(target.getParent(), ".install-", ".tmp");
+    var temporary = Files.createTempFile(io.check(target.getParent()), ".install-", ".tmp");
     try {
-      Files.copy(source, temporary, StandardCopyOption.REPLACE_EXISTING);
-      Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      Files.copy(source, io.check(temporary), StandardCopyOption.REPLACE_EXISTING);
+      Files.move(io.check(temporary), io.check(target),
+          StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } finally {
-      Files.deleteIfExists(temporary);
+      Files.deleteIfExists(io.check(temporary));
     }
   }
 
-  private static void writeChanged(Path target, String text) throws IOException {
+  private static void writeChanged(Path target, String text, InstallFiles io) throws IOException {
+    io.check(target);
     if (Files.isRegularFile(target) && text.equals(Files.readString(target))) {
       return;
     }
-    var temporary = Files.createTempFile(target.getParent(), ".launcher-", ".tmp");
+    var temporary = Files.createTempFile(io.check(target.getParent()), ".launcher-", ".tmp");
     try {
-      Files.writeString(temporary, text);
-      Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      Files.writeString(io.check(temporary), text);
+      Files.move(io.check(temporary), io.check(target),
+          StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } finally {
-      Files.deleteIfExists(temporary);
+      Files.deleteIfExists(io.check(temporary));
     }
   }
 

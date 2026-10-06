@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.google.gson.JsonParser;
 import java.io.File;
+import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,6 +25,7 @@ import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import javax.tools.ToolProvider;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -124,6 +126,32 @@ class InstallerTest {
       assertEquals(1, busy.exit());
       assertTrue(busy.output().contains("Another installation is in progress"), busy.output());
     }
+  }
+
+  @Test
+  void packagedInstallerRefusesSymlinkedBinAndLeavesOutsideSentinelUntouched() throws Exception {
+    var root = Files.createDirectories(tempDir.resolve("install"));
+    var outside = Files.createDirectories(tempDir.resolve("outside"));
+    var sentinel = outside.resolve("wpilog-mcp-" + Version.VERSION + (isWindows() ? ".bat" : ""));
+    Files.writeString(sentinel, "untouched sentinel");
+    var bin = root.resolve("bin");
+    try {
+      Files.createSymbolicLink(bin, outside);
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
+    var result = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+        "--force", "--json"), Map.of(), false);
+    assertAll(
+        () -> assertEquals(1, result.exit(), result.output()),
+        () -> assertTrue(result.stderr().contains(bin.toString()), result.output()),
+        () -> assertTrue(result.stdout().isBlank(), "a failed install has no JSON success"),
+        () -> assertEquals("untouched sentinel", Files.readString(sentinel)));
+    try (var contents = Files.list(outside)) {
+      assertEquals(List.of(sentinel), contents.toList());
+    }
+    assertFalse(Files.exists(root.resolve("jars")));
+    assertFalse(Files.exists(root.resolve("install.lock")));
   }
 
   static Path jar() {
