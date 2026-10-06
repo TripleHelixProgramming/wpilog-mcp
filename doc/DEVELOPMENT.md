@@ -53,6 +53,13 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 
 The store checks also distinguish a new named robot with a logged serial from a later serial promotion, keep non-overlapping sessions separate, count catalog reads per batch, and observe which REV candidates reach correlation. `log.LogMappingLifetimeTest` reads fixtures through tools and the manager before moving them, holds calls and background synchronization across eviction, and checks that the final holder releases the mapping so a real rename succeeds on Windows too.
 
+**Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
+`LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
+mapped readers, retained old paths, key history, disagreements, and late logged identity outside a
+store. `/SystemStats/SerialNumber` is resolved with the same metadata roles as imports.
+`robot_candidates` checks use synthetic exact fingerprints, ambiguity, contradictory hints, and
+CAN inventories. No identity or value comes from a robot log.
+
 **NT4 protocol and gateway.** `./gradlew test --tests '*.nt4.*'` checks the pure codec against
 hand-encoded JSON/MessagePack frames from the NT4 and MessagePack specifications, both directions
 of the type table, malformed input, and the time-sync arithmetic. The pure gateway tests drive

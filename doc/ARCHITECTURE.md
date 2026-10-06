@@ -158,6 +158,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
+| `capture/context` | Device identity from the HAL sources, with source provenance and capture context |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
@@ -213,7 +214,19 @@ An additive `open_capture` field represents a growing file without inventing a h
 the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
 queued when they change. Cosmetic renames wait for close and reader release on every platform:
 otherwise an asynchronous directory move can race a rollover open or a mapping growth. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
-They are provisional until robot identity is implemented.
+A device serial promotes the address directory at a file creation barrier: finish the current file,
+release mappings, move the closed session, and start its next file. A reader that prevents the move
+leaves the directory in place until a later barrier. Store moves keep old paths usable by tools,
+with the same security and file-change checks as the destination.
+
+Robot identity uses the resolver's metadata roles for `/SystemStats/SerialNumber` and
+`/SystemStats/Comments`, including their `NT:` forms, wherever a log lives. Its own logged serial
+wins over a connection's device serial; disagreements are recorded in the manifest and server log.
+`capture/context` reads the HAL's sources, records the device evidence as the first JSON context
+entry at file start and again on resume, and the store remembers addresses and SSH key history by
+serial. An address or host key can change; neither replaces the serial. `robot_candidates` is only
+a hint: an exact logged team, sorted entry name/type set, or REV CAN id/type inventory must match
+one known serial. Contradictory unique hints are omitted. No candidate changes placement.
 
 The service queues recovery after HTTP is listening, then starts NT4 only when the sweep completes.
 Scanning and hashing an abandoned capture cannot delay the daemon health endpoint. Each `open_capture`

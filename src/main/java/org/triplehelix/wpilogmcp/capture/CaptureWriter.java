@@ -23,6 +23,7 @@ import org.triplehelix.wpilogmcp.nt4.NtType;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
+import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
 
 /**
  * The NT4 listener is the only writer. Time-sync replies, not possibly ancient retained values,
@@ -46,6 +47,12 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default Path create(String address, Instant startedAt, Session previous) throws IOException {
       return previous == null ? create(address, startedAt) : previous.path();
     }
+    default Path create(String address, Instant startedAt, Session previous, DeviceIdentity identity) throws IOException {
+      return create(address, startedAt, previous);
+    }
+    /** A file creation barrier: the old writer and mapping are closed before directory promotion. */
+    default Path identified(Session session, DeviceIdentity identity) throws IOException { return session.path(); }
+    default void identity(Session session) throws IOException {}
     default void opened(Session session, boolean resumed) throws IOException {}
     default void entry(Session session, EntryInfo entry) throws IOException {}
     default void value(Session session, EntryInfo entry, ValueFrame value, WpilogOutput.Written written) throws IOException {}
@@ -69,6 +76,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private Instant endedAt;
     private boolean open;
     private String endReason;
+    private DeviceIdentity identity;
     private int nextEntry = 1, fileNumber = 1;
     private long minUs = Long.MAX_VALUE, maxUs = Long.MIN_VALUE, sizeBytes, observedAtUs;
     private final List<ClosedFile> files = new ArrayList<>();
@@ -83,6 +91,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     public String address() { return address; }
     public boolean open() { return open; }
     public String endReason() { return endReason; }
+    public DeviceIdentity identity() { return identity; }
     public long minTimestampUs() { return minUs == Long.MAX_VALUE ? 0 : minUs; }
     public long maxTimestampUs() { return maxUs == Long.MIN_VALUE ? 0 : maxUs; }
     public long sizeBytes() { return sizeBytes; }
@@ -108,6 +117,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private Session session;
   private WpilogOutput output;
   private String address;
+  private DeviceIdentity identity;
   private boolean connected, synchronizedClock, resume, failed;
   private boolean haveClock;
   private long serverUs, receiptUs, nextReportUs;
@@ -129,6 +139,22 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   public Session session() { return session; }
   public long rejectedValues() { return rejected; }
+
+  /** Called on the listener thread after SSH has supplied device evidence. */
+  public void identity(DeviceIdentity device) {
+    identity = device;
+    if (session == null || output == null || !device.address().equals(address)) return;
+    boolean promote = session.identity == null || !session.identity.serialNumber().equals(device.serialNumber());
+    session.identity = device;
+    io(() -> {
+      if (promote) {
+        closeFile(); observer.closed(session);
+        session.relocate(observer.identified(session, device));
+        nextFile();
+      } else writeIdentity();
+      observer.identity(session);
+    });
+  }
 
   @Override public void connected(URI uri, String protocol) {
     address = uri.getHost(); connected = true; synchronizedClock = false; resume = false;
@@ -158,8 +184,13 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         if (!resume) {
           var now = wallClock.instant();
           session = null; // A failed new create must not overwrite the previous session's reason.
-          session = new Session(observer.create(address, now, null), now, address);
-        } else session.relocate(observer.create(address, session.startedAt(), session));
+          var device = identity != null && identity.address().equals(address) ? identity : null;
+          session = new Session(observer.create(address, now, null, device), now, address);
+          session.identity = device;
+        } else {
+          if (identity != null && identity.address().equals(address)) session.identity = identity;
+          session.relocate(observer.create(address, session.startedAt(), session, session.identity));
+        }
         openFile(resume);
         nextReportUs = loop.nowUs() + REPORT_PERIOD_US;
       }
@@ -185,6 +216,37 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     session.observedAtUs = loop.nowUs();
     observer.opened(session, append);
     scheduleFlush(output);
+    writeIdentity();
+  }
+
+  private int identitySize() {
+    if (session.identity == null) return 0;
+    var device = session.identity;
+    return WpilogOutput.startSize("/Daemon/Robot/Identity", "json", device.metadata().toString(), serverUs)
+        + WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, device.json().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+        + FINISH_RESERVE_BYTES;
+  }
+
+  private void writeIdentity() throws IOException {
+    if (session.identity == null) return;
+    int bytes = identitySize();
+    if (output.size() + bytes + (long) topics.size() * FINISH_RESERVE_BYTES > maxFileBytes) {
+      if (12L + bytes + (long) topics.size() * FINISH_RESERVE_BYTES > maxFileBytes) {
+        throw new IOException("capture.max_file_bytes cannot hold robot identity context");
+      }
+      closeFile(); nextFile(); return;
+    }
+    context("/Daemon/Robot/Identity", session.identity.json(), session.identity.metadata());
+  }
+
+  /** One context sample is a complete entry lifecycle; repeated names still share the live series. */
+  private void context(String name, JsonObject value, JsonObject metadata) throws IOException {
+    int id = output.start(name, "json", metadata.toString(), serverUs);
+    var entry = new EntryInfo(id, name, "json", metadata.toString()); observer.entry(session, entry);
+    var frame = new ValueFrame(id, serverUs, 4, value.toString());
+    var written = output.append(id, serverUs, WpilogOutput.payload(4, value.toString()));
+    session.minUs = Math.min(session.minUs, serverUs); session.maxUs = Math.max(session.maxUs, serverUs);
+    observer.value(session, entry, frame, written); output.finish(id, serverUs); session.sizeBytes = output.size();
   }
 
   /** Reserve every finish before appending, so even the closed file stays below the bound. */
@@ -194,10 +256,20 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     long declarations = topics.values().stream().mapToLong(t -> WpilogOutput.startSize(
         t.entry.name(), t.entry.type(), rolloverMetadata(t), serverUs)
         + (t.schema == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, ((byte[]) t.schema.value()).length))).sum();
-    if (12 + declarations + bytes + reserved > maxFileBytes) {
+    if (12 + declarations + identitySize() + bytes + reserved > maxFileBytes) {
       throw new IOException("capture.max_file_bytes cannot hold the active declarations, record, and finishes");
     }
     closeFile();
+    nextFile();
+  }
+
+  private void nextFile() throws IOException {
+    long declarations = topics.values().stream().mapToLong(t -> WpilogOutput.startSize(
+        t.entry.name(), t.entry.type(), rolloverMetadata(t), serverUs)
+        + (t.schema == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, ((byte[]) t.schema.value()).length))).sum();
+    if (12 + declarations + identitySize() + (long) topics.size() * FINISH_RESERVE_BYTES > maxFileBytes) {
+      throw new IOException("capture.max_file_bytes cannot hold identity and active declarations");
+    }
     session.path = session.path().resolveSibling("capture-" + ++session.fileNumber + ".wpilog");
     session.nextEntry = 1; session.minUs = Long.MAX_VALUE; session.maxUs = Long.MIN_VALUE;
     openFile(false);

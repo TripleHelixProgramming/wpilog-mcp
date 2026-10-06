@@ -324,7 +324,8 @@ public class LogDirectory {
                 session.event(), session.matchType(), session.matchNumber(),
                 session.teamNumber() != null ? session.teamNumber() : teamFor(file.path()),
                 getLastModified(file.path()), file.file().sizeBytes(),
-                Instant.parse(session.startedAt()).toEpochMilli(), file));
+                Instant.parse(session.startedAt()).toEpochMilli(), file,
+                java.util.Optional.ofNullable(getOrExtractLogInfo(file.path()).robot()).orElse(file.robot())));
           }
         }
         if (!StoreCatalog.isStore(dir)) {
@@ -464,7 +465,7 @@ public class LogDirectory {
     if (team == null) return info;
     return new LogFileInfo(info.path(), info.filename(), info.eventName(), info.matchType(),
         info.matchNumber(), team, info.lastModified(), info.fileSize(),
-        info.logCreationTime(), info.stored());
+        info.logCreationTime(), info.stored(), info.robot());
   }
 
   private Integer teamFor(Path file) {
@@ -482,10 +483,8 @@ public class LogDirectory {
   public record DirectoryOrigin(String path, String origin, Integer team) {}
 
   /**
-   * Extracts metadata from a log file by reading the first few records, then its file name for
-   * what the records leave unset (see {@link LogFileName}). Robot code starts logging before the
-   * Driver Station has connected, so the first records usually hold no event or match yet, and
-   * the name the logging framework gave the file later is what carries them.
+   * Extracts metadata from the whole log through the import resolver, then its file name for
+   * what the records leave unset (see {@link LogFileName}). A serial or Driver Station fact may arrive late; stopping at startup records would lose identity.
    *
    * <p>The reader releases its mapping before returning, so browsing a folder does not prevent
    * a later import from moving those files on Windows.
@@ -496,6 +495,7 @@ public class LogDirectory {
     var matchType = (MatchType) null;
     var matchNumber = (Integer) null;
     var teamNumber = (Integer) null;
+    org.triplehelix.wpilogmcp.store.StoreManifest.Robot robot = null;
     // The Driver Station's match type and number as the records go by. A number counts only
     // while a match type is set: with match type None there is no match, and the number can
     // hold anything (real logs start with a five-digit one).
@@ -555,6 +555,12 @@ public class LogDirectory {
           }
         }
       }
+      // Identity is a whole-file fact, even when a serial arrives after the directory metadata prefix.
+      try (var log = new LazyParsedLog(path.toString(), reader, 4L * 1024 * 1024)) {
+        var facts = LogMetadata.read(log);
+        if (facts.serialNumber() != null) robot = new org.triplehelix.wpilogmcp.store.StoreManifest.Robot(
+            facts.serialNumber(), facts.serialNumber(), null, facts.comments(), "logged");
+      }
     } catch (Exception e) {
       logger.debug("Metadata extraction error for {}: {}", filename, e.getMessage());
     }
@@ -576,7 +582,7 @@ public class LogDirectory {
         path.toString(), filename, eventName,
         matchTypeLabel,
         matchNumber, teamNumber, getLastModified(path), getFileSize(path),
-        creationTime(name));
+        creationTime(name), null, robot);
   }
 
   /** The record's string, or null when it cannot be read as one. */
@@ -621,7 +627,15 @@ public class LogDirectory {
 
   public record LogFileInfo(String path, String filename, String eventName, String matchType,
                             Integer matchNumber, Integer teamNumber, long lastModified, long fileSize,
-                            Long logCreationTime, StoreCatalog.StoredFile stored) {
+                            Long logCreationTime, StoreCatalog.StoredFile stored,
+                            org.triplehelix.wpilogmcp.store.StoreManifest.Robot robot) {
+
+    public LogFileInfo(String path, String filename, String eventName, String matchType,
+        Integer matchNumber, Integer teamNumber, long lastModified, long fileSize, Long logCreationTime,
+        StoreCatalog.StoredFile stored) {
+      this(path, filename, eventName, matchType, matchNumber, teamNumber, lastModified, fileSize,
+          logCreationTime, stored, stored == null ? null : stored.robot());
+    }
 
     public LogFileInfo(String path, String filename, String eventName, String matchType,
         Integer matchNumber, Integer teamNumber, long lastModified, long fileSize, Long logCreationTime) {

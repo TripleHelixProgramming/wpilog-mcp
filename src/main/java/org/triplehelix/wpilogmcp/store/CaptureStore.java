@@ -47,10 +47,13 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private String event, matchType;
   private Integer matchNumber, teamNumber;
   private long typeOrdinal, number;
+  private final java.util.Map<String, String> loggedSerials = new java.util.LinkedHashMap<>();
+  private final List<IdentityConflict> conflicts = new ArrayList<>();
   public static final long UPDATE_PERIOD_US = 5_000_000;
   private record Update(CaptureWriter.Session owner, String name, boolean open, Instant endedAt,
       long size, double min, double max, List<CaptureWriter.ClosedFile> files,
-      String event, String matchType, Integer matchNumber, Integer teamNumber, String endReason) {}
+      String event, String matchType, Integer matchNumber, Integer teamNumber, String endReason,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, List<IdentityConflict> conflicts) {}
   private record Pending(Update update, CompletableFuture<Void> done) {}
   private final AtomicReference<Pending> pending = new AtomicReference<>();
   private final AtomicBoolean queued = new AtomicBoolean();
@@ -72,12 +75,16 @@ public final class CaptureStore implements CaptureWriter.Observer {
 
   @Override public Path create(String address, Instant start) throws IOException {
     awaitPrevious();
-    times.clear(); event = null; matchType = null; matchNumber = null; teamNumber = null; typeOrdinal = 0; number = 0;
+    times.clear(); loggedSerials.clear(); conflicts.clear();
+    event = null; matchType = null; matchNumber = null; teamNumber = null; typeOrdinal = 0; number = 0;
     return store.capture(io -> {
       // Percent escapes are portable and injective, unlike replacing every IPv6 ':' with '_'.
-      String id = "address-" + java.net.URLEncoder.encode(address, java.nio.charset.StandardCharsets.UTF_8);
+      var header = io.read(store.root().resolve("store.json"), Header.class);
+      String id = header.addresses().getOrDefault(address, RobotIdentityStore.addressId(address));
       var robot = store.root().resolve("robots").resolve(StoreFiles.component(id));
-      io.write(robot.resolve("robot.json"), new Robot(id, null, null, null, "address"));
+      if (!Files.exists(io.check(robot.resolve("robot.json")))) {
+        io.write(robot.resolve("robot.json"), new Robot(id, null, null, null, "address"));
+      }
       var day = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC).format(start);
       var name = DateTimeFormatter.ofPattern("HHmmss'Z'").withZone(ZoneOffset.UTC).format(start);
       var parent = io.check(robot.resolve("sessions").resolve(day)); Files.createDirectories(parent);
@@ -93,26 +100,56 @@ public final class CaptureStore implements CaptureWriter.Observer {
     });
   }
 
+  @Override public Path create(String address, Instant start, CaptureWriter.Session previous,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
+    if (identity != null) store.capture(io -> {
+      var robot = RobotIdentityStore.record(io, store.root(), identity, clock.instant());
+      RobotIdentityStore.promote(io, store.root(), manager, null, identity, clock.instant());
+      return robot;
+    });
+    return create(address, start, previous);
+  }
+
+  @Override public Path identified(CaptureWriter.Session session,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
+    awaitPrevious();
+    return store.capture(io -> {
+      RobotIdentityStore.record(io, store.root(), identity, clock.instant());
+      var before = session.path();
+      var after = RobotIdentityStore.promote(io, store.root(), manager, before, identity, clock.instant());
+      if (!before.equals(after)) moved.accept(before, after);
+      return after;
+    });
+  }
+
   @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws IOException {
     if (previous == null) return create(address, start);
     awaitPrevious();
     // The preceding close (and any cosmetic move) precedes this create in the same queue.
     // Remove the old hash before reopening its bytes, so the catalog never sees a stale verified size.
     return store.capture(io -> {
-      var path = previous.path(); var manifest = path.getParent().resolve("session.json");
+      var original = previous.path();
+      var path = Files.exists(original) ? original : io.read(store.root().resolve("store.json"), Header.class).moves().stream()
+          .filter(m -> Path.of(m.originalPath()).equals(original)).reduce((a, b) -> b)
+          .map(m -> store.root().resolve(m.movedTo())).orElse(original);
+      path = io.check(path);
+      var manifest = path.getParent().resolve("session.json");
       var old = io.read(manifest, Session.class);
       var provenance = new Provenance("captured", null, path.getFileName().toString(), start.toString(), false);
-      var files = old.files().stream().filter(f -> !f.path().equals(path.getFileName().toString())).toList();
+      String filename = path.getFileName().toString();
+      var files = old.files().stream().filter(f -> !f.path().equals(filename)).toList();
       io.write(manifest, new Session(old.id(), old.startedAt(), clock.instant().toString(), old.startBasis(),
           old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
           new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
-              previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null));
+              previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
+          old.deviceIdentity(), old.identityConflicts()));
       return path;
     });
   }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) { update(session, true); }
   @Override public void flushed(CaptureWriter.Session session) { update(session, false); }
   @Override public void closed(CaptureWriter.Session session) { update(session, true); }
+  @Override public void identity(CaptureWriter.Session session) { update(session, true); }
   public CompletableFuture<Void> completion() { return completion; }
   private void awaitPrevious() throws IOException {
     try { completion.get(); }
@@ -125,7 +162,14 @@ public final class CaptureStore implements CaptureWriter.Observer {
   @Override public void value(CaptureWriter.Session session, EntryInfo entry, ValueFrame frame, WpilogOutput.Written written)
       throws IOException {
     var role = MetadataRole.of(entry.name(), entry.type()).orElse(null);
-    if (role == null || role == MetadataRole.SERIAL || role == MetadataRole.COMMENTS) return;
+    if (role == null || role == MetadataRole.COMMENTS) return;
+    if (role == MetadataRole.SERIAL) {
+      if (frame.value() instanceof String serial && !serial.isBlank()) {
+        String previous = loggedSerials.put(session.path().getFileName().toString(), serial.strip());
+        if (!serial.strip().equals(previous)) update(session, true);
+      }
+      return;
+    }
     if (times.containsKey(role) && times.get(role) > frame.timestampUs()) return;
     times.put(role, frame.timestampUs());
     String oldEvent = event, oldType = matchType; Integer oldMatch = matchNumber, oldTeam = teamNumber;
@@ -145,6 +189,15 @@ public final class CaptureStore implements CaptureWriter.Observer {
   }
 
   private void update(CaptureWriter.Session capture, boolean factChanged) {
+    if (capture.identity() != null) loggedSerials.forEach((path, serial) -> {
+      var conflict = new IdentityConflict(path, serial, capture.identity().serialNumber());
+      if (!serial.equals(conflict.deviceSerial()) && !conflicts.contains(conflict)) {
+        conflicts.add(conflict);
+        org.slf4j.LoggerFactory.getLogger(CaptureStore.class).warn(
+            "Robot identity disagreement in {}: logged {} versus device {}; the file's logged serial wins",
+            capture.path().resolveSibling(path), serial, conflict.deviceSerial());
+      }
+    });
     long now = capture.observedAtUs();
     boolean due = factChanged || now - submittedAtUs >= UPDATE_PERIOD_US;
     if (!due && pending.get() == null) return;
@@ -152,7 +205,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var snapshot = new Update(capture, capture.path().getFileName().toString(), capture.open(),
         capture.open() ? clock.instant() : capture.endedAt(), capture.sizeBytes(),
         capture.minTimestampUs() / 1_000_000.0, capture.maxTimestampUs() / 1_000_000.0,
-        capture.files(), event, matchType, matchNumber, teamNumber, capture.endReason());
+        capture.files(), event, matchType, matchNumber, teamNumber, capture.endReason(), capture.identity(), List.copyOf(conflicts));
     var next = pending.updateAndGet(old -> new Pending(snapshot,
         old == null ? new CompletableFuture<>() : old.done()));
     completion = next.done();
@@ -207,7 +260,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
         update.size(), update.min(), update.max()) : null;
     var session = new Session(old.id(), old.startedAt(), update.endedAt().toString(),
         old.startBasis(), update.event(), update.matchType(), update.matchNumber(), update.teamNumber(),
-        List.copyOf(files), open, update.endReason());
+        List.copyOf(files), open, update.endReason(), update.identity(), update.conflicts());
     io.write(path, session); writes.incrementAndGet();
     // Keep the directory stable while its writer can open another rollover file or remap.
     // Creation of a resumed capture is a queue barrier, so it cannot race this close-time move.
@@ -239,7 +292,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
       var destination = target.resolve(before.getFileName());
       for (var file : update.files()) moves.add(new Move(directory.resolve(file.name()).toString(),
           StoreFiles.relative(store.root(), target.resolve(file.name())), now.toString()));
-      io.write(store.root().resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), moves));
+      io.write(store.root().resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses()));
       return destination;
     }
   }

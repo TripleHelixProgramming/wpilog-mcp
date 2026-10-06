@@ -71,6 +71,19 @@ class ToolConformanceTest {
   static void setUp() throws IOException {
     var dir = FixtureLogs.defaultDirectory();
     fixtures = FixtureLogs.generateAll(dir);
+    // Listing-only identity examples exercise its evidence fields without changing any tool's
+    // telemetry fixture or teaching the server a robot identity from a fingerprint.
+    for (boolean identified : List.of(true, false)) {
+      try (var writer = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(
+          dir.resolve("identity-" + identified + ".wpilog"), "synthetic listing identity")) {
+        int team = writer.start("/SystemStats/TeamNumber", "int64", "", 0);
+        writer.append(team, 1_000_000, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(9998));
+        if (identified) {
+          int serial = writer.start("/SystemStats/SerialNumber", "string", "", 0);
+          writer.append(serial, 1_000_000, "SYNTHETIC-LISTING".getBytes(StandardCharsets.UTF_8));
+        }
+      }
+    }
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(dir);

@@ -212,6 +212,23 @@ Every existing log tool accepts the open capture's path. Each call sees a fixed 
 as `inputs.session_time_range`; later calls can include newer records. The hot window controls
 memory retention, not which records are available: older values are read from the file.
 
+The listing reads `/SystemStats/SerialNumber` and `/SystemStats/Comments` (also prefixed `NT:`)
+in any log, not only a store. AdvantageKit records these conventions. DataLogManager teams can
+make every robot log self-identifying by writing them once in `robotInit`:
+
+```java
+var log = DataLogManager.getLog();
+new StringLogEntry(log, "/SystemStats/SerialNumber").append(RobotController.getSerialNumber());
+new StringLogEntry(log, "/SystemStats/Comments").append(RobotController.getComments());
+new IntegerLogEntry(log, "/SystemStats/TeamNumber").append(RobotController.getTeamNumber());
+```
+
+The entry classes are in `edu.wpi.first.util.datalog`; `DataLogManager` and `RobotController`
+are in `edu.wpi.first.wpilibj`. A logged serial wins for its file. Device evidence learned over
+SSH is stored by serial with host-key history and copied into `/Daemon/Robot/Identity` at capture
+start and resume. Address directories are provisional; promotion preserves old paths. The listing's
+`robot_candidates` are unique exact fingerprint hints with their evidence, never assigned identities.
+
 ### Several Log Directories
 
 `logdir` takes one directory or a list. `list_available_logs` lists the logs of every directory together, newest first, and names the directories in `log_directories`; a log reached from two directories (one inside the other, or the same directory under two names) is listed once. Tools can load logs from any of the directories, and from nowhere else.

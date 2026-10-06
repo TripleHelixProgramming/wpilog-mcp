@@ -161,6 +161,15 @@ public final class LogStore implements AutoCloseable {
 
   public CaptureStore captures(java.time.Clock clock) { return new CaptureStore(this, logManager, clock); }
 
+  public CompletableFuture<Robot> identify(org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity,
+      java.time.Clock clock) {
+    return captureAsync(io -> {
+      var robot = RobotIdentityStore.record(io, root, identity, clock.instant());
+      RobotIdentityStore.promote(io, root, logManager, null, identity, clock.instant());
+      return robot;
+    });
+  }
+
   public StoreInbox inbox() {
     return inbox;
   }
@@ -426,10 +435,10 @@ public final class LogStore implements AutoCloseable {
     if (serial != null && previous != null && previous.serialNumber() == null) {
       var old = root.resolve("robots").resolve(previous.id());
       var target = root.resolve("robots").resolve(serial);
-      var promoted = new Robot(serial, serial, previous.name(), metadata.comments(), "logged");
+      var promoted = new Robot(serial, serial, previous.name(), metadata.comments(), "logged", previous.contacts());
       if (Files.exists(io.check(target))) {
         // Persist the shared identity, while keeping both histories physically separate.
-        var alias = new Robot(previous.id(), serial, previous.name(), metadata.comments(), "logged");
+        var alias = new Robot(previous.id(), serial, previous.name(), metadata.comments(), "logged", previous.contacts());
         io.write(old.resolve("robot.json"), alias);
         catalog.robot(alias, old, old);
         sameRobots.add(new SameRobot(serial, List.of(old, target)));
@@ -449,7 +458,8 @@ public final class LogStore implements AutoCloseable {
         .filter(r -> r.id().equals(id)).findFirst().orElse(null);
     var robot = new Robot(id, serial, existing != null ? existing.name() : stated,
         metadata.comments() != null ? metadata.comments() : existing != null ? existing.comments() : null,
-        serial == null ? "stated" : "logged");
+        existing != null && "device".equals(existing.basis()) ? "device" : serial == null ? "stated" : "logged",
+        existing == null ? List.of() : existing.contacts());
     io.write(root.resolve("robots").resolve(id).resolve("robot.json"), robot);
     catalog.robot(robot, root.resolve("robots").resolve(id), root.resolve("robots").resolve(id));
     return robot;
@@ -604,7 +614,7 @@ public final class LogStore implements AutoCloseable {
           if (input.end() != null && input.end().isAfter(end)) end = input.end();
         }
         session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason());
+            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts());
         io.write(manifest, session);
       }
       catalog.placed(io, manifest, robot, session, records);
@@ -628,7 +638,7 @@ public final class LogStore implements AutoCloseable {
       var moves = new ArrayList<>(header.moves());
       for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
           StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
-      var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves);
+      var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses());
       io.write(root.resolve("store.json"), updated);
       catalog.header = updated;
     }
@@ -704,7 +714,7 @@ public final class LogStore implements AutoCloseable {
       if (file.path().startsWith(old)) moves.add(new Move(file.path().toString(),
           StoreFiles.relative(root, target.resolve(old.relativize(file.path()))), Instant.now().toString()));
     }
-    var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves);
+    var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses());
     io.write(root.resolve("store.json"), updated);
     catalog.header = updated;
   }

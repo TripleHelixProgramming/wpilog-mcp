@@ -430,6 +430,11 @@ public class LogManager {
 
     // Validate path is allowed (or cache is already loaded)
     securityValidator.validateOrAllowCached(filePath, logCache::containsKey);
+    if (!Files.exists(filePath)) {
+      var destination = stores.resolveMoved(filePath);
+      if (!destination.equals(filePath)) securityValidator.validate(destination);
+      filePath = destination;
+    }
     LogFileAccess.checkReadable(filePath);
 
     // Check if already cached (fast path, no lock needed), and still the file on disk
@@ -652,7 +657,7 @@ public class LogManager {
    * @since 0.9.1
    */
   public FileSnapshot snapshotOf(String path, LogData log) {
-    var entry = loaded.get(Path.of(path).toAbsolutePath().normalize().toString());
+    var entry = loaded.get(Path.of(log.path()).toAbsolutePath().normalize().toString());
     return entry != null && entry.log() == log ? entry.snapshot() : null;
   }
 
@@ -671,7 +676,7 @@ public class LogManager {
    */
   public String changeDuringCall(String path, LogData log, FileSnapshot before) {
     if (before == null) return null;
-    String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
+    String normalizedPath = Path.of(log.path()).toAbsolutePath().normalize().toString();
     var change = changeSince(normalizedPath, before);
     if (change != null) {
       logger.info("{} changed while a call read it: {}", Path.of(normalizedPath).getFileName(),
@@ -695,7 +700,7 @@ public class LogManager {
    * @since 0.9.1
    */
   public String faultDuringCall(String path, LogData log, FileSnapshot before, String fault) {
-    String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
+    String normalizedPath = Path.of(log.path()).toAbsolutePath().normalize().toString();
     var change = "a read of the file faulted (" + fault + "), which happens when the file is "
         + "truncated or rewritten while it is loaded";
     var attributes = before == null ? null : changeSince(normalizedPath, before);

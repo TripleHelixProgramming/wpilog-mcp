@@ -420,6 +420,12 @@ Each leaves the project working and tested on its own.
 
 ### 17. Open questions
 
+Milestone 3 decisions:
+
+- **Device sources:** pinned to [WPILib 2026.2.2 roboRIO HAL.cpp](https://github.com/wpilibsuite/allwpilib/blob/v2026.2.2/hal/src/main/native/athena/HAL.cpp). `HAL_GetSerialNumber` reads the process environment's `serialnum`; SSH reads readable `/proc/[0-9]*/environ` files because an SSH login need not inherit the robot program's environment. Missing or conflicting serials refuse device identification. `HAL_GetComments` reads `/etc/machine-info`, the quoted `PRETTY_HOSTNAME`, C-unescaped and bounded to 64 UTF-8 bytes. Hardware permissions and these reads remain shop checks.
+- **Identity placement:** manifest additions are backward compatible (format 1): address-to-serial lookup, contact key history, device evidence, and logged/device conflicts. Discovery during recording closes the current file at a creation barrier, moves the session after mapped readers release it, then opens the next capture file. A busy reader defers the move until a later barrier; old paths resolve through store moves. Closed address history moves on first contact; subsequent sessions use the serial immediately.
+- **Candidate evidence:** `robot_candidates` requires an exact logged team number, sorted entry name/type set, or sorted REV CAN id/device-type inventory to identify exactly one known serial. Conflicting unique hints are omitted; candidates never become identity. The file's `/SystemStats/SerialNumber` wins over device evidence, with disagreements in the manifest and server log until `list_sessions` exists.
+
 Milestone 2 decisions:
 
 - **Rollover before the mapping limit:** the bound includes declarations, values, schema seed copies and reserved finishes. Default 1 GiB; configuration accepts 256 through 2,147,483,647 bytes. A record set that cannot fit fails recording explicitly. Rollover keeps captures below the current int-indexed reader limit until the windowed-mapping milestone after the gateway (windows under 2 GB, long offsets, straddling-record reads and small-window tests). No windowed mapping is implemented here.

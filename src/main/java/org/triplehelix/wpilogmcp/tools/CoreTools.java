@@ -81,7 +81,8 @@ public final class CoreTools {
           + "this tool first to find logs and get match results, then pass the path to other "
           + "tools. stores lists each store's path and robots; store on a log names its root. "
           + "A file beyond the reader size limit carries read_error instead of disappearing. "
-          + "Stores add robot (serial_number, comments, basis), session metadata, and revlogs companions to logs; "
+          + "A logged serial adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
+          + "robot_candidates names serial_number and evidence (kind, value) only for a unique exact fingerprint; a candidate never assigns a robot. "
           + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
           + "or refused files with their reason; "
           + "unmanaged lists files absent from manifests outside the inbox, unassigned lists imported files awaiting "
@@ -192,6 +193,7 @@ public final class CoreTools {
       String tbaFailure = null; // the first outage or rejected key ends the page's enrichment
 
       var logsArray = new JsonArray();
+      var knownRobots = org.triplehelix.wpilogmcp.log.RobotCandidates.known(scan);
       for (var log : page) {
         var logObj = new JsonObject();
         logObj.addProperty("friendly_name", log.friendlyName());
@@ -219,13 +221,6 @@ public final class CoreTools {
                 revlogs.add(rev);
               });
           logObj.add("revlogs", revlogs);
-          var robot = new JsonObject();
-          robot.addProperty("id", stored.robot().id());
-          robot.addProperty("serial_number", stored.robot().serialNumber());
-          robot.addProperty("name", stored.robot().name());
-          if (stored.robot().comments() != null) robot.addProperty("comments", stored.robot().comments());
-          robot.addProperty("basis", stored.robot().basis());
-          logObj.add("robot", robot);
           var session = new JsonObject();
           session.addProperty("id", stored.session().id());
           session.addProperty("path", stored.manifestPath().getParent().toString());
@@ -236,6 +231,12 @@ public final class CoreTools {
             session.addProperty("open", stored.session().openCapture() != null);
           }
           logObj.add("session", session);
+        }
+
+        if (log.robot() != null) logObj.add("robot", StoreJson.JSON.toJsonTree(log.robot()));
+        else {
+          var candidates = org.triplehelix.wpilogmcp.log.RobotCandidates.forFile(Path.of(log.path()), "wpilog", knownRobots);
+          if (!candidates.isEmpty()) logObj.add("robot_candidates", StoreJson.JSON.toJsonTree(candidates));
         }
 
         if (tbaAvailable && tbaFailure == null && tbaEnrichment.isEligibleForEnrichment(log)) {
@@ -309,6 +310,8 @@ public final class CoreTools {
             item.addProperty("store", store.root().toString());
             item.addProperty("kind", file.file().kind());
             item.addProperty("sha256", file.file().sha256());
+            var candidates = org.triplehelix.wpilogmcp.log.RobotCandidates.forFile(file.path(), file.file().kind(), knownRobots);
+            if (!candidates.isEmpty()) item.add("robot_candidates", StoreJson.JSON.toJsonTree(candidates));
             unassigned.add(item);
           }
           for (var move : store.moved()) {

@@ -64,6 +64,22 @@ public final class StoreRegistry implements AutoCloseable {
     }
   }
 
+  /** Move notices expire from listings, but a path once handed to a tool remains a durable alias. */
+  public Path resolveMoved(Path original) throws IOException {
+    var root = StoreCatalog.containing(original);
+    if (root.isEmpty()) return original;
+    var io = new StoreFiles(root.get(), security);
+    var header = io.read(root.get().resolve("store.json"), StoreManifest.Header.class);
+    if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
+    Path result = original;
+    for (var move : header.moves()) {
+      if (Path.of(move.originalPath()).toAbsolutePath().normalize().equals(original)) {
+        result = io.resolve(root.get(), move.movedTo());
+      }
+    }
+    return result;
+  }
+
   /** Writes never inherit the reader's legacy unrestricted mode when no directory is set. */
   public void validate(Path path) throws IOException {
     if (security.getAllowedDirectories().isEmpty()) {

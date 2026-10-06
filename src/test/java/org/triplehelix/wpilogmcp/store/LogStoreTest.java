@@ -117,6 +117,51 @@ class LogStoreTest {
     return tools.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"", "NT:"})
+  void loggedIdentityIsListedOutsideAStoreEvenWhenItArrivesLate(String prefix) throws Exception {
+    var file = temp.resolve("plain.wpilog");
+    try (var w = new WpilogWriter(file, "synthetic late identity")) {
+      int value = w.start("/x", "int64", "", 0);
+      for (int i = 0; i < 10_002; i++) w.append(value, i, encodeInt64(i));
+      int serial = w.start(prefix + "/SystemStats/SerialNumber", "string", "", 0);
+      int comments = w.start(prefix + "/SystemStats/Comments", "string", "", 0);
+      w.append(serial, 1_000_000, encodeString("SYNTHETIC-A"));
+      w.append(comments, 1_000_000, encodeString("fixture practice"));
+    }
+    LogDirectory.getInstance().setLogDirectory(temp.toString());
+    var row = listing().getAsJsonArray("logs").get(0).getAsJsonObject();
+    assertNotNull(row.getAsJsonObject("robot"));
+    assertEquals("SYNTHETIC-A", row.getAsJsonObject("robot").get("serial_number").getAsString());
+    assertEquals("fixture practice", row.getAsJsonObject("robot").get("comments").getAsString());
+    assertEquals("logged", row.getAsJsonObject("robot").get("basis").getAsString());
+    assertFalse(row.has("robot_candidates"));
+    // Import already understood this convention; the plain directory must give the same identity.
+    var imported = run(List.of(file), false, null).files().get(0).path();
+    assertTrue(imported.startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
+    var stored = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
+        .filter(r -> r.get("path").getAsString().equals(imported.toString())).findFirst().orElseThrow();
+    assertEquals(row.getAsJsonObject("robot").get("serial_number"), stored.getAsJsonObject("robot").get("serial_number"));
+  }
+
+  @Test void listingOffersOnlyUniqueRobotCandidatesFromLoggedEvidenceAndNeverAssignsThem() throws Exception {
+    var known = log(temp.resolve("known.wpilog"), "SYNTHETIC-A", START, 1); run(List.of(known), false, null);
+    var plain = log(temp.resolve("plain.wpilog"), null, START, 2);
+    Files.delete(known); LogDirectory.getInstance().setLogDirectory(temp.toString());
+    var row = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
+        .filter(r -> r.get("path").getAsString().equals(plain.toString())).findFirst().orElseThrow();
+    assertFalse(row.has("robot"));
+    var candidates = row.getAsJsonArray("robot_candidates"); assertNotNull(candidates); assertEquals(1, candidates.size());
+    assertEquals("SYNTHETIC-A", candidates.get(0).getAsJsonObject().get("serial_number").getAsString());
+    var evidence = candidates.get(0).getAsJsonObject().getAsJsonArray("evidence").get(0).getAsJsonObject();
+    assertEquals("logged_team_number", evidence.get("kind").getAsString()); assertEquals("9999", evidence.get("value").getAsString());
+    assertTrue(Files.exists(plain)); assertEquals(1, catalog().files().size());
+    run(List.of(log(temp.resolve("other.wpilog"), "SYNTHETIC-B", START, 3)), false, null);
+    row = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
+        .filter(r -> r.get("path").getAsString().equals(plain.toString())).findFirst().orElseThrow();
+    assertFalse(row.has("robot")); assertFalse(row.has("robot_candidates"));
+  }
+
   @Test void oversizedWpilogIsRefusedUntouchedAndListedWithTheSameReason() throws Exception {
     var small = log(temp.resolve("header.wpilog"), null, START, 1);
     byte[] bytes = Files.readAllBytes(small); Files.delete(small);

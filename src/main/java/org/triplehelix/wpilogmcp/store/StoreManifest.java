@@ -5,6 +5,8 @@
 package org.triplehelix.wpilogmcp.store;
 
 import java.util.List;
+import java.util.Map;
+import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
 
 /** Durable facts, with portable relative paths; clocks and identity always retain their basis. */
 public final class StoreManifest {
@@ -13,12 +15,33 @@ public final class StoreManifest {
 
   public static final int FORMAT_VERSION = 1;
 
-  public record Header(int formatVersion, String createdAt, String id, List<Move> moves) {}
+  public record Header(int formatVersion, String createdAt, String id, List<Move> moves,
+      Map<String, String> addresses) {
+    public Header { addresses = addresses == null ? Map.of() : Map.copyOf(addresses); }
+    public Header(int version, String createdAt, String id, List<Move> moves) {
+      this(version, createdAt, id, moves, Map.of());
+    }
+  }
   public record Move(String originalPath, String movedTo, String movedAt) {}
-  public record Robot(String id, String serialNumber, String name, String comments, String basis) {}
+  public record Contact(String address, String hostKeyFingerprint, String seenAt) {}
+  public record Robot(String id, String serialNumber, String name, String comments, String basis,
+      List<Contact> contacts) {
+    public Robot { contacts = contacts == null ? List.of() : List.copyOf(contacts); }
+    public Robot(String id, String serialNumber, String name, String comments, String basis) {
+      this(id, serialNumber, name, comments, basis, List.of());
+    }
+  }
+  public record IdentityConflict(String path, String loggedSerial, String deviceSerial) {}
   public record Session(String id, String startedAt, String endedAt, String startBasis,
       String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
-      OpenCapture openCapture, String endReason) {
+      OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts) {
+    public Session { identityConflicts = identityConflicts == null ? List.of() : List.copyOf(identityConflicts); }
+    public Session(String id, String startedAt, String endedAt, String startBasis,
+        String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
+        OpenCapture openCapture, String endReason) {
+      this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
+          openCapture, endReason, null, List.of());
+    }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
         OpenCapture openCapture) {
