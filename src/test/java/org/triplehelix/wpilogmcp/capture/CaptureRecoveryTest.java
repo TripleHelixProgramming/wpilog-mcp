@@ -70,7 +70,7 @@ class CaptureRecoveryTest {
   private void startup(Path root) throws Exception {
     try (var service = new CaptureService(config(root), LogManager.getInstance(), WALL,
         org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon())) {
-      service.start();
+      service.start().get(10, TimeUnit.SECONDS);
     }
   }
 
@@ -157,6 +157,52 @@ class CaptureRecoveryTest {
     } finally { release.countDown(); threads.shutdownNow(); }
   }
 
+  @Test void slowRecoveryDoesNotDelayHttpHealthOrStartNt4BeforeItsSweep() throws Exception {
+    var root = directory.resolve("store"); var file = plant(root, true, false);
+    var manager = LogManager.getInstance(); var entered = new java.util.concurrent.CountDownLatch(1);
+    var release = new java.util.concurrent.CountDownLatch(1);
+    var clientStarted = new java.util.concurrent.CountDownLatch(1);
+    var delegate = org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon();
+    var loop = new org.triplehelix.wpilogmcp.nt4.client.ClientScheduler() {
+      public long nowUs() { return delegate.nowUs(); }
+      public void execute(Runnable task) { clientStarted.countDown(); delegate.execute(task); }
+      public void schedule(Runnable task, long delayUs) { delegate.schedule(task, delayUs); }
+      public void close() { delegate.close(); }
+    };
+    var threads = java.util.concurrent.Executors.newSingleThreadExecutor();
+    var service = new java.util.concurrent.atomic.AtomicReference<CaptureService>();
+    var http = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new org.triplehelix.wpilogmcp.mcp.ToolRegistry(), 0);
+    var fixture = directory.resolve("queued.wpilog"); Files.copy(file, fixture);
+    var importing = manager.stores().store(root).importPaths(new LogStore.Request(List.of(fixture), false, null), progress -> {
+      if (!progress.phase().equals("starting")) return;
+      entered.countDown();
+      try { assertTrue(release.await(30, TimeUnit.SECONDS)); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
+    });
+    try {
+      assertTrue(entered.await(10, TimeUnit.SECONDS));
+      // Main constructs capture before opening HTTP, then starts capture after HTTP is listening.
+      var starting = threads.submit(() -> {
+        service.set(new CaptureService(config(root), manager, WALL, loop));
+        http.start(); service.get().start(); return http.getPort();
+      });
+      int port = starting.get(2, TimeUnit.SECONDS);
+      var response = java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
+          java.net.URI.create("http://127.0.0.1:" + port + "/health")).timeout(java.time.Duration.ofSeconds(2)).build(),
+          java.net.http.HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, response.statusCode());
+      assertEquals(1, clientStarted.getCount(), "NT4 must wait until recovery has scanned and hashed the old file");
+      assertNotNull(manifest(file).openCapture());
+      release.countDown(); importing.get(10, TimeUnit.SECONDS);
+      assertTrue(clientStarted.await(10, TimeUnit.SECONDS));
+      assertNull(manifest(file).openCapture());
+    } finally {
+      release.countDown(); threads.shutdown(); assertTrue(threads.awaitTermination(10, TimeUnit.SECONDS));
+      if (service.get() != null) service.get().close(); else loop.close();
+      http.stop();
+    }
+  }
+
   @Test void failedOutputCreationReleasesItsLease() throws Exception {
     var file = directory.resolve("failed.wpilog");
     assertThrows(java.io.IOException.class, () -> new WpilogOutput(file) {
@@ -234,6 +280,7 @@ class CaptureRecoveryTest {
       String guide = Files.readString(Path.of("doc", name + ".md"));
       assertTrue(guide.contains(CaptureService.CLOSE_TIMEOUT.toSeconds() + " seconds"), name);
       assertTrue(guide.contains("server stopped while recording"), name);
+      assertTrue(guide.contains("after HTTP is listening"), name);
       assertTrue(guide.contains("rollover") && guide.contains("server time"), name);
     }
   }

@@ -200,7 +200,8 @@ bound, recording stops with an explained error. A write failure closes the sessi
 `end_reason` in its manifest and the reason in the server log, keeps the NT4 connection, and
 suppresses recording until a new robot clock. A partial write is rolled back to its completed
 record boundary when the filesystem permits it. Topic costs are logged every five minutes.
-Before NT4 starts, the store queue sweeps sessions still marked `open_capture`. Files with an
+The service queues recovery after HTTP is listening, so a large abandoned capture cannot delay
+the daemon health endpoint. Before NT4 starts, the store queue sweeps sessions still marked `open_capture`. Files with an
 active writer are left alone. An abandoned readable WPILOG is finalized with its hash, size,
 record time range, file modification time as `ended_at`, and
 `end_reason: "server stopped while recording"`. An incomplete final record remains marked as

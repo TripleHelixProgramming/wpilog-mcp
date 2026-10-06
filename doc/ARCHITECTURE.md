@@ -215,7 +215,8 @@ queued when they change. Cosmetic renames wait for close and reader release on e
 otherwise an asynchronous directory move can race a rollover open or a mapping growth. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
 They are provisional until robot identity is implemented.
 
-Before creating the NT4 client, the service runs recovery on the store queue. Each `open_capture`
+The service queues recovery after HTTP is listening, then starts NT4 only when the sweep completes.
+Scanning and hashing an abandoned capture cannot delay the daemon health endpoint. Each `open_capture`
 is claimed with the same persistent sidecar lease as the writer; a live writer is skipped. The
 OS lock covers other processes and the local claim avoids opening a second channel to a held
 lock. The lease is separate from the data: closing mapped readers must not release a writer's

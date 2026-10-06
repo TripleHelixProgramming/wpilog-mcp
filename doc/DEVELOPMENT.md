@@ -149,7 +149,8 @@ Injected clocks pin the five-second progress cadence and immediate changed facts
 proves service shutdown waits for that manifest outside the NT4 loop. `CaptureRecoveryTest`
 plants open manifests with complete, incomplete-tail, unreadable and damaged-header fixtures;
 checks hashes, ranges, modification-time endings, preserved facts and prior files; and proves
-recovery waits on the store queue. It verifies same-process and cross-process ownership,
+recovery waits on the store queue. A blocked sweep leaves the real HTTP health endpoint responsive
+and starts no NT4 work until recovery completes. It verifies same-process and cross-process ownership,
 reader mapping alongside a writer, alias and symlink guards, and cleanup after an output fails
 to open. A child JVM blocks the store queue, checks the 30 second default and injects a zero deadline into the production wait, then exits
 without draining the pending manifest; the next service start must finish it. No test sleeps to

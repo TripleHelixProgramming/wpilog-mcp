@@ -19,6 +19,8 @@ public final class CaptureService implements AutoCloseable {
   private final Duration closeTimeout;
   private final Nt4Client client;
   private final org.triplehelix.wpilogmcp.store.CaptureStore placement;
+  private volatile java.util.concurrent.CompletableFuture<Void> starting;
+  private final java.util.concurrent.atomic.AtomicBoolean stopping = new java.util.concurrent.atomic.AtomicBoolean();
 
   public CaptureService(CaptureConfig config, LogManager manager) throws IOException {
     this(config, manager, Clock.systemUTC(), ClientScheduler.daemon());
@@ -40,18 +42,30 @@ public final class CaptureService implements AutoCloseable {
       CaptureWriter.OutputFactory outputs, Duration closeTimeout) throws IOException {
     this.closeTimeout = closeTimeout;
     placement = manager.stores().store(config.store()).captures(clock);
-    placement.recover();
     var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs()), config.maxFileBytes(), outputs);
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), writer,
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
   }
 
-  public void start() { client.start(); }
+  /** Called after HTTP is listening: scanning and hashing old captures must not delay health. */
+  public synchronized java.util.concurrent.CompletableFuture<Void> start() {
+    if (starting != null) return starting;
+    if (stopping.get()) return java.util.concurrent.CompletableFuture.completedFuture(null);
+    starting = placement.recoverAsync().thenRun(client::start).whenComplete((ignored, error) -> {
+      if (error != null) org.slf4j.LoggerFactory.getLogger(CaptureService.class)
+          .error("Capture recovery failed; NT4 capture has not started", error);
+    });
+    return starting;
+  }
 
   @Override public void close() {
+    stopping.set(true);
     try {
       // One bound covers stopping the writer and waiting behind imports for the final manifest.
-      client.closeAsync().thenCompose(ignored -> placement.completion())
+      var recovery = starting;
+      java.util.concurrent.CompletableFuture.allOf(client.closeAsync(), recovery == null
+          ? java.util.concurrent.CompletableFuture.completedFuture(null) : recovery)
+          .thenCompose(ignored -> placement.completion())
           .get(closeTimeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt(); deferred(e);

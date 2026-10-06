@@ -66,8 +66,8 @@ public final class CaptureStore implements CaptureWriter.Observer {
   public void onMove(BiConsumer<Path, Path> moved) { this.moved = moved; }
 
   /** Startup joins the same queue as imports; no client can write until this sweep finishes. */
-  public void recover() throws IOException {
-    store.capture(io -> { CaptureRecovery.run(io, store.root()); return null; });
+  public CompletableFuture<Void> recoverAsync() {
+    return store.captureAsync(io -> { CaptureRecovery.run(io, store.root()); return null; });
   }
 
   @Override public Path create(String address, Instant start) throws IOException {
