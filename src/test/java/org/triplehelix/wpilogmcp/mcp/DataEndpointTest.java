@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,10 +31,16 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.data.ArrowSpecReader;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
+import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.sync.SyncMethod;
+import org.triplehelix.wpilogmcp.tools.EntryData;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
 /**
@@ -465,6 +472,55 @@ class DataEndpointTest {
   }
 
   // ---- REV log signals ----
+
+  @ParameterizedTest
+  @ValueSource(strings = {"file", "method", "drift", "reference", "confidence"})
+  void revValidatorIncludesEveryResponseDependency(String changed) {
+    var file = new FileSnapshot(100, FileTime.fromMillis(1000), null);
+    var original = new EntryData.RevValidator(Path.of("signal.revlog"), file,
+        SyncMethod.USER_PROVIDED, 1000, 1.0, 2.0, "medium");
+    var updated = new EntryData.RevValidator(original.path(),
+        changed.equals("file") ? new FileSnapshot(101, file.modified(), null) : file,
+        changed.equals("method") ? SyncMethod.SYSTEM_TIME_ONLY : original.method(), original.offsetMicros(),
+        changed.equals("drift") ? 3.0 : original.driftRateNanosPerSec(),
+        changed.equals("reference") ? 4.0 : original.referenceTimeSec(),
+        changed.equals("confidence") ? "low" : original.confidence());
+    assertNotEquals(DataEndpoint.etag(file, "names=REV/signal", List.of(original)),
+        DataEndpoint.etag(file, "names=REV/signal", List.of(updated)), changed);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"arrow", "csv"})
+  void revOffsetChangesTheEtag(String format, @TempDir Path temp) throws Exception {
+    var dir = temp.toRealPath();
+    var manager = LogManager.getInstance();
+    var allowed = manager.getAllowedDirectories();
+    manager.addAllowedDirectory(dir);
+    try {
+      var file = FixtureLogs.writeRevlogPair(dir, "pair.wpilog", ZoneOffset.UTC, "systemTime");
+      assertTrue(call("wait_for_sync", "path", file, "timeout_ms", 30_000).get("completed").getAsBoolean());
+      assertTrue(call("set_revlog_offset", "path", file, "offset_ms", 10_000).get("success").getAsBoolean());
+      var p = params("path", file.toString(), "names", "REV/SparkMax_3/AppliedOutput", "format", format);
+      var first = get(p);
+      assertEquals(200, first.statusCode());
+      var before = first.headers().firstValue("ETag").orElseThrow();
+      assertTrue(call("set_revlog_offset", "path", file, "offset_ms", 20_000).get("success").getAsBoolean());
+      var changed = get(p, "If-None-Match", before);
+      assertEquals(200, changed.statusCode(), "the same wpilog with a new REV offset is different data");
+      var after = changed.headers().firstValue("ETag").orElseThrow();
+      assertNotEquals(before, after);
+      if (format.equals("arrow")) {
+        assertEquals(20_000_000L, ArrowSpecReader.read(changed.body()).batches().get(0).columns().get(0).get(0));
+      } else {
+        assertTrue(new String(changed.body(), StandardCharsets.UTF_8).lines().anyMatch(line -> line.startsWith("20.0,")));
+      }
+      assertEquals(304, get(p, "If-None-Match", after).statusCode());
+    } finally {
+      manager.unloadAllLogs();
+      manager.clearAllowedDirectories();
+      allowed.forEach(manager::addAllowedDirectory);
+    }
+  }
 
   private static Map<String, String> revParams(String... keyValues) {
     var map = params(keyValues);

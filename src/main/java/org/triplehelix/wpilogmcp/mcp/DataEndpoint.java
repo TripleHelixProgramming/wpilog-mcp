@@ -208,6 +208,7 @@ final class DataEndpoint {
       var before = use.snapshot();
 
       var prepared = new ArrayList<Prepared>();
+      var revValidators = new ArrayList<EntryData.RevValidator>();
       long estimatedBytes = 0;
       long rows = 0;
       for (var name : request.names()) {
@@ -219,6 +220,7 @@ final class DataEndpoint {
             var resolved = EntryData.resolveRev(logManager, log, name);
             series = resolved.series();
             rev = resolved.sync();
+            revValidators.add(resolved.validator());
           } catch (EntryData.RevUnavailable e) {
             var refusal = new Refusal(e.status, e.getMessage(), e.hint);
             throw refusal;
@@ -279,7 +281,7 @@ final class DataEndpoint {
         }
       }
 
-      var etag = etag(before, exchange.getRequestURI().getRawQuery());
+      var etag = etag(before, exchange.getRequestURI().getRawQuery(), revValidators);
       var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
       if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {
         exchange.getResponseHeaders().set("ETag", etag);
@@ -367,12 +369,12 @@ final class DataEndpoint {
 
   // ---- ETag ----
 
-  static String etag(FileSnapshot snapshot, String rawQuery) {
+  static String etag(FileSnapshot snapshot, String rawQuery, List<EntryData.RevValidator> revValidators) {
     if (snapshot == null) return null;
     try {
       var digest = MessageDigest.getInstance("SHA-256");
       var text = snapshot.size() + "|" + snapshot.modified().toMillis() + "|" + snapshot.fileKey()
-          + "|" + Version.VERSION + "|" + (rawQuery == null ? "" : rawQuery);
+          + "|" + Version.VERSION + "|" + (rawQuery == null ? "" : rawQuery) + "|" + revValidators;
       var hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));
       return "\"" + HexFormat.of().formatHex(hash, 0, 16) + "\"";
     } catch (NoSuchAlgorithmException e) {

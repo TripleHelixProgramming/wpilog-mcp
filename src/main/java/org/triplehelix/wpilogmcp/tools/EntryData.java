@@ -4,17 +4,21 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 import org.triplehelix.wpilogmcp.data.ArrowType;
 import org.triplehelix.wpilogmcp.data.ArrowType.Field;
+import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
+import org.triplehelix.wpilogmcp.sync.SyncMethod;
 
 /**
  * An entry's samples as the data endpoint serves them (EXPLORER_PLAN.md §6): resolved by the
@@ -81,7 +85,11 @@ public final class EntryData {
       Double offsetSeconds, String confidence, boolean aligned) {}
 
   /** A REV signal resolved: its samples on the wpilog's clock, and how they got there. */
-  public record RevSeries(Series series, RevSync sync) {}
+  public record RevSeries(Series series, RevSync sync, RevValidator validator) {}
+
+  /** A validator must cover the same immutable alignment used to transform this response. */
+  public record RevValidator(Path path, FileSnapshot snapshot, SyncMethod method, long offsetMicros,
+      double driftRateNanosPerSec, double referenceTimeSec, String confidence) {}
 
   /** Why a REV key could not be served, with the status a request gets. */
   public static final class RevUnavailable extends Exception {
@@ -121,7 +129,7 @@ public final class EntryData {
           "list_revlog_signals lists the keys");
     }
     var result = synced.syncResult();
-    var failed = result.method() == org.triplehelix.wpilogmcp.sync.SyncMethod.FAILED;
+    boolean failed = result.method() == SyncMethod.FAILED;
     var signal = synced.revlog().getSignal(stripBus(key, synced.canBusName()));
     var sync = new RevSync(
         signal != null ? signal.deviceKey() : null,
@@ -137,8 +145,18 @@ public final class EntryData {
           + "') could not be synchronized to the wpilog's clock, so its timestamps are on its "
           + "own clock", "set_revlog_offset gives the bus an offset; sync_status says why it failed");
     }
-    return new RevSeries(
-        new Series(key, key, null, "revlog", values, true), sync);
+    var path = Path.of(synced.revlog().path());
+    FileSnapshot snapshot;
+    try {
+      snapshot = FileSnapshot.of(path);
+      if (snapshot == null) throw new IOException("The file no longer exists: " + path);
+    } catch (IOException e) {
+      throw new RevUnavailable(409, "Cannot validate REV data: " + e.getMessage(),
+          "Refresh the REV logs and wait for synchronization before asking again");
+    }
+    var validator = new RevValidator(path, snapshot, result.method(), result.offsetMicros(),
+        result.driftRateNanosPerSec(), result.referenceTimeSec(), sync.confidence());
+    return new RevSeries(new Series(key, key, null, "revlog", values, true), sync, validator);
   }
 
   /** The key inside the REV log: without the {@code REV/} prefix and, when present, the bus. */
