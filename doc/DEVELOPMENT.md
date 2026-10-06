@@ -133,7 +133,10 @@ the independent reader checks every entry, payload, and timestamp, and wpiutil c
 too. The bounded-file pass verifies the same received frames across every rollover, with marked
 schema seeds checked separately, plus every file's byte bound. This replay uses NT4 4.0 with an
 injected client clock so tiny forced files and tool calls do not turn byte fidelity into an aliveness
-timing test; the NT4 suite independently tests 4.1 keepalives. Replay walks complete record boundaries because wpiutil's iterator can omit a short final
+timing test; the NT4 suite independently tests 4.1 keepalives. Replay allows 60 seconds of wall
+time for socket delivery and forcing the small rollover files, which exceeds the normal helper's
+ten-second deadline on Windows; that deadline never advances the injected clock or changes the
+fidelity assertions. Replay walks complete record boundaries because wpiutil's iterator can omit a short final
 record. The client separately checks that a wrong MessagePack family is counted and dropped
 without losing the next frame or disconnecting. CI runs on `pit-server` as well as `main`, including
 the Windows job.

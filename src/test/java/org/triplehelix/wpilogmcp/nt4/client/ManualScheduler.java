@@ -36,7 +36,11 @@ public final class ManualScheduler implements ClientScheduler {
   }
   public void drain() { Runnable next; while ((next = ready.poll()) != null) next.run(); }
   public void until(BooleanSupplier condition) throws InterruptedException {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    until(condition, java.time.Duration.ofSeconds(10));
+  }
+  /** A wall-clock guard for network delivery and callback I/O; it never advances the NT4 clock. */
+  public void until(BooleanSupplier condition, java.time.Duration timeout) throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
     while (!condition.getAsBoolean()) {
       long left = deadline - System.nanoTime();
       assertTrue(left > 0, "Client event deadline exceeded");

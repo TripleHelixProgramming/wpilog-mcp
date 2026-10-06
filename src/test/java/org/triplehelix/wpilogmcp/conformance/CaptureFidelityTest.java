@@ -113,10 +113,15 @@ class CaptureFidelityTest {
       gateway.announce("/capture-test/ready", "int", new JsonObject()).join();
       try (var client = new Nt4Client(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "capture")),
           Nt4Client.captureSubscription(0.001), listener, java.net.http.HttpClient.newHttpClient(), loop)) {
-        client.start(); loop.until(ready::isDone); ready.get(10, TimeUnit.SECONDS); replayer.replay(gateway, 0, ignored -> fail("Fast replay must not sleep"));
-        for (var name : names) gateway.unannounce(name).join();
-        gateway.unannounce("/capture-test/ready").join(); loop.until(done::isDone); done.get(30, TimeUnit.SECONDS);
-        try { whileOpen.check(); }
+        try {
+          client.start(); loop.until(ready::isDone); ready.get(10, TimeUnit.SECONDS); replayer.replay(gateway, 0, ignored -> fail("Fast replay must not sleep"));
+          for (var name : names) gateway.unannounce(name).join();
+          gateway.unannounce("/capture-test/ready").join();
+          // Windows may spend more than ten seconds forcing all the tiny rollover files.
+          // This is a fidelity check, not a filesystem-throughput requirement.
+          loop.until(done::isDone, java.time.Duration.ofSeconds(60)); done.get(30, TimeUnit.SECONDS);
+          whileOpen.check();
+        }
         finally { var stopped = client.closeAsync(); loop.drain(); stopped.get(30, TimeUnit.SECONDS); }
       }
     }
