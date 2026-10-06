@@ -17,7 +17,16 @@ public final class StoreManifest {
   public record Move(String originalPath, String movedTo, String movedAt) {}
   public record Robot(String id, String serialNumber, String name, String comments, String basis) {}
   public record Session(String id, String startedAt, String endedAt, String startBasis,
-      String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files) {}
+      String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
+      OpenCapture openCapture) {
+    public Session(String id, String startedAt, String endedAt, String startBasis,
+        String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files) {
+      this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files, null);
+    }
+  }
+  /** Additive field: older readers still understand every completed file in files. */
+  public record OpenCapture(String path, Provenance provenance, long sizeBytes,
+      double minTimestampSec, double maxTimestampSec) {}
   public record Provenance(String kind, String originalPath, String originalName,
       String importedAt, boolean moved) {}
   public record Matching(String method, String wpilogSha256, long offsetMicros,

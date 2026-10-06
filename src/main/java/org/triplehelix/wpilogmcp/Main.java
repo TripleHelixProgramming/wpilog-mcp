@@ -211,7 +211,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = System.getenv(DaemonManager.STOP_TOKEN_ENV);
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null));
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture());
     } catch (ConfigException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
@@ -371,8 +371,8 @@ public class Main {
     }
 
     // Log directories
-    if (config.logdirs() != null && !config.logdirs().isEmpty()) {
-      configureLogDirectories(config.logdirs());
+    if (!config.effectiveLogdirs().isEmpty()) {
+      configureLogDirectories(config.effectiveLogdirs());
     }
 
     // Team number
@@ -640,6 +640,12 @@ public class Main {
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit) {
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null);
+  }
+
+  private static void initializeAndRun(boolean httpMode, int httpPort,
+      String httpBind, String httpPath, Set<String> allowedOrigins,
+      String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -671,6 +677,15 @@ public class Main {
 
     if (httpMode) {
       var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
+      final org.triplehelix.wpilogmcp.capture.CaptureService capture;
+      try {
+        capture = captureConfig == null ? null
+            : new org.triplehelix.wpilogmcp.capture.CaptureService(captureConfig, logManager);
+      } catch (IOException e) {
+        logger().error("capture.store: {}", e.getMessage(), e);
+        System.exit(1);
+        return;
+      }
       // A stop request and the idle exit end the server as a signal would: the transport
       // finishes the calls in flight, then the shutdown hook closes the logs
       Runnable exit = () -> {
@@ -688,10 +703,12 @@ public class Main {
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
         // so that in-flight tool calls don't encounter closed logs.
         httpTransport.stop();
+        if (capture != null) capture.close();
         logManager.shutdown();
       }, "shutdown-hook"));
       try {
         httpTransport.start();
+        if (capture != null) capture.start();
         // The guide tells an agent with shell access where to get every sample of an entry
         DiscoveryTools.setDataEndpoint(
             httpTransport.dataEndpointUrl());
@@ -702,6 +719,7 @@ public class Main {
       } catch (InterruptedException e) {
         logger().info("Server interrupted, shutting down");
         httpTransport.stop();
+        if (capture != null) capture.close();
       }
     } else {
       var finalLogManager = logManager;

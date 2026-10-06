@@ -109,7 +109,8 @@ class InstallRefreshTest {
     assertThrows(IOException.class, () -> InstallGuard.acquire(root, file, true), "live marker owner wins");
     Files.writeString(file, "refresh 9223372036854775806 abandoned");
     try (var recovered = InstallGuard.acquire(root, file, true)) {
-      assertEquals("", Files.readString(file));
+      // Windows enforces the exclusive byte-range lock even against another local handle.
     }
+    assertEquals("", Files.readString(file));
   }
 }

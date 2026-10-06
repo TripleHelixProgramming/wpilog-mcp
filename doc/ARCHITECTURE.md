@@ -203,7 +203,13 @@ one writer and one order. Its pure-Java WPILOG output follows WPILib's file spec
 the native DataLog writer cannot run in the Java-only install. The independent fixture writer,
 the differential reader, and wpiutil's reader check its bytes. Storage and live-index observers
 receive complete writes and their byte offsets; context providers can join this loop later.
-This first capture step is not wired into startup yet.
+An optional `capture` configuration starts this listener beside the HTTP server. Missing robots
+do not delay HTTP startup; shutdown drains tool calls, closes the capture, then retires log readers.
+The capture store uses the existing store queue, path validation, move reservations, and manifests.
+An additive `open_capture` field represents a growing file without inventing a hash or weakening
+the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
+written before attempting a directory rename; Windows can defer that rename until the writer
+and mapped readers close. Address directories are provisional until robot identity is implemented.
 
 Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
 clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds

@@ -33,11 +33,26 @@ public record ServerConfig(
     Boolean debug,
     String exportdir,
     Integer scandepth,
-    Integer idleExitMinutes
+    Integer idleExitMinutes,
+    CaptureConfig capture
 ) {
 
   public ServerConfig {
     logdirs = logdirs == null ? null : List.copyOf(logdirs);
+  }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, null);
+  }
+
+  /** Naming a capture store grants this server access to it, alongside its other directories. */
+  public List<String> effectiveLogdirs() {
+    var paths = new java.util.LinkedHashSet<String>(logdirs == null ? List.of() : logdirs);
+    if (capture != null) paths.add(capture.store().toString());
+    return List.copyOf(paths);
   }
 
   /** A configuration without an idle exit, as every configuration was before the idle exit existed. */
@@ -95,7 +110,8 @@ public record ServerConfig(
         debug != null ? debug : defaults.debug(),
         exportdir != null ? exportdir : defaults.exportdir(),
         scandepth != null ? scandepth : defaults.scandepth(),
-        idleExitMinutes != null ? idleExitMinutes : defaults.idleExitMinutes()
+        idleExitMinutes != null ? idleExitMinutes : defaults.idleExitMinutes(),
+        capture != null ? capture : defaults.capture()
     );
   }
 }

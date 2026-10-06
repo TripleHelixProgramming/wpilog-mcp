@@ -317,7 +317,7 @@ public class LogDirectory {
           var store = StoreCatalog.read(root, security);
           stores.add(store);
           LogManager.getInstance().stores().discovered(root);
-          for (var file : store.files()) {
+          for (var file : store.allFiles()) {
             if (!file.file().kind().equals("wpilog") || file.session() == null) continue;
             var session = file.session();
             found.add(new LogFileInfo(file.path().toString(), file.path().getFileName().toString(),
@@ -401,7 +401,7 @@ public class LogDirectory {
           getLogDirectories().forEach(security::addAllowedDirectory);
           var store = StoreCatalog.read(storeRoot, security);
           var realDir = realPath(dir);
-          files = store.files().stream().filter(f -> f.session() != null)
+          files = store.allFiles().stream().filter(f -> f.session() != null)
               .filter(f -> wanted == REVLOG_FILE ? f.file().kind().equals("revlog") : f.file().kind().equals("wpilog"))
               .map(StoreCatalog.StoredFile::path).filter(p -> p.startsWith(realDir)).toList();
         } else {

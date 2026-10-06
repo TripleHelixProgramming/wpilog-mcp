@@ -34,7 +34,7 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
  * Read-only NT4 client. All connection state and listener calls belong to one event loop; JDK
  * callbacks hand off completed messages with backpressure. A robot being off is normal: candidate
  * sweeps retry forever at 1, 2, 4, 8, 10 seconds, reset after a successful connection. IDs and clock
- * estimates never cross a connection boundary. No startup/configuration wiring exists yet.
+ * estimates never cross a connection boundary. Capture startup supplies its listener and loop.
  * Each new sweep starts at the last successfully connected candidate, then tries the others in
  * configured order, so an unavailable mDNS name does not delay every reconnect. Before any success,
  * sweeps start at the first configured candidate.
@@ -71,6 +71,7 @@ public final class Nt4Client implements AutoCloseable {
   private final LinkedHashSet<Long> pendingSync = new LinkedHashSet<>();
   private final AtomicBoolean started = new AtomicBoolean();
   private final AtomicBoolean closed = new AtomicBoolean();
+  private final CompletableFuture<Void> stopped = new CompletableFuture<>();
   private volatile boolean connected;
   private volatile Attempt current;
   private long retryUs = 1_000_000;
@@ -261,15 +262,20 @@ public final class Nt4Client implements AutoCloseable {
     catch (java.util.concurrent.RejectedExecutionException e) { if (!closed.get()) throw e; }
   }
 
-  @Override public void close() {
-    if (!closed.compareAndSet(false, true)) return;
+  @Override public void close() { closeAsync(); }
+
+  /** Completes after the ordered disconnect callback, so shutdown can wait for a capture flush. */
+  public CompletableFuture<Void> closeAsync() {
+    if (!closed.compareAndSet(false, true)) return stopped;
     loop.execute(() -> {
-      if (current != null) {
-        if (current.connecting != null) current.connecting.cancel(true);
-        failed(current);
-      }
-      loop.close();
+      try {
+        if (current != null) {
+          if (current.connecting != null) current.connecting.cancel(true);
+          failed(current);
+        }
+      } finally { loop.close(); stopped.complete(null); }
     });
+    return stopped;
   }
 
   private final class Attempt implements WebSocket.Listener {

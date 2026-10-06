@@ -229,6 +229,9 @@ public final class CoreTools {
           session.addProperty("started_at", stored.session().startedAt());
           session.addProperty("ended_at", stored.session().endedAt());
           session.addProperty("start_basis", stored.session().startBasis());
+          if ("captured".equals(stored.file().provenance().kind())) {
+            session.addProperty("open", stored.session().openCapture() != null);
+          }
           logObj.add("session", session);
         }
 

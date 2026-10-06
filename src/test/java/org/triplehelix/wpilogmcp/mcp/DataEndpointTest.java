@@ -162,7 +162,8 @@ class DataEndpointTest {
   @ParameterizedTest
   @ValueSource(strings = {"arrow", "csv"})
   void decodeProblemsKeepTheOriginalRecordCount(String format) throws Exception {
-    var file = FixtureLogs.defaultDirectory().resolve("decode-problem.wpilog");
+    // The previous parameterized invocation can still own a cached Windows mapping.
+    var file = FixtureLogs.defaultDirectory().resolve("decode-problem-" + format + ".wpilog");
     try (var writer = new WpilogWriter(file, "synthetic malformed double")) {
       int entry = writer.start("/Value", "double", "", 0);
       writer.append(entry, 1_000_000, WpilogWriter.encodeDouble(7));

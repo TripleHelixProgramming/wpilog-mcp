@@ -372,11 +372,14 @@ public class ConfigLoader {
         getBoolean(block, "debug"),
         expandPath(interpolate(getString(block, "exportdir"), warnings)),
         getInteger(block, "scandepth"),
-        getInteger(block, "idle_exit_minutes")
+        getInteger(block, "idle_exit_minutes"),
+        CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)))
     );
   }
 
   private void validate(ServerConfig config) throws ConfigException {
+    if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
+    if (config.capture() != null && config.idleExit().isPresent()) throw new ConfigException("capture requires idle_exit_minutes: 0 (recording must continue without MCP sessions)");
     var transport = config.effectiveTransport();
     if (!"stdio".equals(transport) && !"http".equals(transport)) {
       throw new ConfigException(

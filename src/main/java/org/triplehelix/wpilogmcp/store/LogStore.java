@@ -135,6 +135,28 @@ public final class LogStore implements AutoCloseable {
     return root;
   }
 
+  @FunctionalInterface interface CaptureOperation<T> { T run(StoreFiles files) throws IOException; }
+
+  /** Capture manifest changes share the import queue and the cross-process store lock. */
+  <T> T capture(CaptureOperation<T> operation) throws IOException {
+    var result = new CompletableFuture<T>();
+    queue.execute(() -> {
+      try (var lock = StoreLock.acquire(root, security)) {
+        var io = new StoreFiles(root, security);
+        if (!StoreCatalog.isStore(root)) io.write(root.resolve("store.json"),
+            new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
+        var header = io.read(root.resolve("store.json"), Header.class);
+        if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
+        result.complete(operation.run(io));
+      } catch (Throwable e) { result.completeExceptionally(e); }
+    });
+    try { return result.get(); }
+    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted capture placement", e); }
+    catch (java.util.concurrent.ExecutionException e) { throw new IOException("Capture placement failed: " + e.getCause().getMessage(), e.getCause()); }
+  }
+
+  public CaptureStore captures(java.time.Clock clock) { return new CaptureStore(this, logManager, clock); }
+
   public StoreInbox inbox() {
     return inbox;
   }
@@ -570,7 +592,7 @@ public final class LogStore implements AutoCloseable {
           if (input.end() != null && input.end().isAfter(end)) end = input.end();
         }
         session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records));
+            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture());
         io.write(manifest, session);
       }
       catalog.placed(io, manifest, robot, session, records);

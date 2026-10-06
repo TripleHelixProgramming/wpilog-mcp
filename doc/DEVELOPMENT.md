@@ -135,6 +135,12 @@ record. The client separately checks that a wrong MessagePack family is counted 
 without losing the next frame or disconnecting. CI runs on `pit-server` as well as `main`, including
 the Windows job.
 
+`CaptureConfigTest`, `CaptureStoreTest`, and `CaptureStartTest` cover configuration keys and their
+documentation, UTC placement, open/closed manifests, hashes, resumption and name collisions,
+and immediate match facts with both successful and refused open-file renames. The packaged
+`start` command runs in an isolated home: HTTP works with the robot absent, then a loopback
+fixture robot connects and its values survive daemon shutdown. No test waits for an injected clock.
+
 ### The disk cache in tests
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.

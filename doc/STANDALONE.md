@@ -143,6 +143,50 @@ In `logdir`, `diskcachedir`, and `exportdir`, a path starting with `~/` is in yo
 
 The default disk cache directory is `~/Library/Application Support/wpilog-mcp/cache` on macOS, `wpilog-mcp/cache` under `%LOCALAPPDATA%` on Windows, and `wpilog-mcp/cache` under `$XDG_DATA_HOME` (or `~/.local/share`) on Linux.
 
+### Pit server
+
+Add a `capture` section to a named HTTP server, then run `wpilog-mcp start pit`:
+
+```yaml
+servers:
+  pit:
+    transport: http
+    idle_exit_minutes: 0
+    capture:
+      robot: {team: 2363}
+      store: ~/pit-store
+      period_sec: 0.01
+      exclude: []
+      thin: {}
+      hot_window_sec: 600
+```
+
+| Key | Meaning and default |
+|-----|---------------------|
+| `capture.robot` | Required: exactly one address selector below |
+| `capture.robot.team` | Team number: try the roboRIO mDNS name, then `10.TE.AM.2`; reconnect starts at the last successful address |
+| `capture.robot.usb` | `true` selects the USB tether, `172.22.11.2` |
+| `capture.robot.host` | An explicit host name or IP address |
+| `capture.robot.port` | NT4 port, default `5810` |
+| `capture.store` | Required directory, also added to this server's log directories; supports `~/` and `${NAME}` |
+| `capture.period_sec` | Subscription period in seconds, default `0.01`; every change is requested |
+| `capture.exclude` | List of topic prefixes to omit, default `[]` |
+| `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
+| `capture.hot_window_sec` | Values retained in memory, default `600` seconds; `0` reads every value from the capture file |
+
+The whole capture block can be inherited from `defaults`; a server's block replaces it.
+Unknown capture keys and invalid values name the key in the startup error. Capture requires
+`transport: http` and `idle_exit_minutes: 0` (the default). A robot that is off is normal: HTTP
+starts immediately and the client retries indefinitely. A server without `capture` behaves as before.
+
+Captures are ordinary `.wpilog` files under
+`robots/address-<address>/sessions/<UTC-date>/<HHmmss>Z/capture.wpilog`. A new robot clock starts
+a new session; a continuing clock resumes after a connection loss. Event and match facts appear
+in the store listing immediately. The directory gains those names when it can be renamed, or
+after close on Windows. While recording, the manifest marks the capture open; after close it
+records the SHA-256 and final size. Excluded or thinned topics are a deliberate reduction in
+capture fidelity; thinning is recorded in entry metadata. Topic costs are logged every five minutes.
+
 ### Several Log Directories
 
 `logdir` takes one directory or a list. `list_available_logs` lists the logs of every directory together, newest first, and names the directories in `log_directories`; a log reached from two directories (one inside the other, or the same directory under two names) is listed once. Tools can load logs from any of the directories, and from nowhere else.

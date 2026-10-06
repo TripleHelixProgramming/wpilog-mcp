@@ -30,7 +30,15 @@ public final class StoreCatalog {
   public record StoredFile(Path path, Path manifestPath, Robot robot, Session session, LogFile file) {}
   public record RobotDirectory(Path path, Robot robot) {}
   public record Snapshot(Path root, Header header, List<RobotDirectory> robots,
-      List<StoredFile> files, List<Path> unmanaged, List<Move> moved) {}
+      List<StoredFile> files, List<Path> unmanaged, List<Move> moved, List<StoredFile> openCaptures) {
+    public Snapshot(Path root, Header header, List<RobotDirectory> robots,
+        List<StoredFile> files, List<Path> unmanaged, List<Move> moved) {
+      this(root, header, robots, files, unmanaged, moved, List.of());
+    }
+    public List<StoredFile> allFiles() {
+      return java.util.stream.Stream.concat(files.stream(), openCaptures.stream()).toList();
+    }
+  }
 
   public static boolean isStore(Path directory) {
     return Files.exists(directory.resolve("store.json"));
@@ -88,6 +96,7 @@ public final class StoreCatalog {
     managed.add(headerPath);
     var robots = new ArrayList<RobotDirectory>();
     var files = new ArrayList<StoredFile>();
+    var openCaptures = new ArrayList<StoredFile>();
     var robotsRoot = io.check(root.resolve("robots"));
     if (Files.isDirectory(robotsRoot)) {
       for (var robotDir : children(robotsRoot)) {
@@ -113,6 +122,20 @@ public final class StoreCatalog {
             var session = io.read(manifest, Session.class);
             validate(session, manifest);
             managed.add(manifest);
+            if (session.openCapture() != null) {
+              var capture = session.openCapture();
+              var path = io.resolve(sessionDir, capture.path());
+              if (!Files.isRegularFile(path) || capture.provenance() == null
+                  || !"captured".equals(capture.provenance().kind()) || capture.sizeBytes() < 0
+                  || !Double.isFinite(capture.minTimestampSec()) || !Double.isFinite(capture.maxTimestampSec())
+                  || capture.minTimestampSec() > capture.maxTimestampSec() || !managed.add(path)) {
+                throw new IOException("Invalid open capture: " + path);
+              }
+              var file = new LogFile(capture.path(), null, Files.size(path), "wpilog", capture.provenance(),
+                  false, capture.minTimestampSec(), capture.maxTimestampSec(), session.startedAt(), null,
+                  session.startBasis(), false, null);
+              openCaptures.add(new StoredFile(path, manifest, robot, session, file));
+            }
             for (var file : session.files()) {
               var path = io.resolve(sessionDir, file.path());
               validate(file, path);
@@ -153,7 +176,7 @@ public final class StoreCatalog {
       }
     }
     return new Snapshot(root, header, List.copyOf(robots), List.copyOf(files),
-        List.copyOf(unmanaged), List.copyOf(moved));
+        List.copyOf(unmanaged), List.copyOf(moved), List.copyOf(openCaptures));
   }
 
   private static List<Path> children(Path path) throws IOException {
