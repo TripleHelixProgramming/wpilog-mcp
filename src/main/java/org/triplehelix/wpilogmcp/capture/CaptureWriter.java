@@ -193,7 +193,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (output.size() + bytes + reserved <= maxFileBytes) return;
     long declarations = topics.values().stream().mapToLong(t -> WpilogOutput.startSize(
         t.entry.name(), t.entry.type(), rolloverMetadata(t), serverUs)
-        + (t.schema == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, t.schema.timestampUs(), ((byte[]) t.schema.value()).length))).sum();
+        + (t.schema == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, ((byte[]) t.schema.value()).length))).sum();
     if (12 + declarations + bytes + reserved > maxFileBytes) {
       throw new IOException("capture.max_file_bytes cannot hold the active declarations, record, and finishes");
     }
@@ -208,7 +208,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       topic.entry = new EntryInfo(id, before.name(), before.type(), metadata);
       observer.entry(session, topic.entry);
       if (topic.schema != null) {
-        var seed = topic.schema;
+        var seed = new ValueFrame(topic.schema.topicId(), serverUs, topic.schema.typeCode(), topic.schema.value());
         var written = output.append(id, seed.timestampUs(), (byte[]) seed.value());
         session.minUs = Math.min(session.minUs, seed.timestampUs()); session.maxUs = Math.max(session.maxUs, seed.timestampUs());
         observer.value(session, topic.entry, seed, written);

@@ -15,6 +15,8 @@ import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 
 /** Owns the recorder for a configured HTTP server; waiting for a robot never blocks startup. */
 public final class CaptureService implements AutoCloseable {
+  static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(30);
+  private final Duration closeTimeout;
   private final Nt4Client client;
   private final org.triplehelix.wpilogmcp.store.CaptureStore placement;
 
@@ -30,7 +32,15 @@ public final class CaptureService implements AutoCloseable {
   /** Injectable output for filesystem-failure checks over a real loopback NT4 connection. */
   public CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop,
       CaptureWriter.OutputFactory outputs) throws IOException {
+    this(config, manager, clock, loop, outputs, CLOSE_TIMEOUT);
+  }
+
+  /** Test seam for the single shutdown deadline, without waiting thirty seconds in the suite. */
+  CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop,
+      CaptureWriter.OutputFactory outputs, Duration closeTimeout) throws IOException {
+    this.closeTimeout = closeTimeout;
     placement = manager.stores().store(config.store()).captures(clock);
+    placement.recover();
     var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs()), config.maxFileBytes(), outputs);
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), writer,
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
@@ -40,13 +50,19 @@ public final class CaptureService implements AutoCloseable {
 
   @Override public void close() {
     try {
-      client.closeAsync().get();
-      // The NT4 event loop is already stopped. Only shutdown waits behind store imports/hashing.
-      placement.completion().get();
+      // One bound covers stopping the writer and waiting behind imports for the final manifest.
+      client.closeAsync().thenCompose(ignored -> placement.completion())
+          .get(closeTimeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt(); deferred(e);
+    } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+      deferred(e);
     }
-    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-    catch (java.util.concurrent.ExecutionException e) {
-      org.slf4j.LoggerFactory.getLogger(CaptureService.class).error("Capture shutdown did not finish", e);
-    }
+  }
+
+  private void deferred(Exception reason) {
+    org.slf4j.LoggerFactory.getLogger(CaptureService.class).warn(
+        "Capture shutdown could not finish ({} second bound); the next startup sweep will recover unowned captures: {}",
+        closeTimeout.toSeconds(), reason.toString());
   }
 }

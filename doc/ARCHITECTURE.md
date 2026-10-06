@@ -148,7 +148,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/import endpoints, and the tool registry |
 | `tools` | The tools, grouped by subject, and what they share: the base every tool runs through, the result builder and result contract, the signal resolver, time scopes, field paths, data quality, and the guidance text |
 | `log` | Finding and loading logs: the log manager, the lazy log and its scan, the writer-built live log, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
-| `store` | File manifests, content inspection, and one import queue per store; robot identity, session placement, provenance, duplicate detection, and unmanaged files |
+| `store` | File manifests, content inspection, and one import queue per store, and abandoned-capture recovery; robot identity, session placement, provenance, duplicate detection, and unmanaged files |
 | `revlog` | REV log parsing. `revlog/dbc` reads CAN database (DBC) files and decodes frames with them |
 | `sync` | The synchronization algorithm, and the combined view of a wpilog with its synchronized REV logs |
 | `cache` | The disk cache of sync results, the cache directory, file fingerprints, and the older disk cache of parsed logs, which is no longer used |
@@ -158,19 +158,19 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
-| `capture` | Pure-Java WPILOG output, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
+| `capture` | Pure-Java WPILOG output and writer ownership leases, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
 
 ## NT4 foundation
 
-The pit server's first milestone exists as an unwired layer: startup, configuration, tools, capture,
-and the extension do not use it yet. The client and a loopback gateway exercise each other on every
-generated fixture before a capture writer can depend on their delivery order. The gateway's core
+The NT4 layer was first exercised as an unwired fixture; the configured capture service now uses
+its client. The client and a loopback gateway exercise each other on every generated fixture to
+pin the delivery order the capture writer depends on. The gateway's core
 takes messages and explicit times and returns deliveries; it performs no I/O under its short state
 lock. The adapter sends those deliveries on its own daemon loop. The client has a separate daemon
 loop, so every announcement, removal, property update, and value reaches its listener in order on
-one thread. A future writer can implement that listener.
+one thread. The capture writer implements that listener.
 
 The MessagePack subset is written from the format specification, like the Arrow data writer, and
 checked against hand-encoded bytes, including every integer width, floating-point bits, variable
@@ -208,12 +208,22 @@ do not delay HTTP startup; shutdown drains tool calls, closes the capture, then 
 The capture store uses the existing store queue, path validation, move reservations, and manifests.
 Creation is synchronous. Later updates use immutable snapshots and coalesce into one pending task;
 changed facts queue immediately, ordinary progress at most every five seconds. Imports cannot
-stall the NT4 event loop. Shutdown waits for the last close snapshot, including its hashes.
+stall the NT4 event loop. Shutdown waits at most 30 seconds for the writer and last close snapshot, including its hashes. A timeout is logged for the next startup sweep.
 An additive `open_capture` field represents a growing file without inventing a hash or weakening
 the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
 queued when they change. Cosmetic renames wait for close and reader release on every platform:
 otherwise an asynchronous directory move can race a rollover open or a mapping growth. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
 They are provisional until robot identity is implemented.
+
+Before creating the NT4 client, the service runs recovery on the store queue. Each `open_capture`
+is claimed with the same persistent sidecar lease as the writer; a live writer is skipped. The
+OS lock covers other processes and the local claim avoids opening a second channel to a held
+lock. The lease is separate from the data: closing mapped readers must not release a writer's
+ownership. A dead process loses its lease. Recovery scans a readable file before hashing it,
+preserves an incomplete-tail flag and previously closed files, and uses file modification time
+for `ended_at`, with `end_reason` set to `server stopped while recording`. Failed reads leave the
+file open with a manifest/log reason. Neither successful recovery nor a failed read changes the
+capture bytes. The sidecar inode stays in place for later writers and is catalog metadata.
 
 Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
 clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds
@@ -222,7 +232,7 @@ loop. Exclusion and thinning are explicit policy, and thinned entries record the
 Each capture file is bounded by `capture.max_file_bytes` (default 1 GiB), including reserved finishes.
 Rollover closes every active entry and starts the next numbered file in the same session with fresh
 entry ids and a new live index. Retained schema definitions seed the new file, explicitly marked in
-entry metadata, so a file can decode its own structs. Tools continue to read one file per call.
+entry metadata and timestamped at the rollover's server time, so a file can decode its own structs without inheriting the boot-time schema's range. Tools continue to read one file per call.
 A writer IOException closes recording with its reason and keeps the client connected. Only another
 robot clock permits recording again. Record writes roll back an incomplete tail when possible;
 failed rollback forbids appending finishes. Session `end_reason` preserves the reason without changing

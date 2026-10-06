@@ -276,6 +276,49 @@ class CaptureStoreTest {
     } finally { manager.release(directory); }
   }
 
+  @Test void schemaSeedsGiveEachRolledFileItsOwnRangeInTheManifestAndTools() throws Exception {
+    var security = new SecurityValidator(); security.addAllowedDirectory(directory);
+    var manager = LogManager.getInstance();
+    try (var stores = new StoreRegistry(security, manager)) {
+      var store = stores.store(directory.resolve("store")); var placement = store.captures(WALL);
+      var loop = new ManualScheduler();
+      var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index, 1024)) {
+        connect(writer, 1_000_000, 0);
+        var schema = new Announce("/.schema/struct:SeedPoint", 2, "structschema", null, new JsonObject());
+        var point = new Announce("/point", 3, "struct:SeedPoint", null, new JsonObject());
+        writer.announce(schema); writer.announce(point);
+        writer.value(schema, new ValueFrame(2, 1_000_000, 5, "int32 x;".getBytes(java.nio.charset.StandardCharsets.UTF_8)), 0);
+        var first = writer.session().path();
+        writer.timeSync(20_000_000, 19_000_000);
+        for (int i = 0; i < 200; i++) {
+          var value = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(i).array();
+          writer.value(point, new ValueFrame(3, 21_000_000 + i, 5, value), i);
+        }
+        assertNotEquals(first, writer.session().path());
+        loop.advance(5_000_000); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        var catalog = StoreCatalog.read(store.root(), security);
+        for (var file : catalog.allFiles()) {
+          if (file.path().equals(first.toRealPath())) continue;
+          assertEquals(20.0, file.file().minTimestampSec(), "Manifest starts at the rollover seed, never the boot schema");
+          try (var use = manager.acquire(file.path().toString())) {
+            assertEquals(20.0, use.log().minTimestamp());
+            assertEquals(20.0, use.log().values().get("NT:/.schema/struct:SeedPoint").get(0).timestamp());
+          }
+        }
+        var tools = new org.triplehelix.wpilogmcp.mcp.ToolRegistry();
+        org.triplehelix.wpilogmcp.tools.CoreTools.registerAll(tools);
+        var args = new JsonObject(); args.addProperty("path", writer.session().path().toString());
+        var listed = tools.getTool("list_entries").execute(args).getAsJsonObject();
+        assertEquals(20.0, listed.getAsJsonObject("time_range_sec").get("start").getAsDouble());
+        assertEquals(20.0, listed.getAsJsonObject("inputs").getAsJsonObject("session_time_range").get("start_sec").getAsDouble());
+        writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        var last = writer.session().path(); manager.unloadLog(last.toString());
+        try (var use = manager.acquire(last.toString())) { assertEquals(20.0, use.log().minTimestamp()); }
+      }
+    }
+  }
+
   @Test void aNewerStoreIsNeverWritten() throws Exception {
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
     Files.writeString(directory.resolve("store.json"), "{\"format_version\":999}");

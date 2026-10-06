@@ -125,6 +125,7 @@ public final class StoreCatalog {
             if (session.openCapture() != null) {
               var capture = session.openCapture();
               var path = io.resolve(sessionDir, capture.path());
+              managed.add(io.check(org.triplehelix.wpilogmcp.capture.CaptureLease.lockPath(path)));
               if (!Files.isRegularFile(path) || capture.provenance() == null
                   || !"captured".equals(capture.provenance().kind()) || capture.sizeBytes() < 0
                   || !Double.isFinite(capture.minTimestampSec()) || !Double.isFinite(capture.maxTimestampSec())
@@ -138,6 +139,9 @@ public final class StoreCatalog {
             }
             for (var file : session.files()) {
               var path = io.resolve(sessionDir, file.path());
+              if (file.provenance() != null && "captured".equals(file.provenance().kind())) {
+                managed.add(io.check(org.triplehelix.wpilogmcp.capture.CaptureLease.lockPath(path)));
+              }
               validate(file, path);
               if (!managed.add(path)) throw new IOException("File listed twice: " + path);
               files.add(new StoredFile(path, manifest, robot, session, file));

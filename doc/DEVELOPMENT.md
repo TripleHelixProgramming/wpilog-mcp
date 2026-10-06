@@ -131,7 +131,7 @@ exclusion/thinning metadata, flushes, and minute-bounded cost accounting with in
 Every generated fixture is replayed through the loopback gateway and JDK client into a capture;
 the independent reader checks every entry, payload, and timestamp, and wpiutil checks the result
 too. The bounded-file pass verifies the same received frames across every rollover, with marked
-schema seeds checked separately, plus every file's byte bound. This replay uses NT4 4.0 with an
+schema seeds checked separately at the rollover server time, plus every file's byte bound. Store and tool checks pin each rolled file's minimum timestamp, including `inputs.session_time_range`. This replay uses NT4 4.0 with an
 injected client clock so tiny forced files and tool calls do not turn byte fidelity into an aliveness
 timing test; the NT4 suite independently tests 4.1 keepalives. Replay allows 60 seconds of wall
 time for socket delivery and forcing the small rollover files, which exceeds the normal helper's
@@ -146,7 +146,14 @@ documentation, UTC placement, open/closed manifests, hashes, resumption and name
 and queued match facts preceding the close-time directory rename. A blocked store queue leaves
 values and flushes running, retains one pending update, and writes a complete final manifest.
 Injected clocks pin the five-second progress cadence and immediate changed facts. `CaptureShutdownTest`
-proves service shutdown waits for that manifest outside the NT4 loop. `CaptureFailureTest` injects a
+proves service shutdown waits for that manifest outside the NT4 loop. `CaptureRecoveryTest`
+plants open manifests with complete, incomplete-tail, unreadable and damaged-header fixtures;
+checks hashes, ranges, modification-time endings, preserved facts and prior files; and proves
+recovery waits on the store queue. It verifies same-process and cross-process ownership,
+reader mapping alongside a writer, alias and symlink guards, and cleanup after an output fails
+to open. A child JVM blocks the store queue, checks the 30 second default and injects a zero deadline into the production wait, then exits
+without draining the pending manifest; the next service start must finish it. No test sleeps to
+advance a clock. `CaptureFailureTest` injects a
 disk failure over loopback and checks the reason in the manifest/log, connection survival, a suppressed
 same-clock reconnect, and a resumed recording on a new clock. Writer tests also plant a partial payload
 write and check rollback to the completed prefix, force/create failures, and a bound unable to hold one record. The packaged

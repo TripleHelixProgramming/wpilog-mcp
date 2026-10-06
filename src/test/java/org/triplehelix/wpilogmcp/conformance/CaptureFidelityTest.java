@@ -147,7 +147,7 @@ class CaptureFidelityTest {
         int skip = 0;
         if (seeds.contains(got.name)) {
           assertEquals("structschema", got.type); assertFalse(seenTimes.isEmpty());
-          assertEquals(seenTimes.get(seenTimes.size() - 1), got.payloadTimes.get(0), "Seed keeps its original server timestamp");
+          assertEquals(10.0, got.payloadTimes.get(0), "Seed uses the planted server clock at rollover, not its original timestamp");
           assertArrayEquals(seenPayloads.get(seenPayloads.size() - 1), got.payloads.get(0), "Seed equals the last received schema");
           skip = 1;
         }

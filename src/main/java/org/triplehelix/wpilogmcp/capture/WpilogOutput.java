@@ -22,6 +22,7 @@ import java.util.List;
 public class WpilogOutput implements AutoCloseable {
   public record Written(long offset, int size, long payloadOffset, int payloadSize) {}
   private final FileChannel channel;
+  private final CaptureLease lease;
   private int nextEntry;
   private boolean broken;
 
@@ -29,12 +30,21 @@ public class WpilogOutput implements AutoCloseable {
 
   /** Only the recorder which closed this session can resume it, with its next unused entry id. */
   public WpilogOutput(Path path, int nextEntry, boolean resume) throws IOException {
-    channel = resume ? FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.APPEND)
-        : FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+    lease = CaptureLease.tryAcquire(path).orElseThrow(() -> resume
+        ? new IOException("Capture is owned by another writer or recovery: " + path)
+        : new java.nio.file.FileAlreadyExistsException(path.toString()));
+    FileChannel opened = null;
     this.nextEntry = nextEntry;
     try {
+      opened = resume ? FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.APPEND)
+          : FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+      channel = opened;
       if (!resume) write(ByteBuffer.wrap(new byte[] {'W', 'P', 'I', 'L', 'O', 'G', 0, 1, 0, 0, 0, 0}));
-    } catch (IOException e) { channel.close(); throw e; }
+    } catch (IOException | RuntimeException e) {
+      try { if (opened != null) opened.close(); } catch (IOException close) { e.addSuppressed(close); }
+      try { lease.close(); } catch (IOException close) { e.addSuppressed(close); }
+      throw e;
+    }
   }
 
   public int nextEntry() { return nextEntry; }
@@ -125,6 +135,6 @@ public class WpilogOutput implements AutoCloseable {
 
   public void flush() throws IOException { channel.force(false); }
   @Override public void close() throws IOException {
-    try { flush(); } finally { channel.close(); }
+    try { flush(); } finally { try { channel.close(); } finally { lease.close(); } }
   }
 }

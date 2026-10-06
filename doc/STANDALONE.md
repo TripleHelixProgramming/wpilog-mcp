@@ -188,18 +188,25 @@ in the store listing as soon as the queued fact update runs. Imports never stall
 manifest updates coalesce into one pending task, on changed facts or at most every five seconds.
 The directory gains the event and match after close and reader release on every platform, keeping
 its path stable during rollover and remapping. While recording, the manifest marks the current
-file in `open_capture`; each closed file gets its own SHA-256 and final size. Shutdown waits for
-the final manifest. Creation, including a resumed file's removal from the hashed list, is synchronous. Excluded or thinned topics are a deliberate reduction in
+file in `open_capture`; each closed file gets its own SHA-256 and final size. Shutdown waits at most 30 seconds for the writer and final manifest; if it cannot finish, the
+server log says the next startup sweep will recover unowned captures. Creation, including a resumed file's removal from the hashed list, is synchronous. Excluded or thinned topics are a deliberate reduction in
 capture fidelity; thinning is recorded in entry metadata.
 The bound rolls to `capture-2.wpilog`, `capture-3.wpilog`, and so on. Each file redeclares active
 entries and has its own live index; a tool still reads one file per call. Retained struct schemas
-are copied into each new file with their original timestamp and `capture_schema_seed: true` in
+are copied into each new file at its rollover server time with `capture_schema_seed: true` in
 that entry's metadata, so each file can decode its structs. Those seed records are not additional
-received changes. If declarations, schemas, one value and finishes cannot fit the configured
+received changes, and do not extend the file's time range back to the boot-time schema. If declarations, schemas, one value and finishes cannot fit the configured
 bound, recording stops with an explained error. A write failure closes the session with
 `end_reason` in its manifest and the reason in the server log, keeps the NT4 connection, and
 suppresses recording until a new robot clock. A partial write is rolled back to its completed
 record boundary when the filesystem permits it. Topic costs are logged every five minutes.
+Before NT4 starts, the store queue sweeps sessions still marked `open_capture`. Files with an
+active writer are left alone. An abandoned readable WPILOG is finalized with its hash, size,
+record time range, file modification time as `ended_at`, and
+`end_reason: "server stopped while recording"`. An incomplete final record remains marked as
+truncated. Unreadable or structurally damaged files stay open with a recovery reason in the
+manifest and server log. This handles a crash, power loss, or daemon termination before shutdown
+finishes, without changing the capture's bytes.
 Every existing log tool accepts the open capture's path. Each call sees a fixed prefix, reported
 as `inputs.session_time_range`; later calls can include newer records. The hot window controls
 memory retention, not which records are available: older values are read from the file.
