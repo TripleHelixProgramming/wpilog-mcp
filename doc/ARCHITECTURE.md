@@ -184,6 +184,8 @@ under `META-INF/licenses/`. NT4.1 is preferred, with NT4.0 negotiated on the sam
 connections receive WebSocket pings. Initial time synchronization precedes subscription; later
 measurements run every three seconds. The clock estimate uses the newest minimum-RTT measurement
 in the last 30 seconds. Failed address sweeps retry after 1, 2, 4, 8, then 10 seconds indefinitely.
+Each sweep tries the last successful address first, then the others in configured order; until a
+connection succeeds, sweeps start with the first configured address.
 
 The lossless listener sees every received value, including an older timestamp. In accordance with
 WPILib's protocol, the latest table keeps the greatest timestamp (ties replace), honors `cached: false`,

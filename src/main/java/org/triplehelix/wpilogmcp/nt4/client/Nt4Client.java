@@ -35,7 +35,9 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
  * callbacks hand off completed messages with backpressure. A robot being off is normal: candidate
  * sweeps retry forever at 1, 2, 4, 8, 10 seconds, reset after a successful connection. IDs and clock
  * estimates never cross a connection boundary. No startup/configuration wiring exists yet.
- * Each new sweep starts at the first configured candidate, even after a fallback had connected.
+ * Each new sweep starts at the last successfully connected candidate, then tries the others in
+ * configured order, so an unavailable mDNS name does not delay every reconnect. Before any success,
+ * sweeps start at the first configured candidate.
  */
 public final class Nt4Client implements AutoCloseable {
   public static final String V41 = "v4.1.networktables.first.wpi.edu";
@@ -70,6 +72,7 @@ public final class Nt4Client implements AutoCloseable {
   private volatile boolean connected;
   private volatile Attempt current;
   private long retryUs = 1_000_000;
+  private int preferredIndex;
 
   public Nt4Client(List<URI> addresses, double periodSeconds, Listener listener) {
     this(addresses, captureSubscription(periodSeconds), listener,
@@ -106,7 +109,12 @@ public final class Nt4Client implements AutoCloseable {
 
   private void connect(int tried) {
     if (closed.get()) return;
-    var attempt = new Attempt(tried, tried);
+    int index = preferredIndex;
+    if (tried > 0) {
+      index = tried - 1;
+      if (index >= preferredIndex) index++;
+    }
+    var attempt = new Attempt(index, tried);
     current = attempt;
     attempt.connecting = http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(2))
         .subprotocols(V41, V40).buildAsync(addresses.get(attempt.index), attempt);
@@ -146,6 +154,7 @@ public final class Nt4Client implements AutoCloseable {
     attempt.socket = socket;
     if (!List.of(V41, V40).contains(socket.getSubprotocol())) { failed(attempt); return; }
     attempt.open = true;
+    preferredIndex = attempt.index;
     retryUs = 1_000_000;
     connected = true;
     attempt.lastPongUs = loop.nowUs();

@@ -172,15 +172,18 @@ class ClientTest {
     }
   }
 
-  @Test void reconnectStartsAgainAtFirstConfiguredCandidate() throws Exception {
+  @Test void reconnectPrefersLastConnectedCandidateThenConfiguredOrder() throws Exception {
     var loop = new ManualScheduler();
     var seen = new ArrayList<String>();
     var disconnected = new AtomicInteger();
     int firstPort = unusedPort();
-    try (var second = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 5000)) {
+    try (var second = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> loop.nowUs() + 5000);
+         var third = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> loop.nowUs() + 5000)) {
       second.start().get(5, TimeUnit.SECONDS); second.announce("/second", "int", new JsonObject()).join();
+      third.start().get(5, TimeUnit.SECONDS); third.announce("/third", "int", new JsonObject()).join();
       try (var client = new Nt4Client(List.of(RobotAddress.uri("127.0.0.1", firstPort, "first"),
-          RobotAddress.uri("127.0.0.1", second.port(), "second")), Nt4Client.captureSubscription(0.01),
+          RobotAddress.uri("127.0.0.1", second.port(), "second"),
+          RobotAddress.uri("127.0.0.1", third.port(), "third")), Nt4Client.captureSubscription(0.01),
           new Nt4Client.Listener() {
             @Override public void announce(Announce a) { seen.add(a.name()); }
             @Override public void disconnected() { disconnected.incrementAndGet(); }
@@ -190,7 +193,12 @@ class ClientTest {
           first.start().get(5, TimeUnit.SECONDS); first.announce("/first", "int", new JsonObject()).join();
           second.dropClients().join(); loop.until(() -> disconnected.get() == 1);
           loop.advance(1_000_000); loop.until(() -> seen.size() == 2);
-          assertEquals(List.of("/second", "/first"), seen);
+          assertEquals(List.of("/second", "/second"), seen,
+              "The successful address stays first even when an earlier candidate becomes reachable");
+          second.close(); loop.until(() -> disconnected.get() == 2);
+          loop.advance(1_000_000); loop.until(() -> seen.size() == 3);
+          assertEquals(List.of("/second", "/second", "/first"), seen,
+              "After the remembered address fails, the others retain their configured order");
         }
       }
       loop.drain();

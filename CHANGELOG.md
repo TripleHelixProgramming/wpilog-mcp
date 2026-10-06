@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- The NT4 client retries the last successful address first, then the other candidates in configured order. Previously every reconnect started at the first candidate, repeating an unavailable mDNS lookup before reaching the robot's IP address.
 - Standalone installation validates the complete layout against the canonical install root before writing and rechecks each destination. Symlinked directories, locks, configuration files, JARs, or launchers that escape the root are refused with the path named, instead of overwriting outside files. The current Unix launcher may still point inside the install.
 - Store imports refuse symbolic-link lock files before HTTP job admission and open locks without following links. Containment checks now reject dangling links, preventing an import from creating a lock outside the store through a missing target.
 - Imports refuse to move a file listed by another store’s manifest and name that store in the refusal. Copies remain allowed, preserving the source store’s readable catalog instead of leaving it with a missing payload.
