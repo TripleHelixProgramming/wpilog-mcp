@@ -17,7 +17,7 @@ The server has a layered architecture (`doc/ARCHITECTURE.md` has the code map):
 3. **Log layer** — Logs are read lazily: one scan indexes a file, values are decoded on demand and cached, and loaded logs are unloaded when memory runs short. A loaded log follows its file: a file that changed on disk is loaded again, a result read across the change is discarded with an explained error, and each session is told once. Structs decode with the schemas the log records. The scan is built for logs that were not closed cleanly.
 4. **RevLog layer** — REV log parsing with DBC-based CAN signal decoding, and synchronization to the wpilog's clock by cross-correlation, where names only nominate signal pairs and the data decides. Results are cached on disk (see Disk Cache).
 5. **External integrations** — The Blue Alliance API for match data, bundled game data, named server configurations with environment variable interpolation, and a background server for the standalone install.
-6. **VS Code extension** — Registers the server with VS Code's agents, adds an entry for Claude Code in robot projects, keeps settings and the TBA key in a per-project configuration file in its own storage, and keeps the key in VS Code's secret storage.
+6. **VS Code extension** — Installs and updates the standalone server, registers its HTTP endpoint with VS Code’s agents and its bridge with Claude Code at user scope, and leases each window’s directories and secret-storage TBA key to its MCP session. The home YAML remains the user’s permanent configuration.
 
 ## Java 17 Best Practices
 
@@ -135,7 +135,7 @@ REV log synchronizations are cached on disk, keyed by the two files and the CAN 
 
 - Path traversal prevention with symlink resolution is enforced for all file access. When handling file paths, always validate through the security validator; a path must resolve to a file inside the configured log directories. CSV exports are restricted to a configured export directory.
 - The HTTP transport listens on `127.0.0.1` by default, checks `Origin` against DNS rebinding, and has no authentication; binding it elsewhere exposes the logs to anyone who can reach the port.
-- The Blue Alliance key is never logged and never returned by a tool. Nothing this project writes or launches puts it on a command line (process lists are visible to other users) or into a project file: the extension keeps it in VS Code's secret storage and in a configuration file in its own storage that only the user can read. The standalone server still accepts a `-tba-key` flag, and `doc/STANDALONE.md` says why the configuration file or the environment variable is better.
+- The Blue Alliance key is never logged and never returned by a tool. Nothing this project writes or launches puts it on a command line (process lists are visible to other users) or into a project file: the extension keeps it in VS Code’s secret storage and registers it in memory with the shared server for the life of its session. The standalone server still accepts a `-tba-key` flag, and `doc/STANDALONE.md` says why the configuration file or the environment variable is better.
 - Dependencies: Dependabot covers the extension's npm packages and, through the dependency-submission job in CI, the server's Gradle dependencies, build plugins included. An alert on a build plugin or a packaging tool is about the build, not the server JAR or the `.vsix`; say which in the changelog.
 
 ## Concurrency

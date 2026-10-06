@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 - The extension uses the standalone install's `http` server for every window and client. Directory, team, and key changes replace its session lease without restarting the daemon; the Logs tree shows each directory's origin. Claude Code gets a user-scope bridge registration, with an offered project YAML file for terminal use, instead of new project `.mcp.json` entries. The private daemon, `useStandaloneServer`, and `idleExitMinutes` settings are removed; permanent server settings belong in `servers.yaml`.
+- On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
 - Standalone installation validates the complete layout against the canonical install root before writing and rechecks each destination. Symlinked directories, locks, configuration files, JARs, or launchers that escape the root are refused with the path named, instead of overwriting outside files. The current Unix launcher may still point inside the install.
@@ -42,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 - Store fixtures now pin serial-first identity for new named robots, separate non-overlapping sessions, and widening only the overlapping session; mapping-lifetime and import-scaling checks guard the review gaps with synthetic files and planted production bugs.
+
+### Documentation
+- The guides now describe one shared standalone server, session leases, user-scope Claude Code registration, preserved install settings, and legacy migration. They distinguish VS Code settings from permanent YAML, replace the plan's superseded private-daemon proposals with the implementation record, and list the real-VS-Code checks still required.
 
 ## [0.9.1] - 2026-10-04
 

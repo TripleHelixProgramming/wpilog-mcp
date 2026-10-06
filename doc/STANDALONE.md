@@ -1,8 +1,6 @@
-# Standalone Install (without VS Code)
+# The Standalone Server
 
-The standalone install runs wpilog-mcp for MCP clients outside VS Code: Claude Code, Claude Desktop, Gemini, or any other MCP client. If you work in VS Code, the extension is usually the better choice; see [Extension or Standalone?](../README.md#extension-or-standalone).
-
-The server is designed for and tested with Claude. Other MCP clients work too, but the depth and quality of the analysis depend on the model.
+The standalone install is the server used by the VS Code extension and by clients outside VS Code. Most users put logs in `~/riologs` and let their client start the shared server automatically. The extension offers installation itself; the scripts below also work without VS Code.
 
 ## Requirements
 
@@ -85,7 +83,7 @@ On Windows, the installer prints the folder to add to your `Path`.
 
 ## Configuration
 
-Edit `~/.wpilog-mcp/servers.yaml`. The installer creates it and never overwrites it. Set your team number there, or seed it with `install --team`; without a seed the line is commented out.
+The defaults need no editing: logs in `~/riologs`, one shared `http` server on loopback port 2363, and no team assumed. Edit `~/.wpilog-mcp/servers.yaml` for permanent directories, team, port, cache, or idle policy. The installer creates it only when absent; `install --team` and `--logdir` seed a new file. VS Code’s Settings UI supplies temporary session leases and does not read or edit this YAML. Restart the daemon after editing it (`wpilog-mcp stop http`, then reconnect).
 
 ```yaml
 # Your FRC team number, for The Blue Alliance match data when a log does not record one.
@@ -124,7 +122,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `logdir` | Directory of log files (subdirectories are searched too), or a list of directories | None; tools then accept a log at any path |
+| `logdir` | Directory of log files (subdirectories are searched too), or a list of directories | None without configuration; the installed file sets `~/riologs`. An empty set after lease registration admits nothing |
 | `team` | Your team number, for logs that do not record one | None |
 | `tba_key` | The Blue Alliance API key | `TBA_API_KEY` from the environment |
 | `transport` | `stdio` or `http` | `stdio` |
@@ -134,7 +132,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
 | `exportdir` | Directory for CSV exports | `wpilog-export` in the system's temporary directory |
 | `scandepth` | How many directory levels to search for `.wpilog` and `.revlog` files | `5` |
-| `idle_exit_minutes` | For an `http` server started in the background: minutes with no MCP session and no request after which it exits on its own; `0` means never. Meant for a server a program manages, such as the one the VS Code extension starts; a server you start by hand stays until `stop` | `0` |
+| `idle_exit_minutes` | Minutes without a session, recent MCP request, or active import before a background HTTP server exits; `0` keeps it running. Applies whether a person or a client started it | `0` |
 | `debug` | Debug logging | `false` |
 
 `logdir`, `tba_key`, `diskcachedir`, and `exportdir` can include environment variables, written `${NAME}`. A variable that is not set is left as written, and the server warns about it at startup; in `tba_key` the key then counts as not set.
@@ -155,7 +153,7 @@ The default disk cache directory is `~/Library/Application Support/wpilog-mcp/ca
 
 ### Named Server Configurations
 
-With no arguments, `wpilog-mcp` starts the `default` server. `start <name>` starts another:
+Advanced use only: the normal shared server is `http`. With no arguments, `wpilog-mcp` starts the separate stdio `default` server; `start <name>` selects a named configuration:
 
 ```bash
 wpilog-mcp                                   # the "default" server
@@ -172,7 +170,7 @@ The server reads the first configuration file it finds:
 
 A JSON file uses the same keys as the YAML one. This project-first order applies to `start` and the bare launcher. `connect` joins a shared server: its server configuration comes only from `--config` or the home `servers.yaml` / `servers.json`, never a project file. Separately, it reads only top-level `logdir` and `team` from the working directory's `.wpilog-mcp.yaml` as a temporary directory lease. A `servers` section there is ignored, with a line in the server log. Project JSON does not supply leases.
 
-After `start <name>` (and `stop <name>`, which takes the same `--config`), the server reads only `--config` and `-debug` from the command line and ignores other flags. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
+After `start <name>`, the server reads only `--config` and `-debug` from the command line and ignores other flags. `stop <name>` uses that name’s PID record; it does not load configuration. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
 - `TBA_API_KEY`, when the file sets no `tba_key`
 - `WPILOG_DISK_CACHE_DIR`, when the file sets no `diskcachedir`
 - `WPILOG_DEBUG`
@@ -239,34 +237,23 @@ The launcher sets the JVM's maximum heap from `WPILOG_MAX_HEAP` (default `4g`), 
 
 ### Claude Code
 
-Register the server once, for all your projects:
+Register the shared bridge once for your user account:
+
 ```bash
-claude mcp add --scope user wpilog -- ~/.wpilog-mcp/bin/wpilog-mcp
+claude mcp add --scope user wpilog-analyzer -- "$HOME/.wpilog-mcp/bin/wpilog-mcp" connect http
 ```
-On Windows (Command Prompt): `claude mcp add --scope user wpilog -- cmd /c %USERPROFILE%\.wpilog-mcp\bin\wpilog-mcp.bat`
 
-This stores the server in your own Claude Code configuration (`~/.claude.json`), not in any project. The launcher's path stays the same when you upgrade, so the registration keeps working. Run `/mcp` in Claude Code to check that `wpilog` is connected.
+Windows (Command Prompt):
 
-To add the server to a single project instead, put it in a `.mcp.json` at the project root:
-```json
-{
-  "mcpServers": {
-    "wpilog": {
-      "command": "${HOME}/.wpilog-mcp/bin/wpilog-mcp"
-    }
-  }
-}
+```bat
+claude mcp add --scope user wpilog-analyzer -- cmd /c "%USERPROFILE%\.wpilog-mcp\bin\wpilog-mcp.bat" connect http
 ```
-Claude Code expands `${HOME}` in `.mcp.json` but not `~`. On Windows, use `"command": "cmd", "args": ["/c", "${USERPROFILE}\\.wpilog-mcp\\bin\\wpilog-mcp.bat"]`. Claude Code asks you to approve a server from `.mcp.json` the first time it sees it.
 
-Written this way, the entry holds nothing specific to your computer: it works for any teammate who has the standalone install on the same kind of system, so committing the file is fine. A teammate without the install is asked to approve a server that then fails to start. If only you use it, add `.mcp.json` to `.gitignore` instead.
+The [VS Code extension](../vscode-extension/README.md#using-it-with-claude-code) does this when it finds the Claude CLI, so do not register a second copy under another name. Registration stays in your Claude Code user configuration and survives server updates. Restart an existing Claude session, approve the server if asked, and check `/mcp`.
 
-Beyond the command, the server reads everything from `~/.wpilog-mcp/servers.yaml`, the TBA key (`tba_key`) included, so Claude Code needs no environment variables. If you also use the VS Code extension, see [Using It Alongside the Standalone Install](../vscode-extension/README.md#using-it-alongside-the-standalone-install): once the server is registered for all projects as above, turn off the extension's own Claude Code entries, or Claude Code starts both servers.
+The bridge starts `http` when needed and joins it when running, including with VS Code closed. It takes the server's settings from the home file. For a project's own directories, put top-level `logdir` and optional `team` in `.wpilog-mcp.yaml`, or use `connect http --logdir logs --team 1234`. These grant a session lease; they do not redefine the server or its port. See [Directories by lease](#directories-by-lease).
 
-Registered this way, each Claude Code session runs a server of its own. To have every client on the machine share one, register `connect` with the name of an `http` server instead (see [One Server for Every Client](#one-server-for-every-client)):
-```bash
-claude mcp add --scope user wpilog -- ~/.wpilog-mcp/bin/wpilog-mcp connect http
-```
+If an old project `.mcp.json` entry takes precedence over the user registration, remove that entry. The extension retires only recognized entries it owned, and only from untracked or ignored files; custom and tracked files are left with a note. A permanent TBA key can stay in `servers.yaml` or `TBA_API_KEY`; while VS Code is open its registered key takes precedence.
 
 ### Claude Desktop
 
@@ -275,12 +262,13 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "wpilog": {
-      "command": "/Users/you/.wpilog-mcp/bin/wpilog-mcp"
+      "command": "/Users/you/.wpilog-mcp/bin/wpilog-mcp",
+      "args": ["connect", "http"]
     }
   }
 }
 ```
-On Windows, use `C:\\Users\\you\\.wpilog-mcp\\bin\\wpilog-mcp.bat`.
+On Windows, use `"command": "cmd"` and `"args": ["/c", "C:\\Users\\you\\.wpilog-mcp\\bin\\wpilog-mcp.bat", "connect", "http"]`.
 
 See [modelcontextprotocol.io](https://modelcontextprotocol.io/) for other MCP clients.
 
@@ -310,7 +298,7 @@ wpilog-mcp connect --url http://pit:2363     # any server, by URL, started by no
 ```
 `connect <name>` does what `start <name>` does first, so a client started with it gets a server whether or not one was running, and a client started beside a running one shares it; `connect --url` starts nothing. Each connected client gets a session of its own, ended when the client closes its end. With `idle_exit_minutes` set (see [Config Fields](#config-fields)), the server exits on its own once every client has gone and the time has passed, so a server that is started on demand need never be stopped by hand.
 
-The VS Code extension can join in: with its **Use Standalone Server** setting on, it starts this `http` server with the launcher instead of running a server of its own, and VS Code's agents, its viewer, and Claude Code's entries in robot projects all use it, with this file's settings ([Using the Standalone Server](../vscode-extension/README.md#using-the-standalone-server)).
+The VS Code extension always uses this install’s `http` server. It starts the launcher with the home configuration explicitly, then registers its window’s directories and secret-storage key by lease. Every client shares the loaded logs and disk cache ([extension guide](../vscode-extension/README.md#the-standalone-install-is-the-server)).
 
 The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
 
@@ -339,7 +327,7 @@ wpilog-mcp connect http --logdir logs --logdir /Volumes/LOGS --team 2363
 wpilog-mcp connect --url http://localhost:2363 --logdir logs
 ```
 
-Paths from flags and the project YAML are combined and resolved against the bridge's working directory; `--team` overrides the project's team. A new bridge connection after a daemon restart registers again. A project can contain only `logdir` and `team`, with no `servers` section. Server addresses, ports, keys, and cache settings always come from the home or explicit server configuration. The bridge reports an ignored project `servers` section through its registration so the daemon's log records the decision.
+Paths from flags and the project YAML are combined and resolved against the bridge's working directory; `--team` overrides the project's team. A new bridge connection after a daemon restart registers again. Only top-level `logdir` and `team` in the project YAML contribute to the lease. Server addresses, ports, keys, and cache settings always come from the home or explicit server configuration. The bridge reports an ignored project `servers` section through its registration so the daemon's log records the decision.
 
 ### The Data Endpoint
 
@@ -351,14 +339,14 @@ GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_ti
 
 `path` is the log, as `list_available_logs` lists it; `names` is one or more entries, an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it), or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`), comma separated. A REV signal streams on the wpilog's clock, as `get_revlog_data` reads it, and its entry metadata carries `rev` with the device, the signal, the bus, `sync_method`, `timestamps_aligned`, `offset_seconds`, and `sync_confidence`, so a reader knows the offset's basis; a REV log that could not be synchronized is refused with the reason, and one still synchronizing with a `503` and `Retry-After`. `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets, by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
 
-- `format=arrow` (the default) is the Apache Arrow IPC streaming format, `application/vnd.apache.arrow.stream`: a `timestamp` column in the log's microseconds and a `value` column typed by the entry (a float, an integer, a boolean, text, a struct with the schema's fields, a list for an array), or, bucketed, `timestamp`, `count`, `min`, `max`, `mean` (null where no sample in the bucket is finite), `first`, and `last`. One stream has one schema, so the entries in one request must share a value type; bucketed, any numeric entries go together. Enum fields carry `value` and `label`; a number absent from the schema has a null label (CSV keeps the number at the field name and an empty `.label` cell). Each record batch is tagged with its entry in its message metadata, and the schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, original `total_records`, and, bucketed, its bucket length. An entry with decoding failures also carries `decode_problem` (`entry`, `failed_records`, `total_records`, and the first failure’s `reason`) and the same `warning` text tools return; CSV carries these fields in its `# entries:` comment. `pyarrow.ipc.open_stream(url)` or `polars.read_ipc_stream` reads it in one line; `read_next_batch_with_custom_metadata()` gives each batch's entry.
+- `format=arrow` (the default) is the Apache Arrow IPC streaming format, `application/vnd.apache.arrow.stream`: a `timestamp` column in the log's microseconds and a `value` column typed by the entry (a float, an integer, a boolean, text, a struct with the schema's fields, a list for an array), or, bucketed, `timestamp`, `count`, `min`, `max`, `mean` (null where no sample in the bucket is finite), `first`, and `last`. One stream has one schema, so the entries in one request must share a value type; bucketed, any numeric entries go together. Enum fields carry `value` and `label`; a number absent from the schema has a null label (CSV keeps the number at the field name and an empty `.label` cell). Each record batch is tagged with its entry in its message metadata, and the schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, original `total_records`, and, bucketed, its bucket length. An entry with decoding failures also carries `decode_problem` (`entry`, `failed_records`, `total_records`, and the first failure’s `reason`) and the same `warning` text tools return; CSV carries these fields in its `# entries:` comment. `pyarrow.ipc.open_stream` or `polars.read_ipc_stream` reads the response bytes; `read_next_batch_with_custom_metadata()` gives each batch's entry.
 - `format=csv` is one table per entry in the form `export_csv` writes (`timestamp_sec`, then the value's flattened columns, or the bucket columns), after `#` comment lines with the server version, `inputs`, and the entries' metadata, and a `# entry: <name>` line before each table.
 
 ```bash
 curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16-29-56_vache_q10.wpilog&names=/SystemStats/BatteryVoltage&start_time=20&end_time=40&format=csv'
 ```
 
-The endpoint reads only files inside the configured log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`, never cut. A missing entry is an error naming it, with the tools that list entries and field paths. A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`. `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
+The endpoint reads only files inside configured or currently leased log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`, never cut. A missing entry is an error naming it, with the tools that list entries and field paths. A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`. `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
 
 ### The Import Endpoint
 
@@ -451,7 +439,7 @@ A busy install or a daemon already starting/stopping is refused promptly. A guar
 
 ## Uninstalling
 
-Stop any running HTTP server (`wpilog-mcp stop <name>`), then delete the install directory (on Windows, the `.wpilog-mcp` folder in your user folder):
+Disable or uninstall the extension first so it does not offer to reinstall the server. Stop the shared server (`wpilog-mcp stop http`) and any additional HTTP server you configured, then delete the install directory (on Windows, the `.wpilog-mcp` folder in your user folder):
 ```bash
 rm -rf ~/.wpilog-mcp
 ```
@@ -465,7 +453,7 @@ Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your s
   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | wpilog-mcp
   ```
 - **Where the files are**:
-  - Server: `~/.wpilog-mcp/servers.yaml`, or a `.wpilog-mcp.yaml` in the directory the server starts in
+  - Server: `~/.wpilog-mcp/servers.yaml`. `start` also searches the working directory; `connect` reads its project YAML only for directory/team leases
   - Claude Code: `~/.claude.json` (user scope) or the project's `.mcp.json`
   - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
   - HTTP server log: `~/.wpilog-mcp/logs/<name>.log`; its process ID and port: `~/.wpilog-mcp/run/<name>.pid`; the token `stop` presents: `~/.wpilog-mcp/run/<name>.token`

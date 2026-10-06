@@ -13,6 +13,7 @@ import { InstallSummary, installAction, installArgs, launcherVersion, parseInsta
 import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./directoryLease";
 import { claudeCommand, claudeCommandText, findClaude } from "./claudeRegistration";
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
+import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
 import { Explorer } from "./explorer";
 import { TBA_KEY_QUIET_MS, TBA_KEY_SETTING, planTbaKeyMove } from "./tbaKey";
 
@@ -22,6 +23,7 @@ const STANDALONE_INSTALLED_VERSION = "wpilog-mcp.standaloneInstalledVersion";
 const TBA_SECRET = "wpilog-mcp.tbaApiKey";
 const TBA_ACCOUNT_URL = "https://www.thebluealliance.com/account";
 const CLAUDE_REGISTERED = "wpilog-mcp.claudeUserRegistration";
+const LEGACY_RETIRED = "wpilog-mcp.retiredOwnedDaemon";
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("WPILog Analyzer");
@@ -67,7 +69,75 @@ export function activate(context: vscode.ExtensionContext) {
   // The JAR's cross-process lock also protects different windows installing at the same time.
   let installation: Promise<InstallSummary | undefined> | undefined;
   let updateCheck: Promise<void> | undefined;
+  let migration: Promise<void> | undefined;
   let offerDismissed = false;
+  const migrationNotes = new Set<string>();
+
+  /** Retire project entries first; a failed stop keeps its settings for a later activation. */
+  function migrateLegacy(): Promise<void> {
+    if (!migration) migration = (async () => {
+      await retireOpenProjects();
+      const completed = context.globalState.get<boolean>(LEGACY_RETIRED) === true;
+      const pidFile = path.join(os.homedir(), ".wpilog-mcp", "run", "vscode-default.pid");
+      const recorded = fs.existsSync(pidFile);
+      let action = legacyCleanupAction(completed, recorded);
+      if (action === "stop") {
+        const runtime = await resolveRuntime();
+        if (!runtime) return;
+        const stopped = await new Promise<boolean>(resolve => execFile(runtime.javaPath,
+          [`-Xmx${runtime.maxHeap}`, "-jar", runtime.jarPath, "stop", "vscode-default"],
+          { timeout: 120_000, windowsHide: true }, (error, stdout, stderr) => {
+            if (stdout.trim()) outputChannel.appendLine(stdout.trim());
+            if (stderr.trim()) outputChannel.appendLine(stderr.trim());
+            resolve(!error);
+          }));
+        action = legacyCleanupAction(completed, recorded, stopped);
+      }
+      if (action === "retry") {
+        outputChannel.appendLine("Could not stop the old vscode-default daemon; kept its settings and will retry next activation.");
+      } else if (action === "remove") {
+        for (const directory of ["servers", "projects"]) {
+          await fs.promises.rm(path.join(context.globalStorageUri.fsPath, directory), { recursive: true, force: true });
+        }
+        await context.globalState.update("wpilog-mcp.claudeCodeProjects", undefined);
+        await context.globalState.update(LEGACY_RETIRED, true);
+        outputChannel.appendLine("Retired the extension's private server settings; the standalone http server is now shared.");
+      }
+    })().catch(error => outputChannel.appendLine(`Legacy migration did not complete: ${String(error)}`));
+    return migration;
+  }
+
+  async function retireOpenProjects() {
+    for (const folder of localFolders()) {
+      const file = path.join(folder.uri.fsPath, ".mcp.json");
+      try {
+        const stat = await fs.promises.lstat(file);
+        if (stat.isSymbolicLink()) {
+          if (!migrationNotes.has(file)) outputChannel.appendLine(`Left symbolic link alone: ${file}`);
+          migrationNotes.add(file);
+          continue;
+        }
+        const text = await fs.promises.readFile(file, "utf8");
+        const git = await gitStatusOf(folder.uri.fsPath, ".mcp.json");
+        const edit = retireLegacyEntry(text, git, context.globalStorageUri.fsPath, folder.uri.fsPath,
+          path, canonicalMigrationPath);
+        if (edit.changed) {
+          // Preserve an edit or git add made while the initial read and git query were pending.
+          const currentGit = await gitStatusOf(folder.uri.fsPath, ".mcp.json");
+          if ((currentGit !== "untracked" && currentGit !== "ignored") ||
+            (await fs.promises.lstat(file)).isSymbolicLink() || await fs.promises.readFile(file, "utf8") !== text) {
+            outputChannel.appendLine(`Left ${file} alone: it changed during migration.`);
+            continue;
+          }
+          await fs.promises.writeFile(file, edit.text!);
+        }
+        if (edit.note && !migrationNotes.has(file)) outputChannel.appendLine(`${file}: ${edit.note}`);
+        migrationNotes.add(file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") outputChannel.appendLine(`Could not migrate ${file}: ${String(error)}`);
+      }
+    }
+  }
 
   function installStandalone(seed: boolean, updating: boolean): Promise<InstallSummary | undefined> {
     if (!installation) {
@@ -155,6 +225,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   /** A declined offer lasts for this activation; an explicit command can still install later. */
   async function prepareStandalone(): Promise<StandaloneDaemonSpec | undefined> {
+    await migrateLegacy();
     await updateStandaloneAtActivation();
     if (installation) await installation;
     const spec = standaloneSpec();
@@ -297,6 +368,8 @@ export function activate(context: vscode.ExtensionContext) {
   }
   function scheduleProjectOffers(requested = false) {
     projectOffers = projectOffers.then(async () => {
+      await migrateLegacy();
+      await retireOpenProjects();
       await registerClaude(requested);
       if (!vscode.workspace.getConfiguration("wpilog-mcp").get<boolean>("enableForClaudeCode") && !requested) return;
       for (const folder of localFolders()) await offerProjectFile(context, outputChannel, folder);
@@ -483,6 +556,23 @@ async function gitStatusOf(folder: string, file: string): Promise<GitStatus> {
   if (tracked === 0) return "tracked";
   if (tracked !== 1) return "none";
   return await exitCode("git", ["check-ignore", "-q", "--", file], folder) === 0 ? "ignored" : "untracked";
+}
+
+/** Missing old config files still have a location; an existing symlink's target decides ownership. */
+function canonicalMigrationPath(file: string): string {
+  const suffix: string[] = [];
+  let ancestor = path.resolve(file);
+  for (;;) {
+    try {
+      fs.lstatSync(ancestor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || path.dirname(ancestor) === ancestor) throw error;
+      suffix.unshift(path.basename(ancestor));
+      ancestor = path.dirname(ancestor);
+      continue;
+    }
+    return path.join(fs.realpathSync(ancestor), ...suffix);
+  }
 }
 
 export function deactivate() {}

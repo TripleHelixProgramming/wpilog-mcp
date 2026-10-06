@@ -94,7 +94,7 @@ Some clients drop these rules, so `get_server_guide` returns the full method as 
 
 ### Each call stands alone
 
-Every tool that reads a log takes the log's path. There is no "current log", and a session holds no state, so a call does not depend on the calls before it, and one client's calls do not change what another sees. REV log data is the exception, and a visible one. It is ready only once the background synchronization has finished, and until then the tools say so. An offset set with `set_revlog_offset` is shared the same way (see [Synchronization](#synchronization)).
+Every tool that reads a log takes the log's path. There is no "current log", so analysis does not depend on an implicit selection left by an earlier call. Session leases control shared file access, not which log a tool selects. REV log data is the exception, and a visible one. It is ready only once the background synchronization has finished, and until then the tools say so. An offset set with `set_revlog_offset` is shared the same way (see [Synchronization](#synchronization)).
 
 ### Claims are checked
 
@@ -143,7 +143,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | Package | What it holds |
 |---|---|
 | (the root) | Startup: reading arguments and configuration, and wiring the parts together |
-| `mcp` | The protocol: message handling, the stdio and HTTP transports, sessions, and the tool registry |
+| `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/import endpoints, and the tool registry |
 | `tools` | The tools, grouped by subject, and what they share: the base every tool runs through, the result builder and result contract, the signal resolver, time scopes, field paths, data quality, and the guidance text |
 | `log` | Finding and loading logs: the log manager, the lazy log and its scan, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
 | `store` | File manifests, content inspection, and one import queue per store; robot identity, session placement, provenance, duplicate detection, and unmanaged files |
@@ -152,7 +152,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `cache` | The disk cache of sync results, the cache directory, file fingerprints, and the older disk cache of parsed logs, which is no longer used |
 | `tba` | The Blue Alliance client, and adding match results to log listings |
 | `game` | Bundled game data |
-| `config` | Reading the configuration file, and managing a server started in the background |
+| `config` | File configuration, session leases, daemon lifecycle, and the shared install/refresh implementation |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
 
@@ -162,7 +162,7 @@ Each step is explained in the sections that follow.
 
 1. A client sends a `tools/call` request over stdio or HTTP. The transport hands it to the protocol handler, which finds the tool by name.
 2. The tool runs inside a wrapper that every tool shares, which turns an exception or an out-of-memory condition into an explained result.
-3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against the configured log directories. A log already in memory is returned at once, once a look at the file's attributes shows it is still the file the log was read from; a file that changed is loaded again. Otherwise the file is mapped into memory and scanned once.
+3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against permanent directories and live session leases. A log already in memory is returned at once, once a look at the file's attributes shows it is still the file the log was read from; a file that changed is loaded again. Otherwise the file is mapped into memory and scanned once.
 4. The tool finds the signals it needs through the signal resolver. A tool that takes a scope or windows turns them into time windows through the shared scope handling.
 5. It reads the values it needs. An entry's values are decoded the first time any call asks for them, and then cached.
 6. It computes its result and, in most tools, builds it with the result builder: the status, the inputs, what was skipped or shortened, and data quality where the result rests on statistics.
@@ -174,7 +174,7 @@ Each step is explained in the sections that follow.
 The server starts in one of three ways:
 
 - From a configuration file: with no arguments, or with `start <name>`. The named server's settings come from the file. This is what the installers set up and what MCP clients run. [STANDALONE.md](STANDALONE.md#configuration) describes the file, where it is looked for, and how a server inherits the top-level settings.
-- From command-line flags, with environment variables as their defaults and no configuration file. The VS Code extension starts the server for VS Code's agents this way. [STANDALONE.md](STANDALONE.md#command-line-flags) lists the flags.
+- From command-line flags, with environment variables as their defaults and no configuration file. [STANDALONE.md](STANDALONE.md#command-line-flags) lists the flags.
 - As a background HTTP server: `start <name>` for a server whose transport is HTTP starts a second process and returns once it answers. Two starts of one server never spawn two processes, and the background process gets the same heap the launcher would give it. `stop <name>` ends it, and `connect <name>` relays a stdio client to it, starting it first when it must, so that one background server can serve every client on a machine.
 
 The `install` verb writes the standalone layout from its running JAR, with launcher and configuration templates packaged as resources. The shell installers download a JAR and delegate to it; Gradle does the same with `--force`. Versioned JARs and launchers remain available, the current launcher advances only to a newer version unless forced, and an existing YAML or legacy JSON configuration is preserved. Installation preflights the complete layout against the canonical install root through the shared security validator, and rechecks destinations when reading or writing them. The validator follows existing symlinks before normalizing parent components, matching the filesystem’s interpretation of `link/..`. Outside symlink targets are refused before any layout write; the intentional current-launcher link is allowed only to an in-root target (a missing in-root target still counts as older). Installation opens its lock without following links, holds it across the version decision and writes, and replaces complete files instead of truncating a JAR a daemon may still be reading. Ordinary updates leave daemon replacement to `start` and `connect`. Explicit `--refresh` instead stops recorded daemons, marks the install and start guards before closing their handles for Windows, renames the whole layout to a recovery backup, and copies only the settings into a fresh install. `--with-extension --vsix` delegates to one platform-aware VS Code lookup; Gradle and release scripts use it, while extension updates never do.
@@ -203,14 +203,15 @@ The HTTP transport serves the MCP Streamable HTTP shape on one endpoint (`/mcp` 
 - `GET` opens an event stream. The server sends no messages of its own, so the stream carries only a keep-alive every 15 seconds.
 - `DELETE` ends a session.
 - `GET /health` answers as soon as the server is up, with the version and the process ID. `start` uses it to tell whether a background server is running, and which.
+- `POST /directories` replaces a session’s directory/team lease, `DELETE /directories` ends it early, and `POST /tba-key` replaces its in-memory key. These routes share the Origin gate and refuse any non-loopback bind: only a person’s client, never a tool, can grant access.
 - `POST /stop` ends the server, when it was started in the background: from this machine only, with the token the start gave it (above).
 - `GET /data/entries` serves every sample of one or more entries over a window, as an Apache Arrow IPC stream or as CSV (doc/STANDALONE.md, "The Data Endpoint"), for the extension's viewer, a script, or a dashboard, which MCP's JSON messages are the wrong shape for. It goes through the log manager's validator and the `Origin` check as the MCP endpoint does, and reads nothing it would not. The Arrow stream is written at the format level: `arrow-format` gives the Flatbuffers metadata, and the server lays out each batch's validity bitmaps, offsets, and data in byte arrays on the heap, so nothing leaves the garbage collector's care, as arrow-vector's off-heap allocator would. The tests read the streams back with a reader written from the specification, and CI reads them with pyarrow. The entries' samples are resolved, typed, classed by sampling, and flattened for CSV by the same code the tools use (`EntryData` in the tools package); the buckets are `read_entry`'s (`Buckets`).
 
-A server started in the background may also end itself: with `idle_exit_minutes` in its configuration, it exits once that long has passed with no session open and no request to the MCP endpoint, counting from its start or from the end of its last session. A health check does not count, so a start's probe cannot keep a server alive. The flag is off unless set, so a server someone started by hand stays until `stop`; the VS Code extension sets it on the server it manages.
+With `idle_exit_minutes` configured, a background server exits after that interval without a session or recent MCP request, provided no HTTP import job or inbox import is active. Health probes do not count as use. The default is zero, regardless of who starts the daemon; the extension does not change the file’s idle policy.
 
 The stdio bridge (`connect`) is a client of this transport in the same JAR: it posts each line from its standard input to the endpoint, writes each response as one line, relays the event stream's messages the same way, and deletes its session when its input closes, so the idle clock can run. A request it cannot deliver (the server unreachable, the session gone after a restart) gets a JSON-RPC error with the request's id, and the bridge exits non-zero, since the client's remedy is to run it again.
 
-`initialize` creates a session, a random identifier that every later request must carry. A session holds nothing but its timestamps. A sweep every five minutes removes sessions that have gone an hour without use, and an open event stream counts as use.
+`initialize` creates a session, a random identifier that every later request must carry. A session tracks activity and owns any directory/key registrations; deleting or expiring it revokes both. A sweep every five minutes removes sessions that have gone an hour without use, and an open event stream counts as use.
 
 The server listens on `127.0.0.1` unless told otherwise, and rejects a request to the MCP endpoint whose `Origin` header names a host other than the local machine or an allowed one, which protects against DNS rebinding. There is no authentication: anyone who can reach the port can use the server.
 
@@ -303,7 +304,7 @@ Structs are decoded from the schemas the log records, using WPILib's schema pars
 
 ## Memory Management
 
-One setting sizes the server: the JVM's maximum heap, `4g` by default (`WPILOG_MAX_HEAP` for the standalone install, `wpilog-mcp.maxHeap` in the extension). The launcher, a server started in the background, and the VS Code extension all pass it to the JVM.
+The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` by default; a background server inherits it from the JVM that starts it. The extension’s `wpilog-mcp.maxHeap` now applies only to running the installer.
 
 A loaded log costs:
 
@@ -390,9 +391,9 @@ In stdio mode the server handles one message at a time. In HTTP mode, requests r
 The design keeps shared mutable state small:
 
 - Tools hold no state. One instance of each tool serves every thread, and everything a call builds is created for that call.
-- Shared structures that change while the server runs are concurrent ones: concurrent maps, the Caffeine caches, volatile fields, and atomic counters. The code takes few locks: one per log path during loading, one that keeps heap-pressure checks made at the same time from each unloading a log, the one that makes starts of a background server take turns, and a few synchronized accessors.
+- Shared structures that change while the server runs are concurrent ones: concurrent maps, the Caffeine caches, volatile fields, and atomic counters. The code takes few locks: one per log path during loading, one that keeps heap-pressure checks made at the same time from each unloading a log, the one that makes starts of a background server take turns, and the store/import and install guards described above.
 - Check-then-act sequences are atomic. A log is loaded once under its path's lock, after a second look at the cache. An entry's values are decoded once, through the cache's per-key computation. A finished synchronization replaces its placeholder only if the placeholder is still there, so a log unloaded in the meantime stays unloaded. A background start claims its PID file with an atomic create. A version-mismatch restart replaces the old daemon's record with the starter's PID and `starting` marker while still holding the start lock used to check its version, then retains that claim through stopping and spawning. Another start therefore waits even after the old daemon's PID dies; it cannot decide on the same old record or remove the restart's claim as stale. No start lock is held while waiting for a process to exit or boot.
-- Background work is limited to a single thread that runs REV log synchronizations one at a time, a timer that checks heap pressure every 5 minutes, a timer that removes expired sessions, one sweep of the disk cache at startup, and the value caches' own upkeep, which Caffeine runs on the JVM's shared pool.
+- Background work is limited to a single thread that runs REV log synchronizations one at a time, a timer that checks heap pressure every 5 minutes, a timer that removes expired sessions, one sweep of the disk cache at startup, the known-store inbox poller, and the value caches' own upkeep, which Caffeine runs on the JVM's shared pool.
 
 On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
 
@@ -402,25 +403,24 @@ Three rules, each explained in its own section above:
 
 - Files: a path given to a tool must resolve to a file inside the configured log directories, and exports go only to the export directory (see [Path security](#path-security)).
 - Network: the HTTP transport listens on `127.0.0.1` by default, checks `Origin` against DNS rebinding, and has no authentication, so binding it to another address exposes the logs to anyone who can reach the port (see [HTTP](#http)).
-- The Blue Alliance key is never logged or returned by a tool. The VS Code extension keeps it in VS Code's secret storage and in a configuration file in its own storage that only the user can read (see [The VS Code Extension](#the-vs-code-extension)).
+- The Blue Alliance key is never logged or returned by a tool. The VS Code extension keeps it in secret storage and registers it in the server’s memory for the session, without writing a server or project file (see [The VS Code Extension](#the-vs-code-extension)).
 
 ## The VS Code Extension
 
-The extension exists so that a team installs one thing. It bundles the server's JAR, runs it with the WPILib JDK when one is installed, and finds the log folder. Its [README](../vscode-extension/README.md) describes what it does; these are the reasons behind it.
+The extension installs and updates the standalone layout from its bundled JAR and starts that install’s `http` server with the home configuration explicitly. This avoids separate heaps, caches, and private configuration files for the viewer and agents. `servers.yaml` belongs to the user; the Settings UI does not edit it. The extension’s Java/heap settings run the installer, while the launcher chooses the daemon’s Java and heap.
 
-- Agents find MCP servers in different ways, so the extension provides the server twice. VS Code's own agents get it from VS Code's server registry. Claude Code reads a project's `.mcp.json` instead, so the extension adds an entry there. Without that, someone who installed the extension to use it with Claude Code would find no server.
-- The entry for Claude Code does nothing but start the server with a configuration file. The settings and the Blue Alliance key are in that file, in the extension's own storage, readable only by the user (by file mode on macOS and Linux, and by the user profile's protection on Windows). The server Claude Code starts runs outside VS Code and can read neither VS Code's settings nor its secret storage. The file keeps the key out of the project and spares the user environment variables. It is the same arrangement as the standalone install, where a client's entry names the launcher and the configuration file holds the settings.
-- The entry points at a copy of the JAR in the extension's storage, whose path survives extension updates.
-- The extension runs one server per computer, shared by VS Code's agents, Claude Code, and the explorer, with every project's log directories joined in. A draft that let the user define more servers and projects name theirs was taken out before release: the server keeps logs apart by path already, a tool reads one log per call, and one heap serves better than two halves, so a second server added only a settings model and a picker (`doc/EXPLORER_PLAN.md`, decision 5). The extension's server is its own: it reads none of the standalone install's `servers.yaml`, and its daemon is named `vscode-default` so its PID file, token, and log never collide with a standalone server's `default`. One setting makes the standalone install's `http` server the extension's instead, for a user who has that install and wants Claude Desktop and the rest on the same server: the extension then starts it with the install's own launcher, reads the port from the PID file the start writes, and writes nothing into the install, whose file decides the server's settings and whose installer decides its version (an older one is reported, not replaced, since the explorer needs what newer servers have).
-- The explorer (the views and the editor that show a log without an assistant) is a client of the same server, through an MCP client of its own and the data endpoint. Its webview opens no connection: the extension host fetches, and the webview draws what it is sent, under a content security policy that allows only the extension's own scripts. Every number it shows is a tool's result or the data endpoint's samples, so it can never disagree with the assistant; the webview's own code (the Arrow reader, the plot arithmetic) runs under Node's test runner as well, where it is checked against the server's streams.
-- The entry holds paths that exist on one computer only. So the extension does not write into a `.mcp.json` that git tracks, and it offers to keep the file out of git.
-- User settings apply to every project, and a project's own settings override them, so Claude Code in a project gets the settings that apply to that project. No team number is assumed: the setting is empty until the user sets it.
-- The extension adds no second server to a project whose `.mcp.json` already runs the standalone one. It cannot see a standalone server registered for all projects, which is why that case needs the extension's entries turned off.
+`directoryLease.ts` resolves User roots and open projects’ directories with a team per path. The extension’s own MCP session registers them and its secret-storage key before VS Code’s agents receive the HTTP definition. Registrations are visible to every session. A window updates its lease on settings, key, and folder changes; the client serializes updates, keeps the session alive, re-registers after restart, and deletes it on disposal. No daemon restart is needed for a lease change.
+
+`claudeRegistration.ts` builds one user-scope `connect http` bridge command, through `cmd /c` on Windows. The bridge loads server configuration only from the home or explicit file, so the first project cannot choose the shared daemon’s port. Project YAML contributes only top-level directories and team. The extension offers that file once, with an optional gitignore addition, and never rewrites it. No key or directory goes in Claude Code’s registration command.
+
+`legacyMigration.ts` recognizes the old `connect vscode-default` entry or `connect http --config` pointing inside extension storage. It removes only the named entry from untracked or ignored `.mcp.json`; other contents, tracked files, custom entries, and symlinks are left alone with a note. After the old daemon stops, private `servers/` and `projects/` files are removed once. Failed stops preserve the files for a later activation.
+
+The explorer shares this server through `mcpClient.ts` and `dataClient.ts`. The webview only draws results under its content security policy and opens no network connection. Pure models handle tree grouping, organizing decisions, and requests; `explorer.ts` and `extension.ts` hold the VS Code glue. Node tests cover those models, both platform path/command rules, fake transports, and a real JAR; real VS Code checks are listed in [DEVELOPMENT.md](DEVELOPMENT.md#extension-tests).
 
 ## Known Limits
 
 - A file over 2 GB is not loaded.
-- On Windows, a loaded log's file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until the garbage collector does, so copying a newer log over a loaded one fails there until the old log has been collected ([IDEAS.md](IDEAS.md), "Logs That Change After Loading").
+- On Windows, a mapped file cannot be moved or replaced. Managed imports reserve file access and release mappings after the last reader before moving a source; an external copy cannot bypass an active reader.
 - Compressed logs are not read ([IDEAS.md](IDEAS.md), "Compressed Log Files").
 - Protobuf entries are not decoded. A record of 100 bytes or less is returned as hex, and a longer one only as its size.
 - The memory budgets are estimates, and the heap-pressure check is the backstop (see [Memory Management](#memory-management)).

@@ -56,19 +56,13 @@ A possible answer: *"Battery voltage dropped below the brownout threshold at 42.
 
 ## Installation
 
-wpilog-mcp runs two ways. It is designed for Claude and tested with Claude, but any agent that speaks MCP should work: GitHub Copilot in VS Code, Gemini CLI, Cursor, and others. ChatGPT reaches MCP servers only over the network, so it needs the [HTTP transport](doc/STANDALONE.md#http-transport).
-
-**[VS Code extension](vscode-extension/README.md):** install **[WPILog Analyzer](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer)** from the Visual Studio Marketplace, either through VS Code's Extensions view or from its Marketplace page. There is nothing else to download. The extension bundles the server, finds Java, and registers the server with VS Code, where Copilot and other agents pick it up; for Claude Code, it adds the server to your robot project's `.mcp.json`, which you approve once. A particular build, such as a test build of the next version, installs from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases); the extension's README says how.
-
-**[Standalone install](doc/STANDALONE.md):** for MCP clients outside VS Code, such as Claude Desktop, the Claude Code CLI, Gemini CLI, or Cursor. Run the one-line installer, or clone the repository and run `./gradlew install`; set your team number and log directory in `~/.wpilog-mcp/servers.yaml`; then point your MCP client at the `wpilog-mcp` launcher.
-
-Both take the same three settings: where your logs are (one directory or several), your team number, and a Blue Alliance API key if you want match results. The extension takes them in VS Code [settings](vscode-extension/README.md#settings) and moves the key into VS Code's secret storage, so that no settings file keeps it ([details](vscode-extension/README.md#the-blue-alliance-api-key)); the standalone server takes them in its [configuration file](doc/STANDALONE.md#configuration).
+Install **[WPILog Analyzer](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer)** in VS Code, accept its server-install offer, and put your logs in `~/riologs`. The extension bundles the server JAR, finds Java, and starts one shared server. Copilot and other VS Code agents get its HTTP definition; Claude Code gets a user-scope bridge registration. [The extension guide](vscode-extension/README.md) covers setup and the explorer.
 
 ### Extension or Standalone?
 
-Most people want the extension. The standalone install is for Claude Code or Claude Desktop without VS Code, for the HTTP transport, and for settings the extension doesn't offer: disk cache size, export directory, scan depth, and named server configurations in `servers.yaml`.
+Most people want the extension. It installs and updates the same standalone server used by clients outside VS Code; installing both does not create a second server or cache. The default log location needs no configuration changes. User and project directory settings in VS Code become temporary leases, visible to every connected client while the window is open.
 
-You can install both. Each keeps its own settings and its own disk cache; the extension leaves alone any project that already runs the standalone server. [Using It Alongside the Standalone Install](vscode-extension/README.md#using-it-alongside-the-standalone-install) has the details, including what to turn off if you registered the standalone server for every project. Or have the extension use the standalone server: its **Use Standalone Server** setting makes the standalone install's `http` server, with that install's settings, the one every client on the computer shares, VS Code's agents and the extension's own viewer included ([details](vscode-extension/README.md#using-the-standalone-server)).
+Without VS Code, use the [standalone installer](doc/STANDALONE.md), which prompts for directories, team, and the optional matching extension. Point clients at the launcher's `connect http` bridge. For permanent directories or advanced server settings, edit `~/.wpilog-mcp/servers.yaml`; VS Code's Settings UI does not edit it. A Blue Alliance key is optional: the extension registers its secret-storage key in memory, while standalone users can configure the key in YAML or the environment.
 
 ## Guardrails
 

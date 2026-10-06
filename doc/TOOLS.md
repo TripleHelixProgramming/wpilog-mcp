@@ -474,7 +474,7 @@ Server status: version, loaded log count, TBA configuration, whether a revlog sy
 
 **Parameters:** None
 
-**Returns:** `server_version`, `loaded_logs`, `tba_available` (a key is configured; `get_tba_status` checks that it works), `revlog_sync_in_progress`, `jvm_memory` (`used_mb`, `total_mb`, `max_mb`, `free_mb`), `jvm_heap_used_mb`, and the two disk caches, which share one directory. Each counts only its own files:
+**Returns:** `server_version`, `loaded_logs`, `tba_available` (a key is registered by a live session or configured; `get_tba_status` checks that it works), `revlog_sync_in_progress`, `jvm_memory` (`used_mb`, `total_mb`, `max_mb`, `free_mb`), `jvm_heap_used_mb`, and the two disk caches, which share one directory. Each counts only its own files:
 - `sync_disk_cache`: the revlog sync-result cache, which is in use (`enabled`, `directory`, `cached_files`, `total_size_mb`)
 - `parsed_log_disk_cache`: the parsed-log cache of releases before 0.8.0 (`enabled`, `directory`, `cached_files`, `total_size_mb`, `format_version`). It reports `used_by_load_path: false` because logs are now parsed lazily from memory-mapped files, but it is still configured and its directory is cleaned at startup.
 
