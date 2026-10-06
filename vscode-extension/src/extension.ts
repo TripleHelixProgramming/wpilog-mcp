@@ -476,7 +476,8 @@ function standaloneSpec(): StandaloneDaemonSpec {
       return false;
     }
   };
-  return { kind: "standalone", name: STANDALONE_SERVER, ...findStandaloneInstall(os.homedir(), process.platform, isFile) };
+  const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap");
+  return { kind: "standalone", name: STANDALONE_SERVER, maxHeap, ...findStandaloneInstall(os.homedir(), process.platform, isFile) };
 }
 
 /** The user's values: User settings, else the defaults. */

@@ -17,6 +17,7 @@ import {
   STANDALONE_GUIDE_URL,
   StandaloneInstall,
   launcherCommand,
+  launcherEnvironment,
   olderVersion,
   portInPidFile,
   standaloneStartArgs,
@@ -28,6 +29,8 @@ export interface StandaloneDaemonSpec extends StandaloneInstall {
   kind: "standalone";
   /** The server's name in the install's configuration file (see STANDALONE_SERVER). */
   name: string;
+  /** The `maxHeap` setting, the daemon's heap when the extension starts it; blank for the launcher's default. */
+  maxHeap?: string;
 }
 
 export type DaemonSpec = StandaloneDaemonSpec;
@@ -140,7 +143,8 @@ export class ServerManager implements vscode.Disposable {
       return undefined;
     }
     const start = launcherCommand(spec.launcher, standaloneStartArgs(spec.configPath), process.platform);
-    const result = await this.run(start.command, start.args, start.windowsVerbatimArguments);
+    const result = await this.run(start.command, start.args, start.windowsVerbatimArguments,
+      launcherEnvironment(process.env, spec.maxHeap));
     const port = result.code === 0 ? await this.portFor(spec) : undefined;
     const verdict = port === undefined ? undefined : await this.probe(port);
     if (port === undefined || verdict?.kind !== "ours") {
@@ -238,14 +242,15 @@ export class ServerManager implements vscode.Disposable {
   private run(
     command: string,
     args: string[],
-    windowsVerbatimArguments = false
+    windowsVerbatimArguments = false,
+    env: NodeJS.ProcessEnv = process.env
   ): Promise<{ code: number | undefined; output: string }> {
     this.output.appendLine(`Running: ${command} ${args.join(" ")}`);
     return new Promise((resolve) => {
       execFile(
         command,
         args,
-        { timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20, windowsVerbatimArguments },
+        { timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20, windowsVerbatimArguments, env },
         (error, stdout, stderr) => {
           const output = `${stdout}${stderr}`.trim();
           if (output) this.output.appendLine(output);

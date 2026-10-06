@@ -6,6 +6,7 @@ import {
   STANDALONE_SERVER,
   findStandaloneInstall,
   launcherCommand,
+  launcherEnvironment,
   olderVersion,
   portInPidFile,
   standaloneStartArgs,
@@ -86,6 +87,19 @@ test("start and stop name the http server and the install's configuration file, 
     ["start", "http", "--config", "/home/me/.wpilog-mcp/servers.yaml"]);
   assert.deepEqual(standaloneStopArgs("/home/me/.wpilog-mcp/servers.yaml"),
     ["stop", "http", "--config", "/home/me/.wpilog-mcp/servers.yaml"]);
+});
+
+test("the maxHeap setting reaches the launcher as its heap variable, never on the command line", () => {
+  const base = { PATH: "/usr/bin", WPILOG_MAX_HEAP: "2g" };
+  assert.deepEqual(launcherEnvironment(base, "8g"), { PATH: "/usr/bin", WPILOG_MAX_HEAP: "8g" },
+    "the setting wins over a variable the extension inherited");
+  assert.deepEqual(launcherEnvironment(base, " 6g "), { PATH: "/usr/bin", WPILOG_MAX_HEAP: "6g" }, "trimmed");
+  assert.deepEqual(launcherEnvironment({ PATH: "/usr/bin" }, "4g"), { PATH: "/usr/bin", WPILOG_MAX_HEAP: "4g" });
+  assert.deepEqual(launcherEnvironment(base, ""), base, "a blank setting leaves the launcher's default");
+  assert.deepEqual(launcherEnvironment(base, undefined), base);
+  assert.notEqual(launcherEnvironment(base, undefined), base, "a copy, so the extension's environment is not changed");
+  assert.deepEqual(standaloneStartArgs("/home/me/.wpilog-mcp/servers.yaml").filter((a) => /xmx|heap/i.test(a)), [],
+    "the heap is not an argument");
 });
 
 test("a server is older than the extension by the version's numbers; a suffix does not count", () => {
