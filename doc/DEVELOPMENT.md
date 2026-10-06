@@ -53,6 +53,21 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 
 The store checks also distinguish a new named robot with a logged serial from a later serial promotion, keep non-overlapping sessions separate, count catalog reads per batch, and observe which REV candidates reach correlation. `log.LogMappingLifetimeTest` reads fixtures through tools and the manager before moving them, holds calls and background synchronization across eviction, and checks that the final holder releases the mapping so a real rename succeeds on Windows too.
 
+**NT4 protocol and gateway.** `./gradlew test --tests '*.nt4.*'` checks the pure codec against
+hand-encoded JSON/MessagePack frames from the NT4 and MessagePack specifications, both directions
+of the type table, malformed input, and the time-sync arithmetic. The pure gateway tests drive
+explicit times for overlapping subscriptions, batching, cached values, exact/prefix matching,
+`topicsonly`, removals, and read-only acknowledgements. Real JDK WebSocket clients connect to the
+loopback gateway on numeric `127.0.0.1` and ephemeral ports. Every generated fixture is replayed in
+timestamp order; every announcement, unannouncement, timestamp, and raw payload is compared with
+the source records, including struct schema topics and intentionally malformed struct payloads.
+The replay helper also accepts a pace and an injected pacer. The client tests inject the event loop
+and clock to observe infinite 1–10 second backoff, reconnection, and time-sync/keepalive timers
+without sleeping. A separate scripted peer checks fragmentation, the 4.0 fallback, unknown IDs,
+malformed messages, and listener order. A planted server clock is checked within the measured RTT.
+These tests need no robot, native NT library, external service, or committed log. Actual ntcore and
+dashboard interoperability and native Windows execution still require their respective environments.
+
 **Tool tests.** Each tool's behavior and its edge cases (empty and single-sample entries, NaN and infinite values, duplicate timestamps, missing Driver Station data, and bad arguments), on the fixtures and on small logs that the tests build in memory.
 
 **Conformance sweep.** Every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, a note on every result computed from a log that was not read to its end, and every output the tool's description names.

@@ -104,6 +104,9 @@ dependencies {
     // Binary serialization for disk cache
     implementation 'org.msgpack:msgpack-core:0.9.12'
 
+    // NT4 gateway framing only (nt4/server); the client uses java.net.http.WebSocket.
+    implementation 'org.java-websocket:Java-WebSocket:1.6.0'
+
     // In-memory cache with weight-based eviction for lazy log value loading
     implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'
 

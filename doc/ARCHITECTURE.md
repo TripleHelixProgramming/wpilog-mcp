@@ -116,6 +116,8 @@ A test run without failures shows that the tools keep their contract, not that t
 | The JDK's built-in HTTP server | The HTTP transport. It is enough for local use by a few clients and adds no dependency. |
 | Arrow's format library (`arrow-format`, with the Flatbuffers runtime) | The Flatbuffers schema and message headers of the Arrow IPC stream the data endpoint writes. Only the generated format classes: the arrays' layout is the server's own, on the heap. |
 | The JDK's HTTP client | The Blue Alliance API. |
+| The JDK's WebSocket client | The NT4 client, currently exercised only by tests. |
+| Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway fixture; confined to `nt4/server`. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
 | TypeScript and the VS Code extension API | The VS Code extension. It has no runtime npm dependencies, and its tests use Node's built-in test runner. |
@@ -153,8 +155,43 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `tba` | The Blue Alliance client, and adding match results to log listings |
 | `game` | Bundled game data |
 | `config` | File configuration, session leases, daemon lifecycle, and the shared install/refresh implementation |
+| `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
+| `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
+| `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
+
+## NT4 foundation
+
+The pit server's first milestone exists as an unwired layer: startup, configuration, tools, capture,
+and the extension do not use it yet. The client and a loopback gateway exercise each other on every
+generated fixture before a capture writer can depend on their delivery order. The gateway's core
+takes messages and explicit times and returns deliveries; it performs no I/O under its short state
+lock. The adapter sends those deliveries on its own daemon loop. The client has a separate daemon
+loop, so every announcement, removal, property update, and value reaches its listener in order on
+one thread. A future writer can implement that listener.
+
+The MessagePack subset is written from the format specification, like the Arrow data writer, and
+checked against hand-encoded bytes, including every integer width, floating-point bits, variable
+length headers, and concatenated NT4 messages. It is separate from the existing MessagePack disk
+cache library. Untrusted lengths, nesting, and message size are bounded; unsupported extension
+formats are rejected. The announced type string survives unchanged: a binary code chooses a decoder,
+not a schema or an interpretation. Struct schemas are ordinary binary topics.
+
+The client uses Java 17's WebSocket to avoid another client dependency. Java-WebSocket 1.6.0 supplies
+only the server framing (140,686-byte JAR, MIT, with SLF4J already present); its license is retained
+under `META-INF/licenses/`. NT4.1 is preferred, with NT4.0 negotiated on the same handshake. Only 4.1
+connections receive WebSocket pings. Initial time synchronization precedes subscription; later
+measurements run every three seconds. The clock estimate uses the newest minimum-RTT measurement
+in the last 30 seconds. Failed address sweeps retry after 1, 2, 4, 8, then 10 seconds indefinitely.
+
+The lossless listener sees every received value, including an older timestamp. In accordance with
+WPILib's protocol, the latest table keeps the greatest timestamp (ties replace), honors `cached: false`,
+and removes values on unannounce or disconnect. The gateway deduplicates overlapping
+subscriptions, batches at the client's minimum requested period, and honors `all`, `topicsonly`,
+and exact/prefix matching. Downstream publications are private acknowledgement sinks: values never
+enter the upstream table, and property replies state the unchanged properties. Full gateway
+integration, metadata topics, and real dashboard interoperability remain the later gateway milestone.
 
 ## Life of a Tool Call
 
