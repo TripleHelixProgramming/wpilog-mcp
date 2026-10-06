@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The shell, PowerShell, and Gradle installers now delegate the layout to the JAR's `install` verb instead of maintaining three copies of launcher scripts and configuration defaults. Release installers download to a temporary file; the Gradle task forces its development build current. Windows launchers now fall back to `JAVA_HOME` after WPILib, as the Unix launcher does.
 
 ### Fixed
+- Unassigned imports keep payloads under `robot/` and reserve control filenames in hash subdirectories, preventing a log named `import.json` from being overwritten by its manifest. Existing unassigned layouts remain readable and migrate on the next import with provenance retained.
 - The one-line installers now fall back to the downloaded release's tagged installer when its JAR rejects the `install` command, so releases from before the verb remain installable. Both paths report which was used and clean up temporary downloads; a repeated fallback stops with an error.
 - Installer JSON checks now capture stdout separately so JVM banners on stderr do not break the suite.
 - Concurrent starts during a version-mismatch restart now share one replacement daemon. The restart claims the PID file under the start lock as it checks the version and retains that live starter's claim through stopping and spawning; previously another start could decide to restart the same old daemon, overwrite a new claim with its stopping record, or discard that record as stale as soon as the old process exited.

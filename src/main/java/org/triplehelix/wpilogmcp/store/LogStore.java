@@ -17,8 +17,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -61,6 +63,9 @@ public final class LogStore implements AutoCloseable {
   private record Candidate(Path path, String hash, Robot robot, Instant start, Instant end) {}
   private record Pair(Candidate wpilog, SyncResult sync) {}
   private record Placement(ImportInspection input, Path destination, Matching matching) {}
+
+  private static final Set<String> CONTROL_NAMES = Set.of(
+      "import.json", "session.json", "robot.json", "store.json", "batch.json");
 
   private final Path root;
   private final SecurityValidator security;
@@ -214,6 +219,8 @@ public final class LogStore implements AutoCloseable {
           Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
     }
     var catalog = new ImportCatalog(catalogReader.read(root, security));
+    var migrated = migrateUnassigned(io, catalog);
+    sources = sources.stream().map(path -> migrated.getOrDefault(path, path)).toList();
     Files.createDirectories(io.check(root.resolve("inbox")));
     var known = new HashMap<String, Path>();
     catalog.files.values().forEach(f -> known.put(f.file().sha256(), f.path()));
@@ -481,11 +488,7 @@ public final class LogStore implements AutoCloseable {
         outcomes.add(new Outcome(input.path(), "present", duplicate.get().path(), "Already held by SHA-256"));
         continue;
       }
-      var parent = session == null ? manifest.getParent() : manifest.getParent().resolve("robot");
-      var destination = parent.resolve(input.path().getFileName());
-      if (Files.exists(io.check(destination))) {
-        destination = parent.resolve(input.hash()).resolve(input.path().getFileName());
-      }
+      var destination = payloadDestination(io, manifest, input.path().getFileName(), input.hash());
       var pair = pairs.get(input.path());
       var matching = pair == null ? null : new Matching("by_correlation", pair.wpilog().hash(),
           pair.sync().offsetMicros(), pair.sync().confidence(), pair.sync().driftRateNanosPerSec(),
@@ -580,6 +583,52 @@ public final class LogStore implements AutoCloseable {
     for (var placement : placements) outcomes.add(new Outcome(placement.input().path(),
         session == null ? "unassigned" : "imported", placement.destination(), session == null
             ? "No robot assignment or unique correlated wpilog; awaiting assignment" : null));
+  }
+
+  /** Payloads never share a directory with manifests, even when their original names match. */
+  private Path payloadDestination(StoreFiles io, Path manifest, Path name, String hash)
+      throws IOException {
+    var parent = manifest.getParent().resolve("robot");
+    var destination = parent.resolve(name);
+    if (CONTROL_NAMES.contains(name.toString().toLowerCase(Locale.ROOT)) || Files.exists(io.check(destination))) {
+      destination = parent.resolve(hash).resolve(name);
+    }
+    return io.check(destination);
+  }
+
+  /**
+   * Old manifests remain readable. Under the import lock, copy and verify their payloads before
+   * switching the manifest, then remove the old files: a failed migration must keep log bytes.
+   */
+  private Map<Path, Path> migrateUnassigned(StoreFiles io, ImportCatalog catalog) throws IOException {
+    var migrated = new HashMap<Path, Path>();
+    for (var stored : List.copyOf(catalog.files.values())) {
+      if (stored.session() != null || stored.path().startsWith(stored.manifestPath().getParent().resolve("robot"))) {
+        continue;
+      }
+      var file = stored.file();
+      var destination = payloadDestination(io, stored.manifestPath(), stored.path().getFileName(), file.sha256());
+      try (var lease = releaseForMove(List.of(stored.path()))) {
+        if (!file.sha256().equals(StoreFiles.hash(io.check(stored.path())))) {
+          throw new IOException("Stored content no longer matches its manifest: " + stored.path());
+        }
+        Files.createDirectories(destination.getParent());
+        Files.copy(io.check(stored.path()), io.check(destination), StandardCopyOption.COPY_ATTRIBUTES);
+        if (!file.sha256().equals(StoreFiles.hash(destination))) {
+          throw new IOException("Migration copy hash differs: " + destination);
+        }
+        var updated = new LogFile(StoreFiles.relative(stored.manifestPath().getParent(), destination),
+            file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
+            file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(),
+            file.startBasis(), file.truncated(), file.matching());
+        io.write(stored.manifestPath(), updated);
+        rewriteMoves(io, catalog, stored.path(), destination);
+        catalog.placed(io, stored.manifestPath(), null, null, List.of(updated));
+        Files.delete(io.check(stored.path()));
+        migrated.put(stored.path(), destination);
+      }
+    }
+    return migrated;
   }
 
   private void rewriteMoves(StoreFiles io, ImportCatalog catalog, Path old, Path target)

@@ -29,6 +29,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
@@ -112,6 +114,57 @@ class LogStoreTest {
     var tools = new ToolRegistry();
     CoreTools.registerAll(tools);
     return tools.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"import.json", "session.json", "robot.json", "store.json", "batch.json"})
+  void controlNamedPayloadKeepsItsBytesAndIsListed(String name) throws Exception {
+    var source = log(temp.resolve(name), null, START, 1);
+    var bytes = Files.readAllBytes(source);
+    var hash = StoreFiles.hash(source);
+    var result = run(List.of(source), true, null).files().get(0);
+    assertEquals("unassigned", result.status());
+    assertFalse(Files.exists(source));
+    assertArrayEquals(bytes, Files.readAllBytes(result.path()), "the payload must not become its manifest");
+    var expected = root.resolve("unassigned").resolve(hash.substring(0, 16))
+        .resolve("robot").resolve(hash).resolve(name);
+    assertEquals(expected, result.path());
+    assertEquals(expected, Path.of(listing().getAsJsonArray("unassigned").get(0)
+        .getAsJsonObject().get("path").getAsString()));
+    assertTrue(catalog().unmanaged().isEmpty());
+  }
+
+  @Test
+  void legacyUnassignedLayoutIsReadableAndMigratedOnTheNextImport() throws Exception {
+    var source = log(temp.resolve("old.wpilog"), null, START, 1);
+    var bytes = Files.readAllBytes(source);
+    var hash = StoreFiles.hash(source);
+    var bucket = Files.createDirectories(root.resolve("unassigned").resolve(hash.substring(0, 16)));
+    var legacy = Files.move(source, bucket.resolve(source.getFileName()));
+    var io = new StoreFiles(root, security);
+    var provenance = new StoreManifest.Provenance("imported", source.toString(), "old.wpilog",
+        START.toString(), true);
+    io.write(root.resolve("store.json"), new StoreManifest.Header(1, START.toString(), "legacy",
+        List.of(new StoreManifest.Move(source.toString(), StoreFiles.relative(root, legacy), Instant.now().toString()))));
+    io.write(bucket.resolve("import.json"), new StoreManifest.LogFile("old.wpilog", hash,
+        bytes.length, "wpilog", provenance, true, 10, 20, START.toString(),
+        START.plusSeconds(10).toString(), "systemTime", false, null));
+    assertEquals(legacy, catalog().files().get(0).path());
+    assertEquals(legacy, Path.of(listing().getAsJsonArray("unassigned").get(0)
+        .getAsJsonObject().get("path").getAsString()));
+
+    run(List.of(), false, null);
+    var migrated = bucket.resolve("robot").resolve("old.wpilog");
+    var held = catalog().files().get(0);
+    assertEquals(migrated, held.path());
+    assertEquals(provenance, held.file().provenance());
+    assertArrayEquals(bytes, Files.readAllBytes(migrated));
+    assertFalse(Files.exists(legacy));
+    assertTrue(catalog().unmanaged().isEmpty());
+    assertTrue(catalog().moved().stream().anyMatch(m -> m.originalPath().equals(source.toString())
+        && Path.of(m.movedTo()).equals(migrated)));
+    assertEquals("present", run(List.of(migrated), false, null).files().get(0).status());
+    assertEquals(migrated, catalog().files().get(0).path(), "new layout stays readable and is not migrated again");
   }
 
   @Test
