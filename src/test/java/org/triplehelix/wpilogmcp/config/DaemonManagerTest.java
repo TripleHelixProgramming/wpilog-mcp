@@ -23,7 +23,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.IntPredicate;
 import java.util.stream.Stream;
@@ -31,6 +33,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.Version;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
@@ -805,6 +808,8 @@ class DaemonManagerTest {
     final List<Long> forced = new CopyOnWriteArrayList<>();
     /** Whether a plain destroy ends the process, as a signal does for a JVM. */
     volatile boolean destroyWorks = true;
+    /** Whether even a forced termination can end the process. */
+    volatile boolean forceWorks = true;
     /** Runs when a process is ended, so the fake daemon it stands for can close its port. */
     volatile Runnable onEnd = () -> {};
 
@@ -824,7 +829,9 @@ class DaemonManagerTest {
     @Override
     public boolean destroyForcibly(long pid) {
       forced.add(pid);
-      end(pid);
+      if (forceWorks) {
+        end(pid);
+      }
       return true;
     }
 
@@ -1042,6 +1049,133 @@ class DaemonManagerTest {
           pool.shutdownNow();
           launcher.stop();
         }
+      }
+    }
+
+    @Test
+    @DisplayName("a restart keeps its claim after the old daemon exits and before the new spawn")
+    void startAfterOldDaemonExitsJoinsTheRestart() throws Exception {
+      int port = freePort();
+      var launcher = new FakeLauncher(port, 0);
+      var restartWaitingForExit = new CountDownLatch(1);
+      var continueRestart = new CountDownLatch(1);
+      var secondCheckedRecord = new CountDownLatch(1);
+      var allowLaunch = new CountDownLatch(1);
+      var restartingThread = new AtomicReference<Thread>();
+      var secondThread = new AtomicReference<Thread>();
+      var managerRef = new AtomicReference<DaemonManager>();
+      var secondClaimed = new AtomicBoolean();
+      var controlledProcesses = new DaemonManager.Processes() {
+        @Override
+        public boolean isAlive(long pid) {
+          if (pid == FAKE_PID && Thread.currentThread() == restartingThread.get()
+              && !managerRef.get().holdsStartLock("test")) {
+            // Pause outside the start lock, after /stop and before the restart cleans up.
+            restartWaitingForExit.countDown();
+            awaitLatch(continueRestart);
+          }
+          return processes.isAlive(pid);
+        }
+
+        @Override
+        public boolean destroy(long pid) {
+          return processes.destroy(pid);
+        }
+
+        @Override
+        public boolean destroyForcibly(long pid) {
+          return processes.destroyForcibly(pid);
+        }
+      };
+      var files = new DaemonManager.PidFileWriter() {
+        @Override
+        public void create(Path pidFile, String content) throws IOException {
+          boolean second = Thread.currentThread() == secondThread.get();
+          try {
+            DaemonManager.FILE_SYSTEM.create(pidFile, content);
+            if (second) {
+              secondClaimed.set(true);
+            }
+          } finally {
+            if (second) {
+              secondCheckedRecord.countDown();
+            }
+          }
+        }
+
+        @Override
+        public void replace(Path temp, Path pidFile) throws IOException {
+          DaemonManager.FILE_SYSTEM.replace(temp, pidFile);
+        }
+      };
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8),
+          (command, environment, logFile) -> {
+            // Neither caller can boot before the second has inspected the dead daemon's record.
+            awaitLatch(allowLaunch);
+            return launcher.launch(command, environment, logFile);
+          }, files, controlledProcesses, Version.VERSION);
+      managerRef.set(manager);
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      var pool = Executors.newFixedThreadPool(2);
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        old.exitsOnStop = false;
+        Future<Boolean> first = pool.submit(() -> {
+          restartingThread.set(Thread.currentThread());
+          return manager.spawnDaemon("test", port, null);
+        });
+        awaitLatch(restartWaitingForExit);
+        var reserved = pidFileLines(manager, "test");
+        processes.end(FAKE_PID); // Close the old listener before letting the second start look.
+        Future<Boolean> second = pool.submit(() -> {
+          secondThread.set(Thread.currentThread());
+          return manager.spawnDaemon("test", port, null);
+        });
+        awaitLatch(secondCheckedRecord);
+        continueRestart.countDown();
+        allowLaunch.countDown();
+
+        assertTrue(first.get(20, TimeUnit.SECONDS));
+        assertTrue(second.get(20, TimeUnit.SECONDS));
+        assertAll(
+            () -> assertEquals(claim(OWN_PID, port), reserved,
+                "the restart must belong to its live starter before the old daemon exits"),
+            () -> assertFalse(secondClaimed.get(),
+                "the second start removed the stopping record and claimed an in-flight restart"),
+            () -> assertEquals(1, launcher.launches.get()));
+      } finally {
+        continueRestart.countDown();
+        allowLaunch.countDown();
+        pool.shutdownNow();
+        pool.awaitTermination(10, TimeUnit.SECONDS);
+        launcher.stop();
+      }
+    }
+
+    /** Latches choose the interleaving; the deadline only bounds a broken test's wait. */
+    private void awaitLatch(CountDownLatch latch) {
+      try {
+        assertTrue(latch.await(10, TimeUnit.SECONDS), "restart interleaving was not reached");
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("restart interleaving interrupted", e);
+      }
+    }
+
+    @Test
+    @DisplayName("a restart that cannot stop the old daemon restores its stopping record")
+    void failedRestartRestoresTheOldRecord() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(400));
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      processes.forceWorks = false;
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        old.exitsOnStop = false;
+        assertFalse(manager.spawnDaemon("test", port, null));
+        assertEquals(List.of(Long.toString(FAKE_PID), Integer.toString(port),
+            DaemonManager.STOPPING_MARKER), pidFileLines(manager, "test"),
+            "a failed restart must not leave a live starter's claim blocking later starts");
       }
     }
 

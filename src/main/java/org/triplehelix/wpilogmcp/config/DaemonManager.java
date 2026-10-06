@@ -60,9 +60,10 @@ import org.triplehelix.wpilogmcp.mcp.HttpTransport;
  * A start that took any answer for its daemon once mistook a daemon of an older version for its
  * own, so an update left the old JAR running until someone noticed; and it took any program on
  * the port for the daemon. Now {@code /health} carries the version and the process ID: a daemon
- * of another version is stopped and started again ({@value #STOPPING_MARKER} on the record's
- * third line while that happens), a program that does not answer as this server is reported as
- * holding the port, and a daemon that answers on the port with no record is recorded.
+ * of another version is stopped and started again (the starter claims its record under the
+ * same lock as the version check and holds that claim through stopping and spawning), a program
+ * that does not answer as this server is reported as holding the port, and a daemon that answers
+ * on the port with no record is recorded.
  *
  * <p>A daemon is stopped by {@code POST /stop} with a token the start that spawned it wrote to a
  * file beside the PID file that only the user can read ({@code {name}.token}) and gave the
@@ -78,7 +79,7 @@ public class DaemonManager {
   static final String STARTING_MARKER = "starting";
   /** Third line of a PID file whose daemon was spawned and has not answered yet. */
   static final String BOOTING_MARKER = "booting";
-  /** Third line of a PID file whose daemon is being stopped, for a restart or a {@code stop}. */
+  /** Third line for {@code stop}, or a failed restart whose old daemon did not exit. */
   static final String STOPPING_MARKER = "stopping";
   /** The environment variable that gives a spawned daemon its stop token. */
   public static final String STOP_TOKEN_ENV = "WPILOG_STOP_TOKEN";
@@ -455,55 +456,47 @@ public class DaemonManager {
    *     another program holds the port
    */
   public boolean spawnDaemon(String name, int port, Path configPath) {
-    // Once, and once more after stopping a daemon of another version
-    for (int attempt = 1; attempt <= 2; attempt++) {
-      // One start decides at a time: a daemon is running, another start has the file, or this
-      // start claims it. Of concurrent starts, only the one that claims the file spawns; the
-      // others wait for its daemon.
-      record Decision(Optional<RunningDaemon> running, boolean claimed) {}
-      Decision decision;
-      try {
-        decision = locked(name, () -> {
-          var running = findRunning(name);
-          return new Decision(running, running.isEmpty() && claimPidFile(name, port));
-        });
-      } catch (java.io.UncheckedIOException e) {
-        logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());
+    // Choosing to restart and reserving that restart are one decision. The starter's live
+    // PID keeps the claim valid even after the old daemon exits, until its replacement boots.
+    record Decision(Optional<RunningDaemon> running, boolean claimed) {}
+    Decision decision;
+    try {
+      decision = locked(name, () -> {
+        var running = findRunning(name);
+        if (running.isPresent() && !ownVersion.equals(running.get().version())) {
+          writePidFile(name, ProcessHandle.current().pid(), port, STARTING_MARKER);
+          return new Decision(running, true);
+        }
+        return new Decision(running, running.isEmpty() && claimPidFile(name, port));
+      });
+    } catch (java.io.UncheckedIOException e) {
+      logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());
+      return false;
+    }
+    if (decision.running().isPresent()) {
+      var running = decision.running().get();
+      if (ownVersion.equals(running.version())) {
+        return reportRunning(name, port, running);
+      }
+      logger.info("Server '{}' is running version {} (PID {}); this is version {}: "
+          + "restarting it", name, versionName(running.version()), running.pid(), ownVersion);
+      if (!endDaemon(name, running, true)) {
+        logger.error("Server '{}' (PID {}) could not be stopped for the restart", name,
+            running.pid());
         return false;
       }
-      if (decision.running().isPresent()) {
-        var running = decision.running().get();
-        if (ownVersion.equals(running.version())) {
-          return reportRunning(name, port, running);
-        }
-        if (attempt == 2) {
-          logger.error("Server '{}' is running version {} (PID {}) again after the restart; "
-              + "something else starts that version", name, versionName(running.version()),
-              running.pid());
-          return false;
-        }
-        logger.info("Server '{}' is running version {} (PID {}); this is version {}: "
-            + "restarting it", name, versionName(running.version()), running.pid(), ownVersion);
-        if (!endDaemon(name, running)) {
-          logger.error("Server '{}' (PID {}) could not be stopped for the restart", name,
-              running.pid());
-          return false;
-        }
-        continue;
-      }
-      if (!decision.claimed()) {
-        // The other start may be restarting a daemon of another version, which takes a stop
-        // and a boot: wait for as long as a booting record is given
-        logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);
-        if (!waitForHealth(port, null, startTimeout.multipliedBy(BOOTING_GRACE_TIMEOUTS))) {
-          return false;
-        }
-        logger.info("Server '{}' is running on port {} (started by the other start)", name, port);
-        return true;
-      }
-      return launchClaimed(name, port, configPath);
     }
-    return false;
+    if (!decision.claimed()) {
+      // The other start may be restarting a daemon of another version, which takes a stop
+      // and a boot: wait for as long as a booting record is given.
+      logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);
+      if (!waitForHealth(port, null, startTimeout.multipliedBy(BOOTING_GRACE_TIMEOUTS))) {
+        return false;
+      }
+      logger.info("Server '{}' is running on port {} (started by the other start)", name, port);
+      return true;
+    }
+    return launchClaimed(name, port, configPath);
   }
 
   private static String versionName(String version) {
@@ -631,7 +624,7 @@ public class DaemonManager {
       return true;
     }
     var daemon = running.get();
-    if (endDaemon(name, daemon)) {
+    if (endDaemon(name, daemon, false)) {
       logger.info("Server '{}' stopped (PID {})", name, daemon.pid());
       return true;
     }
@@ -644,12 +637,17 @@ public class DaemonManager {
    * (by {@code POST /stop} with the token, or, for a daemon too old to have that endpoint, as
    * a process), waits for the process to exit, ends it without asking if it has not after the
    * start timeout (the transport finishes its calls within half that), and removes its record
-   * and token under the lock. The lock is not held while waiting.
+   * and token under the lock. A restart already holds its starter's claim and keeps it through
+   * the stop, so neither another restart decision nor the old PID dying can admit a second
+   * starter. A failed stop restores the old daemon's stopping record for later inspection.
+   * The lock is not held while waiting.
    */
-  private boolean endDaemon(String name, RunningDaemon daemon) {
+  private boolean endDaemon(String name, RunningDaemon daemon, boolean restarting) {
     try {
       locked(name, () -> {
-        writePidFile(name, daemon.pid(), daemon.port(), STOPPING_MARKER);
+        if (!restarting) {
+          writePidFile(name, daemon.pid(), daemon.port(), STOPPING_MARKER);
+        }
         var token = readToken(name);
         if (token != null && requestStop(daemon.port(), token)) {
           logger.debug("Server '{}' (PID {}) accepted the stop request", name, daemon.pid());
@@ -669,12 +667,21 @@ public class DaemonManager {
           startTimeout.toMillis());
       processes.destroyForcibly(daemon.pid());
       if (!waitForExit(daemon.pid(), Duration.ofSeconds(2))) {
+        if (restarting) {
+          try {
+            recordDaemon(name, daemon.pid(), daemon.port(), STOPPING_MARKER);
+          } catch (IOException e) {
+            logger.error("Failed to restore the stopping record for '{}': {}", name, e.toString());
+          }
+        }
         return false;
       }
     }
     locked(name, () -> {
-      // Only this daemon's record: a start may have recorded a new one meanwhile
-      if (recordedPid(name) == daemon.pid()) deletePidFile(name);
+      // A restart keeps its claim; a plain stop removes only the daemon it stopped.
+      if (!restarting && recordedPid(name) == daemon.pid()) {
+        deletePidFile(name);
+      }
       deleteToken(name);
       return null;
     });
