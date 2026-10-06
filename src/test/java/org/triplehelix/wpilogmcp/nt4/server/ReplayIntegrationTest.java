@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.nt4.server;
 import static org.junit.jupiter.api.Assertions.*;
 import com.google.gson.JsonObject;
 import edu.wpi.first.util.datalog.DataLogReader;
+import edu.wpi.first.util.datalog.DataLogAccess;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -48,14 +49,16 @@ class ReplayIntegrationTest {
     var declared = new LinkedHashMap<String, String>();
     var entries = new HashMap<Integer, String[]>();
     // This oracle reads the WPILOG's raw payloads, independently of the replay/type conversion.
-    var records = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(path))).iterator();
-    while (records.hasNext()) {
-      edu.wpi.first.util.datalog.DataLogRecord record;
-      try { record = records.next(); }
-      catch (IllegalArgumentException e) {
+    var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(path)));
+    int offset = DataLogAccess.firstRecordOffset(path);
+    while (offset < DataLogAccess.size(reader)) {
+      int next = DataLogAccess.recordEnd(reader, offset);
+      if (next < 0) {
         assertTrue(path.getFileName().toString().contains("truncated"), "Unexpected fixture damage");
         break;
       }
+      var record = DataLogAccess.getRecord(reader, offset);
+      offset = next;
       if (record.isStart()) {
         var s = record.getStartData(); entries.put(s.entry, new String[] {s.name, s.type}); declared.put(s.name, s.type);
       } else if (record.isFinish()) entries.remove(record.getFinishEntry());

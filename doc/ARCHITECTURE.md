@@ -158,6 +158,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
+| `capture` | Pure-Java WPILOG output, session clock continuity, ordered recording, and explicit topic policy/cost accounting |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
 
@@ -194,6 +195,20 @@ subscriptions, batches at the client's minimum requested period, and honors `all
 and exact/prefix matching. Downstream publications are private acknowledgement sinks: values never
 enter the upstream table, and property replies state the unchanged properties. Full gateway
 integration, metadata topics, and real dashboard interoperability remain the later gateway milestone.
+
+## Capture writer
+
+The capture writer is the NT4 client's listener, so announcement, value, and finish records have
+one writer and one order. Its pure-Java WPILOG output follows WPILib's file specification because
+the native DataLog writer cannot run in the Java-only install. The independent fixture writer,
+the differential reader, and wpiutil's reader check its bytes. Storage and live-index observers
+receive complete writes and their byte offsets; context providers can join this loop later.
+This first capture step is not wired into startup yet.
+
+Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
+clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds
+starts a new session. Flushes and five-minute topic cost reports run on the same injectable event
+loop. Exclusion and thinning are explicit policy, and thinned entries record their period.
 
 ## Life of a Tool Call
 

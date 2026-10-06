@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.nt4.server;
 
 import com.google.gson.JsonObject;
 import edu.wpi.first.util.datalog.DataLogReader;
+import edu.wpi.first.util.datalog.DataLogAccess;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -37,11 +38,12 @@ public final class FixtureReplayer {
   public FixtureReplayer(Path file) throws IOException {
     var entries = new HashMap<Integer, Topic>();
     var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file)));
-    var records = reader.iterator();
-    while (records.hasNext()) {
-      DataLogRecord record;
-      try { record = records.next(); }
-      catch (IllegalArgumentException e) { break; } // Fixture with an incomplete final record.
+    int offset = DataLogAccess.firstRecordOffset(file);
+    while (offset < DataLogAccess.size(reader)) {
+      int next = DataLogAccess.recordEnd(reader, offset);
+      if (next < 0) break; // Fixture with an incomplete final record.
+      var record = DataLogAccess.getRecord(reader, offset);
+      offset = next;
       if (record.isStart()) {
         var start = record.getStartData();
         var topic = new Topic(start.name, NtType.fromWpilog(start.type).nt4());

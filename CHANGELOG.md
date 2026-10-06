@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Capture foundations now include a pure-Java WPILOG writer, clock-based session resumption, explicit exclusion/thinning, and topic cost accounting. This first step is tested through the NT4 client but is not wired into server startup yet.
 - The pit server now has an NT4 wire layer, JDK WebSocket client, and loopback gateway core exercised on every generated fixture log. Previously no live-protocol foundation existed; this first milestone adds no user-visible behavior and changes no startup, configuration, tools, capture, or extension behavior.
 - Installers accept `--tag` or `--pre-release`, optionally bootstrap the matching VS Code extension with `--with-extension`, and prompt for log directories, team, and extension installation in a terminal. Explicit `--refresh` replaces an old layout with a fresh install, preserving settings and a complete recovery backup after stopping its daemons; ordinary updates remain non-disruptive.
 - Local MCP sessions can lease directories and an in-memory TBA key through loopback-only registration endpoints. Every client sees the live directories with origin/team metadata; session end revokes access, including cached reads. The bridge accepts project/flag directory leases while taking shared-server configuration only from the home or explicit file, preventing the first project from choosing the daemon’s settings.

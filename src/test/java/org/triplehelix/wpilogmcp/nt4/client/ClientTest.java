@@ -229,4 +229,23 @@ class ClientTest {
     }
     loop.drain();
   }
+
+  @Test void wrongValueFamilyIsCountedWithoutLosingTheNextFrameOrConnection() throws Exception {
+    var loop = new ManualScheduler(); var values = new ArrayList<ValueFrame>(); var rejected = new AtomicInteger();
+    try (var peer = new ScriptedPeer(Nt4Client.V40); var client = client(peer.getPort(), loop, new Nt4Client.Listener() {
+      @Override public void invalidValue(Announce topic, int code) {
+        assertEquals("/x", topic.name()); assertEquals(2, code); rejected.incrementAndGet();
+      }
+      @Override public void value(Announce topic, ValueFrame frame, long receivedAt) { values.add(frame); }
+    })) {
+      client.start(); loop.until(() -> client.timeEstimate().isPresent());
+      peer.text("[{\"method\":\"announce\",\"params\":{\"name\":\"/x\",\"id\":1,\"type\":\"int\",\"properties\":{}}}]");
+      loop.until(() -> client.topics().size() == 1);
+      peer.binary(hex("94010102c39401020207")); // int code with boolean, then integer 7 at 2 us
+      loop.until(() -> client.invalidValueCount() > 0 || !client.isConnected());
+      assertTrue(client.isConnected()); assertEquals(1, rejected.get()); assertEquals(1, client.invalidValueCount());
+      assertEquals(List.of(new ValueFrame(1, 2, 2, 7L)), values);
+    }
+    loop.drain();
+  }
 }

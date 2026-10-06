@@ -82,7 +82,7 @@ What follows is for the developers. It follows the project's rules in `CLAUDE.md
 
 These are settled; the sections after them follow from them.
 
-1. **Captures are `.wpilog` files**, written through WPILib's DataLog writer. Every existing tool, the listing, the differential reader, and the reload path work on them without new code. A capture is a log like any other.
+1. **Captures are `.wpilog` files**, written by a pure-Java writer from WPILib's file format specification (§17). Every existing tool, the listing, the differential reader, and the reload path work on them without new code. A capture is a log like any other.
 2. **Every change is captured.** The subscription asks for all value changes (`all: true`), not the latest per period. The capture is meant to stand in for a log, and a sampled stream cannot. The cost is measured and reported per topic, and a topic can be excluded or thinned by configuration, never silently.
 3. **The NT4 client and server are pure Java**, written from the protocol document ([`ntcore/doc/networktables4.adoc`](https://github.com/wpilibsuite/allwpilib/blob/main/ntcore/doc/networktables4.adoc) in allwpilib). The JDK's `java.net.http.WebSocket` serves the client; Java-WebSocket supplies RFC 6455 handshake and framing on a separate socket for the gateway. The NT4 MessagePack subset is written from its specification, independently of the existing disk-cache MessagePack dependency. No native libraries enter the standalone install. Milestone 1's choices and the protocol's precedence are recorded in §17.
 4. **The gateway is read-only.** It re-publishes the robot's topics and accepts subscriptions. A `publish` from a gateway client is answered as the protocol requires but never forwarded to the robot, and the server log says so once per client.
@@ -157,7 +157,7 @@ The type string in the `announce` is authoritative; the code in a value frame on
 
 **Entry names.** A topic is written under its own name with the `NT:` prefix DataLogManager uses for the topics it logs (`NT:/SmartDashboard/...`), so a capture of a robot running DataLogManager looks like that robot's own log to the signal resolver. Entry metadata is `{"source":"nt4","robot":"<address>"}`. Robots running AdvantageKit publish under `/AdvantageKit/...`, while their logs use `/RealOutputs/...` and similar; the resolver's conventions for captures of such robots are added only once verified against real captures, per the no-guessing rule, and until then those entries are candidates like any other.
 
-**Records.** Each value frame becomes one data record with the server timestamp, written through the DataLog writer's `append` for its type. An `announce` for a new topic starts an entry; `unannounce` finishes it. The writer flushes every 250 ms and on session end, so a reader of the growing file sees whole records at most a quarter second behind.
+**Records.** Each value frame becomes one data record with the server timestamp, written by the pure-Java WPILOG writer. An `announce` for a new topic starts an entry; `unannounce` finishes it. The writer flushes every 250 ms and on session end, so a reader of the growing file sees whole records at most a quarter second behind. A wrong MessagePack family is dropped and counted, without disconnecting or losing other frames in its packet.
 
 **Cost accounting.** Per topic: records, bytes, and the rate over the last minute. Reported by `list_sessions` and in the server log every five minutes while a session is open. Configuration may `exclude` topics by prefix or `thin` them to a period; a thinned topic's entry metadata records the period, so a result on it can say so.
 
@@ -412,6 +412,12 @@ Each leaves the project working and tested on its own.
 - **Windows**: the capture file is open for writing while the server reads it; the tests cover that on Windows, where a mapped file cannot be replaced but can be appended to and read.
 
 ### 17. Open questions
+
+Milestone 2 decisions:
+
+- **Pure-Java capture writer:** WPILib's DataLog writer uses JNI, while this install deliberately has no native library. `capture/WpilogOutput` therefore writes ordinary WPILOG 1.0 from the [published format](https://github.com/wpilibsuite/allwpilib/blob/main/datalog/doc/datalog.adoc). The fixture writer remains independent. Byte examples, wpiutil's pure-Java DataLogReader, and the differential reader check the output.
+- **Session clock:** the initial time-sync reply decides continuity, since a retained topic value may predate the connection by minutes. A nondecreasing server clock within five seconds of the elapsed client clock resumes; a backward clock or a larger discrepancy begins a new session. The five-second tolerance permits connection/RTT jitter. A reboot wholly inside the tolerance without an observable clock rollback cannot be distinguished by timestamps alone. This is continuity evidence, not device identity.
+- **Capture accounting and policy:** per-topic bytes count complete data records, excluding declaration/finish overhead. Rates use sixty one-second receipt-time buckets and a fixed sixty-second denominator. Exclusion wins over thinning; the longest matching thinning prefix wins. A thinned entry records `period_sec` in metadata. Reports remain server-log-only until the live-tools milestone.
 
 Milestone 1 decisions:
 

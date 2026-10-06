@@ -32,6 +32,13 @@ public record ValueFrame(int topicId, long timestampUs, int typeCode, Object val
 
   /** Invalid shapes/families terminate the connection; unsupported IDs/codes are ignored. */
   public static List<ValueFrame> decode(byte[] bytes) {
+    return decode(bytes, (id, code) -> {
+      throw new IllegalArgumentException("Invalid NT4 value for type code " + code);
+    });
+  }
+
+  /** A consumer can count and drop a wrong value family while retaining the rest of a packet. */
+  public static List<ValueFrame> decode(byte[] bytes, java.util.function.BiConsumer<Integer, Integer> rejected) {
     var frames = new ArrayList<ValueFrame>();
     for (var object : MessagePack.decodeStream(bytes)) {
       if (!(object instanceof List<?> a) || a.size() != 4
@@ -45,7 +52,10 @@ public record ValueFrame(int topicId, long timestampUs, int typeCode, Object val
       }
       if (id < -1 || id > Integer.MAX_VALUE || code < 0 || code > 20
           || code > 5 && code < 16) continue;
-      frames.add(new ValueFrame(id.intValue(), timestamp, code.intValue(), a.get(3)));
+      ValueFrame frame;
+      try { frame = new ValueFrame(id.intValue(), timestamp, code.intValue(), a.get(3)); }
+      catch (IllegalArgumentException e) { rejected.accept(id.intValue(), code.intValue()); continue; }
+      frames.add(frame);
     }
     return List.copyOf(frames);
   }

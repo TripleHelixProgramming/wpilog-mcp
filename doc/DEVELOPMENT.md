@@ -123,6 +123,18 @@ The stress tests also need real logs, but they are Gradle tasks of their own rat
 
 They take their settings from a server named `stresstest`. It is looked for in the file given with `-Pconfigpath=/path/to/config.yaml`, or else in the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one). With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
 
+### Capture tests
+
+`./gradlew test --tests '*.capture.*' --tests '*CaptureFidelityTest'` checks WPILOG bytes against
+hand-encoded format examples, all NT4 payload families, clock continuity and reboot detection,
+exclusion/thinning metadata, flushes, and minute-bounded cost accounting with injected clocks.
+Every generated fixture is replayed through the loopback gateway and JDK client into a capture;
+the independent reader checks every entry, payload, and timestamp, and wpiutil checks the result
+too. Replay walks complete record boundaries because wpiutil's iterator can omit a short final
+record. The client separately checks that a wrong MessagePack family is counted and dropped
+without losing the next frame or disconnecting. CI runs on `pit-server` as well as `main`, including
+the Windows job.
+
 ### The disk cache in tests
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.

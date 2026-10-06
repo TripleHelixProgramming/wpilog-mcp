@@ -50,6 +50,8 @@ public final class Nt4Client implements AutoCloseable {
     default void unannounce(Unannounce topic) {}
     default void properties(Properties update) {}
     default void value(Announce topic, ValueFrame value, long receivedAtUs) {}
+    default void invalidValue(Announce topic, int typeCode) {}
+    default void timeSync(long serverTimeUs, long receivedAtUs) {}
   }
 
   public record LatestValue(Object value, long serverTimestampUs, long receivedAtUs) {
@@ -73,6 +75,7 @@ public final class Nt4Client implements AutoCloseable {
   private volatile Attempt current;
   private long retryUs = 1_000_000;
   private int preferredIndex;
+  private volatile long invalidValues;
 
   public Nt4Client(List<URI> addresses, double periodSeconds, Listener listener) {
     this(addresses, captureSubscription(periodSeconds), listener,
@@ -103,6 +106,7 @@ public final class Nt4Client implements AutoCloseable {
   }
 
   public boolean isConnected() { return connected; }
+  public long invalidValueCount() { return invalidValues; }
   public Map<String, LatestValue> latestValues() { return Map.copyOf(latest); }
   public Map<String, Announce> topics() { return Map.copyOf(topics); }
   public Optional<TimeSync.Sample> timeEstimate() { return sync.best(loop.nowUs()); }
@@ -227,10 +231,14 @@ public final class Nt4Client implements AutoCloseable {
 
   private void binary(Attempt attempt, byte[] bytes) {
     long received = loop.nowUs();
-    for (var frame : ValueFrame.decode(bytes)) {
+    for (var frame : ValueFrame.decode(bytes, (id, code) -> {
+      invalidValues++;
+      listener.invalidValue(ids.get(id), code);
+    })) {
       if (frame.topicId() == -1) {
         if (frame.typeCode() != 2 || !(frame.value() instanceof Long sent) || !pendingSync.remove(sent)) continue;
         sync.add(sent, received, frame.timestampUs());
+        listener.timeSync(frame.timestampUs(), received);
         attempt.lastSyncUs = received;
         if (!attempt.subscribed) {
           attempt.subscribed = true;
