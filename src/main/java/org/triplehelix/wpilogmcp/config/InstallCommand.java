@@ -10,8 +10,6 @@ import java.io.File;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.URISyntaxException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -28,8 +26,9 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
 /**
  * The release scripts, Gradle and the extension all install through this verb, so their layout,
- * launcher lookup and configuration defaults cannot drift. Installing never stops a daemon or
- * deletes an older version, and the current launcher never moves backwards without --force.
+ * launcher lookup and configuration defaults cannot drift. Ordinary updates leave daemons and
+ * older JARs alone; explicit refresh retires the layout with a recovery copy. Neither downgrades
+ * the current launcher without --force.
  */
 public final class InstallCommand {
   private static final Gson JSON = new GsonBuilder().serializeNulls().disableHtmlEscaping().create();
@@ -40,7 +39,12 @@ public final class InstallCommand {
   private InstallCommand() {
   }
 
-  public record Options(Path directory, List<String> logdirs, Integer team, boolean force, boolean json) {}
+  public record Options(Path directory, List<String> logdirs, Integer team, boolean force, boolean json,
+      boolean withExtension, Path vsix, boolean refresh) {
+    public Options(Path directory, List<String> logdirs, Integer team, boolean force, boolean json) {
+      this(directory, logdirs, team, force, json, false, null, false);
+    }
+  }
 
   /** Plan every destination before the first write, so a bad link cannot leave a partial install. */
   private record Layout(Path root, Path bin, Path jars, Path jar, Path launcher, Path current,
@@ -75,7 +79,9 @@ public final class InstallCommand {
     /** A missing in-root launcher target still counts as older; an outside target never does. */
     Path current(Path path) throws IOException {
       check(path.getParent());
-      if (!Files.isSymbolicLink(path)) return check(path);
+      if (!Files.isSymbolicLink(path)) {
+        return check(path);
+      }
       try {
         check(path.getParent().resolve(Files.readSymbolicLink(path)));
         return path;
@@ -96,9 +102,23 @@ public final class InstallCommand {
   /** Null fields are included so callers can distinguish a missing launcher from a bad response. */
   public record Summary(String install_dir, String installed_version, String launcher_version_before,
       String launcher_version_after, boolean repointed, boolean config_created, String config_path,
-      String launcher_path, String path_hint) {
+      String launcher_path, String path_hint, String backup_dir) {
+    Summary(String installDir, String installedVersion, String before, String after, boolean repointed,
+        boolean configCreated, String configPath, String launcherPath, String pathHint) {
+      this(installDir, installedVersion, before, after, repointed, configCreated, configPath, launcherPath, pathHint, null);
+    }
+
+    Summary withBackup(InstallRefresh.Prepared refresh) {
+      return new Summary(install_dir, installed_version, refresh.previousVersion(), launcher_version_after,
+          repointed, config_created, config_path, launcher_path, path_hint, refresh.backup().toString());
+    }
+
     public String json() {
-      return JSON.toJson(this);
+      var result = JSON.toJsonTree(this).getAsJsonObject();
+      if (backup_dir == null) {
+        result.remove("backup_dir");
+      }
+      return JSON.toJson(result);
     }
 
     public String text() {
@@ -106,7 +126,8 @@ public final class InstallCommand {
           + (repointed ? "Current launcher: " : "Kept current launcher: ") + launcher_version_after + "\n"
           + (config_created ? "Created configuration: " : "Kept configuration: ") + config_path + "\n"
           + (path_hint == null ? "Launcher directory is already on PATH."
-              : "Add this directory to PATH: " + path_hint);
+              : "Add this directory to PATH: " + path_hint)
+          + (backup_dir == null ? "" : "\nPrevious install kept at: " + backup_dir);
     }
   }
 
@@ -116,11 +137,16 @@ public final class InstallCommand {
     Integer team = null;
     boolean force = false;
     boolean json = false;
+    boolean withExtension = false;
+    boolean refresh = false;
+    Path vsix = null;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
         case "--force" -> force = true;
         case "--json" -> json = true;
-        case "--install-dir", "--logdir", "--team" -> {
+        case "--with-extension" -> withExtension = true;
+        case "--refresh" -> refresh = true;
+        case "--install-dir", "--logdir", "--team", "--vsix" -> {
           var flag = args[i];
           if (++i == args.length || args[i].isBlank() || args[i].startsWith("--")) {
             throw new IllegalArgumentException("Missing value for " + flag);
@@ -128,6 +154,7 @@ public final class InstallCommand {
           switch (flag) {
             case "--install-dir" -> directory = Path.of(args[i]);
             case "--logdir" -> logdirs.add(args[i]);
+            case "--vsix" -> vsix = Path.of(args[i]);
             default -> {
               try {
                 team = Integer.valueOf(args[i]);
@@ -143,7 +170,13 @@ public final class InstallCommand {
         default -> throw new IllegalArgumentException("Unknown install argument: " + args[i]);
       }
     }
-    return new Options(directory, List.copyOf(logdirs), team, force, json);
+    if (withExtension && vsix == null) {
+      throw new IllegalArgumentException("--with-extension requires --vsix <file>");
+    }
+    if (!withExtension && vsix != null) {
+      throw new IllegalArgumentException("--vsix requires --with-extension");
+    }
+    return new Options(directory, List.copyOf(logdirs), team, force, json, withExtension, vsix, refresh);
   }
 
   public static Summary install(Options options) throws IOException {
@@ -168,17 +201,24 @@ public final class InstallCommand {
     var layout = Layout.at(root, version, windows);
     var io = new InstallFiles(root);
     io.preflight(layout);
-    try (var channel = FileChannel.open(io.check(layout.lock()),
-        StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
-      try (var lock = channel.tryLock()) {
-        if (lock == null) {
-          throw new IOException("Another installation is in progress in " + root);
-        }
-        return writeLayout(source, version, options, windows, searchPath, layout, io);
-      } catch (OverlappingFileLockException e) {
-        throw new IOException("Another installation is in progress in " + root, e);
-      }
+    if (options.withExtension() && (options.vsix() == null || !Files.isRegularFile(options.vsix()))) {
+      throw new IOException("VSIX file does not exist: " + options.vsix());
     }
+    var refresh = options.refresh() ? InstallRefresh.prepare(root, source, version, options.force(), windows) : null;
+    Path backup = refresh == null ? null : refresh.backup();
+    Summary summary;
+    try (var guard = InstallGuard.acquire(root, io.check(layout.lock()))) {
+      summary = writeLayout(source, version, options, windows, searchPath, layout, io);
+      if (options.withExtension()) {
+        CodeInstaller.install(options.vsix());
+      }
+    } catch (IOException e) {
+      if (backup != null) {
+        throw new IOException("Previous install kept at " + backup + "; fresh install failed: " + e.getMessage(), e);
+      }
+      throw e;
+    }
+    return refresh == null ? summary : summary.withBackup(refresh);
   }
 
   private static Summary writeLayout(Path source, String version, Options options, boolean windows,

@@ -738,7 +738,7 @@ public class Main {
     logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
     logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
     logger().info("  import <path>...   Import logs into the configured store, using its daemon when running");
-    logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--json]");
+    logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--refresh] [--with-extension --vsix <file>] [--json]");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");

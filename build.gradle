@@ -345,32 +345,18 @@ tasks.register('installExtension', Exec) {
     def extDir = "${projectDir}/vscode-extension"
     def extVersion = project.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
-
-    // Find VS Code CLI — prefer WPILib VS Code, fall back to system 'code'
-    def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
-    def codeBin = 'code'
-    def wpiYear = java.time.Year.now().value
-    def wpiCodePaths = isWindows ? [
-        "C:/Users/Public/wpilib/${wpiYear}/vscode/bin/code.cmd",
-        "${System.getProperty('user.home')}/wpilib/${wpiYear}/vscode/bin/code.cmd",
-    ] : [
-        "${System.getProperty('user.home')}/wpilib/${wpiYear}/vscode/bin/code",
-        "/usr/local/bin/code",
-    ]
-    for (def p : wpiCodePaths) {
-        if (new File(p).exists()) { codeBin = p; break }
-    }
+    def isWindows = System.getProperty('os.name').toLowerCase().startsWith('windows')
 
     workingDir extDir
-    if (isWindows) {
-        commandLine 'cmd', '/c', "\"${codeBin}\" --install-extension ${vsixFile} --force"
-    } else {
-        commandLine 'bash', '-c', "\"${codeBin}\" --install-extension '${vsixFile}' --force"
-    }
 
     doFirst {
         println "Installing WPILog Analyzer VS Code extension v${extVersion}..."
+        def javaExe = new File(System.getProperty('java.home'), "bin/java${isWindows ? '.exe' : ''}")
+        commandLine javaExe.absolutePath, '-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath,
+            'install', '--force', '--with-extension', '--vsix', file("${extDir}/${vsixFile}").absolutePath,
+            '--install-dir', (findProperty('installDir') ?: new File(System.getProperty('user.home'), '.wpilog-mcp')).toString()
     }
+
     doLast {
         println "Extension installed. Restart VS Code to activate."
     }

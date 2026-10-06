@@ -29,6 +29,22 @@ class InstallCommandTest {
   @TempDir Path temp;
   private static final boolean WINDOWS = System.getProperty("os.name").startsWith("Windows");
 
+  @Test
+  void extensionBootstrapRequiresAnExplicitVsix() {
+    var error = assertThrows(IllegalArgumentException.class,
+        () -> InstallCommand.parse(new String[] {"install", "--with-extension"}));
+    assertTrue(error.getMessage().contains("--with-extension requires --vsix"), error.getMessage());
+    assertThrows(IllegalArgumentException.class, () -> InstallCommand.parse(new String[] {"install", "--vsix", "alone.vsix"}));
+    assertDoesNotThrow(() -> InstallCommand.parse(new String[] {"install", "--with-extension", "--vsix",
+        temp.resolve("matching extension.vsix").toString()}));
+  }
+
+  @Test
+  void refreshIsAnExplicitInstallOperation() {
+    assertDoesNotThrow(() -> InstallCommand.parse(new String[] {"install", "--refresh", "--install-dir",
+        temp.resolve("install").toString()}));
+  }
+
   private InstallCommand.Options options(Path root, boolean force) {
     return new InstallCommand.Options(root, List.of(), null, force, false);
   }

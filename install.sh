@@ -5,14 +5,80 @@ set -e
 
 REPO="TripleHelixProgramming/wpilog-mcp"
 INSTALL_DIR="$HOME/.wpilog-mcp"
+tag=""
+pre_release=false
+extension=""
+interactive=auto
+has_logdir=false
+has_team=false
+advanced=false
 
-echo ""
-echo "========================================"
-echo "  wpilog-mcp Installer"
-echo "========================================"
-echo ""
+# Rotate forwarded arguments to the end; never split or eval a user's path.
+remaining=$#
+while [ "$remaining" -gt 0 ]; do
+    flag=$1
+    shift
+    remaining=$((remaining - 1))
+    case "$flag" in
+        --tag|--install-dir|--logdir|--team)
+            if [ "$remaining" -eq 0 ] || [ -z "$1" ]; then
+                echo "ERROR: Missing value for $flag" >&2; exit 2
+            fi
+            value=$1; shift; remaining=$((remaining - 1))
+            case "$flag" in
+                --tag) tag=$value ;;
+                --install-dir) INSTALL_DIR=$value; advanced=true ;;
+                --logdir) set -- "$@" "$flag" "$value"; has_logdir=true; advanced=true ;;
+                --team) set -- "$@" "$flag" "$value"; has_team=true; advanced=true ;;
+            esac ;;
+        --pre-release) pre_release=true ;;
+        --with-extension) extension=yes; advanced=true ;;
+        --without-extension) extension=no ;;
+        --interactive) interactive=yes ;;
+        --non-interactive) interactive=no ;;
+        --refresh|--force) set -- "$@" "$flag"; advanced=true ;;
+        *) echo "ERROR: Unknown installer argument: $flag" >&2; exit 2 ;;
+    esac
+done
+if [ -n "$tag" ] && [ "$pre_release" = true ]; then
+    echo "ERROR: Choose --tag or --pre-release, not both." >&2; exit 2
+fi
+case "$tag" in *[!0-9A-Za-z.-]*) echo "ERROR: Invalid release tag: $tag" >&2; exit 2 ;; esac
 
-# --- Find Java ---
+# Reading /dev/tty also works with curl | sh, whose stdin contains this script.
+if [ "$interactive" = auto ]; then
+    interactive=no
+    if [ -t 1 ] && (exec 3</dev/tty) 2>/dev/null; then interactive=yes; fi
+fi
+if [ "$interactive" = yes ]; then
+    if [ -t 1 ] && (exec 3</dev/tty) 2>/dev/null; then exec 3</dev/tty; else exec 3<&0; fi
+    if [ -f "$INSTALL_DIR/servers.yaml" ] || [ -f "$INSTALL_DIR/servers.json" ]; then
+        echo "Keeping your existing server settings, including during --refresh."
+    else
+        if [ "$has_logdir" = false ]; then
+            printf 'Log directory [%s/riologs]: ' "$HOME"
+            IFS= read -r answer <&3 || answer=""
+            set -- "$@" --logdir "${answer:-$HOME/riologs}"
+            while :; do
+                printf 'Another log directory (Enter to finish): '
+                IFS= read -r answer <&3 || answer=""
+                [ -n "$answer" ] || break
+                set -- "$@" --logdir "$answer"
+            done
+        fi
+        if [ "$has_team" = false ]; then
+            printf 'Team number (Enter to leave unset): '
+            IFS= read -r answer <&3 || answer=""
+            if [ -n "$answer" ]; then set -- "$@" --team "$answer"; fi
+        fi
+    fi
+    if [ -z "$extension" ]; then
+        printf 'Install the matching VS Code extension? [Y/n]: '
+        IFS= read -r answer <&3 || answer=""
+        case "$answer" in n|N|no|No) extension=no ;; *) extension=yes; advanced=true ;; esac
+    fi
+    exec 3<&-
+fi
 
 find_java() {
     # 1. WPILib JDK, newest four-digit year; globbing preserves spaces in the home folder.
@@ -54,47 +120,48 @@ JAVA_VERSION=$("$JAVA_EXEC" -version 2>&1 | head -1)
 echo "Java version: $JAVA_VERSION"
 echo ""
 
-# --- Download latest release ---
-
-echo "Fetching latest release from GitHub..."
-RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" -H "User-Agent: wpilog-mcp-installer")
-VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
-JAR_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url".*-all\.jar"' | sed 's/.*"\(https[^"]*\)".*/\1/')
-
-if [ -z "$JAR_URL" ]; then
-    echo "ERROR: No JAR asset found in latest release" >&2
-    exit 1
+# A tag selects exactly one release; the first public release includes prereleases.
+api="https://api.github.com/repos/$REPO/releases/latest"
+if [ -n "$tag" ]; then api="https://api.github.com/repos/$REPO/releases/tags/$tag"; fi
+if [ "$pre_release" = true ]; then api="https://api.github.com/repos/$REPO/releases?per_page=1"; fi
+RELEASE_JSON=$(curl -fsSL "$api" -H "User-Agent: wpilog-mcp-installer")
+VERSION=$(printf '%s\n' "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"v\([^" ]*\)".*/\1/')
+JAR_URL=$(printf '%s\n' "$RELEASE_JSON" | grep '"browser_download_url".*-all\.jar"' | head -1 | sed 's/.*"\(https[^" ]*\)".*/\1/')
+VSIX_URL=$(printf '%s\n' "$RELEASE_JSON" | grep '"browser_download_url".*\.vsix"' | head -1 | sed 's/.*"\(https[^" ]*\)".*/\1/')
+case "$VERSION" in ""|*[!0-9A-Za-z.-]*) echo "ERROR: Release tag is not a version: $VERSION" >&2; exit 1 ;; esac
+if [ -z "$JAR_URL" ]; then echo "ERROR: No JAR asset found in release $VERSION" >&2; exit 1; fi
+if [ "$extension" = yes ] && [ -z "$VSIX_URL" ]; then
+    echo "ERROR: No VSIX asset found in release $VERSION" >&2; exit 1
 fi
+echo "Installing release $VERSION"
 
-# The version names files below, so it must look like one
-case "$VERSION" in
-    ""|*[!0-9A-Za-z.-]*)
-        echo "ERROR: The latest release's tag is not a version: $VERSION" >&2
-        exit 1
-        ;;
-esac
-
-echo "Latest version: $VERSION"
-echo ""
-
-# The JAR owns the install layout and prints the PATH hint. Never download over an installed JAR.
-TEMP_JAR=$(mktemp "${TMPDIR:-/tmp}/wpilog-mcp.XXXXXX")
-trap 'rm -f "$TEMP_JAR"' EXIT HUP INT TERM
+# One scratch directory owns every download, including a completely fetched fallback script.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/wpilog-install.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+TEMP_JAR="$scratch/server.jar"
 curl -fsSL -o "$TEMP_JAR" "$JAR_URL"
-if "$JAVA_EXEC" -jar "$TEMP_JAR" install --install-dir "$INSTALL_DIR"; then
+if [ "$extension" = yes ]; then
+    curl -fsSL -o "$scratch/extension.vsix" "$VSIX_URL"
+    set -- "$@" --with-extension --vsix "$scratch/extension.vsix"
+fi
+if "$JAVA_EXEC" -jar "$TEMP_JAR" install --install-dir "$INSTALL_DIR" "$@" 2>"$scratch/error"; then
+    cat "$scratch/error" >&2
     echo "Install path: release $VERSION install command."
 else
     install_status=$?
-    # A current tagged script may delegate too. Do not recurse if its JAR cannot install.
+    cat "$scratch/error" >&2
+    # An actual install error must not trigger a second install or hide a failed refresh.
+    if ! grep -q 'Unknown option' "$scratch/error"; then exit "$install_status"; fi
     if [ "$WPILOG_INSTALL_FALLBACK" = "1" ]; then
         echo "ERROR: Release installer fallback already attempted (exit $install_status)." >&2
         exit "$install_status"
     fi
+    if [ "$advanced" = true ]; then
+        echo "ERROR: Release $VERSION predates the install command and cannot honor these options. Choose a newer --tag." >&2
+        exit "$install_status"
+    fi
     INSTALLER_URL="https://raw.githubusercontent.com/$REPO/v$VERSION/install.sh"
     echo "Install path: release $VERSION predates the install command; using $INSTALLER_URL."
-    TEMP_INSTALLER=$(mktemp "${TMPDIR:-/tmp}/wpilog-mcp-installer.XXXXXX")
-    trap 'rm -f "$TEMP_JAR" "$TEMP_INSTALLER"' EXIT HUP INT TERM
-    # Fetch completely before handing the script to sh, so a failed download cannot run a fragment.
-    curl -fsSL -o "$TEMP_INSTALLER" "$INSTALLER_URL"
-    WPILOG_INSTALL_FALLBACK=1 sh < "$TEMP_INSTALLER"
+    curl -fsSL -o "$scratch/installer.sh" "$INSTALLER_URL"
+    WPILOG_INSTALL_FALLBACK=1 sh < "$scratch/installer.sh"
 fi

@@ -462,12 +462,14 @@ public class DaemonManager {
     Decision decision;
     try {
       decision = locked(name, () -> {
-        var running = findRunning(name);
-        if (running.isPresent() && !ownVersion.equals(running.get().version())) {
-          writePidFile(name, ProcessHandle.current().pid(), port, STARTING_MARKER);
-          return new Decision(running, true);
+        try (var refresh = InstallGuard.acquire(runDir, runDir.resolve(".install-refresh.guard"))) {
+          var running = findRunning(name);
+          if (running.isPresent() && !ownVersion.equals(running.get().version())) {
+            writePidFile(name, ProcessHandle.current().pid(), port, STARTING_MARKER);
+            return new Decision(running, true);
+          }
+          return new Decision(running, running.isEmpty() && claimPidFile(name, port));
         }
-        return new Decision(running, running.isEmpty() && claimPidFile(name, port));
       });
     } catch (java.io.UncheckedIOException e) {
       logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());

@@ -1,17 +1,67 @@
 # wpilog-mcp installer for Windows
 # Usage: irm https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/main/install.ps1 | iex
-
 $ErrorActionPreference = "Stop"
 $repo = "TripleHelixProgramming/wpilog-mcp"
 $installDir = Join-Path $env:USERPROFILE ".wpilog-mcp"
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  wpilog-mcp Installer" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-# --- Find Java ---
+$tag = $null
+$preRelease = $false
+$extension = $null
+$interactive = -not [Console]::IsInputRedirected
+$hasLogdir = $false
+$hasTeam = $false
+$advanced = $false
+$installArgs = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+    $flag = $args[$i]
+    switch ($flag) {
+        { $_ -in '--tag', '--install-dir', '--logdir', '--team' } {
+            $i++
+            if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace($args[$i])) { throw "Missing value for $flag" }
+            $value = $args[$i]
+            switch ($flag) {
+                '--tag' { $tag = $value }
+                '--install-dir' { $installDir = $value; $advanced = $true }
+                '--logdir' { $installArgs += @($flag, $value); $hasLogdir = $true; $advanced = $true }
+                '--team' { $installArgs += @($flag, $value); $hasTeam = $true; $advanced = $true }
+            }
+        }
+        '--pre-release' { $preRelease = $true }
+        '--with-extension' { $extension = $true; $advanced = $true }
+        '--without-extension' { $extension = $false }
+        '--interactive' { $interactive = $true }
+        '--non-interactive' { $interactive = $false }
+        { $_ -in '--refresh', '--force' } { $installArgs += $flag; $advanced = $true }
+        default { throw "Unknown installer argument: $flag" }
+    }
+}
+if ($tag -and $preRelease) { throw 'Choose --tag or --pre-release, not both.' }
+if ($tag -and $tag -notmatch '^[0-9A-Za-z.-]+$') { throw "Invalid release tag: $tag" }
+if ($interactive) {
+    if ((Test-Path (Join-Path $installDir 'servers.yaml')) -or (Test-Path (Join-Path $installDir 'servers.json'))) {
+        Write-Host 'Keeping your existing server settings, including during --refresh.'
+    } else {
+        if (-not $hasLogdir) {
+            $defaultLogdir = Join-Path $env:USERPROFILE 'riologs'
+            $answer = Read-Host "Log directory [$defaultLogdir]"
+            if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $defaultLogdir }
+            $installArgs += @('--logdir', $answer)
+            while ($true) {
+                $answer = Read-Host 'Another log directory (Enter to finish)'
+                if ([string]::IsNullOrWhiteSpace($answer)) { break }
+                $installArgs += @('--logdir', $answer)
+            }
+        }
+        if (-not $hasTeam) {
+            $answer = Read-Host 'Team number (Enter to leave unset)'
+            if (-not [string]::IsNullOrWhiteSpace($answer)) { $installArgs += @('--team', $answer) }
+        }
+    }
+    if ($null -eq $extension) {
+        $answer = Read-Host 'Install the matching VS Code extension? [Y/n]'
+        $extension = $answer -notmatch '^(n|no)$'
+        if ($extension) { $advanced = $true }
+    }
+}
 
 function Find-Java {
     # 1. WPILib JDK (scan for latest year)
@@ -61,64 +111,59 @@ $ErrorActionPreference = "Stop"
 Write-Host "Java version: $versionOutput"
 Write-Host ""
 
-# --- Download latest release ---
-
-# GitHub needs TLS 1.2, which Windows PowerShell 5.1 may not offer by default
+# GitHub needs TLS 1.2, which Windows PowerShell 5.1 may not offer by default.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-
-Write-Host "Fetching latest release from GitHub..." -ForegroundColor Cyan
-$releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "wpilog-mcp-installer" }
+$api = "https://api.github.com/repos/$repo/releases/latest"
+if ($tag) { $api = "https://api.github.com/repos/$repo/releases/tags/$tag" }
+if ($preRelease) { $api = "https://api.github.com/repos/$repo/releases?per_page=1" }
+$releases = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'wpilog-mcp-installer' }
+$releaseInfo = @($releases)[0]
 $version = $releaseInfo.tag_name -replace '^v', ''
-$jarAsset = $releaseInfo.assets | Where-Object { $_.name -like "*-all.jar" } | Select-Object -First 1
+if ($version -notmatch '^[0-9A-Za-z.-]+$') { throw "Release tag is not a version: $($releaseInfo.tag_name)" }
+$jarAsset = $releaseInfo.assets | Where-Object { $_.name -like '*-all.jar' } | Select-Object -First 1
+$vsixAsset = $releaseInfo.assets | Where-Object { $_.name -like '*.vsix' } | Select-Object -First 1
+if (-not $jarAsset) { throw "No JAR asset found in release $version" }
+if ($extension -and -not $vsixAsset) { throw "No VSIX asset found in release $version" }
+Write-Host "Installing release $version"
 
-if (-not $jarAsset) {
-    Write-Host "ERROR: No JAR asset found in release $($releaseInfo.tag_name)" -ForegroundColor Red
-    exit 1
-}
-
-# The version names files below, so it must look like one
-if ($version -notmatch '^[0-9A-Za-z.-]+$') {
-    Write-Host "ERROR: The latest release's tag is not a version: $($releaseInfo.tag_name)" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "Latest version: $version" -ForegroundColor Green
-Write-Host ""
-
-# The JAR owns the install layout and prints the PATH hint. Always clean up the download.
-$temporaryJar = [System.IO.Path]::GetTempFileName()
+$scratch = Join-Path ([System.IO.Path]::GetTempPath()) ('wpilog-install-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    $temporaryJar = Join-Path $scratch 'server.jar'
+    $errorFile = Join-Path $scratch 'stderr.txt'
     Invoke-WebRequest -Uri $jarAsset.browser_download_url -OutFile $temporaryJar -UseBasicParsing
-    # Inspect the exit code even when an older JAR writes its usage error to stderr.
-    $ErrorActionPreference = "Continue"
-    & $javaExe -jar $temporaryJar install --install-dir $installDir
+    if ($extension) {
+        $temporaryVsix = Join-Path $scratch 'extension.vsix'
+        Invoke-WebRequest -Uri $vsixAsset.browser_download_url -OutFile $temporaryVsix -UseBasicParsing
+        $installArgs += @('--with-extension', '--vsix', $temporaryVsix)
+    }
+    # Capture stderr separately: JVM banners and code's output must not hide the exit status.
+    $ErrorActionPreference = 'Continue'
+    & $javaExe -jar $temporaryJar install --install-dir $installDir @installArgs 2>$errorFile
     $installStatus = $LASTEXITCODE
-    $ErrorActionPreference = "Stop"
+    $ErrorActionPreference = 'Stop'
+    $installError = Get-Content -Raw -LiteralPath $errorFile
+    if ($installError) { [Console]::Error.Write($installError) }
     if ($installStatus -eq 0) {
         Write-Host "Install path: release $version install command."
     } else {
-        # A current tagged script may delegate too. Do not recurse if its JAR cannot install.
-        if ($env:WPILOG_INSTALL_FALLBACK -eq "1") {
-            throw "Release installer fallback already attempted (exit $installStatus)."
-        }
+        if ($installError -notmatch 'Unknown option') { throw "Installation failed (exit $installStatus)." }
+        if ($env:WPILOG_INSTALL_FALLBACK -eq '1') { throw "Release installer fallback already attempted (exit $installStatus)." }
+        if ($advanced) { throw "Release $version predates the install command and cannot honor these options. Choose a newer --tag." }
         $installerUrl = "https://raw.githubusercontent.com/$repo/v$version/install.ps1"
         Write-Host "Install path: release $version predates the install command; using $installerUrl."
-        $temporaryInstaller = [System.IO.Path]::GetTempFileName()
+        $temporaryInstaller = Join-Path $scratch 'installer.ps1'
         $previousFallback = $env:WPILOG_INSTALL_FALLBACK
         try {
             Invoke-WebRequest -Uri $installerUrl -OutFile $temporaryInstaller -UseBasicParsing
-            $env:WPILOG_INSTALL_FALLBACK = "1"
+            $env:WPILOG_INSTALL_FALLBACK = '1'
             $global:LASTEXITCODE = 0
-            # A child scope keeps the fetched script's variables out of our cleanup paths.
             & ([scriptblock]::Create((Get-Content -Raw -LiteralPath $temporaryInstaller)))
-            if ($LASTEXITCODE -ne 0) {
-                throw "Release installer failed (exit $LASTEXITCODE)."
-            }
+            if ($LASTEXITCODE -ne 0) { throw "Release installer failed (exit $LASTEXITCODE)." }
         } finally {
             $env:WPILOG_INSTALL_FALLBACK = $previousFallback
-            Remove-Item -LiteralPath $temporaryInstaller -Force
         }
     }
 } finally {
-    Remove-Item -LiteralPath $temporaryJar -Force
+    Remove-Item -LiteralPath $scratch -Recurse -Force
 }

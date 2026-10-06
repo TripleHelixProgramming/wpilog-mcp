@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Installers accept `--tag` or `--pre-release`, optionally bootstrap the matching VS Code extension with `--with-extension`, and prompt for log directories, team, and extension installation in a terminal. Explicit `--refresh` replaces an old layout with a fresh install, preserving settings and a complete recovery backup after stopping its daemons; ordinary updates remain non-disruptive.
 - Local MCP sessions can lease directories and an in-memory TBA key through loopback-only registration endpoints. Every client sees the live directories with origin/team metadata; session end revokes access, including cached reads. The bridge accepts project/flag directory leases while taking shared-server configuration only from the home or explicit file, preventing the first project from choosing the daemon’s settings.
 - The extension now offers to install a missing standalone server from its bundled JAR, updates an older launcher on activation when selected or previously installed by the extension, and provides **Install Standalone Server** on demand. New configurations take User log directories and team only; existing configuration and newer launchers are kept. Previously a missing install required a separate installer and older servers only produced a warning. The extension's own server remains the default.
 - `wpilog-mcp install` installs its own JAR and versioned launchers, optionally seeds a new configuration, and reports text or JSON. It keeps an equal or newer current launcher unless `--force` is given, preserves existing YAML or legacy JSON, and leaves running daemons alone.
@@ -17,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Store manifests and a queued Java import pipeline organize existing WPILOG and REV files by robot and session, preserving names and provenance, verifying copies, deduplicating by SHA-256, and pairing REV logs by correlation before moving them. Previously a folder had only its filenames to describe its organization; `list_available_logs` now reads a store's manifests, reports robot and session facts, leaves hand-copied files unmanaged, and reports moved paths for seven days. Serial numbers promote stated robot names without merging existing histories.
 
 ### Changed
+- `installExtension` delegates VS Code lookup and installation to the JAR's `install --with-extension --vsix` verb. Release scripts fall back only for a JAR without the verb, so an actual write or refresh failure cannot trigger another install.
 - The shell, PowerShell, and Gradle installers now delegate the layout to the JAR's `install` verb instead of maintaining three copies of launcher scripts and configuration defaults. Release installers download to a temporary file; the Gradle task forces its development build current. Windows launchers now fall back to `JAVA_HOME` after WPILib, as the Unix launcher does.
 
 ### Fixed

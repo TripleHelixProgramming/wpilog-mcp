@@ -7,7 +7,11 @@ package org.triplehelix.wpilogmcp;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonParser;
+import java.net.ServerSocket;
+import java.time.Year;
+import java.util.ArrayList;
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -154,6 +158,69 @@ class InstallerTest {
     assertFalse(Files.exists(root.resolve("install.lock")));
   }
 
+  @Test
+  void refreshStopsItsDaemonAndPreservesSettingsWithoutOldRuntimeFiles() throws Exception {
+    var home = Files.createDirectory(tempDir.resolve("home"));
+    var root = home.resolve(".wpilog-mcp");
+    var env = Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=" + home);
+    assertEquals(0, run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString()), env, false).exit());
+    int port;
+    try (var socket = new ServerSocket(0)) {
+      port = socket.getLocalPort();
+    }
+    var config = root.resolve("servers.yaml");
+    String settings = "# preserved comment\nteam: 2363\nlogdir: []\nservers:\n  http:\n    transport: http\n    port: " + port + "\n";
+    Files.writeString(config, settings);
+    var started = run(List.of(java(), "-jar", jar().toString(), "start", "http", "--config", config.toString()), env, false);
+    assertEquals(0, started.exit(), started.output());
+    var pidFile = root.resolve("run").resolve("http.pid");
+    long pid = Long.parseLong(Files.readAllLines(pidFile).get(0));
+    var daemon = ProcessHandle.of(pid).orElseThrow();
+    try {
+      assertTrue(daemon.isAlive());
+      var refreshed = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+          "--refresh", "--json"), env, false);
+      assertEquals(0, refreshed.exit(), refreshed.output());
+      var summary = JsonParser.parseString(refreshed.stdout()).getAsJsonObject();
+      var backup = Path.of(summary.get("backup_dir").getAsString());
+      assertFalse(daemon.isAlive(), "refresh waits for the old JVM to exit before renaming its JAR");
+      assertEquals(settings, Files.readString(config));
+      assertEquals(settings, Files.readString(backup.resolve("servers.yaml")));
+      assertFalse(Files.exists(pidFile));
+      assertFalse(Files.exists(root.resolve("logs")));
+      assertTrue(Files.isDirectory(backup.resolve("logs")));
+    } finally {
+      daemon.destroy();
+      daemon.onExit().get(15, TimeUnit.SECONDS);
+    }
+  }
+
+  @Test
+  void matchingVsixIsInstalledOnceAndCliOutputDoesNotPolluteJson() throws Exception {
+    var home = Files.createDirectory(tempDir.resolve("code home"));
+    var code = home.resolve("wpilib").resolve(Integer.toString(Year.now().getValue()))
+        .resolve("vscode").resolve("bin").resolve(isWindows() ? "code.cmd" : "code");
+    var capture = tempDir.resolve("code-args.txt");
+    executable(code, isWindows() ? "@echo off\r\n(echo %~1& echo %~2& echo %~3)>>\"%CODE_ARGS%\"\r\necho code output\r\nexit /b %CODE_EXIT%\r\n"
+        : "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CODE_ARGS\"\necho code output\nexit \"${CODE_EXIT:-0}\"\n");
+    var vsix = Files.writeString(tempDir.resolve("matching extension.vsix"), "synthetic vsix");
+    var root = tempDir.resolve("standalone");
+    var env = new HashMap<>(Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + home + "\"", "PUBLIC", tempDir.resolve("public").toString(),
+        "CODE_ARGS", capture.toString(), "CODE_EXIT", "0"));
+    var command = List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+        "--with-extension", "--vsix", vsix.toString(), "--json");
+    var installed = run(command, env, false);
+    assertEquals(0, installed.exit(), installed.output());
+    assertTrue(JsonParser.parseString(installed.stdout()).getAsJsonObject().get("repointed").getAsBoolean());
+    assertTrue(installed.stderr().contains("code output"));
+    assertEquals(List.of("--install-extension", vsix.toString(), "--force"), Files.readAllLines(capture).stream().map(String::strip).toList());
+    env.put("CODE_EXIT", "7");
+    var failed = run(command, env, false);
+    assertNotEquals(0, failed.exit());
+    assertTrue(failed.stderr().contains("exit 7"), failed.output());
+    assertTrue(failed.stdout().isBlank());
+  }
+
   static Path jar() {
     return Path.of(System.getProperty("install.testJar"));
   }
@@ -211,7 +278,8 @@ class InstallerTest {
     pb.environment().remove("JAVA_HOME");
     pb.environment().remove("WPILOG_MAX_HEAP");
     pb.environment().putAll(env);
-    pb.redirectInput(ProcessBuilder.Redirect.from(new File(isWindows() ? "NUL" : "/dev/null")));
+    pb.redirectInput(ProcessBuilder.Redirect.from(env.containsKey("FAKE_ANSWERS") ? new File(env.get("FAKE_ANSWERS"))
+        : new File(isWindows() ? "NUL" : "/dev/null")));
     var output = Files.createTempFile(tempDir, "process-", ".txt");
     var error = Files.createTempFile(tempDir, "process-error-", ".txt");
     pb.redirectOutput(output.toFile());
@@ -252,7 +320,12 @@ class InstallerTest {
           esac
       done
       case "$url" in
-          https://api.github.com/*) cat "$FAKE_RELEASE_JSON" ;;
+          https://api.github.com/*)
+             if [ -n "$FAKE_API_URL" ]; then printf '%s' "$url" > "$FAKE_API_URL"; fi
+             cat "$FAKE_RELEASE_JSON" ;;
+          *.vsix) cp "$FAKE_VSIX" "$out"
+             printf '%s' "$url" > "$FAKE_VSIX_URL"
+             printf '%s' "$out" > "$FAKE_VSIX_FILE" ;;
           https://raw.githubusercontent.com/*)
              printf '%s' "$url" > "$FAKE_INSTALLER_URL"
              printf '%s' "$out" > "$FAKE_INSTALLER_FILE"
@@ -377,6 +450,7 @@ class InstallerTest {
   static final String PS_WRAPPER = """
       $ErrorActionPreference = 'Stop'
       function Invoke-RestMethod { param([string]$Uri, $Headers)
+          if ($env:FAKE_API_URL) { [System.IO.File]::WriteAllText($env:FAKE_API_URL, $Uri) }
           Get-Content -Raw -Path $env:FAKE_RELEASE_JSON | ConvertFrom-Json }
       function Invoke-WebRequest { param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
           if ($Uri.StartsWith('https://raw.githubusercontent.com/')) {
@@ -384,11 +458,23 @@ class InstallerTest {
               [System.IO.File]::WriteAllText($env:FAKE_INSTALLER_FILE, $OutFile)
               Copy-Item -LiteralPath $env:FAKE_INSTALLER -Destination $OutFile -Force
               if ($env:FAKE_INSTALLER_FAIL -eq "1") { Write-Error "Download interrupted" }
+          } elseif ($Uri.EndsWith('.vsix')) {
+              Copy-Item -LiteralPath $env:FAKE_VSIX -Destination $OutFile -Force
+              [System.IO.File]::WriteAllText($env:FAKE_VSIX_URL, $Uri)
+              [System.IO.File]::WriteAllText($env:FAKE_VSIX_FILE, $OutFile)
           } else {
+              if ($env:FAKE_DOWNLOAD_URL) { [System.IO.File]::WriteAllText($env:FAKE_DOWNLOAD_URL, $Uri) }
               Copy-Item -LiteralPath $env:FAKE_JAR -Destination $OutFile -Force
               [System.IO.File]::WriteAllText($env:FAKE_DOWNLOAD_FILE, $OutFile)
           } }
-      & $env:WPILOG_INSTALLER
+      $installerArgs = @()
+      if ($env:FAKE_SCRIPT_ARGS) { $installerArgs = @(Get-Content -Raw $env:FAKE_SCRIPT_ARGS | ConvertFrom-Json) }
+      if ($env:FAKE_ANSWERS) {
+          $global:installerAnswers = [System.Collections.Generic.Queue[string]]::new()
+          Get-Content $env:FAKE_ANSWERS | ForEach-Object { $global:installerAnswers.Enqueue($_) }
+          function Read-Host { param([string]$Prompt) return $global:installerAnswers.Dequeue() }
+      }
+      & $env:WPILOG_INSTALLER @installerArgs
       exit $LASTEXITCODE
       """;
 
@@ -422,6 +508,103 @@ class InstallerTest {
     assertArrayEquals(Files.readAllBytes(jar()), Files.readAllBytes(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar")));
     assertFalse(Files.exists(Path.of(Files.readString(download))));
     checkDefaultConfig(root.resolve("servers.yaml"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void scriptsSelectReleaseBootstrapAndPromptWithoutLosingPaths(boolean ps) throws Exception {
+    assumeTrue(ps ? powershell() != null : !isWindows(), "script shell unavailable");
+    var home = Files.createDirectory(tempDir.resolve("script home"));
+    var fakeBin = Files.createDirectory(tempDir.resolve("script-bin"));
+    if (!ps) executable(fakeBin.resolve("curl"), FAKE_CURL);
+    var capture = tempDir.resolve("script-code-args");
+    executable(home.resolve("wpilib").resolve(Integer.toString(Year.now().getValue()))
+        .resolve("vscode").resolve("bin").resolve(isWindows() ? "code.cmd" : "code"),
+        isWindows() ? "@echo off\r\n(echo %~1& echo %~2& echo %~3)>>\"%CODE_ARGS%\"\r\n"
+        : "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CODE_ARGS\"\n");
+    var env = new HashMap<String, String>();
+    env.put("HOME", home.toString());
+    env.put("USERPROFILE", home.toString());
+    env.put("JAVA_HOME", System.getProperty("java.home"));
+    env.put("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + home + "\"");
+    env.put("PUBLIC", tempDir.resolve("public").toString());
+    env.put("PATH", fakeBin + File.pathSeparator + System.getenv("PATH"));
+    env.put("CODE_ARGS", capture.toString());
+    env.put("FAKE_JAR", jar().toString());
+    env.put("FAKE_VSIX", Files.writeString(tempDir.resolve("fake.vsix"), "vsix bytes").toString());
+    env.put("FAKE_RELEASE_JSON", tempDir.resolve("script-release.json").toString());
+    for (String name : List.of("FAKE_API_URL", "FAKE_DOWNLOAD_URL", "FAKE_DOWNLOAD_FILE", "FAKE_VSIX_URL", "FAKE_VSIX_FILE")) {
+      env.put(name, tempDir.resolve(name).toString());
+    }
+    var wrapper = Files.writeString(tempDir.resolve("script-wrapper.ps1"), PS_WRAPPER);
+    env.put("WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString());
+    var base = ps ? List.of(powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", wrapper.toString())
+        : List.of("sh", Path.of("install.sh").toAbsolutePath().toString());
+    for (String selection : List.of("latest", "tag", "pre-release", "interactive")) {
+      Files.deleteIfExists(capture);
+      var args = new ArrayList<String>();
+      String version = selection.equals("latest") ? "1.2.0" : "1.3.0-dev3";
+      String release = releaseJson(version);
+      if (selection.equals("pre-release")) release = "[" + release + "]";
+      Files.writeString(Path.of(env.get("FAKE_RELEASE_JSON")), release);
+      String expectedApi = "https://api.github.com/repos/TripleHelixProgramming/wpilog-mcp/releases/";
+      if (selection.equals("tag")) {
+        args.addAll(List.of("--tag", "v" + version));
+        expectedApi += "tags/v" + version;
+      } else if (selection.equals("pre-release")) {
+        args.add("--pre-release");
+        expectedApi = expectedApi.substring(0, expectedApi.length() - 1) + "?per_page=1";
+      } else expectedApi += "latest";
+      var root = tempDir.resolve("selected " + selection);
+      var logs = tempDir.resolve("logs with spaces");
+      args.addAll(List.of("--install-dir", root.toString()));
+      if (selection.equals("interactive")) {
+        args.add("--interactive");
+        env.put("FAKE_ANSWERS", Files.writeString(tempDir.resolve("answers"), logs + "\n\n2363\n\n").toString());
+      } else {
+        args.addAll(List.of("--non-interactive", "--with-extension", "--logdir", logs.toString(), "--team", "2363"));
+      }
+      env.put("FAKE_SCRIPT_ARGS", Files.writeString(tempDir.resolve("args.json"), new Gson().toJson(args)).toString());
+      var command = new ArrayList<>(base);
+      if (!ps) command.addAll(args);
+      var result = run(command, env, false);
+      assertEquals(0, result.exit(), selection + ": " + result.output());
+      assertEquals(expectedApi, Files.readString(Path.of(env.get("FAKE_API_URL"))));
+      assertEquals(jarUrl(version), Files.readString(Path.of(env.get("FAKE_DOWNLOAD_URL"))));
+      assertTrue(Files.readString(Path.of(env.get("FAKE_VSIX_URL"))).endsWith("/v" + version + "/wpilog-analyzer-" + version + ".vsix"));
+      var codeArgs = Files.readAllLines(capture).stream().map(String::strip).toList();
+      assertEquals(3, codeArgs.size(), "exactly one code invocation");
+      assertEquals("--install-extension", codeArgs.get(0));
+      assertEquals("--force", codeArgs.get(2));
+      assertFalse(Files.exists(Path.of(codeArgs.get(1))), "VSIX download removed");
+      assertFalse(Files.exists(Path.of(Files.readString(Path.of(env.get("FAKE_DOWNLOAD_FILE"))))));
+      var config = new ConfigLoader().load("http", root.resolve("servers.yaml"));
+      assertEquals(2363, config.team());
+      assertEquals(List.of(logs.toString()), config.logdirs());
+      if (selection.equals("interactive")) {
+        // A refresh asks only about the extension; existing settings are copied byte for byte.
+        var before = Files.readAllBytes(root.resolve("servers.yaml"));
+        Files.writeString(Path.of(env.get("FAKE_ANSWERS")), "n\n");
+        args.add("--refresh");
+        Files.writeString(Path.of(env.get("FAKE_SCRIPT_ARGS")), new Gson().toJson(args));
+        command = new ArrayList<>(base);
+        if (!ps) command.addAll(args);
+        var refreshed = run(command, env, false);
+        assertEquals(0, refreshed.exit(), refreshed.output());
+        assertTrue(refreshed.stdout().contains("Previous install kept at:"), refreshed.output());
+        assertArrayEquals(before, Files.readAllBytes(root.resolve("servers.yaml")));
+        assertEquals(codeArgs, Files.readAllLines(capture).stream().map(String::strip).toList(), "declining does not install again");
+      }
+      env.remove("FAKE_ANSWERS");
+    }
+    var invalidArgs = List.of("--non-interactive", "--install-dir", tempDir.resolve("bad-install").toString(), "--team", "0");
+    Files.writeString(Path.of(env.get("FAKE_SCRIPT_ARGS")), new Gson().toJson(invalidArgs));
+    var command = new ArrayList<>(base);
+    if (!ps) command.addAll(invalidArgs);
+    var refused = run(command, env, false);
+    assertNotEquals(0, refused.exit());
+    assertFalse(refused.output().contains("predates"), refused.output());
+    assertTrue(refused.output().contains("--team must be a positive integer"), refused.output());
   }
 
   /** Reproduces pre-install argument handling without embedding or downloading an old release. */

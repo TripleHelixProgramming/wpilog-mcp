@@ -18,9 +18,10 @@ for (const [label, text, expected] of [
   test(`launcher marker: ${label}`, () => assert.equal(launcherVersion(text), expected));
 }
 
-test("install arguments seed User directories and team, as separate words, and never a key", () => {
+test("install arguments seed User directories and team, never keys, refresh, or extension bootstrap", () => {
   const seed = { logDirs: ["/logs with spaces", "C:\\Logs\\archive", "", "  "], teamNumber: 2363,
-    tbaKey: "not-for-the-process-list", tbaApiKey: "nor-this-key" };
+    tbaKey: "not-for-the-process-list", tbaApiKey: "nor-this-key", withExtension: true,
+    vsix: "/never-bootstrap-from-the-extension.vsix", refresh: true };
   assert.deepEqual(installArgs(seed), ["install", "--json", "--logdir", "/logs with spaces",
     "--logdir", "C:\\Logs\\archive", "--team", "2363"]);
 });
