@@ -112,6 +112,11 @@
         "category": "WPILog Analyzer"
       },
       {
+        "command": "wpilog-mcp.installStandaloneServer",
+        "title": "Install Standalone Server",
+        "category": "WPILog Analyzer"
+      },
+      {
         "command": "wpilog-mcp.restartServer",
         "title": "Restart Server",
         "category": "WPILog Analyzer"
@@ -380,7 +385,7 @@
             "default": false,
             "order": 6,
             "scope": "application",
-            "markdownDescription": "Use the [standalone install](https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md)'s server instead of the extension's own: the `http` server of `~/.wpilog-mcp/servers.yaml`, started with the install's own launcher, so that VS Code's agents, Claude Code, WPILog Explorer, and the install's other clients (Claude Desktop, Claude Code outside VS Code) share one server. That file's settings then apply (its log directories, team number, TBA key, disk cache, and idle exit), and the settings above (**Log Directory**, **Additional Log Directories**, **Team Number**, the TBA key) and below (**Java Path**, **WPILib Year**, **Max Heap**, **Idle Exit Minutes**) do not; a project's own log directories do not join it either. Needs the standalone install: without it the extension says so and runs no server. Claude Code's `.mcp.json` entry then runs the install's bridge (`connect http`). The server's log is `~/.wpilog-mcp/logs/http.log`, which [Show Server Log](command:wpilog-mcp.showServerLog) opens; an install older than the extension is noted in the output, since WPILog Explorer needs what newer servers have."
+            "markdownDescription": "Use the [standalone install](https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md)'s server instead of the extension's own: the `http` server of `~/.wpilog-mcp/servers.yaml`, shared by VS Code's agents, Claude Code, WPILog Explorer, and other clients. If missing, the extension offers to install its bundled server. A new configuration is seeded with the User **Log Directory**, **Additional Log Directories**, and **Team Number**, never the TBA key. Existing configuration is kept. Afterward that file controls the server: project directories and these settings, including **Java Path**, **WPILib Year**, **Max Heap**, and **Idle Exit Minutes**, do not configure it. Java and heap settings are used to run the installer. On activation an older launcher (by version numbers) is updated when this setting is on or the extension installed it before; the JAR never downgrades, and the next start replaces the running server. [Install Standalone Server](command:wpilog-mcp.installStandaloneServer) also works with this setting off. Claude Code's entry runs the install's bridge (`connect http`); [Show Server Log](command:wpilog-mcp.showServerLog) opens `~/.wpilog-mcp/logs/http.log`."
           },
           "wpilog-mcp.javaPath": {
             "type": "string",

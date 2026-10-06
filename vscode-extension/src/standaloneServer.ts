@@ -4,7 +4,7 @@
  * "One Server for Every Client" recipe starts, run with the install's own launcher so that the
  * install's JAR, Java, and settings (log directories, team number, TBA key, disk cache) serve
  * VS Code's agents, Claude Code, and the explorer alongside the install's other clients. The
- * extension writes nothing into the install: it starts the server with `start http --config`,
+ * extension installs through the bundled JAR (standaloneInstall.ts), then starts with `start http --config`,
  * reads the port from the PID file the start writes (`run/http.pid`: the process ID on the
  * first line, the port on the second, as the server documents it), and stops it with `stop`.
  * Pure functions (no VS Code API) so they are tested on both platforms' path rules;
@@ -131,9 +131,9 @@ export function buildStandaloneEntry(
 
 /**
  * Whether a server's version is older than the extension's, by the numbers of the version
- * (`major.minor.patch`); a suffix such as `-dev2` is not compared. The standalone install is
- * upgraded by its own installer, so the extension cannot replace an older server as it does its
- * own, and says so instead: the explorer needs what newer servers have.
+ * (`major.minor.patch`); a suffix such as `-dev2` is not compared. This decides whether to
+ * request an automatic install. The JAR makes the final no-downgrade decision with suffixes
+ * included; the on-demand install command can therefore advance a development suffix too.
  */
 export function olderVersion(server: string | undefined, extension: string): boolean {
   if (server === undefined) return true;

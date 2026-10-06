@@ -3,10 +3,10 @@
  * projectServers.ts), whose configuration it writes, whose port it chooses, which it starts
  * with the server's own `start` (idempotent, and restarting a daemon of another version),
  * restarts when its configuration changes, and tries again with backoff when a start fails; or
- * the standalone install's server (see standaloneServer.ts), which it only starts with the
- * install's launcher and asks for its port, since the install's configuration and version are
- * the user's. This is the VS Code side; the decisions it makes are the pure functions in those
- * two modules. The manager keeps its state per daemon name, so a second daemon would cost
+ * the standalone install's server (see standaloneServer.ts), prepared by the activation
+ * callback before it starts with the install's launcher and asks for its port. The existing
+ * install configuration remains the user's. This is the VS Code side; its decisions are pure
+ * functions in the server and install modules. The manager keeps its state per daemon name, so a second daemon would cost
  * nothing here; there is one at a time because the extension found no use for more
  * (doc/EXPLORER_PLAN.md, decision 5).
  */
@@ -99,12 +99,14 @@ export class ServerManager implements vscode.Disposable {
    * @param resolveInputs what to start a daemon from, or undefined when it cannot be started
    *     (no Java, no JAR), which the resolver has already reported
    * @param onChanged called when a daemon's URL changes, so VS Code's agents are re-registered
+   * @param prepareStandalone completes an install offer or update before starting from the launcher
    */
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly resolveInputs: (spec: OwnDaemonSpec, prompt: boolean) => Promise<DaemonInputs | undefined>,
-    private readonly onChanged: () => void
+    private readonly onChanged: () => void,
+    private readonly prepareStandalone: () => Promise<StandaloneDaemonSpec | undefined>
   ) {}
 
   private state(name: string): DaemonState {
@@ -202,7 +204,10 @@ export class ServerManager implements vscode.Disposable {
 
   private async doEnsure(spec: DaemonSpec, state: DaemonState, prompt: boolean): Promise<string | undefined> {
     this.cancelRetry(state);
-    if (spec.kind === "standalone") return this.ensureStandalone(spec, state);
+    if (spec.kind === "standalone") {
+      const prepared = await this.prepareStandalone();
+      return prepared ? this.ensureStandalone(prepared, state) : undefined;
+    }
     const inputs = await this.resolveInputs(spec, prompt);
     if (!inputs) return undefined;
     state.lastInputs = inputs;
@@ -250,12 +255,10 @@ export class ServerManager implements vscode.Disposable {
   /**
    * Makes sure the standalone install's server runs, with the install's own launcher: `start`
    * returns at once when it is running, else starts it, and the PID file then holds its port.
-   * Nothing is written and nothing is chosen, since the install's configuration is the user's;
-   * a start that fails, or an install that is not there, is reported once, and tried again
-   * whenever something next needs the server, not with backoff, since what is wrong is in the
-   * install for the user to fix. An older server is not replaced, as the extension's own would
-   * be (the install upgrades with its own installer); the output says so, since the explorer
-   * needs what newer servers have.
+   * The activation callback has completed any install offer or update; the existing config
+   * remains the user's. A start failure is reported once, and tried again when something next
+   * needs the server. An older server is still reported if an attempted install could not
+   * advance its launcher, since the explorer may need endpoints that version does not have.
    */
   private async ensureStandalone(spec: StandaloneDaemonSpec, state: DaemonState): Promise<string | undefined> {
     if (spec.missing !== undefined) {

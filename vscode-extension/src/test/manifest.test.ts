@@ -89,6 +89,7 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.clearTbaApiKey",
     "wpilog-mcp.addToClaudeCode",
     "wpilog-mcp.showServerLog",
+    "wpilog-mcp.installStandaloneServer",
     "wpilog-mcp.restartServer",
     "wpilog-mcp.explorer.organizeLogs",
     "wpilog-mcp.explorer.importLogs",
@@ -232,4 +233,15 @@ test("organizing has a palette/title command, inline import groups, and unassign
     { command: "wpilog-mcp.explorer.assignRobot", when: "view == wpilog-mcp.logs && viewItem == wpilogUnassignedGroup", group: "inline@1" },
     { command: "wpilog-mcp.explorer.assignRobot", when: "view == wpilog-mcp.logs && viewItem == wpilogUnassigned", group: "navigation@1" },
   ]);
+});
+
+
+test("standalone installation has a named palette command linked from its setting", () => {
+  const id = "wpilog-mcp.installStandaloneServer";
+  assert.deepEqual(manifest.contributes.commands.find((command: { command: string }) => command.command === id), {
+    command: id, title: "Install Standalone Server", category: "WPILog Analyzer",
+  });
+  assert.ok(!manifest.contributes.menus.commandPalette.some((item: { command: string; when: string }) =>
+    item.command === id && item.when === "false"));
+  assert.ok(settings["wpilog-mcp.useStandaloneServer"].markdownDescription.includes(`(command:${id})`));
 });

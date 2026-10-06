@@ -36,6 +36,7 @@ import {
 import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
 import { DaemonInputs, DaemonSpec, OwnDaemonSpec, ServerManager, StandaloneDaemonSpec } from "./serverManager";
 import { STANDALONE_SERVER, buildStandaloneEntry, findStandaloneInstall } from "./standaloneServer";
+import { InstallSummary, installAction, installArgs, launcherVersion, parseInstallSummary } from "./standaloneInstall";
 import { ServerEntry } from "./mcpJson";
 import { Explorer } from "./explorer";
 import {
@@ -46,6 +47,7 @@ import {
 } from "./tbaKey";
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
+const STANDALONE_INSTALLED_VERSION = "wpilog-mcp.standaloneInstalledVersion";
 
 /**
  * Where the TBA API key is kept: VS Code's secret storage (the OS keychain), never a settings
@@ -60,17 +62,8 @@ export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("WPILog Analyzer");
   const didChangeEmitter = new vscode.EventEmitter<void>();
 
-  /**
-   * What the server is started from (see projectServers.ts): Java, the JAR copy that survives
-   * updates, and the configuration's values. The log directories are the User settings',
-   * together with those of every project, open or remembered, each project's resolved with its
-   * own settings on top of the user's; the team number is the first a project sets, else the
-   * user's. With no directory set at all, the server lists what auto-detection finds (a
-   * well-known folder, else, when asked in the foreground, the folder the user picks). The TBA
-   * API key goes into the configuration file, which only this user can read, never on a command
-   * line, which the process list shows to every user of the machine.
-   */
-  async function resolveInputsFor(spec: OwnDaemonSpec, prompt: boolean): Promise<DaemonInputs | undefined> {
+  /** Installation uses the bundled JAR itself; the daemon's stable copy may still be an older one. */
+  async function resolveRuntime(): Promise<{ javaPath: string; jarPath: string; maxHeap: string } | undefined> {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     const maxHeap = config.get<string>("maxHeap") || "4g";
 
@@ -102,6 +95,24 @@ export function activate(context: vscode.ExtensionContext) {
       return undefined;
     }
 
+    return { javaPath, jarPath, maxHeap };
+  }
+
+  /**
+   * What the server is started from (see projectServers.ts): Java, the JAR copy that survives
+   * updates, and the configuration's values. The log directories are the User settings',
+   * together with those of every project, open or remembered, each project's resolved with its
+   * own settings on top of the user's; the team number is the first a project sets, else the
+   * user's. With no directory set at all, the server lists what auto-detection finds (a
+   * well-known folder, else, when asked in the foreground, the folder the user picks). The TBA
+   * API key goes into the configuration file, which only this user can read, never on a command
+   * line, which the process list shows to every user of the machine.
+   */
+  async function resolveInputsFor(spec: OwnDaemonSpec, prompt: boolean): Promise<DaemonInputs | undefined> {
+    const runtime = await resolveRuntime();
+    if (!runtime) return undefined;
+    const { javaPath, jarPath, maxHeap } = runtime;
+    const config = vscode.workspace.getConfiguration("wpilog-mcp");
     const jar = await stableJar(context, jarPath, outputChannel);
     outputChannel.appendLine(`Java: ${javaPath}`);
     outputChannel.appendLine(`JAR: ${jar}`);
@@ -135,6 +146,117 @@ export function activate(context: vscode.ExtensionContext) {
     };
   }
 
+  // A window shares one install/offer between activation, the MCP provider, and the explorer.
+  // The JAR's cross-process lock also protects different windows installing at the same time.
+  let installation: Promise<InstallSummary | undefined> | undefined;
+  let updateCheck: Promise<void> | undefined;
+  let offerDismissed = false;
+
+  function installStandalone(seed: boolean, updating: boolean): Promise<InstallSummary | undefined> {
+    if (!installation) {
+      installation = performStandaloneInstall(seed, updating).finally(() => { installation = undefined; });
+    }
+    return installation;
+  }
+
+  async function performStandaloneInstall(seed: boolean, updating: boolean): Promise<InstallSummary | undefined> {
+    try {
+      const runtime = await resolveRuntime();
+      if (!runtime) return undefined;
+      const user = userSettings();
+      const args = installArgs(seed ? {
+        logDirs: combineLogDirectories(user.logDirectory, user.additionalLogDirectories,
+          (vscode.workspace.workspaceFolders ?? []).filter(folder => folder.uri.scheme === "file").map(folder => folder.uri.fsPath)),
+        teamNumber: user.teamNumber,
+      } : undefined);
+      const summary = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: updating ? "WPILog Analyzer: updating the standalone server" : "WPILog Analyzer: installing the standalone server",
+      }, async () => {
+        const json = await new Promise<string>((resolve, reject) => {
+          execFile(runtime.javaPath, [`-Xmx${runtime.maxHeap}`, "-jar", runtime.jarPath, ...args],
+            { timeout: 120_000, windowsHide: true, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+              if (stderr.trim()) outputChannel.appendLine(stderr.trim());
+              if (error) reject(new Error(stderr.trim() || error.message));
+              else resolve(stdout);
+            });
+        });
+        return parseInstallSummary(json);
+      });
+      outputChannel.appendLine(`Standalone install: installed ${summary.installed_version} in ${summary.install_dir}.`);
+      outputChannel.appendLine(`Standalone launcher: ${summary.launcher_version_before ?? "missing"} -> ${summary.launcher_version_after}` +
+        (summary.repointed ? "." : " (kept the current launcher)."));
+      outputChannel.appendLine(`${summary.config_created ? "Created" : "Kept"} configuration: ${summary.config_path}`);
+      if (summary.path_hint) outputChannel.appendLine(`Add to PATH: ${summary.path_hint}`);
+      await context.globalState.update(STANDALONE_INSTALLED_VERSION, summary.installed_version);
+      if (updating) {
+        if (summary.repointed) {
+          void vscode.window.showInformationMessage(
+            `WPILog Analyzer: standalone server updated from ${summary.launcher_version_before ?? "unknown"} to ${summary.launcher_version_after}. ` +
+            "The next start replaces the running server.");
+        }
+      } else {
+        void vscode.window.showInformationMessage(
+          `WPILog Analyzer: installed standalone server ${summary.installed_version}.` +
+          (summary.repointed ? "" : ` Kept current launcher ${summary.launcher_version_after}.`) +
+          (summary.path_hint ? ` Add ${summary.path_hint} to PATH.` : " Its launcher is already on PATH."));
+      }
+      return summary;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      outputChannel.appendLine(`ERROR: standalone install failed: ${reason}`);
+      void vscode.window.showErrorMessage(`WPILog Analyzer: standalone install failed: ${reason}`);
+      return undefined;
+    }
+  }
+
+  async function standaloneInstallAction(spec: StandaloneDaemonSpec) {
+    const text = await fs.promises.readFile(spec.launcher, "utf8").catch(() => "");
+    return installAction({
+      settingOn: vscode.workspace.getConfiguration("wpilog-mcp").get<boolean>("useStandaloneServer") === true,
+      installedVersion: context.globalState.get<string>(STANDALONE_INSTALLED_VERSION),
+      launcherVersion: launcherVersion(text),
+      extensionVersion: context.extension.packageJSON.version,
+      missing: spec.missing !== undefined,
+    });
+  }
+
+  /** Check once at activation, including installs we made before the setting was turned off. */
+  function updateStandaloneAtActivation(): Promise<void> {
+    if (!updateCheck) {
+      updateCheck = (async () => {
+        const spec = standaloneSpec();
+        const action = await standaloneInstallAction(spec);
+        if (action === "update") {
+          await installStandalone(false, true);
+        } else if (action === "none" && spec.missing === undefined) {
+          const text = await fs.promises.readFile(spec.launcher, "utf8").catch(() => "");
+          outputChannel.appendLine(`Standalone launcher ${launcherVersion(text) ?? "unknown"}: kept; no automatic install requested for extension ${context.extension.packageJSON.version}.`);
+        }
+      })();
+    }
+    return updateCheck;
+  }
+
+  /** A declined offer lasts for this activation; an explicit command can still install later. */
+  async function prepareStandalone(): Promise<StandaloneDaemonSpec | undefined> {
+    await updateStandaloneAtActivation();
+    if (installation) await installation;
+    const spec = standaloneSpec();
+    if (spec.missing === undefined) return spec;
+    if (offerDismissed || await standaloneInstallAction(spec) !== "offer") return undefined;
+    offerDismissed = true;
+    outputChannel.appendLine(`Standalone install missing: ${spec.missing}.`);
+    const choice = await vscode.window.showInformationMessage(
+      `WPILog Analyzer: no standalone install was found. Install one from this extension's server, version ${context.extension.packageJSON.version}?`,
+      "Install", "Not now", "Open Settings");
+    if (choice === "Open Settings") {
+      void vscode.commands.executeCommand("workbench.action.openSettings", "wpilog-mcp.useStandaloneServer");
+    }
+    if (choice !== "Install" || !await installStandalone(true, false)) return undefined;
+    return standaloneSpec();
+  }
+
   // ---- The server, and VS Code's MCP provider ----
 
   // One server, shared by every project, runs in the background on the loopback address and
@@ -145,7 +267,7 @@ export function activate(context: vscode.ExtensionContext) {
   const serverManager = new ServerManager(context, outputChannel, resolveInputsFor, () => {
     didChangeEmitter.fire();
     explorer.serversChanged();
-  });
+  }, prepareStandalone);
   context.subscriptions.push(serverManager);
 
   // ---- WPILog Explorer: the views and the editor, a client of the same server ----
@@ -188,6 +310,20 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("wpilog-mcp.showServerLog", () =>
       serverManager.showLog(serverSpec(context))
     ),
+    vscode.commands.registerCommand("wpilog-mcp.installStandaloneServer", async () => {
+      if (!await installStandalone(true, false)) return;
+      const config = vscode.workspace.getConfiguration("wpilog-mcp");
+      if (!config.get<boolean>("useStandaloneServer")) {
+        const choice = await vscode.window.showInformationMessage(
+          "WPILog Analyzer: use the standalone server for this extension?", "Use Standalone Server", "Not now");
+        if (choice === "Use Standalone Server") {
+          await config.update("useStandaloneServer", true, vscode.ConfigurationTarget.Global);
+        }
+      } else {
+        await serverManager.ensure(standaloneSpec());
+        scheduleMcpJsonUpdate();
+      }
+    }),
     vscode.commands.registerCommand("wpilog-mcp.restartServer", async () => {
       const url = await serverManager.restart(serverSpec(context));
       if (url) {
@@ -324,6 +460,7 @@ export function activate(context: vscode.ExtensionContext) {
   void (async () => {
     await moveTbaKeyNow();
     await removeTbaKeyFromMcpJson(outputChannel);
+    await updateStandaloneAtActivation();
     // Start the server now, so the first agent to ask finds it up, then add or update Claude
     // Code's entry in .mcp.json (robot projects, by default)
     await serverManager.ensure(serverSpec(context), false);
