@@ -5,12 +5,16 @@
 package org.triplehelix.wpilogmcp.log.subsystems;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.log.LogFileException;
 
 /**
  * Validates file paths against allowed directories to prevent path traversal attacks.
@@ -50,10 +54,10 @@ public class SecurityValidator {
       // so that the allowed path matches what toRealPath() returns during validation
       Path normalized;
       try {
-        normalized = java.nio.file.Files.exists(directory)
+        normalized = Files.exists(directory)
             ? directory.toRealPath()
             : directory.toAbsolutePath().normalize();
-      } catch (java.io.IOException e) {
+      } catch (IOException e) {
         normalized = directory.toAbsolutePath().normalize();
       }
       allowedDirectories.add(normalized);
@@ -113,7 +117,7 @@ public class SecurityValidator {
 
     logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
     // A fact about the caller's path, reported as an ordinary error (not an internal one)
-    throw new org.triplehelix.wpilogmcp.log.LogFileException(
+    throw new LogFileException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
   }
@@ -122,17 +126,18 @@ public class SecurityValidator {
    * Resolves a path, following symlinks where possible to prevent symlink-based path traversal.
    * If the file exists, uses toRealPath() which resolves all symlinks.
    * If not, walks up the ancestor chain to find the nearest existing directory, resolves
-   * symlinks there, and appends the remaining relative portion.
+   * symlinks there, and appends the remaining relative portion. A dangling link still exists
+   * for this walk: resolving it must fail, not authorize creating its outside target.
    */
   private Path resolvePath(Path filePath) throws IOException {
     Path absPath = filePath.toAbsolutePath().normalize();
-    if (java.nio.file.Files.exists(absPath)) {
+    if (Files.exists(absPath, LinkOption.NOFOLLOW_LINKS)) {
       return absPath.toRealPath();
     }
     // Walk up the path to find the nearest existing ancestor
     Path current = absPath;
     Path relative = Path.of("");
-    while (current != null && !java.nio.file.Files.exists(current)) {
+    while (current != null && !Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
       relative = current.getFileName() != null
           ? current.getFileName().resolve(relative)
           : relative;
@@ -155,7 +160,7 @@ public class SecurityValidator {
    * @param isInCache Function that returns true if the path is already cached
    * @throws IOException if the path is outside allowed directories and not cached
    */
-  public void validateOrAllowCached(Path filePath, java.util.function.Predicate<String> isInCache)
+  public void validateOrAllowCached(Path filePath, Predicate<String> isInCache)
       throws IOException {
     if (allowedDirectories.isEmpty()) {
       return;
@@ -177,7 +182,7 @@ public class SecurityValidator {
 
     logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
     // A fact about the caller's path, reported as an ordinary error (not an internal one)
-    throw new org.triplehelix.wpilogmcp.log.LogFileException(
+    throw new LogFileException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
   }

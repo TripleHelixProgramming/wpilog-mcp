@@ -7,6 +7,8 @@ package org.triplehelix.wpilogmcp.store;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
@@ -23,9 +25,8 @@ final class StoreLock implements AutoCloseable {
   }
 
   static StoreLock acquire(Path root, SecurityValidator security) throws IOException {
-    var io = new StoreFiles(root, security);
-    var channel = FileChannel.open(io.check(root.resolve("store.lock")),
-        StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+    var channel = FileChannel.open(checkedPath(root, security),
+        StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
     try {
       if (channel.tryLock() == null) throw held();
       return new StoreLock(channel);
@@ -36,6 +37,16 @@ final class StoreLock implements AutoCloseable {
       channel.close();
       throw e;
     }
+  }
+
+  /** Refuse aliases before admission, and check again when the queued import opens the lock. */
+  static Path checkedPath(Path root, SecurityValidator security) throws IOException {
+    var io = new StoreFiles(root, security);
+    var path = root.resolve("store.lock");
+    if (Files.isSymbolicLink(path)) {
+      throw new IOException("Store lock must not be a symbolic link: " + path);
+    }
+    return io.check(path);
   }
 
   private static IOException held() {

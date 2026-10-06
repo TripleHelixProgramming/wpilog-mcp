@@ -10,8 +10,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Comprehensive tests for SecurityValidator to prevent path traversal attacks.
@@ -40,6 +43,27 @@ class SecurityValidatorTest {
 
     Path allowedPath = tempDir.resolve("test.wpilog");
     assertDoesNotThrow(() -> validator.validate(allowedPath));
+  }
+
+  @ParameterizedTest
+  @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+  void danglingSymlinkCannotPassContainment(boolean ancestor, boolean cached) throws IOException {
+    var allowed = Files.createDirectory(tempDir.resolve("allowed"));
+    validator.addAllowedDirectory(allowed);
+    var outside = tempDir.resolve("outside-missing");
+    var link = allowed.resolve("link");
+    try {
+      Files.createSymbolicLink(link, outside);
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
+    var requested = ancestor ? link.resolve("new.log") : link;
+    var error = assertThrows(IOException.class, () -> {
+      if (cached) validator.validateOrAllowCached(requested, path -> true);
+      else validator.validate(requested);
+    });
+    assertTrue(error.getMessage().contains(link.toString()), error.getMessage());
+    assertFalse(Files.exists(outside));
   }
 
   @Test

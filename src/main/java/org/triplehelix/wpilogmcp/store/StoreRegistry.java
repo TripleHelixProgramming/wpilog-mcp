@@ -56,6 +56,7 @@ public final class StoreRegistry implements AutoCloseable {
     Files.createDirectories(directory);
     var real = directory.toRealPath();
     security.validate(real);
+    StoreLock.checkedPath(real, security);
     synchronized (this) {
       if (closed) throw new IllegalStateException("Store registry is closed");
       return stores.computeIfAbsent(real,

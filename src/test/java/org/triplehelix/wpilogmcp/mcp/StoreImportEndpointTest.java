@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -23,9 +24,12 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.log.LogFileAccess;
 import org.triplehelix.wpilogmcp.log.LogManager;
@@ -249,6 +253,34 @@ class StoreImportEndpointTest {
     }
     assertEquals(403, request("/store/import", body(root, true, link).toString()).statusCode());
     assertTrue(Files.exists(outside));
+  }
+
+  @ParameterizedTest
+  @CsvSource({"/store/import, false", "/store/import, true", "/store/assign, false", "/store/assign, true"})
+  void symlinkLockIsRefusedBeforeJobAdmission(String route, boolean targetExists) throws Exception {
+    Files.createDirectories(root);
+    manager.clearAllowedDirectories();
+    manager.addAllowedDirectory(root);
+    manager.stores().store(root); // Admission must recheck even a previously registered store.
+    var outside = temp.resolve("outside-lock");
+    if (targetExists) Files.writeString(outside, "untouched sentinel");
+    var link = root.resolve("store.lock");
+    try {
+      Files.createSymbolicLink(link, outside);
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
+    var response = request(route, body(root, true).toString());
+    assertTrue(response.statusCode() >= 400 && response.statusCode() < 500, response.toString());
+    var refused = JsonParser.parseString(response.body()).getAsJsonObject();
+    assertTrue(refused.get("error").getAsString().contains("store.lock"), response.body());
+    assertTrue(refused.get("error").getAsString().contains("symbolic link"), response.body());
+    assertTrue(refused.has("hint"));
+    assertEquals(targetExists, Files.exists(outside), "a dangling lock must not create its target");
+    if (targetExists) assertEquals("untouched sentinel", Files.readString(outside));
+    assertTrue(Files.isSymbolicLink(link));
+    assertFalse(Files.exists(root.resolve("store.json")));
+    assertFalse(Files.exists(root.resolve("inbox")));
   }
 
   @Test void unknownJobAndOriginRefusalsMatchTransport() throws Exception {

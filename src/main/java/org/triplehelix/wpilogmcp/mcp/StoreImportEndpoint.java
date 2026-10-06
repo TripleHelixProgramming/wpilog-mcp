@@ -106,7 +106,8 @@ final class StoreImportEndpoint {
     try {
       store = stores.store(request.store());
     } catch (IOException | IllegalArgumentException e) {
-      refuse(exchange, 400, "Store directory cannot be opened", "Choose a writable directory inside configured log directories");
+      refuse(exchange, 400, "Store directory cannot be opened: " + e.getMessage(),
+          "Choose a writable directory inside configured log directories with a regular store.lock file");
       return;
     }
     Job job;
