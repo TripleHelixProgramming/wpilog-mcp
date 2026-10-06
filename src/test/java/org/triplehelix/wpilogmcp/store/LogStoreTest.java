@@ -30,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
@@ -242,6 +243,44 @@ class LogStoreTest {
     assertTrue(Files.exists(original));
     assertTrue(Files.exists(duplicate));
     assertEquals(1, catalog().files().size());
+  }
+
+  @ParameterizedTest
+  @CsvSource({"practice, cross-store.wpilog", ", cross-store.wpilog", ", store.json"})
+  void crossStoreMoveIsRefusedButCopyKeepsBothCatalogsReadable(String robot, String filename) throws Exception {
+    var source = log(temp.resolve(filename), null, START, 1);
+    var bytes = Files.readAllBytes(source);
+    var held = run(List.of(source), true, robot).files().get(0).path();
+    var before = catalog();
+    var other = registry.store(temp.resolve("other-store"));
+    var moved = other.importPaths(new LogStore.Request(List.of(held), true, "copy"), p -> {})
+        .get(60, TimeUnit.SECONDS).files().get(0);
+    assertEquals("refused", moved.status(), moved.toString());
+    assertTrue(moved.reason().contains(root.toString()), moved.reason());
+    assertArrayEquals(bytes, Files.readAllBytes(held));
+    assertEquals(before, catalog(), "the source store's catalog and files must remain readable");
+    assertTrue(StoreCatalog.read(other.root(), security).files().isEmpty());
+
+    var copied = other.importPaths(new LogStore.Request(List.of(held), false, "copy"), p -> {})
+        .get(60, TimeUnit.SECONDS).files().get(0);
+    assertEquals("imported", copied.status(), copied.toString());
+    assertArrayEquals(bytes, Files.readAllBytes(held));
+    assertArrayEquals(bytes, Files.readAllBytes(copied.path()));
+    assertEquals(before, catalog());
+    assertEquals(copied.path(), StoreCatalog.read(other.root(), security).files().get(0).path());
+  }
+
+  @Test
+  void unmanagedFileInsideAnotherStoreCanStillMove() throws Exception {
+    run(List.of(), false, null);
+    var source = log(root.resolve("stray.wpilog"), null, START, 1);
+    var other = registry.store(temp.resolve("other-store"));
+    var moved = other.importPaths(new LogStore.Request(List.of(source), true, "practice"), p -> {})
+        .get(60, TimeUnit.SECONDS).files().get(0);
+    assertEquals("imported", moved.status(), moved.toString());
+    assertFalse(Files.exists(source));
+    assertTrue(catalog().files().isEmpty());
+    assertTrue(catalog().unmanaged().isEmpty());
   }
 
   @Test

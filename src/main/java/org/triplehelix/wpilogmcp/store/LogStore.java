@@ -227,6 +227,7 @@ public final class LogStore implements AutoCloseable {
     var inspected = new ArrayList<ImportInspection>();
     var batchHashes = new HashSet<String>();
     var repeats = new LinkedHashMap<Path, String>();
+    var otherStores = new HashMap<Path, Set<Path>>();
     var parser = new RevLogParser(new DbcLoader().load(null));
     int completed = 0;
     for (var source : sources) {
@@ -234,6 +235,7 @@ public final class LogStore implements AutoCloseable {
       try {
         security.validate(source);
         StoreFiles.component(source.getFileName().toString());
+        if (request.move()) refuseManagedMove(source, otherStores);
         // Hash first: a duplicate requires neither decoding nor a robot assignment.
         var hash = StoreFiles.hash(source);
         if (assignment) {
@@ -324,6 +326,30 @@ public final class LogStore implements AutoCloseable {
     }
     notify(progress, new Progress("complete", root, sources.size(), sources.size()));
     return new Result(List.copyOf(outcomes), List.copyOf(sameRobots));
+  }
+
+  /** Moving another store's payload would leave its manifest pointing to a missing file. */
+  private void refuseManagedMove(Path source, Map<Path, Set<Path>> otherStores) throws IOException {
+    var ancestor = source;
+    var owner = StoreCatalog.containing(ancestor);
+    // A WPILOG named store.json is a payload, not its own parent directory's store marker.
+    while (owner.isPresent() && source.equals(owner.get().resolve("store.json"))) {
+      ancestor = owner.get();
+      owner = StoreCatalog.containing(ancestor);
+    }
+    if (owner.isEmpty() || owner.get().equals(root)) return;
+    var directory = owner.get();
+    var managed = otherStores.get(directory);
+    if (managed == null) {
+      managed = new HashSet<>();
+      for (var file : catalogReader.read(directory, security).files()) {
+        managed.add(file.path().toRealPath());
+      }
+      otherStores.put(directory, managed);
+    }
+    if (managed.contains(source)) {
+      throw new IOException("Source is listed by another store: " + directory + "; copy it instead");
+    }
   }
 
   private List<Path> expand(List<Path> paths, List<Outcome> outcomes) {
