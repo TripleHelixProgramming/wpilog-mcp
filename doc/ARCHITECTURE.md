@@ -209,7 +209,8 @@ The capture store uses the existing store queue, path validation, move reservati
 An additive `open_capture` field represents a growing file without inventing a hash or weakening
 the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
 written before attempting a directory rename; Windows can defer that rename until the writer
-and mapped readers close. Address directories are provisional until robot identity is implemented.
+and mapped readers close. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
+They are provisional until robot identity is implemented.
 
 Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
 clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds
@@ -233,7 +234,8 @@ take no writer lock. Short lifetime transitions and the existing file leases pro
 
 The default ten-minute hot window keeps the client's decoded values, with array/struct conversion
 when a tool requests them. Expiry follows server time sync as well as new data, so idle topics age
-out too. Before discarding a hot value, the writer ensures a read-only mapping covers its complete
+out too. Expiry is batched on the 250 ms flush tick, at most four growth remaps per second even
+with a zero hot window. Before discarding a hot value, the writer ensures a read-only mapping covers its complete
 record. Older values use their offsets; replacing a mapping waits for its last atomic reader
 reference before unmapping it. The write channel remains open beside the mapping on Windows.
 

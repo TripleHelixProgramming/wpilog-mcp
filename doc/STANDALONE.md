@@ -172,7 +172,7 @@ servers:
 | `capture.period_sec` | Subscription period in seconds, default `0.01`; every change is requested |
 | `capture.exclude` | List of topic prefixes to omit, default `[]` |
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
-| `capture.hot_window_sec` | Values retained in memory, default `600` seconds; `0` reads every value from the capture file |
+| `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry runs on the 250 ms flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
 
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
 Unknown capture keys and invalid values name the key in the startup error. Capture requires

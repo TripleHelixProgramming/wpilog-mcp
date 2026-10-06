@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.triplehelix.wpilogmcp.capture.WpilogOutput;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
@@ -100,6 +101,8 @@ public final class LiveLog implements LogData, AutoCloseable {
   private volatile State state = new State(Map.of(), 0, 0, 0, 0, -1, true);
   private final PriorityQueue<Record> hot = new PriorityQueue<>(Comparator.comparingLong(r -> r.timestampUs));
   private final AtomicReference<Mapping> mapping = new AtomicReference<>();
+  private final AtomicLong mappedReads = new AtomicLong();
+  private final AtomicLong mappings = new AtomicLong();
   private final AtomicInteger users = new AtomicInteger();
   private final AtomicBoolean retired = new AtomicBoolean();
   private final Object lifetime = new Object();
@@ -138,9 +141,13 @@ public final class LiveLog implements LogData, AutoCloseable {
     advance(Math.round(max * 1_000_000));
   }
 
-  /** Time sync expires an idle topic too, without extending the session's data time range. */
-  public void advance(long serverTimeUs) throws IOException {
+  /** Values and time sync move the boundary; only the flush tick retires hot objects. */
+  public void advance(long serverTimeUs) {
     coldBefore = Math.max(coldBefore, serverTimeUs - hotWindowUs);
+  }
+
+  /** One mapping can cover the entire expired batch, even for a zero-length hot window. */
+  public void expire() throws IOException {
     while (!hot.isEmpty() && hot.peek().timestampUs <= coldBefore) {
       var cold = hot.peek(); ensureMapped(cold.end);
       cold.hot = null; hot.remove();
@@ -150,7 +157,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   private void ensureMapped(int end) throws IOException {
     var current = mapping.get();
     if (current != null && current.size >= end) return;
-    var next = new Mapping(path);
+    var next = new Mapping(path); mappings.incrementAndGet();
     if (next.size < end) { next.release(); throw new IOException("Capture record not completely written"); }
     var old = mapping.getAndSet(next); if (old != null) old.release();
   }
@@ -162,7 +169,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
   public void resume() throws IOException {
     // Publish a fresh mapping even if an old cache-removal notification is arriving meanwhile.
-    var next = new Mapping(path); Mapping old;
+    var next = new Mapping(path); mappings.incrementAndGet(); Mapping old;
     synchronized (lifetime) {
       old = mapping.getAndSet(next);
       var s = state; state = new State(s.entries(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), true);
@@ -173,7 +180,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   public void relocate(Path destination) throws IOException {
     path = destination.toAbsolutePath().normalize();
     if (mapping.get() != null) {
-      var next = new Mapping(path); var old = mapping.getAndSet(next); if (old != null) old.release();
+      var next = new Mapping(path); mappings.incrementAndGet(); var old = mapping.getAndSet(next); if (old != null) old.release();
     }
   }
 
@@ -294,7 +301,7 @@ public final class LiveLog implements LogData, AutoCloseable {
       var held = mapping.get();
       if (held == null) throw new IllegalStateException("Live log mapping is retired: " + path);
       if (!held.retain()) continue;
-      try { return EntryDecoder.decodeValue(DataLogAccess.getRecord(held.reader.reader(), record.offset), type, schemas); }
+      try { mappedReads.incrementAndGet(); return EntryDecoder.decodeValue(DataLogAccess.getRecord(held.reader.reader(), record.offset), type, schemas); }
       finally { held.release(); }
     }
   }
@@ -319,5 +326,7 @@ public final class LiveLog implements LogData, AutoCloseable {
         + String.format("Data from %.2f to %.2f s was recovered.", seen.min(), seen.max());
   }
   @Override public StructSchemas structSchemas() { return current().structSchemas(); }
+  long mappedReadCount() { return mappedReads.get(); }
+  long mappingCount() { return mappings.get(); }
   public long hotRecordCount() { return hot.size(); } // Writer-thread diagnostic for deterministic tests.
 }

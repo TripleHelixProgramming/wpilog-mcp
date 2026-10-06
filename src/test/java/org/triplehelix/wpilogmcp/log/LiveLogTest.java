@@ -44,7 +44,8 @@ class LiveLogTest {
     var path = directory.resolve("prefix.wpilog"); var index = index(manager, path, 0);
     var entered = new CompletableFuture<Void>(); var appended = new CompletableFuture<Void>();
     var pool = Executors.newSingleThreadExecutor();
-    try (var writer = new CaptureWriter(Clock.systemUTC(), new ManualScheduler(), CapturePolicy.ALL, index)) {
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
       connect(writer, 1_000_000, 0); writer.value(X, new ValueFrame(1, 1_000_000, 2, 1L), 0);
       var tool = new LogRequiringTool(new ToolDependencies(manager, null, null, null)) {
         @Override public String name() { return "prefix_probe"; }
@@ -78,6 +79,7 @@ class LiveLogTest {
       for (String field : List.of("inputs.session_time_range", "inputs.session_time_ranges", "start_sec", "end_sec")) {
         assertTrue(guide.contains("`" + field + "`"), field);
       }
+      loop.advance(250_000);
       assertEquals(0, index.live().hotRecordCount());
       assertFalse(manager.release(path).released(), "An import cannot move an active writer");
       try (var canonical = manager.acquire(path.toRealPath().toString())) {
@@ -90,9 +92,11 @@ class LiveLogTest {
   @Test void mappedColdValuesSurviveGrowthRetirementAndResumeAfterEviction() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("growth.wpilog"); var index = index(manager, path, 2_000_000);
-    try (var writer = new CaptureWriter(Clock.systemUTC(), new ManualScheduler(), CapturePolicy.ALL, index)) {
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
       connect(writer, 10_000_000, 0);
       for (int i = 0; i < 2200; i++) writer.value(X, new ValueFrame(1, 10_000_000L + i * 1_000_000L, 2, (long) i), i);
+      loop.advance(250_000);
       assertEquals(2, index.live().hotRecordCount());
       try (var use = manager.acquire(path.toString())) {
         assertInstanceOf(LiveLog.View.class, use.log()); assertNull(use.snapshot());
@@ -106,7 +110,9 @@ class LiveLogTest {
         }
         assertTrue(manager.unloadLog(path.toString()));
         // Decode for the first time after retirement, including across two array chunks and remaps.
+        long reads = index.live().mappedReadCount();
         var values = use.log().values().get("NT:/x"); assertEquals(2200, values.size());
+        assertEquals(2198, index.live().mappedReadCount() - reads, "The expired values must come from the mapping");
         for (int i = 0; i < values.size(); i++) { assertEquals((long) i, values.get(i).value()); assertEquals(10.0 + i, values.get(i).timestamp()); }
       }
       try (var loaded = manager.acquire(path.toString())) {
@@ -133,7 +139,8 @@ class LiveLogTest {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("families.wpilog"); var index = index(manager, path, 1);
     var json = new com.google.gson.GsonBuilder().serializeSpecialFloatingPointValues().create();
-    try (var writer = new CaptureWriter(Clock.systemUTC(), new ManualScheduler(), CapturePolicy.ALL, index)) {
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
       connect(writer, 1_000_000, 0);
       var types = List.of("boolean", "double", "int", "float", "string", "raw", "boolean[]", "double[]", "int[]", "float[]", "string[]", "structschema", "struct:Point", "custom");
       var codes = List.of(0, 1, 2, 3, 4, 5, 16, 17, 18, 19, 20, 5, 5, 5);
@@ -147,7 +154,8 @@ class LiveLogTest {
         try (var use = manager.acquire(path.toString())) { hotResults.put("NT:" + name, json.toJson(use.log().values().get("NT:" + name))); }
       }
       writer.timeSync(3_000_000, 1_000_000);
-      assertEquals(0, index.live().hotRecordCount(), "Idle topics expire on clock sync, without another value");
+      loop.advance(250_000);
+      assertEquals(0, index.live().hotRecordCount(), "Idle topics expire on the flush after clock sync, without another value");
       writer.value(X, new ValueFrame(1, 2_000_000, 2, 7L), 0);
       try (var use = manager.acquire(path.toString())) {
         assertEquals("NT:/x", use.log().entries().keySet().iterator().next());
@@ -161,10 +169,46 @@ class LiveLogTest {
     } finally { manager.shutdown(); }
   }
 
+
+  @Test void zeroHotWindowExpiresOnlyOnQuarterSecondFlushes() throws Exception {
+    var manager = new LogManager(); manager.addAllowedDirectory(directory);
+    var path = directory.resolve("ticks.wpilog"); var index = index(manager, path, 0);
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
+      connect(writer, 1_000_000, 0);
+      long mappings = index.live().mappingCount();
+      for (int tick = 0; tick < 4; tick++) {
+        for (int i = 0; i < 100; i++) {
+          long n = tick * 100L + i;
+          writer.value(X, new ValueFrame(1, 1_000_000 + n, 2, n), loop.nowUs());
+        }
+        writer.timeSync(2_000_000 + tick, loop.nowUs());
+        assertEquals(100, index.live().hotRecordCount(), "Append and time sync only advance the expiry boundary");
+        assertEquals(mappings + tick, index.live().mappingCount());
+        loop.advance(249_999);
+        assertEquals(100, index.live().hotRecordCount());
+        loop.advance(1);
+        assertEquals(0, index.live().hotRecordCount());
+        assertEquals(mappings + tick + 1, index.live().mappingCount());
+      }
+      long reads = index.live().mappedReadCount();
+      try (var use = manager.acquire(path.toString())) {
+        var values = use.log().values().get("NT:/x");
+        assertEquals(400, values.size());
+        for (int i = 0; i < 400; i++) {
+          assertEquals((long) i, values.get(i).value());
+          assertEquals((1_000_000 + i) / 1_000_000.0, values.get(i).timestamp());
+        }
+      }
+      assertEquals(400, index.live().mappedReadCount() - reads);
+    } finally { manager.shutdown(); }
+  }
+
   @Test void repeatedDeclarationsAndImpossibleForwardTimestampsFollowTheFinishedReader() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("restarted-entry.wpilog"); var index = index(manager, path, 0);
-    try (var writer = new CaptureWriter(Clock.systemUTC(), new ManualScheduler(), CapturePolicy.ALL, index)) {
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
       connect(writer, 1_000_000, 0); writer.value(X, new ValueFrame(1, 1_000_000, 2, 1L), 0);
       var wrongType = new Announce("/x", 2, "string", null, new JsonObject()); writer.announce(wrongType);
       writer.value(wrongType, new ValueFrame(2, 3_000_000, 4, "ignored type restart"), 0);

@@ -146,10 +146,12 @@ the conformance suite's argument variants for every log-reading tool on the open
 a fresh load of its finished file. It compares complete results, excluding only execution timing
 and the documented live-prefix range, and also runs the independent capture-fidelity checks.
 `LiveLogTest` checks fixed prefixes during a concurrent append, input ranges (including role-based
-inputs), array growth, all hot/cold value families and schemas, idle expiry by time sync, mapping
+inputs), array growth, all hot/cold value families and schemas, actual mapped-read counts (including
+a plant that leaves every hot object intact), four-per-second expiry with a zero hot window, mapping
 retirement with a held reader, resume after eviction, and rename after release. The store rename
 tests now keep a live mapping beside the writer too. These run in the normal Linux and Windows
-suite; the shop stress test with a real robot remains a manual check owned by the user.
+suite. A sparse WPILOG beyond the mapping limit is refused by import without moving or placing
+its bytes; loading and the plain-directory listing give the same reason. The shop stress test with a real robot remains a manual check owned by the user.
 
 ### The disk cache in tests
 

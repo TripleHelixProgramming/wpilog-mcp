@@ -57,6 +57,15 @@ class CaptureStoreTest {
         var open = StoreCatalog.read(root, security); assertEquals(1, open.openCaptures().size());
         assertTrue(open.files().isEmpty()); assertTrue(open.unmanaged().isEmpty());
         var first = open.openCaptures().get(0); assertEquals("captured", first.file().provenance().kind());
+        assertEquals("address", first.robot().basis());
+        var dirs = LogDirectory.getInstance().getLogDirectories();
+        try {
+          LogDirectory.getInstance().setLogDirectory(root.toString());
+          var tools = new org.triplehelix.wpilogmcp.mcp.ToolRegistry();
+          org.triplehelix.wpilogmcp.tools.CoreTools.registerAll(tools);
+          var listed = tools.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
+          assertEquals("address", listed.getAsJsonArray("logs").get(0).getAsJsonObject().getAsJsonObject("robot").get("basis").getAsString());
+        } finally { LogDirectory.getInstance().setLogDirectories(dirs.stream().map(Path::toString).toList()); }
         assertNull(first.file().sha256()); assertEquals(10, first.file().minTimestampSec());
         assertEquals(WALL.instant().toString(), first.session().startedAt());
         assertEquals("pit_clock", first.session().startBasis());

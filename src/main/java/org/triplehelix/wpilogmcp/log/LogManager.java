@@ -499,8 +499,7 @@ public class LogManager {
       // DataLogReader maps the whole file into one int-indexed ByteBuffer, so a file over 2 GB
       // cannot be read: say so here, before the reader fails and the eager fallback rethrows.
       if (fileSizeBytes > Integer.MAX_VALUE) {
-        throw new LogFileException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
-            + filePath + " (" + (fileSizeBytes / (1024 * 1024)) + " MB)");
+        throw LogFileException.tooLarge(filePath, fileSizeBytes);
       }
 
       // The file as it is before it is read: a change during the read shows against this,

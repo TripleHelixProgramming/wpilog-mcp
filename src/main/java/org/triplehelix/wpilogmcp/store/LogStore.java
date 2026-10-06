@@ -258,6 +258,14 @@ public final class LogStore implements AutoCloseable {
         security.validate(source);
         StoreFiles.component(source.getFileName().toString());
         if (request.move()) refuseManagedMove(source, otherStores);
+        // Reject an unmappable WPILOG before even hashing gigabytes that cannot be imported.
+        if (Files.size(source) > Integer.MAX_VALUE) {
+          try (var input = Files.newInputStream(source)) {
+            if (java.util.Arrays.equals(input.readNBytes(6), new byte[]{'W', 'P', 'I', 'L', 'O', 'G'})) {
+              throw org.triplehelix.wpilogmcp.log.LogFileException.tooLarge(source, Files.size(source));
+            }
+          }
+        }
         // Hash first: a duplicate requires neither decoding nor a robot assignment.
         var hash = StoreFiles.hash(source);
         if (assignment) {

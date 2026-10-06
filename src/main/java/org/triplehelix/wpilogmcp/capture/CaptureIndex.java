@@ -39,7 +39,9 @@ public final class CaptureIndex implements CaptureWriter.Observer {
       throws IOException {
     live.append(entry, frame, written); placement.value(session, entry, frame, written);
   }
-  @Override public void flushed(CaptureWriter.Session session) throws IOException { placement.flushed(session); }
+  @Override public void flushed(CaptureWriter.Session session) throws IOException {
+    live.expire(); placement.flushed(session);
+  }
   @Override public void timeSync(CaptureWriter.Session session, long serverTimeUs) throws IOException {
     live.advance(serverTimeUs); placement.timeSync(session, serverTimeUs);
   }

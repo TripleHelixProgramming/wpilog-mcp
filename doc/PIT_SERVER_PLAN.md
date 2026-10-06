@@ -384,12 +384,13 @@ Each leaves the project working and tested on its own.
 6. **Mirror** (§11, §14): the store over HTTP, the local server's synchronization with the shared transfer logic, the extension's settings, status bar, and pins. From here the laptop analyzes offline.
 7. **Metrics endpoint** (§12): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
 8. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
-9. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings`.
-10. **roboRIO system stats** (§8.2) and **followed files** (§8.4), on the puller's SSH connection; the stats provider's cost measured on a roboRIO 1 and a roboRIO 2 before it is on by default, and the program's console followed by default once its file is verified (§17).
-11. **JVM provider** (§8.3): JMX polling first, then the Flight Recorder stream, each gated on what the roboRIO's JRE turns out to carry (§17).
-12. **Session manifests and import matching** (§10, §11).
-13. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
-14. **JFR file import** (§8.3) and the Grafana query endpoint (§12), each when a need shows.
+9. **Windowed WPILOG mapping**: replace the single int-indexed buffer with mapping windows under 2 GB and long offsets everywhere. Read a straddling record through a small extra mapping or a copy; make the window size injectable so tests cross boundaries in small fixtures. Until then, refuse oversized imports and explain oversized plain-directory files in the listing.
+10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings`.
+11. **roboRIO system stats** (§8.2) and **followed files** (§8.4), on the puller's SSH connection; the stats provider's cost measured on a roboRIO 1 and a roboRIO 2 before it is on by default, and the program's console followed by default once its file is verified (§17).
+12. **JVM provider** (§8.3): JMX polling first, then the Flight Recorder stream, each gated on what the roboRIO's JRE turns out to carry (§17).
+13. **Session manifests and import matching** (§10, §11).
+14. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
+15. **JFR file import** (§8.3) and the Grafana query endpoint (§12), each when a need shows.
 
 ### 16. Testing
 
@@ -416,10 +417,10 @@ Each leaves the project working and tested on its own.
 Milestone 2 decisions:
 
 - **Prefix boundary and lifetime:** a call captures a global record sequence and time range, then bounds each first-touched entry by that sequence. This strengthens the per-entry rule so late entry reads cannot exceed the time range in `inputs`. Single-log results use `inputs.session_time_range`; comparisons use `inputs.session_time_ranges` by path. Active captures are pinned, finished ones enter the normal cache, and the writer keeps its last index for a possible clock-continuous resume. Data reads use atomic mapping references; short lifetime transitions guard eviction/resumption. Cold reads retain the existing mapped reader's 2 GB file limit.
-- **Hot expiry:** the window follows the greatest accepted value timestamp or subsequent time-sync clock. Time sync expires idle topics too, without extending the data time range. A complete mapped record is available before its hot value is discarded. No second scan or cross-process incremental index was added.
+- **Hot expiry:** the window follows the greatest accepted value timestamp or subsequent time-sync clock. Time sync expires idle topics too, without extending the data time range. Expiry runs on the 250 ms flush tick, rather than on each append or sync, to cap growth remaps at four per second even with a zero hot window. A complete mapped record is available before its hot value is discarded. Tests count actual mapped decodes, so retaining hot values cannot pass as a cold read. No second scan or cross-process incremental index was added.
 
 - **Windows rename amendment:** the manifest gains event and match immediately; the directory rename is attempted then and retried after session close and reader release. Windows forbids moving the directory while its capture is open or mapped. Listing facts must not wait for a cosmetic name.
-- **Store compatibility:** `open_capture` is an additive session field for an unfinished file. Close replaces it with the existing hashed, verified `files` record, so format version 1 and its finished-file validation remain intact. Older readers can show the growing file as unmanaged. UTC names colliding within one second get `_2`, `_3`, etc.; address characters unsafe in a path are percent-encoded. No serial identity is inferred.
+- **Store compatibility:** `open_capture` is an additive session field for an unfinished file. Close replaces it with the existing hashed, verified `files` record, so format version 1 and its finished-file validation remain intact. Older readers can show the growing file as unmanaged. UTC names colliding within one second get `_2`, `_3`, etc.; address characters unsafe in a path are percent-encoded. The placeholder robot basis is `address`, not `stated`: only the connection endpoint is known. No serial identity is inferred.
 - **Configuration:** `capture.robot` selects team, USB, or an explicit host (optional NT4 port); `store`, `period_sec`, `exclude`, `thin`, and `hot_window_sec` are documented in the standalone guide. Blocks inherit as a whole. Capture requires HTTP and no idle exit: it must keep recording without tool clients. The store is added to the server's log directories.
 
 - **Pure-Java capture writer:** WPILib's DataLog writer uses JNI, while this install deliberately has no native library. `capture/WpilogOutput` therefore writes ordinary WPILOG 1.0 from the [published format](https://github.com/wpilibsuite/allwpilib/blob/main/datalog/doc/datalog.adoc). The fixture writer remains independent. Byte examples, wpiutil's pure-Java DataLogReader, and the differential reader check the output.

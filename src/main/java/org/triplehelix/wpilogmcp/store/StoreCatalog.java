@@ -105,7 +105,7 @@ public final class StoreCatalog {
         if (!Files.isDirectory(robotDir) || !Files.isRegularFile(robotPath)) continue;
         var robot = io.read(robotPath, Robot.class);
         if (robot.id() == null || !robot.id().equals(robotDir.getFileName().toString())
-            || !List.of("logged", "device", "stated").contains(robot.basis())) {
+            || !List.of("logged", "device", "stated", "address").contains(robot.basis())) {
           throw new IOException("Invalid robot manifest: " + robotPath);
         }
         managed.add(robotPath);

@@ -38,7 +38,8 @@ public final class ScopedLogReader implements AutoCloseable {
     lease = LogFileAccess.read(path);
     try (var channel = FileChannel.open(path)) {
       long size = channel.size();
-      if (size < 12 || size > Integer.MAX_VALUE) throw LogFileException.invalid(path);
+      if (size > Integer.MAX_VALUE) throw LogFileException.tooLarge(path, size);
+      if (size < 12) throw LogFileException.invalid(path);
       buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, size);
     } catch (IOException | RuntimeException e) {
       lease.close();

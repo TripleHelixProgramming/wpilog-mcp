@@ -80,6 +80,7 @@ public final class CoreTools {
           + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
           + "this tool first to find logs and get match results, then pass the path to other "
           + "tools. stores lists each store's path and robots; store on a log names its root. "
+          + "A file beyond the reader size limit carries read_error instead of disappearing. "
           + "Stores add robot (serial_number, comments, basis), session metadata, and revlogs companions to logs; "
           + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
           + "or refused files with their reason; "
@@ -201,6 +202,8 @@ public final class CoreTools {
         if (log.matchNumber() != null) logObj.addProperty("match_number", log.matchNumber());
         if (log.teamNumber() != null) logObj.addProperty("team_number", log.teamNumber());
         logObj.addProperty("size_bytes", log.fileSize());
+        if (log.fileSize() > Integer.MAX_VALUE) logObj.addProperty("read_error",
+            org.triplehelix.wpilogmcp.log.LogFileException.tooLarge(Path.of(log.path()), log.fileSize()).getMessage());
         logObj.addProperty("last_modified", log.lastModified());
         if (log.stored() != null) {
           var stored = log.stored();

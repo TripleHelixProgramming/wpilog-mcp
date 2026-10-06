@@ -22,6 +22,12 @@ public class LogFileException extends IOException {
     super(message);
   }
 
+  /** One explanation shared by loading, import, and directory listing until windowed mapping. */
+  public static LogFileException tooLarge(Path path, long size) {
+    return new LogFileException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
+        + path + " (" + (size / (1024 * 1024)) + " MB)");
+  }
+
   /**
    * What makes the file not a WPILOG, stated as facts read from the file: its size and what its
    * first bytes are. Robots produce such files: one that lost power before its log was flushed

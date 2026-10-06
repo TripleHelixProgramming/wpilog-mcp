@@ -55,7 +55,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
       // Percent escapes are portable and injective, unlike replacing every IPv6 ':' with '_'.
       String id = "address-" + java.net.URLEncoder.encode(address, java.nio.charset.StandardCharsets.UTF_8);
       var robot = store.root().resolve("robots").resolve(StoreFiles.component(id));
-      io.write(robot.resolve("robot.json"), new Robot(id, null, null, null, "stated"));
+      io.write(robot.resolve("robot.json"), new Robot(id, null, null, null, "address"));
       var day = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC).format(start);
       var name = DateTimeFormatter.ofPattern("HHmmss'Z'").withZone(ZoneOffset.UTC).format(start);
       var parent = io.check(robot.resolve("sessions").resolve(day)); Files.createDirectories(parent);

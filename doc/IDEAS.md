@@ -400,7 +400,12 @@ Milestone 1 is implemented: the NT4 protocol/client and the gateway's loopback f
 
 A daemon in the shop and the pit that subscribes once to the robot's NetworkTables, records every change of every topic as a `.wpilog` capture per robot boot, re-publishes the stream as a read-only NetworkTables gateway so the robot has one client, pulls the robot's own log files and the roboRIO's system logs whenever it sits disabled, follows configured files such as the program's console into the capture as they are written, answers the existing tools and a few live ones over the HTTP MCP transport on the team's private network, records vision coprocessor settings, the roboRIO's system stats, and the robot program's garbage collection and profile beside the data, serves its latest values for Prometheus and Grafana, maps every session and pulled file to a robot by the roboRIO's serial number, and keeps all of it in a store it owns, by robot and session, that files enter only by capture, pull, or import; the extension keeps a synchronized mirror of the sessions a laptop wants, so analysis continues offline from the same files. The process that writes a capture is the process that answers questions about it, so an open session is served from the index and values the writer builds as it writes, never by reading the file back. [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) is the proposal and the specification, with milestones.
 
-### 9.2 Data Browser and Charts
+### 9.2 Windowed WPILOG Mapping
+Priority: High. Complexity: High. Planned after the gateway in [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md#15-milestones).
+
+The reader currently maps a file into one int-indexed buffer and refuses files over 2 GB. Replace that with windows under 2 GB, long offsets everywhere, and a small extra mapping or copy for a record straddling a window boundary. Tests must be able to set a small window size and cross boundaries without writing gigabyte fixtures. Until that milestone, oversized imports are refused with the original untouched, and the plain-directory listing reports the same reason.
+
+### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.
 
 Direct access to the data without an agent, and real data in an agent's answers. [EXPLORER_PLAN.md](EXPLORER_PLAN.md) is the proposal and the specification, with milestones; the notes below are what it grew from. Decided: the viewer is part of the WPILog Analyzer extension, not a second extension, since a viewer and an analyzer that share a server, a configuration, and a selection belong in one install, and the viewer needs no assistant to be useful.

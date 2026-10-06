@@ -38,6 +38,7 @@ final class DescriptionOutputs {
       Map.entry("detect_anomalies | spike_interval_sec", "ScopeToolsTest.spikeCadence"),
       Map.entry("get_entry_info | decode_problem", "StructToolsFixtureTest.entryInfoMystery"),
       Map.entry("get_statistics | records_in_window", "FieldPathToolsTest.wildcardPools"),
+      Map.entry("list_available_logs | read_error", "LogStoreTest.oversizedWpilogIsRefusedUntouchedAndListedWithTheSameReason"),
       Map.entry("list_available_logs | stated_robot", "StoreInboxTest.batchIdentityIsListedAndAppliedButALooseDropHasNone"),
       Map.entry("list_available_logs | serial_number", "LogStoreTest.storeListingUsesManifestsAndReportsStraysAndMoves"),
       Map.entry("list_available_logs | moved_to", "LogStoreTest.storeListingUsesManifestsAndReportsStraysAndMoves"),
