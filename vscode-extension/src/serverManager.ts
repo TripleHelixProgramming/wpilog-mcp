@@ -89,6 +89,9 @@ interface DaemonState {
   inFlight?: Promise<string | undefined>;
   lastUrl?: string;
   lastInputs?: DaemonInputs;
+  startedInputs?: DaemonInputs;
+  restartPending: boolean;
+  restartRevision: number;
   errorShown: boolean;
 }
 
@@ -112,7 +115,7 @@ export class ServerManager implements vscode.Disposable {
   private state(name: string): DaemonState {
     let state = this.states.get(name);
     if (!state) {
-      state = { backoff: new Backoff(), errorShown: false };
+      state = { backoff: new Backoff(), errorShown: false, restartPending: false, restartRevision: 0 };
       this.states.set(name, state);
     }
     return state;
@@ -176,10 +179,26 @@ export class ServerManager implements vscode.Disposable {
     if (spec.kind === "standalone") return false;
     const inputs = await this.resolveInputs(spec, false);
     if (!inputs) return false;
-    this.state(spec.name).lastInputs = inputs;
+    const state = this.state(spec.name);
+    state.lastInputs = inputs;
     const port = (await this.portFor(spec)) ?? (await this.choosePort());
     await this.rememberPort(spec.name, port);
-    return writeConfigFile(spec.configPath, buildDaemonConfig({ ...inputs, name: spec.name, port }));
+    return this.writeOwnConfig(spec, state, inputs, port);
+  }
+
+  /** A disk write is not a running daemon update; retain it until a restart succeeds. */
+  private async writeOwnConfig(spec: OwnDaemonSpec, state: DaemonState, inputs: DaemonInputs,
+    port: number): Promise<boolean> {
+    const changed = await writeConfigFile(
+      spec.configPath, buildDaemonConfig({ ...inputs, name: spec.name, port })
+    );
+    const previous = state.startedInputs;
+    if (changed || (previous && (previous.javaPath !== inputs.javaPath ||
+      previous.maxHeap !== inputs.maxHeap || previous.jarPath !== inputs.jarPath))) {
+      state.restartPending = true;
+      state.restartRevision++;
+    }
+    return changed;
   }
 
   /** Stops a daemon and starts it again from the current configuration. */
@@ -228,16 +247,20 @@ export class ServerManager implements vscode.Disposable {
     }
     await this.rememberPort(spec.name, port);
 
-    const changed = await writeConfigFile(
-      spec.configPath,
-      buildDaemonConfig({ ...inputs, name: spec.name, port })
-    );
-    if (verdict.kind === "ours" && !changed && daemonIsCurrent(verdict, inputs.version)) {
+    await this.writeOwnConfig(spec, state, inputs, port);
+    if (verdict.kind === "ours" && !state.restartPending && daemonIsCurrent(verdict, inputs.version)) {
+      state.startedInputs = inputs;
       return this.started(spec, state, port);
     }
-    if (verdict.kind === "ours" && changed) {
-      this.output.appendLine(`${spec.name}: the configuration changed; restarting the server.`);
-      await this.run(inputs.javaPath, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
+    const revision = state.restartRevision;
+    if (verdict.kind === "ours" && state.restartPending) {
+      this.output.appendLine(`${spec.name}: the configuration or launch inputs changed; restarting the server.`);
+      const stopped = await this.run(inputs.javaPath, stopCommand(inputs.maxHeap, inputs.jarPath, spec.name));
+      if (stopped.code !== 0) {
+        this.output.appendLine(`ERROR: the server ${spec.name} did not stop (exit ${stopped.code}).`);
+        this.scheduleRetry(spec, state);
+        return undefined;
+      }
     }
 
     const result = await this.run(
@@ -245,6 +268,9 @@ export class ServerManager implements vscode.Disposable {
       startCommand(inputs.maxHeap, inputs.jarPath, spec.name, spec.configPath)
     );
     if (result.code === 0) {
+      state.startedInputs = inputs;
+      // A write while the child starts belongs to the next restart, not this one.
+      if (state.restartRevision === revision) state.restartPending = false;
       return this.started(spec, state, port);
     }
     this.output.appendLine(`ERROR: the server ${spec.name} did not start (exit ${result.code}).`);
