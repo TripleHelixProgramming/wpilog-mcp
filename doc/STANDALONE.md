@@ -1,6 +1,8 @@
 # The Standalone Server
 
-The standalone install is the server used by the VS Code extension and by clients outside VS Code. Most users put logs in `~/riologs` and let their client start the shared server automatically. The extension offers installation itself; the scripts below also work without VS Code.
+The standalone install is the server used by the VS Code extension and by clients outside VS Code: Claude Code, Claude Desktop, Gemini, or any other MCP client. Most users put logs in `~/riologs` and let their client start the shared server automatically. The extension offers installation itself; the scripts below also work without VS Code.
+
+The server is designed for and tested with Claude. Other MCP clients work too, but the depth and quality of the analysis depend on the model.
 
 ## Requirements
 
@@ -13,7 +15,7 @@ The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME`, then `java` 
 
 ## Install
 
-Run the installer for your system to get the latest full release. In a terminal it prompts for log directories, a team number, and whether to install the matching VS Code extension. Existing server settings are kept, without asking you to enter them again. Unattended runs do not prompt; use `--non-interactive` to require that behavior or `--interactive` to request prompts.
+Run the installer for your system to get the latest full release. In a terminal it prompts for log directories, a team number, and whether to install the matching VS Code extension. Existing server settings are kept, without asking you to enter them again. A piped or scripted run does not prompt and takes the defaults; `--interactive` asks anyway, and `--non-interactive` never asks.
 
 macOS and Linux:
 ```bash
@@ -122,7 +124,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `logdir` | Directory of log files (subdirectories are searched too), or a list of directories | None without configuration; the installed file sets `~/riologs`. An empty set after lease registration admits nothing |
+| `logdir` | Directory of log files (subdirectories are searched too), or a list of directories | None; the installed file sets `~/riologs`. Clients can add directories for a session (see [Directories by lease](#directories-by-lease)) |
 | `team` | Your team number, for logs that do not record one | None |
 | `tba_key` | The Blue Alliance API key | `TBA_API_KEY` from the environment |
 | `transport` | `stdio` or `http` | `stdio` |
@@ -318,7 +320,7 @@ POST /tba-key
 
 `POST /directories` replaces that session's directories atomically. Paths must be absolute, existing directories; symlinks resolve to their targets. An invalid path is refused with its name (400), and the previous lease remains intact. Each object may override the request's default team, including with null. Logs use their recorded team first, then the most specific matching lease with a team, then the configured default. The most recently registered lease wins equal-path team conflicts. `list_available_logs` returns origins and teams in `log_directories`, and plain strings in `log_directory_paths`. Leased directories also supply import sources, store discovery, and inbox polling.
 
-`POST /tba-key` keeps the key in memory only. The most recently registered live key wins over the configured key; `{"key":null}` clears this session's key and restores the next live key or the configured one. The response never contains it. A missing session header is 400; an unknown or expired session is 404. Session DELETE or expiry removes both leases; `DELETE /directories` removes only the directories. Later reads, including cached logs, are refused unless another live lease or permanent configuration still admits them. After registration has been used, an empty directory set grants no file access.
+`POST /tba-key` keeps the key in memory only. The most recently registered live key wins over the configured key; `{"key":null}` clears this session's key and restores the next live key or the configured one. The response never contains it. A missing session header is 400; an unknown or expired session is 404. Session DELETE or expiry removes both leases; `DELETE /directories` removes only the directories. Later reads, including cached logs, are refused unless another live lease or permanent configuration still admits them. A server with no `logdir` and no lease admits no file at all.
 
 The bridge registers after initialization and releases its session when standard input closes:
 
@@ -461,5 +463,5 @@ Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your s
   ```bash
   ~/wpilib/2026/jdk/bin/java -version   # or: java -version
   ```
-- **Out of memory with large logs**: set `WPILOG_MAX_HEAP=8g` in the environment the server starts in. For an MCP client, that is the `env` of the server's entry, since the client starts the launcher.
+- **Out of memory with large logs**: set `WPILOG_MAX_HEAP=8g` in the environment the server starts in. For an MCP client, that is the `env` of the server's entry, since the client starts the launcher. In VS Code, set the extension's `maxHeap` setting and restart the server; the extension passes it to the launcher.
 - **Log reported as truncated**: a log cut short (by a power loss on the robot, for example) still loads. The server reads every complete record and reports the log as `truncated`.

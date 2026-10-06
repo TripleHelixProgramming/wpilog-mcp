@@ -101,9 +101,9 @@ User directories remain available for the window; open projects add their own di
 | `wpilog-mcp.enableForClaudeCode` | User-scope bridge registration and project YAML offers | on |
 | `wpilog-mcp.javaPath` | Java executable for the bundled installer | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib JDK year for the installer | latest installed |
-| `wpilog-mcp.maxHeap` | Heap for the installer | `4g` |
+| `wpilog-mcp.maxHeap` | Maximum JVM heap for the server, applied when the extension starts or restarts it, and for the installer | `4g` |
 
-`useStandaloneServer` and `idleExitMinutes` are removed. Every window uses the standalone install; idle policy is `idle_exit_minutes` in YAML. The installed launcher's Java lookup and `WPILOG_MAX_HEAP` control the daemon, not the extension's installer settings.
+`useStandaloneServer` and `idleExitMinutes` are removed. Every window uses the standalone install; idle policy is `idle_exit_minutes` in YAML. The installed launcher's own Java lookup runs the daemon, not the installer's `javaPath` and `wpiLibYear`. The heap is the extension's `maxHeap` when the extension starts the daemon, passed to the launcher as `WPILOG_MAX_HEAP`; a daemon another client started keeps the heap it was given until it is restarted.
 
 ## The Blue Alliance API Key
 
@@ -145,7 +145,7 @@ Before uninstalling, use **Clear The Blue Alliance API Key** if you want it remo
 - **Port occupied:** change `servers.http.port` in `servers.yaml`, then restart. The extension reads the actual port from the daemon's PID file.
 - **Java missing:** install the WPILib JDK or configure the installer Java path. The launcher also needs a JDK through WPILib, `JAVA_HOME`, or PATH.
 - **Claude Code lacks tools:** run **Register with Claude Code**, restart the Claude session, and check `/mcp` for approval. A retained project entry can override the user registration; the output explains why it was left.
-- **Large logs exhaust memory:** set `WPILOG_MAX_HEAP=8g` in the environment that starts the launcher and restart the daemon.
+- **Large logs exhaust memory:** set `wpilog-mcp.maxHeap` to `8g` and run **WPILog Analyzer: Restart Server**. For a daemon another client starts, set `WPILOG_MAX_HEAP=8g` in that client's environment instead.
 
 ## More Information
 

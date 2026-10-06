@@ -56,7 +56,9 @@ A possible answer: *"Battery voltage dropped below the brownout threshold at 42.
 
 ## Installation
 
-Install **[WPILog Analyzer](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer)** in VS Code, accept its server-install offer, and put your logs in `~/riologs`. The extension bundles the server JAR, finds Java, and starts one shared server. Copilot and other VS Code agents get its HTTP definition; Claude Code gets a user-scope bridge registration. [The extension guide](vscode-extension/README.md) covers setup and the explorer.
+wpilog-mcp is designed for Claude and tested with Claude, but any agent that speaks MCP should work: GitHub Copilot in VS Code, Gemini CLI, Cursor, and others. ChatGPT reaches MCP servers only over the network, so it needs the [HTTP transport](doc/STANDALONE.md#http-transport).
+
+Install **[WPILog Analyzer](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer)** in VS Code, accept its server-install offer, and put your logs in `~/riologs` or set its Log Directory setting. The extension bundles the server JAR, finds Java, and starts one shared server. Copilot and other VS Code agents get its HTTP definition; Claude Code gets a user-scope bridge registration. [The extension guide](vscode-extension/README.md) covers setup and the explorer. A particular build, such as a test build of the next version, installs from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases); the extension's README says how.
 
 ### Extension or Standalone?
 

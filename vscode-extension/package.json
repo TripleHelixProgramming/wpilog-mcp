@@ -396,7 +396,7 @@
             "type": "string",
             "default": "4g",
             "order": 8,
-            "markdownDescription": "Maximum JVM heap for running the bundled installer (for example `4g`). Set `WPILOG_MAX_HEAP` in the environment to configure the standalone daemon’s heap."
+            "markdownDescription": "Maximum JVM heap for the server (for example `4g`, or `8g` for logs of several hundred MB), applied when this extension starts or restarts it, and for the bundled installer. A server another client started keeps its heap until it is restarted."
           }
         }
       }

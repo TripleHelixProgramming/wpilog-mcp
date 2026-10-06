@@ -99,6 +99,21 @@ export function standaloneStopArgs(configPath: string): string[] {
   return ["stop", STANDALONE_SERVER, "--config", configPath];
 }
 
+/** The variable the launcher reads for the JVM's maximum heap (`-Xmx`). */
+export const MAX_HEAP_VARIABLE = "WPILOG_MAX_HEAP";
+
+/**
+ * The environment the launcher starts the server in: the extension's, with the `maxHeap`
+ * setting as the launcher's heap variable. The launcher turns it into `-Xmx` for the daemon
+ * it starts, so the setting sizes the server as it did when the extension ran the JAR itself,
+ * and the size never appears on a command line. A blank setting leaves the environment alone,
+ * so the launcher's own default (or a variable the user exported) applies.
+ */
+export function launcherEnvironment(base: NodeJS.ProcessEnv, maxHeap: string | undefined): NodeJS.ProcessEnv {
+  const heap = maxHeap?.trim();
+  return heap ? { ...base, [MAX_HEAP_VARIABLE]: heap } : { ...base };
+}
+
 /**
  * Whether a server's version is older than the extension's, by the numbers of the version
  * (`major.minor.patch`); a suffix such as `-dev2` is not compared. This decides whether to

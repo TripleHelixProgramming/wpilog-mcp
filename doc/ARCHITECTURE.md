@@ -313,7 +313,7 @@ Import, listing, and shared lazy readers own their mappings through the same det
 
 ### Path security
 
-A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. The server validator's dynamic set is the union of permanent configuration and live session leases (`ClientLeases`); listings, store discovery, inbox polling, and import validation see the same leases. After registration has been used, an empty set admits nothing, and cached files receive the same validation as new reads. The earlier unrestricted mode remains for a reader that has never used leases. A listing resolves file symlinks before reading metadata, so a link cannot broaden a lease. CSV exports are written only inside the export directory, which is checked the same way.
+A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. The server validator's dynamic set is the union of permanent configuration and live session leases (`ClientLeases`); listings, store discovery, inbox polling, and import validation see the same leases. A server with no configured directory and no lease admits nothing, and cached files receive the same validation as new reads, so a lease that ends takes its files with it. A listing resolves file symlinks before reading metadata, so a link cannot broaden a lease. CSV exports are written only inside the export directory, which is checked the same way.
 
 ### Loading
 
@@ -343,7 +343,7 @@ Structs are decoded from the schemas the log records, using WPILib's schema pars
 
 ## Memory Management
 
-The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` by default; a background server inherits it from the JVM that starts it. The extension’s `wpilog-mcp.maxHeap` now applies only to running the installer.
+The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` by default; a background server inherits it from the JVM that starts it. The extension sets that variable from its `wpilog-mcp.maxHeap` setting in the launcher’s environment when it starts or restarts the daemon (and runs the installer with the same heap), so the size never appears in a process list; a daemon another client started keeps its own heap until it is restarted.
 
 A loaded log costs:
 
