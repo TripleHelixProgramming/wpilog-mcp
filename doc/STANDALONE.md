@@ -9,7 +9,7 @@ The server is designed for and tested with Claude. Other MCP clients work too, b
 - JDK 17 or newer (the WPILib JDK is recommended)
 - Nothing else: the WPILib libraries are bundled in the JAR
 
-The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME` (macOS and Linux), then `java` on your `PATH`. Building with `./gradlew` uses `JAVA_HOME` or `java` on your `PATH`. WPILib puts its JDK here:
+The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME`, then `java` on your `PATH`. Building with `./gradlew` uses `JAVA_HOME` or `java` on your `PATH`. WPILib puts its JDK here:
 - macOS and Linux: `~/wpilib/2026/jdk/bin/java`
 - Windows: `C:\Users\Public\wpilib\2026\jdk\bin\java.exe`
 
@@ -34,7 +34,16 @@ cd wpilog-mcp
 ./gradlew install
 ```
 
-Either way, the server is installed in `~/.wpilog-mcp/`:
+Both release installers download a temporary JAR and run its `install` verb, which owns the layout and prints the PATH hint. The Gradle task runs the same verb with `--force`, so a development build becomes current even when its version is equal or older. To install a JAR you already have:
+
+```bash
+java -jar wpilog-mcp-<version>-all.jar install
+java -jar wpilog-mcp-<version>-all.jar install --install-dir /path/to/install --logdir /path/to/logs --logdir /path/to/archive --team 2363 --json
+```
+
+`--install-dir` defaults to `~/.wpilog-mcp`. Each `--logdir` and `--team` seeds a new configuration only; existing `servers.yaml` or legacy `servers.json` is preserved. The TBA key is always left commented. `--json` prints one object with `install_dir`, `installed_version`, `launcher_version_before` (null when none), `launcher_version_after`, `repointed`, `config_created`, `config_path`, `launcher_path`, and `path_hint` (the folder to add to PATH, or null). Keeping a newer or equal current launcher is success; a write failure exits nonzero with its reason. Without `--json`, these results are printed as text.
+
+The default layout is:
 ```
 ~/.wpilog-mcp/
 ├── jars/wpilog-mcp-{version}.jar        # one JAR per installed version
@@ -54,7 +63,7 @@ On Windows, the installer prints the folder to add to your `Path`.
 
 ## Configuration
 
-Edit `~/.wpilog-mcp/servers.yaml`. The installer creates it and never overwrites it. Set your team number there: the installer has no way to know it, so the file ships with that line commented out.
+Edit `~/.wpilog-mcp/servers.yaml`. The installer creates it and never overwrites it. Set your team number there, or seed it with `install --team`; without a seed the line is commented out.
 
 ```yaml
 # Your FRC team number, for The Blue Alliance match data when a log does not record one.
@@ -385,7 +394,7 @@ git pull
 ./gradlew install
 ```
 
-Either installer adds the new version's JAR and launcher, points `wpilog-mcp` at them, and leaves `servers.yaml` alone. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until the next `start` or `connect` of its name, which stops it and starts the new version, or until you `stop` it.
+Installation adds its versioned JAR and launcher, and leaves the configuration alone. It repoints `wpilog-mcp` only when the installing version is newer, or with `--force`. Version numbers compare numerically; an unsuffixed release follows a suffixed version with the same numbers, and suffixes compare their numeric and text components (`dev10` follows `dev9`). An unreadable or unmarked current launcher counts as missing. A second install with identical files leaves them alone and reports `repointed: false`; changed bytes of the same version are refreshed atomically, as needed for development builds. `./gradlew install` always passes `--force`. An `install.lock` file serializes simultaneous installers; a busy install is reported. Installing never stops or restarts a running daemon. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until the next `start` or `connect` of its name, which stops it and starts the new version, or until you `stop` it.
 
 ## Uninstalling
 

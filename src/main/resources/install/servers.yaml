@@ -1,0 +1,36 @@
+# wpilog-mcp server configuration
+# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
+
+# ---- Defaults ----
+# Top-level settings are inherited by all server configurations below.
+# Individual servers can override any of these.
+
+# Your FRC team number, for The Blue Alliance match data when a log does not record one.
+# Remove the # and put in your number:
+@TEAM@
+
+# Directory containing .wpilog files downloaded from the roboRIO
+@LOGDIR@
+# Or several directories, listed together:
+# logdir:
+#   - ~/riologs
+#   - /Volumes/LOGS/archive
+
+# The Blue Alliance API key (get one at https://www.thebluealliance.com/account).
+# Remove the # and put in your key, or set the TBA_API_KEY environment variable instead:
+# tba_key: your-key-here
+
+# ---- Server Configurations ----
+servers:
+
+  # Default: stdio transport for MCP clients (Claude Desktop, etc.)
+  default:
+    transport: stdio
+
+  # HTTP transport for browser-based or multi-client access
+  http:
+    transport: http
+    port: 2363
+
+  # For the project's stress tests (./gradlew stressTest), with the settings above
+  stresstest: {}

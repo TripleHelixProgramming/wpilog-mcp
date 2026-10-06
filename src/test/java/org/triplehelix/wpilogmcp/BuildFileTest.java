@@ -26,6 +26,19 @@ import org.junit.jupiter.api.Test;
  */
 class BuildFileTest {
 
+  @Test
+  void installDelegatesToThePackagedJarWithForce() throws IOException {
+    var build = Files.readString(Path.of("build.gradle"));
+    int start = build.indexOf("tasks.register('install', Exec)");
+    assertTrue(start >= 0);
+    var body = build.substring(start, build.indexOf("// Installer tests", start));
+    assertTrue(body.contains("dependsOn shadowJar"));
+    assertTrue(body.contains("'-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath"));
+    assertTrue(body.contains("'install', '--force', '--install-dir'"));
+    assertFalse(body.contains("# wpilog-mcp") || body.contains("yamlConfig"),
+        "the JAR owns the launcher and configuration templates");
+  }
+
   /** The text of a task registered as {@code tasks.register('name') { ... }}. */
   private static String task(String build, String name) {
     int start = build.indexOf("tasks.register('" + name + "')");

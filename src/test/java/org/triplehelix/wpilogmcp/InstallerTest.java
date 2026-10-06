@@ -8,9 +8,11 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.File;
-import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
+import com.google.gson.JsonParser;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +28,7 @@ import org.triplehelix.wpilogmcp.config.ConfigLoader;
  * The one-line installers (install.sh, install.ps1) install a release the way {@code ./gradlew
  * install} installs a build: a versioned JAR and launcher, {@code wpilog-mcp[.bat]} pointing at
  * the newest, and the same default {@code servers.yaml}, kept on upgrade. They run here against
- * a fake GitHub (and, for install.sh, a fake java), in a scratch home folder.
+ * a fake GitHub that supplies the real packaged JAR, in a scratch home folder.
  */
 @DisplayName("installers")
 class InstallerTest {
@@ -36,31 +38,6 @@ class InstallerTest {
 
   static String read(String file) throws Exception {
     return Files.readString(Path.of(file));
-  }
-
-  /** The lines after the line containing {@code start}, up to the line that is {@code end}. */
-  static String between(String text, String start, String end) {
-    text = text.replace("\r\n", "\n");
-    int from = text.indexOf(start);
-    assertTrue(from >= 0, "not found: " + start);
-    from = text.indexOf('\n', from) + 1;
-    int to = text.indexOf("\n" + end + "\n", from - 1);
-    assertTrue(to >= 0, "no closing " + end + " after " + start);
-    return text.substring(from, to + 1);
-  }
-
-  static String shConfig() throws Exception {
-    return between(read("install.sh"), "<< 'CONFIG'", "CONFIG");
-  }
-
-  /** A literal here-string: in a "@ ... "@ one, PowerShell would expand any $ in the file. */
-  static String ps1Config() throws Exception {
-    return between(read("install.ps1"), "$configContent = @'", "'@");
-  }
-
-  static String gradleConfig() throws Exception {
-    return between(read("build.gradle"), "yamlConfig.text = \"\"\"\\", "\"\"\"")
-        .replace("\\$", "$");
   }
 
   /** Checks a default configuration file as the server reads it. */
@@ -91,13 +68,56 @@ class InstallerTest {
   }
 
   @Test
-  @DisplayName("the default servers.yaml is the same in all three installers, with no team number")
-  void defaultConfigs() throws Exception {
-    var sh = shConfig();
-    assertEquals(sh, gradleConfig(), "install.sh and ./gradlew install");
-    assertEquals(sh.replace("/Volumes/LOGS/archive", "D:/frc-logs/archive"), ps1Config(),
-        "install.sh and install.ps1 (apart from the example archive path)");
-    checkDefaultConfig(Files.writeString(tempDir.resolve("servers.yaml"), sh));
+  @DisplayName("the packaged JAR installs a runnable launcher, JSON summary, and default configuration")
+  void jarInstall() throws Exception {
+    var root = tempDir.resolve("install with spaces");
+    var first = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
+    assertEquals(0, first.exit(), first.output());
+    var summary = JsonParser.parseString(first.output()).getAsJsonObject();
+    assertEquals(Version.VERSION, summary.get("installed_version").getAsString());
+    assertTrue(summary.get("repointed").getAsBoolean());
+    assertTrue(summary.get("config_created").getAsBoolean());
+    assertEquals(9, summary.size(), first.output());
+    assertArrayEquals(Files.readAllBytes(jar()), Files.readAllBytes(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar")));
+    var launcher = Path.of(summary.get("launcher_path").getAsString());
+    var launched = run(isWindows() ? List.of("cmd", "/c", launcher.toString(), "--version")
+        : List.of(launcher.toString(), "--version"), Map.of("JAVA_HOME", System.getProperty("java.home")), false);
+    assertEquals(0, launched.exit(), launched.output());
+    assertEquals(List.of("wpilog-mcp version " + Version.VERSION),
+        launched.output().lines().filter(line -> line.startsWith("wpilog-mcp version ")).toList());
+    checkDefaultConfig(root.resolve("servers.yaml"));
+    var again = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
+    var second = JsonParser.parseString(again.output()).getAsJsonObject();
+    assertEquals(0, again.exit(), again.output());
+    assertFalse(second.get("repointed").getAsBoolean());
+    assertFalse(second.get("config_created").getAsBoolean());
+  }
+
+  @Test void commandErrorsDoNotWriteAJsonSuccess() throws Exception {
+    var blocked = Files.writeString(tempDir.resolve("not-a-directory"), "kept");
+    var failed = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", blocked.toString(), "--json"), Map.of(), false);
+    assertEquals(1, failed.exit());
+    assertTrue(failed.output().contains("Install failed:"), failed.output());
+    var bad = run(List.of(java(), "-jar", jar().toString(), "install", "--team", "nope", "--json"), Map.of(), false);
+    assertEquals(2, bad.exit());
+    assertTrue(bad.output().contains("--team must be a positive integer"), bad.output());
+    var classes = MainProcess.run(tempDir, List.of("install", "--install-dir", tempDir.resolve("classes").toString()), Map.of());
+    assertTrue(classes.contains("Install must run from a JAR"), classes);
+    var root = Files.createDirectories(tempDir.resolve("locked"));
+    try (var channel = FileChannel.open(root.resolve("install.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        var lock = channel.lock()) {
+      var busy = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
+      assertEquals(1, busy.exit());
+      assertTrue(busy.output().contains("Another installation is in progress"), busy.output());
+    }
+  }
+
+  static Path jar() {
+    return Path.of(System.getProperty("install.testJar"));
+  }
+
+  static String java() {
+    return ProcessHandle.current().info().command().orElse("java");
   }
 
   @Test
@@ -138,7 +158,7 @@ class InstallerTest {
 
   record Run(int exit, String output) {}
 
-  static Run run(List<String> command, Map<String, String> env, boolean clearEnv)
+  Run run(List<String> command, Map<String, String> env, boolean clearEnv)
       throws Exception {
     var pb = new ProcessBuilder(command);
     if (clearEnv) pb.environment().clear();
@@ -147,10 +167,15 @@ class InstallerTest {
     pb.environment().putAll(env);
     pb.redirectErrorStream(true);
     pb.redirectInput(ProcessBuilder.Redirect.from(new File(isWindows() ? "NUL" : "/dev/null")));
+    var output = Files.createTempFile(tempDir, "process-", ".txt");
+    pb.redirectOutput(output.toFile());
     var process = pb.start();
-    var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    assertTrue(process.waitFor(120, TimeUnit.SECONDS), "did not finish:\n" + output);
-    return new Run(process.exitValue(), output);
+    try {
+      assertTrue(process.waitFor(120, TimeUnit.SECONDS), "did not finish: " + Files.readString(output));
+      return new Run(process.exitValue(), Files.readString(output));
+    } finally {
+      process.destroyForcibly();
+    }
   }
 
   static boolean isWindows() {
@@ -179,7 +204,9 @@ class InstallerTest {
       done
       case "$url" in
           https://api.github.com/*) cat "$FAKE_RELEASE_JSON" ;;
-          *) printf 'jar for %s' "$url" > "$out" ;;
+          *) cp "$FAKE_JAR" "$out"
+             printf '%s' "$url" > "$FAKE_DOWNLOAD_URL"
+             printf '%s' "$out" > "$FAKE_DOWNLOAD_FILE" ;;
       esac
       """;
 
@@ -195,54 +222,60 @@ class InstallerTest {
 
   @Test
   @DisabledOnOs(OS.WINDOWS)
-  @DisplayName("install.sh: versioned JAR and launcher, wpilog-mcp a symlink to the newest")
+  @DisplayName("install.sh downloads a temporary JAR and delegates the layout without overwriting configuration")
   void installSh() throws Exception {
-    var home = Files.createDirectories(tempDir.resolve("home"));
+    var home = Files.createDirectories(tempDir.resolve("home with spaces"));
     var fakeBin = Files.createDirectories(tempDir.resolve("fakebin"));
     executable(fakeBin.resolve("curl"), FAKE_CURL);
-    // The launcher prefers the newest WPILib JDK
-    executable(home.resolve("wpilib/2026/jdk/bin/java"), FAKE_JAVA);
-    var install = home.resolve(".wpilog-mcp");
-    var bin = install.resolve("bin");
-    // An earlier install.sh wrote the launcher itself here, not a symlink
-    executable(bin.resolve("wpilog-mcp"), "#!/bin/sh\necho old launcher\n");
-    var installer = Path.of("install.sh").toAbsolutePath().toString();
-    var release = tempDir.resolve("release.json");
-    Map<String, String> env = Map.of("HOME", home.toString(),
-        "PATH", fakeBin + ":/usr/bin:/bin", "FAKE_RELEASE_JSON", release.toString());
-
-    Files.writeString(release, releaseJson("1.2.3"));
-    var first = run(List.of("sh", installer), env, true);
+    var release = Files.writeString(tempDir.resolve("release.json"), releaseJson(Version.VERSION));
+    var downloadedUrl = tempDir.resolve("url.txt");
+    var downloadedFile = tempDir.resolve("download.txt");
+    var env = Map.of("HOME", home.toString(), "PATH", fakeBin + ":/usr/bin:/bin",
+        "JAVA_HOME", System.getProperty("java.home"), "TMPDIR", tempDir.toString(), "FAKE_RELEASE_JSON", release.toString(),
+        "FAKE_JAR", jar().toString(), "FAKE_DOWNLOAD_URL", downloadedUrl.toString(), "FAKE_DOWNLOAD_FILE", downloadedFile.toString());
+    var command = List.of("sh", Path.of("install.sh").toAbsolutePath().toString());
+    var first = run(command, env, true);
     assertEquals(0, first.exit(), first.output());
-    var jar123 = install.resolve("jars/wpilog-mcp-1.2.3.jar");
-    assertEquals("jar for " + jarUrl("1.2.3"), Files.readString(jar123));
-    var launcher123 = bin.resolve("wpilog-mcp-1.2.3");
-    assertTrue(Files.isExecutable(launcher123), first.output());
-    assertTrue(Files.isSymbolicLink(bin.resolve("wpilog-mcp")), "wpilog-mcp is a symlink");
-    assertEquals(Path.of("wpilog-mcp-1.2.3"), Files.readSymbolicLink(bin.resolve("wpilog-mcp")));
-    checkDefaultConfig(install.resolve("servers.yaml"));
-
-    var launched = run(List.of(bin.resolve("wpilog-mcp").toString(), "start", "default"),
-        Map.of("HOME", home.toString(), "PATH", "/usr/bin:/bin"), true);
-    assertEquals(List.of("-Xmx4g", "-jar", jar123.toString(), "start", "default"),
-        launched.output().lines().toList());
-    var bigHeap = run(List.of(bin.resolve("wpilog-mcp").toString()),
-        Map.of("HOME", home.toString(), "PATH", "/usr/bin:/bin", "WPILOG_MAX_HEAP", "8g"), true);
-    assertEquals("-Xmx8g", bigHeap.output().lines().findFirst().orElse(""));
-
-    // Upgrade: the new version is added and becomes current; the old launcher still runs the
-    // old JAR, and the user's configuration is kept
-    var config = install.resolve("servers.yaml");
+    var root = home.resolve(".wpilog-mcp");
+    assertArrayEquals(Files.readAllBytes(jar()), Files.readAllBytes(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar")));
+    assertEquals(jarUrl(Version.VERSION), Files.readString(downloadedUrl));
+    assertFalse(Files.exists(Path.of(Files.readString(downloadedFile))), "the temporary download is removed");
+    assertEquals(Path.of("wpilog-mcp-" + Version.VERSION), Files.readSymbolicLink(root.resolve("bin").resolve("wpilog-mcp")));
+    assertTrue(first.output().contains("Add this directory to PATH: " + root.resolve("bin")), first.output());
+    checkDefaultConfig(root.resolve("servers.yaml"));
+    var config = root.resolve("servers.yaml");
     Files.writeString(config, "team: 2363\n" + Files.readString(config));
-    Files.writeString(release, releaseJson("1.2.4"));
-    var second = run(List.of("sh", installer), env, true);
+    var second = run(command, env, true);
     assertEquals(0, second.exit(), second.output());
-    assertEquals(Path.of("wpilog-mcp-1.2.4"), Files.readSymbolicLink(bin.resolve("wpilog-mcp")));
-    var old = run(List.of(launcher123.toString()),
-        Map.of("HOME", home.toString(), "PATH", "/usr/bin:/bin"), true);
-    assertTrue(old.output().lines().anyMatch(jar123.toString()::equals), old.output());
-    assertTrue(Files.isRegularFile(install.resolve("jars/wpilog-mcp-1.2.4.jar")));
-    assertTrue(Files.readString(config).startsWith("team: 2363\n"), "servers.yaml kept");
+    assertTrue(Files.readString(config).startsWith("team: 2363\n"));
+    assertTrue(second.output().contains("Kept current launcher: " + Version.VERSION), second.output());
+  }
+
+  @Test
+  @DisabledOnOs(OS.WINDOWS)
+  void shellLauncherJavaLookupAndHeap() throws Exception {
+    var root = tempDir.resolve("install");
+    assertEquals(0, run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString()), Map.of(), false).exit());
+    var home = tempDir.resolve("home with spaces");
+    var javaHome = tempDir.resolve("fallback");
+    executable(javaHome.resolve("bin").resolve("java"), FAKE_JAVA.replace("for arg", "echo JAVA_HOME\nfor arg"));
+    var older = executable(home.resolve("wpilib").resolve("2025").resolve("jdk").resolve("bin").resolve("java"), FAKE_JAVA.replace("for arg", "echo 2025\nfor arg"));
+    var newer = executable(home.resolve("wpilib").resolve("2026").resolve("jdk").resolve("bin").resolve("java"), FAKE_JAVA.replace("for arg", "echo 2026\nfor arg"));
+    var command = List.of(root.resolve("bin").resolve("wpilog-mcp").toString(), "--version", "argument with spaces");
+    var env = Map.of("HOME", home.toString(), "PATH", "/usr/bin:/bin", "JAVA_HOME", javaHome.toString(), "WPILOG_MAX_HEAP", "8g");
+    var newest = run(command, env, true).output().lines().toList();
+    assertEquals("2026", newest.get(0));
+    assertEquals("-Xmx8g", newest.get(1));
+    assertEquals(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar"), Path.of(newest.get(3)).normalize());
+    assertEquals(List.of("--version", "argument with spaces"), newest.subList(4, newest.size()));
+    Files.delete(newer);
+    assertEquals("2025", run(command, env, true).output().lines().findFirst().orElseThrow());
+    Files.delete(older);
+    assertEquals("JAVA_HOME", run(command, env, true).output().lines().findFirst().orElseThrow());
+    var fakeBin = Files.createDirectories(tempDir.resolve("java-on-path"));
+    executable(fakeBin.resolve("java"), FAKE_JAVA);
+    var fallback = run(command, Map.of("HOME", home.toString(), "PATH", fakeBin + ":/usr/bin:/bin"), true);
+    assertEquals("-Xmx4g", fallback.output().lines().findFirst().orElseThrow());
   }
 
   @Test
@@ -281,59 +314,30 @@ class InstallerTest {
       function Invoke-RestMethod { param([string]$Uri, $Headers)
           Get-Content -Raw -Path $env:FAKE_RELEASE_JSON | ConvertFrom-Json }
       function Invoke-WebRequest { param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
-          [System.IO.File]::WriteAllText($OutFile, "jar for $Uri") }
+          Copy-Item -LiteralPath $env:FAKE_JAR -Destination $OutFile -Force
+          [System.IO.File]::WriteAllText($env:FAKE_DOWNLOAD_FILE, $OutFile) }
       & $env:WPILOG_INSTALLER
       exit $LASTEXITCODE
       """;
 
   @Test
-  @DisplayName("install.ps1: versioned JAR and launcher, wpilog-mcp.bat a copy of the newest")
+  @DisplayName("install.ps1 downloads a temporary JAR and delegates the layout")
   void installPs1() throws Exception {
     var shell = powershell();
     assumeTrue(shell != null, "PowerShell is not installed");
-    var profile = Files.createDirectories(tempDir.resolve("profile"));
+    var profile = Files.createDirectories(tempDir.resolve("profile with spaces"));
     var wrapper = Files.writeString(tempDir.resolve("run.ps1"), PS_WRAPPER);
-    var release = tempDir.resolve("release.json");
-    var javaBin = Path.of(System.getProperty("java.home"), "bin").toString();
-    Map<String, String> env = Map.of("USERPROFILE", profile.toString(),
-        "FAKE_RELEASE_JSON", release.toString(),
-        "WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString(),
-        "PATH", javaBin + File.pathSeparator + System.getenv("PATH"));
-    var command = List.of(shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-        "-File", wrapper.toString());
-    var install = profile.resolve(".wpilog-mcp");
-    var bin = install.resolve("bin");
-
-    Files.writeString(release, releaseJson("1.2.3"));
-    var first = run(command, env, false);
-    assertEquals(0, first.exit(), first.output());
-    assertEquals("jar for " + jarUrl("1.2.3"),
-        Files.readString(install.resolve("jars/wpilog-mcp-1.2.3.jar")));
-    var bat123 = Files.readString(bin.resolve("wpilog-mcp-1.2.3.bat"));
-    assertTrue(bat123.contains("\\wpilog-mcp-1.2.3.jar\" %*"), bat123);
-    assertFalse(bat123.replace("\r\n", "").contains("\n"), "cmd.exe wants CRLF line endings");
-    assertEquals(bat123, Files.readString(bin.resolve("wpilog-mcp.bat")));
-    var config = install.resolve("servers.yaml");
-    assertNotEquals((byte) 0xEF, Files.readAllBytes(config)[0], "no byte order mark");
-    checkDefaultConfig(config);
-
-    Files.writeString(config, "team: 2363\n" + Files.readString(config));
-    Files.writeString(release, releaseJson("1.2.4"));
-    var second = run(command, env, false);
-    assertEquals(0, second.exit(), second.output());
-    assertEquals(bat123, Files.readString(bin.resolve("wpilog-mcp-1.2.3.bat")),
-        "the old launcher still runs the old JAR");
-    assertTrue(Files.readString(bin.resolve("wpilog-mcp.bat"))
-        .contains("\\wpilog-mcp-1.2.4.jar\" %*"));
-    assertTrue(Files.readString(config).startsWith("team: 2363\n"), "servers.yaml kept");
-  }
-
-  @Test
-  @DisplayName("the test's own helpers: between() takes whole lines")
-  void betweenTakesLines() {
-    assertEquals("a\nb\n", between("x << 'CONFIG'\na\nb\nCONFIG\ny\n", "<< 'CONFIG'", "CONFIG"));
-    assertEquals("a\n", between("s @'\r\na\r\n'@\r\n", "@'", "'@"));
-    assertThrows(AssertionError.class, () -> between("no marker", "<<", "END"));
-    assertThrows(AssertionError.class, () -> between("<<\na\nEND-ish\n", "<<", "END"));
+    var release = Files.writeString(tempDir.resolve("release.json"), releaseJson(Version.VERSION));
+    var download = tempDir.resolve("download.txt");
+    var env = Map.of("USERPROFILE", profile.toString(), "FAKE_RELEASE_JSON", release.toString(),
+        "WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString(), "FAKE_JAR", jar().toString(),
+        "FAKE_DOWNLOAD_FILE", download.toString(), "JAVA_HOME", System.getProperty("java.home"),
+        "TMPDIR", tempDir.toString(), "TEMP", tempDir.toString(), "TMP", tempDir.toString());
+    var result = run(List.of(shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", wrapper.toString()), env, false);
+    assertEquals(0, result.exit(), result.output());
+    var root = profile.resolve(".wpilog-mcp");
+    assertArrayEquals(Files.readAllBytes(jar()), Files.readAllBytes(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar")));
+    assertFalse(Files.exists(Path.of(Files.readString(download))));
+    checkDefaultConfig(root.resolve("servers.yaml"));
   }
 }

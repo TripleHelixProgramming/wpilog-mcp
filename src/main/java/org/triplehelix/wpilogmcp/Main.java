@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.config.ConfigException;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 import org.triplehelix.wpilogmcp.config.DaemonManager;
+import org.triplehelix.wpilogmcp.config.InstallCommand;
 import org.triplehelix.wpilogmcp.config.ServerConfig;
 import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
@@ -101,6 +102,10 @@ public class Main {
     }
     if (args.length >= 1 && "import".equals(args[0])) {
       System.exit(runImport(args));
+      return;
+    }
+    if (args.length >= 1 && "install".equals(args[0])) {
+      System.exit(runInstall(args));
       return;
     }
 
@@ -232,6 +237,22 @@ public class Main {
       var cause = e instanceof ExecutionException ? e.getCause() : e;
       logger().error("Import failed: {}", cause.getMessage());
       if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      return 1;
+    }
+  }
+
+  /** Installation keeps stdout usable by the extension's --json reader, even on failure. */
+  static int runInstall(String[] args) {
+    try {
+      var options = InstallCommand.parse(args);
+      var summary = InstallCommand.install(options);
+      System.out.println(options.json() ? summary.json() : summary.text());
+      return 0;
+    } catch (IllegalArgumentException e) {
+      System.err.println(e.getMessage());
+      return 2;
+    } catch (IOException e) {
+      System.err.println("Install failed: " + e.getMessage());
       return 1;
     }
   }
@@ -685,6 +706,7 @@ public class Main {
     logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
     logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
     logger().info("  import <path>...   Import logs into the configured store, using its daemon when running");
+    logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--json]");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");
