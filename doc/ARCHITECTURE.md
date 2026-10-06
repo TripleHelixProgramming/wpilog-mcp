@@ -19,7 +19,7 @@ That purpose sets the goals:
 - Handle real logs: hundreds of megabytes, cut off when the robot lost power, holding a team's own struct types.
 - Be efficient and correct: quick enough for a conversation on a team's laptop, and able to serve several clients at once without one client's call disturbing another's.
 
-The server analyzes logs after they are written. It does not connect to a running robot or to NetworkTables. It keeps no database of past matches: what it knows about a robot comes from the log files. It runs no scripts: when the tools can't express an analysis, `export_csv` hands the data to the agent's own tools.
+The server analyzes recorded logs and, when capture is configured, the fixed prefix of a running robot's NetworkTables capture. It keeps no database of past matches: what it knows about a robot comes from the log files. It runs no scripts: when the tools can't express an analysis, `export_csv` hands the data to the agent's own tools.
 
 ## Design Principles
 
@@ -107,7 +107,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | Technology | Used for |
 |---|---|
 | Java 17 | The server. |
-| WPILib's `wpiutil` library | Reading WPILOG files and parsing struct schemas. The server does not reimplement the file format. |
+| WPILib's `wpiutil` library | Reading WPILOG files and parsing struct schemas. The pure-Java capture writer emits the documented file format. |
 | Gson | JSON for the protocol, tool arguments, and results. |
 | SnakeYAML | Reading the configuration file. |
 | Caffeine | The in-memory cache of loaded logs and each log's cache of decoded values. |
@@ -116,7 +116,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | The JDK's built-in HTTP server | The HTTP transport. It is enough for local use by a few clients and adds no dependency. |
 | Arrow's format library (`arrow-format`, with the Flatbuffers runtime) | The Flatbuffers schema and message headers of the Arrow IPC stream the data endpoint writes. Only the generated format classes: the arrays' layout is the server's own, on the heap. |
 | The JDK's HTTP client | The Blue Alliance API. |
-| The JDK's WebSocket client | The NT4 client, currently exercised only by tests. |
+| The JDK's WebSocket client | The NT4 capture client. |
 | Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway fixture; confined to `nt4/server`. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
@@ -206,16 +206,27 @@ receive complete writes and their byte offsets; context providers can join this 
 An optional `capture` configuration starts this listener beside the HTTP server. Missing robots
 do not delay HTTP startup; shutdown drains tool calls, closes the capture, then retires log readers.
 The capture store uses the existing store queue, path validation, move reservations, and manifests.
+Creation is synchronous. Later updates use immutable snapshots and coalesce into one pending task;
+changed facts queue immediately, ordinary progress at most every five seconds. Imports cannot
+stall the NT4 event loop. Shutdown waits for the last close snapshot, including its hashes.
 An additive `open_capture` field represents a growing file without inventing a hash or weakening
 the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
-written before attempting a directory rename; Windows can defer that rename until the writer
-and mapped readers close. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
+queued when they change. Cosmetic renames wait for close and reader release on every platform:
+otherwise an asynchronous directory move can race a rollover open or a mapping growth. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
 They are provisional until robot identity is implemented.
 
 Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
 clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds
 starts a new session. Flushes and five-minute topic cost reports run on the same injectable event
 loop. Exclusion and thinning are explicit policy, and thinned entries record their period.
+Each capture file is bounded by `capture.max_file_bytes` (default 1 GiB), including reserved finishes.
+Rollover closes every active entry and starts the next numbered file in the same session with fresh
+entry ids and a new live index. Retained schema definitions seed the new file, explicitly marked in
+entry metadata, so a file can decode its own structs. Tools continue to read one file per call.
+A writer IOException closes recording with its reason and keeps the client connected. Only another
+robot clock permits recording again. Record writes roll back an incomplete tail when possible;
+failed rollback forbids appending finishes. Session `end_reason` preserves the reason without changing
+the store format version.
 
 ## Live log
 

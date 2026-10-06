@@ -18,7 +18,12 @@ public final class StoreManifest {
   public record Robot(String id, String serialNumber, String name, String comments, String basis) {}
   public record Session(String id, String startedAt, String endedAt, String startBasis,
       String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
-      OpenCapture openCapture) {
+      OpenCapture openCapture, String endReason) {
+    public Session(String id, String startedAt, String endedAt, String startBasis,
+        String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
+        OpenCapture openCapture) {
+      this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files, openCapture, null);
+    }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files) {
       this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files, null);

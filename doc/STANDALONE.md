@@ -159,6 +159,7 @@ servers:
       exclude: []
       thin: {}
       hot_window_sec: 600
+      max_file_bytes: 1073741824
 ```
 
 | Key | Meaning and default |
@@ -172,6 +173,7 @@ servers:
 | `capture.period_sec` | Subscription period in seconds, default `0.01`; every change is requested |
 | `capture.exclude` | List of topic prefixes to omit, default `[]` |
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
+| `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `2147483647`. Rollover stays in the same session |
 | `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry runs on the 250 ms flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
 
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
@@ -182,10 +184,22 @@ starts immediately and the client retries indefinitely. A server without `captur
 Captures are ordinary `.wpilog` files under
 `robots/address-<address>/sessions/<UTC-date>/<HHmmss>Z/capture.wpilog`. A new robot clock starts
 a new session; a continuing clock resumes after a connection loss. Event and match facts appear
-in the store listing immediately. The directory gains those names when it can be renamed, or
-after close on Windows. While recording, the manifest marks the capture open; after close it
-records the SHA-256 and final size. Excluded or thinned topics are a deliberate reduction in
-capture fidelity; thinning is recorded in entry metadata. Topic costs are logged every five minutes.
+in the store listing as soon as the queued fact update runs. Imports never stall the NT4 writer:
+manifest updates coalesce into one pending task, on changed facts or at most every five seconds.
+The directory gains the event and match after close and reader release on every platform, keeping
+its path stable during rollover and remapping. While recording, the manifest marks the current
+file in `open_capture`; each closed file gets its own SHA-256 and final size. Shutdown waits for
+the final manifest. Creation, including a resumed file's removal from the hashed list, is synchronous. Excluded or thinned topics are a deliberate reduction in
+capture fidelity; thinning is recorded in entry metadata.
+The bound rolls to `capture-2.wpilog`, `capture-3.wpilog`, and so on. Each file redeclares active
+entries and has its own live index; a tool still reads one file per call. Retained struct schemas
+are copied into each new file with their original timestamp and `capture_schema_seed: true` in
+that entry's metadata, so each file can decode its structs. Those seed records are not additional
+received changes. If declarations, schemas, one value and finishes cannot fit the configured
+bound, recording stops with an explained error. A write failure closes the session with
+`end_reason` in its manifest and the reason in the server log, keeps the NT4 connection, and
+suppresses recording until a new robot clock. A partial write is rolled back to its completed
+record boundary when the filesystem permits it. Topic costs are logged every five minutes.
 Every existing log tool accepts the open capture's path. Each call sees a fixed prefix, reported
 as `inputs.session_time_range`; later calls can include newer records. The hot window controls
 memory retention, not which records are available: older values are read from the file.

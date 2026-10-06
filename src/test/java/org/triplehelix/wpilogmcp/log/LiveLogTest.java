@@ -204,6 +204,37 @@ class LiveLogTest {
     } finally { manager.shutdown(); }
   }
 
+  @Test void eachRolloverFileCanDecodeItsCustomStructWithoutAnotherFile() throws Exception {
+    var manager = new LogManager(); manager.addAllowedDirectory(directory);
+    var path = directory.resolve("capture.wpilog"); var index = index(manager, path, 0);
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index, 1024)) {
+      connect(writer, 1_000_000, 0);
+      var schema = new Announce("/.schema/struct:ReviewPoint", 2, "structschema", null, new JsonObject());
+      var point = new Announce("/point", 3, "struct:ReviewPoint", null, new JsonObject());
+      writer.announce(schema); writer.announce(point);
+      writer.value(schema, new ValueFrame(2, 1_000_000, 5, "int32 x;".getBytes(java.nio.charset.StandardCharsets.UTF_8)), 0);
+      for (int i = 0; i < 200; i++) {
+        byte[] payload = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(i).array();
+        writer.value(point, new ValueFrame(3, 1_000_001 + i, 5, payload), i);
+      }
+      assertNotEquals(path, writer.session().path());
+      loop.advance(250_000);
+      try (var use = manager.acquire(writer.session().path().toString())) {
+        var values = use.log().values().get("NT:/point");
+        assertFalse(values.isEmpty(), "The rolled file needs its schema to decode point values");
+        var last = values.get(values.size() - 1).value();
+        assertInstanceOf(java.util.Map.class, last);
+        assertEquals(199, ((Number) ((java.util.Map<?, ?>) last).get("x")).intValue());
+      }
+      var last = writer.session().path(); writer.disconnected(); manager.unloadLog(last.toString());
+      try (var use = manager.acquire(last.toString())) {
+        var values = use.log().values().get("NT:/point");
+        assertEquals(199, ((Number) ((java.util.Map<?, ?>) values.get(values.size() - 1).value()).get("x")).intValue());
+      }
+    } finally { manager.shutdown(); }
+  }
+
   @Test void repeatedDeclarationsAndImpossibleForwardTimestampsFollowTheFinishedReader() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("restarted-entry.wpilog"); var index = index(manager, path, 0);

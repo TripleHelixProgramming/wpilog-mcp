@@ -26,13 +26,15 @@ class CaptureConfigTest {
     var config = load("    capture:\n      robot: {team: 2363}\n      store: ${CAPTURE_STORE}\n");
     assertEquals(List.of("roboRIO-2363-FRC.local", "10.23.63.2"), config.capture().addresses().stream().map(u -> u.getHost()).toList());
     assertEquals(5810, config.capture().addresses().get(0).getPort());
+    assertEquals(1_073_741_824, config.capture().maxFileBytes());
     assertEquals(0.01, config.capture().periodSeconds()); assertEquals(600_000_000, config.capture().hotWindowUs());
     assertEquals(List.of(directory.resolve("store").toString()), config.effectiveLogdirs());
     var all = load("    logdir: [logs]\n    capture:\n      robot: {usb: true, port: 5811}\n"
         + "      store: ${CAPTURE_STORE}\n      period_sec: 0.02\n      exclude: ['/camera']\n"
-        + "      thin: {'/Drive': 0.5}\n      hot_window_sec: 0\n");
+        + "      thin: {'/Drive': 0.5}\n      hot_window_sec: 0\n      max_file_bytes: 4096\n");
     assertEquals("172.22.11.2", all.capture().addresses().get(0).getHost());
     assertEquals(5811, all.capture().addresses().get(0).getPort()); assertEquals(0.02, all.capture().periodSeconds());
+    assertEquals(4096, all.capture().maxFileBytes());
     assertEquals(0, all.capture().hotWindowUs()); assertTrue(all.capture().policy().excluded("/camera/x"));
     assertEquals(500_000, all.capture().policy().periodUs("/Drive/x"));
     assertTrue(all.effectiveLogdirs().contains(directory.resolve("store").toString()));
@@ -57,6 +59,10 @@ class CaptureConfigTest {
       "{robot:{host:'x'}}|capture.store", "{robot:{host:'x'},store:''}|capture.store",
       "{robot:{host:'x'},store:'x',period_sec:0}|capture.period_sec",
       "{robot:{host:'x'},store:'x',hot_window_sec:-1}|capture.hot_window_sec",
+      "{robot:{host:'x'},store:'x',max_file_bytes:255}|capture.max_file_bytes",
+      "{robot:{host:'x'},store:'x',max_file_bytes:2147483648}|capture.max_file_bytes",
+      "{robot:{host:'x'},store:'x',max_file_bytes:4096.5}|capture.max_file_bytes",
+      "{robot:{host:'x'},store:'x',max_file_bytes:'4096'}|capture.max_file_bytes",
       "{robot:{host:'x'},store:'x',exclude:1}|capture.exclude",
       "{robot:{host:'x'},store:'x',exclude:[1]}|capture.exclude",
       "{robot:{host:'x'},store:'x',thin:[]}|capture.thin",
@@ -78,6 +84,9 @@ class CaptureConfigTest {
 
   @Test void standaloneDocumentsEveryAcceptedCaptureKey() throws Exception {
     String guide = Files.readString(Path.of("doc/STANDALONE.md"));
+    assertTrue(guide.contains("default `1073741824` bytes (1 GiB)"));
+    assertTrue(guide.contains("integer from `256` through `2147483647`"));
+    assertTrue(guide.contains("at most four remaps per second"));
     for (var key : CaptureConfig.KEYS) assertTrue(guide.contains("`capture." + key + "`"), key);
     for (var key : CaptureConfig.ROBOT_KEYS) assertTrue(guide.contains("`capture.robot." + key + "`"), key);
   }

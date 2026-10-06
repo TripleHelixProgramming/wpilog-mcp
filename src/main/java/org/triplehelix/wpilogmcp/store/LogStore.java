@@ -139,6 +139,12 @@ public final class LogStore implements AutoCloseable {
 
   /** Capture manifest changes share the import queue and the cross-process store lock. */
   <T> T capture(CaptureOperation<T> operation) throws IOException {
+    try { return captureAsync(operation).get(); }
+    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted capture placement", e); }
+    catch (java.util.concurrent.ExecutionException e) { throw new IOException("Capture placement failed: " + e.getCause().getMessage(), e.getCause()); }
+  }
+
+  <T> CompletableFuture<T> captureAsync(CaptureOperation<T> operation) {
     var result = new CompletableFuture<T>();
     queue.execute(() -> {
       try (var lock = StoreLock.acquire(root, security)) {
@@ -150,9 +156,7 @@ public final class LogStore implements AutoCloseable {
         result.complete(operation.run(io));
       } catch (Throwable e) { result.completeExceptionally(e); }
     });
-    try { return result.get(); }
-    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted capture placement", e); }
-    catch (java.util.concurrent.ExecutionException e) { throw new IOException("Capture placement failed: " + e.getCause().getMessage(), e.getCause()); }
+    return result;
   }
 
   public CaptureStore captures(java.time.Clock clock) { return new CaptureStore(this, logManager, clock); }
@@ -600,7 +604,7 @@ public final class LogStore implements AutoCloseable {
           if (input.end() != null && input.end().isAfter(end)) end = input.end();
         }
         session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture());
+            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason());
         io.write(manifest, session);
       }
       catalog.placed(io, manifest, robot, session, records);

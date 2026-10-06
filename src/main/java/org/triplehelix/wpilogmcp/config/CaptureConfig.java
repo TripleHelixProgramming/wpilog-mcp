@@ -18,10 +18,14 @@ import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 
 /** Capture is opt-in, and misspelled nested keys must never silently turn recording policy off. */
 public record CaptureConfig(List<URI> addresses, Path store, double periodSeconds,
-    CapturePolicy policy, long hotWindowUs) {
-  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec");
+    CapturePolicy policy, long hotWindowUs, long maxFileBytes) {
+  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes");
   public static final Set<String> ROBOT_KEYS = Set.of("team", "usb", "host", "port");
   public CaptureConfig { addresses = List.copyOf(addresses); }
+  public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy, long hotWindowUs) {
+    this(addresses, store, periodSeconds, policy, hotWindowUs,
+        org.triplehelix.wpilogmcp.capture.CaptureWriter.DEFAULT_MAX_FILE_BYTES);
+  }
 
   static CaptureConfig parse(JsonElement value, UnaryOperator<String> expand) throws ConfigException {
     if (value == null || value.isJsonNull()) return null;
@@ -58,7 +62,9 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
       if (block.has("thin")) for (var e : object(block.get("thin"), "capture.thin").entrySet()) {
         thin.put(e.getKey(), micros(e.getValue(), "capture.thin." + e.getKey(), false));
       }
-      return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot);
+      long max = block.has("max_file_bytes") ? integer(block.get("max_file_bytes"), "capture.max_file_bytes", 256, Integer.MAX_VALUE)
+          : org.triplehelix.wpilogmcp.capture.CaptureWriter.DEFAULT_MAX_FILE_BYTES;
+      return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot, max);
     } catch (IllegalArgumentException e) { throw new ConfigException("Invalid capture configuration: " + e.getMessage(), e); }
   }
   private static JsonObject object(JsonElement value, String key) throws ConfigException {

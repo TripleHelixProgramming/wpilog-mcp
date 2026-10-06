@@ -107,6 +107,168 @@ class CaptureWriterTest {
     assertEquals(List.of("NT:/x"), starts); assertEquals(List.of(0L, 1_000_000L), values);
   }
 
+  @Test void rolloverFinishesAndRedeclaresEntriesWithoutLosingAValue() throws Exception {
+    var files = new ArrayList<Path>(); var loop = new ManualScheduler();
+    var observer = new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) { return directory.resolve("capture.wpilog"); }
+      @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+    };
+    try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, observer, 512)) {
+      connect(writer, 10_000_000, 0);
+      var second = new Announce("/y", 18, "string", null, new JsonObject()); writer.announce(second);
+      for (int i = 0; i < 100; i++) {
+        writer.value(TOPIC, new ValueFrame(17, 10_000_000 + i, 2, (long) i), i);
+        writer.value(second, new ValueFrame(18, 10_000_000 + i, 4, "value-" + i), i);
+      }
+    }
+    assertTrue(files.size() > 2, "The small bound must roll more than once");
+    var ints = new ArrayList<Long>(); var strings = new ArrayList<String>();
+    for (int file = 0; file < files.size(); file++) {
+      var path = files.get(file);
+      assertEquals(file == 0 ? "capture.wpilog" : "capture-" + (file + 1) + ".wpilog", path.getFileName().toString());
+      assertTrue(Files.size(path) <= 512, path.toString());
+      var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(path)));
+      assertTrue(reader.isValid());
+      var names = new java.util.LinkedHashMap<Integer, String>(); var finishes = new ArrayList<Integer>();
+      // Use record boundaries: the wpiutil iterator omits a short last finish record.
+      int pos = edu.wpi.first.util.datalog.DataLogAccess.firstRecordOffset(path);
+      while (pos < Files.size(path)) {
+        var record = edu.wpi.first.util.datalog.DataLogAccess.getRecord(reader, pos);
+        pos = edu.wpi.first.util.datalog.DataLogAccess.recordEnd(reader, pos);
+        assertTrue(pos > 0);
+        if (record.isStart()) names.put(record.getStartData().entry, record.getStartData().name);
+        else if (record.isFinish()) finishes.add(record.getFinishEntry());
+        else if (!record.isControl()) {
+          if (names.get(record.getEntry()).equals("NT:/x")) { assertEquals(10_000_000 + ints.size(), record.getTimestamp()); ints.add(record.getInteger()); }
+          else { assertEquals(10_000_000 + strings.size(), record.getTimestamp()); strings.add(record.getString()); }
+        }
+      }
+      assertEquals(List.of("NT:/x", "NT:/y"), List.copyOf(names.values()));
+      assertEquals(List.copyOf(names.keySet()), finishes);
+    }
+    assertEquals(java.util.stream.LongStream.range(0, 100).boxed().toList(), ints);
+    assertEquals(java.util.stream.IntStream.range(0, 100).mapToObj(i -> "value-" + i).toList(), strings);
+  }
+
+  @Test void outputFailureEndsRecordingUntilANewRobotClockWithoutEscapingTheListener() throws Exception {
+    var paths = new ArrayList<Path>(); var closes = new AtomicInteger();
+    var observer = new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) {
+        var path = directory.resolve("failure-" + paths.size() + ".wpilog"); paths.add(path); return path;
+      }
+      @Override public void closed(CaptureWriter.Session session) { closes.incrementAndGet(); }
+    };
+    var opens = new AtomicInteger();
+    try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, observer, 1024,
+        (path, id, resume) -> new WpilogOutput(path, id, resume) {
+          final boolean fail = opens.getAndIncrement() == 0;
+          int records;
+          @Override public Written append(int entry, long time, byte[] payload) throws java.io.IOException {
+            if (fail && records++ == 2) throw new java.io.IOException("planted disk full");
+            return super.append(entry, time, payload);
+          }
+        })) {
+      connect(writer, 10_000_000, 0);
+      for (int i = 0; i < 20; i++) {
+        long n = i;
+        assertDoesNotThrow(() -> writer.value(TOPIC, new ValueFrame(17, 10_000_000 + n, 2, n), n));
+      }
+      assertFalse(writer.session().open()); assertEquals(1, closes.get()); assertEquals(1, paths.size());
+      writer.disconnected(); connect(writer, 11_000_000, 1_000_000);
+      writer.value(TOPIC, new ValueFrame(17, 11_000_000, 2, 42L), 1_000_000);
+      assertEquals(1, paths.size()); assertFalse(writer.session().open());
+      writer.disconnected(); connect(writer, 100_000, 2_000_000);
+      writer.value(TOPIC, new ValueFrame(17, 100_000, 2, 43L), 2_000_000);
+      assertTrue(writer.session().open()); assertEquals(2, paths.size());
+    }
+    assertEquals(2, closes.get());
+    var first = new ArrayList<Long>();
+    for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(paths.get(0))))) if (!record.isControl()) first.add(record.getInteger());
+    assertEquals(List.of(0L, 1L), first);
+  }
+
+  @Test void partialRecordFailureLeavesOnlyTheCompletedPrefix() throws Exception {
+    var path = directory.resolve("partial.wpilog");
+    var armed = new java.util.concurrent.atomic.AtomicBoolean(); var pieces = new AtomicInteger();
+    try (var output = new WpilogOutput(path) {
+      @Override protected void write(ByteBuffer bytes) throws java.io.IOException {
+        if (armed.get() && pieces.incrementAndGet() == 2) {
+          bytes.limit(bytes.position() + 2); super.write(bytes); armed.set(false);
+          throw new java.io.IOException("planted partial payload");
+        }
+        super.write(bytes);
+      }
+    }) {
+      int id = output.start("x", "int64", "", 1_000_000);
+      output.append(id, 1_000_000, WpilogOutput.payload(2, 1L));
+      byte[] complete = Files.readAllBytes(path);
+      armed.set(true);
+      assertEquals("planted partial payload", assertThrows(java.io.IOException.class,
+          () -> output.append(id, 2_000_000, WpilogOutput.payload(2, 2L))).getMessage());
+      assertArrayEquals(complete, Files.readAllBytes(path), "No finish record may follow an incomplete payload");
+      assertEquals(complete.length, output.size());
+      output.finish(id, 1_000_000);
+    }
+  }
+
+  @Test void aRecordThatCannotFitStopsOnceWithoutCreatingOversizedFiles() throws Exception {
+    var files = new ArrayList<Path>();
+    var observer = new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) { return directory.resolve("capture.wpilog"); }
+      @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+    };
+    try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, observer, 256)) {
+      connect(writer, 10_000_000, 0);
+      var large = new Announce("/large", 18, "raw", null, new JsonObject()); writer.announce(large);
+      assertDoesNotThrow(() -> writer.value(large, new ValueFrame(18, 10_000_000, 5, new byte[1024]), 0));
+      assertFalse(writer.session().open()); assertTrue(writer.session().endReason().contains("capture.max_file_bytes"));
+      assertEquals(1, files.size()); assertTrue(Files.size(files.get(0)) <= 256);
+      assertFalse(Files.exists(directory.resolve("capture-2.wpilog")));
+    }
+  }
+
+  @Test void aFlushFailureClosesOnceAndStopsTheFlushTimer() throws Exception {
+    var armed = new java.util.concurrent.atomic.AtomicBoolean(); var closes = new AtomicInteger();
+    var flushes = new AtomicInteger(); var loop = new ManualScheduler();
+    var observer = new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) { return directory.resolve("flush.wpilog"); }
+      @Override public void closed(CaptureWriter.Session session) { closes.incrementAndGet(); }
+    };
+    try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, observer, 4096,
+        (path, id, resume) -> new WpilogOutput(path, id, resume) {
+          @Override public void flush() throws java.io.IOException {
+            flushes.incrementAndGet();
+            if (armed.getAndSet(false)) throw new java.io.IOException("planted force failure");
+            super.flush();
+          }
+        })) {
+      connect(writer, 10_000_000, 0); writer.value(TOPIC, new ValueFrame(17, 10_000_000, 2, 1L), 0);
+      armed.set(true); assertDoesNotThrow(() -> loop.advance(250_000));
+      assertEquals("Capture write failed: planted force failure", writer.session().endReason());
+      assertFalse(writer.session().open()); assertEquals(1, closes.get());
+      int stoppedAt = flushes.get(); loop.advance(100_000_000);
+      assertEquals(stoppedAt, flushes.get()); assertEquals(1, closes.get());
+    }
+  }
+
+  @Test void aFailedNewCreateCannotOverwriteThePreviousSessionsReason() throws Exception {
+    var creates = new AtomicInteger(); var closes = new AtomicInteger();
+    var observer = new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) throws java.io.IOException {
+        if (creates.getAndIncrement() > 0) throw new java.io.IOException("planted create permission failure");
+        return directory.resolve("previous.wpilog");
+      }
+      @Override public void closed(CaptureWriter.Session session) { closes.incrementAndGet(); }
+    };
+    try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, observer)) {
+      connect(writer, 10_000_000, 0); writer.disconnected();
+      var previous = writer.session();
+      assertDoesNotThrow(() -> connect(writer, 100_000, 1_000_000));
+      assertNull(previous.endReason()); assertEquals(1, closes.get()); assertNull(writer.session());
+      writer.announce(TOPIC); assertEquals(2, creates.get());
+    }
+  }
+
   @Test void costUsesABoundedMinuteAndCountsDropsSeparately() {
     var cost = new TopicCost(); cost.add(0, 10); cost.add(59_000_000, 20); cost.drop(); cost.thin();
     assertEquals(new TopicCost.Snapshot(2, 30, 1, 1, 2 / 60.0, 0.5), cost.snapshot(59_000_000));

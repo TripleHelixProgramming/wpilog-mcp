@@ -19,10 +19,11 @@ import java.util.List;
  * this can ship in the Java-only install. A complete write precedes publication to the live index;
  * offsets describe the durable format, not a second representation invented for capture.
  */
-public final class WpilogOutput implements AutoCloseable {
+public class WpilogOutput implements AutoCloseable {
   public record Written(long offset, int size, long payloadOffset, int payloadSize) {}
   private final FileChannel channel;
   private int nextEntry;
+  private boolean broken;
 
   public WpilogOutput(Path path) throws IOException { this(path, 1, false); }
 
@@ -37,6 +38,15 @@ public final class WpilogOutput implements AutoCloseable {
   }
 
   public int nextEntry() { return nextEntry; }
+  public long size() throws IOException { return channel.position(); }
+  public static int recordSize(int id, long timestampUs, int payloadSize) {
+    return 1 + width(Integer.toUnsignedLong(id), 4) + width(payloadSize, 4) + width(timestampUs, 8) + payloadSize;
+  }
+  public static int startSize(String name, String type, String metadata, long timestampUs) {
+    int payload = 17 + name.getBytes(StandardCharsets.UTF_8).length
+        + type.getBytes(StandardCharsets.UTF_8).length + metadata.getBytes(StandardCharsets.UTF_8).length;
+    return recordSize(0, timestampUs, payload);
+  }
   public int start(String name, String type, String metadata, long timestampUs) throws IOException {
     int id = nextEntry++;
     var out = new ByteArrayOutputStream();
@@ -57,6 +67,7 @@ public final class WpilogOutput implements AutoCloseable {
   }
 
   private Written record(int id, long timestampUs, byte[] payload) throws IOException {
+    if (broken) throw new IOException("Capture output has an incomplete record");
     int ids = width(Integer.toUnsignedLong(id), 4);
     int sizes = width(payload.length, 4);
     int times = width(timestampUs, 8);
@@ -64,11 +75,17 @@ public final class WpilogOutput implements AutoCloseable {
     header.write(ids - 1 | (sizes - 1) << 2 | (times - 1) << 4);
     little(header, id, ids); little(header, payload.length, sizes); little(header, timestampUs, times);
     long offset = channel.position();
-    write(ByteBuffer.wrap(header.toByteArray())); write(ByteBuffer.wrap(payload));
+    try { write(ByteBuffer.wrap(header.toByteArray())); write(ByteBuffer.wrap(payload)); }
+    catch (IOException failure) {
+      // Never append finishes after half a data record. Truncation also frees a disk-full tail.
+      try { channel.truncate(offset); channel.position(offset); }
+      catch (IOException rollback) { broken = true; failure.addSuppressed(rollback); }
+      throw failure;
+    }
     return new Written(offset, header.size() + payload.length, offset + header.size(), payload.length);
   }
 
-  private void write(ByteBuffer buffer) throws IOException {
+  protected void write(ByteBuffer buffer) throws IOException {
     while (buffer.hasRemaining()) channel.write(buffer);
   }
   private static int width(long value, int max) {

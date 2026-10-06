@@ -130,14 +130,23 @@ hand-encoded format examples, all NT4 payload families, clock continuity and reb
 exclusion/thinning metadata, flushes, and minute-bounded cost accounting with injected clocks.
 Every generated fixture is replayed through the loopback gateway and JDK client into a capture;
 the independent reader checks every entry, payload, and timestamp, and wpiutil checks the result
-too. Replay walks complete record boundaries because wpiutil's iterator can omit a short final
+too. The bounded-file pass verifies the same received frames across every rollover, with marked
+schema seeds checked separately, plus every file's byte bound. This replay uses NT4 4.0 with an
+injected client clock so tiny forced files and tool calls do not turn byte fidelity into an aliveness
+timing test; the NT4 suite independently tests 4.1 keepalives. Replay walks complete record boundaries because wpiutil's iterator can omit a short final
 record. The client separately checks that a wrong MessagePack family is counted and dropped
 without losing the next frame or disconnecting. CI runs on `pit-server` as well as `main`, including
 the Windows job.
 
 `CaptureConfigTest`, `CaptureStoreTest`, and `CaptureStartTest` cover configuration keys and their
 documentation, UTC placement, open/closed manifests, hashes, resumption and name collisions,
-and immediate match facts with both successful and refused open-file renames. The packaged
+and queued match facts preceding the close-time directory rename. A blocked store queue leaves
+values and flushes running, retains one pending update, and writes a complete final manifest.
+Injected clocks pin the five-second progress cadence and immediate changed facts. `CaptureShutdownTest`
+proves service shutdown waits for that manifest outside the NT4 loop. `CaptureFailureTest` injects a
+disk failure over loopback and checks the reason in the manifest/log, connection survival, a suppressed
+same-clock reconnect, and a resumed recording on a new clock. Writer tests also plant a partial payload
+write and check rollback to the completed prefix, force/create failures, and a bound unable to hold one record. The packaged
 `start` command runs in an isolated home: HTTP works with the robot absent, then a loopback
 fixture robot connects and its values survive daemon shutdown. No test waits for an injected clock.
 

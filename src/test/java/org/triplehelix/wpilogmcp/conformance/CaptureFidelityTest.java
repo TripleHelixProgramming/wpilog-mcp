@@ -31,7 +31,6 @@ import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Unannounce;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
-import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 import org.triplehelix.wpilogmcp.nt4.server.FixtureReplayer;
@@ -44,18 +43,57 @@ class CaptureFidelityTest {
         DynamicTest.dynamicTest(f.id(), () -> capture(f.path(), directory.resolve(f.id() + ".wpilog"))));
   }
 
+  @TestFactory Stream<DynamicTest> everyFixtureCapturedAcrossBoundedFiles() throws Exception {
+    return FixtureLogs.generateAll(FixtureLogs.defaultDirectory()).stream().map(f ->
+        DynamicTest.dynamicTest(f.id(), () -> {
+          var raw = IndependentLog.read(f.path(), Set.of());
+          var samples = IndependentLog.read(f.path(), Set.of(), raw.series.keySet());
+          long declarations = raw.series.values().stream().mapToLong(e -> 256L
+              + e.name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              + e.type.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum();
+          long largest = samples.series.values().stream().flatMap(e -> e.payloads.stream()).mapToInt(a -> a.length).max().orElse(0);
+          long schemas = samples.series.values().stream().filter(e -> e.type.equals("structschema"))
+              .flatMap(e -> e.payloads.stream()).mapToLong(a -> a.length + 32L).sum();
+          long bound = 2048 + declarations + largest + schemas;
+          var dir = Files.createDirectory(directory.resolve(f.id()));
+          var files = captureFiles(f.path(), dir.resolve("capture.wpilog"), null, () -> {}, bound);
+          for (var file : files) assertTrue(Files.size(file) <= bound, file.toString());
+          long dataBytes = samples.series.values().stream().flatMap(e -> e.payloads.stream()).mapToLong(a -> a.length).sum();
+          if (dataBytes > bound) assertTrue(files.size() > 1, "Fixture must exercise rollover: " + f.id());
+        }));
+  }
+
   static void capture(Path fixture, Path capture) throws Exception {
     capture(fixture, capture, null, () -> {});
   }
 
   @FunctionalInterface interface OpenCheck { void check() throws Exception; }
   static void capture(Path fixture, Path capture, CaptureWriter.Observer observer, OpenCheck whileOpen) throws Exception {
+    captureFiles(fixture, capture, observer, whileOpen, CaptureWriter.DEFAULT_MAX_FILE_BYTES);
+  }
+
+  private static List<Path> captureFiles(Path fixture, Path capture, CaptureWriter.Observer observer,
+      OpenCheck whileOpen, long maxFileBytes) throws Exception {
     var names = IndependentLog.read(fixture, Set.of()).series.keySet();
-    var loop = ClientScheduler.daemon(); var ready = new CompletableFuture<Void>(); var done = new CompletableFuture<Void>();
+    var files = new java.util.ArrayList<Path>();
+    var delegate = observer != null ? observer : new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) { return capture; }
+    };
+    var tracking = new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) throws java.io.IOException { return delegate.create(address, start); }
+      @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws java.io.IOException { return delegate.create(address, start, previous); }
+      @Override public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException { files.add(session.path()); delegate.opened(session, resumed); }
+      @Override public void entry(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry) throws java.io.IOException { delegate.entry(session, entry); }
+      @Override public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry, ValueFrame value,
+          org.triplehelix.wpilogmcp.capture.WpilogOutput.Written written) throws java.io.IOException { delegate.value(session, entry, value, written); }
+      @Override public void flushed(CaptureWriter.Session session) throws java.io.IOException { delegate.flushed(session); }
+      @Override public void timeSync(CaptureWriter.Session session, long time) throws java.io.IOException { delegate.timeSync(session, time); }
+      @Override public void fileClosed(CaptureWriter.Session session) throws java.io.IOException { delegate.fileClosed(session); }
+      @Override public void closed(CaptureWriter.Session session) throws java.io.IOException { delegate.closed(session); }
+    };
+    var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler(); var ready = new CompletableFuture<Void>(); var done = new CompletableFuture<Void>();
     var writer = new CaptureWriter(Clock.systemUTC(), loop, new CapturePolicy(List.of("/capture-test/"), Map.of()),
-        observer != null ? observer : new CaptureWriter.Observer() {
-          @Override public Path create(String address, Instant start) { return capture; }
-        });
+        tracking, maxFileBytes);
     var listener = new Nt4Client.Listener() {
       @Override public void connected(URI address, String protocol) { writer.connected(address, protocol); }
       @Override public void timeSync(long server, long received) { writer.timeSync(server, received); }
@@ -65,40 +103,61 @@ class CaptureFidelityTest {
         writer.unannounce(a);
         if (a.name().equals("/capture-test/ready")) done.complete(null);
       }
-      @Override public void disconnected() { writer.disconnected(); }
+      @Override public void disconnected() { writer.disconnected(); if (!done.isDone()) done.completeExceptionally(new AssertionError("Disconnected before replay finished")); }
     };
-    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 10_000_000)) {
+    // 4.0 plus the injected client clock keeps this an exact-byte replay, independent of the
+    // time spent forcing tiny files or running tools. Separate NT4 tests pin 4.1 keepalives.
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 10_000_000, List.of(Nt4Client.V40))) {
       gateway.start().get(5, TimeUnit.SECONDS);
       var replayer = new FixtureReplayer(fixture); replayer.announce(gateway);
       gateway.announce("/capture-test/ready", "int", new JsonObject()).join();
       try (var client = new Nt4Client(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "capture")),
           Nt4Client.captureSubscription(0.001), listener, java.net.http.HttpClient.newHttpClient(), loop)) {
-        client.start(); ready.get(10, TimeUnit.SECONDS); replayer.replay(gateway, 0, ignored -> fail("Fast replay must not sleep"));
+        client.start(); loop.until(ready::isDone); ready.get(10, TimeUnit.SECONDS); replayer.replay(gateway, 0, ignored -> fail("Fast replay must not sleep"));
         for (var name : names) gateway.unannounce(name).join();
-        gateway.unannounce("/capture-test/ready").join(); done.get(30, TimeUnit.SECONDS);
+        gateway.unannounce("/capture-test/ready").join(); loop.until(done::isDone); done.get(30, TimeUnit.SECONDS);
         try { whileOpen.check(); }
-        finally { client.closeAsync().get(30, TimeUnit.SECONDS); }
+        finally { var stopped = client.closeAsync(); loop.drain(); stopped.get(30, TimeUnit.SECONDS); }
       }
     }
     var expected = IndependentLog.read(fixture, Set.of(), names);
     var capturedNames = names.stream().map(n -> "NT:" + n).collect(Collectors.toSet());
-    var actual = IndependentLog.read(capture, Set.of(), capturedNames);
-    assertEquals(names.stream().map(n -> "NT:" + n).toList(), List.copyOf(actual.series.keySet()));
+    var times = new java.util.LinkedHashMap<String, java.util.List<Double>>();
+    var payloads = new java.util.LinkedHashMap<String, java.util.List<byte[]>>();
+    for (var file : files) {
+      var actual = IndependentLog.read(file, Set.of(), capturedNames);
+      var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file))); assertTrue(reader.isValid());
+      var ids = new HashMap<Integer, String>(); var counts = new HashMap<String, Integer>(); var seeds = new java.util.HashSet<String>();
+      for (var record : reader) {
+        if (record.isStart()) {
+          var start = record.getStartData(); ids.put(start.entry, start.name);
+          if (com.google.gson.JsonParser.parseString(start.metadata).getAsJsonObject().has("capture_schema_seed")) seeds.add(start.name);
+        } else if (!record.isControl()) counts.merge(ids.get(record.getEntry()), 1, Integer::sum);
+      }
+      for (var got : actual.series.values()) {
+        assertEquals(got.records, counts.getOrDefault(got.name, 0), got.name);
+        assertEquals(expected.series.get(got.name.substring(3)).type, got.type);
+        var seenTimes = times.computeIfAbsent(got.name, ignored -> new java.util.ArrayList<>());
+        var seenPayloads = payloads.computeIfAbsent(got.name, ignored -> new java.util.ArrayList<>());
+        int skip = 0;
+        if (seeds.contains(got.name)) {
+          assertEquals("structschema", got.type); assertFalse(seenTimes.isEmpty());
+          assertEquals(seenTimes.get(seenTimes.size() - 1), got.payloadTimes.get(0), "Seed keeps its original server timestamp");
+          assertArrayEquals(seenPayloads.get(seenPayloads.size() - 1), got.payloads.get(0), "Seed equals the last received schema");
+          skip = 1;
+        }
+        seenTimes.addAll(got.payloadTimes.subList(skip, got.payloadTimes.size()));
+        seenPayloads.addAll(got.payloads.subList(skip, got.payloads.size()));
+      }
+    }
+    assertEquals(names.stream().map(n -> "NT:" + n).toList(), List.copyOf(times.keySet()));
     for (var entry : expected.series.values()) {
-      var got = actual.series.get("NT:" + entry.name);
       var order = java.util.stream.IntStream.range(0, entry.payloadTimes.size()).boxed()
           .sorted(java.util.Comparator.comparingDouble(entry.payloadTimes::get)).toList();
-      assertEquals(entry.type, got.type); assertEquals(order.stream().map(entry.payloadTimes::get).toList(), got.payloadTimes, entry.name);
-      assertEquals(entry.payloads.size(), got.payloads.size(), entry.name);
-      for (int i = 0; i < entry.payloads.size(); i++) assertArrayEquals(entry.payloads.get(order.get(i)), got.payloads.get(i), entry.name + " sample " + i);
+      assertEquals(order.stream().map(entry.payloadTimes::get).toList(), times.get("NT:" + entry.name), entry.name);
+      var got = payloads.get("NT:" + entry.name); assertEquals(entry.payloads.size(), got.size(), entry.name);
+      for (int i = 0; i < got.size(); i++) assertArrayEquals(entry.payloads.get(order.get(i)), got.get(i), entry.name + " sample " + i);
     }
-    // A second, independent check uses wpiutil's pure-Java DataLogReader over heap bytes.
-    var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(capture))); assertTrue(reader.isValid());
-    var ids = new HashMap<Integer, String>(); var counts = new HashMap<String, Integer>();
-    for (var record : reader) {
-      if (record.isStart()) ids.put(record.getStartData().entry, record.getStartData().name);
-      else if (!record.isControl()) counts.merge(ids.get(record.getEntry()), 1, Integer::sum);
-    }
-    for (var entry : actual.series.values()) assertEquals(entry.records, counts.getOrDefault(entry.name, 0), entry.name);
+    return files;
   }
 }

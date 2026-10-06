@@ -23,10 +23,13 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs) {
     this.placement = placement; this.manager = manager; this.hotWindowUs = hotWindowUs;
     if (placement instanceof CaptureStore store) store.onMove((from, to) -> {
-      try { manager.relocateCapture(live, from, to); } catch (IOException e) { throw new UncheckedIOException(e); }
+      try { if (live != null && Path.of(live.path()).equals(from)) manager.relocateCapture(live, from, to); } catch (IOException e) { throw new UncheckedIOException(e); }
     });
   }
   @Override public Path create(String address, Instant start) throws IOException { return placement.create(address, start); }
+  @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws IOException {
+    return placement.create(address, start, previous);
+  }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
     if (!resumed) live = new LiveLog(session.path(), hotWindowUs);
     manager.beginCapture(live);
@@ -45,9 +48,10 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   @Override public void timeSync(CaptureWriter.Session session, long serverTimeUs) throws IOException {
     live.advance(serverTimeUs); placement.timeSync(session, serverTimeUs);
   }
-  @Override public void closed(CaptureWriter.Session session) throws IOException {
-    manager.finishCapture(live); placement.closed(session);
+  @Override public void fileClosed(CaptureWriter.Session session) throws IOException {
+    manager.finishCapture(live); placement.fileClosed(session);
   }
+  @Override public void closed(CaptureWriter.Session session) throws IOException { placement.closed(session); }
   @Override public void cost(String topic, TopicCost.Snapshot cost) { placement.cost(topic, cost); }
   public LiveLog live() { return live; }
 }

@@ -403,7 +403,7 @@ A daemon in the shop and the pit that subscribes once to the robot's NetworkTabl
 ### 9.2 Windowed WPILOG Mapping
 Priority: High. Complexity: High. Planned after the gateway in [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md#15-milestones).
 
-The reader currently maps a file into one int-indexed buffer and refuses files over 2 GB. Replace that with windows under 2 GB, long offsets everywhere, and a small extra mapping or copy for a record straddling a window boundary. Tests must be able to set a small window size and cross boundaries without writing gigabyte fixtures. Until that milestone, oversized imports are refused with the original untouched, and the plain-directory listing reports the same reason.
+The reader currently maps a file into one int-indexed buffer and refuses files over 2 GB. Replace that with windows under 2 GB, long offsets everywhere, and a small extra mapping or copy for a record straddling a window boundary. Tests must be able to set a small window size and cross boundaries without writing gigabyte fixtures. Capture rollover keeps each file below the limit until that milestone. Oversized imports are refused with the original untouched, and the plain-directory listing reports the same reason.
 
 ### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.
