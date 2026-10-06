@@ -53,6 +53,13 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 
 The store checks also distinguish a new named robot with a logged serial from a later serial promotion, keep non-overlapping sessions separate, count catalog reads per batch, and observe which REV candidates reach correlation. `log.LogMappingLifetimeTest` reads fixtures through tools and the manager before moving them, holds calls and background synchronization across eviction, and checks that the final holder releases the mapping so a real rename succeeds on Windows too.
 
+**Transfer logic.** `sync.FileTransferTest` uses a remote and local store in memory and advances
+an injected clock: whole-prefix hashes, the last-64-KiB fallback, growth, shrinks, rewound clocks,
+common-prefix boots, REV's repeated unset-clock name, DataLogManager renames, one-block pauses,
+read pacing, one retry, manifest round trips, and concurrent-call refusal. `TransferVerificationTest`
+copies every generated fixture byte for byte and runs the normal readers, including rejection of
+partial WPILOG records and native REV headers/frames. No test waits for a robot or sleeps for time.
+
 **Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
 `LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
 mapped readers, retained old paths, key history, disagreements, and late logged identity outside a

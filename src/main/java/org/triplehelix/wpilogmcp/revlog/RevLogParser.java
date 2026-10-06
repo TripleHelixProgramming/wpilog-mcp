@@ -83,6 +83,18 @@ public class RevLogParser {
     return parse(path.toString());
   }
 
+  /** Pull verification must distinguish a complete scan from the permissive recovery reader. */
+  public ParsedRevLog parseComplete(Path path) throws IOException {
+    try (var lease = LogFileAccess.read(path)) {
+      if (!hasWpilogMagic(path)) return parseNativeFormat(path, true);
+      try (var scoped = new ScopedLogReader(path)) {
+        var scan = org.triplehelix.wpilogmcp.log.LogScan.of(scoped.reader(), path);
+        if (scan.truncated()) throw new IOException("REV scan did not reach a clean EOF: " + scan.truncationMessage());
+        return parseWpilog(path, scoped.reader());
+      }
+    }
+  }
+
   /**
    * Parses a .revlog file.
    *
@@ -319,6 +331,10 @@ public class RevLogParser {
    * @throws IOException if the file cannot be read or parsed
    */
   private ParsedRevLog parseNativeFormat(Path path) throws IOException {
+    return parseNativeFormat(path, false);
+  }
+
+  private ParsedRevLog parseNativeFormat(Path path, boolean complete) throws IOException {
     byte[] fileData = Files.readAllBytes(path);
     var buf = ByteBuffer.wrap(fileData).order(ByteOrder.LITTLE_ENDIAN);
 
@@ -333,6 +349,7 @@ public class RevLogParser {
     int pos = 0;
     while (pos < fileData.length) {
       if (recordCount > MAX_RECORDS) {
+        if (complete) throw new IOException("REV scan stopped before EOF at the record limit");
         logger.warn("Native revlog exceeded maximum record count, truncating");
         break;
       }
@@ -340,12 +357,16 @@ public class RevLogParser {
       try {
         // Read record header bitfield
         int bitfield = fileData[pos] & 0xFF;
+        if (complete && (bitfield & 0xf0) != 0) throw new IOException("Invalid REV record header");
         pos++;
 
         int entryIdLen = (bitfield & 0x03) + 1;
         int payloadSizeLen = ((bitfield >> 2) & 0x03) + 1;
 
-        if (pos + entryIdLen + payloadSizeLen > fileData.length) break;
+        if (pos + entryIdLen + payloadSizeLen > fileData.length) {
+          if (complete) throw new IOException("REV scan stopped inside a header before EOF");
+          break;
+        }
 
         // Read entry ID (variable length, LE)
         long entryId = readVarInt(fileData, pos, entryIdLen);
@@ -356,11 +377,15 @@ public class RevLogParser {
         pos += payloadSizeLen;
 
         if (payloadSize < 0 || pos + payloadSize > fileData.length) {
+          if (complete) throw new IOException("REV scan stopped inside a payload before EOF");
           logger.debug("Native revlog: invalid payload size {} at offset {}", payloadSize, pos);
           break;
         }
 
         int payloadStart = pos;
+        if (complete && ((entryId == 1 && payloadSize % 10 != 0) || (entryId == 2 && payloadSize % 16 != 0))) {
+          throw new IOException("REV record has a partial CAN frame");
+        }
         pos += (int) payloadSize;
         recordCount++;
 
@@ -385,6 +410,7 @@ public class RevLogParser {
         }
         // Other entry IDs are silently ignored
       } catch (Exception e) {
+        if (complete) throw new IOException("REV scan did not reach a clean EOF at byte " + pos, e);
         logger.debug("Native revlog parse error at offset {}: {}", pos, e.getMessage());
         break;
       }

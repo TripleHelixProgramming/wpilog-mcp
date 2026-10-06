@@ -150,7 +150,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `log` | Finding and loading logs: the log manager, the lazy log and its scan, the writer-built live log, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
 | `store` | File manifests, content inspection, and one import queue per store, and abandoned-capture recovery; robot identity, session placement, provenance, duplicate detection, and unmanaged files |
 | `revlog` | REV log parsing. `revlog/dbc` reads CAN database (DBC) files and decodes frames with them |
-| `sync` | The synchronization algorithm, and the combined view of a wpilog with its synchronized REV logs |
+| `sync` | Signal synchronization and combined logs; transport-independent content-checked transfers, pacing, pull manifests, and verification |
 | `cache` | The disk cache of sync results, the cache directory, file fingerprints, and the older disk cache of parsed logs, which is no longer used |
 | `tba` | The Blue Alliance client, and adding match results to log listings |
 | `game` | Bundled game data |
@@ -162,6 +162,26 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
+
+## File transfer
+
+`sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock
+and gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
+SFTP now and the mirror later; a local interface supplies append, archive, rename, verification,
+placement, and atomic manifest writes. One caller owns a step; a concurrent call is refused.
+
+`pull.json` remembers each remote name, size, modification time, copied count, verification state,
+and local path, plus retired generations. Growth resumes only after a hash of exactly the held
+prefix matches. Without command execution, the fallback compares the last 64 KiB of that range;
+this is weaker evidence than a whole-prefix hash. Shrinkage, rewound time, or mismatched content
+archives the old copy and starts a new file. A disappearing name and a new name with unique matching
+content can rename the held copy. Names alone never establish continuity.
+
+The gate pauses between blocks; resuming rechecks the held prefix. Read pacing includes fallback
+comparison bytes. After a stable listing pass, the ordinary readers must reach a clean EOF before
+placement; a recoverable truncated log is not verified. One failed verification permits one complete
+refetch. The REV parser has a strict verification entry point beside its ordinary recovery behavior;
+sync cache format 5 invalidates older reader results. There is no remote deletion operation.
 
 ## NT4 foundation
 
