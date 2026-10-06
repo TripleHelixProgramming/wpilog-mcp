@@ -156,6 +156,33 @@ public class ConfigLoader {
     return new Loaded(config, configFile, List.copyOf(warnings));
   }
 
+  /** A bridge joins a shared server; a project's servers block must never define that server. */
+  public Loaded loadHomeDetailed(String name, Path explicitPath) throws ConfigException {
+    if (explicitPath != null) return loadDetailed(name, explicitPath);
+    var home = homeConfigSearchPaths();
+    for (var path : home) {
+      if (Files.isRegularFile(path)) return loadDetailed(name, path);
+    }
+    throw new ConfigException("No home configuration file found. Searched: " + home);
+  }
+
+  public record ProjectLease(Path file, List<String> paths, Integer team, boolean serversIgnored) {}
+
+  /** Read only top-level permission hints, never a project key or a named server's settings. */
+  public ProjectLease projectLease(Path workingDirectory) throws ConfigException {
+    var file = workingDirectory.resolve(".wpilog-mcp.yaml");
+    if (!Files.isRegularFile(file)) return new ProjectLease(null, List.of(), null, false);
+    var root = parseFile(file);
+    var paths = getPathList(root, "logdir", new LinkedHashSet<>());
+    return new ProjectLease(file, paths == null ? List.of() : paths, getInteger(root, "team"),
+        root.has("servers"));
+  }
+
+  private List<Path> homeConfigSearchPaths() {
+    var home = Path.of(System.getProperty("user.home"), "." + APP_NAME);
+    return List.of(home.resolve("servers.yaml"), home.resolve("servers.json"));
+  }
+
   /**
    * Lists all available server configuration names from the config file.
    *
@@ -206,15 +233,13 @@ public class ConfigLoader {
    */
   List<Path> configSearchPaths() {
     var paths = new ArrayList<Path>();
-    String home = System.getProperty("user.home");
 
     // 1. Project-local override (YAML preferred, JSON fallback)
     paths.add(Path.of(".wpilog-mcp.yaml"));
     paths.add(Path.of(".wpilog-mcp.json"));
 
     // 2. Install directory (YAML preferred, JSON fallback)
-    paths.add(Path.of(home, "." + APP_NAME, "servers.yaml"));
-    paths.add(Path.of(home, "." + APP_NAME, "servers.json"));
+    paths.addAll(homeConfigSearchPaths());
 
     return paths;
   }

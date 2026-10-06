@@ -52,7 +52,8 @@ export interface LogListing {
   unassigned?: StoreFile[];
   inbox?: StoreFile[];
   unmanaged?: StoreFile[];
-  log_directories?: string[];
+  log_directories?: (string | { path: string; origin: "configured" | "leased"; team: number | null })[];
+  log_directory_paths?: string[];
   log_count?: number;
   returned?: number;
   offset?: number;
@@ -60,6 +61,11 @@ export interface LogListing {
   skipped?: { section?: string; directory?: string; reason?: string }[];
   error?: string;
   hint?: string;
+}
+
+/** Accept both earlier servers and the origin-bearing listing introduced with leases. */
+export function directoryPaths(listing: LogListing): string[] {
+  return (listing.log_directories ?? listing.log_directory_paths ?? []).map(dir => typeof dir === "string" ? dir : dir.path);
 }
 
 /** A node of the tree. */
@@ -187,7 +193,7 @@ function plainLogTree(listing: LogListing, filter = ""): LogNode[] {
   }
   const logs = (listing.logs ?? []).filter((log) => logMatches(log, filter));
   if (logs.length === 0) {
-    const where = listing.log_directories?.length ? listing.log_directories.join(", ") : "the log directories";
+    const where = listing.log_directories?.length ? directoryPaths(listing).join(", ") : "the log directories";
     nodes.push({
       kind: "note",
       label: filter.trim() !== "" ? `No log matches "${filter.trim()}"` : `No logs in ${where}`,
@@ -278,7 +284,7 @@ export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
   }
   const plain = (listing.logs ?? []).filter(l => !l.store);
   const used = new Set<string>();
-  for (const folder of listing.log_directories ?? []) {
+  for (const folder of directoryPaths(listing)) {
     if (listing.stores.some(s => s.path === folder)) continue;
     const logs = plain.filter(l => {
       const relative = path.relative(folder, l.path);

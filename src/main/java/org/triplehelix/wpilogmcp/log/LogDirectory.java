@@ -31,6 +31,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.store.StoreCatalog;
 import org.triplehelix.wpilogmcp.tools.SignalResolver.MetadataRole;
@@ -181,7 +182,9 @@ public class LogDirectory {
    * @since 0.9.0
    */
   public List<Path> getLogDirectories() {
-    return logDirectories;
+    var paths = new ArrayList<>(logDirectories);
+    ClientLeases.getInstance().directories().forEach(directory -> paths.add(directory.path()));
+    return paths.stream().distinct().toList();
   }
 
   /**
@@ -225,7 +228,7 @@ public class LogDirectory {
 
   /** Whether at least one configured directory exists. */
   public boolean isConfigured() {
-    return logDirectories.stream().anyMatch(Files::isDirectory);
+    return getLogDirectories().stream().anyMatch(Files::isDirectory);
   }
 
   /** Cache size, hits, and misses, in that order (Map.of's order changes from run to run). */
@@ -293,7 +296,7 @@ public class LogDirectory {
    * @since 0.9.0
    */
   public DirectoryScan scanLogs() throws IOException {
-    var dirs = logDirectories;
+    var dirs = getLogDirectories();
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();
@@ -319,7 +322,7 @@ public class LogDirectory {
             var session = file.session();
             found.add(new LogFileInfo(file.path().toString(), file.path().getFileName().toString(),
                 session.event(), session.matchType(), session.matchNumber(),
-                session.teamNumber() != null ? session.teamNumber() : defaultTeamNumber,
+                session.teamNumber() != null ? session.teamNumber() : teamFor(file.path()),
                 getLastModified(file.path()), file.file().sizeBytes(),
                 Instant.parse(session.startedAt()).toEpochMilli(), file));
           }
@@ -370,7 +373,7 @@ public class LogDirectory {
    */
   public List<Path> directoriesContaining(Path file) {
     var real = realPath(file);
-    return logDirectories.stream().filter(dir -> real.startsWith(realPath(dir))).toList();
+    return getLogDirectories().stream().filter(dir -> real.startsWith(realPath(dir))).toList();
   }
 
   /**
@@ -395,7 +398,7 @@ public class LogDirectory {
         while (storeRoot != null && !StoreCatalog.isStore(storeRoot)) storeRoot = storeRoot.getParent();
         if (storeRoot != null) {
           var security = new SecurityValidator();
-          logDirectories.forEach(security::addAllowedDirectory);
+          getLogDirectories().forEach(security::addAllowedDirectory);
           var store = StoreCatalog.read(storeRoot, security);
           var realDir = realPath(dir);
           files = store.files().stream().filter(f -> f.session() != null)
@@ -413,7 +416,9 @@ public class LogDirectory {
         continue;
       }
       for (var file : files) {
-        if (seen.add(realPath(file))) found.add(file);
+        var real = realPath(file);
+        if (dirs.stream().map(LogDirectory::realPath).anyMatch(real::startsWith)
+            && seen.add(real)) found.add(file);
       }
     }
     return found;
@@ -443,14 +448,38 @@ public class LogDirectory {
     var cached = metadataCache.get(pathKey);
     if (cached != null && cached.cachedLastModified() == currentLastModified) {
       cacheHits.increment();
-      return cached.info();
+      return withFallbackTeam(cached.info());
     }
 
     cacheMisses.increment();
     var info = extractLogInfo(path);
     metadataCache.put(pathKey, new CachedLogInfo(info, currentLastModified));
-    return info;
+    return withFallbackTeam(info);
   }
+
+  /** Apply leases after the metadata cache, so changing a lease cannot leave an old team cached. */
+  private LogFileInfo withFallbackTeam(LogFileInfo info) {
+    if (info.teamNumber() != null) return info;
+    var team = teamFor(Path.of(info.path()));
+    if (team == null) return info;
+    return new LogFileInfo(info.path(), info.filename(), info.eventName(), info.matchType(),
+        info.matchNumber(), team, info.lastModified(), info.fileSize(),
+        info.logCreationTime(), info.stored());
+  }
+
+  private Integer teamFor(Path file) {
+    var leased = ClientLeases.getInstance().teamFor(realPath(file));
+    return leased == null ? defaultTeamNumber : leased;
+  }
+
+  /** Permanent origins win duplicate paths; their team still follows the active lease precedence. */
+  public List<DirectoryOrigin> directoryOrigins() {
+    var configured = logDirectories.stream().map(LogDirectory::realPath).toList();
+    return getLogDirectories().stream().map(dir -> new DirectoryOrigin(dir.toString(),
+        configured.contains(realPath(dir)) ? "configured" : "leased", teamFor(dir))).toList();
+  }
+
+  public record DirectoryOrigin(String path, String origin, Integer team) {}
 
   /**
    * Extracts metadata from a log file by reading the first few records, then its file name for
@@ -538,7 +567,6 @@ public class LogDirectory {
       matchType = name.matchType();
       matchNumber = name.matchNumber();
     }
-    if (teamNumber == null) teamNumber = defaultTeamNumber;
 
     // A replay or simulation output (_sim) is marked in its match type, whichever gave it
     String matchTypeLabel = matchType == null ? null
@@ -687,7 +715,7 @@ public class LogDirectory {
    * @since 0.5.0
    */
   public List<RevLogFileInfo> listRevLogFiles() throws IOException {
-    var dirs = logDirectories;
+    var dirs = getLogDirectories();
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();

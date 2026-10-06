@@ -45,6 +45,40 @@ class ConfigLoaderTest {
     return file;
   }
 
+  @Test
+  void connectLoadsOnlyHomeOrExplicitServerConfigurationAndOnlyTopLevelProjectHints() throws Exception {
+    var oldHome = System.getProperty("user.home");
+    try {
+      System.setProperty("user.home", tempDir.toString());
+      var home = Files.createDirectories(tempDir.resolve(".wpilog-mcp"));
+      var server = home.resolve("servers.json");
+      Files.writeString(server, "{\"servers\":{\"http\":{\"transport\":\"http\",\"port\":43123}}}");
+      var loader = new ConfigLoader(name -> { throw new AssertionError("Must not read project secrets"); });
+      assertEquals(43123, loader.loadHomeDetailed("http", null).config().port());
+      assertEquals(server, loader.loadHomeDetailed("http", null).file());
+      var project = tempDir.resolve(".wpilog-mcp.yaml");
+      Files.writeString(project, "logdir: [logs, more]\nteam: 12\ntba_key: ${SECRET}\n"
+          + "defaults: {team: 33, logdir: forbidden}\nservers: {http: {port: 43124}}\n");
+      var hints = loader.projectLease(tempDir);
+      assertEquals(project, hints.file());
+      assertEquals(List.of("logs", "more"), hints.paths());
+      assertEquals(12, hints.team());
+      assertTrue(hints.serversIgnored());
+      assertEquals(43124, new ConfigLoader().loadHomeDetailed("http", project).config().port());
+      Files.delete(project);
+      Files.writeString(tempDir.resolve(".wpilog-mcp.json"), "{\"logdir\":\"ignored\"}");
+      var absent = loader.projectLease(tempDir);
+      assertNull(absent.file());
+      assertEquals(List.of(), absent.paths());
+      assertNull(absent.team());
+      assertFalse(absent.serversIgnored());
+      Files.delete(server);
+      assertThrows(ConfigException.class, () -> loader.loadHomeDetailed("http", null));
+    } finally {
+      System.setProperty("user.home", oldHome);
+    }
+  }
+
   // ==================== JSON Parsing ====================
 
   @Nested

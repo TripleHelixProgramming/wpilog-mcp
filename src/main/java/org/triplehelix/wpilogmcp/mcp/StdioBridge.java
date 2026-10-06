@@ -59,6 +59,7 @@ public final class StdioBridge {
   static final int BRIDGE_ERROR = -32000;
 
   private final URI endpoint;
+  private final JsonObject registration;
   private final BufferedReader in;
   private final PrintWriter out;
   private final HttpClient http;
@@ -76,6 +77,12 @@ public final class StdioBridge {
    * @param out Where the server's messages go, one per line
    */
   public StdioBridge(URI endpoint, InputStream in, OutputStream out) {
+    this(endpoint, in, out, null);
+  }
+
+  /** A newly initialized session receives the same permission lease, including after reconnect. */
+  public StdioBridge(URI endpoint, InputStream in, OutputStream out, JsonObject registration) {
+    this.registration = registration == null ? null : registration.deepCopy();
     this.endpoint = endpoint;
     this.in = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
     this.out = new PrintWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8), true);
@@ -176,7 +183,20 @@ public final class StdioBridge {
       if (initialize) {
         // A client that initializes again gets a new session; the old one is ended, not leaked
         if (sessionId != null) endSession();
-        response.headers().firstValue(SESSION_HEADER).ifPresent(this::startSession);
+        var newSession = response.headers().firstValue(SESSION_HEADER);
+        if (newSession.isPresent()) {
+          sessionId = newSession.get();
+          try {
+            registerDirectories();
+          } catch (IOException e) {
+            if (id != null) write(JsonRpc.createErrorResponse(id, BRIDGE_ERROR, e.getMessage()));
+            return false;
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+          }
+          startSession(sessionId);
+        }
       }
       writeBody(response);
       return true;
@@ -204,6 +224,20 @@ public final class StdioBridge {
           response.body().strip());
     }
     return true;
+  }
+
+  private void registerDirectories() throws IOException, InterruptedException {
+    if (registration == null) return;
+    var request = HttpRequest.newBuilder(endpoint.resolve("/directories"))
+        .timeout(REQUEST_TIMEOUT)
+        .header("Content-Type", "application/json")
+        .header(SESSION_HEADER, sessionId)
+        .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(registration))).build();
+    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() != 200) {
+      throw new IOException("Directory registration refused: HTTP " + response.statusCode()
+          + " " + response.body());
+    }
   }
 
   private static boolean bodyIsJsonRpc(String body) {

@@ -64,7 +64,8 @@ public final class CoreTools {
       return "List WPILOG files available in the configured log directories with friendly names, "
           + "newest first, paged: log_count is the number matching the filters, offset/limit "
           + "select a page (default 50), has_more says whether another page exists. "
-          + "log_directories names the directories searched; one that could not be read (a drive "
+          + "log_directories names the directories searched with path, origin (configured or leased), and team; "
+          + "log_directory_paths keeps their plain paths; one that could not be read (a drive "
           + "not mounted, no permission) is listed in skipped with the reason, and the result is "
           + "partial: its logs are missing from the list, not absent. Filters: "
           + "name (substring of the file or friendly name), event (event code, e.g. VACHE), "
@@ -134,8 +135,9 @@ public final class CoreTools {
       }
 
       var scan = logDirectory.scanLogs();
-      var directories = new JsonArray();
-      scan.directories().forEach(dir -> directories.add(dir.toString()));
+      var directoryPaths = new JsonArray();
+      scan.directories().forEach(dir -> directoryPaths.add(dir.toString()));
+      var directories = StoreJson.JSON.toJsonTree(logDirectory.directoryOrigins());
       if (scan.noneReadable()) {
         var result = new JsonObject();
         result.addProperty("success", false);
@@ -144,6 +146,7 @@ public final class CoreTools {
                 .map(u -> u.directory() + " " + u.reason())
                 .collect(java.util.stream.Collectors.joining("; ")));
         result.add("log_directories", directories);
+        result.add("log_directory_paths", directoryPaths);
         result.addProperty("hint", "Check that each directory exists and can be read (a "
             + "removable drive may not be mounted)");
         return result;
@@ -244,6 +247,7 @@ public final class CoreTools {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.add("log_directories", directories);
+      result.add("log_directory_paths", directoryPaths);
       result.addProperty("log_count", logs.size());
       result.addProperty("total_logs", all.size());
       result.addProperty("offset", Math.min(offset, logs.size()));

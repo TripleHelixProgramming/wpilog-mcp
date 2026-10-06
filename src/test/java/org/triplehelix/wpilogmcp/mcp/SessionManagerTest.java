@@ -7,6 +7,10 @@ package org.triplehelix.wpilogmcp.mcp;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -92,6 +96,38 @@ class SessionManagerTest {
     int cleaned = manager.cleanupExpired(Duration.ofHours(1));
     assertEquals(0, cleaned);
     assertEquals(1, manager.size());
+  }
+
+  @Test
+  void removalCannotLeaveALateRegistrationBehind() throws Exception {
+    var registered = new AtomicBoolean();
+    var manager = new SessionManager(id -> registered.set(false));
+    var id = manager.createSession().getId();
+    var inside = new CountDownLatch(1);
+    var finish = new CountDownLatch(1);
+    var pool = Executors.newFixedThreadPool(2);
+    try {
+      var update = pool.submit(() -> manager.update(id, session -> {
+        inside.countDown();
+        try {
+          assertTrue(finish.await(5, TimeUnit.SECONDS));
+        } catch (InterruptedException e) {
+          throw new AssertionError(e);
+        }
+        registered.set(true);
+      }));
+      assertTrue(inside.await(5, TimeUnit.SECONDS));
+      var removed = pool.submit(() -> manager.removeSession(id));
+      finish.countDown();
+      assertTrue(update.get(5, TimeUnit.SECONDS));
+      assertNotNull(removed.get(5, TimeUnit.SECONDS));
+      assertFalse(registered.get());
+      assertFalse(manager.update(id, session -> registered.set(true)));
+      assertFalse(registered.get());
+    } finally {
+      finish.countDown();
+      pool.shutdownNow();
+    }
   }
 
   // ==================== Concurrency Tests ====================

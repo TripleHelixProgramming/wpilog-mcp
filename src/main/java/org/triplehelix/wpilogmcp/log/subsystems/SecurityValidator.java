@@ -15,6 +15,7 @@ import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.LogFileException;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 
 /**
  * Validates file paths against allowed directories to prevent path traversal attacks.
@@ -39,6 +40,21 @@ public class SecurityValidator {
   private static final Logger logger = LoggerFactory.getLogger(SecurityValidator.class);
 
   private final Set<Path> allowedDirectories = new CopyOnWriteArraySet<>();
+
+  private final ClientLeases leases;
+
+  public SecurityValidator() {
+    this(null);
+  }
+
+  /** Only the server's validator admits client leases; install/export containment never does. */
+  public SecurityValidator(ClientLeases leases) {
+    this.leases = leases;
+  }
+
+  private boolean leasedPermissions() {
+    return leases != null && leases.enforcesDirectories();
+  }
 
   /**
    * Adds a directory to the list of allowed directories for loading logs.
@@ -88,7 +104,11 @@ public class SecurityValidator {
    * @return A new set containing the allowed directories
    */
   public Set<Path> getAllowedDirectories() {
-    return new HashSet<>(allowedDirectories);
+    var result = new HashSet<>(allowedDirectories);
+    if (leases != null) {
+      leases.directories().forEach(directory -> result.add(directory.path()));
+    }
+    return result;
   }
 
   /**
@@ -101,7 +121,8 @@ public class SecurityValidator {
    * @throws IOException if the path is outside allowed directories
    */
   public void validate(Path filePath) throws IOException {
-    if (allowedDirectories.isEmpty()) {
+    var directories = getAllowedDirectories();
+    if (directories.isEmpty() && !leasedPermissions()) {
       // No restrictions configured - allow all paths (backwards compatibility)
       return;
     }
@@ -109,7 +130,7 @@ public class SecurityValidator {
     Path normalizedPath = resolvePath(filePath);
 
     // Check if path is within any allowed directory
-    for (Path allowedDir : allowedDirectories) {
+    for (Path allowedDir : directories) {
       if (normalizedPath.startsWith(allowedDir)) {
         return; // Path is allowed
       }
@@ -164,21 +185,22 @@ public class SecurityValidator {
    */
   public void validateOrAllowCached(Path filePath, Predicate<String> isInCache)
       throws IOException {
-    if (allowedDirectories.isEmpty()) {
+    var directories = getAllowedDirectories();
+    if (directories.isEmpty() && !leasedPermissions()) {
       return;
     }
 
     Path normalizedPath = resolvePath(filePath);
 
     // Check if path is within any allowed directory
-    for (Path allowedDir : allowedDirectories) {
+    for (Path allowedDir : directories) {
       if (normalizedPath.startsWith(allowedDir)) {
         return; // Path is allowed
       }
     }
 
     // Check if already cached (allow re-access to cached logs)
-    if (isInCache.test(normalizedPath.toString())) {
+    if (!leasedPermissions() && isInCache.test(normalizedPath.toString())) {
       return; // Already cached, allow access
     }
 

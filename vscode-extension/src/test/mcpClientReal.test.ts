@@ -18,11 +18,10 @@ import { McpClient, ToolError } from "../mcpClient";
 
 function findJar(): string | undefined {
   const bundled = path.join(__dirname, "..", "..", "server", "wpilog-mcp-all.jar");
-  if (fs.existsSync(bundled)) return bundled;
   const libs = path.join(__dirname, "..", "..", "..", "build", "libs");
-  if (!fs.existsSync(libs)) return undefined;
+  if (!fs.existsSync(libs)) return fs.existsSync(bundled) ? bundled : undefined;
   const jars = fs.readdirSync(libs).filter((name) => /^wpilog-mcp-.*-all\.jar$/.test(name)).sort();
-  return jars.length > 0 ? path.join(libs, jars[jars.length - 1]) : undefined;
+  return jars.length > 0 ? path.join(libs, jars[jars.length - 1]) : fs.existsSync(bundled) ? bundled : undefined;
 }
 
 function javaAvailable(): boolean {
@@ -86,7 +85,7 @@ test("the client works the real server: a session, a listing, an error result, a
     const client = new McpClient(`http://127.0.0.1:${port}/mcp`, "0.0.0-test");
     const listing = await client.callTool("list_available_logs", { limit: 5 });
     assert.ok(["ok", "no_match"].includes(listing.status as string), JSON.stringify(listing));
-    const directories = listing.log_directories as string[];
+    const directories = listing.log_directory_paths as string[];
     assert.equal(directories.length, 1);
     assert.equal(fs.realpathSync(directories[0]).toLowerCase(), fs.realpathSync(logDir).toLowerCase());
     assert.equal((await health(port))?.sessions, 1, "the explorer holds one session");

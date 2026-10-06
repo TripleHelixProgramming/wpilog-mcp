@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 
 /**
  * Client for The Blue Alliance (TBA) API v3.
@@ -150,7 +151,8 @@ public class TbaClient {
    * @return true if TBA API is available
    */
   public boolean isAvailable() {
-    return apiKey != null && !apiKey.isEmpty();
+    var key = ClientLeases.getInstance().keyOr(apiKey);
+    return key != null && !key.isEmpty();
   }
 
   /**
@@ -695,9 +697,13 @@ public class TbaClient {
   }
 
   private <T> T fetchJson(String endpoint, Class<T> type) throws IOException {
+    // A lease may end after the caller's availability check. Report that as unavailable,
+    // rather than passing null to the HTTP builder and turning it into an internal error.
+    var key = ClientLeases.getInstance().keyOr(apiKey);
+    if (key == null || key.isEmpty()) throw new IOException("No TBA API key is configured");
     var request = HttpRequest.newBuilder()
         .uri(URI.create(baseUrl + endpoint))
-        .header("X-TBA-Auth-Key", apiKey)
+        .header("X-TBA-Auth-Key", key)
         .header("Accept", "application/json")
         .timeout(TIMEOUT)
         .GET()

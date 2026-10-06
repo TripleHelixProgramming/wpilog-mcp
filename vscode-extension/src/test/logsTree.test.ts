@@ -204,3 +204,13 @@ test("store sessions sort by their actual clocks, including fractional seconds, 
     { "2026-01-10": [{ "15:00:00.123 UTC · TEST · Qualification 2": ["fraction"] }, { "15:00:00 UTC · TEST · Qualification 2": ["early"] }] },
   ] }, { Unassigned: [] }, { Inbox: [] }, { Unmanaged: [] }]);
 });
+
+test("origin-bearing store and plain directories preserve the existing tree", () => {
+  const listing = { ...storeListing, log_directories: [
+    { path: store, origin: "configured" as const, team: null },
+    { path: plain, origin: "leased" as const, team: 11 },
+  ], logs: [...storeListing.logs!, plainLog] };
+  const tree = buildLogTree(listing);
+  assert.deepEqual(tree.map(node => node.label), [path.basename(store), path.basename(plain)]);
+  assert.equal(tree[1].kind, "directory");
+});

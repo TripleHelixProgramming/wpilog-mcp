@@ -7,6 +7,8 @@ package org.triplehelix.wpilogmcp.mcp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +24,26 @@ public class SessionManager {
 
   private final Map<String, McpSession> sessions = new ConcurrentHashMap<>();
 
+  private final Consumer<String> onRemoval;
+
+  public SessionManager() {
+    this(id -> {});
+  }
+
+  public SessionManager(Consumer<String> onRemoval) {
+    this.onRemoval = onRemoval;
+  }
+
+  /** Lease mutation and removal share the map's per-session lock; neither may perform I/O. */
+  public boolean update(String id, Consumer<McpSession> action) {
+    if (id == null) return false;
+    return sessions.computeIfPresent(id, (key, session) -> {
+      session.touch();
+      action.accept(session);
+      return session;
+    }) != null;
+  }
+
   public McpSession createSession() {
     var session = new McpSession();
     sessions.put(session.getId(), session);
@@ -31,38 +53,44 @@ public class SessionManager {
 
   public McpSession getSession(String id) {
     if (id == null) return null;
-    var session = sessions.get(id);
-    if (session != null) {
+    return sessions.computeIfPresent(id, (key, session) -> {
       session.touch();
-    }
-    return session;
+      return session;
+    });
   }
 
   public McpSession removeSession(String id) {
-    var session = sessions.remove(id);
-    if (session != null) {
+    var removed = new McpSession[1];
+    sessions.computeIfPresent(id, (key, session) -> {
+      removed[0] = session;
+      onRemoval.accept(key);
+      return null;
+    });
+    if (removed[0] != null) {
       logger.info("Removed session: {}", id);
     }
-    return session;
+    return removed[0];
   }
 
   public int cleanupExpired(Duration maxIdle) {
     var cutoff = Instant.now().minus(maxIdle);
-    // Use removeIf for atomic per-entry removal on ConcurrentHashMap, avoiding
-    // a TOCTOU race where a session could be touched between filter and remove.
-    var count = new int[]{0};
-    sessions.entrySet().removeIf(e -> {
-      if (e.getValue().getLastAccessedAt().isBefore(cutoff)) {
-        count[0]++;
-        return true;
+    var count = new AtomicInteger();
+    sessions.keySet().forEach(id -> sessions.computeIfPresent(id, (key, session) -> {
+      if (session.getLastAccessedAt().isBefore(cutoff)) {
+        onRemoval.accept(key);
+        count.incrementAndGet();
+        return null;
       }
-      return false;
-    });
-
-    if (count[0] > 0) {
-      logger.info("Cleaned up {} expired session(s)", count[0]);
+      return session;
+    }));
+    if (count.get() > 0) {
+      logger.info("Cleaned up {} expired session(s)", count.get());
     }
-    return count[0];
+    return count.get();
+  }
+
+  public void clear() {
+    sessions.keySet().forEach(this::removeSession);
   }
 
   public int size() {

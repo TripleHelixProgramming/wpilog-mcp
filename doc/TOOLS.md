@@ -157,14 +157,15 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 - `since` (optional): Only logs from this date on (`2026-03-20`, midnight UTC), or from an ISO-8601 instant
 - `offset`, `limit` (optional): Paging (default limit 50, max 500)
 
-**Returns:** `log_directories`, `log_count` (logs matching the filters), `total_logs` (in all the directories), `offset`, `returned`, `has_more`, `tba_enrichment`, `metadata_cache`, `logs` (the page), and `limits.logs`. Only the listed page is enriched with TBA data. When no log matches the filters, the status is `no_match`. A directory that could not be read makes the result `partial`, with an entry in `skipped` (`section: "logs"`, `directory`, `reason`). When no directory can be read, the call is an error naming each directory and why.
+**Returns:** `log_directories`, `log_directory_paths`, `log_count` (logs matching the filters), `total_logs` (in all the directories), `offset`, `returned`, `has_more`, `tba_enrichment`, `metadata_cache`, `logs` (the page), and `limits.logs`. Only the listed page is enriched with TBA data. When no log matches the filters, the status is `no_match`. A directory that could not be read makes the result `partial`, with an entry in `skipped` (`section: "logs"`, `directory`, `reason`). When no directory can be read, the call is an error naming each directory and why.
 
 **Example Response:**
 ```json
 {
   "success": true,
   "status": "ok",
-  "log_directories": ["/Users/team2363/Documents/FRC/logs"],
+  "log_directories": [{"path":"/Users/team2363/Documents/FRC/logs","origin":"configured","team":2363}],
+  "log_directory_paths": ["/Users/team2363/Documents/FRC/logs"],
   "log_count": 2,
   "total_logs": 2,
   "offset": 0,
@@ -214,14 +215,15 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 ```
 
 **Response Fields:**
-- `log_directories`: Every configured directory, in configuration order. A log reached from two of them (nested directories, or one directory under two names) is listed once
+- `log_directories`: Every configured or leased directory as `{path, origin: "configured" | "leased", team}` (team may be null), permanent configuration first; a duplicate configured path keeps its configured origin.
+- `log_directory_paths`: The same directories as plain path strings for consumers needing paths. A log reached from two of them (nested directories, or one directory under two names) is listed once
 - `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission). That directory's logs are missing from the list, not from the disk, and the status is `partial`
 - `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected. In those cases no log carries a `tba` field, and that says nothing about whether TBA has data for it
 - `metadata_cache`: Cache statistics for log file metadata (`size`, `hits`, `misses`)
 - `team_number`: From the log's `SystemStats/TeamNumber` entry (AdvantageKit records it), else the configured default team (`-team`, `WPILOG_TEAM`, or `team` in the server configuration)
 - `tba`: TBA data for the match (see [TBA enrichment](#tba-enrichment)): `team_number`, `match_key`, `lookup_method`, `alliance`, `score`, `won`, `opponent_score`, `actual_time` and `scheduled_time` (epoch seconds, each with a `_local` form in the event's time zone when known). `match_key` is the TBA match the data came from and `lookup_method` how it was found: `direct` (a key built from the match type and number), `double_elimination_bracket` (a Driver Station "Elimination N" read as bracket match N, TBA's `sfNm1`, for 2023 and later), `nearest_time` (the team's playoff match nearest the log's file-name time, for the finals, which carry no bracket number), or `play_order` (before 2023: playoff match number N in the order the team played, a heuristic). The last three carry a `lookup_basis` sentence.
 
-**Log directories:** at least one is required: `-logdir` (repeatable), `WPILOG_DIR`, or `logdir` in the server configuration (a path or a list). Without one, the call is an error that says how to set it.
+**Log directories:** at least one configured directory or live session lease is required: `-logdir` (repeatable), `WPILOG_DIR`, or `logdir` in the server configuration (a path or a list). Without one, the call is an error that says how to set it. Local clients may register directories through `POST /directories` (not a tool); see [Directories by lease](STANDALONE.md#directories-by-lease). A logged team wins, then the matching lease team, then the configured default.
 
 **Event, match, and team:** read from the entries that carry them by convention, among the log's first records, and otherwise from the file name.
 

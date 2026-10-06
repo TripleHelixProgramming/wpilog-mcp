@@ -4,6 +4,8 @@
  */
 package org.triplehelix.wpilogmcp;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -270,47 +272,73 @@ public class Main {
     String url = null;
     String configName = null;
     Path configPath = null;
-    for (int i = 1; i < args.length; i++) {
-      if ("--url".equals(args[i]) && i + 1 < args.length) {
-        url = args[++i];
-      } else if ("--config".equals(args[i]) && i + 1 < args.length) {
-        configPath = Path.of(args[++i]);
-      } else if (configName == null && !args[i].startsWith("-")) {
-        configName = args[i];
-      } else {
-        logger().error("Usage: wpilog-mcp connect <name> [--config <path>] | connect --url <url>");
-        return 2;
+    var paths = new ArrayList<String>();
+    Integer team = null;
+    try {
+      for (int i = 1; i < args.length; i++) {
+        switch (args[i]) {
+          case "--url" -> url = args[++i];
+          case "--config" -> configPath = Path.of(args[++i]);
+          case "--logdir" -> paths.add(args[++i]);
+          case "--team" -> {
+            team = Integer.valueOf(args[++i]);
+            if (team <= 0) throw new IllegalArgumentException("team must be positive");
+          }
+          default -> {
+            if (configName != null || args[i].startsWith("-")) throw new IllegalArgumentException();
+            configName = args[i];
+          }
+        }
       }
-    }
-    if ((url == null) == (configName == null)) {
-      logger().error("Usage: wpilog-mcp connect <name> [--config <path>] | connect --url <url>");
+      if ((url == null) == (configName == null)) throw new IllegalArgumentException();
+    } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+      logger().error("Usage: wpilog-mcp connect <name> [--config <path>] | connect --url <url> "
+          + "[--logdir <dir>]... [--team <n>]");
       return 2;
     }
 
-    URI endpoint;
-    if (url != null) {
-      endpoint = StdioBridge.endpointFor(url);
-    } else {
-      try {
-        var config = loadConfig(configName, configPath);
+    try {
+      var loader = new ConfigLoader();
+      var workingDirectory = Path.of("").toAbsolutePath();
+      var project = loader.projectLease(workingDirectory);
+      paths.addAll(project.paths());
+      var registration = new JsonObject();
+      var resolved = new JsonArray();
+      paths.stream().map(path -> workingDirectory.resolve(path).toString()).distinct()
+          .forEach(resolved::add);
+      registration.add("paths", resolved);
+      registration.addProperty("team", team == null ? project.team() : team);
+      registration.addProperty("project_servers_ignored", project.serversIgnored());
+      URI endpoint;
+      if (url != null) {
+        endpoint = StdioBridge.endpointFor(url);
+      } else {
+        var loaded = loader.loadHomeDetailed(configName, configPath);
+        var config = loaded.config();
+        if (Boolean.TRUE.equals(config.debug())) enableDebugLogging();
+        loaded.warnings().forEach(warning -> logger().warn("{}", warning));
+        logger().info("Loaded configuration '{}' from {}", configName, loaded.file());
         if (!config.isHttp()) {
           logger().error("Server '{}' uses the stdio transport; connect needs an http server. "
               + "Set transport: http in its configuration, or run it directly.", configName);
           return 1;
         }
-        if (!new DaemonManager().spawnDaemon(configName, config.effectivePort(), configPath)) {
+        // Passing the chosen file matters: the spawned JVM inherits this project's cwd too.
+        if (!new DaemonManager().spawnDaemon(configName, config.effectivePort(),
+            loaded.file().toAbsolutePath())) {
           logger().error("Server '{}' could not be started", configName);
           return 1;
         }
         var path = System.getenv("WPILOG_HTTP_PATH");
         endpoint = URI.create("http://127.0.0.1:" + config.effectivePort()
             + (path == null || path.isEmpty() ? "/mcp" : path));
-      } catch (ConfigException e) {
-        logger().error("{}", e.getMessage());
-        return 1;
       }
+      return connectTo(endpoint, System.in, paths.isEmpty() && !project.serversIgnored()
+          ? null : registration);
+    } catch (ConfigException | IllegalArgumentException e) {
+      logger().error("{}", e.getMessage());
+      return 1;
     }
-    return connectTo(endpoint, System.in);
   }
 
   /**
@@ -319,10 +347,14 @@ public class Main {
    * stdio server does, so nothing else can print on it.
    */
   static int connectTo(URI endpoint, InputStream input) {
+    return connectTo(endpoint, input, null);
+  }
+
+  private static int connectTo(URI endpoint, InputStream input, JsonObject registration) {
     var protocolOut = System.out;
     System.setOut(System.err);
     logger().info("Connecting standard input and output to {}", endpoint);
-    return new StdioBridge(endpoint, input, protocolOut).run();
+    return new StdioBridge(endpoint, input, protocolOut, registration).run();
   }
 
   /**
@@ -694,8 +726,8 @@ public class Main {
     logger().info("Usage: wpilog-mcp [options]");
     logger().info("       wpilog-mcp start <config-name> [--config <path>]");
     logger().info("       wpilog-mcp stop <config-name>");
-    logger().info("       wpilog-mcp connect <config-name> [--config <path>]");
-    logger().info("       wpilog-mcp connect --url <url>");
+    logger().info("       wpilog-mcp connect <config-name> [--config <path>] [--logdir <dir>]... [--team <n>]");
+    logger().info("       wpilog-mcp connect --url <url> [--logdir <dir>]... [--team <n>]");
     logger().info("       {}", ImportCommand.USAGE);
     logger().info("");
     logger().info("With no arguments, starts the \"default\" server configuration.");

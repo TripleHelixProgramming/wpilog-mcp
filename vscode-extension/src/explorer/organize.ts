@@ -1,7 +1,7 @@
 /** Organizing is an offer, never a side effect of listing a folder. Decisions live here so a
  * remembered refusal, a cancelled picker, or a refresh cannot accidentally authorize a move. */
 import * as path from "path";
-import { LogListing, ListedRobot } from "./logsTree";
+import { LogListing, ListedRobot, directoryPaths } from "./logsTree";
 
 export const ORGANIZE_CHOICES = ["Organize", "Not now", "Never for this folder"] as const;
 export type OrganizeChoice = typeof ORGANIZE_CHOICES[number] | undefined;
@@ -36,7 +36,7 @@ export function containsPath(folder: string, file: string, paths: path.PlatformP
 }
 
 export function organizeFolders(listing: LogListing): string[] {
-  return [...new Set([...(listing.log_directories ?? []), ...(listing.stores ?? []).map(s => s.path)])];
+  return [...new Set([...directoryPaths(listing), ...(listing.stores ?? []).map(s => s.path)])];
 }
 
 /** Explicit commands may revisit a refused folder; automatic offers respect every remembered choice. */

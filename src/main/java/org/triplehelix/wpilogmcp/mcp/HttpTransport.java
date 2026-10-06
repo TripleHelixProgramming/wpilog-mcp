@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.Version;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 
 /**
  * MCP server using Streamable HTTP transport.
@@ -65,6 +66,9 @@ public class HttpTransport {
   private final Gson gson;
   private final McpMessageHandler handler;
   private final SessionManager sessionManager;
+  private final ClientLeases leases = ClientLeases.getInstance();
+  private final RegistrationEndpoint registration;
+  private boolean leasesOpened;
   private final int port;
   private final String bindAddress;
   private final String mcpPath;
@@ -99,7 +103,8 @@ public class HttpTransport {
   public HttpTransport(ToolRegistry toolRegistry, int port, String bindAddress,
       java.util.Set<String> allowedOriginHosts, String mcpPath) {
     this.gson = new GsonBuilder().serializeNulls().create();
-    this.sessionManager = new SessionManager();
+    this.sessionManager = new SessionManager(leases::remove);
+    this.registration = new RegistrationEndpoint(sessionManager, leases);
     this.handler = new McpMessageHandler(toolRegistry, sessionManager);
     this.port = port;
     this.bindAddress = bindAddress != null ? bindAddress : "127.0.0.1";
@@ -140,6 +145,8 @@ public class HttpTransport {
   public void start() throws IOException {
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, counted(this::handleRequest));
+    server.createContext("/directories", counted(this::handleRegistration));
+    server.createContext("/tba-key", counted(this::handleRegistration));
     server.createContext("/health", counted(this::handleHealthCheck));
     server.createContext("/stop", counted(this::handleStop));
     server.createContext(DATA_PATH, counted(this::handleData));
@@ -148,6 +155,8 @@ public class HttpTransport {
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
+    leases.transportOpened();
+    leasesOpened = true;
     server.start();
     stores.startWatching();
 
@@ -167,7 +176,7 @@ public class HttpTransport {
       return t;
     });
     scheduler.scheduleAtFixedRate(
-        () -> sessionManager.cleanupExpired(SESSION_IDLE_TIMEOUT),
+        () -> expireSessions(SESSION_IDLE_TIMEOUT),
         CLEANUP_INTERVAL_MINUTES, CLEANUP_INTERVAL_MINUTES, TimeUnit.MINUTES);
     lastMcpActivityNanos = System.nanoTime();
     var idle = idleExit;
@@ -255,8 +264,10 @@ public class HttpTransport {
     if (scheduler != null) {
       scheduler.shutdownNow();
     }
+    sessionManager.clear();
     stores.stopWatching();
     stores.awaitImports();
+    if (leasesOpened) leases.transportClosed();
   }
 
   /** Wraps a handler so that {@link #stop} can wait for the requests being handled. */
@@ -574,6 +585,25 @@ public class HttpTransport {
    * must not be able to fetch a log's samples any more than it can call a tool. It serves only
    * the files the log manager's validator allows, as every tool does.
    */
+  private void handleRegistration(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin");
+      return;
+    }
+    if (!server.getAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Registration requires a server bound to loopback");
+      return;
+    }
+    noteMcpActivity();
+    registration.handle(exchange);
+  }
+
+  /** The scheduler and transport tests use the same session expiry path. */
+  int expireSessions(Duration maximumIdle) {
+    return sessionManager.cleanupExpired(maximumIdle);
+  }
+
   private void handleData(HttpExchange exchange) throws IOException {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
     if (origin != null && !isAllowedOrigin(origin)) {

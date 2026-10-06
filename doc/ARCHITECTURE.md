@@ -273,7 +273,7 @@ Import, listing, and shared lazy readers own their mappings through the same det
 
 ### Path security
 
-A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. With no log directory configured, any path is accepted. CSV exports are written only inside the export directory, which is checked the same way.
+A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. The server validator's dynamic set is the union of permanent configuration and live session leases (`ClientLeases`); listings, store discovery, inbox polling, and import validation see the same leases. After registration has been used, an empty set admits nothing, and cached files receive the same validation as new reads. The earlier unrestricted mode remains for a reader that has never used leases. A listing resolves file symlinks before reading metadata, so a link cannot broaden a lease. CSV exports are written only inside the export directory, which is checked the same way.
 
 ### Loading
 
@@ -385,7 +385,7 @@ Game data is one file per season, bundled in the JAR. The current season's is lo
 
 ## Concurrency
 
-In stdio mode the server handles one message at a time. In HTTP mode, requests run in parallel on a fixed pool of max(4, 2 × CPU count) threads, with up to 64 further threads for event streams. Requests are not serialized per session.
+In stdio mode the server handles one message at a time. In HTTP mode, requests run in parallel on a fixed pool of max(4, 2 × CPU count) threads, with up to 64 further threads for event streams. Requests are not serialized per session. Directory/key registration is serialized only with that session's removal, through the session map's per-key computation; validation and filesystem I/O happen beforehand. DELETE, expiry, and transport shutdown discard the session's permissions together, so a late registration cannot resurrect them. Keys remain in memory, with the most recent live registration taking precedence over the file. Registration is HTTP-only, behind the Origin check and refused on any non-loopback bind: a model's tool call cannot grant itself access.
 
 The design keeps shared mutable state small:
 

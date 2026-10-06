@@ -124,3 +124,10 @@ test("a copy that creates a store does not offer its retained originals again; n
   assert.equal(offerFor({ ...simple, logs: [plainLog, { ...plainLog, path: path.join(plain, "more.wpilog") }] }, plain, accepted), undefined);
   assert.equal(offerFor({ ...copied, unmanaged: [...copied.unmanaged, { store: plain, path: path.join(plain, "new.wpilog") }] }, plain, accepted)?.count, 2);
 });
+
+test("origin-bearing directories and the compatibility path list still offer organizing", () => {
+  const origins = { ...simple, log_directories: [{ path: plain, origin: "leased" as const, team: 11 }] };
+  assert.deepEqual(organizeFolders(origins), [plain]);
+  assert.equal(offerFor(origins, plain, empty)?.count, 1);
+  assert.deepEqual(organizeFolders({ log_directory_paths: [plain] }), [plain]);
+});

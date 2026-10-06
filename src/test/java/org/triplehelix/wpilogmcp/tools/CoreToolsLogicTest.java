@@ -532,7 +532,7 @@ class CoreToolsLogicTest extends ToolTestBase {
       assertEquals("ok", resultObj.get("status").getAsString(), resultObj.toString());
       var dirs = resultObj.getAsJsonArray("log_directories");
       assertEquals(1, dirs.size(), resultObj.toString());
-      assertEquals(tempDir.toAbsolutePath().normalize().toString(), dirs.get(0).getAsString());
+      assertEquals(tempDir.toAbsolutePath().normalize().toString(), dirs.get(0).getAsJsonObject().get("path").getAsString());
       assertFalse(resultObj.has("skipped"), resultObj.toString());
       assertTrue(resultObj.has("metadata_cache"), "Should include metadata_cache");
       var cache = resultObj.getAsJsonObject("metadata_cache");
@@ -643,8 +643,8 @@ class CoreToolsLogicTest extends ToolTestBase {
       assertEquals(6, r.get("log_count").getAsInt(), r.toString());
       var dirs = r.getAsJsonArray("log_directories");
       assertEquals(2, dirs.size());
-      assertEquals(ours.toString(), dirs.get(0).getAsString());
-      assertEquals(theirs.toString(), dirs.get(1).getAsString());
+      assertEquals(ours.toString(), dirs.get(0).getAsJsonObject().get("path").getAsString());
+      assertEquals(theirs.toString(), dirs.get(1).getAsJsonObject().get("path").getAsString());
       assertFalse(r.has("skipped"), r.toString());
       // Newest first across both directories: theirs' log (03-21 12:00) sits between ours'
       // (bench 04-10 by mtime, 04-03, 04-02 | 03-21 11:00, 03-20)

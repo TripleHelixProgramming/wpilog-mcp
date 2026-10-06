@@ -37,6 +37,7 @@ import org.triplehelix.wpilogmcp.cache.CacheDirectory;
 import org.triplehelix.wpilogmcp.cache.ContentFingerprint;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.cache.SyncDiskCache;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 import org.triplehelix.wpilogmcp.log.LogDirectory.RevLogFileInfo;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.LogCache;
@@ -50,8 +51,8 @@ import org.triplehelix.wpilogmcp.store.StoreCatalog;
 import org.triplehelix.wpilogmcp.sync.LogSynchronizer;
 import org.triplehelix.wpilogmcp.sync.SyncMethod;
 import org.triplehelix.wpilogmcp.sync.SyncResult;
-import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 import org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog;
+import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 
 /**
  * Manages loading, caching, and accessing WPILOG files.
@@ -162,7 +163,7 @@ public class LogManager {
   /** A controlled synchronizer lets tests hold a real background read across eviction. */
   LogManager(LogSynchronizer synchronizer) {
     // Initialize subsystems
-    this.securityValidator = new SecurityValidator();
+    this.securityValidator = new SecurityValidator(ClientLeases.getInstance());
     this.stores = new org.triplehelix.wpilogmcp.store.StoreRegistry(securityValidator, this);
     this.logParser = new LogParser();
     this.logCache = new LogCache();

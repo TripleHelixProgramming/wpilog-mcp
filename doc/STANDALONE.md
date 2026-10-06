@@ -150,9 +150,9 @@ The server reads the first configuration file it finds:
 4. `~/.wpilog-mcp/servers.yaml`
 5. `~/.wpilog-mcp/servers.json` (older installs)
 
-A JSON file uses the same keys as the YAML one.
+A JSON file uses the same keys as the YAML one. This project-first order applies to `start` and the bare launcher. `connect` joins a shared server: its server configuration comes only from `--config` or the home `servers.yaml` / `servers.json`, never a project file. Separately, it reads only top-level `logdir` and `team` from the working directory's `.wpilog-mcp.yaml` as a temporary directory lease. A `servers` section there is ignored, with a line in the server log. Project JSON does not supply leases.
 
-After `start <name>` (and `stop <name>` or `connect <name>`, which take the same `--config`), the server reads only `--config` and `-debug` from the command line and ignores other flags. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
+After `start <name>` (and `stop <name>`, which takes the same `--config`), the server reads only `--config` and `-debug` from the command line and ignores other flags. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
 - `TBA_API_KEY`, when the file sets no `tba_key`
 - `WPILOG_DISK_CACHE_DIR`, when the file sets no `diskcachedir`
 - `WPILOG_DEBUG`
@@ -295,6 +295,31 @@ The VS Code extension can join in: with its **Use Standalone Server** setting on
 The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
 
 Started with flags, `wpilog-mcp --http` runs the HTTP server in the foreground instead, as the Docker image below does.
+
+### Directories by lease
+
+A local client may grant the shared server access to directories for the life of its MCP session. This is an HTTP registration endpoint, not an MCP tool: the person decides which files the server may read. Leases are visible to all sessions, including agents that connect independently. Both routes require `Mcp-Session-Id`, pass the MCP Origin check, and return 403 when the server is bound to anything except loopback, even for a request arriving locally.
+
+```
+POST /directories
+{"paths":["/absolute/logs", {"path":"/another/project/logs","team":1234}],"team":2363}
+DELETE /directories
+POST /tba-key
+{"key":"the-key"}
+```
+
+`POST /directories` replaces that session's directories atomically. Paths must be absolute, existing directories; symlinks resolve to their targets. An invalid path is refused with its name (400), and the previous lease remains intact. Each object may override the request's default team, including with null. Logs use their recorded team first, then the most specific matching lease with a team, then the configured default. The most recently registered lease wins equal-path team conflicts. `list_available_logs` returns origins and teams in `log_directories`, and plain strings in `log_directory_paths`. Leased directories also supply import sources, store discovery, and inbox polling.
+
+`POST /tba-key` keeps the key in memory only. The most recently registered live key wins over the configured key; `{"key":null}` clears this session's key and restores the next live key or the configured one. The response never contains it. A missing session header is 400; an unknown or expired session is 404. Session DELETE or expiry removes both leases; `DELETE /directories` removes only the directories. Later reads, including cached logs, are refused unless another live lease or permanent configuration still admits them. After registration has been used, an empty directory set grants no file access.
+
+The bridge registers after initialization and releases its session when standard input closes:
+
+```bash
+wpilog-mcp connect http --logdir logs --logdir /Volumes/LOGS --team 2363
+wpilog-mcp connect --url http://localhost:2363 --logdir logs
+```
+
+Paths from flags and the project YAML are combined and resolved against the bridge's working directory; `--team` overrides the project's team. A new bridge connection after a daemon restart registers again. A project can contain only `logdir` and `team`, with no `servers` section. Server addresses, ports, keys, and cache settings always come from the home or explicit server configuration. The bridge reports an ignored project `servers` section through its registration so the daemon's log records the decision.
 
 ### The Data Endpoint
 

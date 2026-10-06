@@ -42,6 +42,8 @@ final class DescriptionOutputs {
       Map.entry("list_available_logs | serial_number", "LogStoreTest.storeListingUsesManifestsAndReportsStraysAndMoves"),
       Map.entry("list_available_logs | moved_to", "LogStoreTest.storeListingUsesManifestsAndReportsStraysAndMoves"),
       Map.entry("list_available_logs | has_more", "CoreToolsLogicTest.paging (needs a log directory)"),
+      Map.entry("list_available_logs | log_directory_paths", "DirectoryLeaseTest.directoriesAreSharedAndMetadataUsesEachPathsTeamWithoutCachingIt"),
+      Map.entry("list_available_logs | origin", "DirectoryLeaseTest.directoriesAreSharedAndMetadataUsesEachPathsTeamWithoutCachingIt"),
       Map.entry("list_available_logs | log_directories",
           "CoreToolsLogicTest.severalDirectories (needs a log directory)"),
       Map.entry("list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)"),
