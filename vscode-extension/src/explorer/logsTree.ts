@@ -70,7 +70,7 @@ export function directoryPaths(listing: LogListing): string[] {
 
 /** A node of the tree. */
 export type LogNode =
-  | { kind: "store" | "directory"; label: string; folder: string; children: LogNode[] }
+  | { kind: "store" | "directory"; label: string; folder: string; description?: string; tooltip?: string; children: LogNode[] }
   | { kind: "robot" | "session"; label: string; tooltip: string; children: LogNode[] }
   | { kind: "imports"; label: string; group: "unassigned" | "inbox" | "unmanaged"; store: string; files: StoreFile[]; children: LogNode[] }
   | { kind: "importFile"; label: string; description: string; tooltip: string; group: "unassigned" | "inbox" | "unmanaged"; file: StoreFile }
@@ -233,9 +233,33 @@ function plainLogTree(listing: LogListing, filter = ""): LogNode[] {
 }
 
 
+/** Origin belongs to the directory configured or leased, including stores nested inside it. */
+function directoryNode(kind: "store" | "directory", folder: string, children: LogNode[], listing: LogListing): LogNode {
+  const directories = (listing.log_directories ?? []).filter((dir): dir is Exclude<typeof dir, string> => typeof dir !== "string");
+  const origin = directories.filter(dir => inside(dir.path, folder)).sort((a, b) => b.path.length - a.path.length)[0];
+  const description = origin ? [origin.origin, origin.team === null ? undefined : `team ${origin.team}`].filter(Boolean).join(" · ") : undefined;
+  return { kind, label: path.basename(folder) || folder, folder, children,
+    ...(origin ? { description, tooltip: `${folder}\n${description}` } : {}) };
+}
+
+function inside(folder: string, file: string): boolean {
+  const relative = path.relative(folder, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 /** Stores use manifest identities and clocks. Plain folders retain their event/date grouping. */
 export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
-  if (listing.status === "error" || !listing.stores?.length) return plainLogTree(listing, filter);
+  if (listing.status === "error") return plainLogTree(listing, filter);
+  const origins = (listing.log_directories ?? []).filter((dir): dir is Exclude<typeof dir, string> => typeof dir !== "string");
+  if (!listing.stores?.length) {
+    if (!origins.length) return plainLogTree(listing, filter);
+    return origins.map(dir => directoryNode("directory", dir.path, plainLogTree({ ...listing,
+      log_directories: [dir],
+      logs: (listing.logs ?? []).filter(log => origins.filter(root => inside(root.path, log.path))
+        .sort((a, b) => b.path.length - a.path.length)[0]?.path === dir.path),
+      skipped: listing.skipped?.filter(skipped => skipped.directory === dir.path),
+    }, filter), listing));
+  }
   const roots: LogNode[] = [];
   for (const store of listing.stores) {
     const children: LogNode[] = [];
@@ -280,7 +304,7 @@ export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
           description: [file.state, file.stated_robot, formatSize(file.size)].filter(Boolean).join(" · "),
           tooltip: [file.path, file.reason, file.stated_robot ? `Stated robot: ${file.stated_robot}` : undefined].filter(Boolean).join("\n") })) });
     }
-    roots.push({ kind: "store", label: path.basename(store.path), folder: store.path, children });
+    roots.push(directoryNode("store", store.path, children, listing));
   }
   const plain = (listing.logs ?? []).filter(l => !l.store);
   const used = new Set<string>();
@@ -291,11 +315,12 @@ export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
       return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative) && !used.has(l.path);
     });
     logs.forEach(l => used.add(l.path));
-    if (logs.length) roots.push({ kind: "directory", label: path.basename(folder), folder,
-      children: plainLogTree({ logs, log_directories: [folder] }, filter) });
+    if (logs.length || origins.some(dir => dir.path === folder)) {
+      roots.push(directoryNode("directory", folder, plainLogTree({ logs, log_directories: [folder] }, filter), listing));
+    }
   }
   const skipped = (listing.skipped ?? []).filter(s => s.directory).map(s => ({ kind: "note" as const,
     label: `Could not read ${s.directory}`, tooltip: s.reason }));
   if (listing.has_more) roots.push({ kind: "note", label: `Showing ${(listing.logs ?? []).length} of ${listing.log_count ?? "more"} logs; narrow with the filter` });
-  return [...skipped, ...(roots.length === 1 && roots[0].kind === "store" ? roots[0].children : roots)];
+  return [...skipped, ...(!origins.length && roots.length === 1 && roots[0].kind === "store" ? roots[0].children : roots)];
 }

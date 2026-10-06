@@ -12,6 +12,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { DataClient, DataError, TooLargeError } from "./dataClient";
 import { McpClient, ToolError } from "./mcpClient";
+import { SessionRegistration } from "./directoryLease";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
 import { LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
@@ -58,7 +59,8 @@ export class Explorer implements vscode.Disposable {
     private readonly output: vscode.OutputChannel,
     private readonly serverManager: ServerManager,
     private readonly windowSpec: () => DaemonSpec,
-    private readonly windowDirectories: () => string[] | undefined = () => undefined
+    private readonly windowDirectories: () => string[] | undefined = () => undefined,
+    private readonly registration?: () => Promise<SessionRegistration>
   ) {
     this.choices = { never: context.globalState.get<string[]>(NEVER_ORGANIZE_KEY) ?? [], deferred: [], offered: {} };
     this.logs = new LogsProvider(this);
@@ -273,7 +275,7 @@ export class Explorer implements vscode.Disposable {
       // A server at a new URL was started again, perhaps with other directories: its streams are new
       this.data.clear();
     }
-    const client = new McpClient(url, this.extensionVersion);
+    const client = new McpClient(url, this.extensionVersion, this.registration);
     this.clients.set(spec.name, { url, client });
     return client;
   }
@@ -320,7 +322,8 @@ class LogItem extends vscode.TreeItem {
       case "store":
       case "directory":
         this.iconPath = vscode.ThemeIcon.Folder;
-        this.tooltip = node.folder;
+        this.tooltip = node.tooltip ?? node.folder;
+        this.description = node.description;
         this.contextValue = "wpilogDirectory";
         break;
       case "robot":

@@ -1,17 +1,5 @@
-/**
- * The standalone install's server as the extension's own (the `wpilog-mcp.useStandaloneServer`
- * setting): the `http` server of `~/.wpilog-mcp/servers.yaml`, the one the standalone guide's
- * "One Server for Every Client" recipe starts, run with the install's own launcher so that the
- * install's JAR, Java, and settings (log directories, team number, TBA key, disk cache) serve
- * VS Code's agents, Claude Code, and the explorer alongside the install's other clients. The
- * extension installs through the bundled JAR (standaloneInstall.ts), then starts with `start http --config`,
- * reads the port from the PID file the start writes (`run/http.pid`: the process ID on the
- * first line, the port on the second, as the server documents it), and stops it with `stop`.
- * Pure functions (no VS Code API) so they are tested on both platforms' path rules;
- * `serverManager.ts` runs them.
- */
+/** The shared standalone layout and launcher, independent of VS Code. */
 import * as path from "path";
-import { ServerEntry } from "./mcpJson";
 
 /** The server of the install's configuration file the extension uses: the one over HTTP. */
 export const STANDALONE_SERVER = "http";
@@ -109,24 +97,6 @@ export function standaloneStartArgs(configPath: string): string[] {
 /** The arguments that stop it: `stop http --config <file>`. */
 export function standaloneStopArgs(configPath: string): string[] {
   return ["stop", STANDALONE_SERVER, "--config", configPath];
-}
-
-/**
- * Claude Code's `.mcp.json` entry for the standalone server: the launcher running the bridge
- * (`connect http --config <file>`), which joins the server and starts it first when it is not
- * running, with the file the extension starts it from, so Claude Code and VS Code never run two
- * servers from two files. On Windows the batch file runs under `cmd /c`, as the standalone guide
- * registers it. The entry holds this computer's paths, as the extension's own entry does.
- */
-export function buildStandaloneEntry(
-  launcher: string,
-  configPath: string,
-  platform: NodeJS.Platform
-): ServerEntry {
-  const args = ["connect", STANDALONE_SERVER, "--config", configPath];
-  return platform === "win32"
-    ? { command: "cmd", args: ["/c", launcher, ...args] }
-    : { command: launcher, args };
 }
 
 /**

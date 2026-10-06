@@ -4,7 +4,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "fs";
 import * as path from "path";
 import { overlaySettings } from "../logDirectories";
-import { buildServerConfig } from "../mcpJson";
+import { directoryRegistration } from "../directoryLease";
 
 const manifest = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")
@@ -25,8 +25,7 @@ test("the team number is empty until the user sets it: never another team's numb
 test("an untouched team number puts no team in the server's configuration", () => {
   // VS Code reports the default (null) as the user's value when nobody set one
   const merged = overlaySettings({ teamNumber: settings["wpilog-mcp.teamNumber"].default }, {});
-  const config = JSON.parse(buildServerConfig({ logDirs: [], teamNumber: merged.teamNumber || 0 }));
-  assert.equal(config.servers.default.team, undefined);
+  assert.equal(directoryRegistration(merged, []).team, null);
 });
 
 test("the settings appear in a fixed order: where the logs are, then the team and TBA, then the rest", () => {
@@ -41,11 +40,9 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.teamNumber",
     "wpilog-mcp.tbaApiKey",
     "wpilog-mcp.enableForClaudeCode",
-    "wpilog-mcp.useStandaloneServer",
     "wpilog-mcp.javaPath",
     "wpilog-mcp.wpiLibYear",
     "wpilog-mcp.maxHeap",
-    "wpilog-mcp.idleExitMinutes",
   ]);
   const orders = byOrder.map((s) => s.order);
   assert.ok(orders.every((o) => Number.isInteger(o)), "every setting has an order");
@@ -87,7 +84,7 @@ test("the commands are the ones the README names, each under the extension's or 
   assert.deepEqual(commands.map((c) => c.command), [
     "wpilog-mcp.setTbaApiKey",
     "wpilog-mcp.clearTbaApiKey",
-    "wpilog-mcp.addToClaudeCode",
+    "wpilog-mcp.registerWithClaudeCode",
     "wpilog-mcp.showServerLog",
     "wpilog-mcp.installStandaloneServer",
     "wpilog-mcp.restartServer",
@@ -191,25 +188,6 @@ test("the plot's libraries are bundled with their licenses, at the versions the 
   }
 });
 
-test("the idle exit is a whole number of minutes, thirty by default, and zero turns it off", () => {
-  const idle = settings["wpilog-mcp.idleExitMinutes"];
-  assert.equal(idle.type, "integer");
-  assert.equal(idle.default, 30);
-  assert.equal(idle.minimum, 0);
-});
-
-test("the standalone server is a checkbox in the User settings, off until the user has the install", () => {
-  const setting = settings["wpilog-mcp.useStandaloneServer"];
-  assert.equal(setting.type, "boolean");
-  assert.equal(setting.default, false);
-  assert.equal(setting.scope, "application", "one install per user, not per workspace");
-  assert.match(setting.markdownDescription, /STANDALONE\.md/, "says where the install is described");
-  assert.match(setting.markdownDescription, /servers\.yaml/, "says whose settings apply");
-  for (const overridden of ["Log Directory", "Team Number", "Max Heap", "Idle Exit Minutes"]) {
-    assert.ok(setting.markdownDescription.includes(`**${overridden}**`), `says ${overridden} does not apply`);
-  }
-});
-
 test("there is one server per computer: no setting defines more, and no project names one", () => {
   // The settings were a pre-release's and are gone (doc/EXPLORER_PLAN.md, decision 5); a user
   // who kept a value in settings.json gets VS Code's own unknown-setting warning there
@@ -236,12 +214,20 @@ test("organizing has a palette/title command, inline import groups, and unassign
 });
 
 
-test("standalone installation has a named palette command linked from its setting", () => {
+test("standalone installation has a named palette command linked from the Java setting", () => {
   const id = "wpilog-mcp.installStandaloneServer";
   assert.deepEqual(manifest.contributes.commands.find((command: { command: string }) => command.command === id), {
     command: id, title: "Install Standalone Server", category: "WPILog Analyzer",
   });
   assert.ok(!manifest.contributes.menus.commandPalette.some((item: { command: string; when: string }) =>
     item.command === id && item.when === "false"));
-  assert.ok(settings["wpilog-mcp.useStandaloneServer"].markdownDescription.includes(`(command:${id})`));
+  assert.ok(settings["wpilog-mcp.javaPath"].markdownDescription.includes(`(command:${id})`));
+});
+
+test("one server removes obsolete settings and registers Claude Code at user scope", () => {
+  assert.equal(settings["wpilog-mcp.useStandaloneServer"], undefined);
+  assert.equal(settings["wpilog-mcp.idleExitMinutes"], undefined);
+  assert.match(settings["wpilog-mcp.enableForClaudeCode"].markdownDescription, /user.scope/);
+  assert.deepEqual(manifest.contributes.commands.find((c: { command: string }) => c.command === "wpilog-mcp.registerWithClaudeCode"),
+    { command: "wpilog-mcp.registerWithClaudeCode", title: "Register with Claude Code", category: "WPILog Analyzer" });
 });

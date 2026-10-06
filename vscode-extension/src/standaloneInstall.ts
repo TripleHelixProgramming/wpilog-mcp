@@ -82,19 +82,15 @@ export function parseInstallSummary(json: string): InstallSummary {
 }
 
 export interface InstallActionInput {
-  settingOn: boolean;
-  /** A successful install by this extension, remembered across activations. */
-  installedVersion?: string;
   launcherVersion?: string;
   extensionVersion: string;
   missing: boolean;
 }
 
-/** A removed install is offered again only when selected; updating never opts a user into using it. */
+/** Every window uses this install; the JAR makes the final no-downgrade decision. */
 export function installAction(input: InstallActionInput): "offer" | "update" | "none" {
-  if (input.missing) return input.settingOn ? "offer" : "none";
-  if ((input.settingOn || input.installedVersion !== undefined)
-      && olderVersion(input.launcherVersion, input.extensionVersion)) {
+  if (input.missing) return "offer";
+  if (olderVersion(input.launcherVersion, input.extensionVersion)) {
     return "update";
   }
   return "none";

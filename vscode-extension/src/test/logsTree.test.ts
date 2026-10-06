@@ -205,7 +205,7 @@ test("store sessions sort by their actual clocks, including fractional seconds, 
   ] }, { Unassigned: [] }, { Inbox: [] }, { Unmanaged: [] }]);
 });
 
-test("origin-bearing store and plain directories preserve the existing tree", () => {
+test("origin-bearing store and plain directories show their origin and team", () => {
   const listing = { ...storeListing, log_directories: [
     { path: store, origin: "configured" as const, team: null },
     { path: plain, origin: "leased" as const, team: 11 },
@@ -213,4 +213,23 @@ test("origin-bearing store and plain directories preserve the existing tree", ()
   const tree = buildLogTree(listing);
   assert.deepEqual(tree.map(node => node.label), [path.basename(store), path.basename(plain)]);
   assert.equal(tree[1].kind, "directory");
+  assert.equal((tree[0] as { description?: string }).description, "configured");
+  assert.equal((tree[1] as { description?: string }).description, "leased · team 11");
+});
+
+test("plain leased roots keep event/date groups and empty roots stay visible", () => {
+  const root = path.resolve("lease-root");
+  const nested = path.join(root, "nested");
+  const empty = path.resolve("empty-root");
+  const tree = buildLogTree({ log_directories: [
+    { path: root, origin: "configured", team: null }, { path: nested, origin: "leased", team: 9999 },
+    { path: empty, origin: "leased", team: null },
+  ], logs: [{ ...q42, path: path.join(nested, "log.wpilog") }] });
+  assert.deepEqual(tree.map(node => node.kind), ["directory", "directory", "directory"]);
+  const nodes = tree as Extract<LogNode, { kind: "store" | "directory" }>[];
+  assert.match(nodes[0].children[0].label, /^No logs/);
+  assert.equal(nodes[1].description, "leased · team 9999");
+  assert.equal(nodes[1].children[0].kind, "event");
+  assert.equal(nodes[2].description, "leased");
+  assert.match(nodes[2].children[0].label, /^No logs/);
 });

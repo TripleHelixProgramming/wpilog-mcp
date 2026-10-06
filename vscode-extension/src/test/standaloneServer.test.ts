@@ -4,7 +4,6 @@ import * as assert from "node:assert/strict";
 import * as path from "path";
 import {
   STANDALONE_SERVER,
-  buildStandaloneEntry,
   findStandaloneInstall,
   launcherCommand,
   olderVersion,
@@ -12,8 +11,6 @@ import {
   standaloneStartArgs,
   standaloneStopArgs,
 } from "../standaloneServer";
-import { entryUsesConnect } from "../projectServers";
-import { mergeServerEntry, otherWpilogServer } from "../mcpJson";
 
 const fileSet = (...files: string[]) => (file: string) => files.includes(file);
 
@@ -89,28 +86,6 @@ test("start and stop name the http server and the install's configuration file, 
     ["start", "http", "--config", "/home/me/.wpilog-mcp/servers.yaml"]);
   assert.deepEqual(standaloneStopArgs("/home/me/.wpilog-mcp/servers.yaml"),
     ["stop", "http", "--config", "/home/me/.wpilog-mcp/servers.yaml"]);
-});
-
-test("Claude Code's entry runs the install's bridge to the same server from the same file, under cmd on Windows", () => {
-  const posix = buildStandaloneEntry("/home/me/.wpilog-mcp/bin/wpilog-mcp", "/home/me/.wpilog-mcp/servers.yaml", "linux");
-  assert.deepEqual(posix, {
-    command: "/home/me/.wpilog-mcp/bin/wpilog-mcp",
-    args: ["connect", "http", "--config", "/home/me/.wpilog-mcp/servers.yaml"],
-  });
-  const windows = buildStandaloneEntry("C:\\Users\\me\\.wpilog-mcp\\bin\\wpilog-mcp.bat", "C:\\Users\\me\\.wpilog-mcp\\servers.yaml", "win32");
-  assert.deepEqual(windows, {
-    command: "cmd",
-    args: ["/c", "C:\\Users\\me\\.wpilog-mcp\\bin\\wpilog-mcp.bat", "connect", "http", "--config", "C:\\Users\\me\\.wpilog-mcp\\servers.yaml"],
-  });
-  assert.equal(posix.env, undefined, "no settings and no key in the entry");
-  // Written into .mcp.json, the entry is the extension's (no second wpilog-mcp entry is seen
-  // beside it) and counts as a bridge, so no per-project file is kept for it
-  for (const entry of [posix, windows]) {
-    const edit = mergeServerEntry(undefined, entry);
-    assert.ok(edit.ok);
-    assert.ok(entryUsesConnect(edit.text));
-    assert.equal(otherWpilogServer(edit.text), undefined);
-  }
 });
 
 test("a server is older than the extension by the version's numbers; a suffix does not count", () => {

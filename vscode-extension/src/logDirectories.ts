@@ -2,7 +2,6 @@
  * The log directories and settings passed to the server, and how they are passed. Pure functions
  * (no VS Code API) so they can be tested on their own.
  */
-import * as crypto from "crypto";
 import * as os from "os";
 import * as path from "path";
 
@@ -19,7 +18,7 @@ export function expandTilde(p: string, pathApi: path.PlatformPath = path): strin
  * becomes `\`, and `.` and `..` are resolved) with no trailing separator, and in lower case on
  * Windows, whose file names ignore case.
  */
-function directoryIdentity(dir: string, pathApi: path.PlatformPath): string {
+export function directoryIdentity(dir: string, pathApi: path.PlatformPath): string {
   const normalized = pathApi.normalize(dir);
   const root = pathApi.parse(normalized).root;
   let trimmed = normalized;
@@ -86,30 +85,4 @@ export function overlaySettings(user: LogSettings, project: LogSettings): LogSet
     additionalLogDirectories: project.additionalLogDirectories ?? user.additionalLogDirectories,
     teamNumber: project.teamNumber ?? user.teamNumber,
   };
-}
-
-/** The name of a project's configuration file: from a hash of its folder, so each has its own. */
-export function projectConfigName(folderPath: string): string {
-  return (
-    crypto.createHash("sha256").update(path.resolve(folderPath)).digest("hex").slice(0, 16) +
-    ".json"
-  );
-}
-
-/**
- * Passes the log directories to the server: one `-logdir` per directory, and `WPILOG_DIR` with
- * them joined by the platform's path delimiter (`:`, or `;` on Windows), as the server reads it.
- */
-export function addLogDirectories(
-  args: string[],
-  env: Record<string, string>,
-  logDirs: string[],
-  delimiter: string = path.delimiter
-): void {
-  for (const dir of logDirs) {
-    args.push("-logdir", dir);
-  }
-  if (logDirs.length > 0) {
-    env["WPILOG_DIR"] = logDirs.join(delimiter);
-  }
 }

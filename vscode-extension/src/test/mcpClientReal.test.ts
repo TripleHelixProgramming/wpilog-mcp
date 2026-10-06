@@ -65,10 +65,13 @@ const runnable = jar !== undefined && javaAvailable();
 
 test("the client works the real server: a session, a listing, an error result, and the session's end", { skip: !runnable && "no server JAR or no java" }, async () => {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "wpilog-explorer-"));
+  const leaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "wpilog-lease-"));
   const port = await freePort();
-  const server = spawn("java", ["-Xmx256m", "-jar", jar!, "--http", "--port", String(port), "-logdir", logDir], {
+  const server = spawn("java", ["-Xmx256m", `-Duser.home=${logDir}`, "-jar", jar!, "--http", "--port", String(port), "-logdir", logDir], {
+    cwd: logDir,
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
+    env: { ...process.env, TBA_API_KEY: "", WPILOG_DISK_CACHE_DIR: path.join(logDir, "cache") },
   });
   let stderr = "";
   server.stderr?.setEncoding("utf8");
@@ -98,11 +101,33 @@ test("the client works the real server: a session, a listing, an error result, a
     });
     await assert.rejects(client.callTool("no_such_tool"), ToolError);
 
+    const key = "synthetic-extension-key";
+    const holder = new McpClient(client.endpoint, "test", async () => ({
+      directories: { paths: [{ path: leaseDir, team: 9999 }], team: null }, key,
+    }));
+    await holder.refreshRegistration();
+    const withLease = await client.callTool("list_available_logs");
+    const origins = withLease.log_directories as { path: string; origin: string; team: number | null }[];
+    assert.equal(origins.length, 2);
+    const leased = origins.find(dir => dir.origin === "leased")!;
+    assert.equal(fs.realpathSync(leased.path), fs.realpathSync(leaseDir));
+    assert.equal(leased.team, 9999);
+    assert.ok(!JSON.stringify(withLease).includes(key));
+    // No logs are present, so availability can be observed without calling the live TBA API.
+    assert.equal((withLease.tba_enrichment as { available: boolean }).available, true);
+    assert.equal((await client.callTool("health_check")).tba_available, true);
+    await holder.dispose();
+    assert.equal((await client.callTool("health_check")).tba_available, false);
+    assert.equal(((await client.callTool("list_available_logs")).tba_enrichment as { available: boolean }).available, false);
+    assert.equal(((await client.callTool("list_available_logs")).log_directories as unknown[]).length, 1);
+    await assert.rejects(client.callTool("list_entries", { path: path.join(leaseDir, "missing.wpilog") }), /outside|not allowed|Access denied/);
+    assert.ok(!stderr.includes(key));
     await client.dispose();
     assert.equal((await health(port))?.sessions, 0, "the session is deleted, so an idle server may exit");
   } finally {
     server.kill();
     await new Promise((resolve) => server.once("exit", resolve));
+    fs.rmSync(leaseDir, { recursive: true, force: true });
     fs.rmSync(logDir, { recursive: true, force: true });
   }
 });

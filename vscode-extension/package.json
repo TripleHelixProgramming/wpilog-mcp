@@ -102,8 +102,8 @@
         "category": "WPILog Analyzer"
       },
       {
-        "command": "wpilog-mcp.addToClaudeCode",
-        "title": "Add to Claude Code in This Folder",
+        "command": "wpilog-mcp.registerWithClaudeCode",
+        "title": "Register with Claude Code",
         "category": "WPILog Analyzer"
       },
       {
@@ -123,19 +123,19 @@
       },
       {
         "command": "wpilog-mcp.explorer.organizeLogs",
-        "title": "Organize Logs\u2026",
+        "title": "Organize Logs…",
         "category": "WPILog Explorer",
         "icon": "$(folder-library)"
       },
       {
         "command": "wpilog-mcp.explorer.importLogs",
-        "title": "Import\u2026",
+        "title": "Import…",
         "category": "WPILog Explorer",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "wpilog-mcp.explorer.assignRobot",
-        "title": "Assign to Robot\u2026",
+        "title": "Assign to Robot…",
         "category": "WPILog Explorer",
         "icon": "$(circuit-board)"
       },
@@ -378,39 +378,25 @@
             "type": "boolean",
             "default": true,
             "order": 5,
-            "markdownDescription": "**Claude Code only** (Copilot and other VS Code agents always have the server). Make WPILog Analyzer available to Claude Code, which finds servers in a project's `.mcp.json` rather than in VS Code: the extension adds a `wpilog-analyzer` entry to the `.mcp.json` of each WPILib robot project you open, and keeps any existing entry up to date. For a folder that is not a robot project, run **WPILog Analyzer: Add to Claude Code in This Folder**. The entry holds this computer's paths, so it is never written into a `.mcp.json` that git tracks, and the extension offers to add `.mcp.json` to `.gitignore`. The TBA API key is never written into it."
-          },
-          "wpilog-mcp.useStandaloneServer": {
-            "type": "boolean",
-            "default": false,
-            "order": 6,
-            "scope": "application",
-            "markdownDescription": "Use the [standalone install](https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md)'s server instead of the extension's own: the `http` server of `~/.wpilog-mcp/servers.yaml`, shared by VS Code's agents, Claude Code, WPILog Explorer, and other clients. If missing, the extension offers to install its bundled server. A new configuration is seeded with the User **Log Directory**, **Additional Log Directories**, and **Team Number**, never the TBA key. Existing configuration is kept. Afterward that file controls the server: project directories and these settings, including **Java Path**, **WPILib Year**, **Max Heap**, and **Idle Exit Minutes**, do not configure it. Java and heap settings are used to run the installer. On activation an older launcher (by version numbers) is updated when this setting is on or the extension installed it before; the JAR never downgrades, and the next start replaces the running server. [Install Standalone Server](command:wpilog-mcp.installStandaloneServer) also works with this setting off. Claude Code's entry runs the install's bridge (`connect http`); [Show Server Log](command:wpilog-mcp.showServerLog) opens `~/.wpilog-mcp/logs/http.log`."
+            "markdownDescription": "Register the shared server’s bridge with Claude Code once at user scope. [Register with Claude Code](command:wpilog-mcp.registerWithClaudeCode) repeats this on demand. Projects with their own log directories are offered a `.wpilog-mcp.yaml` for terminal sessions. The extension never writes a project `.mcp.json` entry."
           },
           "wpilog-mcp.javaPath": {
             "type": "string",
             "default": "",
-            "order": 7,
-            "markdownDescription": "Path to the `java` executable. Leave blank to auto-detect the WPILib JDK."
+            "order": 6,
+            "markdownDescription": "Java executable used to run the bundled installer. Leave blank to auto-detect the WPILib JDK. The installed launcher chooses the daemon’s Java. [Install Standalone Server](command:wpilog-mcp.installStandaloneServer) installs or updates it on demand."
           },
           "wpilog-mcp.wpiLibYear": {
             "type": "string",
             "default": "",
-            "order": 8,
-            "markdownDescription": "WPILib installation year (e.g., `2026`). Leave blank to auto-detect the latest installed year."
+            "order": 7,
+            "markdownDescription": "WPILib year for finding Java to run the installer (for example `2026`). Leave blank for the latest installed year."
           },
           "wpilog-mcp.maxHeap": {
             "type": "string",
             "default": "4g",
-            "order": 9,
-            "markdownDescription": "Maximum JVM heap size. Examples: `2g`, `4g`, `8g`."
-          },
-          "wpilog-mcp.idleExitMinutes": {
-            "type": "integer",
-            "default": 30,
-            "minimum": 0,
-            "order": 10,
-            "markdownDescription": "How many minutes a server keeps running with no client connected before it exits on its own. `0` keeps it running until [Restart Server](command:wpilog-mcp.restartServer) or the next update. VS Code's agents, Claude Code, and the extension start a server again whenever they need it, so a short time costs only a few seconds' wait the next time."
+            "order": 8,
+            "markdownDescription": "Maximum JVM heap for running the bundled installer (for example `4g`). Set `WPILOG_MAX_HEAP` in the environment to configure the standalone daemon’s heap."
           }
         }
       }

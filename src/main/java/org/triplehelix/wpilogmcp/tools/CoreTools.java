@@ -1060,7 +1060,7 @@ public final class CoreTools {
       result.addProperty("loaded_logs", logManager.getLoadedLogPaths().size());
 
       // TBA availability
-      result.addProperty("tba_available", tbaConfig.isConfigured());
+      result.addProperty("tba_available", tbaClient.isAvailable());
 
       // RevLog sync status
       result.addProperty("revlog_sync_in_progress", logManager.isAnyRevLogSyncInProgress());

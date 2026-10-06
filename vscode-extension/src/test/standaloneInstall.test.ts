@@ -87,22 +87,11 @@ test("a version with a trailing newline is malformed", () => {
     /Invalid install summary/);
 });
 
-// All combinations of setting/previous ownership and missing/older/equal/newer/unknown versions.
-// Suffixes deliberately keep olderVersion's numeric-only automatic-update policy.
-for (const settingOn of [false, true]) {
-  for (const installedVersion of [undefined, "1.0.0"]) {
-    for (const [missing, current, expected] of [
-      [true, undefined, settingOn ? "offer" : "none"],
-      [true, "1.0.0", settingOn ? "offer" : "none"], // configuration is missing
-      [false, "1.9.9", settingOn || installedVersion ? "update" : "none"],
-      [false, undefined, settingOn || installedVersion ? "update" : "none"],
-      [false, "1.10.0", "none"],
-      [false, "2.0.0", "none"],
-      [false, "1.10.0-dev2", "none"],
-    ] as const) {
-      const input: InstallActionInput = { settingOn, installedVersion, missing,
-        launcherVersion: current, extensionVersion: "1.10.0" };
-      test(`install action: ${JSON.stringify(input)} -> ${expected}`, () => assert.equal(installAction(input), expected));
-    }
-  }
+for (const [missing, current, expected] of [
+  [true, undefined, "offer"], [true, "1.0.0", "offer"],
+  [false, "1.9.9", "update"], [false, undefined, "update"],
+  [false, "1.10.0", "none"], [false, "2.0.0", "none"], [false, "1.10.0-dev2", "none"],
+] as const) {
+  const input: InstallActionInput = { missing, launcherVersion: current, extensionVersion: "1.10.0" };
+  test(`shared install action: ${JSON.stringify(input)} -> ${expected}`, () => assert.equal(installAction(input), expected));
 }

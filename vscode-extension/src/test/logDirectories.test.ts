@@ -4,11 +4,9 @@ import * as assert from "node:assert/strict";
 import * as os from "os";
 import * as path from "path";
 import {
-  addLogDirectories,
   combineLogDirectories,
   expandTilde,
   overlaySettings,
-  projectConfigName,
 } from "../logDirectories";
 
 test("the main directory comes first, then the additional ones, each once", () => {
@@ -34,26 +32,6 @@ test("a leading tilde is the home directory", () => {
   assert.equal(expandTilde("/a/~/b"), "/a/~/b");
   assert.deepEqual(combineLogDirectories("~/riologs", ["~/riologs"]),
     [path.join(os.homedir(), "riologs")]);
-});
-
-test("each directory is a -logdir, and WPILOG_DIR joins them with the delimiter", () => {
-  const args: string[] = ["-jar", "x.jar"];
-  const env: Record<string, string> = {};
-  addLogDirectories(args, env, ["/a", "/b"], ":");
-  assert.deepEqual(args, ["-jar", "x.jar", "-logdir", "/a", "-logdir", "/b"]);
-  assert.deepEqual(env, { WPILOG_DIR: "/a:/b" });
-
-  const winEnv: Record<string, string> = {};
-  addLogDirectories([], winEnv, ["C:\\logs", "D:\\usb"], ";");
-  assert.equal(winEnv["WPILOG_DIR"], "C:\\logs;D:\\usb");
-});
-
-test("no directories adds nothing", () => {
-  const args: string[] = [];
-  const env: Record<string, string> = {};
-  addLogDirectories(args, env, []);
-  assert.deepEqual(args, []);
-  assert.deepEqual(env, {});
 });
 
 test("a relative path is a folder inside the project", () => {
@@ -100,12 +78,4 @@ test("a project's own settings override the user's; the rest come from the user"
     "a project's list replaces the user's, as VS Code does");
   assert.deepEqual(overlaySettings({}, {}),
     { logDirectory: undefined, additionalLogDirectories: undefined, teamNumber: undefined });
-});
-
-test("each project has its own configuration file, named the same every time", () => {
-  const a = projectConfigName("/th/Rebuilt");
-  assert.match(a, /^[0-9a-f]{16}\.json$/);
-  assert.equal(projectConfigName("/th/Rebuilt"), a);
-  assert.equal(projectConfigName("/th/Rebuilt/"), a, "a trailing separator is the same folder");
-  assert.notEqual(projectConfigName("/th/Rebuilt2025"), a);
 });
