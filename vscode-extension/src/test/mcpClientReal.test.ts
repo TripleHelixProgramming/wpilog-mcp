@@ -59,6 +59,10 @@ function health(port: number): Promise<{ status?: string; sessions?: number } | 
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// The server reports real paths as the OS resolves them (Java's toRealPath). Node's own
+// realpathSync keeps a Windows short-name alias such as RUNNER~1, so compare what the OS says,
+// and compare without case, since Windows paths differ only in the case they were typed with.
+const canonical = (p: string) => fs.realpathSync.native(p).toLowerCase();
 
 const jar = findJar();
 const runnable = jar !== undefined && javaAvailable();
@@ -90,7 +94,7 @@ test("the client works the real server: a session, a listing, an error result, a
     assert.ok(["ok", "no_match"].includes(listing.status as string), JSON.stringify(listing));
     const directories = listing.log_directory_paths as string[];
     assert.equal(directories.length, 1);
-    assert.equal(fs.realpathSync(directories[0]).toLowerCase(), fs.realpathSync(logDir).toLowerCase());
+    assert.equal(canonical(directories[0]), canonical(logDir));
     assert.equal((await health(port))?.sessions, 1, "the explorer holds one session");
 
     await assert.rejects(client.callTool("list_entries", { path: path.join(logDir, "missing.wpilog") }), (error: unknown) => {
@@ -110,7 +114,7 @@ test("the client works the real server: a session, a listing, an error result, a
     const origins = withLease.log_directories as { path: string; origin: string; team: number | null }[];
     assert.equal(origins.length, 2);
     const leased = origins.find(dir => dir.origin === "leased")!;
-    assert.equal(fs.realpathSync(leased.path), fs.realpathSync(leaseDir));
+    assert.equal(canonical(leased.path), canonical(leaseDir));
     assert.equal(leased.team, 9999);
     assert.ok(!JSON.stringify(withLease).includes(key));
     // No logs are present, so availability can be observed without calling the live TBA API.
