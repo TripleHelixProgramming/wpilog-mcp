@@ -34,7 +34,7 @@ cd wpilog-mcp
 ./gradlew install
 ```
 
-Both release installers download a temporary JAR and run its `install` verb, which owns the layout and prints the PATH hint. The Gradle task runs the same verb with `--force`, so a development build becomes current even when its version is equal or older. To install a JAR you already have:
+Both release installers download a temporary JAR and run its `install` verb, which owns the layout and prints the PATH hint. If that command exits nonzero, the script reports that the release predates the verb and runs the installer from its `v<version>` tag instead; either path is named in the output. The Gradle task runs the same verb with `--force`, so a development build becomes current even when its version is equal or older. To install a JAR you already have:
 
 ```bash
 java -jar wpilog-mcp-<version>-all.jar install

@@ -89,9 +89,35 @@ Write-Host ""
 $temporaryJar = [System.IO.Path]::GetTempFileName()
 try {
     Invoke-WebRequest -Uri $jarAsset.browser_download_url -OutFile $temporaryJar -UseBasicParsing
+    # Inspect the exit code even when an older JAR writes its usage error to stderr.
+    $ErrorActionPreference = "Continue"
     & $javaExe -jar $temporaryJar install --install-dir $installDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "wpilog-mcp install failed (exit $LASTEXITCODE)"
+    $installStatus = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($installStatus -eq 0) {
+        Write-Host "Install path: release $version install command."
+    } else {
+        # A current tagged script may delegate too. Do not recurse if its JAR cannot install.
+        if ($env:WPILOG_INSTALL_FALLBACK -eq "1") {
+            throw "Release installer fallback already attempted (exit $installStatus)."
+        }
+        $installerUrl = "https://raw.githubusercontent.com/$repo/v$version/install.ps1"
+        Write-Host "Install path: release $version predates the install command; using $installerUrl."
+        $temporaryInstaller = [System.IO.Path]::GetTempFileName()
+        $previousFallback = $env:WPILOG_INSTALL_FALLBACK
+        try {
+            Invoke-WebRequest -Uri $installerUrl -OutFile $temporaryInstaller -UseBasicParsing
+            $env:WPILOG_INSTALL_FALLBACK = "1"
+            $global:LASTEXITCODE = 0
+            # A child scope keeps the fetched script's variables out of our cleanup paths.
+            & ([scriptblock]::Create((Get-Content -Raw -LiteralPath $temporaryInstaller)))
+            if ($LASTEXITCODE -ne 0) {
+                throw "Release installer failed (exit $LASTEXITCODE)."
+            }
+        } finally {
+            $env:WPILOG_INSTALL_FALLBACK = $previousFallback
+            Remove-Item -LiteralPath $temporaryInstaller -Force
+        }
     }
 } finally {
     Remove-Item -LiteralPath $temporaryJar -Force

@@ -81,4 +81,20 @@ echo ""
 TEMP_JAR=$(mktemp "${TMPDIR:-/tmp}/wpilog-mcp.XXXXXX")
 trap 'rm -f "$TEMP_JAR"' EXIT HUP INT TERM
 curl -fsSL -o "$TEMP_JAR" "$JAR_URL"
-"$JAVA_EXEC" -jar "$TEMP_JAR" install --install-dir "$INSTALL_DIR"
+if "$JAVA_EXEC" -jar "$TEMP_JAR" install --install-dir "$INSTALL_DIR"; then
+    echo "Install path: release $VERSION install command."
+else
+    install_status=$?
+    # A current tagged script may delegate too. Do not recurse if its JAR cannot install.
+    if [ "$WPILOG_INSTALL_FALLBACK" = "1" ]; then
+        echo "ERROR: Release installer fallback already attempted (exit $install_status)." >&2
+        exit "$install_status"
+    fi
+    INSTALLER_URL="https://raw.githubusercontent.com/$REPO/v$VERSION/install.sh"
+    echo "Install path: release $VERSION predates the install command; using $INSTALLER_URL."
+    TEMP_INSTALLER=$(mktemp "${TMPDIR:-/tmp}/wpilog-mcp-installer.XXXXXX")
+    trap 'rm -f "$TEMP_JAR" "$TEMP_INSTALLER"' EXIT HUP INT TERM
+    # Fetch completely before handing the script to sh, so a failed download cannot run a fragment.
+    curl -fsSL -o "$TEMP_INSTALLER" "$INSTALLER_URL"
+    WPILOG_INSTALL_FALLBACK=1 sh < "$TEMP_INSTALLER"
+fi

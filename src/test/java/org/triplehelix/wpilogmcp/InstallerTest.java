@@ -7,28 +7,37 @@ package org.triplehelix.wpilogmcp;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.google.gson.JsonParser;
 import java.io.File;
 import java.nio.channels.FileChannel;
-import com.google.gson.JsonParser;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import java.util.jar.Attributes;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
+import javax.tools.ToolProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 
 /**
  * The one-line installers (install.sh, install.ps1) install a release the way {@code ./gradlew
  * install} installs a build: a versioned JAR and launcher, {@code wpilog-mcp[.bat]} pointing at
  * the newest, and the same default {@code servers.yaml}, kept on upgrade. They run here against
- * a fake GitHub that supplies the real packaged JAR, in a scratch home folder.
+ * a fake GitHub in a scratch home folder. Both the current JAR and a tiny JAR with the old
+ * argument handling are exercised, so a bootstrap change cannot strand a published release.
  */
 @DisplayName("installers")
 class InstallerTest {
@@ -67,13 +76,18 @@ class InstallerTest {
     }
   }
 
-  @Test
-  @DisplayName("the packaged JAR installs a runnable launcher, JSON summary, and default configuration")
-  void jarInstall() throws Exception {
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  @DisplayName("the packaged JAR installs with JSON on stdout even when the JVM prints a banner on stderr")
+  void jarInstall(boolean jvmBanner) throws Exception {
     var root = tempDir.resolve("install with spaces");
-    var first = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
+    var env = jvmBanner ? Map.of("JAVA_TOOL_OPTIONS", "-Dwpilog.install.banner=true") : Map.<String, String>of();
+    var first = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
     assertEquals(0, first.exit(), first.output());
-    var summary = JsonParser.parseString(first.output()).getAsJsonObject();
+    var summary = JsonParser.parseString(first.stdout()).getAsJsonObject();
+    if (jvmBanner) {
+      assertTrue(first.stderr().contains("-Dwpilog.install.banner=true"), first.output());
+    }
     assertEquals(Version.VERSION, summary.get("installed_version").getAsString());
     assertTrue(summary.get("repointed").getAsBoolean());
     assertTrue(summary.get("config_created").getAsBoolean());
@@ -86,8 +100,8 @@ class InstallerTest {
     assertEquals(List.of("wpilog-mcp version " + Version.VERSION),
         launched.output().lines().filter(line -> line.startsWith("wpilog-mcp version ")).toList());
     checkDefaultConfig(root.resolve("servers.yaml"));
-    var again = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
-    var second = JsonParser.parseString(again.output()).getAsJsonObject();
+    var again = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
+    var second = JsonParser.parseString(again.stdout()).getAsJsonObject();
     assertEquals(0, again.exit(), again.output());
     assertFalse(second.get("repointed").getAsBoolean());
     assertFalse(second.get("config_created").getAsBoolean());
@@ -156,7 +170,11 @@ class InstallerTest {
         + "/wpilog-mcp-" + version + "-all.jar";
   }
 
-  record Run(int exit, String output) {}
+  record Run(int exit, String stdout, String stderr) {
+    String output() {
+      return stdout + stderr;
+    }
+  }
 
   Run run(List<String> command, Map<String, String> env, boolean clearEnv)
       throws Exception {
@@ -165,14 +183,16 @@ class InstallerTest {
     pb.environment().remove("JAVA_HOME");
     pb.environment().remove("WPILOG_MAX_HEAP");
     pb.environment().putAll(env);
-    pb.redirectErrorStream(true);
     pb.redirectInput(ProcessBuilder.Redirect.from(new File(isWindows() ? "NUL" : "/dev/null")));
     var output = Files.createTempFile(tempDir, "process-", ".txt");
+    var error = Files.createTempFile(tempDir, "process-error-", ".txt");
     pb.redirectOutput(output.toFile());
+    pb.redirectError(error.toFile());
     var process = pb.start();
     try {
-      assertTrue(process.waitFor(120, TimeUnit.SECONDS), "did not finish: " + Files.readString(output));
-      return new Run(process.exitValue(), Files.readString(output));
+      assertTrue(process.waitFor(120, TimeUnit.SECONDS),
+          "did not finish: " + Files.readString(output) + Files.readString(error));
+      return new Run(process.exitValue(), Files.readString(output), Files.readString(error));
     } finally {
       process.destroyForcibly();
     }
@@ -192,6 +212,7 @@ class InstallerTest {
   /** Answers the release API with {@code $FAKE_RELEASE_JSON}; "downloads" anything else. */
   static final String FAKE_CURL = """
       #!/bin/sh
+      set -e
       out=""
       url=""
       while [ $# -gt 0 ]; do
@@ -204,6 +225,11 @@ class InstallerTest {
       done
       case "$url" in
           https://api.github.com/*) cat "$FAKE_RELEASE_JSON" ;;
+          https://raw.githubusercontent.com/*)
+             printf '%s' "$url" > "$FAKE_INSTALLER_URL"
+             printf '%s' "$out" > "$FAKE_INSTALLER_FILE"
+             cp "$FAKE_INSTALLER" "$out"
+             if [ "$FAKE_INSTALLER_FAIL" = "1" ]; then exit 22; fi ;;
           *) cp "$FAKE_JAR" "$out"
              printf '%s' "$url" > "$FAKE_DOWNLOAD_URL"
              printf '%s' "$out" > "$FAKE_DOWNLOAD_FILE" ;;
@@ -220,23 +246,34 @@ class InstallerTest {
       for arg in "$@"; do printf '%s\\n' "$arg"; done
       """;
 
-  @Test
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
   @DisabledOnOs(OS.WINDOWS)
-  @DisplayName("install.sh downloads a temporary JAR and delegates the layout without overwriting configuration")
-  void installSh() throws Exception {
+  @DisplayName("install.sh uses the verb when available and the tagged installer for an older release")
+  void installSh(boolean legacy) throws Exception {
     var home = Files.createDirectories(tempDir.resolve("home with spaces"));
     var fakeBin = Files.createDirectories(tempDir.resolve("fakebin"));
     executable(fakeBin.resolve("curl"), FAKE_CURL);
-    var release = Files.writeString(tempDir.resolve("release.json"), releaseJson(Version.VERSION));
+    var version = legacy ? "0.9.1" : Version.VERSION;
+    var release = Files.writeString(tempDir.resolve("release.json"), releaseJson(version));
     var downloadedUrl = tempDir.resolve("url.txt");
     var downloadedFile = tempDir.resolve("download.txt");
-    var env = Map.of("HOME", home.toString(), "PATH", fakeBin + ":/usr/bin:/bin",
+    var env = new HashMap<>(Map.of("HOME", home.toString(), "PATH", fakeBin + ":/usr/bin:/bin",
         "JAVA_HOME", System.getProperty("java.home"), "TMPDIR", tempDir.toString(), "FAKE_RELEASE_JSON", release.toString(),
-        "FAKE_JAR", jar().toString(), "FAKE_DOWNLOAD_URL", downloadedUrl.toString(), "FAKE_DOWNLOAD_FILE", downloadedFile.toString());
+        "FAKE_JAR", (legacy ? legacyJar() : jar()).toString(), "FAKE_DOWNLOAD_URL", downloadedUrl.toString(), "FAKE_DOWNLOAD_FILE", downloadedFile.toString()));
+    addFallback(env, false);
     var command = List.of("sh", Path.of("install.sh").toAbsolutePath().toString());
     var first = run(command, env, true);
     assertEquals(0, first.exit(), first.output());
     var root = home.resolve(".wpilog-mcp");
+    if (legacy) {
+      checkFallback(first, env, root, false);
+      assertEquals(jarUrl(version), Files.readString(downloadedUrl));
+      checkFallbackFailures(command, env, false);
+      return;
+    }
+    assertEquals(List.of("Install path: release " + version + " install command."),
+        first.stdout().lines().filter(line -> line.startsWith("Install path:")).toList());
     assertArrayEquals(Files.readAllBytes(jar()), Files.readAllBytes(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar")));
     assertEquals(jarUrl(Version.VERSION), Files.readString(downloadedUrl));
     assertFalse(Files.exists(Path.of(Files.readString(downloadedFile))), "the temporary download is removed");
@@ -314,30 +351,144 @@ class InstallerTest {
       function Invoke-RestMethod { param([string]$Uri, $Headers)
           Get-Content -Raw -Path $env:FAKE_RELEASE_JSON | ConvertFrom-Json }
       function Invoke-WebRequest { param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
-          Copy-Item -LiteralPath $env:FAKE_JAR -Destination $OutFile -Force
-          [System.IO.File]::WriteAllText($env:FAKE_DOWNLOAD_FILE, $OutFile) }
+          if ($Uri.StartsWith('https://raw.githubusercontent.com/')) {
+              [System.IO.File]::WriteAllText($env:FAKE_INSTALLER_URL, $Uri)
+              [System.IO.File]::WriteAllText($env:FAKE_INSTALLER_FILE, $OutFile)
+              Copy-Item -LiteralPath $env:FAKE_INSTALLER -Destination $OutFile -Force
+              if ($env:FAKE_INSTALLER_FAIL -eq "1") { Write-Error "Download interrupted" }
+          } else {
+              Copy-Item -LiteralPath $env:FAKE_JAR -Destination $OutFile -Force
+              [System.IO.File]::WriteAllText($env:FAKE_DOWNLOAD_FILE, $OutFile)
+          } }
       & $env:WPILOG_INSTALLER
       exit $LASTEXITCODE
       """;
 
-  @Test
-  @DisplayName("install.ps1 downloads a temporary JAR and delegates the layout")
-  void installPs1() throws Exception {
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  @DisplayName("install.ps1 uses the verb when available and the tagged installer for an older release")
+  void installPs1(boolean legacy) throws Exception {
     var shell = powershell();
     assumeTrue(shell != null, "PowerShell is not installed");
     var profile = Files.createDirectories(tempDir.resolve("profile with spaces"));
     var wrapper = Files.writeString(tempDir.resolve("run.ps1"), PS_WRAPPER);
-    var release = Files.writeString(tempDir.resolve("release.json"), releaseJson(Version.VERSION));
+    var version = legacy ? "0.9.1" : Version.VERSION;
+    var release = Files.writeString(tempDir.resolve("release.json"), releaseJson(version));
     var download = tempDir.resolve("download.txt");
-    var env = Map.of("USERPROFILE", profile.toString(), "FAKE_RELEASE_JSON", release.toString(),
-        "WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString(), "FAKE_JAR", jar().toString(),
+    var env = new HashMap<>(Map.of("USERPROFILE", profile.toString(), "FAKE_RELEASE_JSON", release.toString(),
+        "WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString(), "FAKE_JAR", (legacy ? legacyJar() : jar()).toString(),
         "FAKE_DOWNLOAD_FILE", download.toString(), "JAVA_HOME", System.getProperty("java.home"),
-        "TMPDIR", tempDir.toString(), "TEMP", tempDir.toString(), "TMP", tempDir.toString());
-    var result = run(List.of(shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", wrapper.toString()), env, false);
+        "TMPDIR", tempDir.toString(), "TEMP", tempDir.toString(), "TMP", tempDir.toString()));
+    addFallback(env, true);
+    var command = List.of(shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", wrapper.toString());
+    var result = run(command, env, false);
     assertEquals(0, result.exit(), result.output());
     var root = profile.resolve(".wpilog-mcp");
+    if (legacy) {
+      checkFallback(result, env, root, true);
+      checkFallbackFailures(command, env, true);
+      return;
+    }
+    assertEquals(List.of("Install path: release " + version + " install command."),
+        result.stdout().lines().filter(line -> line.startsWith("Install path:")).toList());
     assertArrayEquals(Files.readAllBytes(jar()), Files.readAllBytes(root.resolve("jars").resolve("wpilog-mcp-" + Version.VERSION + ".jar")));
     assertFalse(Files.exists(Path.of(Files.readString(download))));
     checkDefaultConfig(root.resolve("servers.yaml"));
+  }
+
+  /** Reproduces pre-install argument handling without embedding or downloading an old release. */
+  Path legacyJar() throws Exception {
+    var source = Files.writeString(tempDir.resolve("LegacyRelease.java"), """
+        public class LegacyRelease {
+          public static void main(String[] args) {
+            for (String arg : args) {
+              if (arg.startsWith("--")) {
+                System.err.println("Unknown option: " + arg);
+                System.exit(1);
+              }
+            }
+          }
+        }
+        """);
+    var classes = Files.createDirectories(tempDir.resolve("legacy-classes"));
+    assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null,
+        "--release", "17", "-d", classes.toString(), source.toString()));
+    var manifest = new Manifest();
+    manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+    manifest.getMainAttributes().put(Attributes.Name.MAIN_CLASS, "LegacyRelease");
+    var jar = tempDir.resolve("legacy.jar");
+    try (var output = new JarOutputStream(Files.newOutputStream(jar), manifest)) {
+      output.putNextEntry(new JarEntry("LegacyRelease.class"));
+      Files.copy(classes.resolve("LegacyRelease.class"), output);
+      output.closeEntry();
+    }
+    return jar;
+  }
+
+  /** A tagged installer records its execution and inheritance of the guard against recursive fallback. */
+  void addFallback(Map<String, String> env, boolean powershell) throws Exception {
+    var script = powershell ? """
+        [System.IO.File]::WriteAllText($env:FAKE_INSTALLER_RAN, (Join-Path $env:USERPROFILE '.wpilog-mcp'))
+        [System.IO.File]::WriteAllText($env:FAKE_INSTALLER_GUARD, $env:WPILOG_INSTALL_FALLBACK)
+        """ : """
+        printf '%s' "$HOME/.wpilog-mcp" > "$FAKE_INSTALLER_RAN"
+        printf '%s' "$WPILOG_INSTALL_FALLBACK" > "$FAKE_INSTALLER_GUARD"
+        """;
+    env.put("FAKE_INSTALLER", Files.writeString(tempDir.resolve("fallback-installer"), script).toString());
+    env.put("FAKE_INSTALLER_RAN", tempDir.resolve("fallback-ran.txt").toString());
+    env.put("FAKE_INSTALLER_GUARD", tempDir.resolve("fallback-guard.txt").toString());
+    env.put("FAKE_FAILURE_JAVA", java());
+    env.put("FAKE_INSTALLER_URL", tempDir.resolve("fallback-url.txt").toString());
+    env.put("FAKE_INSTALLER_FILE", tempDir.resolve("fallback-download.txt").toString());
+  }
+
+  void checkFallback(Run result, Map<String, String> env, Path root, boolean powershell) throws Exception {
+    var url = "https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/v0.9.1/install."
+        + (powershell ? "ps1" : "sh");
+    assertEquals(List.of("Install path: release 0.9.1 predates the install command; using " + url + "."),
+        result.stdout().lines().filter(line -> line.startsWith("Install path:")).toList());
+    assertTrue(result.output().contains("Unknown option: --install-dir"), result.output());
+    assertEquals(url, Files.readString(Path.of(env.get("FAKE_INSTALLER_URL"))));
+    assertEquals(root, Path.of(Files.readString(Path.of(env.get("FAKE_INSTALLER_RAN")))));
+    assertEquals("1", Files.readString(Path.of(env.get("FAKE_INSTALLER_GUARD"))));
+    checkDownloadsRemoved(env);
+  }
+
+  void checkDownloadsRemoved(Map<String, String> env) throws Exception {
+    assertFalse(Files.exists(Path.of(Files.readString(Path.of(env.get("FAKE_DOWNLOAD_FILE"))))), "temporary JAR removed");
+    assertFalse(Files.exists(Path.of(Files.readString(Path.of(env.get("FAKE_INSTALLER_FILE"))))), "temporary installer removed");
+  }
+
+  /** Failed delegation must fail the bootstrap and remove downloads, including a repeated fallback. */
+  void checkFallbackFailures(List<String> command, Map<String, String> env, boolean powershell) throws Exception {
+    var ran = Path.of(env.get("FAKE_INSTALLER_RAN"));
+    var downloaded = Path.of(env.get("FAKE_INSTALLER_FILE"));
+    Files.delete(ran);
+    Files.delete(downloaded);
+    env.put("WPILOG_INSTALL_FALLBACK", "1");
+    var repeated = run(command, env, !powershell);
+    assertNotEquals(0, repeated.exit(), repeated.output());
+    assertTrue(repeated.output().contains("Release installer fallback already attempted"), repeated.output());
+    assertFalse(Files.exists(downloaded), "a repeated fallback does not fetch another installer");
+    assertFalse(Files.exists(Path.of(Files.readString(Path.of(env.get("FAKE_DOWNLOAD_FILE"))))));
+    env.remove("WPILOG_INSTALL_FALLBACK");
+
+    var installer = Path.of(env.get("FAKE_INSTALLER"));
+    // A native failure in PowerShell must be checked even when the script itself returns normally.
+    var failure = powershell ? "& $env:FAKE_FAILURE_JAVA -jar $env:FAKE_JAR --legacy-error" : "exit 7";
+    var original = Files.readString(installer);
+    Files.writeString(installer, original + "\n" + failure + "\n");
+    var failed = run(command, env, !powershell);
+    assertNotEquals(0, failed.exit(), failed.output());
+    assertTrue(Files.exists(ran), "the failing installer ran");
+    checkDownloadsRemoved(env);
+
+    Files.delete(ran);
+    Files.writeString(installer, original);
+    env.put("FAKE_INSTALLER_FAIL", "1"); // leaves executable script text in an incomplete download
+    var unavailable = run(command, env, !powershell);
+    assertNotEquals(0, unavailable.exit(), unavailable.output());
+    assertFalse(Files.exists(ran), "a failed download does not execute an installer");
+    checkDownloadsRemoved(env);
   }
 }
