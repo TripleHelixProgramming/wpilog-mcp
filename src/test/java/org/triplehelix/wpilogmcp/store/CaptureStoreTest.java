@@ -87,7 +87,8 @@ class CaptureStoreTest {
         if (!allowMove.get()) throw new java.nio.file.AccessDeniedException(from.toString());
         Files.move(from, to);
       });
-      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
+      var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, LogManager.getInstance(), 0);
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
         connect(writer, 10_000_000, 0); var before = writer.session().path();
         var names = List.of("/FMSInfo/EventName", "/FMSInfo/MatchType", "/FMSInfo/MatchNumber");
         for (int i = 0; i < names.size(); i++) {
@@ -96,6 +97,10 @@ class CaptureStoreTest {
               i == 0 ? "TEST" : i == 1 ? 2L : 7L), 0);
         }
         var held = StoreCatalog.read(root, security).openCaptures().get(0);
+        try (var use = LogManager.getInstance().acquire(writer.session().path().toString())) {
+          assertInstanceOf(org.triplehelix.wpilogmcp.log.LiveLog.View.class, use.log());
+          assertEquals("TEST", use.log().values().get("NT:/FMSInfo/EventName").get(0).value());
+        }
         assertEquals("TEST", held.session().event()); assertEquals("Qualification", held.session().matchType());
         assertEquals(7, held.session().matchNumber());
         // The real platform may refuse too. The manifest is always authoritative for the listing.

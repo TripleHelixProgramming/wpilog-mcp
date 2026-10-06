@@ -159,6 +159,9 @@ public abstract class LogRequiringTool extends ToolBase {
         if (!object.has("success") || object.get("success").getAsBoolean()) {
           log.recordInputs(object);
         }
+        if (object.has("inputs") && object.get("inputs").isJsonObject()) {
+          log.recordSessionRange(object.getAsJsonObject("inputs"));
+        }
         // A session that used this log before its file changed is told once that it was reloaded
         var reload = logManager.reloadNoticeFor(sessionKey(), path);
         if (reload != null) noteReload(object, reload);

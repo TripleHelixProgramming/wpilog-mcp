@@ -116,6 +116,40 @@ public class LogManager {
    * one is never reloaded.
    */
   private final ConcurrentHashMap<String, Loaded> loaded = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, LiveLog> captures = new ConcurrentHashMap<>();
+
+  /** Active captures are pinned outside the evictable cache; their writer owns their index. */
+  public void beginCapture(LiveLog log) throws IOException {
+    securityValidator.validate(Path.of(log.path()));
+    unloadLog(log.path());
+    log.resume();
+    captures.put(log.path(), log);
+  }
+
+  /** The completed writer-built index remains cached until ordinary eviction. */
+  public void finishCapture(LiveLog log) throws IOException {
+    log.finish();
+    var snapshot = FileSnapshot.of(Path.of(log.path()));
+    loaded.put(log.path(), new Loaded(log, snapshot));
+    logCache.put(log.path(), log);
+    captures.remove(log.path(), log);
+  }
+
+  public void relocateCapture(LiveLog log, Path from, Path to) throws IOException {
+    log.relocate(to);
+    if (captures.remove(from.toString(), log)) captures.put(to.toString(), log);
+  }
+
+  private LiveLog captureAt(Path path) throws IOException {
+    var direct = captures.get(path.toString());
+    if (direct != null || captures.isEmpty() || !Files.exists(path)) return direct;
+    var real = path.toRealPath();
+    for (var capture : captures.values()) {
+      var candidate = Path.of(capture.path());
+      if (Files.exists(candidate) && candidate.toRealPath().equals(real)) return capture;
+    }
+    return null;
+  }
 
   /**
    * A reload forced by a change to the file, or a result discarded because the file changed
@@ -245,6 +279,8 @@ public class LogManager {
       Thread.currentThread().interrupt();
     }
     diskCache.shutdown();
+    captures.values().forEach(log -> { log.finish(); log.close(); });
+    captures.clear();
     logCache.clear();
   }
 
@@ -370,6 +406,10 @@ public class LogManager {
   }
 
   private static LogUse retain(LogData log, FileSnapshot snapshot) throws IOException {
+    if (log instanceof LiveLog live) {
+      var view = live.retainView();
+      return view == null ? null : new LogUse(view, snapshot, view::close);
+    }
     if (log instanceof LazyParsedLog lazy) {
       if (!lazy.retain()) return null;
       return new LogUse(log, snapshot, () -> {});
@@ -394,6 +434,11 @@ public class LogManager {
 
     // Check if already cached (fast path, no lock needed), and still the file on disk
     String normalizedPath = filePath.toString();
+    var capture = captureAt(filePath);
+    if (capture != null) {
+      var use = retain(capture, null);
+      if (use != null) return use;
+    }
     LogData cachedLog = logCache.get(normalizedPath);
     if (cachedLog != null && changeSinceLoad(normalizedPath, cachedLog) == null) {
       logger.debug("Returning cached log: {}", filePath);
@@ -405,6 +450,11 @@ public class LogManager {
     Object lock = loadLocks.computeIfAbsent(normalizedPath, k -> new Object());
     synchronized (lock) {
       LogFileAccess.checkReadable(filePath);
+      capture = captureAt(filePath);
+      if (capture != null) {
+        var use = retain(capture, null);
+        if (use != null) return use;
+      }
       // Double-check cache after acquiring lock (another thread may have finished parsing,
       // or reloaded the changed file)
       cachedLog = logCache.get(normalizedPath);
@@ -530,6 +580,12 @@ public class LogManager {
   public Release release(Path path) throws IOException {
     securityValidator.validate(path);
     var real = Files.exists(path) ? path.toRealPath() : path.toAbsolutePath().normalize();
+    for (var capture : captures.values()) {
+      var candidate = Path.of(capture.path());
+      if (Files.exists(candidate) && candidate.toRealPath().startsWith(real)) {
+        return new Release(false, "An active capture is still writing in " + path);
+      }
+    }
     long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
     do {
       for (var entry : logCache.getAllEntries().entrySet()) {
@@ -664,7 +720,7 @@ public class LogManager {
     String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
     reloads.compute(normalizedPath, (k, previous) -> new Reload(
         previous == null ? 1 : previous.generation() + 1, Instant.now(), change));
-    logCache.remove(normalizedPath, log);
+    logCache.remove(normalizedPath, log instanceof LiveLog.View view ? view.source() : log);
   }
 
   /**
@@ -771,7 +827,8 @@ public class LogManager {
    * @since 0.5.0
    */
   public Map<String, LogData> getAllLoadedLogs() {
-    return logCache.getAllEntries();
+    var all = new HashMap<String, LogData>(logCache.getAllEntries()); all.putAll(captures);
+    return Map.copyOf(all);
   }
 
   /**
@@ -790,7 +847,7 @@ public class LogManager {
    * @return The number of loaded logs
    */
   public int getLoadedLogCount() {
-    return logCache.getAllEntries().size();
+    return getAllLoadedLogs().size();
   }
 
   /**
@@ -830,7 +887,7 @@ public class LogManager {
    * @return List of paths for logs currently in cache
    */
   public List<String> getLoadedLogPaths() {
-    return new ArrayList<>(logCache.getAllEntries().keySet());
+    return new ArrayList<>(getAllLoadedLogs().keySet());
   }
 
   /**
@@ -840,7 +897,7 @@ public class LogManager {
    * @since 0.4.0
    */
   public List<LoadedLogInfo> listLoadedLogs() {
-    var entries = logCache.getAllEntries();
+    var entries = getAllLoadedLogs();
     var result = new ArrayList<LoadedLogInfo>();
 
     for (var entry : entries.entrySet()) {

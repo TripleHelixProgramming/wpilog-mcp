@@ -22,6 +22,33 @@ public final class EntryDecoder {
 
   private EntryDecoder() {}
 
+  /** The client already decoded primitive NT4 values; only arrays and opaque types need conversion. */
+  public static Object decodeNetworkValue(Object value, String type, StructSchemas schemas) {
+    return switch (type) {
+      case "boolean", "int64", "float", "double", "string", "json" -> value;
+      case "structschema" -> new String((byte[]) value, java.nio.charset.StandardCharsets.UTF_8);
+      case "raw" -> ((byte[]) value).clone();
+      case "boolean[]" -> {
+        var list = (java.util.List<?>) value; boolean[] array = new boolean[list.size()];
+        for (int i = 0; i < array.length; i++) array[i] = (Boolean) list.get(i);
+        yield array;
+      }
+      case "int64[]" -> ((java.util.List<?>) value).stream().mapToLong(v -> ((Number) v).longValue()).toArray();
+      case "float[]" -> {
+        var list = (java.util.List<?>) value; float[] array = new float[list.size()];
+        for (int i = 0; i < array.length; i++) array[i] = ((Number) list.get(i)).floatValue();
+        yield array;
+      }
+      case "double[]" -> ((java.util.List<?>) value).stream().mapToDouble(v -> ((Number) v).doubleValue()).toArray();
+      case "string[]" -> ((java.util.List<?>) value).toArray(String[]::new);
+      default -> {
+        var bytes = (byte[]) value;
+        yield isStruct(type) ? schemas.decode(type, bytes)
+            : bytes.length <= 100 ? BinaryReader.bytesToHex(bytes) : "<" + bytes.length + " bytes>";
+      }
+    };
+  }
+
   /**
    * Decodes a value from a DataLogRecord based on its type.
    *

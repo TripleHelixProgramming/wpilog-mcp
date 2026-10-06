@@ -1344,6 +1344,12 @@ public final class RobotAnalysisTools {
         logs.keySet().forEach(inputLogs::add);
         inputs.add("logs", inputLogs);
         inputs.addProperty("entry", name);
+        var sessionRanges = new JsonObject();
+        logs.forEach((logPath, log) -> {
+          var one = new JsonObject(); ((AccessTrackingLogData) log).recordSessionRange(one);
+          if (one.has("session_time_range")) sessionRanges.add(logPath, one.get("session_time_range"));
+        });
+        if (!sessionRanges.isEmpty()) inputs.add("session_time_ranges", sessionRanges);
         result.add("inputs", inputs);
         result.addProperty("logs_compared", logs.size());
         result.add("comparisons", comparisons);

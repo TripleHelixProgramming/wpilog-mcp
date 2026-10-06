@@ -131,7 +131,7 @@ final class AccessTrackingLogData implements LogData {
    * total). Tools that record their inputs by role keep their own block.
    */
   void recordInputs(JsonObject result) {
-    if (result.has("inputs")) return;
+    if (result.has("inputs")) { recordSessionRange(result.getAsJsonObject("inputs")); return; }
     var inputs = new JsonObject();
     inputs.addProperty("log", delegate.path());
     if (!read.isEmpty()) {
@@ -141,6 +141,14 @@ final class AccessTrackingLogData implements LogData {
       if (read.size() > MAX_LISTED_INPUTS) inputs.addProperty("entries_read_total", read.size());
     }
     result.add("inputs", inputs);
+    recordSessionRange(inputs);
+  }
+
+  void recordSessionRange(JsonObject inputs) {
+    delegate.sessionTimeRange().ifPresent(range -> {
+      var time = new JsonObject(); time.addProperty("start_sec", range.startSec()); time.addProperty("end_sec", range.endSec());
+      inputs.add("session_time_range", time);
+    });
   }
 
   /** The log being tracked. */
@@ -191,6 +199,7 @@ final class AccessTrackingLogData implements LogData {
   }
 
   @Override public String path() { return delegate.path(); }
+  @Override public Optional<SessionTimeRange> sessionTimeRange() { return delegate.sessionTimeRange(); }
   @Override public Map<String, EntryInfo> entries() { return delegate.entries(); }
   @Override public Map<String, List<TimestampedValue>> values() { return values; }
   @Override public double minTimestamp() { return delegate.minTimestamp(); }

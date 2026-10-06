@@ -45,10 +45,15 @@ class CaptureFidelityTest {
   }
 
   static void capture(Path fixture, Path capture) throws Exception {
+    capture(fixture, capture, null, () -> {});
+  }
+
+  @FunctionalInterface interface OpenCheck { void check() throws Exception; }
+  static void capture(Path fixture, Path capture, CaptureWriter.Observer observer, OpenCheck whileOpen) throws Exception {
     var names = IndependentLog.read(fixture, Set.of()).series.keySet();
     var loop = ClientScheduler.daemon(); var ready = new CompletableFuture<Void>(); var done = new CompletableFuture<Void>();
     var writer = new CaptureWriter(Clock.systemUTC(), loop, new CapturePolicy(List.of("/capture-test/"), Map.of()),
-        new CaptureWriter.Observer() {
+        observer != null ? observer : new CaptureWriter.Observer() {
           @Override public Path create(String address, Instant start) { return capture; }
         });
     var listener = new Nt4Client.Listener() {
@@ -58,7 +63,7 @@ class CaptureFidelityTest {
       @Override public void value(Announce a, ValueFrame v, long received) { writer.value(a, v, received); }
       @Override public void unannounce(Unannounce a) {
         writer.unannounce(a);
-        if (a.name().equals("/capture-test/ready")) { writer.disconnected(); done.complete(null); }
+        if (a.name().equals("/capture-test/ready")) done.complete(null);
       }
       @Override public void disconnected() { writer.disconnected(); }
     };
@@ -71,6 +76,8 @@ class CaptureFidelityTest {
         client.start(); ready.get(10, TimeUnit.SECONDS); replayer.replay(gateway, 0, ignored -> fail("Fast replay must not sleep"));
         for (var name : names) gateway.unannounce(name).join();
         gateway.unannounce("/capture-test/ready").join(); done.get(30, TimeUnit.SECONDS);
+        try { whileOpen.check(); }
+        finally { client.closeAsync().get(30, TimeUnit.SECONDS); }
       }
     }
     var expected = IndependentLog.read(fixture, Set.of(), names);

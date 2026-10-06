@@ -141,6 +141,16 @@ and immediate match facts with both successful and refused open-file renames. Th
 `start` command runs in an isolated home: HTTP works with the robot absent, then a loopback
 fixture robot connects and its values survive daemon shutdown. No test waits for an injected clock.
 
+`LiveCaptureConformanceTest` replays every fixture through the gateway/client/writer, then runs
+the conformance suite's argument variants for every log-reading tool on the open session and on
+a fresh load of its finished file. It compares complete results, excluding only execution timing
+and the documented live-prefix range, and also runs the independent capture-fidelity checks.
+`LiveLogTest` checks fixed prefixes during a concurrent append, input ranges (including role-based
+inputs), array growth, all hot/cold value families and schemas, idle expiry by time sync, mapping
+retirement with a held reader, resume after eviction, and rename after release. The store rename
+tests now keep a live mapping beside the writer too. These run in the normal Linux and Windows
+suite; the shop stress test with a real robot remains a manual check owned by the user.
+
 ### The disk cache in tests
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.

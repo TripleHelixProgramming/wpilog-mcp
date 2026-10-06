@@ -25,7 +25,7 @@ public final class CaptureService implements AutoCloseable {
   public CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop)
       throws IOException {
     var placement = manager.stores().store(config.store()).captures(clock);
-    var writer = new CaptureWriter(clock, loop, config.policy(), placement);
+    var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs()));
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), writer,
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
   }

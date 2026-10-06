@@ -208,9 +208,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
             + ".");
       }
       if (jumps > 0) {
-        parts.add(jumps + " record" + (jumps == 1 ? " whose timestamp jumps" : "s whose "
-            + "timestamps jump") + " more than a day past the rest of the log " + (jumps == 1
-                ? "was" : "were") + " ignored (the first at byte " + firstJump + ").");
+        parts.add(jumpMessage(jumps, firstJump));
       }
       parts.add(String.format("Data from %.2f to %.2f s was recovered.", min, max));
       message = String.join(" ", parts);
@@ -220,5 +218,11 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
     boolean damaged = (damage != null && !cutInsideRecord) || rolledBack > 0 || jumps > 0;
     return new LogScan(Collections.unmodifiableMap(entriesByName), offsets, min, max,
         dataRecords, message != null, damaged, message);
+  }
+
+  static String jumpMessage(int jumps, int firstJump) {
+    return jumps + " record" + (jumps == 1 ? " whose timestamp jumps" : "s whose timestamps jump")
+        + " more than a day past the rest of the log " + (jumps == 1 ? "was" : "were")
+        + " ignored (the first at byte " + firstJump + ").";
   }
 }

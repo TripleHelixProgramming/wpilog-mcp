@@ -307,11 +307,11 @@ public class LogCache {
     return true;
   }
 
-  /** Closes a LazyParsedLog to release memory-mapped file resources. */
+  /** Retires an owned lazy or live index; in-flight uses keep their mappings until release. */
   private void closeIfLazy(LogData log) {
-    if (log instanceof org.triplehelix.wpilogmcp.log.LazyParsedLog lazyLog) {
+    if (log instanceof AutoCloseable owned) {
       try {
-        lazyLog.close();
+        owned.close();
       } catch (Exception e) {
         logger.debug("Error closing lazy log: {}", e.getMessage());
       }

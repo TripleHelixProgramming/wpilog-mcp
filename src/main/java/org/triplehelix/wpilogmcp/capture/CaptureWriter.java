@@ -39,6 +39,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default void entry(Session session, EntryInfo entry) throws IOException {}
     default void value(Session session, EntryInfo entry, ValueFrame value, WpilogOutput.Written written) throws IOException {}
     default void flushed(Session session) throws IOException {}
+    default void timeSync(Session session, long serverTimeUs) throws IOException {}
     default void closed(Session session) throws IOException {}
     default void cost(String topic, TopicCost.Snapshot cost) {
       LoggerFactory.getLogger(CaptureWriter.class).info("Capture topic {}: {}", topic, cost);
@@ -106,6 +107,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       synchronizedClock = true;
     }
     serverUs = timestampUs; receiptUs = receivedAtUs; haveClock = true;
+    if (output != null) io(() -> observer.timeSync(session, timestampUs));
   }
 
   @Override public void announce(Announce announce) {

@@ -16,6 +16,7 @@ import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
  * <ul>
  *   <li>{@link ParsedLog} — eagerly loaded, all values in memory (used by tests, disk cache)</li>
  *   <li>{@link LazyParsedLog} — lazily loaded, values decoded on demand from memory-mapped file</li>
+ *   <li>{@link LiveLog.View} — a fixed prefix of the index the capture writer builds</li>
  * </ul>
  *
  * <p>Tools interact with log data exclusively through this interface via
@@ -27,6 +28,10 @@ public interface LogData {
 
   /** The file path of the log. */
   String path();
+
+  /** The complete session prefix this call could see, independent of a requested analysis scope. */
+  record SessionTimeRange(double startSec, double endSec) {}
+  default Optional<SessionTimeRange> sessionTimeRange() { return Optional.empty(); }
 
   /** Entry metadata keyed by entry name. */
   Map<String, EntryInfo> entries();

@@ -1027,6 +1027,7 @@ public final class CoreTools {
         result.addProperty("log_path", log.path());
         var inputs = new JsonObject();
         inputs.addProperty("log", log.path());
+        new AccessTrackingLogData(log).recordSessionRange(inputs);
         result.add("inputs", inputs);
         result.addProperty("struct_type_count", types.size());
         result.add("struct_types", types);

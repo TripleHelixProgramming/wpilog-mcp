@@ -147,7 +147,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | (the root) | Startup: reading arguments and configuration, and wiring the parts together |
 | `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/import endpoints, and the tool registry |
 | `tools` | The tools, grouped by subject, and what they share: the base every tool runs through, the result builder and result contract, the signal resolver, time scopes, field paths, data quality, and the guidance text |
-| `log` | Finding and loading logs: the log manager, the lazy log and its scan, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
+| `log` | Finding and loading logs: the log manager, the lazy log and its scan, the writer-built live log, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
 | `store` | File manifests, content inspection, and one import queue per store; robot identity, session placement, provenance, duplicate detection, and unmanaged files |
 | `revlog` | REV log parsing. `revlog/dbc` reads CAN database (DBC) files and decodes frames with them |
 | `sync` | The synchronization algorithm, and the combined view of a wpilog with its synchronized REV logs |
@@ -158,7 +158,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
-| `capture` | Pure-Java WPILOG output, session clock continuity, ordered recording, and explicit topic policy/cost accounting |
+| `capture` | Pure-Java WPILOG output, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
 
@@ -215,6 +215,34 @@ Session continuity uses time-sync replies, rather than old retained topic timest
 clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds
 starts a new session. Flushes and five-minute topic cost reports run on the same injectable event
 loop. Exclusion and thinning are explicit policy, and thinned entries record their period.
+
+## Live log
+
+The capture writer already knows each declaration, complete record's offset, value, and timestamp.
+`CaptureIndex` passes those facts to `LiveLog`; rescanning a growing file would duplicate that work
+and repeatedly invalidate tool calls. Entries retain announcement order and WPILOG ids. Repeated
+names and types, forward clock jumps, struct schemas, and decode problems follow the finished
+reader's rules, so eviction and a normal file load preserve answers.
+
+Each entry has a chunked append-only array and a volatile length. The writer publishes complete
+slots, then a global boundary containing the record sequence and data time range. A call captures
+that boundary and takes each entry's length on first access, capped at the boundary. Its values,
+entry table, and schemas therefore come from one consistent prefix. `inputs.session_time_range`
+names that prefix in seconds; `compare_matches` supplies a range per live input path. Data reads
+take no writer lock. Short lifetime transitions and the existing file leases protect retirement.
+
+The default ten-minute hot window keeps the client's decoded values, with array/struct conversion
+when a tool requests them. Expiry follows server time sync as well as new data, so idle topics age
+out too. Before discarding a hot value, the writer ensures a read-only mapping covers its complete
+record. Older values use their offsets; replacing a mapping waits for its last atomic reader
+reference before unmapping it. The write channel remains open beside the mapping on Windows.
+
+The manager pins active captures outside its evictable cache and supplies a fresh prefix per call,
+without file-change checks or after-call discard. At close the same index enters the ordinary cache;
+eviction releases its mappings after in-flight uses. A later load uses `LazyParsedLog`. The writer
+keeps the last session's index available for clock-continuous resumption and remaps it if evicted.
+The mapped-file size limit remains the existing reader's 2 GB limit. No other-process incremental
+rescan is implemented here.
 
 ## Life of a Tool Call
 

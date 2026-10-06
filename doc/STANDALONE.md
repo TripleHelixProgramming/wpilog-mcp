@@ -186,6 +186,9 @@ in the store listing immediately. The directory gains those names when it can be
 after close on Windows. While recording, the manifest marks the capture open; after close it
 records the SHA-256 and final size. Excluded or thinned topics are a deliberate reduction in
 capture fidelity; thinning is recorded in entry metadata. Topic costs are logged every five minutes.
+Every existing log tool accepts the open capture's path. Each call sees a fixed prefix, reported
+as `inputs.session_time_range`; later calls can include newer records. The hot window controls
+memory retention, not which records are available: older values are read from the file.
 
 ### Several Log Directories
 
