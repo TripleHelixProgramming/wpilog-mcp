@@ -464,7 +464,7 @@ Milestone 6, first-half choices:
 Shop harness step 1 decisions:
 
 - **Reconnect investigation remains open:** the reported once-only failed-capture reconnect assertion has not reproduced in 400 repetitions or the full local suite. The regression now records the exact server/receipt sync samples, and a controlled WebSocket pins old-socket callbacks arriving after the next connection opens. Plants that remove the callback guard, clear the failed state on connect, or ignore a reboot fail. No production continuity change is justified by that evidence alone; another occurrence needs its trace before its cause can be called fixed.
-- **Second load-sensitive socket failure:** one full `./gradlew build` in `e998df1..98173d1` reported a single failure in `org.triplehelix.wpilogmcp.nt4.client.ClientTest` in the 2,787-test run. The method and assertion were lost when targeted runs replaced the XML. The class then passed three times alone and a second full build passed. Its cause remains unknown; no timeout or protocol rule has been changed. Harness CI through `98173d1` is green. The CI harness job now runs the ordinary suite first and uploads `build/test-results/test` with its always-retained evidence so the next occurrence preserves the assertion.
+- **Second load-sensitive socket failure:** one full `./gradlew build` in `e998df1..98173d1` reported a single failure in `org.triplehelix.wpilogmcp.nt4.client.ClientTest` with 2,787 other tests passing. The method and assertion were lost when targeted runs replaced the XML. The class then passed three times alone and a second full build passed. Its cause remains unknown; no timeout or protocol rule has been changed. Harness CI through `98173d1` is green. The CI harness job now runs the ordinary suite first and uploads `build/test-results/test` with its always-retained evidence so the next occurrence preserves the assertion.
 - **Mirror review:** invalid recorded alignments stay as failed companions, with a manifest-naming reason in the listing and REV results; they never authorize fresh correlation. Sync cache format 10 retires prior interpretation. Every mirror write route is tested from a nonloopback connection, and a growing prefix without an agreeing journal cannot be evicted. A terminal used without VS Code should configure the same `mirror` block in home YAML for permanent folder admission; bridge `--logdir` grants temporary read access.
 - **Simulation launch:** [GradleRIO 2026.2.1](https://plugins.gradle.org/plugin/edu.wpi.first.GradleRIO/2026.2.1) builds a separate Java 17 project with WPILib 2026.2.2. `prepareHarness` resolves Java libraries and extracts desktop JNI libraries; the runner launches the JAR directly with their library path, without GUI or HAL simulation extensions. Gradle caches both Java and native downloads. The [simulation clock](https://github.com/wpilibsuite/allwpilib/blob/v2026.2.2/hal/src/main/native/sim/MockHooks.cpp) is paused, reset per process and stepped by 20 ms after capture subscribes. TimedRobot still drives periodic calls. Linux/macOS launch the complete harness; real-SSH tests run on Windows too.
 - **Script and oracle:** timeline microseconds control DriverStationSim and explicitly stamped telemetry. `serialnum` supplies the fallback when RobotController's simulated serial is empty; team and comments come through RoboRioSim. Nonperiodic counter resets make correlation distinguish a boot and offset; a ramp alone correlates equally well at many offsets. The independent reader and HTTP checks derive expected values from the timeline, never from captured samples. Logs stop before process exit so the disabled gate can finish the pull while NT4 is connected. This exercises [DataLogManager's actual rename](https://github.com/wpilibsuite/allwpilib/blob/v2026.2.2/wpilibj/src/main/java/edu/wpi/first/wpilibj/DataLogManager.java), including its FMS packet threshold.
@@ -574,11 +574,22 @@ Milestone 5 choices:
   with them. Claude's URL bridge goes through loopback `/pit-mcp` for exactly the registered
   endpoint, leaving its command and user registration secret-free. Set/clear needs Claude
   re-registration; with the window closed only the configured offline mirror remains usable.
-- Windows CI on the inbox correction caught a replay capture create failing its atomic
-  `store.json` replacement, followed by a null-session assertion. Its HTML report was retained;
-  it is a filesystem replacement failure, not evidence of a wrong replay value. The unchanged
-  job passed on an unchanged rerun; no timeout or numerical tolerance was widened and the
-  transient replacement cause remains unverified.
+- Windows CI on both the inbox correction and live tools caught capture creation failing its
+  atomic `store.json` replacement, followed by a null-session assertion; both HTML reports were
+  retained. The native cause is still unverified. Store writes now retry Windows
+  `AccessDeniedException` only: six atomic-move attempts with 20/40/80/160/320 ms backoffs,
+  preserving the old manifest, cleaning failed temporaries and honoring interruption. Other
+  errors, including an unsupported atomic move, fail immediately. This is bounded handling of
+  a repeatable failure class, not a claim to have identified the process denying replacement.
+  [OpenJDK's Windows error mapping](https://github.com/openjdk/jdk17u/blob/master/src/java.base/windows/classes/sun/nio/fs/WindowsException.java)
+  distinguishes access denial; its [atomic move](https://github.com/openjdk/jdk17u/blob/master/src/java.base/windows/classes/sun/nio/fs/WindowsFileCopy.java)
+  has no retry. Injected move/pause tests pin the bounds without sleeping. No NT4 timeout or
+  numerical tolerance changed.
+- Windows also caught the credential expiry test assuming the wall clock advanced between
+  registration and cleanup. The test now expires strictly past the last access and asserts
+  the number removed, like the existing directory-lease test; production expiry is unchanged.
+  Live session ordering compares cached instants, not ISO strings: fractional seconds can
+  otherwise put a newer session behind one at the start of the same second.
 
 - The capture-enabled inbox check now stops the real watcher before driving its injected poll
   clock. A full build caught a real watcher observation racing the test's `0`/settle-time

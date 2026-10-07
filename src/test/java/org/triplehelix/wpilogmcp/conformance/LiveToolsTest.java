@@ -150,6 +150,19 @@ class LiveToolsTest {
     }
   }
 
+  @Test void newestSessionsCompareInstantsAcrossFractionalSeconds() throws Exception {
+    try (var rig = rig(CapturePolicy.ALL)) {
+      rig.announce("/x", "int");
+      String later = rig.service.live().current().startedAt().plusMillis(500).toString();
+      rig.service.live().manifest(rig.root.resolve("robots/other/sessions/later/session.json"),
+          new org.triplehelix.wpilogmcp.store.StoreManifest.Session("later", later, later,
+              "synthetic", null, null, null, null, List.of()));
+      var sessions = rig.call("list_sessions", "{}").getAsJsonArray("sessions");
+      assertEquals(2, sessions.size());
+      assertEquals("later", sessions.get(0).getAsJsonObject().get("id").getAsString());
+    }
+  }
+
   @Test void aBlockedStoreCannotDelayLiveQueriesOrCostPublicationAndImportsAppearAfterward() throws Exception {
     try (var rig = rig(CapturePolicy.ALL)) {
       rig.announce("/SystemStats/SerialNumber", "string"); rig.announce("/x", "int");

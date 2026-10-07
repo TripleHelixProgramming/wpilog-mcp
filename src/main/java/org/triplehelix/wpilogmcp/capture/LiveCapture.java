@@ -28,7 +28,11 @@ import org.triplehelix.wpilogmcp.store.StoreManifest;
 public final class LiveCapture implements LogStore.Observer {
   public record SessionView(Path directory, StoreManifest.Session session, StoreManifest.Robot robot) {}
   public record Change(boolean changed, String reason, String type, ValueFrame frame) {}
-  private record Held(Path directory, StoreManifest.Session session) {}
+  private record Held(Path directory, StoreManifest.Session session, java.time.Instant started) {
+    Held(Path directory, StoreManifest.Session session) {
+      this(directory, session, java.time.Instant.parse(session.startedAt()));
+    }
+  }
   private record Catalog(Map<String, Held> sessions, Map<String, StoreManifest.Robot> robots) {}
   private record Wait(String session, String topic, CompletableFuture<Change> result) {}
   private final Path root;
@@ -88,7 +92,11 @@ public final class LiveCapture implements LogStore.Observer {
   }
   public List<SessionView> sessions() {
     var known = catalog;
-    return known.sessions().values().stream().map(item -> {
+    // ISO strings with and without fractional seconds do not sort chronologically. Parse
+    // once when a manifest is published, keeping repeated live queries free of that work.
+    return known.sessions().values().stream()
+        .sorted(java.util.Comparator.comparing(Held::started).reversed().thenComparing(v -> v.session().id()))
+        .map(item -> {
       var s = item.session(); Path directory = item.directory();
       String relative = s.openCapture() != null ? s.openCapture().path() : s.files().stream().findFirst().map(StoreManifest.LogFile::path).orElse(null);
       if (relative != null) {
@@ -99,8 +107,7 @@ public final class LiveCapture implements LogStore.Observer {
       var parts = root.relativize(directory);
       var robot = parts.getNameCount() >= 2 && parts.getName(0).toString().equals("robots") ? known.robots().get(parts.getName(1).toString()) : null;
       return new SessionView(directory, s, robot);
-    }).sorted(java.util.Comparator.<SessionView, String>comparing(v -> v.session().startedAt()).reversed()
-        .thenComparing(v -> v.session().id())).toList();
+    }).toList();
   }
 
   public CompletableFuture<Change> waitFor(String session, String topic, int timeoutMs) {

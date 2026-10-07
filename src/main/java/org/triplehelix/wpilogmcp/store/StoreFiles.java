@@ -9,6 +9,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import java.io.File;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -27,11 +29,22 @@ final class StoreFiles {
   private final SecurityValidator containment = new SecurityValidator();
 
   private final java.util.function.BiConsumer<Path, Object> published;
+  @FunctionalInterface interface Mover { void move(Path from, Path to) throws IOException; }
+  @FunctionalInterface interface Pause { void millis(long delay) throws InterruptedException; }
+  private final Mover mover;
+  private final Pause pause;
+  private final boolean windows;
   StoreFiles(Path root, SecurityValidator security) throws IOException {
     this(root, security, (path, value) -> {});
   }
   StoreFiles(Path root, SecurityValidator security, java.util.function.BiConsumer<Path, Object> published) throws IOException {
+    this(root, security, published, (from, to) -> Files.move(from, to,
+        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING), Thread::sleep, File.separatorChar == '\\');
+  }
+  StoreFiles(Path root, SecurityValidator security, java.util.function.BiConsumer<Path, Object> published,
+      Mover mover, Pause pause, boolean windows) throws IOException {
     this.published = published;
+    this.mover = mover; this.pause = pause; this.windows = windows;
     security.validate(root);
     this.root = root.toRealPath();
     this.security = security;
@@ -100,13 +113,37 @@ final class StoreFiles {
     Files.createDirectories(path.getParent());
     check(path);
     var temporary = Files.createTempFile(path.getParent(), ".manifest-", ".tmp");
-    try (var writer = Files.newBufferedWriter(temporary)) {
-      JSON.toJson(value, writer);
+    try {
+      try (var writer = Files.newBufferedWriter(temporary)) {
+        JSON.toJson(value, writer);
+      }
+      // A crash leaves the old manifest or the complete new one, never a half-written catalog.
+      // A filesystem without atomic rename is refused rather than weakening that guarantee.
+      replace(temporary, path);
+      published.accept(path, value);
+    } catch (IOException | RuntimeException | Error failure) {
+      try { Files.deleteIfExists(temporary); }
+      catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+      throw failure;
     }
-    // A crash leaves the old manifest or the complete new one, never a half-written catalog.
-    // A filesystem without atomic rename is refused rather than weakening that guarantee.
-    Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-    published.accept(path, value);
+  }
+
+  /** Windows can deny replacement transiently. Retry only that error, for at most 620 ms
+   * of backoff, without deleting the destination or weakening the atomic-move requirement. */
+  private void replace(Path temporary, Path path) throws IOException {
+    for (int attempt = 0; ; attempt++) {
+      try { mover.move(temporary, path); return; }
+      catch (AccessDeniedException denied) {
+        if (!windows || attempt == 5) throw denied;
+        try { pause.millis(20L << attempt); }
+        catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          var failure = new InterruptedIOException("Interrupted replacing manifest " + path);
+          failure.initCause(interrupted);
+          throw failure;
+        }
+      }
+    }
   }
 
   static String hash(Path path) throws IOException {

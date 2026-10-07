@@ -76,7 +76,9 @@ class PitCredentialTest {
       assertEquals(403, request(local, "GET", route, null, null).statusCode());
       try (var remote = new HttpRemoteFiles(origin)) { remote.description(); } assertEquals("null", seen.get(4));
       request(local, "POST", "/pit-credential", session, body(endpoint, secret));
-      local.expireSessions(Duration.ZERO); assertEquals(403, request(local, "GET", route, null, null).statusCode());
+      // Expire strictly past the last access even if Windows returns the same wall-clock tick.
+      assertEquals(1, local.expireSessions(Duration.ofNanos(-1)));
+      assertEquals(403, request(local, "GET", route, null, null).statusCode());
     } finally { local.stop(); upstream.stop(0); }
   }
   @Test void redirectsCannotForwardAPitSecretToAnotherServer() throws Exception {

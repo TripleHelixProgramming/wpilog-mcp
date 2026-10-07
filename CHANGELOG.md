@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- Store manifest replacement retries transient Windows access denials with bounded backoff while retaining atomic writes and the previous complete manifest. Previously one refusal could stop capture creation; persistent and other errors still fail with their reason. Failed temporary manifests are cleaned up, and interruption stops the retry.
+- Live sessions now sort by their calendar instants. Previously ISO strings with fractional seconds could put a newer session behind an older one in the same second.
 - Imports can join an overlapping session while its capture is still open. Previously session nomination used only finished file hashes and could miss the current boot.
 
 - Inbox cleanup now joins the store queue. Previously the watcher briefly took the store lock outside that queue, so an admitted upload could fail as though another process were importing. A blocked-queue regression pins ordering without delaying polling.

@@ -483,7 +483,10 @@ and a network interruption; real VS Code has not been available for this work.
 injected robot/calendar clocks. It pins ages, first-publication and per-session waits, exact
 record bytes, thinning/exclusion, costs and session limits, closed summaries, missing topics,
 bad arguments, shutdown/unannounce registration ordering, and import visibility while the store
-queue is blocked. Description outputs are checked against these actual results. `LiveReplayTest` replays every generated fixture,
+queue is blocked. Session ordering includes mixed whole and fractional seconds. Description
+outputs are checked against these actual results. `StoreManifestReplaceTest` injects Windows
+access denials and a pause recorder: it pins complete atomic replacement, six attempts, error
+selection, interruption, temporary cleanup and publication only after success, without sleeps. `LiveReplayTest` replays every generated fixture,
 compares current values and timestamps with the independent reader, counts WPILOG record bytes,
 and repeats calls for determinism. `LiveCaptureConformanceTest` continues to compare every
 ordinary log tool on the live prefix and finished file. The only silent-empty exception is
