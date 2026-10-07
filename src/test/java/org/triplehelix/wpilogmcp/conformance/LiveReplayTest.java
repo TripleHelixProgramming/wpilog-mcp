@@ -121,6 +121,7 @@ public class LiveReplayTest {
       }
       // Chunk only the request, never the expected values or the checked record set.
       var entries = new ArrayList<>(source.entries.values());
+      var metricsValues = new java.util.HashMap<String, MetricsReplayAudit.Value>();
       for (int from = 0; from < entries.size(); from += 2000) {
         var selected = entries.subList(from, Math.min(entries.size(), from + 2000));
         var names = new JsonArray(); selected.forEach(e -> names.add(source.topic(e)));
@@ -137,10 +138,13 @@ public class LiveReplayTest {
           var row = rows.get(source.topic(entry)); assertNotNull(row);
           assertEquals(ReplaySource.ntType(entry.type), row.get("type").getAsString());
           assertEquals(latest.timestampUs() / 1e6, row.get("timestamp_sec").getAsDouble());
-          assertEquals(json(ReplaySource.value(entry.type, source.reader.payload(latest))).toString(), row.get("value").toString());
+          var expected = ReplaySource.value(entry.type, source.reader.payload(latest));
+          assertEquals(json(expected).toString(), row.get("value").toString());
+          metricsValues.put(source.topic(entry), new MetricsReplayAudit.Value(ReplaySource.ntType(entry.type), expected, latest.timestampUs()));
         }
         assertEquals(ConformanceChecks.normalize(answer), ConformanceChecks.normalize(rig.call("get_latest_values", args.toString())));
       }
+      int metricsSamples = MetricsReplayAudit.check(rig, metricsValues);
       if (!entries.isEmpty()) {
         var args = new JsonObject(); args.addProperty("entry", source.topic(entries.get(0))); args.addProperty("timeout_ms", 0);
         results.add(Map.entry("wait_for_change", rig.call("wait_for_change", args.toString())));
@@ -184,7 +188,7 @@ public class LiveReplayTest {
       for (var result : results) assertEquals(List.of(), ConformanceChecks.check(result.getValue(), null, false, result.getKey(), new JsonObject()), result.getKey());
       // Edge-state output keys are checked in LiveToolsTest; these calls cover all ordinary publications.
       var report = Files.createDirectories(Path.of("build/reports/live-tools"));
-      Files.writeString(report.resolve(work.getFileName() + ".txt"), "path=" + file + "\nentries=" + entries.size() + " records=" + replay.sent() + " calls=" + results.size() + "\n");
+      Files.writeString(report.resolve(work.getFileName() + ".txt"), "path=" + file + "\nentries=" + entries.size() + " records=" + replay.sent() + " calls=" + results.size() + " metrics_samples=" + metricsSamples + "\n");
     }
   }
   private static JsonElement json(Object value) {

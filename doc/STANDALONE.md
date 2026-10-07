@@ -777,6 +777,89 @@ local mirror remains available for offline analysis, but password-protected orig
 requires the credential's window to be open. This is a client of the team's proxy, not new
 authentication in the pit server.
 
+### Metrics and a starter dashboard
+
+Every HTTP server serves `GET /metrics`, including a server without capture. It emits
+[Prometheus text format 0.0.4](https://prometheus.io/docs/instrumenting/exposition_formats/)
+with no extra server dependency. `/health` stays its short JSON answer. The Origin check
+applies to metrics, too. The route has no authentication: anyone who can reach the HTTP
+port can read it, so use the same private network or proxy as the MCP endpoint.
+
+A dashboard is a **sampled view, not the record**. Changes between scrapes disappear from
+that view; the capture remains the record of every publication. Samples have no exposition
+timestamps. `nt_age_seconds` uses the robot clock to show the age of the latest publication,
+can be negative for a future publisher timestamp, and is absent until time sync is known.
+Disconnected topics disappear when the client clears its latest table.
+
+Configure scope in a named server's `servers.yaml` block:
+
+```yaml
+metrics:
+  include: []
+  max_array_length: 16
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `metrics.include` | `[]` | NT4 topic prefixes; empty includes all numeric topics. This changes the scrape only, not capture. |
+| `metrics.max_array_length` | `16` | Nonnegative maximum per array dimension; `0` omits array elements. |
+
+`nt_value{topic="..."}` keeps exact NT4 names. Booleans are 0/1; numeric arrays gain an
+`index` label. Structs use their published schemas and the tools' field paths in a `field`
+label; a struct array has both labels. Nested field indexes stay in the field path, such as
+`currents[1]`. Only declared numeric fields appear, including enums and booleans. Strings,
+raw/protobuf payloads, missing or incompatible schemas, and unpublished fallback schemas
+produce no values. Schema topics are used even when the prefix filter excludes them.
+NaN and infinities retain their Prometheus spellings. Each emitted topic gets one age sample.
+
+| Server metric | Meaning and labels |
+|---------------|--------------------|
+| `wpilog_nt_connected` | 0/1 NT4 connection state; 0 without capture. |
+| `wpilog_nt_address_info` | 1 with the last connected `address`; absent before any connection. |
+| `wpilog_capture_open` | 0/1 recording session state. |
+| `wpilog_capture_topics` | Session entry count, including finished entries. |
+| `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh on the 250 ms flush tick. |
+| `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
+| `wpilog_gateway_clients` | Connected gateway clients; currently 0 because gateway startup is the next milestone. |
+| `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: copied payload bytes, including retransfers, and successful verifications, including growing-file updates. |
+| `wpilog_pull_files_waiting` | Per-`robot` known unfinished files at a closed gate, from the last listing; unknown remote files are not counted. |
+| `wpilog_provider_sample_duration_seconds`, `wpilog_provider_sample_bytes` | Last completed sample cost by `provider`; no samples until providers are implemented. |
+| `wpilog_jvm_memory_used_bytes`, `wpilog_jvm_memory_committed_bytes`, `wpilog_jvm_memory_max_bytes` | Platform MBean memory by `area` (`heap`, `nonheap`); an undefined maximum is omitted. |
+| `wpilog_jvm_gc_collections_total`, `wpilog_jvm_gc_duration_seconds_total` | Collection count and total collection seconds by `collector`; unsupported MBean values are omitted. |
+
+Topic count and record/byte counters have the same `session_started_at` label. Components are
+independent published snapshots, as in the live tools; a scrape never waits for the NT4 loop,
+the store queue, a remote listing, or a file read. It samples the server JVM's MBeans directly.
+
+The ready-to-run files are in [metrics/](metrics/compose.yaml):
+
+```bash
+# From a checkout, or a copy of the doc/metrics directory with its subdirectories:
+docker compose -f doc/metrics/compose.yaml up -d
+```
+
+[The Compose file](metrics/compose.yaml) pins Prometheus 3.15.0 and Grafana 13.2.3, stores
+both services' data in Docker volumes, and exposes their UIs only on this laptop's loopback.
+[Prometheus configuration](metrics/prometheus.yml) scrapes once a second. Edit its target
+for a pit server on another machine; the default `host.docker.internal:2363` addresses the
+Docker host and includes Linux's host-gateway mapping. The pit server must bind to an
+address reachable from that container (for example, set `WPILOG_HTTP_BIND=0.0.0.0` before
+`wpilog-mcp start pit`); binding only to loopback is not reachable through a Linux bridge.
+The server runs neither of these services itself.
+
+Open Grafana at `http://127.0.0.1:3000` (initial login `admin`/`admin`, then choose your
+password) and select **Pit / Pit sampled telemetry**. Its
+[provisioned dashboard](metrics/pit-dashboard.json) includes session state, capture rate,
+battery, CAN utilization, loop duration, robot CPU, robot free disk, server heap, topic age,
+pull gate and NT4 round trip. Fill the topic boxes with exact names and the units the boxes
+state; empty boxes deliberately show no robot data. For a topic in other units, edit the
+query's conversion. CPU/disk panels work when the robot publishes them; future context
+providers will supply their own topics. The heap panel is the **server's** JVM. Use the
+capture and analysis tools for full-resolution history, not the dashboard's sampled curve.
+
+The configuration follows the official [Prometheus container setup](https://prometheus.io/docs/prometheus/latest/installation/)
+and [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).
+
 ## Containerization
 
 You can run wpilog-mcp in a Docker container for a team-shared or cloud-hosted server. This `Dockerfile` uses a multi-stage build to keep the runtime image small.

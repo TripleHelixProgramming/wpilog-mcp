@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Every HTTP server now exposes dependency-free Prometheus metrics: latest numeric NT4 values and ages, bounded arrays and recorded-schema fields, capture/pull counters and server JVM measurements. Scrapes read published snapshots without joining capture or store work; a Compose setup provisions a starter Grafana dashboard. Previously dashboards had no supported metrics endpoint.
 - Capture-enabled servers now expose `list_sessions`, `get_latest_values`, and `wait_for_change`: session costs and matched imports, current NT4 publications with robot-clock ages, and bounded per-client waits. Previously these facts required reading captures or server logs; live queries now use published memory snapshots and closed summaries persist in the manifest.
 - The extension can set and clear a pit proxy login in SecretStorage, lease it to the local server for mirror reads, and register a secret-free Claude bridge URL. Previously password-protected pit URLs had no supported credential path; secrets never enter settings, manifests or command arguments.
 - The extension can upload laptop logs to the pit server over its HTTP import endpoint. Files stream with a source hash into the existing verified importer, retain their originals, and report duplicates; previously the pit setting could read sessions but could not send files. Server-path imports and assignments now require loopback. Generated bulk USB and capture-enabled inbox checks pin the existing grouping pipeline.
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- A configured store beneath a directory alias can now start before the store exists. Previously admission kept the alias while validation resolved its parent, rejecting the same directory on macOS and other symlinked paths.
 - Store uploads now explain filename encoding refusals and how to start with a UTF-8 locale; previously a service without a locale returned Java path errors. Store startup warns once for non-UTF-8 native encoding, with a separate locale-unset CI check.
 - A corrupt historical session manifest no longer prevents capture startup: live inventory skips and logs that session while strict catalog readers still refuse it. Previously recovery completed but the inventory refresh kept NT4 from starting.
 - Pit credential tests now reject URLs carrying user and password, pinning the existing guard that the prior mutation check missed.

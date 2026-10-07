@@ -392,7 +392,7 @@ Each leaves the project working and tested on its own.
 4. **Import** (§11) (done: the explorer already supplied the command, inbox, inspection, grouping and duplicate recognition; generated USB batches and the capture-enabled inbox now pin those together, and the extension uploads streamed, hash-checked files through the pit server import endpoint. Automated HTTP and Node checks pass; the real VS Code picker remains manual).
 5. **Live tools** (§9), and the extension's pit server setting (§14) (done: capture-only session/latest/wait tools, cached manifest facts and persisted recorder costs; HTTP fixture replay, independent values/bytes, per-session waits and injected-clock checks; the remaining proxy credential commands use SecretStorage and local leases. Real VS Code and the shop hardware checks remain manual).
 6. **Store over HTTP, peer sync, and the mirror** (§11, §14) (first half done: catalog-only HTTP reads, growing prefixes and hashes; peer sync through daemon jobs or the offline store lock, content-checked resume, serial/window session union with convergent ids, provenance and human conflicts, remembered peers and recovery; generated fixtures, tool conformance and planted failures. Second half done: scoped and capped mirror with pins, growing-prefix resume, id-based moves, offline age and recorded REV alignment; local controls; extension registration, status/actions, pit Logs/follow/offline copy and remembered peer sync. Automated checks and planted faults pass; real VS Code remains the manual checklist): the store's read-only door; `wpilog-mcp sync <url>` between two laptops' stores, built first because it needs no pit server and tests with two daemons on one machine; then the mirror on the same door, with the local server's synchronization, the extension's settings, status bar, and pins. From here the laptop analyzes offline.
-7. **Metrics endpoint** (§12): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
+7. **Metrics endpoint** (§12) (done: dependency-free Prometheus text on every HTTP server, published capture/pull/time snapshots, recorded-schema field paths, bounded arrays and JVM MBeans; independent parser, fixture replay and blocked-worker checks; Compose and starter dashboard. Gateway/provider samples await their own milestones): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
 8. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
 9. **Windowed WPILOG mapping**: replace the single int-indexed buffer with mapping windows under 2 GB and long offsets everywhere. Read a straddling record through a small extra mapping or a copy; make the window size injectable so tests cross boundaries in small fixtures. Until then, refuse oversized imports and explain oversized plain-directory files in the listing.
 10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings`.
@@ -405,6 +405,7 @@ Each leaves the project working and tested on its own.
 ### 16. Testing
 
 - **Harness** (step 1): `harness/run` builds a separate WPILib 2026 GradleRIO TimedRobot and runs an opt-in JUnit suite against the packaged pit server's HTTP MCP endpoint. A timeline drives headless DriverStationSim states, delayed match data and program reboots; independent expectations check every scripted topic, timestamp and value, schemas, device identity, session placement, verified near-zero-offset pulls, DataLogManager renames and the disabled gate. A test-only Apache MINA SSHD fake roboRIO provides real Ed25519 SSH/SFTP and only the puller's exact prefix-hash command. Ordinary Linux/Windows tests use it for transport, keepalive, deadline and host-key checks too. The full runner supports Linux/macOS and has a separate Linux CI job on `pit-server`; no robot data is used. Step 2 adds the NI-image container and PhotonVision. See DEVELOPMENT.md, "The shop harness", for the remaining hardware checklist.
+- **Metrics**: independent exposition grammar parser and exact fixture-function checks; scalar/boolean/array/recorded-struct expansion, filtering and missing-schema omission; recorder counts against live tools, MBean unit conversion, and scrapes while the NT4 loop and store queue are blocked. The packaged daemon pins configuration wiring; every generated replay also compares metrics against the differential reader and WPILib DynamicStruct.
 - **Protocol**: the client and the gateway against each other in-process, over a loopback WebSocket, on every fixture log replayed as a robot would publish it. Message encoding is checked against hand-encoded frames taken from the protocol document.
 - **Capture fidelity**: every fixture is captured through the client and writer both whole and with a small rollover bound. Differential and wpiutil readers check entries, values and timestamps across all files, checking marked schema seeds separately. Every closed file stays within its bound and has a manifest hash; the live index belongs to one file. An injected partial-write failure preserves the completed prefix.
 - **Sessions**: reconnection with continuing timestamps resumes; with restarted timestamps begins a new session. A blocked store queue does not delay values or flushes, updates coalesce, unchanged facts do not trigger writes, and shutdown waits within its 30 second bound for the final manifest. Startup recovers abandoned captures, preserves active writers across processes, and reports unreadable files without hashing them; a killed process after a blocked-queue timeout is recovered by the next service start. Injected writer failures preserve the connection, record the reason, and suppress recording until a new robot clock. Match facts appear before the close-time directory rename.
@@ -605,3 +606,36 @@ Milestone 5 choices:
   clock. A full build caught a real watcher observation racing the test's `0`/settle-time
   observations; a planted later-clock first observation reproduced the refusal to import.
   One clock drives the test now, with no longer wait or production settle-time change.
+
+
+#### Milestone 7 choices
+
+- Prometheus 0.0.4 is written directly from its specification. Topic samples keep NaN and
+  infinities, unlike JSON tool numbers; float values are widened before formatting so
+  Prometheus's double parser preserves the recorded binary32 value. No exposition timestamp
+  is emitted. Ages may be negative and are absent without sync. Arrays have zero-based
+  `index` labels, struct leaves `field` paths, and struct arrays both; the configured limit
+  applies to each array dimension. `metrics.include` never filters schema dependencies.
+- Only published schemas are used, with no canonical or template fallback. Missing,
+  incompatible or nonnumeric payloads have no samples. Field paths enumerate declared
+  fields, excluding synthetic derived rotations while preserving an actually declared
+  field of that name. Capture counts use `session_started_at` to distinguish lifetimes;
+  they have the same 250 ms snapshot and byte definition as live tools.
+- Pull bytes and successful verification events are process counters by serial, including
+  retransfers and grown-file verifications. Gate counts cover only unfinished files known
+  from the last remote listing, without a listing during scrape. JVM totals omit unsupported
+  MBean values. The gateway has zero connected clients until milestone 8 wires it; provider
+  costs have no samples until those providers exist. Owners supply published component facts
+  through the metrics interface; the renderer keeps no state between requests.
+- The Compose example pins Prometheus 3.15.0 and Grafana 13.2.3. Robot dashboard topic boxes
+  start empty: people choose exact names and confirm units; provider panels do not claim
+  measurements from unimplemented providers. The capture, not the scrape, remains the record.
+- Packaged startup exposed a configured, not-yet-created store below an existing directory
+  alias being admitted lexically but validated canonically (macOS `/var` versus `/private/var`).
+  Directory admission now uses the same ancestor resolver as validation, with a failing-first
+  regression that also refuses siblings and a retargeted alias. It grants no extra directory.
+- Review-fix CI `86998c3` preserved another `ClientTest` real-socket failure: the
+  `wrongValueFamilyIsCountedWithoutLosingTheNextFrameOrConnection` test timed out waiting
+  for its announcement, before sending either value. Both platform build jobs passed;
+  the failed harness job's unchanged rerun passed ordinary tests and the harness. Its XML
+  and job log were saved. The cause remains unverified; no timeout was widened.

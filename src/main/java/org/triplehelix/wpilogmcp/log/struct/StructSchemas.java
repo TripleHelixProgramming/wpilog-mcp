@@ -92,15 +92,22 @@ public final class StructSchemas {
    * @param entries Struct name to the schema entry's name (for reporting)
    */
   public static StructSchemas of(Map<String, String> logged, Map<String, String> entries) {
-    var s = new StructSchemas();
-    logged.forEach((name, schema) -> s.add(name, schema, Source.LOGGED));
-    s.schemaEntries.putAll(entries);
+    var s = recordedOnly(logged, entries);
     CanonicalSchemas.WPILIB.forEach((name, schema) -> {
       if (!s.sources.containsKey(name)) s.add(name, schema, Source.WPILIB);
     });
     CanonicalSchemas.ASSUMED.forEach((name, schema) -> {
       if (!s.sources.containsKey(name)) s.add(name, schema, Source.ASSUMED);
     });
+    return s;
+  }
+
+  /** A dashboard cannot disclose schema assumptions beside each number. Decode only the
+   * schemas actually published, including nested types; missing dependencies stay missing. */
+  public static StructSchemas recordedOnly(Map<String, String> logged, Map<String, String> entries) {
+    var s = new StructSchemas();
+    logged.forEach((name, schema) -> s.add(name, schema, Source.LOGGED));
+    s.schemaEntries.putAll(entries);
     return s;
   }
 

@@ -432,6 +432,11 @@ local. Capture-only session/latest/wait tools now exist, with recorder costs and
 The remaining §14 proxy login uses SecretStorage and local credential leases; real VS Code
 and hardware validation remain on the manual checklist.
 
+The metrics milestone is complete: `/metrics` serves latest numeric topics with ages,
+recorded struct fields, capture/pull counters and JVM MBeans. A Compose setup and starter
+Grafana dashboard live in `doc/metrics`. Gateway and provider startup remain later work;
+the capture remains the full record behind the sampled dashboard.
+
 ### 9.4 Shop Harness
 
 Step 1 is implemented: a scripted WPILib 2026 headless robot, real SSH/SFTP from a synthetic

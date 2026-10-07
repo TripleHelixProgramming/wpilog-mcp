@@ -22,6 +22,17 @@ import org.triplehelix.wpilogmcp.nt4.ControlMessage.*;
 
 /** Expected bytes are assembled from the format tables, never from the encoder under test. */
 class ProtocolTest {
+  @Test void timeEstimateReadsAPublishedWindowWithoutJoiningTheWriter() throws Exception {
+    var sync = new TimeSync(100); sync.add(0, 10, 105); sync.add(90, 110, 300);
+    var threads = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      synchronized (sync) {
+        var answer = threads.submit(() -> sync.best(110).orElseThrow());
+        assertEquals(new TimeSync.Sample(110, 20, 200), answer.get(1, java.util.concurrent.TimeUnit.SECONDS));
+      }
+      assertTrue(sync.best(210).isEmpty()); sync.clear(); assertTrue(sync.best(0).isEmpty());
+    } finally { threads.shutdownNow(); }
+  }
   static byte[] hex(String text) { return HexFormat.of().parseHex(text.replace(" ", "")); }
   private record Vector(String bytes, Object value) {}
 

@@ -30,6 +30,20 @@ class SecurityValidatorTest {
     validator = new SecurityValidator();
   }
 
+  @Test void aNewConfiguredDirectoryResolvesItsExistingParentBeforeItIsCreated() throws IOException {
+    var parent = Files.createDirectory(tempDir.resolve("real")); var link = tempDir.resolve("alias");
+    try { Files.createSymbolicLink(link, parent); }
+    catch (UnsupportedOperationException | IOException e) { Assumptions.abort("Symlinks unavailable: " + e.getMessage()); }
+    var store = link.resolve("new-store"); validator.addAllowedDirectory(store);
+    assertDoesNotThrow(() -> validator.validate(store));
+    Files.createDirectories(store);
+    assertDoesNotThrow(() -> validator.validate(store.resolve("capture.wpilog")));
+    assertEquals(java.util.Set.of(store.toRealPath()), validator.getConfiguredDirectories());
+    assertThrows(IOException.class, () -> validator.validate(parent.resolve("another-store")));
+    Files.delete(link); var outside = Files.createDirectory(tempDir.resolve("outside")); Files.createSymbolicLink(link, outside);
+    assertThrows(IOException.class, () -> validator.validate(link.resolve("new-store/capture.wpilog")));
+  }
+
   @Test
   void testNoRestrictionsWhenNoDirectoriesConfigured() throws IOException {
     // When no allowed directories are configured, all paths should be allowed

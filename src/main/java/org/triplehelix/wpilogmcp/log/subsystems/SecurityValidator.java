@@ -66,13 +66,11 @@ public class SecurityValidator {
    */
   public void addAllowedDirectory(Path directory) {
     if (directory != null) {
-      // Use toRealPath() to resolve symlinks if the directory exists,
-      // so that the allowed path matches what toRealPath() returns during validation
+      // Admission and validation must resolve the same existing ancestors, even before
+      // capture creates a configured store below an alias such as macOS /var.
       Path normalized;
       try {
-        normalized = Files.exists(directory)
-            ? directory.toRealPath()
-            : directory.toAbsolutePath().normalize();
+        normalized = resolvePath(directory);
       } catch (IOException e) {
         normalized = directory.toAbsolutePath().normalize();
       }

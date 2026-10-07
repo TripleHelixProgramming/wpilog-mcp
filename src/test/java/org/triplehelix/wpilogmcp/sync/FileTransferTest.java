@@ -105,6 +105,22 @@ class FileTransferTest {
     assertEquals("SYNTHETIC-A", f.saved.serialNumber()); assertTrue(f.saved.history().isEmpty());
   }
 
+  @Test void waitingCountIncludesAChangedRefusalFromTheLastListingWithoutAnotherRemoteCall() throws Exception {
+    var f = new Fake(); f.put("z", bytes(10, 1), 1); f.invalid = 2;
+    var engine = f.engine(); f.finish(engine);
+    assertNotNull(f.saved.files().get(0).failure()); assertEquals(0, engine.pendingFiles());
+    f.put("a", bytes(2 * 65536, 2), 1); f.put("z", bytes(20, 3), 2);
+    assertEquals(FileTransfer.Status.COPIED, f.step(engine).status());
+    // The new listing knows both generations before the sorted pass reaches z.
+    assertEquals(2, engine.pendingFiles());
+    int listings = f.listings; f.gate.set(false);
+    assertEquals(FileTransfer.Status.PAUSED, f.step(engine).status());
+    assertEquals(2, engine.pendingFiles()); assertEquals(listings, f.listings);
+    f.gate.set(true); f.finish(engine);
+    assertTrue(f.saved.files().stream().allMatch(PullManifest.Entry::verified));
+    assertEquals(0, engine.pendingFiles());
+  }
+
   @Test void aGrowingFileDuringTheSameTransferRechecksEveryHeldByte() throws Exception {
     var f = new Fake(); byte[] first = bytes(150_000, 21); f.put("log.wpilog", first, 1);
     var engine = f.engine(); f.step(engine); assertEquals(65536, f.saved.files().get(0).bytesCopied());

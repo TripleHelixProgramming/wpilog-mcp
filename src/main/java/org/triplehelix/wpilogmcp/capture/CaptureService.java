@@ -61,6 +61,7 @@ public final class CaptureService implements AutoCloseable {
     var gate = new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, config.pull().settleUs());
     pull = config.pull().enabled() ? pulls.create(config.pull(), gate, store, clock,
         learned -> loop.execute(() -> { if (learned.connection() == gate.connection()) writer.identity(learned.device()); })) : null;
+    if (pull != null) live.attachPull(pull::progress);
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), listener(writer, gate, live),
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
     live.attach(client);

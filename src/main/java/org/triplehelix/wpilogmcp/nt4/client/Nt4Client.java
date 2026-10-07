@@ -109,6 +109,8 @@ public final class Nt4Client implements AutoCloseable {
   }
 
   public boolean isConnected() { return connected; }
+  private volatile String connectedAddress = "";
+  public String connectedAddress() { return connectedAddress; }
   public long invalidValueCount() { return invalidValues; }
   public Map<String, LatestValue> latestValues() { return Map.copyOf(latest); }
   public Map<String, Announce> topics() { return Map.copyOf(topics); }
@@ -166,6 +168,7 @@ public final class Nt4Client implements AutoCloseable {
     connected = true;
     attempt.lastPongUs = loop.nowUs();
     attempt.lastSyncUs = loop.nowUs();
+    connectedAddress = addresses.get(attempt.index).getHost();
     listener.connected(addresses.get(attempt.index), socket.getSubprotocol());
     sendSync(attempt); // First RTT precedes subscribe, avoiding the initial value burst.
     heartbeat(attempt);

@@ -39,6 +39,18 @@ public final class PullCoordinator implements AutoCloseable {
   private FileTransfer transfer;
   private long connection = -1;
   private FileTransfer.Status lastStatus;
+  /** Cumulative copied payload bytes and successful verifications for this server process. */
+  public record Progress(long bytes, long files, int pendingFiles, int waitingFiles) {}
+  private volatile java.util.Map<String, Progress> progress = java.util.Map.of();
+  private volatile String serial;
+  public java.util.Map<String, Progress> progress() {
+    var snapshot = progress;
+    boolean open = gate.open(); String current = serial;
+    var result = new java.util.TreeMap<String, Progress>();
+    snapshot.forEach((robot, p) -> result.put(robot,
+        new Progress(p.bytes(), p.files(), p.pendingFiles(), open && robot.equals(current) ? 0 : p.pendingFiles())));
+    return java.util.Map.copyOf(result);
+  }
 
   public PullCoordinator(PullConfig config, PullGate gate, LogStore store, Clock wall, Consumer<Identity> identity) {
     this(config, gate, store, wall, identity, ClientScheduler.daemon("robot-pull"), SftpTransport::connect);
@@ -87,6 +99,7 @@ public final class PullCoordinator implements AutoCloseable {
       var device = contact.identity();
       if (stopped.get() || !gate.open() || episode != gate.connection()) { closeRemote(); return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null)); }
       store.identify(device, wall).get();
+      serial = device.serialNumber();
       identity.accept(new Identity(episode, device));
       var local = store.pulls(device, wall);
       transfer = new FileTransfer(contact, local, local.manifest(), config.rateBytes(), worker::nowUs,
@@ -97,6 +110,14 @@ public final class PullCoordinator implements AutoCloseable {
   }
   private FileTransfer.Result report(FileTransfer.Result result) {
     var status = result.status();
+    if (serial != null) {
+      var before = progress.getOrDefault(serial, new Progress(0, 0, 0, 0));
+      var next = new java.util.HashMap<>(progress);
+      next.put(serial, new Progress(before.bytes() + result.bytes(),
+          before.files() + (status == FileTransfer.Status.VERIFIED ? 1 : 0),
+          transfer == null ? before.pendingFiles() : transfer.pendingFiles(), 0));
+      progress = java.util.Map.copyOf(next);
+    }
     if (status == FileTransfer.Status.VERIFIED || status == FileTransfer.Status.RETRIED || status == FileTransfer.Status.REFUSED
         || status != lastStatus && (status == FileTransfer.Status.PAUSED || status == FileTransfer.Status.COPIED)) {
       LoggerFactory.getLogger(PullCoordinator.class).info("Robot pull {}: {} {}", status, result.remoteName(), result.detail() == null ? "" : result.detail());

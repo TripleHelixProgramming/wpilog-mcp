@@ -180,6 +180,27 @@ Linux CI checks explained refusals on its native non-UTF-8 encoding; macOS can r
 without these variables. Reports are separate from the main suite. The upload test uses the
 platform path API as its independent representability check.
 
+### Metrics checks
+
+`MetricsProjectionTest` checks every exposition sample with hand-computed scalar, array,
+struct, clock, counter, provider and JVM answers. `PrometheusText` is an independent parser
+that checks grammar, escaping, family grouping, unique labels, types and absent sample
+timestamps. `LiveMetricsTest` uses real NT4 and HTTP, checks known functions and live-tool
+cost agreement, and scrapes while both NT4 and store work are blocked. `MetricsDaemonTest`
+executes the packaged JAR to pin YAML scope and capture wiring. `MetricsConfigTest` validates
+keys and defaults; pull and protocol tests pin publication counters and nonblocking clock reads.
+
+The fixture and opt-in real-log `LiveReplayTest` also scrape `/metrics`, comparing scalar and
+array values with the differential reader and structs with WPILib's DynamicStruct. The
+`metrics_samples` count appears beside entries/records/calls under `build/reports/live-tools`;
+real-directory failures identify only a path. No robot values enter test sources or reports.
+
+Linux CI also runs `python3 ci/check_metrics.py` after building the shadow JAR. It starts
+that server and the documented Compose stack, runs Prometheus's own `promtool` on the
+configuration and exposition, queries a real scrape, and verifies Grafana's provisioned
+dashboard, datasource and all starter queries. Evidence is uploaded from
+`build/metrics-smoke`. This optional Docker check is outside `./gradlew test`.
+
 ### The shop harness
 
 Run `harness/run` on Linux or macOS with JDK 17 and a network connection for the first build.

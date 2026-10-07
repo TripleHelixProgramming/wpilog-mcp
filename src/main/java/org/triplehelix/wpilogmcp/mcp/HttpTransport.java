@@ -97,6 +97,9 @@ public class HttpTransport {
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
+  private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null);
+  public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
+      org.triplehelix.wpilogmcp.capture.LiveCapture capture) { metricsEndpoint = new MetricsEndpoint(config, capture); }
   private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores, storeDoor);
   private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores);
   private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores,
@@ -160,6 +163,7 @@ public class HttpTransport {
     server.createContext("/pit-credential", counted(this::handleRegistration));
     server.createContext("/pit-mcp", counted(this::handlePitMcp));
     server.createContext("/health", counted(this::handleHealthCheck));
+    server.createContext("/metrics", counted(this::handleMetrics));
     server.createContext("/stop", counted(this::handleStop));
     server.createContext(DATA_PATH, counted(this::handleData));
     server.createContext(StoreImportEndpoint.PATH, counted(this::handleImport));
@@ -727,6 +731,12 @@ public class HttpTransport {
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }
+  }
+
+  private void handleMetrics(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) { sendError(exchange, 403, "Forbidden: invalid origin"); return; }
+    metricsEndpoint.handle(exchange);
   }
 
   /**

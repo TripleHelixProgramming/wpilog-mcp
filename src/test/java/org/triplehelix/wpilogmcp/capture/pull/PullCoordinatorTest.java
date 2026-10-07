@@ -58,6 +58,7 @@ class PullCoordinatorTest {
       assertEquals(FileTransfer.Status.PAUSED, pull.step().status()); assertTrue(pins.isEmpty()); worker.advance(1);
       robot.onRead = () -> gate.control(1L);
       assertEquals(FileTransfer.Status.COPIED, pull.step().status()); assertEquals(1, robot.reads.size());
+      assertEquals(new PullCoordinator.Progress(65536, 0, 1, 1), pull.progress().get("SYNTHETIC-A"));
       assertEquals(65536, robot.reads.get(0).count()); assertEquals(0, robot.reads.get(0).offset());
       assertEquals(List.of(robot.device), identities.stream().map(PullCoordinator.Identity::device).toList()); assertNull(pins.get(0));
       assertEquals(FileTransfer.Status.PAUSED, pull.step().status()); assertEquals(1, robot.reads.size());
@@ -69,9 +70,13 @@ class PullCoordinatorTest {
       assertEquals(131072, robot.reads.get(2).offset()); assertEquals(2, identities.size());
       worker.advance(1_000_000); assertEquals(FileTransfer.Status.WAITING, pull.step().status());
       assertEquals(FileTransfer.Status.VERIFIED, pull.step().status()); assertEquals(3, robot.listings);
+      assertEquals(new PullCoordinator.Progress(robot.files.values().iterator().next().length, 1, 0, 0),
+          pull.progress().get("SYNTHETIC-A"));
       assertTrue(store.pulls(robot.device, WALL).manifest().files().get(0).verified());
       gate.disconnected(); pull.step(); robot.device = FakeRobot.device("SYNTHETIC-B", "SHA256:third"); settled();
       assertEquals(FileTransfer.Status.COPIED, pull.step().status()); assertEquals(0, robot.reads.get(3).offset());
+      assertEquals(1, pull.progress().get("SYNTHETIC-A").files());
+      assertEquals(new PullCoordinator.Progress(65536, 0, 1, 0), pull.progress().get("SYNTHETIC-B"));
       assertEquals("SYNTHETIC-B", store.pulls(robot.device, WALL).manifest().serialNumber());
     }
   }

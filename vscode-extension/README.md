@@ -246,3 +246,11 @@ extension's window open to hold the in-memory credential lease. Re-register if t
 port changes. After VS Code closes, analyze the offline mirror through its `servers.yaml`
 mirror block (preferred for regular terminal use) or an explicit bridge `--logdir`; a window's
 folder lease alone does not survive. A proxy password is not put in permanent YAML.
+
+### Sampled dashboards
+
+The local and pit HTTP servers also serve `/metrics`. The
+[standalone metrics guide](../doc/STANDALONE.md#metrics-and-a-starter-dashboard) provides
+Prometheus/Grafana Compose files and a starter dashboard. Configure `metrics` in the server's
+YAML; this adds no extension setting. Scrapes show latest values and ages, while the capture
+and the explorer retain the record between scrapes.

@@ -216,7 +216,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = System.getenv(DaemonManager.STOP_TOKEN_ENV);
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture(), config.mirror());
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture(), config.mirror(), config.metrics());
     } catch (ConfigException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
@@ -659,13 +659,13 @@ public class Main {
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit) {
-    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null, null);
   }
 
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig,
-      org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig) {
+      org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -709,6 +709,7 @@ public class Main {
         return;
       }
       if (capture != null) org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, capture.live());
+      httpTransport.configureMetrics(metricsConfig, capture == null ? null : capture.live());
       // A stop request and the idle exit end the server as a signal would: the transport
       // finishes the calls in flight, then the shutdown hook closes the logs
       Runnable exit = () -> {

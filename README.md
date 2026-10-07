@@ -22,6 +22,8 @@ It reads WPILib `.wpilog` files and the REV `.revlog` files recorded beside them
 
 A standalone HTTP server can also [record NetworkTables and pull robot logs](doc/STANDALONE.md#pit-server) into a local store. Pulling is opt-in and waits for a connected, disabled robot; the open capture is available to the existing tools.
 
+The HTTP transport also serves [Prometheus metrics and a starter Grafana dashboard](doc/STANDALONE.md#metrics-and-a-starter-dashboard). Dashboards show sampled latest values and their ages; the capture keeps the full record between scrapes.
+
 ## How It Works
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open standard by which an AI assistant such as Claude calls tools that a server provides; wpilog-mcp is such a server. Its tools open the logs, find entries, compute statistics, and report events. The reasoning is the model's.

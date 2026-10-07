@@ -152,7 +152,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | Package | What it holds |
 |---|---|
 | (the root) | Startup: reading arguments and configuration, and wiring the parts together |
-| `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/store endpoints and import/sync jobs, and the tool registry |
+| `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/store/metrics endpoints and import/sync jobs, and the tool registry |
 | `tools` | The tools, grouped by subject, and what they share: the base every tool runs through, the result builder and result contract, the signal resolver, time scopes, field paths, data quality, and the guidance text |
 | `log` | Finding and loading logs: the log manager, the lazy log and its scan, the writer-built live log, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
 | `store` | File manifests, content inspection, one mutation queue per store, and abandoned-capture recovery; the catalog door, peer sync and placement recovery, scoped mirror synchronization and local controls, robot identity, session placement, provenance, duplicate detection, and unmanaged files |
@@ -167,7 +167,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
 | `capture/pull` | Disabled-state gate, SSH/SFTP adapter, and the daemon coordinating transfer and device identity outside the NT4 loop |
 | `capture/context` | Device identity from the HAL sources, with source provenance and capture context |
-| `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` |
+| `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
 
@@ -711,3 +711,22 @@ redirects. `mcp/PitMcpEndpoint` forwards only the exact leased MCP endpoint for 
 bridge, keeping secrets out of registration commands and files. Registration and forwarding
 are loopback-only; neither is an assistant tool. The extension's `pitCredential.ts` holds
 origin selection and bridge URL logic; VS Code input and secret storage stay in the glue.
+
+## Metrics are a sampled view
+
+`mcp/MetricsEndpoint` renders Prometheus 0.0.4 from `LiveCapture` publications and platform
+MBeans. It owns no history or counters. The recorder publishes costs at flush; the pull
+worker publishes copy/verification progress; time sync publishes an immutable window so
+reads cannot join the NT4 writer's monitor. The HTTP thread never queues work on either
+capture or store, reads files, or contacts the robot. Ordinary HTTP servers expose JVM and
+inactive-component state even without capture. Gateway/provider owners have a snapshot
+interface, with no gateway wiring or provider startup added here.
+
+Topic types travel atomically with latest values. Only published struct schemas enter the
+metrics decoder, including nested dependencies: a dashboard cannot state the assumptions
+of a fallback schema beside every number. Shared field paths name declared numeric leaves,
+with bounded arrays; enum fields carry their stored number and booleans 0/1. No sample has
+an exposition timestamp: the robot clock is not calendar time. Ages report staleness, and
+capture remains the record of changes a scrape missed. The independent parser and replay
+oracle compare every numeric topic with source records, using WPILib's DynamicStruct rather
+than the server's compiled decoder for structs. The Compose example stays outside the server.

@@ -374,7 +374,8 @@ public class ConfigLoader {
         getInteger(block, "scandepth"),
         getInteger(block, "idle_exit_minutes"),
         CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings)),
-        MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings)))
+        MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings))),
+        MetricsConfig.parse(block.get("metrics"))
     );
   }
 

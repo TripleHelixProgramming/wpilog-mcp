@@ -59,7 +59,8 @@ final class LiveToolRig implements AutoCloseable {
     service = new CaptureService(new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "live-test")),
         this.root, .001, policy, 0), manager, clock, loop);
     WpilogTools.registerAll(tools); LiveTools.registerAll(tools, service.live());
-    transport = new HttpTransport(tools, 0); transport.setStoreDirectories(java.util.Set.of(this.root)); transport.start();
+    transport = new HttpTransport(tools, 0); transport.setStoreDirectories(java.util.Set.of(this.root));
+    transport.configureMetrics(null, service.live()); transport.start();
     http = new HarnessHttp(transport.getPort()); http.initialize();
     service.start().get(10, TimeUnit.SECONDS);
     pump(() -> service.live().connected());

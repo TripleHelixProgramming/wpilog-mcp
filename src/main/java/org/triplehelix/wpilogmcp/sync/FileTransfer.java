@@ -56,6 +56,7 @@ public final class FileTransfer {
   private final Map<String, Boolean> renameProof = new HashMap<>();
   private final String serial;
   private volatile PullManifest manifest;
+  private volatile int pendingFiles;
   private long nextReadUs, listedAtUs;
   private List<RemoteFiles.File> listing;
   private final Map<String, RemoteFiles.File> previousPass = new HashMap<>();
@@ -68,6 +69,8 @@ public final class FileTransfer {
     manifest.files().forEach(e -> files.put(e.remoteName(), e)); history = new ArrayList<>(manifest.history());
   }
   public PullManifest manifest() { return manifest; }
+  /** Last listing's unfinished files; reading it never lists the robot or touches storage. */
+  public int pendingFiles() { return pendingFiles; }
 
   public Result step() throws IOException {
     if (!busy.compareAndSet(false, true)) throw new IllegalStateException("A transfer step is already running");
@@ -182,6 +185,11 @@ public final class FileTransfer {
     local.save(next); manifest = next;
   }
   private Result result(Status status, String remote, long bytes, String detail) {
+    pendingFiles = (int) observed.values().stream().filter(item -> {
+      var held = files.get(item.name());
+      return held == null || held.size() != item.size() || held.mtimeMillis() != item.mtimeMillis()
+          || !held.verified() && held.failure() == null;
+    }).count();
     return new Result(status, Math.max(0, nextReadUs - clock.getAsLong()), remote, bytes, detail);
   }
 }

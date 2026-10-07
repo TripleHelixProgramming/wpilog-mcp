@@ -95,7 +95,7 @@ class MainLogDirectoriesTest {
       assertEquals(List.of(a, later), LogDirectory.getInstance().getLogDirectories());
       var allowed = LogManager.getInstance().getAllowedDirectories();
       assertTrue(allowed.contains(a.toRealPath()), allowed.toString());
-      assertTrue(allowed.contains(later.toAbsolutePath().normalize()), allowed.toString());
+      assertTrue(allowed.contains(later.getParent().toRealPath().resolve(later.getFileName())), allowed.toString());
     }
   }
 

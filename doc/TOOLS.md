@@ -2582,6 +2582,15 @@ Wait for background REV log synchronization to finish. Synchronization runs in t
 
 ---
 
+## Sampled metrics beside the tools
+
+`GET /metrics` is an HTTP view, not an MCP tool. It serves current numeric NT4 values,
+robot-clock ages, recorder and pull counters, and server JVM measurements in Prometheus
+format. Struct fields use the same paths as the analysis tools, but only published schemas;
+strings are omitted. The [standalone guide](STANDALONE.md#metrics-and-a-starter-dashboard)
+lists the fields, configuration and starter Grafana dashboard. A scrape can miss changes:
+the capture is the record, and tools reading it analyze a fixed prefix of that record.
+
 ## Data Types
 
 What the server reads from a WPILOG file, and what a value looks like in a result.

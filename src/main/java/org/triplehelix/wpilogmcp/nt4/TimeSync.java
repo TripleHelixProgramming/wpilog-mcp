@@ -4,7 +4,8 @@
  */
 package org.triplehelix.wpilogmcp.nt4;
 
-import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Comparator;
 import java.util.Optional;
 
@@ -12,7 +13,7 @@ import java.util.Optional;
 public final class TimeSync {
   public record Sample(long receivedUs, long roundTripUs, long offsetUs) {}
   private final long windowUs;
-  private final ArrayDeque<Sample> samples = new ArrayDeque<>();
+  private volatile List<Sample> samples = List.of();
 
   public TimeSync(long windowUs) {
     if (windowUs <= 0) throw new IllegalArgumentException("Time window must be positive");
@@ -28,15 +29,17 @@ public final class TimeSync {
 
   public synchronized Sample add(long sentUs, long receivedUs, long serverUs) {
     var sample = measure(sentUs, receivedUs, serverUs);
-    samples.addLast(sample);
+    var next = new ArrayList<>(samples.stream().filter(s -> receivedUs - s.receivedUs() < windowUs).toList());
+    next.add(sample);
+    samples = List.copyOf(next);
     return best(receivedUs).orElseThrow();
   }
 
-  public synchronized Optional<Sample> best(long nowUs) {
-    samples.removeIf(s -> nowUs - s.receivedUs() >= windowUs);
-    return samples.stream().min(Comparator.comparingLong(Sample::roundTripUs)
+  /** Readers use a published window; a scrape cannot wait for the NT4 writer's monitor. */
+  public Optional<Sample> best(long nowUs) {
+    return samples.stream().filter(s -> nowUs - s.receivedUs() < windowUs).min(Comparator.comparingLong(Sample::roundTripUs)
         .thenComparing(Comparator.comparingLong(Sample::receivedUs).reversed()));
   }
 
-  public synchronized void clear() { samples.clear(); }
+  public synchronized void clear() { samples = List.of(); }
 }

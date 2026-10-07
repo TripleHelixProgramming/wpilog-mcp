@@ -11,7 +11,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import org.triplehelix.wpilogmcp.capture.pull.PullCoordinator;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
+import org.triplehelix.wpilogmcp.nt4.TimeSync;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
@@ -46,9 +49,21 @@ public final class LiveCapture implements LogStore.Observer {
   private final Object waitLock = new Object();
   private final Map<String, Map<String, Wait>> waiting = new HashMap<>();
   private boolean stopped;
+  private volatile Supplier<Map<String, PullCoordinator.Progress>> pull = Map::of;
 
   public LiveCapture(Path root, ClientScheduler clock) { this.root = root; this.clock = clock; }
   public void attach(Nt4Client client) { this.client = client; }
+  public void attachPull(Supplier<Map<String, PullCoordinator.Progress>> progress) { pull = progress; }
+  public record Metrics(boolean connected, String address, CaptureStore.Status current,
+      Map<String, Nt4Client.LatestValue> latest, TimeSync.Sample time,
+      Double robotNowUs, Map<String, PullCoordinator.Progress> pull) {}
+  /** Independent published components, just like live tools; no event-loop call or store read. */
+  public Metrics metrics() {
+    var value = client;
+    var estimate = timeEstimate().orElse(null);
+    return new Metrics(connected(), value == null ? "" : value.connectedAddress(), current,
+        latest(), estimate, estimate == null ? null : (double) clock.nowUs() + estimate.offsetUs(), pull.get());
+  }
   public CaptureStore.Status current() { return current; }
   public void status(CaptureStore.Status status) {
     current = status;

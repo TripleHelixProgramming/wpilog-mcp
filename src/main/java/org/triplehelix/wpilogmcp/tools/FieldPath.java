@@ -21,7 +21,35 @@ import org.triplehelix.wpilogmcp.log.struct.EnumValue;
  *
  * @since 0.9.0
  */
-final class FieldPath {
+public final class FieldPath {
+
+  /** Numeric leaves with the tools' field-path spelling and enum/boolean conversions.
+   * Each array dimension is bounded; derived rotations are not declared schema fields. */
+  public record NumericLeaf(String field, double value) {}
+  public static List<NumericLeaf> numericLeaves(org.triplehelix.wpilogmcp.log.struct.StructSchemas schemas,
+      String struct, Object decoded, int arrayLimit) {
+    var result = new ArrayList<NumericLeaf>();
+    numericLeaves(schemas, struct, decoded, decoded, "", arrayLimit, result);
+    return List.copyOf(result);
+  }
+  private static void numericLeaves(org.triplehelix.wpilogmcp.log.struct.StructSchemas schemas,
+      String struct, Object root, Object value, String prefix, int limit, List<NumericLeaf> out) {
+    var info = schemas.info(struct).orElseThrow();
+    for (var field : info.fields()) {
+      String path = prefix + field.name();
+      Object child = value instanceof Map<?, ?> fields ? fields.get(field.name()) : null;
+      int count = field.isArray() ? Math.min(limit, length(child)) : 1;
+      for (int i = 0; i < count; i++) {
+        String leaf = field.isArray() ? path + "[" + i + "]" : path;
+        Object item = field.isArray() ? element(child, i) : child;
+        if (field.structType() != null) numericLeaves(schemas, field.structType(), root, item, leaf + ".", limit, out);
+        else {
+          var number = toNumber(parse(leaf).resolveOne(root));
+          if (number != null) out.add(new NumericLeaf(leaf, number));
+        }
+      }
+    }
+  }
 
   /** One step of a path. */
   sealed interface Step permits Field, Index, All {}
