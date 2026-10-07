@@ -56,7 +56,8 @@ public class SyncCacheSerializer {
   // REV synchronization state when its interpretation changes.
   // Version 9 makes store associations use their recorded alignment, including in a mirror,
   // rather than letting a previous automatic correlation replace the manifest's evidence.
-  public static final int CURRENT_FORMAT_VERSION = 9;
+  // Version 10 rejects corrupt recorded alignment evidence as an explained failed companion.
+  public static final int CURRENT_FORMAT_VERSION = 10;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(

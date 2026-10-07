@@ -122,6 +122,14 @@ on-demand command remain available; restart existing Claude sessions after regis
 
 ## Using It with Claude Code
 
+With VS Code closed, the extension's directory lease expires. The mirror remains on disk,
+but a terminal's Claude Code can read it only when the local server admits its folder through
+a `mirror` block in `servers.yaml`, or the bridge registers it with `--logdir`.
+For regular offline analysis away from VS Code, use the `mirror` block in `servers.yaml`
+with the same folder and origin as the extension: it keeps the folder available and continues
+syncing when the origin answers. Use bridge `--logdir /absolute/path/to/mirror` for temporary
+read access without configuring background mirroring. See the [standalone mirror configuration](../doc/STANDALONE.md#the-mirror).
+
 With **Enable For Claude Code** on (the default), the extension runs `claude mcp add --scope user wpilog-analyzer -- <launcher> connect http` once when it finds the Claude CLI. On Windows it registers the batch launcher through `cmd /c`. If the CLI is unavailable, it shows the exact command with **Copy Command**. **WPILog Analyzer: Register with Claude Code** repeats setup on demand. Existing Claude Code sessions need restarting after registration.
 
 No project `.mcp.json` entry is written. The user-scope bridge works from a terminal with VS Code closed: it starts the same server from the home configuration and leases directories from flags or the current project's `.wpilog-mcp.yaml`.

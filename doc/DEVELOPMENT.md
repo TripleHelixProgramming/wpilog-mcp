@@ -205,6 +205,9 @@ timestamp too. The checks cover serial/device identity, one session per boot, sc
 and struct-array topics with schemas, verified pulls matched near zero offset, DataLogManager's
 rename, event/match manifests, and SFTP reads gated by disabled state. Saved manifests, HTTP
 results, server/robot output, and the SFTP read audit explain failures. CI uploads this evidence.
+The CI harness job first runs the ordinary suite and retains `build/test-results/test`, including
+assertion messages, so later targeted runs cannot erase a socket failure. The local runner remains
+the opt-in harness; `./gradlew build` runs the ordinary suite separately.
 
 To add a timeline, copy `harness/timelines/reboot-match.json`. Times ending in `_us` use the
 robot's microsecond clock, reset on every boot. Keep `period_us: 20000`; samples cover

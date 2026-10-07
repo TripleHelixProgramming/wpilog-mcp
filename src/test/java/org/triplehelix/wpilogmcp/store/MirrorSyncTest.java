@@ -250,6 +250,24 @@ class MirrorSyncTest {
     assertTrue(result.evicted().isEmpty()); assertTrue(Files.exists(copy(file))); assertFalse(result.retained().isEmpty());
   }
 
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void aGrowingPrefixWithoutAnAgreeingJournalIsRetained(boolean missing) throws Exception {
+    var file = session("live", "2026-01-19", "RIO", null, true, 100, 1); sync();
+    byte[] held = Files.readAllBytes(copy(file));
+    var io = new StoreFiles(mirror.root(), manager.testGetSecurityValidator());
+    var journal = io.read(MirrorSync.journalPath(mirror.root()), org.triplehelix.wpilogmcp.sync.PullManifest.class);
+    var entry = journal.files().get(0);
+    var changed = new org.triplehelix.wpilogmcp.sync.PullManifest.Entry(entry.remoteName(), entry.size(), entry.mtimeMillis(),
+        entry.bytesCopied() - 1, false, entry.localName(), 0, null);
+    io.write(MirrorSync.journalPath(mirror.root()), new org.triplehelix.wpilogmcp.sync.PullManifest(1, null,
+        missing ? List.of() : List.of(changed), List.of()));
+    var result = sync(config(0, 1, List.of(), List.of()));
+    assertTrue(result.evicted().isEmpty()); assertArrayEquals(held, Files.readAllBytes(copy(file)));
+    assertEquals(1, catalog(mirror).sessions().size());
+    assertTrue(result.retained().stream().anyMatch(reason -> reason.startsWith("live:") && reason.contains("retained")), result.toString());
+  }
+
   @Test void pendingFileAndDirectoryMovesRecoverBeforeContactingAnOfflineOrigin() throws Exception {
     var file = session("boot", "2026-01-19", "RIO", null, false, 100, 1);
     assertThrows(java.util.concurrent.ExecutionException.class, () -> mirror.mirror(config(), p -> {

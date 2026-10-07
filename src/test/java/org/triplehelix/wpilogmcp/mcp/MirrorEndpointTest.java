@@ -102,6 +102,22 @@ class MirrorEndpointTest {
     assertEquals(200, request("/health", "GET", null).statusCode());
   }
 
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"configure", "sync", "pin_session", "unpin_session"})
+  void aNetworkBoundServerRefusesEveryMirrorWriteRoute(String route) throws Exception {
+    local.stop(); local = new HttpTransport(new ToolRegistry(), 0, "0.0.0.0", null, null);
+    local.setStoreDirectories(Set.of(target)); local.start();
+    var address = java.net.NetworkInterface.networkInterfaces().flatMap(java.net.NetworkInterface::inetAddresses)
+        .filter(a -> a instanceof java.net.Inet4Address && !a.isLoopbackAddress() && !a.isLinkLocalAddress()).findFirst();
+    org.junit.jupiter.api.Assumptions.assumeTrue(address.isPresent(), "No nonloopback interface available");
+    var uri = URI.create("http://" + address.orElseThrow().getHostAddress() + ":" + local.getPort() + "/store/mirror/" + route);
+    var response = client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5))
+        .POST(HttpRequest.BodyPublishers.ofString(configuration().toString())).build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(403, response.statusCode(), route + ": " + response.body());
+    assertTrue(response.body().contains("loopback"));
+    assertFalse(Files.exists(target.resolve("store.json")));
+  }
+
   @Test void aSlowOriginDoesNotDelayTheLocalHealthEndpoint() throws Exception {
     var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
     var proxy = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);

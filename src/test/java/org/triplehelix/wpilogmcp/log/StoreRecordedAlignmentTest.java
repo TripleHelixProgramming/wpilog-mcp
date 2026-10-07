@@ -23,6 +23,63 @@ import org.triplehelix.wpilogmcp.sync.SyncResult;
 
 class StoreRecordedAlignmentTest {
   @TempDir Path temp;
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"confidence", "offset", "method"})
+  void aCorruptRecordedAlignmentNamesItsManifestAndLeavesTheCompanionUnsynchronized(String fault) throws Exception {
+    var manager = LogManager.getInstance(); var directory = LogDirectory.getInstance();
+    var previous = manager.getAllowedDirectories(); var listed = directory.getLogDirectories();
+    manager.addAllowedDirectory(temp);
+    try {
+      var wpilog = FixtureLogs.generateAll(temp.resolve("fixtures")).stream()
+          .filter(f -> f.id().equals("revlog_pair")).findFirst().orElseThrow().path();
+      Path rev;
+      try (var paths = Files.list(wpilog.getParent())) {
+        rev = paths.filter(p -> p.toString().endsWith(".revlog")).findFirst().orElseThrow();
+      }
+      var store = manager.stores().store(temp.resolve("store"));
+      store.importPaths(new LogStore.Request(List.of(wpilog, rev), false, "fixture"), p -> {}).get();
+      var catalog = StoreCatalog.readManaged(store.root(), manager.testGetSecurityValidator());
+      var primary = catalog.files().stream().filter(f -> f.file().kind().equals("wpilog")).findFirst().orElseThrow();
+      var companion = catalog.files().stream().filter(f -> f.file().kind().equals("revlog")).findFirst().orElseThrow();
+      var json = com.google.gson.JsonParser.parseString(Files.readString(companion.manifestPath())).getAsJsonObject();
+      var match = json.getAsJsonArray("files").asList().stream().map(e -> e.getAsJsonObject())
+          .filter(f -> f.get("kind").getAsString().equals("revlog")).findFirst().orElseThrow().getAsJsonObject("matching");
+      switch (fault) {
+        case "confidence" -> match.addProperty("confidence", 2);
+        case "offset" -> match.getAsJsonObject("synchronization").addProperty("offset_micros", match.get("offset_micros").getAsLong() + 1);
+        case "method" -> match.getAsJsonObject("synchronization").addProperty("method", "NOT_A_METHOD");
+        default -> throw new AssertionError(fault);
+      }
+      Files.writeString(companion.manifestPath(), json.toString());
+      directory.setLogDirectories(List.of(store.root().toString()));
+      var registry = new org.triplehelix.wpilogmcp.mcp.ToolRegistry();
+      org.triplehelix.wpilogmcp.tools.CoreTools.registerAll(registry);
+      org.triplehelix.wpilogmcp.tools.RevLogTools.registerAll(registry);
+      var listing = registry.getTool("list_available_logs").execute(new com.google.gson.JsonObject()).getAsJsonObject();
+      assertFalse(listing.toString().contains("Internal error"), listing.toString());
+      var error = listing.getAsJsonArray("logs").get(0).getAsJsonObject().getAsJsonArray("revlogs")
+          .get(0).getAsJsonObject().get("read_error");
+      assertNotNull(error, "The companion must explain its invalid recorded alignment");
+      assertTrue(error.getAsString().contains(companion.manifestPath().toString()));
+      manager.loadLog(primary.path().toString()); manager.waitForRevLogSync(primary.path().toString(), 30_000);
+      var synced = manager.getSynchronizedLogs(primary.path().toString());
+      assertEquals(1, synced.revlogCount());
+      assertFalse(synced.revlogs().get(0).syncResult().isSuccessful());
+      assertTrue(synced.revlogs().get(0).syncResult().explanation().contains(companion.manifestPath().toString()));
+      var args = new com.google.gson.JsonObject(); args.addProperty("path", primary.path().toString());
+      args.addProperty("signal_key", "REV/" + synced.revlogs().get(0).revlog().signals().keySet().iterator().next());
+      for (String tool : List.of("sync_status", "list_revlog_signals", "get_revlog_data")) {
+        var result = registry.getTool(tool).execute(args).getAsJsonObject();
+        assertFalse(result.toString().contains("Internal error"), tool + ": " + result);
+        assertTrue(result.toString().contains("Invalid recorded alignment"), tool + ": " + result);
+        if (!tool.equals("sync_status")) assertEquals("not_applicable", result.get("status").getAsString());
+      }
+    } finally {
+      manager.unloadAllLogs(); manager.clearAllowedDirectories(); previous.forEach(manager::addAllowedDirectory);
+      directory.setLogDirectories(listed.stream().map(Path::toString).toList());
+    }
+  }
+
   @Test void aMirrorUsesRecordedOffsetsEvenWhenTheCorrelatorWouldDisagree() throws Exception {
     var calls = new AtomicInteger();
     var manager = new LogManager(new LogSynchronizer() {

@@ -30,11 +30,18 @@ class HarnessWiringTest {
     assertNotNull(job); assertEquals("ubuntu-latest", job.get("runs-on"));
     assertEquals("github.event_name == 'push' && github.ref == 'refs/heads/pit-server'", job.get("if"));
     var steps = (List<?>) job.get("steps");
+    var commands = steps.stream().map(s -> ((Map<?, ?>) s).get("run")).toList();
+    assertTrue(commands.contains("./gradlew test") && commands.indexOf("./gradlew test") < commands.indexOf("harness/run"),
+        "The XML artifact must have an ordinary test run to preserve");
     assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/run".equals(s.get("run"))));
     var evidence = steps.stream().map(s -> (Map<?, ?>) s)
         .filter(s -> "actions/upload-artifact@v4".equals(s.get("uses"))).findFirst().orElseThrow();
     assertTrue(((Map<?, ?>) evidence.get("with")).get("path").toString().contains("build/reports/replay"),
         "The harness job retains per-log replay counts");
+    assertEquals("always()", evidence.get("if"));
+    assertTrue(((Map<?, ?>) evidence.get("with")).get("path").toString().lines()
+        .anyMatch(line -> line.strip().equals("build/test-results/test")),
+        "Preserve the ordinary test XML when a load-sensitive socket assertion fails");
     var cache = steps.stream().map(s -> (Map<?, ?>) s).filter(s -> "gradle/actions/setup-gradle@v4".equals(s.get("uses"))).findFirst().orElseThrow();
     assertEquals(false, ((Map<?, ?>) cache.get("with")).get("cache-read-only"), "pit-server must save its WPILib downloads");
     assertTrue(((Map<?, ?>) cache.get("with")).get("gradle-home-cache-includes").toString().contains("permwrapper/dists"));

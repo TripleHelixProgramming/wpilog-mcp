@@ -268,6 +268,10 @@ For a mirrored log, `session` also reports `origin` (the origin URL), `complete`
 `stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
 imports and leaves unmanaged files untouched; pinning is a local HTTP UI control, not a tool.
 
+A REV companion with corrupt recorded alignment carries `read_error` naming its manifest.
+It stays unsynchronized: `sync_status` explains the failure, and REV value tools cannot use its
+clock until a known offset is supplied. Other companions retain their own recorded alignments.
+
 An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. The standalone [import command and inbox](STANDALONE.md#importing-logs) and [HTTP jobs](STANDALONE.md#the-import-endpoint) organize files; the extension's [organizing controls](../vscode-extension/README.md#organizing-your-logs) offer the same pipeline and explicit assignment.
 
 ### `list_loaded_logs`

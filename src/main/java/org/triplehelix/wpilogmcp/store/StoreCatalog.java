@@ -34,6 +34,38 @@ public final class StoreCatalog {
     return candidate.file().kind().equals("revlog") && candidate.manifestPath().equals(anchor.manifestPath())
         && match != null && match.wpilogSha256() != null && match.wpilogSha256().equals(anchor.file().sha256());
   }
+
+  /** A damaged association stays visible and failed; it must never authorize a new correlation. */
+  public static org.triplehelix.wpilogmcp.sync.SyncResult recordedAlignment(StoredFile companion) {
+    var match = companion.file().matching();
+    try {
+      if (match == null || !Double.isFinite(match.confidence()) || match.confidence() < 0 || match.confidence() > 1
+          || !Double.isFinite(match.driftRateNanosPerSec()) || !Double.isFinite(match.referenceTimeSec())) {
+        throw new IllegalArgumentException("confidence must be in [0,1] and clock fields must be finite");
+      }
+      var recorded = match.synchronization();
+      if (recorded == null) return new org.triplehelix.wpilogmcp.sync.SyncResult(match.offsetMicros(), match.confidence(),
+          org.triplehelix.wpilogmcp.sync.ConfidenceLevel.fromScore(match.confidence()), List.of(),
+          org.triplehelix.wpilogmcp.sync.SyncMethod.USER_PROVIDED, "Alignment recorded in the store manifest",
+          match.driftRateNanosPerSec(), match.referenceTimeSec());
+      if (recorded.method() == null || recorded.confidenceLevel() == null || recorded.signalPairs() == null
+          || recorded.explanation() == null || recorded.offsetMicros() != match.offsetMicros()
+          || recorded.confidence() != match.confidence() || recorded.driftRateNanosPerSec() != match.driftRateNanosPerSec()
+          || recorded.referenceTimeSec() != match.referenceTimeSec()) {
+        throw new IllegalArgumentException("synchronization fields are missing or disagree with the matching summary");
+      }
+      for (var pair : recorded.signalPairs()) {
+        if (pair == null || pair.wpilogEntry() == null || pair.revlogSignal() == null || pair.samplesUsed() < 0
+            || !Double.isFinite(pair.correlation()) || Math.abs(pair.correlation()) > 1) {
+          throw new IllegalArgumentException("invalid signal-pair evidence");
+        }
+      }
+      return recorded;
+    } catch (RuntimeException e) {
+      return org.triplehelix.wpilogmcp.sync.SyncResult.failed("Invalid recorded alignment in "
+          + companion.manifestPath() + " for " + companion.file().path() + ": " + e.getMessage());
+    }
+  }
   public record RobotDirectory(Path path, Robot robot) {}
   public record SessionDirectory(Path path, Robot robot, Session session) {}
   public record Snapshot(Path root, Header header, List<RobotDirectory> robots,

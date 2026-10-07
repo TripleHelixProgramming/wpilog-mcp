@@ -1162,7 +1162,7 @@ public class LogManager {
       if (use == null) return;
       try (use) {
         SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
-        var recorded = recordedStoreOffsets(wpilog);
+        var recorded = recordedStoreOffsets(wpilog, matchingRevLogs);
 
         for (RevLogFileInfo revlogInfo : matchingRevLogs) {
           try {
@@ -1341,7 +1341,7 @@ public class LogManager {
   private static final int REVLOG_MTIME_TOLERANCE_MINUTES = 30;
 
   /** Recorded store alignments are facts about these bytes; offline readers must not correlate them again. */
-  private Map<Path, SyncResult> recordedStoreOffsets(LogData wpilog) {
+  private Map<Path, SyncResult> recordedStoreOffsets(LogData wpilog, List<RevLogFileInfo> candidates) {
     var root = StoreCatalog.containing(Path.of(wpilog.path()));
     if (root.isEmpty()) return Map.of();
     try {
@@ -1351,24 +1351,14 @@ public class LogManager {
       if (source.isEmpty()) return Map.of();
       var result = new HashMap<Path, SyncResult>();
       for (var companion : catalog.files()) if (StoreCatalog.isRevCompanion(companion, source.get())) {
-        var match = companion.file().matching();
-        var recorded = match.synchronization();
-        if (recorded == null) recorded = new SyncResult(match.offsetMicros(), match.confidence(),
-            org.triplehelix.wpilogmcp.sync.ConfidenceLevel.fromScore(match.confidence()), List.of(),
-            org.triplehelix.wpilogmcp.sync.SyncMethod.USER_PROVIDED, "Alignment recorded in the store manifest",
-            match.driftRateNanosPerSec(), match.referenceTimeSec());
-        if (recorded.offsetMicros() != match.offsetMicros() || recorded.method() == null || recorded.confidenceLevel() == null
-            || recorded.signalPairs() == null || recorded.confidence() < 0 || recorded.confidence() > 1
-            || recorded.confidence() != match.confidence() || recorded.driftRateNanosPerSec() != match.driftRateNanosPerSec()
-            || recorded.referenceTimeSec() != match.referenceTimeSec()
-            || !Double.isFinite(recorded.confidence()) || !Double.isFinite(recorded.driftRateNanosPerSec())
-            || !Double.isFinite(recorded.referenceTimeSec())) throw new IOException("Invalid recorded store alignment");
-        result.put(companion.path(), recorded);
+        result.put(companion.path(), StoreCatalog.recordedAlignment(companion));
       }
       return Map.copyOf(result);
     } catch (IOException e) {
       // A broken recorded association is not permission to guess a new one, especially offline.
-      throw new java.io.UncheckedIOException(e);
+      String reason = "Cannot read recorded alignments from " + root.get() + ": " + e.getMessage();
+      logger.warn("{}", reason);
+      return candidates.stream().collect(java.util.stream.Collectors.toMap(RevLogFileInfo::path, c -> SyncResult.failed(reason)));
     }
   }
 

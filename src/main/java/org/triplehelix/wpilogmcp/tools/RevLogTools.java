@@ -125,6 +125,7 @@ public final class RevLogTools {
       o.addProperty("can_bus", synced.canBusName());
       o.addProperty("path", synced.revlog().path());
       o.addProperty("sync_method", synced.syncResult().method().name());
+      if (!synced.syncResult().isSuccessful()) o.addProperty("reason", synced.syncResult().explanation());
       array.add(o);
     }
     return array;

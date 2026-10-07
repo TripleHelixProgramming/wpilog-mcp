@@ -263,3 +263,9 @@ test("the README names every pit and mirror setting and command", () => {
   for (const key of Object.keys(settings).filter(key => key.includes("mirror.") || key.endsWith("pitServerUrl"))) assert.ok(readme.includes(`\`${key}\``), key);
   for (const id of ["pinSession", "unpinSession", "syncNow", "openMirrorFolder", "syncFromLaptop", "registerPitWithClaudeCode", "mirrorActions"]) assert.ok(readme.includes(`\`wpilog-mcp.${id}\``), id);
 });
+
+test("the mirror guide explains permanent admission for terminal use with VS Code closed", () => {
+  const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
+  assert.match(readme, /With VS Code closed[\s\S]*servers\.yaml[\s\S]*--logdir/);
+  assert.match(readme, /For regular offline analysis away from VS Code, use the `mirror` block/);
+});

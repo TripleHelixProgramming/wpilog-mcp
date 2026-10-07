@@ -112,6 +112,8 @@ jobs:
             caches
             notifications
             permwrapper/dists
+      - name: Run ordinary tests and preserve socket assertions
+        run: ./gradlew test
       - name: Run the headless shop harness
         run: harness/run
       - name: Upload harness evidence
@@ -121,6 +123,7 @@ jobs:
           name: shop-harness
           path: |
             build/reports/tests/shopHarness
+            build/test-results/test
             build/shop-harness
             build/reports/replay
           retention-days: 14

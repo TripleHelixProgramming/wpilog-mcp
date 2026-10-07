@@ -80,7 +80,7 @@ public final class CoreTools {
           + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
           + "this tool first to find logs and get match results, then pass the path to other "
           + "tools. stores lists each store's path and robots; store on a log names its root. "
-          + "A file beyond the reader size limit carries read_error instead of disappearing. "
+          + "A file beyond the reader size limit, or a REV companion with an invalid recorded alignment, carries read_error instead of disappearing. "
           + "A pulled file kept in its own session carries matching_reason explaining why automatic placement was refused. "
           + "Mirrored session metadata adds origin, complete, growing, last_sync, and age_sec; offline tools read the same local bytes. "
           + "A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
@@ -219,6 +219,8 @@ public final class CoreTools {
                 rev.addProperty("path", f.path().toString());
                 rev.addProperty("filename", f.path().getFileName().toString());
                 rev.addProperty("size_bytes", f.file().sizeBytes());
+                var alignment = org.triplehelix.wpilogmcp.store.StoreCatalog.recordedAlignment(f);
+                if (!alignment.isSuccessful()) rev.addProperty("read_error", alignment.explanation());
                 revlogs.add(rev);
               });
           logObj.add("revlogs", revlogs);
