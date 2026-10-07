@@ -39,6 +39,30 @@ class LiveLogTest {
     }, manager, hot);
   }
 
+  @Test void changedMetadataMatchesTheFileWithoutChangingAnExistingView() throws Exception {
+    var manager = new LogManager(); manager.addAllowedDirectory(directory);
+    var path = directory.resolve("metadata.wpilog"); var index = index(manager, path, 0);
+    var loop = new ManualScheduler(); String changed;
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
+      connect(writer, 1_000_000, 0); writer.value(X, new ValueFrame(1, 1_000_000, 2, 1L), 0);
+      try (var before = manager.acquire(path.toString())) {
+        String original = before.log().entries().get("NT:/x").metadata();
+        var patch = new JsonObject(); patch.addProperty("unit", "changed");
+        writer.properties(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties("/x", null, patch));
+        try (var after = manager.acquire(path.toString())) {
+          changed = after.log().entries().get("NT:/x").metadata();
+          assertTrue(changed.contains("changed"), "A new call sees the written Set Metadata record");
+          assertEquals(original, before.log().entries().get("NT:/x").metadata());
+          assertEquals(1, after.log().sampleCount("NT:/x"));
+        }
+      }
+      writer.disconnected(); manager.unloadLog(path.toString());
+      try (var fresh = manager.acquire(path.toString())) {
+        assertEquals(changed, fresh.log().entries().get("NT:/x").metadata());
+      }
+    } finally { manager.shutdown(); }
+  }
+
   @Test void aCallKeepsItsPrefixDuringAppendAndReportsItsSessionRangeEvenWithRoleInputs() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("prefix.wpilog"); var index = index(manager, path, 0);

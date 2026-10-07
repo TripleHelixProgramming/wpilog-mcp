@@ -43,6 +43,9 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   @Override public void entry(CaptureWriter.Session session, EntryInfo entry) throws IOException {
     live.announce(entry); placement.entry(session, entry);
   }
+  @Override public void metadata(CaptureWriter.Session session, EntryInfo entry) throws IOException {
+    live.metadata(entry); placement.metadata(session, entry);
+  }
   @Override public void value(CaptureWriter.Session session, EntryInfo entry, ValueFrame frame, WpilogOutput.Written written)
       throws IOException {
     live.append(entry, frame, written); placement.value(session, entry, frame, written);

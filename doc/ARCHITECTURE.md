@@ -279,9 +279,10 @@ the differential reader, and wpiutil's reader check its bytes. Storage and live-
 receive complete writes and their byte offsets; context providers can join this loop later.
 Announcement properties are preserved under `nt4_properties` in the entry metadata, separate
 from the recorder's `source`, `robot`, and thinning policy. Property patches merge with null meaning
-deletion and write WPILOG Set Metadata records. The initial declaration remains the metadata shown
-by the existing log index; subsequent changes remain in the file's control stream and seed the next
-rollover declaration. NT4 does not timestamp its text controls, so these controls use the measured
+deletion and write WPILOG Set Metadata records. The writer then publishes the changed descriptor
+to the live index; calls already in progress keep their earlier metadata snapshot. A fresh file
+scan applies the same control records, and changes also seed the next rollover declaration.
+NT4 does not timestamp its text controls, so these controls use the measured
 server clock at receipt. Closed-file accounting snapshots count received data records, including
 their WPILOG headers, and exclude declarations, control changes, identity context and schema seeds.
 An optional `capture` configuration starts this listener beside the HTTP server. Missing robots

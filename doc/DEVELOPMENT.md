@@ -352,7 +352,9 @@ fixture robot connects and its values survive daemon shutdown. No test waits for
 `LiveCaptureConformanceTest` replays every fixture through the gateway/client/writer, then runs
 the conformance suite's argument variants for every log-reading tool on the open session and on
 a fresh load of its finished file. It compares complete results, excluding only execution timing
-and the documented live-prefix range, and also runs the independent capture-fidelity checks.
+and the documented live-prefix range, after a properties patch on every entry, and also runs the
+independent capture-fidelity checks. Metadata updates reach new calls while an acquired view keeps
+the metadata it saw, as well as its value boundary.
 `LiveLogTest` checks fixed prefixes during a concurrent append, input ranges (including role-based
 inputs), array growth, all hot/cold value families and schemas, actual mapped-read counts (including
 a plant that leaves every hot object intact), four-per-second expiry with a zero hot window, mapping

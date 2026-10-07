@@ -55,6 +55,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default void identity(Session session) throws IOException {}
     default void opened(Session session, boolean resumed) throws IOException {}
     default void entry(Session session, EntryInfo entry) throws IOException {}
+    default void metadata(Session session, EntryInfo entry) throws IOException {}
     default void value(Session session, EntryInfo entry, ValueFrame value, WpilogOutput.Written written) throws IOException {}
     default void flushed(Session session) throws IOException {}
     default void timeSync(Session session, long serverTimeUs) throws IOException {}
@@ -226,6 +227,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         room(WpilogOutput.metadataSize(metadata, serverUs), 0);
         output.setMetadata(topic.entry.id(), metadata, serverUs);
         topic.entry = new EntryInfo(topic.entry.id(), topic.entry.name(), topic.entry.type(), metadata);
+        observer.metadata(session, topic.entry);
         session.sizeBytes = output.size();
       });
     }

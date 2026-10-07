@@ -74,7 +74,7 @@ public final class LiveLog implements LogData, AutoCloseable {
       return low;
     }
   }
-  private record State(Map<String, Series> entries, long sequence, double min, double max,
+  private record State(Map<String, Series> entries, Map<String, EntryInfo> infos, long sequence, double min, double max,
       int jumps, int firstJump, boolean open) {}
   private static final class Mapping {
     final ScopedLogReader reader;
@@ -98,7 +98,7 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   private volatile Path path;
   private final long hotWindowUs;
-  private volatile State state = new State(Map.of(), 0, 0, 0, 0, -1, true);
+  private volatile State state = new State(Map.of(), Map.of(), 0, 0, 0, 0, -1, true);
   private final PriorityQueue<Record> hot = new PriorityQueue<>(Comparator.comparingLong(r -> r.timestampUs));
   private final AtomicReference<Mapping> mapping = new AtomicReference<>();
   private final AtomicLong mappedReads = new AtomicLong();
@@ -118,7 +118,19 @@ public final class LiveLog implements LogData, AutoCloseable {
     var before = state;
     if (before.entries().containsKey(info.name())) return;
     var entries = new LinkedHashMap<>(before.entries()); entries.put(info.name(), new Series(info));
-    state = new State(Collections.unmodifiableMap(entries), before.sequence(), before.min(), before.max(), before.jumps(), before.firstJump(), true);
+    var infos = new LinkedHashMap<>(before.infos()); infos.put(info.name(), info);
+    state = new State(Collections.unmodifiableMap(entries), Collections.unmodifiableMap(infos), before.sequence(), before.min(), before.max(), before.jumps(), before.firstJump(), true);
+  }
+
+  /** Publish metadata with the index boundary so an already acquired view keeps its facts. */
+  public void metadata(EntryInfo info) {
+    var before = state;
+    var original = before.infos().get(info.name());
+    if (original == null || !original.type().equals(info.type())) return;
+    var infos = new LinkedHashMap<>(before.infos());
+    infos.put(info.name(), new EntryInfo(original.id(), original.name(), original.type(), info.metadata()));
+    state = new State(before.entries(), Collections.unmodifiableMap(infos), before.sequence(),
+        before.min(), before.max(), before.jumps(), before.firstJump(), before.open());
   }
 
   /** Called only after WpilogOutput has written the entire record. */
@@ -127,7 +139,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     if (series == null || !series.info.type().equals(info.type())) return;
     double time = frame.timestampUs() / 1_000_000.0;
     if (before.sequence() > 0 && time > before.max() + LogScan.MAX_FORWARD_JUMP_SEC) {
-      state = new State(before.entries(), before.sequence(), before.min(), before.max(), before.jumps() + 1,
+      state = new State(before.entries(), before.infos(), before.sequence(), before.min(), before.max(), before.jumps() + 1,
           before.firstJump() < 0 ? Math.toIntExact(written.offset()) : before.firstJump(), true);
       return;
     }
@@ -137,7 +149,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     double min = sequence == 1 ? time : Math.min(before.min(), time);
     double max = sequence == 1 ? time : Math.max(before.max(), time);
     // Readers can only see complete record slots after this volatile publication.
-    state = new State(before.entries(), sequence, min, max, before.jumps(), before.firstJump(), true);
+    state = new State(before.entries(), before.infos(), sequence, min, max, before.jumps(), before.firstJump(), true);
     advance(Math.round(max * 1_000_000));
   }
 
@@ -164,7 +176,7 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   public void finish() {
     synchronized (lifetime) {
-      var s = state; state = new State(s.entries(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), false);
+      var s = state; state = new State(s.entries(), s.infos(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), false);
     }
   }
   public void resume() throws IOException {
@@ -172,7 +184,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     var next = new Mapping(path); mappings.incrementAndGet(); Mapping old;
     synchronized (lifetime) {
       old = mapping.getAndSet(next);
-      var s = state; state = new State(s.entries(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), true);
+      var s = state; state = new State(s.entries(), s.infos(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), true);
       retired.set(false);
     }
     if (old != null) old.release();
@@ -230,8 +242,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private View(State seen, String seenPath, LogFileAccess.Lease claim) {
       this.seen = seen; this.seenPath = seenPath; this.claim = claim;
-      var infos = new LinkedHashMap<String, EntryInfo>(); seen.entries().forEach((name, s) -> infos.put(name, s.info));
-      entries = Collections.unmodifiableMap(infos);
+      entries = seen.infos();
       schemas = StructSchemas.fromLog(entries, name -> {
         var series = seen.entries().get(name);
         return sampleCount(name) == 0 ? null : value(series.at(0), series.info.type(), StructSchemas.fallbackOnly());
@@ -308,8 +319,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   private View current() { return new View(state, path.toString(), null); }
   @Override public String path() { return path.toString(); }
   @Override public Map<String, EntryInfo> entries() {
-    var infos = new LinkedHashMap<String, EntryInfo>(); state.entries().forEach((name, s) -> infos.put(name, s.info));
-    return Collections.unmodifiableMap(infos);
+    return state.infos();
   }
   @Override public Map<String, List<TimestampedValue>> values() { return current().values(); }
   @Override public double minTimestamp() { return state.min(); }

@@ -50,7 +50,8 @@ public class SyncCacheSerializer {
    * 3: SPARK devices labeled and keyed by the model their status 0 frames report, and the DBC's
    * hash is part of the cache key (0.9.0).
    */
-  // Version 6 adds capture/WPILOG correlation to the shared synchronization machinery.
+  // Version 7 invalidates synchronization decisions made before AdvantageKit topic-prefix
+  // normalization and the NT:systemTime calendar role were recognized during replay.
   public static final int CURRENT_FORMAT_VERSION = 7;
 
   /** Container for a cached sync entry. */

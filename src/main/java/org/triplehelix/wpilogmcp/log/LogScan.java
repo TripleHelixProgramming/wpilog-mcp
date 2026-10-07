@@ -138,6 +138,14 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
               ignoredIds.add(start.entry);
             }
           }
+        } else if (record.isSetMetadata()) {
+          var update = record.getSetMetadataData();
+          var existing = entriesById.get(update.entry);
+          if (existing != null) {
+            var info = new EntryInfo(existing.id(), existing.name(), existing.type(), update.metadata);
+            entriesByName.put(existing.name(), info);
+            entriesById.replaceAll((id, entry) -> entry.name().equals(existing.name()) ? info : entry);
+          }
         } else if (!record.isControl()) {
           int id = record.getEntry();
           var info = entriesById.get(id);

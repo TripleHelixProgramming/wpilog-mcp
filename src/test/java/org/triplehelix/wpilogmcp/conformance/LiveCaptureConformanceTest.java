@@ -49,6 +49,9 @@ class LiveCaptureConformanceTest {
         CaptureFidelityTest.capture(f.path(), capture, index, () -> {
           try (var use = manager.acquire(capture.toString())) {
             assertInstanceOf(LiveLog.View.class, use.log());
+            for (var entry : use.log().entries().values()) {
+              assertTrue(entry.metadata().contains("live_metadata_check"), entry.name());
+            }
             for (var tool : tools) for (var variant : ToolArguments.variants(tool, fixture, use.log(), fixtures, export)) {
               var result = tool.execute(variant.args());
               Integer limit = variant.args().has("limit") ? variant.args().get("limit").getAsInt() : null;

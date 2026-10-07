@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- Entry metadata now follows NT4 properties changes in both the live index and a fresh WPILOG scan. Previously Set Metadata reached the file but both indexes kept the announcement's properties; an in-progress tool call still retains its original snapshot.
 - Captured `NT:systemTime` now retains its calendar-clock role; previously the recording prefix hid it from REV clock alignment.
 - Capture now preserves NT4 topic properties and their updates as WPILOG metadata instead of dropping them. Publisher properties remain separate from recorder provenance.
 - Pull matching now recognizes AdvantageKit's published `/AdvantageKit` table prefix. Refused automatic placement retains `matching_reason` in the file manifest and listing; previously the file remained readable but lost the explanation. Synchronization cache version 7 invalidates earlier decisions.

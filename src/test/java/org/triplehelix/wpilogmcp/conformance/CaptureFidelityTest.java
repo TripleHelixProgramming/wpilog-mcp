@@ -84,6 +84,7 @@ class CaptureFidelityTest {
       @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws java.io.IOException { return delegate.create(address, start, previous); }
       @Override public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException { files.add(session.path()); delegate.opened(session, resumed); }
       @Override public void entry(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry) throws java.io.IOException { delegate.entry(session, entry); }
+      @Override public void metadata(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry) throws java.io.IOException { delegate.metadata(session, entry); }
       @Override public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry, ValueFrame value,
           org.triplehelix.wpilogmcp.capture.WpilogOutput.Written written) throws java.io.IOException { delegate.value(session, entry, value, written); }
       @Override public void flushed(CaptureWriter.Session session) throws java.io.IOException { delegate.flushed(session); }
@@ -99,6 +100,7 @@ class CaptureFidelityTest {
       @Override public void timeSync(long server, long received) { writer.timeSync(server, received); }
       @Override public void announce(Announce a) { writer.announce(a); if (a.name().equals("/capture-test/ready")) ready.complete(null); }
       @Override public void value(Announce a, ValueFrame v, long received) { writer.value(a, v, received); }
+      @Override public void properties(org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties change) { writer.properties(change); }
       @Override public void unannounce(Unannounce a) {
         writer.unannounce(a);
         if (a.name().equals("/capture-test/ready")) done.complete(null);
@@ -115,6 +117,10 @@ class CaptureFidelityTest {
           Nt4Client.captureSubscription(0.001), listener, java.net.http.HttpClient.newHttpClient(), loop)) {
         try {
           client.start(); loop.until(ready::isDone); ready.get(10, TimeUnit.SECONDS); replayer.replay(gateway, 0, ignored -> fail("Fast replay must not sleep"));
+          if (observer != null) {
+            var patch = new JsonObject(); patch.addProperty("live_metadata_check", "changed");
+            for (var name : names) gateway.properties(name, patch).join();
+          }
           for (var name : names) gateway.unannounce(name).join();
           gateway.unannounce("/capture-test/ready").join();
           // Windows may spend more than ten seconds forcing all the tiny rollover files.
