@@ -1,0 +1,3 @@
+# The Sponsor button on the repository page. GitHub reads this file on the default branch
+# and shows the button only when Sponsorships is enabled under Settings > General > Features.
+custom: ["https://www.paypal.com/donate?hosted_button_id=R9BJ2TLELQR6W"]
