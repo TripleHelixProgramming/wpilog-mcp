@@ -27,7 +27,7 @@ final class RobotIdentityStore {
     var old = Files.exists(path) ? io.read(path, Robot.class) : null;
     var contacts = new ArrayList<>(old == null ? List.<Contact>of() : old.contacts());
     var previous = contacts.stream().filter(c -> c.address().equals(device.address())).reduce((a, b) -> b);
-    if (previous.isEmpty() || !previous.get().hostKeyFingerprint().equals(device.hostKeyFingerprint())) {
+    if (previous.isEmpty() || !java.util.Objects.equals(previous.get().hostKeyFingerprint(), device.hostKeyFingerprint())) {
       previous.ifPresent(c -> LoggerFactory.getLogger(RobotIdentityStore.class).warn(
           "SSH host key changed for robot {} at {}: {} -> {}; continuing its pull manifest",
           serial, device.address(), c.hostKeyFingerprint(), device.hostKeyFingerprint()));
@@ -53,7 +53,7 @@ final class RobotIdentityStore {
     if (Files.isDirectory(placeholder)) {
       try (var walk = Files.walk(placeholder)) {
         for (var manifest : walk.filter(p -> p.getFileName().toString().equals("session.json")).sorted().toList()) {
-          // Another live writer keeps its stable directory until its own file creation barrier.
+          // A live writer keeps its stable directory until its session closes.
           if (io.read(manifest, Session.class).openCapture() == null) sessions.add(manifest.getParent());
         }
       }

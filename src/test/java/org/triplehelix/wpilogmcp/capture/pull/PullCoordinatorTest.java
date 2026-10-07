@@ -67,7 +67,8 @@ class PullCoordinatorTest {
       robot.device = FakeRobot.device("SYNTHETIC-A", "SHA256:changed"); settled();
       assertEquals(FileTransfer.Status.COPIED, pull.step().status()); assertEquals("SHA256:first", pins.get(1));
       assertEquals(131072, robot.reads.get(2).offset()); assertEquals(2, identities.size());
-      worker.advance(1_000_000); assertEquals(FileTransfer.Status.VERIFIED, pull.step().status());
+      worker.advance(1_000_000); assertEquals(FileTransfer.Status.WAITING, pull.step().status());
+      assertEquals(FileTransfer.Status.VERIFIED, pull.step().status()); assertEquals(3, robot.listings);
       assertTrue(store.pulls(robot.device, WALL).manifest().files().get(0).verified());
       gate.disconnected(); pull.step(); robot.device = FakeRobot.device("SYNTHETIC-B", "SHA256:third"); settled();
       assertEquals(FileTransfer.Status.COPIED, pull.step().status()); assertEquals(0, robot.reads.get(3).offset());

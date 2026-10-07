@@ -22,11 +22,12 @@ public final class FakeRobot implements RobotRemote {
   public DeviceIdentity device = device("SYNTHETIC-A", "SHA256:first");
   public Runnable onRead = () -> {};
   public boolean closed;
+  public int listings;
   public static DeviceIdentity device(String serial, String fingerprint) {
     return new DeviceIdentity(serial, "fixture robot", "127.0.0.1", fingerprint, Map.of("serial_source", "/proc/42/environ:serialnum", "comments_source", "/etc/machine-info:PRETTY_HOSTNAME"));
   }
   @Override public DeviceIdentity identity() { return device; }
-  @Override public List<File> list() { return files.entrySet().stream().map(e -> new File(e.getKey(), e.getValue().length, mtime)).toList(); }
+  @Override public List<File> list() { listings++; return files.entrySet().stream().map(e -> new File(e.getKey(), e.getValue().length, mtime)).toList(); }
   @Override public byte[] read(String name, long offset, int count) throws IOException {
     reads.add(new Read(name, offset, count)); onRead.run();
     var data = files.get(name); if (data == null) throw new IOException("missing remote file");

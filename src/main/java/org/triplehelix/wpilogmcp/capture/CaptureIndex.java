@@ -34,10 +34,6 @@ public final class CaptureIndex implements CaptureWriter.Observer {
       org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
     return placement.create(address, start, previous, identity);
   }
-  @Override public Path identified(CaptureWriter.Session session,
-      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
-    return placement.identified(session, identity);
-  }
   @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
     if (!resumed) live = new LiveLog(session.path(), hotWindowUs);

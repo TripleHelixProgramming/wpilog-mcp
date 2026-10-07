@@ -36,7 +36,7 @@ class FileTransferTest {
     final List<Long> hashes = new ArrayList<>(); final AtomicLong now = new AtomicLong();
     final AtomicBoolean gate = new AtomicBoolean(true);
     PullManifest saved = PullManifest.empty("SYNTHETIC-A"); boolean exec = true;
-    int unique, invalid, verifies; Runnable reading = () -> {};
+    int unique, invalid, verifies, listings; Runnable reading = () -> {};
     // The remote and local ports intentionally have different adapters for read/hash.
     RemoteFiles transport() { return new RemoteFiles() {
       public List<File> list() { return Fake.this.list(); }
@@ -44,7 +44,7 @@ class FileTransferTest {
       public Optional<String> prefixHash(String name, long length) { hashes.add(length); return exec ? Optional.of(hash(remote.get(name), length)) : Optional.empty(); }
     }; }
     void put(String name, byte[] content, long time) { remote.put(name, content); times.put(name, time); }
-    public List<RemoteFiles.File> list() { return remote.entrySet().stream().map(e -> new RemoteFiles.File(e.getKey(), e.getValue().length, times.get(e.getKey()))).toList(); }
+    public List<RemoteFiles.File> list() { listings++; return remote.entrySet().stream().map(e -> new RemoteFiles.File(e.getKey(), e.getValue().length, times.get(e.getKey()))).toList(); }
     static byte[] slice(byte[] bytes, long offset, int count) { return Arrays.copyOfRange(bytes, (int) offset, Math.min(bytes.length, (int) offset + count)); }
     public String create(String remoteName) { String name = remoteName + "#" + ++unique; local.put(name, new byte[0]); return name; }
     public long size(String name) { return local.get(name).length; }
@@ -73,6 +73,26 @@ class FileTransferTest {
     }
   }
 
+  @Test void oneListingServesTheWholePassAndGrowthRefreshesAfterTenSeconds() throws Exception {
+    var f = new Fake(); f.put("a", bytes(4 * 65536, 1), 1); f.put("b", bytes(2 * 65536, 2), 1);
+    var engine = f.engine();
+    for (int block = 0; block < 6; block++) {
+      assertEquals(FileTransfer.Status.COPIED, f.step(engine).status());
+      assertEquals(1, f.listings, "one recursive listing for both files, not per block");
+    }
+    f.finish(engine);
+    assertEquals(2, f.listings, "a second pass confirms stable size and mtime before verification");
+    assertTrue(f.saved.files().stream().allMatch(PullManifest.Entry::verified));
+    byte[] growing = bytes(100 * 65536, 3); f.put("a", growing, 2);
+    f.step(engine); assertEquals(3, f.listings);
+    for (int block = 0; block < 15; block++) f.step(engine);
+    assertEquals(3, f.listings);
+    f.put("a", Arrays.copyOf(growing, growing.length + 100), 3);
+    f.now.addAndGet(10_000_000); f.step(engine);
+    assertEquals(4, f.listings, "long running passes refresh at ten seconds");
+    assertEquals(3, f.saved.files().get(0).mtimeMillis());
+  }
+
   @Test void newGrowthUsesTheWholeHeldPrefixAndRoundTripsProgress() throws Exception {
     var f = new Fake(); byte[] all = bytes(150_000, 1); f.put("log.wpilog", Arrays.copyOf(all, 90_000), 1);
     var engine = f.engine(); f.finish(engine); assertTrue(f.saved.files().get(0).verified());
@@ -88,7 +108,7 @@ class FileTransferTest {
   @Test void aGrowingFileDuringTheSameTransferRechecksEveryHeldByte() throws Exception {
     var f = new Fake(); byte[] first = bytes(150_000, 21); f.put("log.wpilog", first, 1);
     var engine = f.engine(); f.step(engine); assertEquals(65536, f.saved.files().get(0).bytesCopied());
-    byte[] next = Arrays.copyOf(first, 160_000); next[65535] ^= 1; f.put("log.wpilog", next, 2);
+    byte[] next = Arrays.copyOf(first, 160_000); next[65535] ^= 1; f.put("log.wpilog", next, 2); f.now.addAndGet(10_000_000);
     f.step(engine);
     assertEquals(1, f.saved.history().size(), "A changed listing invalidates the earlier prefix proof");
     assertEquals(0, f.reads.get(1).offset()); assertEquals(65536L, f.hashes.get(0));
@@ -134,7 +154,7 @@ class FileTransferTest {
   void renamedGrowingLogKeepsThePartialCopy(boolean exec) throws Exception {
     var f = new Fake(); f.exec = exec; byte[] all = bytes(140_000, 8); f.put("FRC_TBD.wpilog", all, 1);
     var engine = f.engine(); f.step(engine); // one held block, then DataLogManager renames it
-    f.remote.remove("FRC_TBD.wpilog"); f.put("FRC_20260307_142233_Event_Q1.wpilog", all, 2); f.reads.clear();
+    f.remote.remove("FRC_TBD.wpilog"); f.put("FRC_20260307_142233_Event_Q1.wpilog", all, 2); f.reads.clear(); f.now.addAndGet(10_000_000);
     f.finish(engine); assertEquals(1, f.local.size()); assertEquals(1, f.saved.files().size());
     assertEquals("FRC_20260307_142233_Event_Q1.wpilog", f.saved.files().get(0).remoteName());
     assertTrue(f.saved.files().get(0).localName().startsWith("FRC_20260307"));

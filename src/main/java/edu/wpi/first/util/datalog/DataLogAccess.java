@@ -19,8 +19,13 @@ public final class DataLogAccess {
 
   private DataLogAccess() {}
 
+  // Per-thread test instrumentation counts bytes accessed through mapped records, not mapping size.
+  static final ThreadLocal<java.util.function.LongConsumer> READ_BYTES = new ThreadLocal<>();
+
   /** Reads a record at the given byte offset. */
   public static DataLogRecord getRecord(DataLogReader reader, int pos) {
+    var observer = READ_BYTES.get();
+    if (observer != null) observer.accept(reader.getNextRecord(pos) - (long) pos);
     return reader.getRecord(pos);
   }
 

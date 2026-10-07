@@ -56,26 +56,32 @@ The store checks also distinguish a new named robot with a logged serial from a 
 **Transfer logic.** `sync.FileTransferTest` uses a remote and local store in memory and advances
 an injected clock: whole-prefix hashes, the last-64-KiB fallback, growth, shrinks, rewound clocks,
 common-prefix boots, REV's repeated unset-clock name, DataLogManager renames, one-block pauses,
-read pacing, one retry, manifest round trips, and concurrent-call refusal. `TransferVerificationTest`
+read pacing, one retry, manifest round trips, and concurrent-call refusal. Listing counters pin one
+snapshot per pass and a ten-second refresh while a file grows. `TransferVerificationTest`
 copies every generated fixture byte for byte and runs the normal readers, including rejection of
 partial WPILOG records and native REV headers/frames. No test waits for a robot or sleeps for time.
 
 **SFTP, gate and placement.** `PullConfigTest`, `PullGateTest`, `SftpTransportTest`,
 `PullCoordinatorTest`, `PullStoreTest`, and `CapturePullTest` cover configuration and secrets,
-HAL-source reads over a fake channel, command quoting, host-key reporting, disabled settling,
+HAL-source reads over a fake channel, command quoting, slow hash replies with an injected deadline,
+cancelled/expired timers, and host-key refusal before secret authentication. Tests cover explicit
+acceptance, fingerprint reset, default empty-password contacts, and disabled settling,
 block-boundary pauses, retry scheduling, and the real capture listener over numeric loopback.
 Store tests hold mapped reads before moves, check hidden staging and path ownership, byte-exact
 placement and hashes, verified growth/rename, serial conflicts, identical signals across serials,
 `data_alone`, and the 250 ms matching bound without chaining earlier offsets. REV and WPILOG
-use the shared correlation machinery. `SshPackagingTest` initializes Ed25519 and RSA SHA-2 from
+use the shared correlation machinery. A store with twenty distant sessions and one overlapping
+session checks that only the overlapping capture is loaded. `SshPackagingTest` initializes Ed25519 and RSA SHA-2 from
 the actual fat JAR without optional crypto providers, and checks packaged licenses and dependency
 confinement. `PullDocumentationTest` checks accepted keys and the opt-in hardware invocation.
 Every ordinary fixture remains synthetic; Linux and Windows run these tests without a robot.
 
 **Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
 `LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
-mapped readers, retained old paths, key history, disagreements, and late logged identity outside a
-store. `/SystemStats/SerialNumber` is resolved with the same metadata roles as imports.
+mapped readers, retained old paths, key history, disagreements, and logged identity in the listing
+prefix. A blocked store queue cannot delay a mid-session context, value, or flush; promotion occurs
+at close. A fixture larger than the 2000-record prefix counts mapped record bytes on each fresh
+listing, and unreadable same-size store files prove candidates come from persisted manifests. `/SystemStats/SerialNumber` is resolved with the same metadata roles as imports.
 `robot_candidates` checks use synthetic exact fingerprints, ambiguity, contradictory hints, and
 CAN inventories. No identity or value comes from a robot log.
 

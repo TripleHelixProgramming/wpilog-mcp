@@ -60,6 +60,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private final AtomicLong writes = new AtomicLong(), submissions = new AtomicLong();
   private volatile CompletableFuture<Void> completion = CompletableFuture.completedFuture(null);
   private long submittedAtUs;
+  private org.triplehelix.wpilogmcp.capture.context.DeviceIdentity recordedIdentity;
   private BiConsumer<Path, Path> moved = (from, to) -> {};
 
   CaptureStore(LogStore store, LogManager manager, Clock clock) { this(store, manager, clock, Files::move); }
@@ -108,18 +109,6 @@ public final class CaptureStore implements CaptureWriter.Observer {
       return robot;
     });
     return create(address, start, previous);
-  }
-
-  @Override public Path identified(CaptureWriter.Session session,
-      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
-    awaitPrevious();
-    return store.capture(io -> {
-      RobotIdentityStore.record(io, store.root(), identity, clock.instant());
-      var before = session.path();
-      var after = RobotIdentityStore.promote(io, store.root(), manager, before, identity, clock.instant());
-      if (!before.equals(after)) moved.accept(before, after);
-      return after;
-    });
   }
 
   @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws IOException {
@@ -235,7 +224,14 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private void write(StoreFiles io, Update update) throws IOException {
     var capture = update.owner();
     Path before = capture.path();
+    if (update.identity() != null && !update.identity().equals(recordedIdentity)) {
+      RobotIdentityStore.record(io, store.root(), update.identity(), clock.instant());
+      recordedIdentity = update.identity();
+    }
     Path after = writeSnapshot(io, update, before);
+    if (!update.open() && update.identity() != null) {
+      after = RobotIdentityStore.promote(io, store.root(), manager, after, update.identity(), clock.instant());
+    }
     if (!before.equals(after)) { capture.relocate(after); moved.accept(before, after); }
   }
 

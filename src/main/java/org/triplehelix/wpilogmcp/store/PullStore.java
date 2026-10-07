@@ -171,6 +171,8 @@ public final class PullStore implements FileTransfer.Local {
       // Do not chain tolerated offsets through earlier matches and drift away from the session clock.
       if (candidate.file().matching() != null || capturedSessions.contains(candidate.manifestPath())
           && !candidate.file().provenance().kind().equals("captured")) continue;
+      if (!input.nearClock(Instant.parse(candidate.session().startedAt()),
+          Instant.parse(candidate.session().endedAt()))) continue;
       try (var use = manager.acquire(candidate.path().toString())) {
         var facts = LogMetadata.read(use.log());
         String otherSerial = facts.serialNumber() != null ? facts.serialNumber() : candidate.robot().serialNumber();
@@ -225,7 +227,7 @@ public final class PullStore implements FileTransfer.Local {
       files.add(new LogFile(StoreFiles.relative(sessionPath.getParent(), target), input.hash(), input.size(), input.kind(),
           new Provenance("pulled", entry.remoteName(), entry.remoteName().substring(entry.remoteName().lastIndexOf('/') + 1), clock.instant().toString(), true, identity.serialNumber()),
           true, input.min(), input.max(), input.start() == null ? session.startedAt() : input.start().toString(),
-          input.end() == null ? session.endedAt() : input.end().toString(), input.startBasis(), false, evidence));
+          input.end() == null ? session.endedAt() : input.end().toString(), input.startBasis(), false, evidence, input.robotFingerprint()));
       var conflicts = new ArrayList<>(session.identityConflicts());
       if (conflict != null) conflicts.add(new IdentityConflict(StoreFiles.relative(sessionPath.getParent(), target), serial, identity.serialNumber()));
       io.write(sessionPath, copy(session, files, conflicts));
@@ -249,7 +251,7 @@ public final class PullStore implements FileTransfer.Local {
       for (var file : old.session().files()) {
         if (!old.manifestPath().getParent().resolve(file.path()).equals(from)) records.add(file);
         else if (retain) records.add(new LogFile(StoreFiles.relative(old.manifestPath().getParent(), target), file.sha256(), file.sizeBytes(), file.kind(),
-            file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching()));
+            file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint()));
       }
       io.write(old.manifestPath(), copy(old.session(), records, old.session().identityConflicts()));
     }

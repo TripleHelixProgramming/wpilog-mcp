@@ -51,7 +51,6 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       return create(address, startedAt, previous);
     }
     /** A file creation barrier: the old writer and mapping are closed before directory promotion. */
-    default Path identified(Session session, DeviceIdentity identity) throws IOException { return session.path(); }
     default void identity(Session session) throws IOException {}
     default void opened(Session session, boolean resumed) throws IOException {}
     default void entry(Session session, EntryInfo entry) throws IOException {}
@@ -144,14 +143,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   public void identity(DeviceIdentity device) {
     identity = device;
     if (session == null || output == null || !device.address().equals(address)) return;
-    boolean promote = session.identity == null || !session.identity.serialNumber().equals(device.serialNumber());
     session.identity = device;
     io(() -> {
-      if (promote) {
-        closeFile(); observer.closed(session);
-        session.relocate(observer.identified(session, device));
-        nextFile();
-      } else writeIdentity();
+      writeIdentity();
       observer.identity(session);
     });
   }

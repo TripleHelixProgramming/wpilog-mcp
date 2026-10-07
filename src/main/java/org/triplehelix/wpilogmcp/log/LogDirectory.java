@@ -483,8 +483,8 @@ public class LogDirectory {
   public record DirectoryOrigin(String path, String origin, Integer team) {}
 
   /**
-   * Extracts metadata from the whole log through the import resolver, then its file name for
-   * what the records leave unset (see {@link LogFileName}). A serial or Driver Station fact may arrive late; stopping at startup records would lose identity.
+   * Reads the bounded metadata prefix through the resolver roles, then the file name for facts
+   * not recorded there. Import inspection, unlike a directory listing, can read late identity.
    *
    * <p>The reader releases its mapping before returning, so browsing a folder does not prevent
    * a later import from moving those files on Windows.
@@ -496,6 +496,7 @@ public class LogDirectory {
     var matchNumber = (Integer) null;
     var teamNumber = (Integer) null;
     org.triplehelix.wpilogmcp.store.StoreManifest.Robot robot = null;
+    String serialNumber = null, comments = null;
     // The Driver Station's match type and number as the records go by. A number counts only
     // while a match type is set: with match type None there is no match, and the number can
     // hold anything (real logs start with a five-digit one).
@@ -512,7 +513,7 @@ public class LogDirectory {
         int pos = DataLogAccess.firstRecordOffset(path);
         int size = DataLogAccess.size(reader);
         while (pos >= 12 && pos < size) {
-          if (recordCount++ > LogManager.MAX_METADATA_RECORDS) break;
+          if (recordCount++ >= LogManager.MAX_METADATA_RECORDS) break;
           int next = DataLogAccess.recordEnd(reader, pos);
           if (next < 0) break; // the file ends inside this record
           var record = DataLogAccess.getRecord(reader, pos);
@@ -539,7 +540,8 @@ public class LogDirectory {
                 var v = integerOf(record);
                 if (v != null) currentNumber = v;
               }
-              case SERIAL, COMMENTS -> { }
+              case SERIAL -> { var v = stringOf(record); if (v != null && !v.isBlank()) serialNumber = v.strip(); }
+              case COMMENTS -> { var v = stringOf(record); if (v != null && !v.isBlank()) comments = v.strip(); }
               case TEAM -> {
                 var v = integerOf(record);
                 if (v != null && v > 0 && v <= Integer.MAX_VALUE) teamNumber = v.intValue();
@@ -551,19 +553,17 @@ public class LogDirectory {
                 matchNumber = (int) currentNumber;
               }
             }
-            if (eventName != null && matchType != null && matchNumber != null && teamNumber != null) break;
+            if (eventName != null && matchType != null && matchNumber != null && teamNumber != null
+                && serialNumber != null && comments != null) break;
           }
         }
-      }
-      // Identity is a whole-file fact, even when a serial arrives after the directory metadata prefix.
-      try (var log = new LazyParsedLog(path.toString(), reader, 4L * 1024 * 1024)) {
-        var facts = LogMetadata.read(log);
-        if (facts.serialNumber() != null) robot = new org.triplehelix.wpilogmcp.store.StoreManifest.Robot(
-            facts.serialNumber(), facts.serialNumber(), null, facts.comments(), "logged");
       }
     } catch (Exception e) {
       logger.debug("Metadata extraction error for {}: {}", filename, e.getMessage());
     }
+
+    if (serialNumber != null) robot = new org.triplehelix.wpilogmcp.store.StoreManifest.Robot(
+        serialNumber, serialNumber, null, comments, "logged");
 
     // What the records leave unset comes from the file name. The match is taken whole from one
     // or the other: the name's number under the records' type would be neither's match.

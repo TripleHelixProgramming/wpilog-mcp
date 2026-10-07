@@ -190,6 +190,7 @@ servers:
 | `capture.pull.ssh.user` | Account, default `lvuser`; supports `${NAME}` |
 | `capture.pull.ssh.password` | Password, default empty; supports `${NAME}`. Use an environment variable rather than a literal secret in shared YAML |
 | `capture.pull.ssh.key` | Unencrypted private-key path instead of password; supports `~/` and `${NAME}`. Password and key cannot both be configured |
+| `capture.pull.ssh.accept_changed_host_key` | Default `false`. Explicitly accept a changed pinned key when password or private-key authentication is configured; verify the replacement first and turn this off afterwards |
 
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
 Unknown capture keys and invalid values name the key in the startup error. Capture requires
@@ -228,7 +229,8 @@ as `inputs.session_time_range`; later calls can include newer records. The hot w
 memory retention, not which records are available: older values are read from the file.
 
 The listing reads `/SystemStats/SerialNumber` and `/SystemStats/Comments` (also prefixed `NT:`)
-in any log, not only a store. AdvantageKit records these conventions. DataLogManager teams can
+within the first 2000 records of any log, not only a store. Import inspection also finds identity
+logged later. AdvantageKit records these conventions. DataLogManager teams can
 make every robot log self-identifying by writing them once in `robotInit`:
 
 ```java
@@ -241,25 +243,38 @@ new IntegerLogEntry(log, "/SystemStats/TeamNumber").append(RobotController.getTe
 The entry classes are in `edu.wpi.first.util.datalog`; `DataLogManager` and `RobotController`
 are in `edu.wpi.first.wpilibj`. A logged serial wins for its file. Device evidence learned over
 SSH is stored by serial with host-key history and copied into `/Daemon/Robot/Identity` at capture
-start and resume. Address directories are provisional; promotion preserves old paths. The listing's
-`robot_candidates` are unique exact fingerprint hints with their evidence, never assigned identities.
+start and resume. Identity learned mid-session is written in place; the address directory moves
+under the serial at session close, preserving old paths without waiting on the NT4 loop. New
+sessions use the known serial immediately. The listing's `robot_candidates` apply only to store files,
+using exact fingerprints persisted by import inspection. Older manifests without fingerprints have
+no hints. Listing does not scan logs for this evidence, and candidates never assign identities.
 
 Pulling is opt-in: set `capture.pull.enabled: true` after the [shop test](DEVELOPMENT.md#roborio-sftp-shop-test).
 The gate uses bit 0 of `/FMSInfo/FMSControlData`; enabled, unknown or disconnected state pauses the
 worker within its current 64 KiB block. Reopening the gate resumes at the held offset after a content
 check. The cap also covers fallback comparison reads. SSH errors retry; they do not stop HTTP or NT4.
-The server log reports starts, pauses, completion and failures; `list_sessions` comes later.
+The server log reports starts, pauses, completion and failures; `list_sessions` comes later. One
+recursive listing serves each transfer pass, refreshing after ten seconds during a long pass.
+Hash commands read the whole held prefix on the robot, using CPU and storage bandwidth outside
+the transfer byte cap. Their deadline is 30 seconds plus one second per 256 KiB, rounded up; SSH
+keepalives preserve the connection during a slow hash, with five-second connect timeouts.
 
 The first SSH host key is trusted and its SHA-256 fingerprint recorded with the device serial.
-A changed key is reported and accepted so a reimage can continue; the serial read afterwards selects
-the manifest. This policy assumes the team's trusted robot network. A new serial at the same address
+A changed key is reported. With the default empty password it can continue automatically; with
+a password or private key configured it is refused before authentication. Verify the replacement,
+then set `capture.pull.ssh.accept_changed_host_key: true` temporarily, or remove the last contact
+entry's `host_key_fingerprint` from that robot's `robot.json`. The next accepted contact records the
+new fingerprint. First contact still trusts the team's robot network. The serial read afterwards
+selects the manifest. A new serial at the same address
 starts separate transfer state. Supported host keys are Ed25519 and RSA SHA-2. Serial and comments
 come from the HAL's sources (see the plan's section 17); missing or conflicting serial evidence
 refuses the contact, rather than assigning logs from its address.
 
 Files wait in `robots/<serial>/pulled/` until the ordinary reader reaches EOF. A verified file moves
 into a session's `robot/` directory and appears in the listing. Matching requires the same known
-serial and strong data correlation within 250 ms of zero, with one candidate session; names alone
+serial and strong data correlation within 250 ms of zero, with one candidate session. Manifest
+time ranges filter candidates before loading them, allowing two hours of clock slack (sixteen for
+filename clocks without a zone); an unknown or unset clock cannot exclude a candidate. Names alone
 cannot match. Missing logged serials are marked `data_alone` in the manifest. No match starts its own
 session. A logged/device serial disagreement is reported, and the logged serial wins for the file.
 Confirmed growth temporarily returns a verified file to staging; its earlier tool paths still resolve

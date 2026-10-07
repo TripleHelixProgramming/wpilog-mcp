@@ -26,6 +26,19 @@ class PullDocumentationTest {
     assertTrue(text.contains("SFTP"), name); assertTrue(text.contains("250 ms"), name);
     assertTrue(text.contains("data_alone"), name);
   }
+  @Test void guidesPinReviewBoundsAndTheirReasons() throws Exception {
+    var checks = new java.util.ArrayList<org.junit.jupiter.api.function.Executable>();
+    for (String name : java.util.List.of("ARCHITECTURE", "STANDALONE", "PIT_SERVER_PLAN")) {
+      String text = Files.readString(Path.of("doc", name + ".md"));
+      for (String fact : java.util.List.of("2000", "ten seconds", "256 KiB", "accept_changed_host_key", "session close")) {
+        checks.add(() -> assertTrue(text.contains(fact), name + ": " + fact));
+      }
+    }
+    assertAll(checks);
+    assertEquals(10_000_000, org.triplehelix.wpilogmcp.sync.FileTransfer.LISTING_PERIOD_US);
+    assertEquals(30_000, SftpTransport.hashTimeoutMs(0)); assertEquals(31_000, SftpTransport.hashTimeoutMs(262_144));
+  }
+
   @Test void hardwareInvocationIsDocumentedAndOptInOnly() throws Exception {
     String build = Files.readString(Path.of("build.gradle"));
     String guide = Files.readString(Path.of("doc/DEVELOPMENT.md"));

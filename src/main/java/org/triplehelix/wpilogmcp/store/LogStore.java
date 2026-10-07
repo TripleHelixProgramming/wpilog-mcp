@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -509,10 +508,7 @@ public final class LogStore implements AutoCloseable {
    * Unknown clocks keep every candidate of the stated robot, and correlation still decides.
    */
   private static boolean nearRevClock(ImportInspection rev, Candidate candidate) {
-    if (rev.start() == null || candidate.start() == null) return true;
-    var slack = Duration.ofHours("filename".equals(rev.startBasis()) ? 16 : 2);
-    return !candidate.end().isBefore(rev.start().minus(slack))
-        && !candidate.start().isAfter(rev.end().plus(slack));
+    return rev.nearClock(candidate.start(), candidate.end());
   }
 
   private void place(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, ImportInspection primary,
@@ -612,7 +608,7 @@ public final class LogStore implements AutoCloseable {
             input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
             input.start() == null ? null : input.start().toString(),
             input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
-            placement.matching()));
+            placement.matching(), input.robotFingerprint()));
       }
       if (session == null) io.write(manifest, records.get(0));
       else {
@@ -705,7 +701,7 @@ public final class LogStore implements AutoCloseable {
         var updated = new LogFile(StoreFiles.relative(stored.manifestPath().getParent(), destination),
             file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
             file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(),
-            file.startBasis(), file.truncated(), file.matching());
+            file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint());
         io.write(stored.manifestPath(), updated);
         rewriteMoves(io, catalog, stored.path(), destination);
         catalog.placed(io, stored.manifestPath(), null, null, List.of(updated));

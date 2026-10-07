@@ -243,11 +243,13 @@ Match type codes are `p`, `q` or `qm`, `qf`, `sf`, `f`, and `e`. A file whose na
 The file-name time is read as UTC (the roboRIO's default zone, and the zone DataLogManager always uses), or in the server's local zone for a `_sim` log. It orders the listing (newest first; the file's modification time when the name carries no time), and it is the time the `since` filter and TBA's `nearest_time` lookup use.
 
 For a store (a configured directory with `store.json`), `logs` comes from session manifests, including files beyond the ordinary directory scan depth. The `stores` array names each store (`path`, `robots` with the same robot fields). Each log row carries `store` (its root), `revlogs` (its correlated companions, each with `path`, `filename`, and `size_bytes`), `robot` (`id`, `name`, `serial_number`, `comments` when known, `basis`: `logged`, `device`, `stated`, or `address` (known only by its connection address)) and `session` (`id`, `path`, `started_at`, `ended_at`, `start_basis`). A captured file also carries `session.open`: its event and match come from the manifest even while Windows defers the directory rename. Two directories with the same serial describe one robot but remain separate histories. Store facts override filenames. Plain-directory logs also carry `robot` when `/SystemStats/SerialNumber` and `/SystemStats/Comments`
-(or their `NT:` forms) supply it. This logged identity wins over the store's device identity.
+(or their `NT:` forms) supply it within the first 2000 records. Import inspection can read later identity. This logged identity wins over the store's device identity.
 A store robot can also carry `contacts` (`address`, `host_key_fingerprint`, `seen_at`) documenting SSH
-key history. Rows without a serial can carry `robot_candidates`: each has `serial_number` and
+key history. Store rows without a serial can carry `robot_candidates`: each has `serial_number` and
 `evidence` (`kind`, `value`). Kinds are `logged_team_number`, `entry_set`, and `rev_can_inventory`;
-the latter two values are hashes of exact sorted fingerprints. Each kind must match exactly one
+the latter two values are hashes of exact sorted fingerprints, persisted by import inspection in
+the manifest. Listing never scans a file for candidate evidence. Plain files and older store
+manifests without fingerprints have no candidates. Each kind must match exactly one
 known serial; conflicting hints are omitted. This never assigns the file. Unassigned REV rows can
 carry the same candidates. With `capture.pull` enabled, partial transfers stay out of the log listing; verified copies appear under their session with device identity unless the file logs its own serial. A logged/device disagreement is kept in the session manifest and server log. Moved paths remain usable by tools after the seven-day listing notice. A file beyond the current 2 GB mapping limit remains in `logs` with `read_error`, the same refusal reason loading and import report.
 

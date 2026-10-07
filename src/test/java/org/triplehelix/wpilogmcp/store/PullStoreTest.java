@@ -52,14 +52,17 @@ class PullStoreTest {
     return path;
   }
   Path seed(String serial, String session, Path input) throws Exception {
+    return seed(serial, session, input, WALL.instant());
+  }
+  Path seed(String serial, String session, Path input, Instant start) throws Exception {
     return store.capture(io -> {
       var robot = root.resolve("robots").resolve(serial);
       if (!Files.exists(robot.resolve("robot.json"))) io.write(robot.resolve("robot.json"), new Robot(serial, serial, null, "fixture", "logged"));
       var directory = robot.resolve("sessions").resolve("2026-03-07").resolve(session);
       Files.createDirectories(directory); var path = directory.resolve("capture.wpilog"); Files.copy(input, path);
       var file = new LogFile("capture.wpilog", StoreFiles.hash(path), Files.size(path), "wpilog",
-          new Provenance("captured", null, null, null, false), true, 10, 70, WALL.instant().toString(), WALL.instant().plusSeconds(60).toString(), "server_clock", false, null);
-      io.write(directory.resolve("session.json"), new Session(session, WALL.instant().toString(), WALL.instant().plusSeconds(60).toString(), "server_clock", null, null, null, null, List.of(file)));
+          new Provenance("captured", null, null, null, false), true, 10, 70, start.toString(), start.plusSeconds(60).toString(), "server_clock", false, null);
+      io.write(directory.resolve("session.json"), new Session(session, start.toString(), start.plusSeconds(60).toString(), "server_clock", null, null, null, null, List.of(file)));
       return path;
     });
   }
@@ -75,6 +78,38 @@ class PullStoreTest {
   }
   StoreCatalog.StoredFile placed(PullManifest.Entry entry) throws Exception {
     return StoreCatalog.read(root, security).files().stream().filter(f -> f.path().equals(root.resolve(entry.localName()))).findFirst().orElseThrow();
+  }
+
+  @Test void candidateClocksUseInclusiveTwoOrSixteenHourWindows() {
+    for (String basis : List.of("logged:systemTime", "filename")) {
+      var start = WALL.instant(); var end = start.plusSeconds(60);
+      var input = new ImportInspection(Path.of("synthetic.wpilog"), "", 0, "wpilog", null,
+          0, 60, start, end, basis, false, null, null);
+      long slack = (basis.equals("filename") ? 16 : 2) * 3600L;
+      var lower = start.minusSeconds(slack); var upper = end.plusSeconds(slack);
+      assertAll(
+          () -> assertTrue(input.nearClock(lower.minusSeconds(60), lower)),
+          () -> assertTrue(input.nearClock(upper, upper.plusSeconds(60))),
+          () -> assertFalse(input.nearClock(lower.minusSeconds(60), lower.minusNanos(1))),
+          () -> assertFalse(input.nearClock(upper.plusNanos(1), upper.plusSeconds(60))),
+          () -> assertTrue(input.nearClock(null, null)));
+    }
+  }
+
+  @Test void matchingLoadsOnlySessionsWhoseManifestClocksOverlap() throws Exception {
+    var capture = log("capture.wpilog", null, "NT:/x", 0, false);
+    var distant = new java.util.ArrayList<Path>(); Path overlap = null;
+    for (int day = -10; day <= 10; day++) {
+      var path = seed("SYNTHETIC-A", "day-" + (day + 10), capture, WALL.instant().plusSeconds(day * 86400L));
+      if (day == 0) overlap = path; else distant.add(path);
+    }
+    var remote = new FakeRobot();
+    remote.files.put("/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    var stored = placed(pull(remote));
+    var loaded = manager.getLoadedLogPaths();
+    assertTrue(loaded.contains(overlap.toString()), "the overlapping capture reached correlation");
+    assertTrue(distant.stream().noneMatch(p -> loaded.contains(p.toString())), "non-overlapping sessions were loaded: " + loaded);
+    assertEquals("day-10", stored.session().id()); assertNotNull(stored.file().matching());
   }
 
   @Test void byteIdenticalSignalsNeverMatchAnotherSerialAndMissingLoggedSerialIsDataAlone() throws Exception {

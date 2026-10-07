@@ -119,11 +119,15 @@ class LogStoreTest {
 
   @ParameterizedTest
   @ValueSource(strings = {"", "NT:"})
-  void loggedIdentityIsListedOutsideAStoreEvenWhenItArrivesLate(String prefix) throws Exception {
+  void loggedIdentityIsListedWithinTheMetadataPrefix(String prefix) throws Exception {
     var file = temp.resolve("plain.wpilog");
     try (var w = new WpilogWriter(file, "synthetic late identity")) {
       int value = w.start("/x", "int64", "", 0);
-      for (int i = 0; i < 10_002; i++) w.append(value, i, encodeInt64(i));
+      w.append(value, 1, encodeInt64(1));
+      w.append(w.start("/DriverStation/EventName", "string", "", 0), 1, encodeString("TEST"));
+      w.append(w.start("/DriverStation/MatchType", "int64", "", 0), 1, encodeInt64(2));
+      w.append(w.start("/DriverStation/MatchNumber", "int64", "", 0), 1, encodeInt64(7));
+      w.append(w.start("/SystemStats/TeamNumber", "int64", "", 0), 1, encodeInt64(9999));
       int serial = w.start(prefix + "/SystemStats/SerialNumber", "string", "", 0);
       int comments = w.start(prefix + "/SystemStats/Comments", "string", "", 0);
       w.append(serial, 1_000_000, encodeString("SYNTHETIC-A"));
@@ -144,22 +148,77 @@ class LogStoreTest {
     assertEquals(row.getAsJsonObject("robot").get("serial_number"), stored.getAsJsonObject("robot").get("serial_number"));
   }
 
-  @Test void listingOffersOnlyUniqueRobotCandidatesFromLoggedEvidenceAndNeverAssignsThem() throws Exception {
-    var known = log(temp.resolve("known.wpilog"), "SYNTHETIC-A", START, 1); run(List.of(known), false, null);
+  @Test void listingReadsOnlyTheMetadataPrefixAndNeverScansForCandidates() throws Exception {
+    var known = log(temp.resolve("known.wpilog"), "SYNTHETIC-A", START, 1);
+    var knownPath = run(List.of(known), false, null).files().get(0).path(); Files.delete(known);
+    var plain = temp.resolve("large.wpilog");
+    try (var w = new WpilogWriter(plain, "synthetic bounded listing")) {
+      int team = w.start("/SystemStats/TeamNumber", "int64", "", 0);
+      w.append(team, 1, encodeInt64(9999));
+      int value = w.start("/x", "raw", "", 0);
+      for (int i = 0; i < 10_000; i++) w.append(value, i, new byte[1024]);
+      int serial = w.start("/SystemStats/SerialNumber", "string", "", 0);
+      w.append(serial, 10_000, encodeString("SYNTHETIC-LATE"));
+    }
+    LogDirectory.getInstance().setLogDirectory(temp.toString());
+    for (int restart = 0; restart < 2; restart++) {
+      LogDirectory.getInstance().clearCache();
+      try (var reads = new edu.wpi.first.util.datalog.RecordReads()) {
+        var row = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
+            .filter(r -> r.get("path").getAsString().equals(plain.toString())).findFirst().orElseThrow();
+        // WPILOG headers: 4 bytes for these controls/int, 5/6 for the 1024-byte payloads.
+        // The first 2000 records are team start/value, raw start, then 1997 raw samples;
+        // 256 timestamps fit in one byte, the rest in two. The small known file is an upper bound.
+        long prefixBytes = 21 + "/SystemStats/TeamNumber".length() + "int64".length() + 12
+            + 21 + "/x".length() + "raw".length() + 256L * 1029 + 1741L * 1030;
+        assertTrue(reads.bytes() >= prefixBytes, "the prefix was actually read");
+        assertTrue(reads.bytes() <= prefixBytes + Files.size(knownPath), "listing read " + reads.bytes() + " bytes");
+        assertFalse(row.has("robot"), "late identity is import inspection's job");
+        assertFalse(row.has("robot_candidates"), "plain files have no persisted evidence");
+      }
+    }
+  }
+
+  @Test void listingOffersStoreCandidatesFromPersistedEvidenceWithoutReadingTheirFiles() throws Exception {
+    var known = log(temp.resolve("known.wpilog"), "SYNTHETIC-A", START, 1);
+    var storedKnown = run(List.of(known), false, null).files().get(0).path();
     var plain = log(temp.resolve("plain.wpilog"), null, START, 2);
-    Files.delete(known); LogDirectory.getInstance().setLogDirectory(temp.toString());
-    var row = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
-        .filter(r -> r.get("path").getAsString().equals(plain.toString())).findFirst().orElseThrow();
+    var target = run(List.of(plain), false, null).files().get(0).path();
+    assertEquals(2, catalog().files().size());
+    // The manifest is the evidence source even after a restart; no reader can get it here.
+    for (var path : List.of(storedKnown, target)) {
+      try (var out = java.nio.channels.FileChannel.open(path, java.nio.file.StandardOpenOption.WRITE)) {
+        out.write(ByteBuffer.wrap(new byte[12]));
+      }
+    }
+    LogDirectory.getInstance().clearCache();
+    var row = listing().getAsJsonArray("unassigned").get(0).getAsJsonObject();
     assertFalse(row.has("robot"));
     var candidates = row.getAsJsonArray("robot_candidates"); assertNotNull(candidates); assertEquals(1, candidates.size());
     assertEquals("SYNTHETIC-A", candidates.get(0).getAsJsonObject().get("serial_number").getAsString());
     var evidence = candidates.get(0).getAsJsonObject().getAsJsonArray("evidence").get(0).getAsJsonObject();
     assertEquals("logged_team_number", evidence.get("kind").getAsString()); assertEquals("9999", evidence.get("value").getAsString());
-    assertTrue(Files.exists(plain)); assertEquals(1, catalog().files().size());
+    assertEquals(2, catalog().files().size());
     run(List.of(log(temp.resolve("other.wpilog"), "SYNTHETIC-B", START, 3)), false, null);
-    row = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
-        .filter(r -> r.get("path").getAsString().equals(plain.toString())).findFirst().orElseThrow();
+    row = listing().getAsJsonArray("unassigned").get(0).getAsJsonObject();
     assertFalse(row.has("robot")); assertFalse(row.has("robot_candidates"));
+  }
+
+  @Test void importedCanInventoryIsPersistedAndLegacyManifestsHaveNoFingerprint() throws Exception {
+    var input = temp.resolve("inventory.revlog");
+    try (var w = new WpilogWriter(input, "synthetic persisted CAN inventory")) {
+      int id = w.start("CAN/5", "raw", "", 0); w.append(id, 1_000_000, new byte[8]); w.finish(id, 1_000_000);
+    }
+    run(List.of(input), false, null);
+    var stored = catalog().files().get(0); var facts = stored.file().robotFingerprint();
+    assertNotNull(facts); assertNull(facts.loggedTeamNumber()); assertNull(facts.entrySet());
+    assertNotNull(facts.canInventory()); assertEquals(64, facts.canInventory().length());
+    var json = com.google.gson.JsonParser.parseString(Files.readString(stored.manifestPath())).getAsJsonObject();
+    assertEquals(facts.canInventory(), json.getAsJsonObject("robot_fingerprint").get("can_inventory").getAsString());
+    json.remove("robot_fingerprint"); Files.writeString(stored.manifestPath(), StoreJson.JSON.toJson(json));
+    stored = catalog().files().get(0); assertNull(stored.file().robotFingerprint());
+    assertTrue(org.triplehelix.wpilogmcp.log.RobotCandidates.forFile(stored,
+        List.of(new org.triplehelix.wpilogmcp.log.RobotCandidates.Known("SYNTHETIC-A", facts))).isEmpty());
   }
 
   @Test void oversizedWpilogIsRefusedUntouchedAndListedWithTheSameReason() throws Exception {

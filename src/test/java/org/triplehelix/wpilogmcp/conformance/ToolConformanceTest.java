@@ -68,7 +68,7 @@ class ToolConformanceTest {
   static ExecutorService executor;
 
   @BeforeAll
-  static void setUp() throws IOException {
+  static void setUp() throws Exception {
     var dir = FixtureLogs.defaultDirectory();
     fixtures = FixtureLogs.generateAll(dir);
     // Listing-only identity examples exercise its evidence fields without changing any tool's
@@ -87,6 +87,11 @@ class ToolConformanceTest {
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(dir);
+    var identityStore = logManager.stores().store(dir.resolve("listing-store"));
+    var identityImport = identityStore.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(
+        List.of(dir.resolve("identity-true.wpilog"), dir.resolve("identity-false.wpilog")), false, null), ignored -> {})
+        .get(30, TimeUnit.SECONDS);
+    if (identityImport.files().stream().anyMatch(f -> f.status().equals("refused"))) throw new IOException(identityImport.toString());
     exportDir = dir.resolveSibling("test-fixtures-export").toAbsolutePath();
     Files.createDirectories(exportDir);
     savedExportDir = ExportTools.getExportDirectory();

@@ -35,7 +35,7 @@ public final class SftpTransport implements RobotRemote {
   interface Channel extends AutoCloseable {
     List<Item> list(String directory) throws IOException;
     byte[] read(String path, long offset, int count) throws IOException;
-    Optional<String> exec(String command) throws IOException;
+    Optional<String> exec(String command, long timeoutMs) throws IOException;
     @Override void close();
   }
   private final Channel channel;
@@ -46,24 +46,33 @@ public final class SftpTransport implements RobotRemote {
     this.channel = channel; this.directories = List.copyOf(directories); this.address = address; this.fingerprint = fingerprint;
   }
 
-  /** A changed key is reported before authentication and checked against device identity afterwards. */
+  /** Secret authentication requires the pinned key or explicit acceptance of its replacement. */
   public static SftpTransport connect(String address, PullConfig config, String pinnedFingerprint) throws IOException {
+    return connect(address, config, pinnedFingerprint, new JSch(), null);
+  }
+  interface Deadlines extends AutoCloseable {
+    Runnable schedule(Runnable task, long delayMs);
+    @Override void close();
+  }
+  static SftpTransport connect(String address, PullConfig config, String pinnedFingerprint, JSch jsch, Deadlines deadlines) throws IOException {
     Session session = null;
     try {
-      var jsch = new JSch();
       if (config.ssh().key() != null) jsch.addIdentity(config.ssh().key().toString());
-      var keys = new Pin(address, pinnedFingerprint); jsch.setHostKeyRepository(keys);
+      var keys = new Pin(address, pinnedFingerprint, config.ssh()); jsch.setHostKeyRepository(keys);
       session = jsch.getSession(config.ssh().user(), address, 22);
       session.setConfig("StrictHostKeyChecking", "yes");
       session.setConfig("server_host_key", HOST_KEY_ALGORITHMS);
       session.setConfig("PreferredAuthentications", config.ssh().key() == null ? "password,keyboard-interactive" : "publickey");
       if (config.ssh().key() == null) session.setPassword(config.ssh().password());
-      session.setTimeout(TIMEOUT_MS); session.connect(TIMEOUT_MS);
+      session.setDaemonThread(true);
+      session.setServerAliveInterval(TIMEOUT_MS); session.setServerAliveCountMax(3);
+      session.connect(TIMEOUT_MS);
       var sftp = (ChannelSftp) session.openChannel("sftp"); sftp.connect(TIMEOUT_MS); sftp.setBulkRequests(1);
       String fingerprint = fingerprint(Base64.getDecoder().decode(session.getHostKey().getKey()));
-      return new SftpTransport(new JschChannel(session, sftp), config.directories(), address, fingerprint);
+      return new SftpTransport(new JschChannel(session, sftp, deadlines == null ? daemonDeadlines() : deadlines), config.directories(), address, fingerprint);
     } catch (JSchException | RuntimeException e) {
       if (session != null) session.disconnect();
+      if (deadlines != null) deadlines.close();
       throw new IOException("SSH connection to " + address + " failed: " + e.getMessage(), e);
     }
   }
@@ -74,12 +83,24 @@ public final class SftpTransport implements RobotRemote {
   }
   static final class Pin implements HostKeyRepository {
     private final String address, expected;
-    Pin(String address, String expected) { this.address = address; this.expected = expected; }
+    private final PullConfig.Ssh authentication;
+    Pin(String address, String expected) { this(address, expected, PullConfig.DISABLED.ssh()); }
+    Pin(String address, String expected, PullConfig.Ssh authentication) {
+      this.address = address; this.expected = expected; this.authentication = authentication;
+    }
     @Override public int check(String host, byte[] key) {
       String observed = fingerprint(key);
-      if (expected != null && !expected.equals(observed)) LoggerFactory.getLogger(SftpTransport.class).warn(
-          "SSH host key changed at {}: {} -> {}; checking device serial before continuing its pull manifest", address, expected, observed);
-      return OK; // Explicit TOFU/reimage policy; the store keys continuity by the subsequent serial reading.
+      if (expected != null && !expected.equals(observed)) {
+        boolean secret = authentication.key() != null || !authentication.password().isEmpty();
+        if (secret && !authentication.acceptChangedHostKey()) {
+          LoggerFactory.getLogger(SftpTransport.class).warn(
+              "SSH host key changed at {}: {} -> {}; refused before authentication. Verify the replacement, then set capture.pull.ssh.accept_changed_host_key: true or remove the pinned fingerprint from robot.json", address, expected, observed);
+          return CHANGED;
+        }
+        LoggerFactory.getLogger(SftpTransport.class).warn(
+            "SSH host key changed at {}: {} -> {}; checking device serial before continuing its pull manifest", address, expected, observed);
+      }
+      return OK; // First contact is TOFU; a changed key with secrets needs the opt-in above.
     }
     @Override public void add(HostKey key, UserInfo info) {}
     @Override public void remove(String host, String type) { throw new UnsupportedOperationException("Read-only host keys"); }
@@ -123,11 +144,28 @@ public final class SftpTransport implements RobotRemote {
   }
   @Override public Optional<String> prefixHash(String name, long length) throws IOException {
     if (length < 0) throw new IOException("Negative prefix length");
-    var value = channel.exec("head -c " + length + " -- " + shellQuote(name) + " | sha256sum");
+    var value = channel.exec("head -c " + length + " -- " + shellQuote(name) + " | sha256sum", hashTimeoutMs(length));
     if (value.isEmpty()) return Optional.empty();
     String text = value.get().strip();
     if (!text.matches("(?s)[0-9a-fA-F]{64}\\s+.*")) return Optional.empty();
     return Optional.of(text.substring(0, 64).toLowerCase(java.util.Locale.ROOT));
+  }
+  /** Allow 30 seconds of startup plus one second per 256 KiB read and hashed on the robot. */
+  static long hashTimeoutMs(long length) {
+    return 30_000 + (length / 262_144 + (length % 262_144 == 0 ? 0 : 1)) * 1000;
+  }
+  private static Deadlines daemonDeadlines() {
+    return new Deadlines() {
+      private final java.util.concurrent.ScheduledThreadPoolExecutor timer = new java.util.concurrent.ScheduledThreadPoolExecutor(1, task -> {
+        var thread = new Thread(task, "ssh-command-deadline"); thread.setDaemon(true); return thread;
+      });
+      { timer.setRemoveOnCancelPolicy(true); timer.setExecuteExistingDelayedTasksAfterShutdownPolicy(false); }
+      public Runnable schedule(Runnable task, long delayMs) {
+        var future = timer.schedule(task, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        return () -> future.cancel(false);
+      }
+      public void close() { timer.shutdownNow(); }
+    };
   }
   static String shellQuote(String value) {
     if (value.indexOf('\0') >= 0) throw new IllegalArgumentException("NUL in remote path");
@@ -140,7 +178,10 @@ public final class SftpTransport implements RobotRemote {
   private static final class JschChannel implements Channel {
     private final Session session;
     private final ChannelSftp sftp;
-    private JschChannel(Session session, ChannelSftp sftp) { this.session = session; this.sftp = sftp; }
+    private final Deadlines deadlines;
+    private JschChannel(Session session, ChannelSftp sftp, Deadlines deadlines) {
+      this.session = session; this.sftp = sftp; this.deadlines = deadlines;
+    }
     @Override public List<Item> list(String directory) throws IOException {
       try {
         var result = new ArrayList<Item>();
@@ -158,19 +199,30 @@ public final class SftpTransport implements RobotRemote {
       try (var input = sftp.get(sftpLiteral(path), null, offset)) { return input.readNBytes(count); }
       catch (SftpException e) { throw new IOException("SFTP read failed: " + path, e); }
     }
-    @Override public Optional<String> exec(String command) throws IOException {
+    @Override public Optional<String> exec(String command, long timeoutMs) throws IOException {
       ChannelExec exec = null;
+      Runnable cancel = () -> {};
+      var completed = new java.util.concurrent.atomic.AtomicBoolean();
+      var expired = new java.util.concurrent.atomic.AtomicBoolean();
       try {
         exec = (ChannelExec) session.openChannel("exec"); exec.setCommand(command); exec.setInputStream(null);
+        var channel = exec;
+        cancel = deadlines.schedule(() -> {
+          if (completed.compareAndSet(false, true)) { expired.set(true); channel.disconnect(); }
+        }, timeoutMs);
         try (InputStream input = exec.getInputStream()) {
           exec.connect(TIMEOUT_MS);
           byte[] output = input.readNBytes(4097);
+          if (expired.get()) throw new IOException("SSH hash deadline exceeded after " + timeoutMs + " ms");
           if (output.length > 4096) throw new IOException("SSH hash reply too large");
           return Optional.of(new String(output, StandardCharsets.US_ASCII));
         }
-      } catch (JSchException e) { return Optional.empty(); } // SFTP-only servers use the range comparison.
-      finally { if (exec != null) exec.disconnect(); }
+      } catch (JSchException | IOException e) {
+        if (expired.get()) throw new IOException("SSH hash deadline exceeded after " + timeoutMs + " ms", e);
+        if (e instanceof IOException io) throw io;
+        return Optional.empty(); // SFTP-only servers use the range comparison.
+      } finally { completed.set(true); cancel.run(); if (exec != null) exec.disconnect(); }
     }
-    @Override public void close() { sftp.disconnect(); session.disconnect(); }
+    @Override public void close() { sftp.disconnect(); session.disconnect(); deadlines.close(); }
   }
 }

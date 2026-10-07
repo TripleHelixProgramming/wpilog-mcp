@@ -24,6 +24,7 @@ import org.triplehelix.wpilogmcp.sync.PullManifest.Entry;
  */
 public final class FileTransfer {
   public static final int BLOCK_BYTES = 64 * 1024;
+  public static final long LISTING_PERIOD_US = 10_000_000;
   public interface Local {
     String create(String remoteName) throws IOException;
     long size(String name) throws IOException;
@@ -55,7 +56,9 @@ public final class FileTransfer {
   private final Map<String, Boolean> renameProof = new HashMap<>();
   private final String serial;
   private volatile PullManifest manifest;
-  private long nextReadUs;
+  private long nextReadUs, listedAtUs;
+  private List<RemoteFiles.File> listing;
+  private final Map<String, RemoteFiles.File> previousPass = new HashMap<>();
 
   public FileTransfer(RemoteFiles remote, Local local, PullManifest manifest,
       long rateBytes, LongSupplier clock, BooleanSupplier gate) {
@@ -71,11 +74,17 @@ public final class FileTransfer {
     try {
       if (!gate.getAsBoolean()) { validated.clear(); renameProof.clear(); return result(Status.PAUSED, null, 0, null); }
       if (clock.getAsLong() < nextReadUs) return result(Status.WAITING, null, 0, null);
-      var listing = remote.list().stream().sorted(java.util.Comparator.comparing(RemoteFiles.File::name)).toList();
-      var names = new HashSet<String>();
-      for (var item : listing) if (!names.add(item.name())) throw new IOException("Duplicate remote name: " + item.name());
+      if (listing == null || clock.getAsLong() - listedAtUs >= LISTING_PERIOD_US) {
+        var fresh = remote.list().stream().sorted(java.util.Comparator.comparing(RemoteFiles.File::name)).toList();
+        var unique = new HashSet<String>();
+        for (var item : fresh) if (!unique.add(item.name())) throw new IOException("Duplicate remote name: " + item.name());
+        previousPass.clear(); previousPass.putAll(observed); observed.clear();
+        fresh.forEach(item -> observed.put(item.name(), item));
+        listing = fresh; listedAtUs = clock.getAsLong(); renameProof.clear();
+      }
+      var names = observed.keySet();
+      boolean needsStablePass = false;
       for (var item : listing) {
-        var previousPass = observed.put(item.name(), item);
         var entry = files.get(item.name());
         if (entry == null) {
           // A rename is unique content evidence among names absent from this listing.
@@ -127,7 +136,7 @@ public final class FileTransfer {
           files.put(item.name(), entry); validated.put(item.name(), entry); save();
           return result(Status.COPIED, item.name(), bytes.length, null);
         }
-        if (!item.equals(previousPass)) continue; // Size/mtime must be stable for a whole listing pass.
+        if (!item.equals(previousPass.get(item.name()))) { needsStablePass = true; continue; }
         if (!matches(item, entry)) { restart(item, entry, 0); return result(Status.RETRIED, item.name(), 0, "remote content changed"); }
         try { local.verify(entry.localName()); }
         catch (IOException e) {
@@ -141,8 +150,11 @@ public final class FileTransfer {
         files.put(item.name(), verified); validated.put(item.name(), verified); save();
         return result(Status.VERIFIED, item.name(), 0, null);
       }
-      observed.keySet().retainAll(names);
-      return result(Status.IDLE, null, 0, null);
+      listing = null; // All files reached their listed end; the next step starts a new pass.
+      return result(needsStablePass ? Status.WAITING : Status.IDLE, null, 0, null);
+    } catch (IOException e) {
+      listing = null; // A renamed or removed remote file invalidates this snapshot immediately.
+      throw e;
     } finally { busy.set(false); }
   }
 

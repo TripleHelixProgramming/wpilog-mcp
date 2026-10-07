@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import org.triplehelix.wpilogmcp.log.RobotCandidates;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
@@ -23,7 +24,16 @@ import org.triplehelix.wpilogmcp.revlog.RevLogParser;
 /** Inspection is separate from placement: all readers close before any input is moved. */
 record ImportInspection(Path path, String hash, long size, String kind, LogMetadata metadata,
     double min, double max, Instant start, Instant end, String startBasis, boolean truncated,
-    FileSnapshot snapshot) {
+    FileSnapshot snapshot, RobotCandidates.Fingerprint robotFingerprint) {
+
+  /** Shared import/pull nomination: uncertain clocks get slack; correlation must still decide. */
+  boolean nearClock(Instant candidateStart, Instant candidateEnd) {
+    if (start == null || candidateStart == null || candidateEnd == null) return true;
+    // An unset REV clock is unknown, not evidence that this robot ran in 1970.
+    if ("filename".equals(startBasis) && start.atOffset(ZoneOffset.UTC).getYear() == 1970) return true;
+    var slack = java.time.Duration.ofHours("filename".equals(startBasis) ? 16 : 2);
+    return !candidateEnd.isBefore(start.minus(slack)) && !candidateStart.isAfter(end.plus(slack));
+  }
 
   static ImportInspection read(Path path, RevLogParser revParser) throws IOException {
     var before = FileSnapshot.of(path);
@@ -34,6 +44,7 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     }
     String kind;
     LogMetadata metadata = null;
+    RobotCandidates.Fingerprint fingerprint = null;
     double min;
     double max;
     Instant start = null;
@@ -52,6 +63,7 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
         if (log.damaged()) throw new IOException("Damaged log cannot be verified: " + path.getFileName());
         if (kind.equals("wpilog")) {
           metadata = LogMetadata.read(log);
+          fingerprint = RobotCandidates.inspect(log, metadata);
           if (metadata.serialNumber() != null) StoreFiles.component(metadata.serialNumber());
         }
         var clock = WallClock.first(log);
@@ -75,12 +87,14 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     } else if (nativeHeader(header, before.size())) {
       kind = "revlog";
       var rev = revParser.parse(path);
+      fingerprint = RobotCandidates.inspect(rev);
       if (rev.devices().isEmpty()) throw new IOException("No REV devices in " + path.getFileName());
       min = rev.minTimestamp();
       max = rev.maxTimestamp();
     } else {
       throw new IOException("Refused " + path.getFileName() + ": no WPILOG or REV record header");
     }
+    if (fingerprint == null) fingerprint = RobotCandidates.inspect(revParser.parse(path));
     if (kind.equals("revlog") && start == null) {
       var filename = path.getFileName().toString();
       if (filename.startsWith("REV_")) {
@@ -92,7 +106,7 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     String hash = StoreFiles.hash(path);
     if (!before.sameAs(FileSnapshot.of(path))) throw new IOException("File changed during inspection: " + path);
     return new ImportInspection(path, hash, before.size(), kind, metadata, min, max,
-        start, end, basis, truncated, before);
+        start, end, basis, truncated, before, fingerprint);
   }
 
   // Native REV has record headers, not a magic string. Check a complete firmware/status record

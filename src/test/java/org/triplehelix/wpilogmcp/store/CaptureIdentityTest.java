@@ -78,7 +78,7 @@ class CaptureIdentityTest {
     }
   }
 
-  @Test void learningIdentityMovesTheAddressSessionWithAnOpenMappingAndOldPathsStillLoad() throws Exception {
+  @Test void learningIdentityWritesInPlaceAndMovesOnlyAtSessionClose() throws Exception {
     var root = temp.resolve("store"); var security = security(); var loop = new ManualScheduler();
     try (var stores = new StoreRegistry(security)) {
       var placement = stores.store(root).captures(WALL); var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
@@ -90,11 +90,17 @@ class CaptureIdentityTest {
         String session = StoreCatalog.read(root, security).openCaptures().get(0).session().id();
         writer.identity(device("SYNTHETIC-A", "SHA256:fixture-a"));
         assertTrue(writer.session().open(), writer.session().endReason());
-        var next = writer.session().path(); assertEquals("capture-2.wpilog", next.getFileName().toString());
-        assertTrue(next.startsWith(root.resolve("robots").resolve("SYNTHETIC-A"))); assertFalse(Files.exists(old));
+        assertEquals(old, writer.session().path()); assertTrue(Files.exists(old));
+        try (var use = LogManager.getInstance().acquire(old.toString())) {
+          var context = use.log().values().get("/Daemon/Robot/Identity");
+          assertEquals(1, context.size()); assertEquals(10.0, context.get(0).timestamp());
+        }
+        placement.completion().get(10, TimeUnit.SECONDS);
+        assertEquals("SYNTHETIC-A", StoreCatalog.read(root, security).openCaptures().get(0).session().deviceIdentity().serialNumber());
         writer.value(VALUE, new ValueFrame(1, 11_000_000, 2, 8L), 0); writer.disconnected();
         placement.completion().get(10, TimeUnit.SECONDS);
-        var snapshot = StoreCatalog.read(root, security); assertEquals(2, snapshot.files().size());
+        var snapshot = StoreCatalog.read(root, security); assertEquals(1, snapshot.files().size());
+        assertFalse(Files.exists(old));
         assertTrue(snapshot.files().stream().allMatch(f -> f.session().id().equals(session)));
         assertEquals(1, snapshot.robots().size()); assertTrue(snapshot.unmanaged().isEmpty());
         var move = snapshot.header().moves().stream().filter(m -> Path.of(m.originalPath()).equals(old)).findFirst().orElseThrow();
@@ -111,6 +117,37 @@ class CaptureIdentityTest {
         assertTrue(later.startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
       }
     }
+  }
+
+  @Test void learningIdentityNeverWaitsForABlockedStoreQueue() throws Exception {
+    var root = temp.resolve("store"); var security = security(); var loop = new ManualScheduler();
+    var blocked = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+    var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try (var stores = new StoreRegistry(security)) {
+      var store = stores.store(root); var placement = store.captures(WALL);
+      var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
+        connect(writer, 10_000_000, 0); var old = writer.session().path();
+        placement.completion().get(10, TimeUnit.SECONDS);
+        store.captureAsync(io -> { blocked.countDown(); try { release.await(); } catch (InterruptedException e) { throw new java.io.IOException(e); } return null; });
+        assertTrue(blocked.await(5, TimeUnit.SECONDS));
+        var work = worker.submit(() -> {
+          writer.identity(device("SYNTHETIC-A", "SHA256:fixture-a"));
+          writer.value(VALUE, new ValueFrame(1, 11_000_000, 2, 8L), 0); loop.advance(250_000);
+        });
+        try {
+          work.get(5, TimeUnit.SECONDS);
+          assertEquals(old, writer.session().path());
+          try (var use = LogManager.getInstance().acquire(old.toString())) {
+            assertEquals(8L, use.log().values().get("NT:/x").get(0).value());
+            assertEquals(1, use.log().values().get("/Daemon/Robot/Identity").size());
+          }
+        } finally { release.countDown(); work.get(10, TimeUnit.SECONDS); }
+        writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
+        assertTrue(writer.session().path().startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
+        assertEquals("SYNTHETIC-A", StoreCatalog.read(root, security).files().get(0).session().deviceIdentity().serialNumber());
+      }
+    } finally { release.countDown(); worker.shutdownNow(); }
   }
 
   @Test void disagreementIsManifestedAndLoggedWhileTheFilesLoggedSerialWins() throws Exception {
@@ -135,6 +172,24 @@ class CaptureIdentityTest {
         assertEquals("logged", row.getAsJsonObject("robot").get("basis").getAsString());
       }
     } finally { System.setErr(err); LogDirectory.getInstance().setLogDirectories(oldDirs.stream().map(Path::toString).toList()); }
+  }
+
+  @Test void removingAPinnedFingerprintAllowsTheNextContactToRecordItsReplacement() throws Exception {
+    var root = temp.resolve("store");
+    try (var stores = new StoreRegistry(security())) {
+      var store = stores.store(root);
+      store.identify(device("SYNTHETIC-A", "SHA256:old"), WALL).get(10, TimeUnit.SECONDS);
+      store.capture(io -> {
+        var path = root.resolve("robots").resolve("SYNTHETIC-A").resolve("robot.json");
+        var json = JsonParser.parseString(Files.readString(path)).getAsJsonObject();
+        json.getAsJsonArray("contacts").get(0).getAsJsonObject().remove("host_key_fingerprint");
+        io.write(path, json); return null;
+      });
+      assertNull(store.hostKey("127.0.0.1").get(10, TimeUnit.SECONDS));
+      var robot = store.identify(device("SYNTHETIC-A", "SHA256:new"), WALL).get(10, TimeUnit.SECONDS);
+      assertEquals("SHA256:new", store.hostKey("127.0.0.1").get(10, TimeUnit.SECONDS));
+      assertEquals(2, robot.contacts().size()); assertEquals("SYNTHETIC-A", robot.serialNumber());
+    }
   }
 
   @Test void hostKeyChangesPreserveRobotHistoryAndAnAddressCanLearnANewSerial() throws Exception {

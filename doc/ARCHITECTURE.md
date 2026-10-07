@@ -171,6 +171,8 @@ Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small cl
 and gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
 SFTP now and the mirror later; a local interface supplies append, archive, rename, verification,
 placement, and atomic manifest writes. One caller owns a step; a concurrent call is refused.
+One remote listing serves a whole pass across files and blocks. A long-running pass refreshes after
+ten seconds; verification requires stable size and modification time across distinct listings.
 
 `pull.json` remembers each remote name, size, modification time, copied count, verification state,
 and local path, plus retired generations. Growth resumes only after a hash of exactly the held
@@ -194,9 +196,16 @@ storage runs on the NT4 loop. Shutdown includes the transport in the capture's e
 The maintained JSch fork is one dependency with no required crypto provider on Java 17. Its
 versioned Ed25519 classes require the packaged JAR's `Multi-Release` manifest flag, checked by
 initializing the actual packaged providers in an isolated classloader. Host fingerprints are kept
-per serial and address. First contact is trusted; a changed key is reported before authentication,
-then the device serial decides which pull manifest continues. This is the explicit roboRIO reimage
-policy, not an assertion that a changed key authenticates the old robot.
+per serial and address. First contact is trusted. A changed key is reported before authentication:
+empty-password authentication may continue, but a configured password or key requires explicit
+`capture.pull.ssh.accept_changed_host_key: true` or removal of the pinned fingerprint in `robot.json`.
+The subsequent serial reading selects the pull manifest. A changed key alone does not identify a device.
+
+Connect and channel-open timeouts stay at five seconds. Five-second SSH keepalives (three missed
+replies allowed) keep a live connection available while a hash has no output. Each hash command has
+a separate deadline: 30 seconds plus one second per 256 KiB, rounded up. Expiry closes its channel,
+and a completed command cancels its timer. Hashing reads the entire held prefix on the robot and
+costs CPU and storage bandwidth; the transfer byte cap does not pace that local work.
 
 `store.PullStore` uses the existing queue, path validation, move reservations and reader release.
 Partial files stay in `robots/<serial>/pulled/` and do not appear as logs. Verified files move into
@@ -205,6 +214,9 @@ to staging and removes its obsolete session hash before append. Moves keep durab
 A file's logged serial wins over the SSH device reading, with a recorded conflict; matching never
 crosses known serials. Addresses select a connection, not a robot's lifetime identity.
 
+Before loading candidates, manifest session ranges nominate overlapping sessions, using the same
+clock slack as import: two hours, or sixteen for filename clocks without a zone. Unknown clocks,
+including REV's unset 1970 filename clock, cannot exclude a candidate.
 Names nominate shared numeric entries (including DataLogManager's `NT:` prefix) or REV signal
 pairs; the existing correlation machinery decides. Flat, ambiguous or weak data is insufficient.
 A strong match must have an offset within 250 ms of zero and identify one session. Capture files
@@ -266,19 +278,24 @@ An additive `open_capture` field represents a growing file without inventing a h
 the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
 queued when they change. Cosmetic renames wait for close and reader release on every platform:
 otherwise an asynchronous directory move can race a rollover open or a mapping growth. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
-A device serial promotes the address directory at a file creation barrier: finish the current file,
-release mappings, move the closed session, and start its next file. A reader that prevents the move
-leaves the directory in place until a later barrier. Store moves keep old paths usable by tools,
+A device serial learned during recording is written as context in the current file. Its manifest
+update is asynchronous; promotion waits for session close and reader release, like the event rename.
+New sessions already use the known serial. A reader that prevents the move leaves the directory in
+place until a later close or contact. Store moves keep old paths usable by tools,
 with the same security and file-change checks as the destination.
 
 Robot identity uses the resolver's metadata roles for `/SystemStats/SerialNumber` and
-`/SystemStats/Comments`, including their `NT:` forms, wherever a log lives. Its own logged serial
+`/SystemStats/Comments`, including their `NT:` forms, wherever a log lives. Listing reads only
+the first 2000 records; import inspection can find later identity. Its own logged serial
 wins over a connection's device serial; disagreements are recorded in the manifest and server log.
 `capture/context` reads the HAL's sources, records the device evidence as the first JSON context
 entry at file start and again on resume, and the store remembers addresses and SSH key history by
 serial. An address or host key can change; neither replaces the serial. `robot_candidates` is only
 a hint: an exact logged team, sorted entry name/type set, or REV CAN id/type inventory must match
-one known serial. Contradictory unique hints are omitted. No candidate changes placement.
+one known serial. Only store files participate, from fingerprints saved by import inspection in
+the additive `robot_fingerprint` manifest field. Older manifests without it supply no hint. Listing
+never opens a log to compute candidate evidence. Contradictory unique hints are omitted. No candidate
+changes placement.
 
 The service queues recovery after HTTP is listening, then starts NT4 only when the sweep completes.
 Scanning and hashing an abandoned capture cannot delay the daemon health endpoint. Each `open_capture`
