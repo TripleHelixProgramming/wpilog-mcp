@@ -121,9 +121,15 @@ A test run without failures shows that the tools keep their contract, not that t
 | Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway fixture; confined to `nt4/server`. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
+| Apache MINA SSHD and EdDSA (test only) | A synthetic roboRIO's SSH/SFTP server on loopback, including actual host-key negotiation and exec channels. |
 | TypeScript and the VS Code extension API | The VS Code extension. It has no runtime npm dependencies, and its tests use Node's built-in test runner. |
 
 The JAR has no other runtime dependencies.
+
+The separate `harness/robot` GradleRIO project runs a headless WPILib simulation with its own
+desktop natives. It is outside the server build and ships in no install. The opt-in shop harness
+connects it, a temporary SSH device and the packaged server, and checks HTTP MCP results against
+a timeline; [DEVELOPMENT.md](DEVELOPMENT.md#the-shop-harness) gives its scope and hardware limits.
 
 ## Code Map
 

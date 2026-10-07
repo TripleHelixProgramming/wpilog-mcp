@@ -1354,9 +1354,7 @@ public class LogManager {
         var source = store.files().stream().filter(f -> f.path().equals(real)).findFirst();
         if (source.isEmpty() || source.get().session() == null) return List.of();
         return store.files().stream()
-            .filter(f -> f.manifestPath().equals(source.get().manifestPath()))
-            .filter(f -> f.file().kind().equals("revlog") && f.file().matching() != null
-                && f.file().matching().wpilogSha256().equals(source.get().file().sha256()))
+            .filter(f -> StoreCatalog.isRevCompanion(f, source.get()))
             .map(f -> LogDirectory.getInstance().extractRevLogInfo(f.path())).toList();
       } catch (IOException e) {
         logger.warn("Cannot read store REV associations: {}", e.getMessage());

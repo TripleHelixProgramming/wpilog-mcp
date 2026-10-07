@@ -94,6 +94,52 @@ jobs:
           pip install pyarrow
           python ci/check_arrow.py build/arrow-samples
 
+  shop-harness:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      # Both GradleRIO's WPILib artifacts and the server dependencies use the Gradle cache.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-home-cache-includes: |
+            caches
+            notifications
+            permwrapper/dists
+      - name: Run the headless shop harness
+        run: harness/run
+      - name: Upload harness evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shop-harness
+          path: |
+            build/reports/tests/shopHarness
+            build/shop-harness
+          retention-days: 14
+
+  robot-dependency-submission:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: gradle/actions/dependency-submission@v4
+        with:
+          # Use the repository wrapper for the separate robot project, including GradleRIO.
+          additional-arguments: -p harness/robot
+
   dependency-submission:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest

@@ -1,0 +1,29 @@
+{
+  "name": "reboot-match",
+  "serial_number": "HARNESS-SYNTHETIC-01",
+  "comments": "Scripted shop harness robot",
+  "team_number": 9999,
+  "raw_bytes": 256,
+  "period_us": 20000,
+  "sample_start_us": 1000000,
+  "sample_end_us": 17000000,
+  "settle_sec": 1,
+  "boots": [
+    {
+      "sine_hz": 0.73,
+      "counter_resets": [0, 137, 401, 653],
+      "phases": [{"at_us": 0, "state": "disabled"}, {"at_us": 4000000, "state": "autonomous"}, {"at_us": 7000000, "state": "teleop"}, {"at_us": 10000000, "state": "disabled"}],
+      "match": {"at_us": 6000000, "event": "HARNESS", "type": "Qualification", "number": 1},
+      "end_us": 24000000,
+      "reboot": true
+    },
+    {
+      "sine_hz": 1.17,
+      "counter_resets": [0, 83, 317, 587],
+      "phases": [{"at_us": 0, "state": "disabled"}, {"at_us": 4000000, "state": "teleop"}, {"at_us": 10000000, "state": "disabled"}],
+      "match": {"at_us": 6000000, "event": "HARNESS", "type": "Qualification", "number": 2},
+      "end_us": 24000000,
+      "reboot": false
+    }
+  ]
+}

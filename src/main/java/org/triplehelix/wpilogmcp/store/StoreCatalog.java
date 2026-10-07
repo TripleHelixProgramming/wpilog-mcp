@@ -28,6 +28,12 @@ public final class StoreCatalog {
   public static final Duration MOVE_NOTICE_LIFETIME = Duration.ofDays(7);
 
   public record StoredFile(Path path, Path manifestPath, Robot robot, Session session, LogFile file) {}
+  /** A session-level match to an open, unhashed capture is not a hashed REV-file association. */
+  public static boolean isRevCompanion(StoredFile candidate, StoredFile anchor) {
+    var match = candidate.file().matching();
+    return candidate.file().kind().equals("revlog") && candidate.manifestPath().equals(anchor.manifestPath())
+        && match != null && match.wpilogSha256() != null && match.wpilogSha256().equals(anchor.file().sha256());
+  }
   public record RobotDirectory(Path path, Robot robot) {}
   public record Snapshot(Path root, Header header, List<RobotDirectory> robots,
       List<StoredFile> files, List<Path> unmanaged, List<Move> moved, List<StoredFile> openCaptures) {

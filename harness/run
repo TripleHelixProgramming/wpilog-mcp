@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_dir"
+case "$(uname -s)" in
+  Linux|Darwin) ;;
+  *) echo 'The WPILib shop runner currently supports Linux and macOS; real SSH tests also run on Windows.' >&2; exit 2 ;;
+esac
+./gradlew -p harness/robot prepareHarness
+./gradlew shopHarness "-PharnessTimeline=${1:-harness/timelines/reboot-match.json}"

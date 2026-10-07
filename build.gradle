@@ -123,6 +123,10 @@ dependencies {
 
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    // Real SSH/SFTP for the synthetic roboRIO; never packaged in the server.
+    testImplementation 'org.apache.sshd:sshd-core:2.20.0'
+    testImplementation 'org.apache.sshd:sshd-sftp:2.20.0'
+    testImplementation 'net.i2p.crypto:eddsa:0.3.0' // MINA 2.x's Ed25519 provider (test only).
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // WPILib C++ natives for DataLogWriter tests (JNI is bundled inside cpp artifacts in 2026)
@@ -215,10 +219,26 @@ shadowJar {
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    useJUnitPlatform { excludeTags 'shop-harness' }
     // Read by ExtensionVersionTest: a changed version must rerun the tests
     inputs.files('vscode-extension/package.json', 'vscode-extension/package-lock.json')
         .withPropertyName('extensionManifests')
+}
+
+// A separate opt-in process suite: harness/run builds the GradleRIO robot first.
+tasks.register('shopHarness', Test) {
+    dependsOn testClasses, shadowJar
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'shop-harness' }
+    systemProperty 'harness.timeline', file(project.findProperty('harnessTimeline') ?: 'harness/timelines/reboot-match.json').absolutePath
+    systemProperty 'harness.robotJar', file('harness/robot/build/libs/shop-robot.jar').absolutePath
+    systemProperty 'harness.natives', file('harness/robot/build/jni/release').absolutePath
+    systemProperty 'harness.serverJar', tasks.shadowJar.archiveFile.get().asFile.absolutePath
+    systemProperty 'harness.output', file('build/shop-harness').absolutePath
+    environment 'WPILOG_DISK_CACHE_DIR', file('build/harness-test-disk-cache').absolutePath
+    doFirst { delete file('build/harness-test-disk-cache') }
+    outputs.upToDateWhen { false }
 }
 
 // Convenience task to build the fat JAR

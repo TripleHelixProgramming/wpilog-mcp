@@ -16,6 +16,10 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 class PullConfigTest {
   @TempDir Path temp;
+  @Test void sshPortAllowsAnUnprivilegedHarness() {
+    var config = assertDoesNotThrow(() -> PullConfig.parse(JsonParser.parseString("{ssh:{port:2222}}"), p -> p, p -> p));
+    assertEquals(2222, config.ssh().port()); assertEquals(22, PullConfig.DISABLED.ssh().port());
+  }
   @Test void defaultsAndYamlKeysIncludeSecretInterpolationWithoutPrintingIt() throws Exception {
     var defaults = PullConfig.parse(null, p -> p, p -> p);
     assertFalse(defaults.ssh().acceptChangedHostKey()); assertFalse(defaults.enabled()); assertEquals(List.of("/home/lvuser/logs", "/u/logs", "/U/logs"), defaults.directories());
@@ -54,6 +58,8 @@ class PullConfigTest {
       "{settle_sec:1e20}|capture.pull.settle_sec", "{rate_bytes:0}|capture.pull.rate_bytes",
       "{rate_bytes:1.5}|capture.pull.rate_bytes", "{rate_bytes:2147483648}|capture.pull.rate_bytes",
       "{ssh:[]}|capture.pull.ssh", "{ssh:{accept_changed_host_key:1}}|capture.pull.ssh.accept_changed_host_key", "{ssh:{typo:1}}|capture.pull.ssh.typo",
+      "{ssh:{port:0}}|capture.pull.ssh.port", "{ssh:{port:65536}}|capture.pull.ssh.port",
+      "{ssh:{port:1.5}}|capture.pull.ssh.port", "{ssh:{port:'22'}}|capture.pull.ssh.port",
       "{ssh:{user:''}}|capture.pull.ssh.user", "{ssh:{password:1}}|capture.pull.ssh.password",
       "{ssh:{key:''}}|capture.pull.ssh.key", "{ssh:{password:'',key:'x'}}|capture.pull.ssh"})
   void invalidConfigurationNamesItsKey(String json, String key) {

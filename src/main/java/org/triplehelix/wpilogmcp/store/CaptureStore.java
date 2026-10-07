@@ -287,8 +287,10 @@ public final class CaptureStore implements CaptureWriter.Observer {
             ? target.resolve(directory.relativize(oldTarget)) : oldTarget), move.movedAt()));
       }
       var destination = target.resolve(before.getFileName());
-      for (var file : update.files()) moves.add(new Move(directory.resolve(file.name()).toString(),
-          StoreFiles.relative(store.root(), target.resolve(file.name())), now.toString()));
+      // A verified pull can join an open capture. Its persisted pull.json path needs the same
+      // alias as the capture when this directory is renamed, before identity promotion follows.
+      for (var file : files) moves.add(new Move(io.resolve(directory, file.path()).toString(),
+          StoreFiles.relative(store.root(), io.resolve(target, file.path())), now.toString()));
       io.write(store.root().resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses()));
       return destination;
     }

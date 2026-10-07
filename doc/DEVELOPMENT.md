@@ -76,6 +76,13 @@ the actual fat JAR without optional crypto providers, and checks packaged licens
 confinement. `PullDocumentationTest` checks accepted keys and the opt-in hardware invocation.
 Every ordinary fixture remains synthetic; Linux and Windows run these tests without a robot.
 
+`SftpLoopbackTest` additionally runs the production JSch transport against `FakeRoboRio`, an
+Apache MINA SSHD server with a fresh Ed25519 key and a temporary SFTP root. It checks offset
+reads, exact prefix hashes, HAL identity files, keepalives while exec is silent, injected command
+deadlines, and host-key refusal before sending a password. The fake-channel tests remain: a real
+socket checks interoperability, while an injected channel pins schedules precisely. MINA and its
+EdDSA provider are test dependencies only.
+
 **Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
 `LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
 mapped readers, retained old paths, key history, disagreements, and logged identity in the listing
@@ -163,6 +170,59 @@ pit server through disabled/enabled transitions, Wi-Fi loss, reboot, log growth/
 measure CPU/network cost at the configured rate. This shop stress test remains the user's and
 unverified here. Pulling stays off by default until those checks pass. System-log pulling is later work.
 
+### The shop harness
+
+Run `harness/run` on Linux or macOS with JDK 17 and a network connection for the first build.
+An optional argument selects a timeline, for example
+`harness/run harness/timelines/reboot-match.json`. Windows runs the ordinary real-SSH tests;
+the complete simulation runner in step 1 supports Linux and macOS only.
+
+The script builds the separate GradleRIO project in `harness/robot` once, then runs the opt-in
+JUnit task `shopHarness` (tag `shop-harness`). Neither the robot build nor the simulation runs in
+`./gradlew test` or `./gradlew build`. GradleRIO 2026.2.1 resolves WPILib 2026.2.2 Java artifacts and
+the host's desktop JNI libraries into Gradle's cache; it downloads no roboRIO image or simulation
+GUI. The runner launches the robot JAR with those libraries, without HAL simulation extensions.
+CI has a separate Linux job on pushes to `pit-server`, sharing Gradle's download cache.
+
+Each run owns fresh ports, a home directory, a disk cache, synthetic device files, and a store
+under `build/shop-harness/`. `FakeRoboRio` serves `/home/lvuser/logs`, `/proc/42/environ`, and
+`/etc/machine-info`; `/u/logs` and `/U/logs` are absent. Its exec channel accepts only the puller's
+quoted `head -c N -- <path> | sha256sum` command and computes that prefix in Java, without a shell.
+The packaged server starts from the shadow JAR with capture and pull enabled. No robot is used,
+and no generated log belongs in the repository.
+The harness caps pulling at 64 KiB/s so the timeline exercises transfers on both sides of an
+enable transition; the production default remains 1 MB/s.
+
+`ShopHarnessTest` initializes an HTTP MCP session and asks the running server for its listing
+and entry values. `HarnessExpectations` derives its answers from the timeline, independently of
+the robot and capture writer; the differential reader checks every scripted record's bytes and
+timestamp too. The checks cover serial/device identity, one session per boot, scalar/raw/struct
+and struct-array topics with schemas, verified pulls matched near zero offset, DataLogManager's
+rename, event/match manifests, and SFTP reads gated by disabled state. Saved manifests, HTTP
+results, server/robot output, and the SFTP read audit explain failures. CI uploads this evidence.
+
+To add a timeline, copy `harness/timelines/reboot-match.json`. Times ending in `_us` use the
+robot's microsecond clock, reset on every boot. Keep `period_us: 20000`; samples cover
+`[sample_start_us, sample_end_us)` on that grid, up to 10,000 samples per topic in the verifier's
+HTTP page. Each boot lists ordered phases (`disabled`,
+`teleop`, `autonomous`), match information and its delivery time, a sine frequency, counter-reset
+indices, an ending time, and whether the exit is a reboot. Use distinct match numbers to identify
+the expected sessions, and keep counter-reset indices ordered. The counter resets break the correlation ambiguity of a monotonic ramp;
+names only nominate synchronization candidates. Give DataLogManager at least five seconds after
+FMS attachment to rename, and leave disabled time for a throttled pull before the boot ends.
+The log stops one second after the last scripted sample while NT4 stays connected for the pull.
+At the end marker the process halts with code 75 for a reboot or 0 for the final boot; it skips
+native shutdown hooks whose global destructors can race desktop NT/DS threads. The runner checks
+the marker and code before starting another process.
+The HAL clock waits until capture subscribes, then advances in 20 ms steps paced in real time.
+`serialnum` is set in the robot's environment; simulation's empty HAL serial falls back to it.
+
+This checks the programs and wire transports, not the NI image or radio. The shop day must still
+check that the actual sshd permits an empty password, `lvuser` can read the robot process's
+`/proc` environment, `sha256sum` is installed, and whole-prefix hashing has acceptable CPU/disk
+cost on roboRIO 1 and 2. Wi-Fi loss, sustained load, and robot timing remain hardware checks.
+An NI-image container and PhotonVision belong to harness step 2.
+
 ### Stress tests
 
 ```bash
@@ -208,7 +268,9 @@ to open. A child JVM blocks the store queue, checks the 30 second default and in
 without draining the pending manifest; the next service start must finish it. No test sleeps to
 advance a clock. `CaptureFailureTest` injects a
 disk failure over loopback and checks the reason in the manifest/log, connection survival, a suppressed
-same-clock reconnect, and a resumed recording on a new clock. Writer tests also plant a partial payload
+same-clock reconnect, and a resumed recording on a new clock. Its trace pins the server/receipt
+times at each reconnect, and a controlled WebSocket delivers stale callbacks after the next
+connection opens to check listener order without socket timing. Writer tests also plant a partial payload
 write and check rollback to the completed prefix, force/create failures, and a bound unable to hold one record. The packaged
 `start` command runs in an isolated home: HTTP works with the robot absent, then a loopback
 fixture robot connects and its values survive daemon shutdown. No test waits for an injected clock.

@@ -31,12 +31,51 @@ import org.triplehelix.wpilogmcp.store.StoreCatalog;
 class CaptureFailureTest {
   @TempDir Path directory;
 
+  @Test void callbacksFromAnAbortedConnectionCannotResetAFailedCaptureOnTheNextConnection() throws Exception {
+    var loop = new ManualScheduler(); var sockets = new ControlledSockets(); var opened = new AtomicInteger();
+    var syncs = new java.util.ArrayList<String>();
+    var topic = new Announce("/x", 1, "int", null, new JsonObject());
+    var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, new CaptureWriter.Observer() {
+      public Path create(String address, java.time.Instant start) { return directory.resolve("capture-" + opened.get() + ".wpilog"); }
+    }, 4096, (path, id, resume) -> new WpilogOutput(path, id, resume) {
+      final boolean fail = opened.getAndIncrement() == 0;
+      @Override public Written append(int entry, long time, byte[] bytes) throws IOException {
+        if (fail) throw new IOException("scripted disk full"); return super.append(entry, time, bytes);
+      }
+    });
+    var listener = new Nt4Client.Listener() {
+      public void connected(URI uri, String protocol) { writer.connected(uri, protocol); }
+      public void timeSync(long server, long receipt) { syncs.add(server + ":" + receipt); writer.timeSync(server, receipt); }
+      public void announce(Announce a) { writer.announce(a); }
+      public void value(Announce a, ValueFrame v, long received) { writer.value(a, v, received); }
+      public void disconnected() { writer.disconnected(); }
+    };
+    try (var client = new Nt4Client(List.of(RobotAddress.uri("127.0.0.1", 5810, "ordered")),
+        Nt4Client.captureSubscription(0.01), listener, sockets, loop)) {
+      client.start(); loop.drain(); var first = sockets.peers.get(0);
+      first.sync(10_000_000); first.text(topic); first.binary(new ValueFrame(1, 10_000_000, 2, 1L)); loop.drain();
+      assertFalse(writer.session().open()); assertEquals(1, opened.get());
+      first.fail(); loop.drain(); loop.advance(1_000_000); var second = sockets.peers.get(1);
+      // These were queued by the old socket before failure, delivered after the next onOpen.
+      first.sync(100_000); first.text(new Announce("/stale", 2, "int", null, new JsonObject()));
+      second.sync(11_000_000); second.text(topic); second.binary(new ValueFrame(1, 11_000_000, 2, 2L)); loop.drain();
+      assertEquals(List.of("10000000:0", "11000000:1000000"), syncs);
+      assertFalse(client.topics().containsKey("/stale")); assertTrue(client.isConnected());
+      assertEquals(1, opened.get()); assertFalse(writer.session().open());
+      second.fail(); loop.drain(); loop.advance(1_000_000); var third = sockets.peers.get(2);
+      third.sync(100_000); third.text(topic); third.binary(new ValueFrame(1, 100_000, 2, 3L)); loop.drain();
+      assertEquals(List.of("10000000:0", "11000000:1000000", "100000:2000000"), syncs);
+      assertEquals(2, opened.get()); assertTrue(writer.session().open());
+    } finally { loop.drain(); writer.close(); }
+  }
+
   @Test void diskFailureKeepsTheConnectionAndRecordsItsReasonUntilANewClock() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
     var store = directory.resolve("store"); var placement = manager.stores().store(store).captures(Clock.systemUTC());
     var loop = new ManualScheduler(); var opened = new AtomicInteger(); var connected = new AtomicInteger();
     var received = new AtomicInteger(); var disconnected = new AtomicInteger();
+    var syncs = new java.util.ArrayList<String>();
     var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL,
         new CaptureIndex(placement, manager, 0), 4096, (path, id, resume) -> new WpilogOutput(path, id, resume) {
           final boolean fail = opened.getAndIncrement() == 0;
@@ -48,7 +87,7 @@ class CaptureFailureTest {
         });
     var listener = new Nt4Client.Listener() {
       @Override public void connected(URI address, String protocol) { connected.incrementAndGet(); writer.connected(address, protocol); }
-      @Override public void timeSync(long server, long receipt) { writer.timeSync(server, receipt); }
+      @Override public void timeSync(long server, long receipt) { syncs.add(server + ":" + receipt); writer.timeSync(server, receipt); }
       @Override public void announce(Announce topic) { writer.announce(topic); }
       @Override public void value(Announce topic, ValueFrame value, long receipt) { writer.value(topic, value, receipt); received.incrementAndGet(); }
       @Override public void disconnected() { disconnected.incrementAndGet(); writer.disconnected(); }
@@ -84,7 +123,8 @@ class CaptureFailureTest {
         // A Wi-Fi reconnect on the same robot clock must not reopen the failed output.
         clock.set(11_000_000); gateway.dropClients().join(); loop.until(() -> !client.isConnected());
         loop.advance(1_000_000); loop.until(() -> connected.get() == 2 && received.get() == 22);
-        assertEquals(1, opened.get()); assertFalse(writer.session().open());
+        assertEquals(List.of("10000000:0", "11000000:1000000"), syncs);
+        assertEquals(1, opened.get(), syncs.toString()); assertFalse(writer.session().open());
         clock.set(100_000); gateway.dropClients().join(); loop.until(() -> !client.isConnected());
         gateway.value("/x", 100_000, 2, 43L).join();
         loop.advance(1_000_000); loop.until(() -> opened.get() == 2 && received.get() == 23);

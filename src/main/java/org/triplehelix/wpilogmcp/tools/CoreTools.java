@@ -212,8 +212,7 @@ public final class CoreTools {
           var owner = scan.stores().stream().filter(s -> Path.of(log.path()).startsWith(s.root())).findFirst().orElseThrow();
           logObj.addProperty("store", owner.root().toString());
           var revlogs = new JsonArray();
-          owner.files().stream().filter(f -> f.file().matching() != null
-              && f.file().matching().wpilogSha256().equals(stored.file().sha256())).forEach(f -> {
+          owner.files().stream().filter(f -> org.triplehelix.wpilogmcp.store.StoreCatalog.isRevCompanion(f, stored)).forEach(f -> {
                 var rev = new JsonObject();
                 rev.addProperty("path", f.path().toString());
                 rev.addProperty("filename", f.path().getFileName().toString());

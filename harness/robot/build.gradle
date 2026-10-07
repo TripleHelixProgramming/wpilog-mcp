@@ -1,0 +1,30 @@
+plugins {
+  id 'java'
+  id 'edu.wpi.first.GradleRIO' version '2026.2.1'
+}
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_17
+  targetCompatibility = JavaVersion.VERSION_17
+}
+wpi.versions.wpilibVersion = '2026.2.2'
+wpi.versions.wpimathVersion = '2026.2.2'
+wpi.java.debugJni = false
+
+repositories { mavenCentral() }
+dependencies {
+  implementation wpi.java.deps.wpilib()
+  implementation 'com.google.code.gson:gson:2.11.0'
+  nativeRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.desktop)
+}
+
+// No deploy target, vendor libraries, GUI, Driver Station extension, or server test dependency.
+// The runner launches this once-built desktop program with GradleRIO's extracted JNI libraries.
+jar {
+  from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+  manifest edu.wpi.first.gradlerio.GradleRIOPlugin.javaManifest('org.triplehelix.harness.Main')
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+wpi.java.configureExecutableTasks(jar)
+tasks.register('prepareHarness') { dependsOn jar, extractReleaseNative }
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

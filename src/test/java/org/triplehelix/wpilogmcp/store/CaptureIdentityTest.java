@@ -150,6 +150,59 @@ class CaptureIdentityTest {
     } finally { release.countDown(); worker.shutdownNow(); }
   }
 
+  @Test void aPulledFileMatchedWhileOpenSurvivesEventRenameAndIdentityPromotion() throws Exception {
+    var root = temp.resolve("store"); var loop = new ManualScheduler();
+    try (var stores = new StoreRegistry(security())) {
+      var store = stores.store(root); var placement = store.captures(WALL);
+      var identity = device("SYNTHETIC-A", "SHA256:fixture");
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
+        connect(writer, 10_000_000, 0); writer.identity(identity);
+        var event = new Announce("/FMSInfo/EventName", 2, "string", null, new JsonObject());
+        var type = new Announce("/FMSInfo/MatchType", 3, "int", null, new JsonObject());
+        var number = new Announce("/FMSInfo/MatchNumber", 4, "int", null, new JsonObject());
+        for (var topic : List.of(event, type, number)) writer.announce(topic);
+        writer.value(event, new ValueFrame(2, 10_000_000, 4, "fixture"), 0);
+        writer.value(type, new ValueFrame(3, 10_000_000, 2, 2L), 0);
+        writer.value(number, new ValueFrame(4, 10_000_000, 2, 7L), 0);
+        placement.completion().get(10, TimeUnit.SECONDS);
+        var old = writer.session().path().getParent().resolve("robot").resolve("robot.wpilog");
+        Files.createDirectories(old.getParent());
+        try (var fixture = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(old, "synthetic matched pull")) {
+          int id = fixture.start("/x", "int64", "", 10_000_000);
+          fixture.append(id, 10_000_000, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(42));
+        }
+        store.capture(io -> {
+          var path = old.getParent().getParent().resolve("session.json");
+          var json = JsonParser.parseString(Files.readString(path)).getAsJsonObject();
+          var file = new StoreManifest.LogFile("robot/robot.wpilog", StoreFiles.hash(old), Files.size(old), "wpilog",
+              new StoreManifest.Provenance("pulled", "/home/lvuser/logs/robot.wpilog", "robot.wpilog", WALL.instant().toString(), false, "SYNTHETIC-A"),
+              true, 10, 10, WALL.instant().toString(), WALL.instant().toString(), "pit_clock", false,
+              new StoreManifest.Matching("by_correlation", null, 0, 1, 0, 0, "data_alone"));
+          json.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(file)); io.write(path, json); return null;
+        });
+        var local = store.pulls(identity, WALL);
+        String held = StoreFiles.relative(root, old); long bytes = Files.size(old);
+        local.save(new org.triplehelix.wpilogmcp.sync.PullManifest(1, "SYNTHETIC-A", List.of(
+            new org.triplehelix.wpilogmcp.sync.PullManifest.Entry("/home/lvuser/logs/robot.wpilog", bytes, 0, bytes, true, held, 0, null)), List.of()));
+        var directories = LogDirectory.getInstance().getLogDirectories();
+        try {
+          LogDirectory.getInstance().setLogDirectory(root.toString());
+          var tools = new org.triplehelix.wpilogmcp.mcp.ToolRegistry(); org.triplehelix.wpilogmcp.tools.CoreTools.registerAll(tools);
+          var listing = tools.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
+          assertEquals("ok", listing.get("status").getAsString(), listing.toString());
+          assertEquals(2, listing.get("log_count").getAsInt());
+          for (var row : listing.getAsJsonArray("logs")) assertTrue(row.getAsJsonObject().getAsJsonArray("revlogs").isEmpty(), "A pulled WPILOG is not a REV companion");
+        } finally { LogDirectory.getInstance().setLogDirectories(directories.stream().map(Path::toString).toList()); }
+        writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
+        assertEquals(bytes, local.size(held), "the persisted pull path must still answer after both moves");
+        assertEquals(held, local.manifest().files().get(0).localName());
+        try (var use = LogManager.getInstance().acquire(old.toString())) { assertEquals(42L, use.log().values().get("/x").get(0).value()); }
+        var files = StoreCatalog.read(root, security()).files(); assertEquals(2, files.size());
+        assertTrue(files.stream().allMatch(f -> f.path().startsWith(root.resolve("robots").resolve("SYNTHETIC-A"))));
+      }
+    }
+  }
+
   @Test void disagreementIsManifestedAndLoggedWhileTheFilesLoggedSerialWins() throws Exception {
     var root = temp.resolve("store"); var security = security(); var loop = new ManualScheduler();
     var oldDirs = LogDirectory.getInstance().getLogDirectories();

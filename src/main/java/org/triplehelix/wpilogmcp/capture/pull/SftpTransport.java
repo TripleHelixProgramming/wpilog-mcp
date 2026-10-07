@@ -59,7 +59,7 @@ public final class SftpTransport implements RobotRemote {
     try {
       if (config.ssh().key() != null) jsch.addIdentity(config.ssh().key().toString());
       var keys = new Pin(address, pinnedFingerprint, config.ssh()); jsch.setHostKeyRepository(keys);
-      session = jsch.getSession(config.ssh().user(), address, 22);
+      session = jsch.getSession(config.ssh().user(), address, config.ssh().port());
       session.setConfig("StrictHostKeyChecking", "yes");
       session.setConfig("server_host_key", HOST_KEY_ALGORITHMS);
       session.setConfig("PreferredAuthentications", config.ssh().key() == null ? "password,keyboard-interactive" : "publickey");

@@ -423,6 +423,15 @@ Direct access to the data without an agent, and real data in an agent's answers.
 
 ---
 
+### 9.4 Shop Harness
+
+Step 1 is implemented: a scripted WPILib 2026 headless robot, real SSH/SFTP from a synthetic
+roboRIO, and a packaged pit server checked over HTTP MCP. Timelines pin capture fidelity,
+identity, boots, match renames, pulling and the disabled gate. It runs separately from the ordinary
+suite; see [DEVELOPMENT.md](DEVELOPMENT.md#the-shop-harness). Step 2 is an NI-image container
+and PhotonVision. Actual roboRIO permissions, installed commands, radio behavior and hash cost
+still need the shop test; desktop simulation cannot establish them.
+
 ## Implementation Priority Matrix
 
 | ID | Feature | Impact | Effort | Priority |

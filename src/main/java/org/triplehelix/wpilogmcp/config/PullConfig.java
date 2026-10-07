@@ -14,12 +14,13 @@ import java.util.function.UnaryOperator;
 /** Pulling stays off until a team opts in after checking its robot in the shop. */
 public record PullConfig(boolean enabled, List<String> directories, long settleUs, long rateBytes, Ssh ssh) {
   public static final Set<String> KEYS = Set.of("enabled", "directories", "settle_sec", "rate_bytes", "ssh");
-  public static final Set<String> SSH_KEYS = Set.of("user", "password", "key", "accept_changed_host_key");
+  public static final Set<String> SSH_KEYS = Set.of("user", "password", "key", "port", "accept_changed_host_key");
   public static final PullConfig DISABLED = new PullConfig(false, List.of("/home/lvuser/logs", "/u/logs", "/U/logs"),
       5_000_000, 1_000_000, new Ssh("lvuser", "", null));
   public PullConfig { directories = List.copyOf(directories); }
-  public record Ssh(String user, String password, Path key, boolean acceptChangedHostKey) {
-    public Ssh(String user, String password, Path key) { this(user, password, key, false); }
+  public record Ssh(String user, String password, Path key, boolean acceptChangedHostKey, int port) {
+    public Ssh(String user, String password, Path key) { this(user, password, key, false, 22); }
+    public Ssh(String user, String password, Path key, boolean acceptChangedHostKey) { this(user, password, key, acceptChangedHostKey, 22); }
     @Override public String toString() { return "Ssh[user=" + user + ", password=<redacted>, key=" + key + "]"; }
   }
   static PullConfig parse(JsonElement value, UnaryOperator<String> paths, UnaryOperator<String> text) throws ConfigException {
@@ -65,7 +66,9 @@ public record PullConfig(boolean enabled, List<String> directories, long settleU
         if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isBoolean()) throw bad("ssh.accept_changed_host_key", "must be a boolean");
         acceptChanged = v.getAsBoolean();
       }
-      ssh = new Ssh(user, password, key, acceptChanged);
+      double port = obj.has("port") ? number(obj.get("port"), "ssh.port") : 22;
+      if (port < 1 || port > 65535 || port != Math.rint(port)) throw bad("ssh.port", "must be an integer from 1 through 65535");
+      ssh = new Ssh(user, password, key, acceptChanged, (int) port);
     }
     return new PullConfig(enabled, directories, Math.round(settle * 1_000_000), (long) rate, ssh);
   }
