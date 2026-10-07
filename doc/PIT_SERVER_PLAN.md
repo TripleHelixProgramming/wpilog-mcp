@@ -544,3 +544,9 @@ The extension streams files sequentially, reports the existing result statuses, 
 repeat an uncertain POST. Retrying by user choice finds an already admitted hash.
 
 During milestone 4 validation another real-socket timeout was preserved: `GatewaySocketTest.realClientsSeeEveryChangeOrLatestAndWritesDoNotLeak` waited five seconds for the sampled 4.0 client's publish announcement at line 65. The isolated class then passed. Its XML was saved before subsequent runs; there was no assertion of wrong values and no cause established. No timeout was widened. The ordinary-test XML artifact remains the evidence source for another CI occurrence.
+
+The milestone 4 harness job caught an upload refused by a competing in-process store lock.
+Its retained ordinary-test XML identified inbox transfer cleanup, which used the lock outside
+the store queue. Cleanup now queues behind imports, at most one pending job per inbox, and
+polling returns while it waits. A blocked-queue test failed on the previous implementation
+and passes after serialization; no sleep or wider retry was added to hide the race.

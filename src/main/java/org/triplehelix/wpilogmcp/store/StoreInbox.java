@@ -48,6 +48,7 @@ public final class StoreInbox {
   private record Seen(Observed observed, long at, String state, String reason) {}
   private record Receipt(String at, Path originalPath, String status, Path path, String reason) {}
 
+  private final java.util.concurrent.atomic.AtomicBoolean cleanupQueued = new java.util.concurrent.atomic.AtomicBoolean();
   private final LogStore store;
   private final SecurityValidator security;
   private final ConcurrentHashMap<Path, Seen> seen = new ConcurrentHashMap<>();
@@ -175,10 +176,20 @@ public final class StoreInbox {
       transfers = children.filter(p -> p.getFileName().toString().startsWith(".transfer-"))
           .filter(p -> Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)).toList();
     }
+    if (transfers.isEmpty() || !cleanupQueued.compareAndSet(false, true)) return;
+    try {
+      store.captureAsync(owned -> { cleanTransfers(owned, inbox, transfers); return null; }).whenComplete((ignored, failure) -> {
+        cleanupQueued.set(false);
+        if (failure != null) LoggerFactory.getLogger(StoreInbox.class).debug("Inbox cleanup will retry on the next poll");
+      });
+    } catch (RuntimeException e) { cleanupQueued.set(false); throw e; }
+  }
+
+  /** Cleanup is another store job: taking its lock on the poller could refuse an admitted import. */
+  private void cleanTransfers(StoreFiles io, Path inbox, List<Path> transfers) throws IOException {
     for (var transfer : transfers) {
       var marker = io.check(inbox.resolve(transfer.getFileName() + ".lock"));
-      try (var storeLock = StoreLock.acquire(store.root(), security);
-           var channel = Files.exists(marker, LinkOption.NOFOLLOW_LINKS)
+      try (var channel = Files.exists(marker, LinkOption.NOFOLLOW_LINKS)
                ? FileChannel.open(marker, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS) : null;
            var transferLock = channel == null ? null : channel.tryLock()) {
         if (channel != null && transferLock == null) continue;
@@ -190,7 +201,7 @@ public final class StoreInbox {
       } catch (OverlappingFileLockException e) {
         continue;
       } catch (IOException e) {
-        // An active store writer or an inaccessible transfer can be retried next poll.
+        // A transfer may have completed since the poll; inaccessible bytes retry next poll.
         continue;
       }
       Files.deleteIfExists(marker);

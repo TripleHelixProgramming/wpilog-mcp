@@ -470,7 +470,8 @@ A directory with `store.json` is a store. Its format version and creation time d
 
 Laptop uploads are byte streams into an HTTP-owned hidden inbox transfer. A sidecar lock
 prevents the watcher from taking a slow upload, and abandoned transfers use its existing
-recovery. Reception and source-hash verification happen outside the store queue with a bounded
+recovery. Cleanup joins the same store queue, coalesced to one pending job; it never takes
+the store lock on the watcher thread and cannot race an admitted import. Reception and source-hash verification happen outside the store queue with a bounded
 buffer; `LogStore.importUpload` then uses the same inspection, grouping and manifest pipeline
 as a local import. The network route selects a configured store id and one filename, never
 a server filesystem path. Server-path imports and assignment stay local to the machine.

@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Inbox cleanup now joins the store queue. Previously the watcher briefly took the store lock outside that queue, so an admitted upload could fail as though another process were importing. A blocked-queue regression pins ordering without delaying polling.
+
 - Corrupt store alignment evidence now names its manifest and leaves the REV companion unsynchronized, instead of failing through an unchecked lookup or hiding the companion. Sync cache format 10 retires previous interpretation. Mirror review checks now cover every write route off loopback and missing or inconsistent growing-prefix journals; the harness artifact preserves ordinary test XML for load-sensitive failures. The extension guide explains mirror access after its directory lease ends.
 - Peer sync no longer copies the peer's SSH contact history into a new local robot manifest; contacts belong to the store that made them. The HTTP store listing now reports unreadable store headers individually while serving its readable stores, instead of failing the entire listing.
 - Captures copied from a peer use a hash directory inside the joined session. Previously a peer's `capture-2.wpilog` could occupy the local writer's next rollover filename and stop recording; a small-bound test now rolls both writers and preserves all 402 generated records.

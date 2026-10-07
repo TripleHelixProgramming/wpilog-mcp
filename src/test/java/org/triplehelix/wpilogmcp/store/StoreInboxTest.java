@@ -74,6 +74,29 @@ class StoreInboxTest {
     return Files.readAllLines(root.resolve("inbox").resolve("imported.log"));
   }
 
+  @Test void abandonedTransferCleanupWaitsInTheStoreQueueWithoutBlockingPolling() throws Exception {
+    var abandoned = Files.createDirectories(root.resolve("inbox/.transfer-abandoned"));
+    Files.writeString(abandoned.resolve("partial"), "synthetic incomplete bytes");
+    var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+    var busy = store.captureAsync(io -> {
+      entered.countDown();
+      try { if (!release.await(10, TimeUnit.SECONDS)) throw new java.io.IOException("test barrier"); }
+      catch (InterruptedException e) { throw new java.io.IOException(e); }
+      return null;
+    });
+    try {
+      assertTrue(entered.await(10, TimeUnit.SECONDS));
+      var polled = java.util.concurrent.CompletableFuture.runAsync(() -> {
+        try { store.inbox().poll(0); } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+      });
+      polled.get(5, TimeUnit.SECONDS); // A busy store must not stall the registry's other inboxes.
+      assertTrue(Files.exists(abandoned));
+    } finally { release.countDown(); busy.get(10, TimeUnit.SECONDS); }
+    store.awaitImports();
+    assertFalse(Files.exists(abandoned), "Cleanup must be queued behind the active store operation, not skipped by a competing lock");
+    assertTrue(receipts().get(0).contains("Removed incomplete inbox transfer"));
+  }
+
   @Test void httpOwnedUploadsSurviveInboxSweepsAndAnInterruptedUploadLeavesNothing() throws Exception {
     var source = ImportFixture.write(temp.resolve("upload.wpilog"), 3);
     byte[] bytes = Files.readAllBytes(source);
@@ -400,7 +423,7 @@ class StoreInboxTest {
     });
     try {
       assertTrue(entered.await(10, TimeUnit.SECONDS));
-      store.inbox().poll(0);
+      store.inbox().poll(0); store.awaitImports();
       assertTrue(listing().getAsJsonArray("unmanaged").isEmpty());
       assertTrue(listing().getAsJsonArray("inbox").isEmpty());
       assertFalse(Files.exists(root.resolve("inbox").resolve("imported.log")));
@@ -411,7 +434,7 @@ class StoreInboxTest {
       release.countDown();
     }
     transfer.get(10, TimeUnit.SECONDS);
-    store.inbox().poll(LOOK);
+    store.inbox().poll(LOOK); store.awaitImports();
     assertTrue(Files.exists(source));
     try (var children = Files.list(root.resolve("inbox"))) {
       assertEquals(List.of("imported.log"), children.map(p -> p.getFileName().toString()).toList());
