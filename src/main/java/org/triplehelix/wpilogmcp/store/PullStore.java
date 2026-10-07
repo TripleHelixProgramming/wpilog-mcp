@@ -270,7 +270,7 @@ public final class PullStore implements FileTransfer.Local {
     var header = io.read(store.root().resolve("store.json"), Header.class); var moves = new ArrayList<Move>();
     for (var m : header.moves()) moves.add(new Move(m.originalPath(), io.resolve(store.root(), m.movedTo()).equals(from) ? relative(target) : m.movedTo(), m.movedAt()));
     moves.add(new Move(from.toString(), relative(target), clock.instant().toString()));
-    io.write(store.root().resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses()));
+    io.write(store.root().resolve("store.json"), header.withMoves(moves));
     return relative(target);
   }
 }

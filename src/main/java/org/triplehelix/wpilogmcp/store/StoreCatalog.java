@@ -35,8 +35,14 @@ public final class StoreCatalog {
         && match != null && match.wpilogSha256() != null && match.wpilogSha256().equals(anchor.file().sha256());
   }
   public record RobotDirectory(Path path, Robot robot) {}
+  public record SessionDirectory(Path path, Robot robot, Session session) {}
   public record Snapshot(Path root, Header header, List<RobotDirectory> robots,
-      List<StoredFile> files, List<Path> unmanaged, List<Move> moved, List<StoredFile> openCaptures) {
+      List<StoredFile> files, List<Path> unmanaged, List<Move> moved, List<StoredFile> openCaptures,
+      List<SessionDirectory> sessions) {
+    public Snapshot(Path root, Header header, List<RobotDirectory> robots,
+        List<StoredFile> files, List<Path> unmanaged, List<Move> moved, List<StoredFile> openCaptures) {
+      this(root, header, robots, files, unmanaged, moved, openCaptures, List.of());
+    }
     public Snapshot(Path root, Header header, List<RobotDirectory> robots,
         List<StoredFile> files, List<Path> unmanaged, List<Move> moved) {
       this(root, header, robots, files, unmanaged, moved, List.of());
@@ -77,14 +83,23 @@ public final class StoreCatalog {
   }
 
   public static Snapshot read(Path directory, SecurityValidator security) throws IOException {
+    return read(directory, security, true);
+  }
+
+  /** Network listings need manifest membership, not an inventory of every stray in a season. */
+  public static Snapshot readManaged(Path directory, SecurityValidator security) throws IOException {
+    return read(directory, security, false);
+  }
+
+  private static Snapshot read(Path directory, SecurityValidator security, boolean strays) throws IOException {
     try {
-      return readValidated(directory, security);
+      return readValidated(directory, security, strays);
     } catch (RuntimeException e) {
       throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e);
     }
   }
 
-  private static Snapshot readValidated(Path directory, SecurityValidator security) throws IOException {
+  private static Snapshot readValidated(Path directory, SecurityValidator security, boolean strays) throws IOException {
     var root = directory.toRealPath();
     var io = new StoreFiles(root, security);
     var headerPath = root.resolve("store.json");
@@ -103,6 +118,7 @@ public final class StoreCatalog {
     var robots = new ArrayList<RobotDirectory>();
     var files = new ArrayList<StoredFile>();
     var openCaptures = new ArrayList<StoredFile>();
+    var sessionDirectories = new ArrayList<SessionDirectory>();
     var robotsRoot = io.check(root.resolve("robots"));
     if (Files.isDirectory(robotsRoot)) {
       for (var robotDir : children(robotsRoot)) {
@@ -138,6 +154,7 @@ public final class StoreCatalog {
             if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) continue;
             var session = io.read(manifest, Session.class);
             validate(session, manifest);
+            sessionDirectories.add(new SessionDirectory(sessionDir, robot, session));
             managed.add(manifest);
             if (session.openCapture() != null) {
               var capture = session.openCapture();
@@ -182,7 +199,7 @@ public final class StoreCatalog {
       }
     }
     var unmanaged = new ArrayList<Path>();
-    try (var walk = Files.walk(root)) {
+    if (strays) try (var walk = Files.walk(root)) {
       for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
         if (path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))) continue;
         io.check(path);
@@ -197,7 +214,39 @@ public final class StoreCatalog {
       }
     }
     return new Snapshot(root, header, List.copyOf(robots), List.copyOf(files),
-        List.copyOf(unmanaged), List.copyOf(moved), List.copyOf(openCaptures));
+        List.copyOf(unmanaged), List.copyOf(moved), List.copyOf(openCaptures), List.copyOf(sessionDirectories));
+  }
+
+  /** Resolve one catalog member without walking the catalog for every transfer block. */
+  public static Path file(Path directory, String relative, SecurityValidator security) throws IOException {
+    var root = directory.toRealPath(); var io = new StoreFiles(root, security);
+    var path = io.resolve(root, relative);
+    var parts = root.relativize(path);
+    Path parent; Session session = null; LogFile file = null;
+    if (parts.getNameCount() >= 6 && parts.getName(0).toString().equals("robots")
+        && parts.getName(2).toString().equals("sessions")) {
+      var robotDir = root.resolve(parts.subpath(0, 2));
+      var robot = io.read(robotDir.resolve("robot.json"), Robot.class);
+      if (!parts.getName(1).toString().equals(robot.id())) throw new IOException("Invalid robot manifest");
+      parent = root.resolve(parts.subpath(0, 5));
+      session = io.read(parent.resolve("session.json"), Session.class);
+      validate(session, parent);
+      for (var candidate : session.files()) if (io.resolve(parent, candidate.path()).equals(path)) file = candidate;
+    } else if (parts.getNameCount() >= 3 && parts.getName(0).toString().equals("unassigned")) {
+      parent = root.resolve(parts.subpath(0, 2));
+      var candidate = io.read(parent.resolve("import.json"), LogFile.class);
+      if (io.resolve(parent, candidate.path()).equals(path)) file = candidate;
+    } else throw new IOException("Not a store log path");
+    // Imported logs may themselves be named robot.json, inside their payload subdirectory.
+    // The owning control manifest is never a payload, even under a bad manifest.
+    if (path.equals(parent.resolve("session.json")) || path.equals(parent.resolve("import.json"))) {
+      throw new IOException("Not a store log path");
+    }
+    if (file != null) { validate(file, path); return path; }
+    if (session != null && session.openCapture() != null
+        && io.resolve(parent, session.openCapture().path()).equals(path)
+        && "captured".equals(session.openCapture().provenance().kind()) && Files.isRegularFile(path)) return path;
+    throw new IOException("File is not in the store catalog");
   }
 
   private static List<Path> children(Path path) throws IOException {

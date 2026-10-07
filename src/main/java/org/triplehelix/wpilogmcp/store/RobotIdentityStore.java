@@ -37,7 +37,7 @@ final class RobotIdentityStore {
     io.write(path, robot);
     var header = io.read(root.resolve("store.json"), Header.class);
     var addresses = new LinkedHashMap<>(header.addresses()); addresses.put(device.address(), serial);
-    io.write(root.resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), header.moves(), addresses));
+    io.write(root.resolve("store.json"), header.withAddresses(addresses));
     return robot;
   }
 
@@ -86,7 +86,7 @@ final class RobotIdentityStore {
       }
       for (var file : session.files()) moves.add(new Move(old.resolve(file.path()).toString(),
           StoreFiles.relative(root, io.resolve(target, file.path())), now.toString()));
-      io.write(root.resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses()));
+      io.write(root.resolve("store.json"), header.withMoves(moves));
       if (current != null && current.startsWith(old)) result = target.resolve(old.relativize(current));
     }
     // Remove only our empty placeholder metadata/directories. Strays are reported and retained.

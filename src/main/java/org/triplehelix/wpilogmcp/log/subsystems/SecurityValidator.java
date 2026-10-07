@@ -111,6 +111,9 @@ public class SecurityValidator {
     return result;
   }
 
+  /** A store exposed to network peers must come from configuration, never a session lease. */
+  public Set<Path> getConfiguredDirectories() { return Set.copyOf(allowedDirectories); }
+
   /**
    * Validates that a path is within an allowed directory.
    *

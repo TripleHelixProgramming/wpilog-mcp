@@ -291,7 +291,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
       // alias as the capture when this directory is renamed, before identity promotion follows.
       for (var file : files) moves.add(new Move(io.resolve(directory, file.path()).toString(),
           StoreFiles.relative(store.root(), io.resolve(target, file.path())), now.toString()));
-      io.write(store.root().resolve("store.json"), new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses()));
+      io.write(store.root().resolve("store.json"), header.withMoves(moves));
       return destination;
     }
   }

@@ -490,6 +490,33 @@ curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16
 
 The endpoint reads only files inside configured or currently leased log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`, never cut. A missing entry is an error naming it, with the tools that list entries and field paths. A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`. `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
 
+### The Store Door
+
+An HTTP server exposes stores inside its configured log directories, including `capture.store`.
+Directories leased by an MCP client do not publish stores. Discovery refreshes within five seconds;
+file requests read their owning manifest directly, without walking the catalog per transfer block.
+
+| Request | Response |
+|---|---|
+| `GET /store` | `id`, `format_version`, `server_version`, `mirror`; with several stores (or none), a `stores` array of those descriptors |
+| `GET /store/robots` | `robots`, the robot manifests |
+| `GET /store/sessions` | `sessions`, each with `robot_id`, store-relative `path`, and its complete `manifest`; `unassigned` contains store-relative `path` and `file` records |
+| `GET /store/files/<store path>` | File bytes; a single `Range: bytes=start-end`, open-ended range, or suffix range returns 206 |
+| `GET /store/files/<store path>/prefix-hash?bytes=N` | SHA-256 of exactly the first N bytes: `sha256`, `bytes`, and current `size_bytes` |
+
+Append `?store=<id>` (or `&store=<id>`) to select a store when there are several. Session filters
+are `since` (an ISO UTC instant, including sessions whose end is at or after it), `robot` (id or
+serial), and `event` (exact event text). Filters omit unassigned files. A growing capture is
+served at its current length, including by the prefix-hash endpoint; the session response refreshes
+`open_capture.size_bytes` from the file. An out-of-bounds range or prefix returns 416. Control
+manifests are JSON responses, never arbitrary file downloads; strays, inbox files, traversal and
+paths outside catalog membership are refused. A manifested imported log keeps its original name,
+even a name such as `robot.json`, within its separate payload directory.
+
+The peer server must bind to an interface reachable by the other laptop (`WPILOG_HTTP_BIND=0.0.0.0`
+in the peer server's environment); leases and key registration remain refused on that bind.
+The door has no authentication: expose it only on a trusted network or behind the team's authenticated proxy.
+
 ### The Import Endpoint
 
 The HTTP transport accepts imports beside the data endpoint:

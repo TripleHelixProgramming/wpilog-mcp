@@ -16,11 +16,20 @@ public final class StoreManifest {
   public static final int FORMAT_VERSION = 1;
 
   public record Header(int formatVersion, String createdAt, String id, List<Move> moves,
-      Map<String, String> addresses) {
-    public Header { addresses = addresses == null ? Map.of() : Map.copyOf(addresses); }
+      Map<String, String> addresses, boolean mirror, List<String> peers) {
+    public Header {
+      addresses = addresses == null ? Map.of() : Map.copyOf(addresses);
+      peers = peers == null ? List.of() : List.copyOf(peers);
+    }
+    public Header(int version, String createdAt, String id, List<Move> moves, Map<String, String> addresses) {
+      this(version, createdAt, id, moves, addresses, false, List.of());
+    }
     public Header(int version, String createdAt, String id, List<Move> moves) {
       this(version, createdAt, id, moves, Map.of());
     }
+    public Header withMoves(List<Move> value) { return new Header(formatVersion, createdAt, id, value, addresses, mirror, peers); }
+    public Header withAddresses(Map<String, String> value) { return new Header(formatVersion, createdAt, id, moves, value, mirror, peers); }
+    public Header withPeers(List<String> value) { return new Header(formatVersion, createdAt, id, moves, addresses, mirror, value); }
   }
   public record Move(String originalPath, String movedTo, String movedAt) {}
   public record Contact(String address, String hostKeyFingerprint, String seenAt) {}

@@ -397,6 +397,16 @@ A real VS Code was not available for milestones 6–7. Check the oldest supporte
 
 Native Windows launchers/CLI integration and the interactive installer should also be checked on Windows; Node tests of Windows path/argument rules do not replace that. Installer tests use temporary homes and fake releases/CLIs, never the user's install.
 
+### The store HTTP door
+
+`StoreDoorTest` runs the actual HTTP transport against fixture-backed stores: catalog descriptors,
+filters, Range and prefix hashes, the HTTP remote, open-capture growth, and unassigned payloads.
+It checks traversal, strays, inbox and control-file refusals; lease-only stores are not published.
+One server bound to all interfaces serves the door while refusing both registration routes and
+untrusted Origins. Plants remove each boundary, leak a synthetic credential into a manifest, and
+report the coalesced size instead of the current file length. `ManualSchedulerTest` pins the native
+replay harness race where clock advancement already drained the reply a subsequent wait expected.
+
 ### The data endpoint's streams
 
 `DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`, and CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.

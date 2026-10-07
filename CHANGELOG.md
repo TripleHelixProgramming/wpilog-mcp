@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- HTTP servers now expose configured stores through read-only catalog, Range, and prefix-hash endpoints, with an HTTP transport for the shared file-transfer logic. Previously a store could only be read from its filesystem; lease-only directories, strays, inbox files and control-file downloads remain outside the door.
 - Opt-in `capture.pull` copies robot WPILOG/REV logs over SFTP while NT4 reports the robot disabled and settled. Content checks protect resume and rename across reused filenames, old generations are retained, and verified copies join sessions by serial and near-zero data correlation. Device identity and key history share the capture/store path. Earlier code had no robot-file transport; pulling remains off by default pending the roboRIO shop test. The robot's files are never modified or deleted.
 - Robot identity: the listing reads logged serials and comments wherever a file lives, and offers evidence for unique `robot_candidates` without assigning them. Device context, serial-based placement, SSH key history, and logged/device disagreements now share the store; address promotion preserves paths already given to tools. Previously identity was limited to imported files and capture paths stayed tied to an address.
 - A server with a `capture` section records the robot's NetworkTables to its store and serves the open session to every existing log tool. Previously the NT4 client was only a foundation. Captures are ordinary WPILOG files, with clock-based session resumption, explicit exclusion/thinning, and topic cost accounting; each tool call reports the fixed session prefix it read, with older values available from the file beyond the configurable hot window.
@@ -31,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- The native replay harness accepts a reply already drained while advancing its injected clock. Previously a fast reply made the reboot-pair test wait for an unrequested second callback and fail intermittently.
 - Entry metadata now follows NT4 properties changes in both the live index and a fresh WPILOG scan. Previously Set Metadata reached the file but both indexes kept the announcement's properties; an in-progress tool call still retains its original snapshot.
 - Captured `NT:systemTime` now retains its calendar-clock role; previously the recording prefix hid it from REV clock alignment.
 - Capture now preserves NT4 topic properties and their updates as WPILOG metadata instead of dropping them. Publisher properties remain separate from recorder provenance.

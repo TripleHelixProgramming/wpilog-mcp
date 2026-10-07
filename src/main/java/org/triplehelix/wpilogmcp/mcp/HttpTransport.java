@@ -93,6 +93,11 @@ public class HttpTransport {
   private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
       org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
   private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores);
+  private volatile java.util.Set<java.nio.file.Path> storeDirectories;
+  private final org.triplehelix.wpilogmcp.store.StoreDoor storeDoor = new org.triplehelix.wpilogmcp.store.StoreDoor(
+      () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
+          .getConfiguredDirectories());
+  private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
   private volatile long lastMcpActivityNanos = System.nanoTime();
 
@@ -152,6 +157,7 @@ public class HttpTransport {
     server.createContext(DATA_PATH, counted(this::handleData));
     server.createContext(StoreImportEndpoint.PATH, counted(this::handleImport));
     server.createContext(StoreImportEndpoint.ASSIGN_PATH, counted(this::handleImport));
+    server.createContext("/store", counted(this::handleStore));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
@@ -622,6 +628,21 @@ public class HttpTransport {
     }
     noteMcpActivity();
     importEndpoint.handle(exchange);
+  }
+
+  /** Configuration scope, independent of client leases; useful when transports share a JVM. */
+  public void setStoreDirectories(java.util.Set<java.nio.file.Path> directories) {
+    if (server != null) throw new IllegalStateException("Set store directories before starting HTTP");
+    storeDirectories = java.util.Set.copyOf(directories);
+  }
+
+  private void handleStore(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin"); return;
+    }
+    noteMcpActivity();
+    storeEndpoint.handle(exchange);
   }
 
   /** The size cap of a data response, in bytes (see {@link DataEndpoint}). */

@@ -338,6 +338,9 @@ public class LogManager {
     return securityValidator.getAllowedDirectories();
   }
 
+  /** Permanent roots for the HTTP store door; a lease cannot publish a store to peers. */
+  public Set<Path> getConfiguredDirectories() { return securityValidator.getConfiguredDirectories(); }
+
   /**
    * Clears all allowed directories. After calling this, all paths will be allowed (backwards
    * compatibility mode).

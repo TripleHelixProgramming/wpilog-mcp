@@ -649,7 +649,7 @@ public final class LogStore implements AutoCloseable {
       var moves = new ArrayList<>(header.moves());
       for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
           StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
-      var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses());
+      var updated = header.withMoves(moves);
       io.write(root.resolve("store.json"), updated);
       catalog.header = updated;
     }
@@ -725,7 +725,7 @@ public final class LogStore implements AutoCloseable {
       if (file.path().startsWith(old)) moves.add(new Move(file.path().toString(),
           StoreFiles.relative(root, target.resolve(old.relativize(file.path()))), Instant.now().toString()));
     }
-    var updated = new Header(header.formatVersion(), header.createdAt(), header.id(), moves, header.addresses());
+    var updated = header.withMoves(moves);
     io.write(root.resolve("store.json"), updated);
     catalog.header = updated;
   }
