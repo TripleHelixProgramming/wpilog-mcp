@@ -147,6 +147,26 @@
       for (const listener of this.viewListeners) listener(this.view);
     }
 
+    /** A live tick only requests the visible series' unseen suffix, inclusive of its boundary. */
+    follow(end, entries) {
+      if (!this.log || !Number.isFinite(end)) return;
+      this.log.end = end;
+      this.setEntryCounts(entries.map(e => [e.name, e.sample_count]));
+      const view = Follow.windowAt(this.view, this.log.start, end);
+      for (const pane of this.panes) for (const series of pane.series) {
+        series.sampleCount = this.log.entries.get(series.name) ?? series.sampleCount;
+        if (series.pending) continue;
+        if (!series.data || series.bucketed) { series.plan = null; continue; }
+        const from = series.data.timestamps.length ? series.data.timestamps[series.data.timestamps.length - 1] : view.start;
+        const requestId = this.nextRequest++, key = "follow:" + requestId;
+        series.pending = key;
+        this.requests.set(requestId, { series, key, append: true, from,
+          plan: { mode: "window", startTime: view.start, endTime: end } });
+        this.host.post({ type: "fetch", requestId, name: series.name, startTime: from, endTime: end });
+      }
+      this.setView(view.start, view.end);
+    }
+
     /**
      * Fetches a series for another view (the field view) by the plan the budget gives for the
      * current window, and resolves with {timestamps, values, count, bucketed}: the samples, or
@@ -290,6 +310,7 @@
     // ---- data ----
 
     fetchIfNeeded(series) {
+      if (series.pending && series.pending.startsWith("follow:")) return;
       if (!this.log) return;
       const width = this.paneWidth();
       const plan = PlotMath.planRequest(
@@ -335,7 +356,7 @@
         const opened = Plot.seriesOf(message.bytes, series.name);
         const metadata = opened.metadata;
         const info = (metadata.entries || []).find((e) => e.name === series.name) || {};
-        series.data = opened.data;
+        series.data = request.append ? Follow.append(series.data, opened.data, request.from, this.view.start, PlotMath.SAMPLE_BUDGET) : opened.data;
         series.plan = plan;
         series.bucketed = opened.bucketed;
         series.sampling = info.sampling;

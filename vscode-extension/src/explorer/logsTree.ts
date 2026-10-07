@@ -38,7 +38,8 @@ export interface ListedLog {
   tba?: Record<string, unknown>;
   store?: string;
   robot?: ListedRobot;
-  session?: { id: string; path: string; started_at: string; ended_at: string; start_basis: string };
+  session?: { id: string; path: string; started_at: string; ended_at: string; start_basis: string;
+    open?: boolean; origin?: string; complete?: boolean; growing?: boolean; last_sync?: string; age_sec?: number };
   revlogs?: { path: string; filename: string; size_bytes?: number }[];
   kind?: "wpilog" | "revlog";
   wpilog?: string;
@@ -48,7 +49,7 @@ export interface ListedLog {
 export interface LogListing {
   status?: string;
   logs?: ListedLog[];
-  stores?: { path: string; robots?: ListedRobot[] }[];
+  stores?: { path: string; robots?: ListedRobot[]; mirror?: boolean }[];
   unassigned?: StoreFile[];
   inbox?: StoreFile[];
   unmanaged?: StoreFile[];
@@ -69,7 +70,7 @@ export function directoryPaths(listing: LogListing): string[] {
 }
 
 /** A node of the tree. */
-export type LogNode =
+export type LogNode = { readOnly?: boolean } & (
   | { kind: "store" | "directory"; label: string; folder: string; description?: string; tooltip?: string; children: LogNode[] }
   | { kind: "robot" | "session"; label: string; tooltip: string; children: LogNode[] }
   | { kind: "imports"; label: string; group: "unassigned" | "inbox" | "unmanaged"; store: string; files: StoreFile[]; children: LogNode[] }
@@ -81,7 +82,7 @@ export type LogNode =
   /** A log: its line in the tree, and the log itself. */
   | { kind: "log"; label: string; description: string; tooltip: string; log: ListedLog }
   /** A line that is not a log: a directory that could not be read, an empty listing, an error. */
-  | { kind: "note"; label: string; tooltip?: string };
+  | { kind: "note"; label: string; tooltip?: string });
 
 /** The label of logs that name no event. */
 export const NO_EVENT = "No event";
@@ -304,7 +305,10 @@ export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
           description: [file.state, file.stated_robot, formatSize(file.size)].filter(Boolean).join(" · "),
           tooltip: [file.path, file.reason, file.stated_robot ? `Stated robot: ${file.stated_robot}` : undefined].filter(Boolean).join("\n") })) });
     }
-    roots.push(directoryNode("store", store.path, children, listing));
+    const node = directoryNode("store", store.path, children, listing);
+    const markReadOnly = (item: LogNode) => { item.readOnly = true; if ("children" in item) item.children.forEach(markReadOnly); };
+    if (store.mirror) markReadOnly(node);
+    roots.push(node);
   }
   const plain = (listing.logs ?? []).filter(l => !l.store);
   const used = new Set<string>();

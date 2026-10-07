@@ -15,10 +15,11 @@ import { McpClient, ToolError } from "./mcpClient";
 import { SessionRegistration } from "./directoryLease";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
-import { LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
+import { ListedLog, LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
 import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError } from "./explorer/organize";
 import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
 import { organizeSources } from "./explorer/organizeSources";
+import { mirroredCopy, originOf, pitEndpoint, pitLogTree, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
 import { explorerPage } from "./explorer/webviewHtml";
 
 /** The custom editor's view type, as package.json declares it. */
@@ -33,9 +34,13 @@ const ELEMENTS_PLOTTED = 16;
 const CONSOLE_LIMIT = 500;
 
 /** A log open in the editor: its file, the server that read it, and its listing. */
+export type ExplorerSpec = DaemonSpec | { kind: "pit"; name: string; url: string };
+
 interface OpenLog {
   path: string;
-  spec?: DaemonSpec;
+  spec?: ExplorerSpec;
+  source?: ListedLog;
+  copy?: string;
   listing?: EntryListing;
 }
 
@@ -60,13 +65,26 @@ export class Explorer implements vscode.Disposable {
     private readonly serverManager: ServerManager,
     private readonly windowSpec: () => DaemonSpec,
     private readonly windowDirectories: () => string[] | undefined = () => undefined,
-    private readonly registration?: () => Promise<SessionRegistration>
+    private readonly registration?: () => Promise<SessionRegistration>,
+    private readonly pitUrl: () => string | undefined = () => undefined
   ) {
     this.choices = { never: context.globalState.get<string[]>(NEVER_ORGANIZE_KEY) ?? [], deferred: [], offered: {} };
     this.logs = new LogsProvider(this);
     this.entries = new EntriesProvider(this);
     this.editor = new ExplorerEditorProvider(this);
     this.disposables.push(
+      // Custom editor URIs are documents, not paths on this laptop. No file contents cross this provider.
+      vscode.workspace.registerFileSystemProvider("wpilog-pit", {
+        onDidChangeFile: new vscode.EventEmitter<vscode.FileChangeEvent[]>().event,
+        watch: () => new vscode.Disposable(() => {}),
+        stat: uri => { readRemoteLogUri(uri.toString()); return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: 0 }; },
+        readDirectory: () => [],
+        readFile: () => { throw vscode.FileSystemError.Unavailable("Open this remote log with WPILog Explorer"); },
+        writeFile: () => { throw vscode.FileSystemError.NoPermissions("Pit log documents are read-only"); },
+        createDirectory: () => { throw vscode.FileSystemError.NoPermissions(); },
+        delete: () => { throw vscode.FileSystemError.NoPermissions(); },
+        rename: () => { throw vscode.FileSystemError.NoPermissions(); },
+      }, { isReadonly: true, isCaseSensitive: true }),
       vscode.window.registerTreeDataProvider(LOGS_VIEW, this.logs),
       vscode.window.registerTreeDataProvider(ENTRIES_VIEW, this.entries),
       vscode.window.registerCustomEditorProvider(EDITOR_VIEW_TYPE, this.editor, {
@@ -81,14 +99,16 @@ export class Explorer implements vscode.Disposable {
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearLogFilter", () => this.logs.setFilter("")),
       vscode.commands.registerCommand("wpilog-mcp.explorer.filterEntries", () => this.entries.askFilter()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearEntryFilter", () => this.entries.setFilter("")),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.openLog", (logPath: string) =>
-        vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(logPath), EDITOR_VIEW_TYPE)
+      vscode.commands.registerCommand("wpilog-mcp.explorer.openLog", (logPath: string, spec?: ExplorerSpec, listed?: ListedLog) =>
+        vscode.commands.executeCommand("vscode.openWith", spec?.kind === "pit"
+          ? vscode.Uri.parse(remoteLogUri(spec.url, logPath, listed?.session)) : vscode.Uri.file(logPath), EDITOR_VIEW_TYPE)
       ),
       vscode.commands.registerCommand("wpilog-mcp.explorer.revealLog", (item?: LogItem) => {
-        if (item?.resourceUri) void vscode.commands.executeCommand("revealFileInOS", item.resourceUri);
+        if (item?.resourceUri?.scheme === "file") void vscode.commands.executeCommand("revealFileInOS", item.resourceUri);
       }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.copyLogPath", (item?: LogItem) => {
-        if (item?.resourceUri) void vscode.env.clipboard.writeText(item.resourceUri.fsPath);
+        if (item?.node.kind === "log") void vscode.env.clipboard.writeText(item.node.log.path);
+        else if (item?.resourceUri) void vscode.env.clipboard.writeText(item.resourceUri.fsPath);
       }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.showEntry", (nameOrItem: string | EntryItem) =>
         this.editor.selectEntry(entryNameOf(nameOrItem))),
@@ -175,12 +195,12 @@ export class Explorer implements vscode.Disposable {
 
   /** Inline group actions and assignment use the same explicit robot/move choices as an offer. */
   private async importItem(item?: LogItem, assigning = false): Promise<void> {
-    if (!item) return;
+    if (!item || item.spec.kind === "pit" || item.node.readOnly) return;
     try {
       const node = item.node;
       if (node.kind === "log" && !node.log.store || node.kind === "directory") {
         const listing = await this.logs.listing(item.spec);
-        const stores = listing.stores ?? [];
+        const stores = (listing.stores ?? []).filter(store => !store.mirror);
         const target = stores.length === 1 ? stores[0].path : (await vscode.window.showQuickPick(
           stores.map(s => ({ label: path.basename(s.path), description: s.path, store: s.path })),
           { title: "Import a copy into a store", placeHolder: "Choose the destination store" }))?.store;
@@ -263,8 +283,8 @@ export class Explorer implements vscode.Disposable {
    * when the server's URL changes (a port taken by another program), so a session is never
    * aimed at a port nobody answers on.
    */
-  async clientFor(spec: DaemonSpec): Promise<McpClient> {
-    const url = await this.serverManager.ensure(spec);
+  async clientFor(spec: ExplorerSpec): Promise<McpClient> {
+    const url = spec.kind === "pit" ? spec.url : await this.serverManager.ensure(spec);
     if (!url) {
       throw new Error("The server could not be started; the WPILog Analyzer output says why.");
     }
@@ -275,9 +295,18 @@ export class Explorer implements vscode.Disposable {
       // A server at a new URL was started again, perhaps with other directories: its streams are new
       this.data.clear();
     }
-    const client = new McpClient(url, this.extensionVersion, this.registration);
+    const client = new McpClient(url, this.extensionVersion, spec.kind === "pit" ? undefined : this.registration);
     this.clients.set(spec.name, { url, client });
     return client;
+  }
+
+  pitSpec(): ExplorerSpec | undefined {
+    const url = pitEndpoint(this.pitUrl());
+    return url ? { kind: "pit", name: `pit:${url}`, url } : undefined;
+  }
+
+  async offlineCopy(source: ListedLog, url: string): Promise<ListedLog | undefined> {
+    return mirroredCopy(source, await this.logs.listing(this.spec()), originOf(url));
   }
 
   /** Called when the server was started again or its URL changed: listings may have changed. */
@@ -314,7 +343,7 @@ function entryNameOf(nameOrItem: string | EntryItem): string {
 class LogItem extends vscode.TreeItem {
   constructor(
     readonly node: LogNode,
-    readonly spec: DaemonSpec,
+    readonly spec: ExplorerSpec,
     collapsibleState: vscode.TreeItemCollapsibleState
   ) {
     super(node.label, collapsibleState);
@@ -352,14 +381,14 @@ class LogItem extends vscode.TreeItem {
         this.iconPath = new vscode.ThemeIcon("history");
         break;
       case "log":
-        this.resourceUri = vscode.Uri.file(node.log.path);
+        this.resourceUri = spec.kind === "pit" ? vscode.Uri.parse(remoteLogUri(spec.url, node.log.path, node.log.session)) : vscode.Uri.file(node.log.path);
         this.description = node.description;
         this.tooltip = node.tooltip;
         this.contextValue = node.log.store || node.log.kind === "revlog" ? "wpilogLog" : "wpilogPlainLog";
         this.command = {
           command: "wpilog-mcp.explorer.openLog",
           title: "Open in WPILog Explorer",
-          arguments: [node.log.wpilog ?? node.log.path],
+          arguments: [node.log.wpilog ?? node.log.path, spec, node.log],
         };
         break;
       case "note":
@@ -367,6 +396,8 @@ class LogItem extends vscode.TreeItem {
         this.tooltip = node.tooltip;
         break;
     }
+    if (node.readOnly) this.contextValue = node.kind === "log" ? "wpilogLog" : "wpilogMirrorGroup";
+    if (spec.kind === "pit") this.contextValue = node.kind === "log" ? "wpilogPitLog" : "wpilogPitGroup";
   }
 }
 
@@ -404,7 +435,13 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   }
 
   async getChildren(element?: LogItem): Promise<LogItem[]> {
-    if (!element) return this.nodesOf(this.explorer.spec());
+    if (!element) {
+      const local = this.explorer.spec(), pit = this.explorer.pitSpec();
+      if (!pit || pit.kind !== "pit") return this.nodesOf(local);
+      const [here, there] = await Promise.all([this.listing(local), this.listing(pit)]);
+      return [new LogItem({ kind: "directory", label: "This laptop", folder: "", children: buildLogTree(here, this.filter) }, local, vscode.TreeItemCollapsibleState.Expanded),
+        new LogItem({ kind: "directory", label: "Pit server", folder: pit.url, children: pitLogTree(there, here, originOf(pit.url), this.filter) }, pit, vscode.TreeItemCollapsibleState.Expanded)];
+    }
     if ("children" in element.node) {
       return element.node.children.map(
         (child, index) =>
@@ -416,7 +453,7 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
     return [];
   }
 
-  private async nodesOf(spec: DaemonSpec): Promise<LogItem[]> {
+  private async nodesOf(spec: ExplorerSpec): Promise<LogItem[]> {
     const listing = await this.listing(spec);
     return buildLogTree(listing, this.filter).map(
       (node, index) =>
@@ -427,7 +464,7 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   }
 
   /** The server's listing, fetched once until the next refresh; a failure is a listing that says so. */
-  listing(spec: DaemonSpec): Promise<LogListing> {
+  listing(spec: ExplorerSpec): Promise<LogListing> {
     let pending = this.listings.get(spec.name);
     if (!pending) {
       pending = this.fetch(spec);
@@ -436,12 +473,12 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
     return pending;
   }
 
-  private async fetch(spec: DaemonSpec): Promise<LogListing> {
+  private async fetch(spec: ExplorerSpec): Promise<LogListing> {
     try {
       const client = await this.explorer.clientFor(spec);
       const listing = await completeListing(args => client.callTool("list_available_logs", args) as Promise<LogListing>);
       // Do not hold up the tree while the person considers an offer.
-      void this.explorer.offerOrganizing(listing);
+      if (spec.kind !== "pit") void this.explorer.offerOrganizing(listing);
       return listing;
     } catch (error) {
       if (error instanceof ToolError && error.result) return error.result as LogListing;
@@ -617,6 +654,9 @@ interface WebviewMessage {
   maxPoints?: number;
   pattern?: string;
   level?: string;
+  enabled?: boolean;
+  follow?: boolean;
+  offset?: number;
 }
 
 /** One editor: its panel and the log it shows. */
@@ -624,6 +664,9 @@ interface Editor {
   panel: vscode.WebviewPanel;
   log: OpenLog;
   ready: boolean;
+  followTimer?: ReturnType<typeof setInterval>;
+  following?: boolean;
+  refreshing?: boolean;
 }
 
 /**
@@ -653,17 +696,25 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       scriptUri: asset("explorer.js"),
       plot: {
         styleUri: asset("vendor", "uPlot.min.css"),
-        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("plot.js"), asset("console.js"), asset("field.js"), asset("rev.js")],
+        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("follow.js"), asset("plot.js"), asset("console.js"), asset("field.js"), asset("rev.js")],
       },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
-    const editor: Editor = { panel, log: { path: document.uri.fsPath }, ready: false };
+    const remote = readRemoteLogUri(document.uri.toString());
+    const editor: Editor = { panel, log: remote ? { path: remote.path,
+      spec: { kind: "pit", name: `pit:${remote.url}`, url: remote.url },
+      source: { path: remote.path, filename: remote.path.replace(/\\/g, "/").split("/").pop()!, friendly_name: "Pit session", session: remote.session } }
+      : { path: document.uri.fsPath }, ready: false };
     this.editors.set(key, editor);
     panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
       switch (message.type) {
         case "ready":
           editor.ready = true;
           void this.load(editor);
+          break;
+        case "follow":
+          clearInterval(editor.followTimer); editor.following = message.enabled === true;
+          if (editor.following) editor.followTimer = setInterval(() => void this.refreshLive(editor), 1000);
           break;
         case "entryInfo":
           if (typeof message.name === "string") void this.sendInfo(editor, message.name);
@@ -694,6 +745,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       if (panel.active) this.activate(key);
     });
     panel.onDidDispose(() => {
+      clearInterval(editor.followTimer); editor.following = false;
       this.editors.delete(key);
       if (this.activeKey === key) {
         this.activeKey = undefined;
@@ -714,24 +766,33 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
    * directories is refused by the server itself, with its own words and hint.
    */
   private async load(editor: Editor): Promise<void> {
+    editor.following = false; clearInterval(editor.followTimer);
     const { path: logPath } = editor.log;
     const name = path.basename(logPath);
     const post = (message: Record<string, unknown>) => void editor.panel.webview.postMessage(message);
     post({ type: "loading", name, path: logPath, text: "Starting the server…" });
-    const spec = this.explorer.spec();
+    const spec = editor.log.spec ?? this.explorer.spec();
     let firstError: { message: string; hint?: string } | undefined;
     try {
       const client = await this.explorer.clientFor(spec);
       post({ type: "loading", name, path: logPath, text: "Reading the log…" });
       const listing = (await client.callTool("list_entries", { path: logPath })) as EntryListing;
-      editor.log = { path: logPath, spec, listing };
-      post({ type: "log", name, path: logPath, listing });
+      editor.log = { ...editor.log, path: logPath, spec, listing };
+      post({ type: "log", name, path: logPath, listing, copy: editor.log.copy ?? (spec.kind === "pit" ? "Reading the pit server" : "Reading this laptop"), live: spec.kind === "pit" && editor.log.source?.session?.open === true });
       if (this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
       return;
     } catch (error) {
       const hint = error instanceof ToolError ? (error.result?.hint as string | undefined) : undefined;
       firstError = { message: messageOf(error), hint };
       this.explorer.log(`Explorer: the server could not read ${logPath}: ${messageOf(error)}`);
+      if (spec.kind === "pit" && editor.log.source && !(error instanceof ToolError && error.result)) {
+        const copy = await this.explorer.offlineCopy(editor.log.source, spec.url);
+        if (copy) {
+          editor.log = { path: copy.path, spec: this.explorer.spec(), source: copy,
+            copy: `Reading the offline mirror · last synchronized ${copy.session?.last_sync ?? "unknown"}` };
+          await this.load(editor); return;
+        }
+      }
     }
     post({
       type: "error",
@@ -743,6 +804,25 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
         "A server reads only the files inside its log directories: add this file's folder to " +
           "wpilog-mcp.logDirectory or wpilog-mcp.additionalLogDirectories, or move the file there.",
     });
+  }
+
+  private async refreshLive(editor: Editor): Promise<void> {
+    if (!editor.following || !editor.panel.visible || editor.refreshing || editor.log.spec?.kind !== "pit") return;
+    editor.refreshing = true;
+    try {
+      const client = await this.explorer.clientFor(editor.log.spec);
+      const listing = await client.callTool("list_entries", { path: editor.log.path }) as EntryListing;
+      if (editor.following) {
+        editor.log.listing = listing;
+        if (this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
+        void editor.panel.webview.postMessage({ type: "live", listing });
+      }
+    } catch (error) {
+      editor.following = false; clearInterval(editor.followTimer);
+      void editor.panel.webview.postMessage({ type: "followStopped", reason: messageOf(error) });
+      // The ordinary load path checks exact origin/session identity before offering the mirror.
+      await this.load(editor);
+    } finally { editor.refreshing = false; }
   }
 
   private async sendInfo(editor: Editor, name: string): Promise<void> {
@@ -833,7 +913,8 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     let result: Record<string, unknown>;
     try {
       const client = await this.explorer.clientFor(spec);
-      const args: Record<string, unknown> = { path: editor.log.path, limit: CONSOLE_LIMIT, collapse_repeats: true };
+      const args: Record<string, unknown> = { path: editor.log.path, limit: CONSOLE_LIMIT, collapse_repeats: message.follow !== true };
+      if (typeof message.offset === "number") args.offset = message.offset;
       if (typeof message.pattern === "string" && message.pattern.trim() !== "") args.pattern = message.pattern.trim();
       if (typeof message.level === "string" && message.level !== "any") args.level = message.level;
       if (typeof message.startTime === "number") args.start_time = message.startTime;

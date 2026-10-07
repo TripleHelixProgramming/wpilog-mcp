@@ -99,8 +99,10 @@ public class HttpTransport {
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
   private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores);
-  private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores, storeDoor,
-      () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getConfiguredDirectories());
+  private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores,
+      new org.triplehelix.wpilogmcp.store.StoreDoor(() -> storeDirectories != null ? storeDirectories
+          : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getAllowedDirectories()),
+      () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getAllowedDirectories());
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
   private volatile long lastMcpActivityNanos = System.nanoTime();
 

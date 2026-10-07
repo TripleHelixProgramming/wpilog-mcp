@@ -42,6 +42,17 @@ final class StoreSyncEndpoint {
   synchronized boolean active() { return jobs.values().stream().anyMatch(Job::active); }
   void handle(HttpExchange exchange) throws IOException {
     String route = exchange.getRequestURI().getPath();
+    if (route.equals(PATH) && exchange.getRequestMethod().equals("GET")) {
+      var inventory = door.inventory(); var targets = new java.util.ArrayList<Map<String, Object>>();
+      var unreadable = new java.util.ArrayList<>(inventory.unreadable());
+      for (var selected : inventory.stores()) if (!selected.description().mirror()) {
+        try {
+          var peers = door.peers(selected);
+          targets.add(Map.of("path", selected.root().toString(), "id", selected.description().id(), "peers", peers));
+        } catch (IOException | RuntimeException e) { unreadable.add(new StoreDoor.Unreadable(selected.root().toString(), e.getMessage())); }
+      }
+      StoreEndpoint.send(exchange, 200, Map.of("stores", targets, "unreadable", unreadable)); return;
+    }
     if (exchange.getRequestMethod().equals("GET") && route.startsWith(PATH + "/")) {
       Job job; synchronized (this) { job = jobs.get(route.substring(PATH.length() + 1)); }
       StoreEndpoint.send(exchange, job == null ? 404 : 200, job == null ? Map.of("error", "Unknown sync job") : job.view); return;
@@ -68,7 +79,7 @@ final class StoreSyncEndpoint {
       String selected = string(body, "store");
       if (selected != null) root = Path.of(selected);
       else {
-        var found = door.stores();
+        var found = door.stores().stream().filter(s -> !s.description().mirror()).toList();
         if (found.size() == 1) root = found.get(0).root();
         else if (found.isEmpty() && configured.get().size() == 1) root = configured.get().iterator().next();
         else throw new IllegalArgumentException("store is required when there is not one configured destination");

@@ -44,6 +44,7 @@ ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : "
     <h1 id="title">WPILog Explorer</h1>
     <div id="path" class="muted"></div>
     <div id="state" class="muted">Starting the server…</div>
+    <label id="follow-label" class="hidden"><input id="follow" type="checkbox"> Follow live session</label>
   </header>
   <section id="summary" class="cards hidden">
     <div class="card"><div class="card-label">Start</div><div id="start" class="card-value"></div></div>

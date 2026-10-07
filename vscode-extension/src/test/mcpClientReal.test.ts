@@ -1,3 +1,5 @@
+import { StoreClient } from "../explorer/storeClient";
+import { runImport } from "../explorer/importJobs";
 // The explorer's client against the real server JAR over its HTTP transport: npm test
 //
 // Runs when a server JAR is at hand (the bundled copy under server/, or the one the Gradle build
@@ -116,6 +118,12 @@ test("the client works the real server: a session, a listing, an error result, a
     const leased = origins.find(dir => dir.origin === "leased")!;
     assert.equal(canonical(leased.path), canonical(leaseDir));
     assert.equal(leased.team, 9999);
+    // The local picker sees leased stores too; the network door still exports permanent roots only.
+    for (const store of [logDir, leaseDir]) await runImport(client.endpoint, { store, paths: [], move: false, stated_robot: null }, () => {});
+    const targets = await new StoreClient(client.endpoint).targets();
+    assert.deepEqual(targets.stores.map(store => canonical(store.path)).sort(), [canonical(logDir), canonical(leaseDir)].sort());
+    assert.match((await client.callTool("get_server_guide")).server_location as string, /files on this machine and its mirrors/);
+
     assert.ok(!JSON.stringify(withLease).includes(key));
     // No logs are present, so availability can be observed without calling the live TBA API.
     assert.equal((withLease.tba_enrichment as { available: boolean }).available, true);

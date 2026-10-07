@@ -45,6 +45,8 @@
   const byId = (id) => document.getElementById(id);
   const els = {
     title: byId("title"),
+    follow: byId("follow"),
+    followLabel: byId("follow-label"),
     path: byId("path"),
     state: byId("state"),
     summary: byId("summary"),
@@ -196,7 +198,9 @@
     const listing = message.listing;
     els.title.textContent = message.name;
     els.path.textContent = message.path;
-    els.state.textContent = "";
+    els.state.textContent = message.copy || "";
+    els.follow.checked = false;
+    show(els.followLabel, Boolean(message.live));
     const range = listing.time_range_sec || {};
     els.start.textContent = seconds(range.start);
     els.end.textContent = seconds(range.end);
@@ -256,6 +260,20 @@
         els.error.textContent = message.message + (message.hint ? "\n" + message.hint : "");
         show(els.error, true);
         break;
+      case "live": {
+        const range = message.listing.time_range_sec || {};
+        if (els.follow.checked && plot && Number.isFinite(range.end)) {
+          entries = message.listing.entries || entries; drawRows();
+          els.end.textContent = seconds(range.end); els.duration.textContent = seconds(range.duration);
+          plot.follow(range.end, entries);
+          if (consolePane) consolePane.follow();
+        }
+        break;
+      }
+      case "followStopped":
+        els.follow.checked = false; els.state.textContent = "Follow stopped: " + message.reason;
+        if (consolePane) consolePane.setFollowing(false);
+        break;
       case "entryInfo":
         drawInfo(message.name, message.info);
         break;
@@ -291,6 +309,10 @@
     }
   });
 
+  els.follow.addEventListener("change", () => {
+    if (consolePane) consolePane.setFollowing(els.follow.checked);
+    host.post({ type: "follow", enabled: els.follow.checked });
+  });
   els.filter.addEventListener("input", drawRows);
   els.detailsClose.addEventListener("click", () => {
     selected = null;

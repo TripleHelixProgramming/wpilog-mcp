@@ -30,6 +30,11 @@ public final class StoreDoor {
 
   public StoreDoor(Supplier<Set<Path>> configured) { this.configured = configured; }
 
+  /** Remembered peers are for the local command picker, never part of the public door. */
+  public List<String> peers(Selected selected) throws IOException {
+    return new StoreFiles(selected.root(), selected.security()).read(selected.root().resolve("store.json"), StoreManifest.Header.class).peers();
+  }
+
   /** Only store discovery is cached; manifests and growing-file lengths are read on demand. */
   public List<Selected> stores() throws IOException {
     return inventory().stores();

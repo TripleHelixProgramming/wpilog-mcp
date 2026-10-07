@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as path from "node:path";
-import { claudeArgs, claudeCommand, claudeCommandText, findClaude } from "../claudeRegistration";
+import { claudeArgs, claudeCommand, claudeCommandText, claudePitArgs, claudePitCommand, claudePitCommandText, findClaude } from "../claudeRegistration";
 import { ignoreProjectFile, projectFileOffer, projectFileText } from "../projectFile";
 
 for (const platform of ["linux", "darwin", "win32"] as const) {
@@ -55,4 +55,19 @@ test("project YAML carries only directories and a valid stated team, with portab
   assert.ok(!/never-written|servers|port|tba/.test(text));
   assert.equal(ignoreProjectFile("build/\r\n"), "build/\r\n.wpilog-mcp.yaml\r\n");
   assert.equal(ignoreProjectFile("/.wpilog-mcp.yaml\n"), "/.wpilog-mcp.yaml\n");
+});
+
+
+for (const platform of ["linux", "darwin", "win32"] as const) test(`pit registration is a second user-scope URL bridge on ${platform}`, () => {
+  const launcher = platform === "win32" ? "C:\\Home\\wpilog-mcp.bat" : "/my home/wpilog-mcp";
+  const url = "http://pit:2363/mcp";
+  const args = ["mcp", "add", "--scope", "user", "wpilog-pit", "--",
+    ...(platform === "win32" ? ["cmd", "/c", launcher] : [launcher]), "connect", "--url", url];
+  assert.deepEqual(claudePitArgs(launcher, url, platform), args);
+  const command = claudePitCommand("claude", launcher, url, platform);
+  assert.equal(command.command, platform === "win32" ? "cmd.exe" : "claude");
+  if (platform !== "win32") assert.deepEqual(command.args, args);
+  const quoted = platform === "win32" ? args.map(word => `"${word}"`) : args.map(word => `'${word}'`);
+  assert.equal(claudePitCommandText(launcher, url, platform), `claude ${quoted.join(" ")}`);
+  assert.ok(!/--logdir|--config|tba|password/.test(JSON.stringify(command)));
 });

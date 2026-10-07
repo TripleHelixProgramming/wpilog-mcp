@@ -36,7 +36,8 @@ export function containsPath(folder: string, file: string, paths: path.PlatformP
 }
 
 export function organizeFolders(listing: LogListing): string[] {
-  return [...new Set([...directoryPaths(listing), ...(listing.stores ?? []).map(s => s.path)])];
+  return [...new Set([...directoryPaths(listing), ...(listing.stores ?? []).map(s => s.path)])]
+    .filter(folder => !listing.stores?.some(s => s.mirror && folderKey(s.path) === folderKey(folder)));
 }
 
 /** Explicit commands may revisit a refused folder; automatic offers respect every remembered choice. */

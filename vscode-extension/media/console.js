@@ -34,7 +34,7 @@
       this.timer = null;
       this.build();
       plot.onViewChanged((view) => {
-        if (this.windowOnly.checked) this.schedule();
+        if (this.windowOnly.checked && !this.following) this.schedule();
       });
     }
 
@@ -74,9 +74,17 @@
     }
 
     schedule(now) {
+      if (this.following) { this.followEnd = undefined; this.result = null; }
       clearTimeout(this.timer);
       this.timer = setTimeout(() => this.ask(), now ? 0 : 300);
     }
+
+    setFollowing(enabled) {
+      this.following = enabled; this.followEnd = undefined; this.pendingFollow = false;
+      this.result = null; this.ask();
+    }
+
+    follow() { if (this.following && !this.pendingFollow) this.ask(); }
 
     ask() {
       if (!this.plot.log) return;
@@ -86,6 +94,13 @@
         message.startTime = this.plot.view.start;
         message.endTime = this.plot.view.end;
       }
+      if (this.following) {
+        message.follow = true;
+        message.startTime = Math.max(this.windowOnly.checked ? this.plot.view.start : this.plot.log.start, this.followEnd ?? this.plot.log.start);
+        message.endTime = this.plot.log.end;
+        this.followRequest = { from: message.startTime, end: message.endTime, offset: 0, matches: [] };
+        this.pendingFollow = true;
+      }
       this.count.textContent = "searching…";
       this.host.post(message);
     }
@@ -93,8 +108,28 @@
     /** The host's answer: search_strings' result. */
     onResult(message) {
       if (message.requestId !== this.request) return;
-      const r = message.result || {};
+      let r = message.result || {};
+      if (this.following && this.pendingFollow && r.status !== "error") {
+        const request = this.followRequest;
+        request.matches.push(...(r.matches || []));
+        request.matches = request.matches.slice(-500);
+        if (r.has_more && (r.matches || []).length) {
+          request.offset += r.matches.length;
+          this.host.post({ type: "console", requestId: this.request, follow: true, pattern: this.pattern.value,
+            level: this.level.value, startTime: request.from, endTime: request.end, offset: request.offset });
+          return;
+        }
+        const combined = Follow.consoleMatches(this.result?.matches || [], request.matches, request.from,
+          this.windowOnly.checked ? this.plot.view.start : this.plot.log.start, 500);
+        r = { ...r, status: combined.length ? "ok" : r.status, matches: combined, total_matches: combined.length, total_after_collapse: undefined, has_more: false };
+        this.followEnd = request.end;
+      }
+      this.pendingFollow = false;
       this.result = r;
+      this.draw(r);
+    }
+
+    draw(r) {
       this.list.replaceChildren();
       if (r.status === "error") {
         this.count.textContent = "";
@@ -110,6 +145,7 @@
         return;
       }
       this.count.textContent = (r.has_more ? "first " + matches.length + " of " + total : matches.length) + " matches"
+        + (this.following ? " (latest 500; follow)" : "")
         + (r.total_after_collapse !== undefined && r.total_after_collapse !== r.total_matches ? " (" + r.total_matches + " before collapsing repeats)" : "");
       for (const m of matches) {
         const line = el("div", "console-line");

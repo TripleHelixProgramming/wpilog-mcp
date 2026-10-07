@@ -11,9 +11,11 @@ import { ServerManager, StandaloneDaemonSpec } from "./serverManager";
 import { STANDALONE_SERVER, findStandaloneInstall } from "./standaloneServer";
 import { InstallSummary, installAction, installArgs, launcherVersion, parseInstallSummary } from "./standaloneInstall";
 import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./directoryLease";
-import { claudeCommand, claudeCommandText, findClaude } from "./claudeRegistration";
+import { claudeCommand, claudeCommandText, claudePitCommand, claudePitCommandText, findClaude } from "./claudeRegistration";
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
 import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
+import { MirrorStatus, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, serverDefinitions, sessionPicks } from "./explorer/pitServer";
+import { StoreClient, rememberedPeers, syncSummary } from "./explorer/storeClient";
 import { Explorer } from "./explorer";
 import { TBA_KEY_QUIET_MS, TBA_KEY_SETTING, planTbaKeyMove } from "./tbaKey";
 
@@ -249,16 +251,27 @@ export function activate(context: vscode.ExtensionContext) {
   }, prepareStandalone);
 
   const projects = () => localFolders().map(folder => ({ folderPath: folder.uri.fsPath, own: projectSettings(folder) }));
+  const pitUrl = () => vscode.workspace.getConfiguration("wpilog-mcp").get<string>("pitServerUrl");
+  const mirrorSettings = () => {
+    const config = vscode.workspace.getConfiguration("wpilog-mcp");
+    return { enabled: config.get<boolean>("mirror.enabled"), folder: config.get<string>("mirror.folder"),
+      days: config.get<number>("mirror.days"), maxSizeGb: config.get<number>("mirror.maxSizeGb"),
+      robots: config.get<string[]>("mirror.robots"), events: config.get<string[]>("mirror.events"), intervalSec: config.get<number>("mirror.intervalSec") };
+  };
+  const mirrorConfiguration = () => mirrorRequest(pitUrl(), mirrorSettings(), context.globalStorageUri.fsPath);
   async function registration(): Promise<SessionRegistration> {
     const user = userSettings();
     const additional = Array.isArray(user.additionalLogDirectories) ? user.additionalLogDirectories : [];
     if (!user.logDirectory?.trim() && !additional.some(dir => typeof dir === "string" && dir.trim())) {
       user.logDirectory = wellKnownLogDirectory();
     }
-    return { directories: directoryRegistration(user, projects()), key: await context.secrets.get(TBA_SECRET) || null };
+    const directories = directoryRegistration(user, projects());
+    const mirror = mirrorRequest(pitUrl(), { ...mirrorSettings(), enabled: true }, context.globalStorageUri.fsPath);
+    if (mirror && !directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
+    return { directories, key: await context.secrets.get(TBA_SECRET) || null };
   }
   const explorer = new Explorer(context, outputChannel, serverManager, standaloneSpec,
-    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration);
+    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration, pitUrl);
   context.subscriptions.push(serverManager, explorer, outputChannel, didChangeEmitter);
 
   /** Registration finishes before an agent receives its URL; a third session can then read the lease. */
@@ -284,8 +297,8 @@ export function activate(context: vscode.ExtensionContext) {
     onDidChangeMcpServerDefinitions: didChangeEmitter.event,
     provideMcpServerDefinitions: async () => {
       const url = await connectWindow();
-      return url ? [new vscode.McpHttpServerDefinition("WPILog Analyzer", vscode.Uri.parse(url),
-        undefined, context.extension.packageJSON.version)] : [];
+      return serverDefinitions(url, pitUrl()).map(server => new vscode.McpHttpServerDefinition(server.label,
+        vscode.Uri.parse(server.url), undefined, context.extension.packageJSON.version));
     },
     resolveMcpServerDefinition: async server => server,
   };
@@ -378,6 +391,127 @@ export function activate(context: vscode.ExtensionContext) {
   }
   context.subscriptions.push(vscode.commands.registerCommand("wpilog-mcp.registerWithClaudeCode", () => scheduleProjectOffers(true)));
 
+  // The server owns disk policy and transfers; this window supplies settings and user choices.
+  const mirrorBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
+  mirrorBar.command = "wpilog-mcp.mirrorActions";
+  let mirrorState: MirrorStatus = { state: "disabled" }, lastConfigured: string | undefined, mirrorPolling = false;
+  let mirrorTimer: ReturnType<typeof setInterval> | undefined;
+  async function storeClient(): Promise<StoreClient> {
+    const endpoint = await connectWindow();
+    if (!endpoint) throw new Error("The local server could not be started; see WPILog Analyzer output.");
+    return new StoreClient(endpoint);
+  }
+  function showMirror(status: MirrorStatus) {
+    mirrorState = status;
+    mirrorBar.text = mirrorStatusText(status);
+    mirrorBar.tooltip = [status.config?.folder, status.last_sync ? `Last synchronized: ${status.last_sync}` : undefined,
+      status.result?.reason, ...(status.result?.refusals ?? []), ...(status.result?.retained ?? [])].filter(Boolean).join("\n");
+    if (pitUrl()?.trim() || status.state !== "disabled") mirrorBar.show(); else mirrorBar.hide();
+  }
+  async function pollMirror() {
+    if (mirrorPolling) return;
+    mirrorPolling = true;
+    try {
+      const client = await storeClient(), status = await client.status();
+      const changed = mirrorState.last_sync !== status.last_sync;
+      showMirror(status); if (changed) explorer.serversChanged();
+    } catch (error) {
+      showMirror({ ...mirrorState, state: "offline", result: { reason: error instanceof Error ? error.message : String(error) } });
+    } finally { mirrorPolling = false; }
+  }
+  async function configureMirror() {
+    const client = await storeClient(), config = mirrorConfiguration();
+    if (config) {
+      await client.configure(config); lastConfigured = JSON.stringify(config);
+    } else if (lastConfigured) { await client.disable(); lastConfigured = undefined; }
+    showMirror(await client.status());
+    clearInterval(mirrorTimer);
+    if (config || mirrorState.state !== "disabled") mirrorTimer = setInterval(() => void pollMirror(), 5000);
+  }
+  function command(action: () => Promise<unknown>) {
+    return async () => { try { await action(); } catch (error) {
+      const text = error instanceof Error ? error.message : String(error); outputChannel.appendLine(text); void vscode.window.showErrorMessage(text);
+    } };
+  }
+  async function pinSession(pinned: boolean) {
+    const client = await storeClient(); const status = await client.status();
+    if (!status.origin) throw new Error("Configure a mirror and synchronize it before pinning sessions.");
+    explorer.logs.refresh();
+    const pit = explorer.pitSpec();
+    const listing = pit ? await explorer.logs.listing(pit) : undefined;
+    const local = listing && listing.status !== "error" ? undefined : await explorer.logs.listing(explorer.spec());
+    const available = local ? { ...local, logs: local.logs?.filter(log => log.session?.origin === status.origin!.url) } : listing!;
+    const choices = sessionPicks(available, status.origin.pinned_sessions, !pinned);
+    const choice = await vscode.window.showQuickPick(choices, { title: pinned ? "Pin session" : "Unpin session", placeHolder: "Pins keep a session outside the day window and size cap" });
+    if (!choice) return;
+    await client.pin(choice.id, pinned);
+    void vscode.window.showInformationMessage(`${pinned ? "Pin" : "Unpin"} queued for ${choice.label}. It takes effect after the current store job.`);
+    await pollMirror();
+  }
+  async function syncFromLaptop() {
+    const client = await storeClient(), inventory = await client.targets();
+    for (const failed of inventory.unreadable) outputChannel.appendLine(`${failed.path}: ${failed.reason}`);
+    if (!inventory.stores.length) throw new Error("No writable store is configured. Use Organize Logs to create a store first.");
+    const target = inventory.stores.length === 1 ? inventory.stores[0] : (await vscode.window.showQuickPick(
+      inventory.stores.map(store => ({ label: path.basename(store.path), description: store.path, store })), { title: "Sync into which store?" }))?.store;
+    if (!target) return;
+    const remembered = rememberedPeers(target);
+    const choice = remembered.length ? await vscode.window.showQuickPick([...remembered.map(url => ({ label: url, url })),
+      { label: "Another laptop…", url: "" }], { title: "Sync from Laptop", placeHolder: "The other server must be bound to the network" }) : { url: "" };
+    if (!choice) return;
+    const typed = choice.url || await vscode.window.showInputBox({ title: "Sync from Laptop", prompt: "Other laptop's host:port, or HTTP URL",
+      validateInput: value => { try { peerUrl(value); return undefined; } catch (error) { return String(error); } } });
+    if (!typed) return;
+    const url = peerUrl(typed);
+    const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Sync from Laptop", cancellable: false }, progress =>
+      client.sync(target.path, url, job => progress.report({ message: job.progress ? `${job.progress.phase}: ${job.progress.path ?? ""}` : job.state })));
+    outputChannel.appendLine(JSON.stringify(result, null, 2));
+    void vscode.window.showInformationMessage(syncSummary(result)); explorer.serversChanged();
+  }
+  let pitRegistrationOffered = "";
+  async function registerPitClaude(requested: boolean) {
+    const url = pitEndpoint(pitUrl()); if (!url) { if (requested) throw new Error("Set wpilog-mcp.pitServerUrl first."); return; }
+    if (!requested && (pitRegistrationOffered === url || context.globalState.get<string>("wpilog-mcp.claudePitUrl") === url)) return;
+    pitRegistrationOffered = url;
+    if (!requested && await vscode.window.showInformationMessage("Register the pit server with Claude Code for your user account?", "Register", "Not now") !== "Register") return;
+    const spec = await prepareStandalone(); if (!spec) return;
+    const cli = findClaude(process.env.PATH ?? "", process.platform, file => {
+      try { fs.accessSync(file, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
+    });
+    const text = claudePitCommandText(spec.launcher, url, process.platform);
+    if (!cli) {
+      outputChannel.appendLine(text);
+      if (await vscode.window.showInformationMessage("Claude Code CLI was not found. Copy its user registration command?", "Copy Command") === "Copy Command") await vscode.env.clipboard.writeText(text);
+      return;
+    }
+    const run = claudePitCommand(cli, spec.launcher, url, process.platform);
+    await new Promise<void>((resolve, reject) => execFile(run.command, run.args, { timeout: 30_000, windowsHide: true,
+      windowsVerbatimArguments: run.windowsVerbatimArguments }, error => error ? reject(new Error(`Pit registration failed. Run: ${text}`)) : resolve()));
+    await context.globalState.update("wpilog-mcp.claudePitUrl", url);
+    void vscode.window.showInformationMessage("Pit server registered as wpilog-pit at user scope. Restart existing Claude Code sessions to use it.");
+  }
+  const mirrorActions = [
+    { label: "Sync Now", id: "syncNow" }, { label: "Pin Session", id: "pinSession" },
+    { label: "Unpin Session", id: "unpinSession" }, { label: "Open Mirror Folder", id: "openMirrorFolder" },
+    { label: "Sync from Laptop", id: "syncFromLaptop" },
+  ];
+  context.subscriptions.push(mirrorBar, { dispose: () => clearInterval(mirrorTimer) },
+    vscode.commands.registerCommand("wpilog-mcp.mirrorActions", command(async () => {
+      const action = await vscode.window.showQuickPick(mirrorActions, { title: mirrorStatusText(mirrorState).replace(/\$\([^)]+\) /g, "") });
+      if (action) await vscode.commands.executeCommand(`wpilog-mcp.${action.id}`);
+    })),
+    vscode.commands.registerCommand("wpilog-mcp.pinSession", command(() => pinSession(true))),
+    vscode.commands.registerCommand("wpilog-mcp.unpinSession", command(() => pinSession(false))),
+    vscode.commands.registerCommand("wpilog-mcp.syncNow", command(async () => { await (await storeClient()).syncNow(); await pollMirror(); })),
+    vscode.commands.registerCommand("wpilog-mcp.openMirrorFolder", command(async () => {
+      const folder = (await (await storeClient()).status()).config?.folder ?? mirrorConfiguration()?.folder;
+      if (!folder) throw new Error("Configure a mirror first.");
+      await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(folder));
+    })),
+    vscode.commands.registerCommand("wpilog-mcp.syncFromLaptop", command(syncFromLaptop)),
+    vscode.commands.registerCommand("wpilog-mcp.registerPitWithClaudeCode", command(() => registerPitClaude(true)))
+  );
+
   let tbaKeyMove = Promise.resolve();
   let tbaKeyTimer: ReturnType<typeof setTimeout> | undefined;
   function moveTbaKeyNow() {
@@ -395,6 +529,10 @@ export function activate(context: vscode.ExtensionContext) {
         void refreshLease();
         void scheduleProjectOffers();
       }
+      if (event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror")) {
+        void refreshLease().then(command(configureMirror)); didChangeEmitter.fire(); explorer.serversChanged();
+        if (event.affectsConfiguration("wpilog-mcp.pitServerUrl")) void command(() => registerPitClaude(false))();
+      }
       if (event.affectsConfiguration("wpilog-mcp.enableForClaudeCode")) void scheduleProjectOffers();
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -406,8 +544,9 @@ export function activate(context: vscode.ExtensionContext) {
   void (async () => {
     await moveTbaKeyNow();
     await updateStandaloneAtActivation();
-    if (await connectWindow()) void explorer.offerOrganizing();
+    if (await connectWindow()) { void explorer.offerOrganizing(); await command(configureMirror)(); }
     void scheduleProjectOffers();
+    void command(() => registerPitClaude(false))();
   })();
   outputChannel.appendLine("WPILog Analyzer extension activated.");
 }

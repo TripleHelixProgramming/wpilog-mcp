@@ -131,3 +131,10 @@ test("origin-bearing directories and the compatibility path list still offer org
   assert.equal(offerFor(origins, plain, empty)?.count, 1);
   assert.deepEqual(organizeFolders({ log_directory_paths: [plain] }), [plain]);
 });
+
+test("a mirror and its unmanaged files are never offered for organizing", () => {
+  const folder = path.resolve("mirror");
+  const listing = { log_directories: [folder], stores: [{ path: folder, mirror: true }], unmanaged: [{ store: folder, path: path.join(folder, "stray.wpilog") }] };
+  assert.deepEqual(organizeFolders(listing), []);
+  assert.equal(offerFor(listing, folder, { never: [], deferred: [], offered: {} }, true), undefined);
+});

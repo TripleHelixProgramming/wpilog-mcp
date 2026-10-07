@@ -660,3 +660,19 @@ The explorer shares this server through `mcpClient.ts` and `dataClient.ts`. The 
 - Protobuf entries are not decoded. A record of 100 bytes or less is returned as hex, and a longer one only as its size.
 - The memory budgets are estimates, and the heap-pressure check is the backstop (see [Memory Management](#memory-management)).
 - The MCP instructions do not reach every client, which is why `get_server_guide` repeats the guidance.
+
+### Pit server clients in the extension
+
+The local and pit MCP clients have separate sessions. Only the local client registers the
+window's directory and key leases. Remote editor URIs retain the server URL and exact remote
+path, plus session identity for offline fallback; a remote Windows path is never interpreted
+as a laptop path. The mirror settings and user actions go to loopback controls on the local
+server. The peer picker reads remembered URLs from the store, so different windows share one
+history. Neither action rewrites the home configuration.
+
+Follow polls the current log once per second while its editor is visible. Numeric tails replace
+the inclusive timestamp boundary, preserving duplicate timestamps without duplicating a poll.
+Typed arrays are bounded by the plot budget and retain a preceding hold sample. Console follow
+pages a fixed time range without collapsing repeats, retains the latest 500 matches, and
+advances only after the final page. Offline fallback requires origin, session id and relative
+file path and labels the copy; it never chooses by a similar basename.

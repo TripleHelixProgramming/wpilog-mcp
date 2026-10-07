@@ -30,6 +30,8 @@ A log viewer such as AdvantageScope shows you the data, but only if you know whe
 
 A log folder can become a store, organized by robot and session: the extension [offers to organize](vscode-extension/README.md#organizing-your-logs) a folder it finds, and the standalone [import command and inbox](doc/STANDALONE.md#importing-logs) do the same from a terminal or a USB stick. Imports preserve filenames and provenance, and the listing reports files awaiting assignment or refused by the inbox.
 
+The extension can [connect to a pit server and keep an offline mirror](vscode-extension/README.md#pit-server-and-offline-mirror): browse or follow its sessions, pin what you need, and continue analyzing the same files after leaving the network. **Sync from Laptop** combines two teammates' stores through the same HTTP door, preserving provenance and reporting conflicts.
+
 ### What You Can Ask
 
 Start broad; the model finds the logs and the entries. Then get as specific as the data allows:

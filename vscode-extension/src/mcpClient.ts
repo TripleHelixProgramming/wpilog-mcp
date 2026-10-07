@@ -14,6 +14,7 @@
  * touches the VS Code API.
  */
 import * as http from "http";
+import * as https from "https";
 import { leaseChanged, SessionRegistration } from "./directoryLease";
 import {
   JsonRpcMessage,
@@ -231,7 +232,7 @@ export class McpClient {
     };
     if (sessionId !== undefined) headers[SESSION_HEADER] = sessionId;
     return new Promise((resolve, reject) => {
-      const request = http.request(
+      const request = (new URL(endpoint).protocol === "https:" ? https : http).request(
         endpoint,
         { method, headers, timeout },
         (response) => {

@@ -22,6 +22,14 @@ class DiscoveryToolsTest extends ToolTestBase {
     DiscoveryTools.registerAll(registry);
   }
 
+  @Test void theGuideDistinguishesTheLocalCopyFromThePitServer() throws Exception {
+    var roles = new ToolRegistry(); DiscoveryTools.registerAll(roles);
+    var guide = roles.getTool("get_server_guide");
+    assertEquals(ToolRegistry.LOCAL_LOCATION, guide.execute(new JsonObject()).getAsJsonObject().get("server_location").getAsString());
+    roles.setServerLocation(ToolRegistry.PIT_LOCATION);
+    assertEquals(ToolRegistry.PIT_LOCATION, guide.execute(new JsonObject()).getAsJsonObject().get("server_location").getAsString());
+  }
+
   @Nested
   @DisplayName("get_server_guide Tool")
   class GetServerGuideTests {

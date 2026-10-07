@@ -39,6 +39,14 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.additionalLogDirectories",
     "wpilog-mcp.teamNumber",
     "wpilog-mcp.tbaApiKey",
+    "wpilog-mcp.pitServerUrl",
+    "wpilog-mcp.mirror.enabled",
+    "wpilog-mcp.mirror.folder",
+    "wpilog-mcp.mirror.days",
+    "wpilog-mcp.mirror.maxSizeGb",
+    "wpilog-mcp.mirror.robots",
+    "wpilog-mcp.mirror.events",
+    "wpilog-mcp.mirror.intervalSec",
     "wpilog-mcp.enableForClaudeCode",
     "wpilog-mcp.javaPath",
     "wpilog-mcp.wpiLibYear",
@@ -88,6 +96,13 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.showServerLog",
     "wpilog-mcp.installStandaloneServer",
     "wpilog-mcp.restartServer",
+    "wpilog-mcp.registerPitWithClaudeCode",
+    "wpilog-mcp.mirrorActions",
+    "wpilog-mcp.pinSession",
+    "wpilog-mcp.unpinSession",
+    "wpilog-mcp.syncNow",
+    "wpilog-mcp.openMirrorFolder",
+    "wpilog-mcp.syncFromLaptop",
     "wpilog-mcp.explorer.organizeLogs",
     "wpilog-mcp.explorer.importLogs",
     "wpilog-mcp.explorer.assignRobot",
@@ -171,7 +186,7 @@ test("every menu names a declared command, and every view-title button has an ic
 
 test("the plot's libraries are bundled with their licenses, at the versions the vendor table pins", () => {
   const root = path.join(__dirname, "..", "..");
-  for (const asset of ["media/plot.js", "media/plotMath.js", "media/arrowStream.js", "media/console.js", "media/field.js", "media/rev.js", "media/vendor/uPlot.iife.min.js",
+  for (const asset of ["media/plot.js", "media/plotMath.js", "media/follow.js", "media/arrowStream.js", "media/console.js", "media/field.js", "media/rev.js", "media/vendor/uPlot.iife.min.js",
     "media/vendor/uPlot.min.css", "media/vendor/uPlot.LICENSE", "media/vendor/README.md"]) {
     assert.ok(fs.existsSync(path.join(root, asset)), asset);
   }
@@ -182,7 +197,7 @@ test("the plot's libraries are bundled with their licenses, at the versions the 
   assert.ok(banner.includes(`(v${pinned})`), `the bundled uPlot is v${pinned}: ${banner.split("\n")[0]}`);
   assert.ok(fs.readFileSync(path.join(root, "media", "vendor", "uPlot.LICENSE"), "utf8").includes("MIT License"));
   // The webview's scripts never fetch: no fetch, XMLHttpRequest, WebSocket, or import() in them
-  for (const script of ["media/explorer.js", "media/plot.js", "media/plotMath.js", "media/arrowStream.js", "media/console.js", "media/field.js", "media/rev.js"]) {
+  for (const script of ["media/explorer.js", "media/plot.js", "media/plotMath.js", "media/follow.js", "media/arrowStream.js", "media/console.js", "media/field.js", "media/rev.js"]) {
     const text = fs.readFileSync(path.join(root, script), "utf8");
     assert.ok(!/\b(fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(/.test(text), `${script} opens no connection`);
   }
@@ -230,4 +245,21 @@ test("one server removes obsolete settings and registers Claude Code at user sco
   assert.match(settings["wpilog-mcp.enableForClaudeCode"].markdownDescription, /user.scope/);
   assert.deepEqual(manifest.contributes.commands.find((c: { command: string }) => c.command === "wpilog-mcp.registerWithClaudeCode"),
     { command: "wpilog-mcp.registerWithClaudeCode", title: "Register with Claude Code", category: "WPILog Analyzer" });
+});
+
+
+test("mirror settings pin defaults and links to user controls", () => {
+  for (const [key, value] of Object.entries({ pitServerUrl: "", "mirror.enabled": true, "mirror.folder": "", "mirror.days": 14,
+    "mirror.maxSizeGb": 20, "mirror.robots": [], "mirror.events": [], "mirror.intervalSec": 30 })) {
+    assert.deepEqual(settings[`wpilog-mcp.${key}`]?.default, value, key);
+  }
+  assert.match(settings["wpilog-mcp.pitServerUrl"].markdownDescription, /registerPitWithClaudeCode/);
+  assert.match(settings["wpilog-mcp.mirror.enabled"].markdownDescription, /syncNow/);
+});
+
+
+test("the README names every pit and mirror setting and command", () => {
+  const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
+  for (const key of Object.keys(settings).filter(key => key.includes("mirror.") || key.endsWith("pitServerUrl"))) assert.ok(readme.includes(`\`${key}\``), key);
+  for (const id of ["pinSession", "unpinSession", "syncNow", "openMirrorFolder", "syncFromLaptop", "registerPitWithClaudeCode", "mirrorActions"]) assert.ok(readme.includes(`\`wpilog-mcp.${id}\``), id);
 });

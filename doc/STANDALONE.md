@@ -602,6 +602,11 @@ including on a server bound to the network. A second sync for the same store is 
 409; different stores have separate queues. Active jobs keep the daemon alive. The most recent
 100 jobs are retained in memory, with completed jobs evicted first; they disappear at restart.
 
+The extension's local picker uses `GET /store/sync` to list writable stores and their remembered
+peer URLs, with unreadable headers named separately. It includes stores under local session
+leases, which still do not publish through the network door. All sync controls require a
+loopback connection, including this picker.
+
 ### The Mirror
 
 A mirror is a local cache of a team's store, read by every tool while offline. The origin must
@@ -662,6 +667,12 @@ Local user controls require a loopback connection and the normal Origin check:
 These controls are endpoints for a person's UI actions, not assistant tools. Mirror configuration
 starts after the HTTP listener, so an unavailable or slow origin cannot delay daemon health.
 The mirror uses additive fields in store format 1 and refuses a different origin store ID.
+
+A prefix that changes repeatedly during one pass is retried once, then reported as partial
+until the next interval; the journal keeps its place. Superseded private partial files are
+removed after successful verification. The cap counts session payloads; manifests and the
+private staging copy needed to verify a replacement require temporary additional space.
+A growing local prefix can be evicted only when the origin's prefix hash proves it still exists.
 
 ### The Import Endpoint
 

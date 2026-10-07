@@ -71,6 +71,55 @@ HTTP import sources must be inside the server's configured log directories. For 
 
 Direct imports keep original paths and filenames in the session manifest's file provenance (or `unassigned/<hash>/import.json` before assignment); the listing reports moved paths for seven days. Inbox receipts keep the inbox path and its destination. Duplicate content is reported as present and its source is left in place. Organizing runs in the same server the viewer already uses, whether owned by the extension or the standalone install.
 
+## Pit server and offline mirror
+
+Set `wpilog-mcp.pitServerUrl` to the pit server's HTTP MCP URL, such as `http://pit:2363/mcp`.
+The server must be bound to the team network for another laptop to reach it; this exposes its
+logs to anyone who can reach the port. VS Code's agents see **WPILog Pit Server** beside
+**WPILog Analyzer**. The remote client sends no local directory lease or TBA key.
+
+The Logs view gains **This laptop** and **Pit server** roots. Pit sessions are newest first,
+with the robot, event/match, open state, and whether the mirror holds them. Opening one uses
+its exact path through the pit server. **Follow live session** polls once a second: the window
+tracks the latest time and visible series append from their last timestamp. Console follow
+pages the new text and keeps the latest 500 matches without collapsing repeats. Turning follow
+off restores ordinary browsing. No viewer connects to the robot.
+
+The mirror starts by default when a URL is set. The local Java server copies the last 14 days,
+plus whole named events and pinned sessions, under a 20 GB payload cap. Pins are never evicted;
+a copy missing from the origin is retained and reported even if that exceeds the cap. Resuming
+checks the held prefix first. Open captures refresh every 30 seconds; closed copies have the
+same verified bytes and recorded REV alignment as the origin. The mirror is read-only to
+imports and is never offered for organizing.
+
+The status bar shows **Mirror synchronized**, the remaining file count and size, or **Mirror
+offline** with the last-sync age. Click it for the mirror actions. When the pit server is
+unreachable, a remote editor can use the mirrored file with the same origin, session id and
+relative path; the editor says which copy it is reading and when it synchronized. The local
+Logs root also remains available offline. A failed verification or retention exception appears
+in the status tooltip. Settings apply through the local server without rewriting home YAML.
+
+| Command | What it does |
+|---|---|
+| `wpilog-mcp.mirrorActions` | Open the status bar's action picker |
+| `wpilog-mcp.pinSession` | Pick a recent session to retain outside scope and cap |
+| `wpilog-mcp.unpinSession` | Pick a pinned session to return to normal retention |
+| `wpilog-mcp.syncNow` | Start a mirror pass immediately |
+| `wpilog-mcp.openMirrorFolder` | Reveal the mirror directory in the OS file explorer |
+| `wpilog-mcp.syncFromLaptop` | Pull missing files into a local writable store from another laptop |
+| `wpilog-mcp.registerPitWithClaudeCode` | Register the pit URL as the second user-scope Claude server |
+
+**Sync from Laptop** needs no pit-server setting. Choose a local store, enter the peer's
+`host:port` once, then choose its remembered URL on later runs. The peer must bind its server
+to the network. The local store job reports sessions created, copied files and bytes, files
+already present, conflicts, refusals and interruptions; full details go to **WPILog Analyzer**
+output. Nothing is deleted, and mirrors cannot be sources or destinations of peer sync.
+
+The extension offers Claude Code registration for the pit URL at user scope using the installed
+bridge: `claude mcp add --scope user wpilog-pit -- <launcher> connect --url <url>` (through
+`cmd /c` on Windows). No project `.mcp.json` is written. The copy-command fallback and the
+on-demand command remain available; restart existing Claude sessions after registration.
+
 ## Using It with Claude Code
 
 With **Enable For Claude Code** on (the default), the extension runs `claude mcp add --scope user wpilog-analyzer -- <launcher> connect http` once when it finds the Claude CLI. On Windows it registers the batch launcher through `cmd /c`. If the CLI is unavailable, it shows the exact command with **Copy Command**. **WPILog Analyzer: Register with Claude Code** repeats setup on demand. Existing Claude Code sessions need restarting after registration.
@@ -98,6 +147,14 @@ User directories remain available for the window; open projects add their own di
 | `wpilog-mcp.additionalLogDirectories` | More directories; relative paths can name project simulation logs | none |
 | `wpilog-mcp.teamNumber` | Fallback team for logs that record none | unset |
 | `wpilog-mcp.tbaApiKey` | Write-only field; moved to secret storage and cleared | empty |
+| `wpilog-mcp.pitServerUrl` | Second MCP server and remote Logs root | empty |
+| `wpilog-mcp.mirror.enabled` | Enable mirroring when a pit URL is set | on with URL |
+| `wpilog-mcp.mirror.folder` | Absolute mirror directory | extension storage `/mirror` |
+| `wpilog-mcp.mirror.days` | Recent-session window | `14` |
+| `wpilog-mcp.mirror.maxSizeGb` | Payload cap, decimal GB | `20` |
+| `wpilog-mcp.mirror.robots` | Serial filter; empty includes all | none |
+| `wpilog-mcp.mirror.events` | Exact event names to keep beyond the window | none |
+| `wpilog-mcp.mirror.intervalSec` | Seconds between attempts, including growing files | `30` |
 | `wpilog-mcp.enableForClaudeCode` | User-scope bridge registration and project YAML offers | on |
 | `wpilog-mcp.javaPath` | Java executable for the bundled installer | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib JDK year for the installer | latest installed |

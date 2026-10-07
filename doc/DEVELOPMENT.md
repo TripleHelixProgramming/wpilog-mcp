@@ -385,7 +385,7 @@ npm test
 
 New checks must fail on planted production faults. In particular, queue checks use latches and immediate exchanges to force ordering; a passing test that never exercised the competing update proves little.
 
-A real VS Code was not available for milestones 6–7. Check the oldest supported and current versions by hand:
+A real VS Code was not available for milestones 6–7; the pit/mirror UI in milestone 8 has not been exercised in a real VS Code either. Check the oldest supported and current versions by hand:
 
 1. Install from a fresh home: one offer, Not now lasting until activation, installer progress/PATH notice, and successful server startup. Verify only absolute User directories/team seed a new file and no key does.
 2. Update an older launcher with its YAML preserved; keep a newer hand install. Test the on-demand install command and a development suffix.
@@ -394,6 +394,11 @@ A real VS Code was not available for milestones 6–7. Check the oldest supporte
 5. Register Claude Code at user scope, including the copy-command fallback. Accept/decline the project YAML offer and gitignore choice; run the bridge in a terminal with VS Code closed.
 6. Open legacy projects: retire only recognized untracked/ignored entries, preserve other entries and tracked/custom files with a note, stop `vscode-default` once, and remove its private settings. Check a failed stop can retry next activation.
 7. Exercise the explorer: log/entry trees and origins, plotting and statistics, console cursor, field pose, REV alignment, decode warnings, and read refusals. For organizing, check once-per-activation offers, Never/on-demand override, folder and robot picks, move/copy, progress/refusal output, inbox states, assignment, and refresh. The detailed milestone 6 checklist is in [EXPLORER_PLAN.md](EXPLORER_PLAN.md#11-milestones).
+
+8. Set/clear the pit URL and verify the second VS Code MCP definition, the user-scope Claude offer and copied command, and that no project registration or remote directory/key lease is written. Try the oldest supported and current VS Code.
+9. Configure mirror scope/cap/events/serials, then pin/unpin, Sync Now and Open Mirror Folder. Observe remaining counts, synchronized state, offline age and a verification refusal. Confirm a leased mirror remains readable and the health endpoint answers during sync.
+10. Open a pit log with a remote Windows path and one with spaces/Unicode. Follow plotted series and console across new values, duplicate timestamps, pause, hidden editor, and disconnect. Open the exact mirrored copy offline and verify the copy label. Rename a session at the origin and confirm the listing follows it.
+11. Sync from another laptop twice: destination choice, host:port entry, remembered quick pick, progress and copied/present/conflict/refusal output. Mirrors must not appear as destinations or organizer offers.
 
 Native Windows launchers/CLI integration and the interactive installer should also be checked on Windows; Node tests of Windows path/argument rules do not replace that. Installer tests use temporary homes and fake releases/CLIs, never the user's install.
 
@@ -493,3 +498,11 @@ The extension is published under the `TripleHelixProgramming` publisher. Publish
 - Report bugs: open an issue with steps to reproduce, and the tool call and result if a tool gave a wrong answer.
 - Request features: open an issue describing your use case.
 - Submit pull requests: fork, make your changes, add tests, and open a PR.
+
+The pit/mirror extension tests (`pitServer`, `storeClient`, `pitTransport`, `follow`, and the
+manifest/Claude/organizer checks) run under `npm test` on both CI platforms. Node HTTP servers
+check controls and job polling, refusals and deadlines; the real JAR check includes leased
+store discovery. VM tests exercise the webview's actual plot/console handlers and independently
+check incremental boundary, pagination and memory limits. Plants remove the URL definition,
+identity checks, prefix boundary, pin/cap defaults, endpoint routes and polling safeguards.
+These tests do not replace the real VS Code checklist above.

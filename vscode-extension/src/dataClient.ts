@@ -10,6 +10,7 @@
  * the test.
  */
 import * as http from "http";
+import * as https from "https";
 import { DataRequest, classifyStatus, dataQuery, dataUrl, errorMessage } from "./explorer/dataRequest";
 
 /** A response: the bytes, and whether they came from the client's memory (a 304). */
@@ -131,7 +132,7 @@ export class DataClient {
 
   private get(url: string, headers: Record<string, string>): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Uint8Array }> {
     return new Promise((resolve, reject) => {
-      const request = http.get(url, { headers, timeout: REQUEST_TIMEOUT_MS }, (response) => {
+      const request = (new URL(url).protocol === "https:" ? https : http).get(url, { headers, timeout: REQUEST_TIMEOUT_MS }, (response) => {
         const chunks: Buffer[] = [];
         response.on("data", (chunk: Buffer) => chunks.push(chunk));
         response.on("end", () => {
