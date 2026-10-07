@@ -156,6 +156,7 @@ class CaptureStoreTest {
       var store = stores.store(directory.resolve("store"));
       var placement = store.captures(WALL); var loop = new ManualScheduler();
       var flushed = new java.util.concurrent.atomic.AtomicInteger();
+      var outputFlushes = new java.util.concurrent.atomic.AtomicInteger();
       var observer = new CaptureWriter.Observer() {
         @Override public Path create(String address, Instant start) throws java.io.IOException { return placement.create(address, start); }
         @Override public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException { placement.opened(session, resumed); }
@@ -168,8 +169,13 @@ class CaptureStoreTest {
         }
         @Override public void closed(CaptureWriter.Session session) throws java.io.IOException { placement.closed(session); }
       };
-      var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(observer, LogManager.getInstance(), 0);
-      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
+      // The deadline detects a dependency on the blocked queue, not the speed of 40 disk forces
+      // and remaps. Keep real record writes and the index; LiveLogTest covers actual flush/expiry.
+      var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(observer, LogManager.getInstance(), 600_000_000);
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index, CaptureWriter.DEFAULT_MAX_FILE_BYTES,
+          (path, id, resume) -> new org.triplehelix.wpilogmcp.capture.WpilogOutput(path, id, resume) {
+            @Override public void flush() { outputFlushes.incrementAndGet(); }
+          })) {
         connect(writer, 10_000_000, 0);
         var event = new Announce("/FMSInfo/EventName", 2, "string", null, new JsonObject()); writer.announce(event);
         var busy = threads.submit(() -> store.capture(io -> {
@@ -193,6 +199,7 @@ class CaptureStoreTest {
           assertEquals(queuedBefore + 1, placement.queuedUpdates(), "Only one pending queue task despite ten seconds of writes");
           assertFalse(placement.completion().isDone(), "Only shutdown waits for the final manifest");
           assertEquals(40, flushed.get()); assertEquals(40, index.live().sampleCount("NT:/x"));
+          assertEquals(41, outputFlushes.get(), "Forty flush ticks plus close, all while the store is blocked");
           assertEquals(1, release.getCount(), "The queue must still be blocked when capture finishes");
         } finally { release.countDown(); recording.get(10, java.util.concurrent.TimeUnit.SECONDS); busy.get(10, java.util.concurrent.TimeUnit.SECONDS); }
         placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);

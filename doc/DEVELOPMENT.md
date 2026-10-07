@@ -257,6 +257,9 @@ the Windows job.
 documentation, UTC placement, open/closed manifests, hashes, resumption and name collisions,
 and queued match facts preceding the close-time directory rename. A blocked store queue leaves
 values and flushes running, retains one pending update, and writes a complete final manifest.
+That queue check counts output flush calls and keeps its values hot: its deadlock guard does
+not impose a disk-force/remapping throughput requirement on Windows CI. `LiveLogTest` separately
+exercises real flushes, hot-window expiry, mapping growth and cold reads on both platforms.
 Injected clocks pin the five-second progress cadence and immediate changed facts. `CaptureShutdownTest`
 proves service shutdown waits for that manifest outside the NT4 loop. `CaptureRecoveryTest`
 plants open manifests with complete, incomplete-tail, unreadable and damaged-header fixtures;
