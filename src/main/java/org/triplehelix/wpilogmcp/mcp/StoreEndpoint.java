@@ -44,7 +44,9 @@ final class StoreEndpoint {
         default -> {
           if (!route.startsWith("/store/files/")) { send(exchange, 404, Map.of("error", "Unknown store route")); return; }
           String relative = route.substring("/store/files/".length());
-          boolean hash = relative.endsWith("/prefix-hash");
+          // A classified log may itself be named prefix-hash. The required query field
+          // distinguishes the hash operation from downloading that catalog payload.
+          boolean hash = relative.endsWith("/prefix-hash") && query.containsKey("bytes");
           if (hash) relative = relative.substring(0, relative.length() - "/prefix-hash".length());
           var path = StoreCatalog.file(store.root(), relative, store.security()).toRealPath();
           store.security().validate(path);

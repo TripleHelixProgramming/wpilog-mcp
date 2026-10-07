@@ -296,6 +296,12 @@ public final class StoreSync {
     var desired = item.manifest().getFileName().toString().equals("import.json")
         ? io.resolve(parent.resolve("robot"), Path.of(item.file().path()).getFileName().toString())
         : io.resolve(parent, item.file().path());
+    // An active writer reserves future capture-N names, not only its currently open file.
+    // Keep peer captures in their own hash directory even when the local name is free today.
+    if ("captured".equals(item.file().provenance().kind()) || desired.getParent().equals(parent)
+        && desired.getFileName().toString().matches("(?i)capture(?:-[0-9]+)?\\.wpilog")) {
+      desired = parent.resolve("peer").resolve(item.file().sha256()).resolve(desired.getFileName());
+    }
     if (desired.equals(item.manifest())) desired = parent.resolve("robot").resolve(item.file().sha256()).resolve(desired.getFileName());
     // Even identical stray bytes are not ours to adopt. Existing catalog hashes were removed
     // from the transfer plan; every remaining occupied path belongs to something else.

@@ -406,6 +406,10 @@ One server bound to all interfaces serves the door while refusing both registrat
 untrusted Origins. Plants remove each boundary, leak a synthetic credential into a manifest, and
 report the coalesced size instead of the current file length. `ManualSchedulerTest` pins the native
 replay harness race where clock advancement already drained the reply a subsequent wait expected.
+Catalog payloads named `prefix-hash` are also exercised, separately from the hash operation's
+required query field. `ReplayCaptureTest` drops a socket before replay and proves that subscription
+readiness counts the current connection's announcements. Lifetime counts could overshoot forever
+after a reconnect; timeout diagnostics now include connection and topic counts, without telemetry.
 
 `StoreSyncTest` uses two stores on real in-process HTTP transports. Both transfer orders and a
 third round must converge on the same session ids and hash union. It checks overlapping fragments,
@@ -414,6 +418,8 @@ placement recovery before contacting an offline peer, hash and reader refusals, 
 both directions, and queued-job exclusion. An active writer must retain a peer's capture and match
 facts on its next flush. The network-bind test permits loopback job submission and refuses a
 connection through a nonloopback interface (only that interface check skips if none exists).
+With small file bounds, both writers roll over after syncing; all peer hashes and all 402
+generated value records survive, so a future local filename cannot collide with a peer capture.
 `MainSyncTest` runs child JVMs offline and against a real daemon, checking remembered peers,
 cross-process locking, exit codes and that daemon failures never fall back to an offline writer.
 

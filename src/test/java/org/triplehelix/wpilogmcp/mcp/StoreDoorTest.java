@@ -89,8 +89,10 @@ class StoreDoorTest {
     }
   }
 
-  @Test void manifestedUnassignedPayloadsAreReadableEvenWithAControlFilename() throws Exception {
-    var source = ImportFixture.write(temp.resolve("input/robot.json"), 24);
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"robot.json", "prefix-hash"})
+  void manifestedUnassignedPayloadsAreReadableEvenWithAControlFilename(String filename) throws Exception {
+    var source = ImportFixture.write(temp.resolve("input").resolve(filename), 24);
     var copied = manager.stores().store(root).importPaths(new LogStore.Request(List.of(source), false, null), p -> {})
         .get().files().get(0).path();
     var listing = JsonParser.parseString(text(get("/store/sessions"))).getAsJsonObject().getAsJsonArray("unassigned");
@@ -100,6 +102,10 @@ class StoreDoorTest {
     log = copied;
     var response = get(path()); assertEquals(200, response.statusCode(), text(response));
     assertArrayEquals(Files.readAllBytes(source), response.body());
+    var proof = get(path() + "/prefix-hash?bytes=16"); assertEquals(200, proof.statusCode(), text(proof));
+    assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+        .digest(java.util.Arrays.copyOf(Files.readAllBytes(source), 16))),
+        JsonParser.parseString(text(proof)).getAsJsonObject().get("sha256").getAsString());
   }
 
   @Test void traversalStraysInboxControlManifestsAndOutsidePathsAreRefused() throws Exception {

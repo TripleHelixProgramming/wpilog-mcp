@@ -367,14 +367,17 @@ class StoreSyncTest {
     assertEquals(1, sync(a, httpB).filesPresent().size());
   }
 
-  @Test void aLiveCaptureFlushKeepsThePeersCapturedFileAndMatchFacts() throws Exception {
+  @ParameterizedTest @ValueSource(booleans = {false, true})
+  void aLiveCaptureFlushKeepsThePeersCapturedFileAndMatchFacts(boolean rollover) throws Exception {
     var identity = new org.triplehelix.wpilogmcp.capture.context.DeviceIdentity("SERIAL", "", "127.0.0.1", "SHA256:synthetic", java.util.Map.of());
     var firstLoop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
     var secondLoop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
     var first = a.captures(CLOCK); var second = b.captures(CLOCK);
     var value = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/value", 1, "int", null, new com.google.gson.JsonObject());
-    try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(CLOCK, firstLoop, org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, first)) {
-      try (var peer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(CLOCK, secondLoop, org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, second)) {
+    long bound = rollover ? 1024 : 1L << 30;
+    var peerHashes = new java.util.HashSet<String>();
+    try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(CLOCK, firstLoop, org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, first, bound)) {
+      try (var peer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(CLOCK, secondLoop, org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, second, bound)) {
         int counter = 0;
         for (var w : List.of(writer, peer)) {
           w.identity(identity); w.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "test"), "networktables.first.wpi.edu");
@@ -383,14 +386,27 @@ class StoreSyncTest {
         }
         var event = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/FMSInfo/EventName", 2, "string", null, new com.google.gson.JsonObject());
         peer.announce(event); peer.value(event, new org.triplehelix.wpilogmcp.nt4.ValueFrame(2, 1_000_000, 4, "SYNTHETIC"), 0);
+        if (rollover) for (int i = 0; i < 200; i++) peer.value(value,
+            new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 1_000_001L + i, 2, 1000L + i), 0);
+        assertNull(peer.session().endReason());
       }
       second.completion().get(); first.completion().get();
-      var copied = sync(a, httpB).filesCopied().get(0); assertEquals(1, catalog(a).files().size());
+      catalog(b).files().forEach(f -> peerHashes.add(f.file().sha256()));
+      if (rollover) assertTrue(peerHashes.size() > 1, "The peer must offer the local writer's future rollover filenames");
+      var copied = sync(a, httpB).filesCopied(); assertEquals(peerHashes.size(), copied.size());
       firstLoop.advance(5_000_000); first.completion().get();
-      var during = catalog(a); assertEquals(1, during.files().size());
-      assertEquals(copied.sha256(), during.files().get(0).file().sha256());
+      var during = catalog(a); assertEquals(peerHashes, during.files().stream().map(f -> f.file().sha256()).collect(java.util.stream.Collectors.toSet()));
       assertEquals("SYNTHETIC", during.sessions().get(0).session().event());
+      if (rollover) for (int i = 0; i < 200; i++) writer.value(value,
+          new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 1_000_001L + i, 2, 10L + i), 0);
+      assertNull(writer.session().endReason(), "Peer file names cannot block a future local rollover");
     }
-    first.completion().get(); assertEquals(2, catalog(a).files().size()); assertTrue(catalog(a).unmanaged().isEmpty());
+    first.completion().get(); var finished = catalog(a); assertTrue(finished.unmanaged().isEmpty());
+    assertTrue(finished.files().stream().map(f -> f.file().sha256()).collect(java.util.stream.Collectors.toSet()).containsAll(peerHashes));
+    long records = 0;
+    for (var file : finished.files()) try (var use = manager.acquire(file.path().toString())) {
+      records += use.log().sampleCount("NT:/value");
+    }
+    assertEquals(rollover ? 402 : 2, records);
   }
 }

@@ -511,7 +511,9 @@ served at its current length, including by the prefix-hash endpoint; the session
 `open_capture.size_bytes` from the file. An out-of-bounds range or prefix returns 416. Control
 manifests are JSON responses, never arbitrary file downloads; strays, inbox files, traversal and
 paths outside catalog membership are refused. A manifested imported log keeps its original name,
-even a name such as `robot.json`, within its separate payload directory.
+even a name such as `robot.json`, within its separate payload directory. A payload named
+`prefix-hash` is downloaded normally; the required `bytes` query field selects a prefix-hash
+operation on the preceding file path.
 
 The peer server must bind to an interface reachable by the other laptop (`WPILOG_HTTP_BIND=0.0.0.0`
 in the peer server's environment); leases and key registration remain refused on that bind.
@@ -538,7 +540,9 @@ this sync, while the read-only door continues to serve its current bytes.
 
 Overlapping sessions of the same serial join, using the lexicographically smallest session id
 so both transfer orders converge. Existing paths remain usable when closed session fragments
-move together. Files keep their original provenance and gain `copied_from` entries with the
+move together. Peer captures live under `peer/<sha256>/` inside that session, preserving their
+filenames while reserving future `capture-N.wpilog` names for the local writer.
+Files keep their original provenance and gain `copied_from` entries with the
 peer's store id, URL and copy time. A peer's robot name or comments fill an empty local field;
 otherwise disagreements appear in the session's `conflicts` and the local text stays. Hashes
 already held are reported present. Nothing is deleted on either side, and mirrors are refused

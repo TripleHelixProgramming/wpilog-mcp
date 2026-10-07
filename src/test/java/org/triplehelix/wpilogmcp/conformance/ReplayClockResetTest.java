@@ -58,10 +58,9 @@ class ReplayClockResetTest {
           var b = nativeServer ? null : new LogReplayer(second, gateway, robot::set);
           if (b != null) b.announce();
           long received = capture.received.get(), properties = capture.receivedProperties.get();
-          int announces = capture.announcements.get();
           try (var nativeSecond = nativeServer ? new NativeReplayProcess(second, 0, directory.resolve("boot-2"), port) : null) {
             loop.advance(1_000_000);
-            capture.ready(announces + (nativeServer ? nativeSecond.topics : b.topicCount()));
+            capture.ready(nativeServer ? nativeSecond.topics : b.topicCount());
             if (nativeServer) nativeSecond.consume(capture);
             else b.replay(0, 0, ignored -> fail("Fast replay paced"), count -> capture.receivedThrough(received + count),
                 count -> capture.propertiesThrough(properties + count));

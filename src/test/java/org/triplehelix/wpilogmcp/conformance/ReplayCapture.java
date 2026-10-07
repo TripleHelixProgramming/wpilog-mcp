@@ -35,6 +35,7 @@ final class ReplayCapture implements AutoCloseable {
   final CaptureWriter writer;
   final ClientScheduler loop;
   final AtomicInteger announcements = new AtomicInteger();
+  final AtomicInteger connections = new AtomicInteger();
   final AtomicLong received = new AtomicLong();
   final AtomicLong receivedProperties = new AtomicLong();
   final AtomicLong synchronizedServerUs = new AtomicLong(Long.MIN_VALUE);
@@ -107,7 +108,9 @@ final class ReplayCapture implements AutoCloseable {
     org.triplehelix.wpilogmcp.tools.RevLogTools.registerAll(registry);
     transport = new HttpTransport(registry, 0); transport.start(); http = new HarnessHttp(transport.getPort()); http.initialize();
     client = new Nt4Client(List.of(address), Nt4Client.captureSubscription(0.001), new Nt4Client.Listener() {
-      public void connected(URI uri, String protocol) { writer.connected(uri, protocol); }
+      public void connected(URI uri, String protocol) {
+        announcements.set(0); connections.incrementAndGet(); writer.connected(uri, protocol);
+      }
       public void timeSync(long server, long receipt) { writer.timeSync(server, receipt); synchronizedServerUs.set(server); }
       public void announce(Announce topic) { writer.announce(topic); announcements.incrementAndGet(); }
       public void unannounce(Unannounce topic) { writer.unannounce(topic); }
@@ -123,16 +126,23 @@ final class ReplayCapture implements AutoCloseable {
         synchronized (progress) { received.incrementAndGet(); progress.notifyAll(); }
       }
       public void invalidValue(Announce topic, int code) { writer.invalidValue(topic, code); }
-      public void disconnected() { writer.disconnected(); }
+      public void disconnected() { announcements.set(0); writer.disconnected(); }
     }, HttpClient.newHttpClient(), loop);
     client.start();
   }
 
   void ready(int count) throws Exception {
-    if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) {
-      manual.until(() -> client.isConnected() && announcements.get() == count); return;
+    // Readiness belongs to the current subscription. A transient connection before replay
+    // can otherwise overshoot a lifetime counter and make equality impossible forever.
+    try {
+      if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) {
+        manual.until(() -> client.isConnected() && announcements.get() == count); return;
+      }
+      HarnessHttp.await("replay subscription", 30, () -> client.isConnected() && announcements.get() == count);
+    } catch (AssertionError failure) {
+      throw new AssertionError("Replay subscription: connected=" + client.isConnected() + ", connections=" + connections.get()
+          + ", announcements=" + announcements.get() + ", expected=" + count + ", topics=" + client.topics().size(), failure);
     }
-    HarnessHttp.await("replay subscription", 30, () -> client.isConnected() && announcements.get() == count);
   }
 
   boolean connected() { return client.isConnected(); }
