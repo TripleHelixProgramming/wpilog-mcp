@@ -276,6 +276,20 @@ class MirrorSyncTest {
     assertFalse(Files.exists(mirror.root().resolve(".mirror/pending.json")));
   }
 
+  @Test void anUnreadableOriginFileIsRefusedEvenWhenItsAdvertisedHashMatches() throws Exception {
+    var file = session("broken", "2026-01-19", "RIO", null, false, 100, 1);
+    // Corrupt a generated fixture's magic, then honestly advertise the corrupted bytes' hash.
+    byte[] bytes = Files.readAllBytes(file); bytes[0] ^= 1; Files.write(file, bytes);
+    var manifest = file.resolveSibling("session.json");
+    var json = com.google.gson.JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    json.getAsJsonArray("files").get(0).getAsJsonObject().addProperty("sha256", StoreFiles.hash(file));
+    Files.writeString(manifest, json.toString());
+    var result = mirror.mirror(config(), p -> {}, clock, StoreSync::http).get();
+    assertEquals("partial", result.state()); assertEquals(2 * bytes.length, result.bytesCopied());
+    assertFalse(result.refusals().isEmpty()); assertTrue(catalog(mirror).files().isEmpty());
+    assertFalse(Files.exists(copy(file)), "A matching hash alone must not admit an unreadable log");
+  }
+
   @Test void neitherAnExistingStoreNorADifferentOriginIdCanBecomeThisMirror() throws Exception {
     var source = session("boot", "2026-01-19", "RIO", null, false, 100, 1); sync();
     var existing = manager.stores().store(temp.resolve("existing"));

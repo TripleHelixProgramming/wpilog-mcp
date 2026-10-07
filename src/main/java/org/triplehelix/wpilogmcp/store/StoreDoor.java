@@ -15,7 +15,7 @@ import java.util.function.Supplier;
 import org.triplehelix.wpilogmcp.Version;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
-/** A read-only catalog boundary, shared by the peer reader and the later mirror. */
+/** A read-only catalog boundary, shared by the peer and mirror readers. */
 public final class StoreDoor {
   public record Description(String id, int formatVersion, String serverVersion, boolean mirror) {}
   public record Session(String robotId, String path, StoreManifest.Session manifest) {}
