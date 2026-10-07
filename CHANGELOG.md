@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- Peer sync no longer copies the peer's SSH contact history into a new local robot manifest; contacts belong to the store that made them. The HTTP store listing now reports unreadable store headers individually while serving its readable stores, instead of failing the entire listing.
 - Captures copied from a peer use a hash directory inside the joined session. Previously a peer's `capture-2.wpilog` could occupy the local writer's next rollover filename and stop recording; a small-bound test now rolls both writers and preserves all 402 generated records.
 - Replay subscription readiness now counts announcements per connection. Previously a reconnect before replay could overshoot the lifetime count and leave the harness waiting forever for equality. A controlled socket-drop regression pins the bookkeeping without increasing a wait.
 - The HTTP store door can download a manifested payload named `prefix-hash`; the required `bytes` query parameter selects the hash operation. Previously that filename was mistaken for an endpoint suffix and refused despite catalog membership.

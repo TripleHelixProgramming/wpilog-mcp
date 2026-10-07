@@ -32,8 +32,10 @@ final class StoreEndpoint {
       var query = DataEndpoint.query(exchange.getRequestURI().getRawQuery());
       String selector = one(query, "store"), route = exchange.getRequestURI().getPath();
       if (route.equals("/store") && selector == null) {
-        var stores = door.stores().stream().map(StoreDoor.Selected::description).toList();
-        send(exchange, 200, stores.size() == 1 ? stores.get(0) : Map.of("stores", stores)); return;
+        var inventory = door.inventory();
+        var stores = inventory.stores().stream().map(StoreDoor.Selected::description).toList();
+        send(exchange, 200, stores.size() == 1 && inventory.unreadable().isEmpty() ? stores.get(0)
+            : Map.of("stores", stores, "unreadable", inventory.unreadable())); return;
       }
       var store = door.select(selector);
       switch (route) {

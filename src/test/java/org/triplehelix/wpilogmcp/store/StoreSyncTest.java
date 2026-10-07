@@ -105,6 +105,21 @@ class StoreSyncTest {
     assertEquals(before.sizeBytes(), result.filesCopied().get(0).bytes());
   }
 
+  @Test void aNewLocalRobotDoesNotInheritThePeersSshContacts() throws Exception {
+    put(b, fixture("contact.wpilog", 3, "SERIAL"));
+    var contact = new StoreManifest.Contact("robot.example", "SHA256:fixture", CLOCK.instant().toString());
+    b.capture(io -> {
+      var path = b.root().resolve("robots/SERIAL/robot.json"); var old = io.read(path, StoreManifest.Robot.class);
+      io.write(path, new StoreManifest.Robot(old.id(), old.serialNumber(), "Practice", "Peer comment", old.basis(), List.of(contact)));
+      return null;
+    });
+    sync(a, httpB);
+    var local = catalog(a).robots().get(0).robot();
+    assertEquals("Practice", local.name()); assertEquals("Peer comment", local.comments());
+    assertEquals(List.of(), local.contacts(), "Only SSH contacts made by this store belong in its robot manifest");
+    assertEquals(List.of(contact), catalog(b).robots().get(0).robot().contacts());
+  }
+
   @Test void interruptedCopyResumesOnlyAfterItsHeldPrefixWasProvedOverHttp() throws Exception {
     var source = fixture("large.wpilog", 8, "SERIAL", 20_000); put(b, source);
     var stop = a.sync(url(httpB), 0, p -> {

@@ -22,6 +22,8 @@ public final class StoreDoor {
   public record Unassigned(String path, StoreManifest.LogFile file) {}
   public record Sessions(List<Session> sessions, List<Unassigned> unassigned) {}
   public record Selected(Path root, Description description, SecurityValidator security) {}
+  public record Unreadable(String path, String reason) {}
+  public record Inventory(List<Selected> stores, List<Unreadable> unreadable) {}
   private record Discovery(Set<Path> configured, List<Path> roots, long at) {}
   private final Supplier<Set<Path>> configured;
   private volatile Discovery discovered;
@@ -30,6 +32,11 @@ public final class StoreDoor {
 
   /** Only store discovery is cached; manifests and growing-file lengths are read on demand. */
   public List<Selected> stores() throws IOException {
+    return inventory().stores();
+  }
+
+  /** A damaged neighbor must not hide stores whose catalogs remain readable. */
+  public Inventory inventory() throws IOException {
     var directories = Set.copyOf(configured.get());
     var security = new SecurityValidator(); directories.forEach(security::addAllowedDirectory);
     var seen = discovered;
@@ -40,15 +47,20 @@ public final class StoreDoor {
       discovered = seen;
     }
     var result = new ArrayList<Selected>();
+    var unreadable = new ArrayList<Unreadable>();
     for (var root : seen.roots()) {
-      security.validate(root);
-      var header = new StoreFiles(root, security).read(root.resolve("store.json"), StoreManifest.Header.class);
-      if (header.formatVersion() != StoreManifest.FORMAT_VERSION || header.id() == null) {
-        throw new IOException("Unsupported or incomplete store manifest");
+      try {
+        security.validate(root);
+        var header = new StoreFiles(root, security).read(root.resolve("store.json"), StoreManifest.Header.class);
+        if (header.formatVersion() != StoreManifest.FORMAT_VERSION || header.id() == null) {
+          throw new IOException("Unsupported or incomplete store manifest");
+        }
+        result.add(new Selected(root, new Description(header.id(), header.formatVersion(), Version.VERSION, header.mirror()), security));
+      } catch (IOException e) {
+        unreadable.add(new Unreadable(root.toString(), e.getMessage()));
       }
-      result.add(new Selected(root, new Description(header.id(), header.formatVersion(), Version.VERSION, header.mirror()), security));
     }
-    return List.copyOf(result);
+    return new Inventory(List.copyOf(result), List.copyOf(unreadable));
   }
 
   public Selected select(String id) throws IOException {

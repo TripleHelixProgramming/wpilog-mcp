@@ -77,6 +77,20 @@ class StoreDoorTest {
     }
   }
 
+  @Test void anUnreadableStoreIsNamedWithoutHidingReadableStores() throws Exception {
+    var broken = Files.createDirectories(temp.resolve("broken"));
+    Files.writeString(broken.resolve("store.json"), "{invalid");
+    var response = get("/store"); assertEquals(200, response.statusCode(), text(response));
+    var json = JsonParser.parseString(text(response)).getAsJsonObject();
+    assertEquals(1, json.getAsJsonArray("stores").size());
+    var problem = json.getAsJsonArray("unreadable").get(0).getAsJsonObject();
+    assertEquals(broken.toString(), problem.get("path").getAsString());
+    assertTrue(problem.get("reason").getAsString().contains("Invalid manifest"));
+    String id = json.getAsJsonArray("stores").get(0).getAsJsonObject().get("id").getAsString();
+    assertEquals(200, get("/store/sessions?store=" + id).statusCode());
+    assertEquals(200, get(path() + "?store=" + id).statusCode());
+  }
+
   @Test void theHttpRemoteReadsTheSameListingRangesAndContentProof() throws Exception {
     try (var remote = new org.triplehelix.wpilogmcp.sync.HttpRemoteFiles("http://127.0.0.1:" + transport.getPort() + "/store")) {
       var listed = remote.list(); assertEquals(1, listed.size());

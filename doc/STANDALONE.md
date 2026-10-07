@@ -534,7 +534,7 @@ file requests read their owning manifest directly, without walking the catalog p
 
 | Request | Response |
 |---|---|
-| `GET /store` | `id`, `format_version`, `server_version`, `mirror`; with several stores (or none), a `stores` array of those descriptors |
+| `GET /store` | `id`, `format_version`, `server_version`, `mirror`; with several stores, none, or an unreadable neighbor, a `stores` array of readable descriptors and `unreadable` entries naming each failed store's `path` and `reason` |
 | `GET /store/robots` | `robots`, the robot manifests |
 | `GET /store/sessions` | `sessions`, each with `robot_id`, store-relative `path`, and its complete `manifest`; `unassigned` contains store-relative `path` and `file` records |
 | `GET /store/files/<store path>` | File bytes; a single `Range: bytes=start-end`, open-ended range, or suffix range returns 206 |

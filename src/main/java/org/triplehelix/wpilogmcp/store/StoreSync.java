@@ -190,7 +190,9 @@ public final class StoreSync {
   private static String fill(String local, String peer) { return empty(local) ? peer : local; }
   private Path session(Peer peer, Robot robot, Session remote) throws IOException {
     var robotPath = root.resolve("robots").resolve(robot.id()).resolve("robot.json");
-    var disagreements = new ArrayList<Conflict>(); Robot localRobot = robot;
+    // Contact history is evidence collected by one store, not portable robot identity.
+    var disagreements = new ArrayList<Conflict>();
+    Robot localRobot = new Robot(robot.id(), robot.serialNumber(), robot.name(), robot.comments(), robot.basis());
     if (Files.exists(io.check(robotPath))) {
       var local = io.read(robotPath, Robot.class);
       if (local.serialNumber() != null && robot.serialNumber() != null && !local.serialNumber().equals(robot.serialNumber())) throw new IOException("Robot id has a different local serial");

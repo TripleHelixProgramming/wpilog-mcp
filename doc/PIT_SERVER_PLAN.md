@@ -428,6 +428,10 @@ Each leaves the project working and tested on its own.
 
 ### 17. Open questions
 
+Milestone 6, second-half choices:
+
+- SSH contact history stays local to the store that made the contact; copying a robot's identity and human fields does not copy its `contacts`. A damaged configured store header is reported under `GET /store`'s `unreadable` (`path`, `reason`), alongside the readable `stores`; one damaged neighbor cannot hide the others.
+
 Milestone 6, first-half choices:
 
 - **Peer capture filenames:** copied captures use `peer/<sha256>/<filename>` inside the joined session. A filename can be free today but reserved for the local writer's next rollover; checking only current collisions stopped recording when that next file was opened. A small-bound test rolls both writers after the copy and preserves all hashes and generated records.
