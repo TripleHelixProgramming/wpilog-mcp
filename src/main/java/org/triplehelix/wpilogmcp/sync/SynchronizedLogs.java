@@ -336,17 +336,18 @@ public class SynchronizedLogs {
     }
 
     /**
-     * Infers a CAN bus name from the revlog filename or index.
+     * Infers a CAN bus name from the revlog filename or index. Strip either path separator:
+     * treating a Windows directory as part of the filename made a copied log change buses.
      */
     private String inferCanBusName(ParsedRevLog revlog, int index) {
       // Try to extract from filename (e.g., "rio_20240315_143052.revlog")
       String filename = revlog.path();
       if (filename != null) {
-        int lastSlash = filename.lastIndexOf('/');
+        int lastSlash = Math.max(filename.lastIndexOf('/'), filename.lastIndexOf('\\'));
         String name = lastSlash >= 0 ? filename.substring(lastSlash + 1) : filename;
         int underscore = name.indexOf('_');
         if (underscore > 0) {
-          String prefix = name.substring(0, underscore).toLowerCase();
+          String prefix = name.substring(0, underscore).toLowerCase(java.util.Locale.ROOT);
           if (!prefix.equals("rev")) {
             return prefix;
           }

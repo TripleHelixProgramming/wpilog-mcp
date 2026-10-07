@@ -421,6 +421,9 @@ cross-process locking, exit codes and that daemon failures never fall back to an
 log tool and schema-derived argument variant on the source-store file and its copied file.
 It includes the REV companion, verifies identical bytes, and normalizes only execution time and
 the known file paths. Counts are written to `build/reports/conformance/store-sync.txt`.
+This comparison exposed directory prefixes leaking into inferred REV bus names on Windows.
+`SynchronizedLogsTest` now tests Windows drive/UNC and Unix path strings on every platform,
+including underscores in parent directories, numbered fallback buses and locale-independent names.
 Plants change ids, overlap/serial rules, hash deduplication, provenance, conflict handling, resume
 proofs, verification, recovery, move aliases, mirror/HTTP admission and a copied log's tool answer.
 These tests need no robot, real log, external server or new dependency and run in the ordinary

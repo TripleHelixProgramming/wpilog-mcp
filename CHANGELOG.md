@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- REV bus-name inference now strips Windows separators and folds names independently of the host locale. Previously a directory prefix could become the bus name, so copying the same log between stores changed tool results on Windows. Cross-platform path regressions pin the fix; the sync cache format advances to 8.
 - The native replay harness accepts a reply already drained while advancing its injected clock. Previously a fast reply made the reboot-pair test wait for an unrequested second callback and fail intermittently.
 - Entry metadata now follows NT4 properties changes in both the live index and a fresh WPILOG scan. Previously Set Metadata reached the file but both indexes kept the announcement's properties; an in-progress tool call still retains its original snapshot.
 - Captured `NT:systemTime` now retains its calendar-clock role; previously the recording prefix hid it from REV clock alignment.

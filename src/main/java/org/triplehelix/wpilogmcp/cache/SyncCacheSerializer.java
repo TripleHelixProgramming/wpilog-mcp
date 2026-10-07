@@ -52,7 +52,9 @@ public class SyncCacheSerializer {
    */
   // Version 7 invalidates synchronization decisions made before AdvantageKit topic-prefix
   // normalization and the NT:systemTime calendar role were recognized during replay.
-  public static final int CURRENT_FORMAT_VERSION = 7;
+  // Version 8 accompanies portable CAN-bus naming, following the rule to invalidate older
+  // REV synchronization state when its interpretation changes.
+  public static final int CURRENT_FORMAT_VERSION = 8;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(
