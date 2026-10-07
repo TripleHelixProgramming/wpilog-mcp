@@ -23,14 +23,15 @@
 # ---- Server Configurations ----
 servers:
 
-  # Default: stdio transport for MCP clients (Claude Desktop, etc.)
-  default:
-    transport: stdio
-
-  # HTTP transport for browser-based or multi-client access
+  # The shared server: the VS Code extension, the `connect http` bridge, and HTTP clients
+  # all use this one, and it serves them from one set of loaded logs
   http:
     transport: http
     port: 2363
+
+  # A stdio server of its own for a client that must run the server itself
+  default:
+    transport: stdio
 
   # For the project's stress tests (./gradlew stressTest), with the settings above
   stresstest: {}

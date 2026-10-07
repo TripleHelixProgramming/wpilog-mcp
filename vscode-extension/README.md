@@ -43,7 +43,7 @@ Each window registers its User log directories and open projects' directories wi
 
 The server's permanent settings live in `~/.wpilog-mcp/servers.yaml`. **VS Code's Settings UI does not read or edit that file.** It supplies the window's directories and team through the lease. Edit YAML for permanent directories, port, cache, or idle policy. The installer creates an absent configuration and preserves an existing one.
 
-**WPILog Analyzer: Show Server Log** opens `~/.wpilog-mcp/logs/http.log`; **Restart Server** restarts the shared daemon. With `idle_exit_minutes` set in YAML, it exits when unused; the installed default is `0` (keep running). An active import also prevents idle exit.
+**WPILog Analyzer: Show Server Log** opens `~/.wpilog-mcp/logs/http.log`; **Restart Server** restarts the shared daemon. With `idle_exit_minutes` set in YAML, it exits after that long with no client and no request; the installed configuration does not set it, so the server keeps running. An import in progress also holds the server open.
 
 ## Exploring Logs
 
@@ -86,7 +86,7 @@ team: 1234
 
 Paths are relative to the bridge's working directory. This file is yours afterwards; changing VS Code settings does not rewrite it. Its `servers` section, if any, cannot configure the shared daemon: `connect` ignores it and records that fact in the server log. See [Directories by lease](../doc/STANDALONE.md#directories-by-lease).
 
-On upgrade, recognized extension-owned entries are removed from untracked or ignored `.mcp.json` files as projects open. Tracked, custom, and unrecognized entries are left with a note in the output. The old `vscode-default` daemon is stopped once, then its private `servers/` and `projects/` settings are removed. A failed stop keeps those settings and is retried next activation.
+On upgrade, recognized extension-owned entries are removed from untracked or ignored `.mcp.json` files as projects open. Tracked, custom, and unrecognized entries are left with a note in the output; the [standalone guide](../doc/STANDALONE.md#moving-from-a-project-mcpjson) says what to remove by hand and how to check what Claude Code sees. The old `vscode-default` daemon is stopped once, then its private `servers/` and `projects/` settings are removed. A failed stop keeps those settings and is retried next activation.
 
 ## Settings
 

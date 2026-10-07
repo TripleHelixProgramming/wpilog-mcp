@@ -28,7 +28,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open 
 
 A log viewer such as AdvantageScope shows you the data, but only if you know where to look. With wpilog-mcp you ask an engineering or strategy question; the model finds the relevant entries, proposes an explanation, and tests it against the data with further tool calls.
 
-The standalone [import command and inbox](doc/STANDALONE.md#importing-logs) can organize a log folder as a store by robot and session. Imports preserve filenames and provenance, and the listing reports files awaiting assignment or refused by the inbox.
+A log folder can become a store, organized by robot and session: the extension [offers to organize](vscode-extension/README.md#organizing-your-logs) a folder it finds, and the standalone [import command and inbox](doc/STANDALONE.md#importing-logs) do the same from a terminal or a USB stick. Imports preserve filenames and provenance, and the listing reports files awaiting assignment or refused by the inbox.
 
 ### What You Can Ask
 
@@ -110,7 +110,7 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 
 | Document | What it covers |
 |----------|----------------|
-| [VS Code extension README](vscode-extension/README.md) | Installing and using the extension: settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
+| [VS Code extension README](vscode-extension/README.md) | Installing and using the extension: the explorer, organizing logs, settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
 | [STANDALONE.md](doc/STANDALONE.md) | The standalone install: configuration file, command-line flags, MCP client setup, the HTTP transport, Docker, troubleshooting |
 | [TOOLS.md](doc/TOOLS.md) | Every tool's parameters and results, the data types, the result fields, and how REV logs are synchronized |
 | [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) | The JSON every tool returns, captured from real logs |
