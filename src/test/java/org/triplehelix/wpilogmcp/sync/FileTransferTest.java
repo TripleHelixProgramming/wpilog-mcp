@@ -85,6 +85,25 @@ class FileTransferTest {
     assertEquals("SYNTHETIC-A", f.saved.serialNumber()); assertTrue(f.saved.history().isEmpty());
   }
 
+  @Test void aGrowingFileDuringTheSameTransferRechecksEveryHeldByte() throws Exception {
+    var f = new Fake(); byte[] first = bytes(150_000, 21); f.put("log.wpilog", first, 1);
+    var engine = f.engine(); f.step(engine); assertEquals(65536, f.saved.files().get(0).bytesCopied());
+    byte[] next = Arrays.copyOf(first, 160_000); next[65535] ^= 1; f.put("log.wpilog", next, 2);
+    f.step(engine);
+    assertEquals(1, f.saved.history().size(), "A changed listing invalidates the earlier prefix proof");
+    assertEquals(0, f.reads.get(1).offset()); assertEquals(65536L, f.hashes.get(0));
+    assertArrayEquals(Arrays.copyOf(first, 65536), f.local.get(f.saved.history().get(0).localName()));
+    f.finish(engine); assertArrayEquals(next, f.local.get(f.saved.files().get(0).localName()));
+  }
+
+  @Test void aNewContactRechecksVerifiedContentEvenWhenSizeAndMtimeRepeat() throws Exception {
+    var f = new Fake(); byte[] first = bytes(100_000, 31); f.put("REV_19700101.revlog", first, 0); f.finish(f.engine());
+    byte[] next = first.clone(); next[99_999] ^= 1; f.put("REV_19700101.revlog", next, 0);
+    f.finish(f.engine()); assertEquals(1, f.saved.history().size());
+    assertArrayEquals(first, f.local.get(f.saved.history().get(0).localName()));
+    assertArrayEquals(next, f.local.get(f.saved.files().get(0).localName()));
+  }
+
   @ParameterizedTest @ValueSource(strings = {"shrink", "rewind", "common-prefix", "unset-clock"})
   void reusedNamesNeverConcatenateBoots(String change) throws Exception {
     var f = new Fake(); byte[] old = bytes(100_000, 2); String name = change.equals("unset-clock") ? "REV_19700101_000000.revlog" : "FRC_TBD.wpilog";
@@ -178,6 +197,6 @@ class FileTransferTest {
       assertTrue(text.contains("64 KiB") || text.contains("64-KiB"), name);
       assertTrue(text.contains("EOF"), name);
     }
-    assertEquals(5, org.triplehelix.wpilogmcp.cache.SyncCacheSerializer.CURRENT_FORMAT_VERSION);
+    assertEquals(6, org.triplehelix.wpilogmcp.cache.SyncCacheSerializer.CURRENT_FORMAT_VERSION);
   }
 }

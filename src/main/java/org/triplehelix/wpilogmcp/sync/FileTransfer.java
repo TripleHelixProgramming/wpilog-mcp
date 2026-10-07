@@ -32,6 +32,8 @@ public final class FileTransfer {
     void append(String name, long offset, byte[] bytes) throws IOException;
     String rename(String name, String remoteName) throws IOException;
     String archive(String name) throws IOException;
+    /** A verified file returns to staging before it grows, so its session never keeps a stale hash. */
+    default String resume(Entry entry) throws IOException { return entry.localName(); }
     /** Load through the ordinary reader; refuse a scan that stops before EOF. */
     void verify(String name) throws IOException;
     /** Placement may change the path, but never the verified bytes. */
@@ -101,19 +103,20 @@ public final class FileTransfer {
         }
         renameProof.clear();
         boolean changed = entry.size() != item.size() || entry.mtimeMillis() != item.mtimeMillis();
-        if (!changed && (entry.verified() || entry.failure() != null)) continue;
+        if (!changed && (entry.verified() || entry.failure() != null) && entry.equals(validated.get(item.name()))) continue;
         boolean replaced = item.size() < entry.size() || item.mtimeMillis() < entry.mtimeMillis()
             || local.size(entry.localName()) != entry.bytesCopied();
-        if (!replaced && entry.bytesCopied() > 0 && !entry.equals(validated.get(item.name()))) {
+        if (!replaced && entry.bytesCopied() > 0 && (changed || !entry.equals(validated.get(item.name())))) {
           replaced = !matches(item, entry);
         }
         if (!gate.getAsBoolean()) { validated.clear(); renameProof.clear(); return result(Status.PAUSED, item.name(), 0, null); }
         if (replaced) entry = restart(item, entry, 0);
         else if (changed) {
-          entry = entry.progress(item, entry.bytesCopied(), false, entry.localName(), 0, null);
+          entry = entry.progress(item, entry.bytesCopied(), false, local.resume(entry), 0, null);
           files.put(item.name(), entry); save();
         }
         validated.put(item.name(), entry);
+        if (entry.verified() || entry.failure() != null) continue;
         if (clock.getAsLong() < nextReadUs) return result(Status.WAITING, item.name(), 0, null);
         if (entry.bytesCopied() < item.size()) {
           int count = (int) Math.min(BLOCK_BYTES, item.size() - entry.bytesCopied());
@@ -129,11 +132,13 @@ public final class FileTransfer {
         try { local.verify(entry.localName()); }
         catch (IOException e) {
           if (entry.retries() == 0) { restart(item, entry, 1); return result(Status.RETRIED, item.name(), 0, e.getMessage()); }
-          files.put(item.name(), entry.progress(item, entry.bytesCopied(), false, entry.localName(), 1, e.getMessage())); save();
+          var failed = entry.progress(item, entry.bytesCopied(), false, entry.localName(), 1, e.getMessage());
+          files.put(item.name(), failed); validated.put(item.name(), failed); save();
           return result(Status.REFUSED, item.name(), 0, e.getMessage());
         }
         String path = local.verified(entry);
-        files.put(item.name(), entry.progress(item, entry.bytesCopied(), true, path, entry.retries(), null)); save();
+        var verified = entry.progress(item, entry.bytesCopied(), true, path, entry.retries(), null);
+        files.put(item.name(), verified); validated.put(item.name(), verified); save();
         return result(Status.VERIFIED, item.name(), 0, null);
       }
       observed.keySet().retainAll(names);

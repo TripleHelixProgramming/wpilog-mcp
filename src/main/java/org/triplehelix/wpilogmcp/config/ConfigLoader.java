@@ -373,7 +373,7 @@ public class ConfigLoader {
         expandPath(interpolate(getString(block, "exportdir"), warnings)),
         getInteger(block, "scandepth"),
         getInteger(block, "idle_exit_minutes"),
-        CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)))
+        CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings))
     );
   }
 

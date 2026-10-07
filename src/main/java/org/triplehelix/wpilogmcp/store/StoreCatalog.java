@@ -110,6 +110,17 @@ public final class StoreCatalog {
         }
         managed.add(robotPath);
         robots.add(new RobotDirectory(robotDir, robot));
+        var pullPath = io.check(robotDir.resolve("pull.json"));
+        if (Files.exists(pullPath)) {
+          var pull = io.read(pullPath, org.triplehelix.wpilogmcp.sync.PullManifest.class);
+          if (!java.util.Objects.equals(robot.serialNumber(), pull.serialNumber())) throw new IOException("Pull manifest serial differs from robot: " + pullPath);
+          managed.add(pullPath);
+          for (var entry : java.util.stream.Stream.concat(pull.files().stream(), pull.history().stream()).toList()) {
+            var held = io.resolve(root, entry.localName());
+            // A verified file is also in session.json; only staging needs this membership.
+            if (held.startsWith(robotDir.resolve("pulled"))) managed.add(held);
+          }
+        }
         var sessions = io.check(robotDir.resolve("sessions"));
         if (!Files.isDirectory(sessions)) continue;
         for (var day : children(sessions)) {

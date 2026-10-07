@@ -258,9 +258,10 @@ public final class CaptureStore implements CaptureWriter.Observer {
     OpenCapture open = update.open() ? new OpenCapture(update.name(),
         new Provenance("captured", null, update.name(), capture.startedAt().toString(), false),
         update.size(), update.min(), update.max()) : null;
+    var identityConflicts = java.util.stream.Stream.concat(old.identityConflicts().stream(), update.conflicts().stream()).distinct().toList();
     var session = new Session(old.id(), old.startedAt(), update.endedAt().toString(),
         old.startBasis(), update.event(), update.matchType(), update.matchNumber(), update.teamNumber(),
-        List.copyOf(files), open, update.endReason(), update.identity(), update.conflicts());
+        List.copyOf(files), open, update.endReason(), update.identity(), identityConflicts);
     io.write(path, session); writes.incrementAndGet();
     // Keep the directory stable while its writer can open another rollover file or remap.
     // Creation of a resumed capture is a queue barrier, so it cannot race this close-time move.

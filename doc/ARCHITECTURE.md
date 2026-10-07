@@ -117,6 +117,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | Arrow's format library (`arrow-format`, with the Flatbuffers runtime) | The Flatbuffers schema and message headers of the Arrow IPC stream the data endpoint writes. Only the generated format classes: the arrays' layout is the server's own, on the heap. |
 | The JDK's HTTP client | The Blue Alliance API. |
 | The JDK's WebSocket client | The NT4 capture client. |
+| Maintained JSch (BSD-3-Clause, with ISC jBCrypt) | SSH exec and SFTP in `capture/pull`; JDK 17 supplies Ed25519 and RSA SHA-2. |
 | Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway fixture; confined to `nt4/server`. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
@@ -158,6 +159,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
+| `capture/pull` | Disabled-state gate, SSH/SFTP adapter, and the daemon coordinating transfer and device identity outside the NT4 loop |
 | `capture/context` | Device identity from the HAL sources, with source provenance and capture context |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
 
@@ -181,7 +183,37 @@ The gate pauses between blocks; resuming rechecks the held prefix. Read pacing i
 comparison bytes. After a stable listing pass, the ordinary readers must reach a clean EOF before
 placement; a recoverable truncated log is not verified. One failed verification permits one complete
 refetch. The REV parser has a strict verification entry point beside its ordinary recovery behavior;
-sync cache format 5 invalidates older reader results. There is no remote deletion operation.
+sync cache format 6 invalidates older reader/synchronization results. There is no remote deletion operation.
+
+`capture/pull.PullCoordinator` owns the SFTP connection and runs on a separate daemon. It reads
+the ordered capture listener's `/FMSInfo/FMSControlData` enabled bit: only a continuously disabled
+robot, settled for five seconds with NT4 still connected, permits work. Unknown state and each new
+connection close the gate. Polling, retries and pacing use a scheduler; neither SSH nor transfer
+storage runs on the NT4 loop. Shutdown includes the transport in the capture's existing deadline.
+
+The maintained JSch fork is one dependency with no required crypto provider on Java 17. Its
+versioned Ed25519 classes require the packaged JAR's `Multi-Release` manifest flag, checked by
+initializing the actual packaged providers in an isolated classloader. Host fingerprints are kept
+per serial and address. First contact is trusted; a changed key is reported before authentication,
+then the device serial decides which pull manifest continues. This is the explicit roboRIO reimage
+policy, not an assertion that a changed key authenticates the old robot.
+
+`store.PullStore` uses the existing queue, path validation, move reservations and reader release.
+Partial files stay in `robots/<serial>/pulled/` and do not appear as logs. Verified files move into
+session `robot/` directories with hash, size and remote provenance. Confirmed growth returns a file
+to staging and removes its obsolete session hash before append. Moves keep durable tool-path aliases.
+A file's logged serial wins over the SSH device reading, with a recorded conflict; matching never
+crosses known serials. Addresses select a connection, not a robot's lifetime identity.
+
+Names nominate shared numeric entries (including DataLogManager's `NT:` prefix) or REV signal
+pairs; the existing correlation machinery decides. Flat, ambiguous or weak data is insufficient.
+A strong match must have an offset within 250 ms of zero and identify one session. Capture files
+anchor their session; already matched members cannot chain small offsets into a larger clock shift.
+A session without a capture may use an unmatched WPILOG as its anchor. A missing logged serial on
+either side records `data_alone`, even when device identity already limits the candidate robot.
+No unique match creates a new session, using the file's clock evidence or modification time with
+that basis. An open capture has no completed hash to invent. A new contact checks held content even
+when a reused file has identical size and mtime; a changed listing invalidates an in-progress proof.
 
 ## NT4 foundation
 

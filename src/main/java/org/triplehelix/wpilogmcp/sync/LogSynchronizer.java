@@ -156,6 +156,35 @@ public class LogSynchronizer {
   }
 
   /**
+   * Capture and robot WPILOG files share names and an FPGA clock, but neither fact proves a
+   * session match. Use the REV machinery's overlap, non-flat signal, correlation and consensus
+   * checks, with no filename/wall-clock fallback. NT: is the DataLogManager recording prefix.
+   */
+  public SyncResult synchronize(LogData capture, LogData robot) {
+    var pairs = new ArrayList<SignalPair>();
+    var left = numericEntries(capture); var right = numericEntries(robot);
+    for (var name : left.keySet().stream().sorted().toList()) {
+      if (!right.containsKey(name) || left.get(name).size() != 1 || right.get(name).size() != 1) continue;
+      String a = left.get(name).get(0), b = right.get(name).get(0);
+      pairs.add(new SignalPair(a, b, capture.values().get(a), robot.values().get(b), "shared_logged_entry", 1));
+    }
+    if (pairs.isEmpty()) return SyncResult.failed("No shared numeric entries for capture matching");
+    var results = rankByCoarseCorrelation(pairs, 0).stream().limit(MAX_REFINED_PAIRS)
+        .map(p -> crossCorrelate(p, 0)).toList();
+    return computeConsensus(results, 0, false);
+  }
+
+  private static Map<String, List<String>> numericEntries(LogData log) {
+    var result = new java.util.LinkedHashMap<String, List<String>>();
+    log.entries().values().stream().filter(e -> List.of("double", "float", "int64").contains(e.type())).forEach(e -> {
+      String name = e.name().startsWith("NT:") ? e.name().substring(3) : e.name();
+      if (name.startsWith("/")) name = name.substring(1);
+      result.computeIfAbsent(name, ignored -> new ArrayList<>()).add(e.name());
+    });
+    return result;
+  }
+
+  /**
    * Synchronizes a revlog with a wpilog file using optional CAN ID hints.
    *
    * @param wpilog The parsed wpilog

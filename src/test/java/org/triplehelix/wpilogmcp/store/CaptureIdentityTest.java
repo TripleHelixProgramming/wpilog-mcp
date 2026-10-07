@@ -142,19 +142,20 @@ class CaptureIdentityTest {
     try (var stores = new StoreRegistry(security)) {
       var store = stores.store(root); store.identify(device("SYNTHETIC-A", "SHA256:first"), WALL).get(10, TimeUnit.SECONDS);
       var state = root.resolve("robots").resolve("SYNTHETIC-A").resolve("pull.json");
-      Files.writeString(state, "synthetic transfer state");
+      String transferState = StoreFiles.JSON.toJson(org.triplehelix.wpilogmcp.sync.PullManifest.empty("SYNTHETIC-A"));
+      Files.writeString(state, transferState);
       var err = System.err; var messages = new java.io.ByteArrayOutputStream();
       try (var output = new java.io.PrintStream(messages)) {
         System.setErr(output); store.identify(device("SYNTHETIC-A", "SHA256:second"), WALL).get(10, TimeUnit.SECONDS);
       } finally { System.setErr(err); }
-      assertEquals("synthetic transfer state", Files.readString(state));
+      assertEquals(transferState, Files.readString(state));
       assertTrue(messages.toString().contains("SSH host key changed"));
       assertEquals(List.of("SHA256:first", "SHA256:second"), StoreCatalog.read(root, security).robots().get(0).robot().contacts()
           .stream().map(StoreManifest.Contact::hostKeyFingerprint).toList());
       store.identify(device("SYNTHETIC-B", "SHA256:third"), WALL).get(10, TimeUnit.SECONDS);
       assertEquals("SYNTHETIC-B", StoreCatalog.read(root, security).header().addresses().get("127.0.0.1"));
       assertFalse(Files.exists(root.resolve("robots").resolve("SYNTHETIC-B").resolve("pull.json")));
-      assertEquals("synthetic transfer state", Files.readString(state));
+      assertEquals(transferState, Files.readString(state));
     }
   }
 

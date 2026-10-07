@@ -161,6 +161,21 @@ public final class LogStore implements AutoCloseable {
 
   public CaptureStore captures(java.time.Clock clock) { return new CaptureStore(this, logManager, clock); }
 
+  public PullStore pulls(org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, java.time.Clock clock) {
+    return new PullStore(this, logManager, security, identity, clock);
+  }
+
+  /** Pin lookup is queued like every identity read/modify/write; callers are background pullers. */
+  public CompletableFuture<String> hostKey(String address) {
+    return captureAsync(io -> {
+      String serial = io.read(root.resolve("store.json"), Header.class).addresses().get(address);
+      if (serial == null) return null;
+      var robot = io.read(root.resolve("robots").resolve(StoreFiles.component(serial)).resolve("robot.json"), Robot.class);
+      return robot.contacts().stream().filter(c -> c.address().equals(address)).reduce((a, b) -> b)
+          .map(Contact::hostKeyFingerprint).orElse(null);
+    });
+  }
+
   public CompletableFuture<Robot> identify(org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity,
       java.time.Clock clock) {
     return captureAsync(io -> {

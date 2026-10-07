@@ -160,6 +160,12 @@ servers:
       thin: {}
       hot_window_sec: 600
       max_file_bytes: 1073741824
+      pull:
+        enabled: false
+        directories: [/home/lvuser/logs, /u/logs, /U/logs]
+        settle_sec: 5
+        rate_bytes: 1000000
+        ssh: {user: lvuser}
 ```
 
 | Key | Meaning and default |
@@ -175,6 +181,15 @@ servers:
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
 | `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `2147483647`. Rollover stays in the same session |
 | `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry runs on the 250 ms flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
+| `capture.pull` | Optional robot log pulling block; capture alone needs no SSH |
+| `capture.pull.enabled` | Opt in to SFTP pulling, default `false` until the shop test passes |
+| `capture.pull.directories` | Absolute remote directories, recursively scanned for `.wpilog` and `.revlog`; defaults `/home/lvuser/logs`, `/u/logs`, `/U/logs`. Missing USB directories are normal; links are skipped |
+| `capture.pull.settle_sec` | Start after the connected robot has been disabled for `5` seconds by default; nonnegative seconds |
+| `capture.pull.rate_bytes` | Read cap in bytes/second, default `1000000` (1 MB/s); positive integer through `2147483647` |
+| `capture.pull.ssh` | Optional SSH authentication block; port 22 |
+| `capture.pull.ssh.user` | Account, default `lvuser`; supports `${NAME}` |
+| `capture.pull.ssh.password` | Password, default empty; supports `${NAME}`. Use an environment variable rather than a literal secret in shared YAML |
+| `capture.pull.ssh.key` | Unencrypted private-key path instead of password; supports `~/` and `${NAME}`. Password and key cannot both be configured |
 
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
 Unknown capture keys and invalid values name the key in the startup error. Capture requires
@@ -228,6 +243,29 @@ are in `edu.wpi.first.wpilibj`. A logged serial wins for its file. Device eviden
 SSH is stored by serial with host-key history and copied into `/Daemon/Robot/Identity` at capture
 start and resume. Address directories are provisional; promotion preserves old paths. The listing's
 `robot_candidates` are unique exact fingerprint hints with their evidence, never assigned identities.
+
+Pulling is opt-in: set `capture.pull.enabled: true` after the [shop test](DEVELOPMENT.md#roborio-sftp-shop-test).
+The gate uses bit 0 of `/FMSInfo/FMSControlData`; enabled, unknown or disconnected state pauses the
+worker within its current 64 KiB block. Reopening the gate resumes at the held offset after a content
+check. The cap also covers fallback comparison reads. SSH errors retry; they do not stop HTTP or NT4.
+The server log reports starts, pauses, completion and failures; `list_sessions` comes later.
+
+The first SSH host key is trusted and its SHA-256 fingerprint recorded with the device serial.
+A changed key is reported and accepted so a reimage can continue; the serial read afterwards selects
+the manifest. This policy assumes the team's trusted robot network. A new serial at the same address
+starts separate transfer state. Supported host keys are Ed25519 and RSA SHA-2. Serial and comments
+come from the HAL's sources (see the plan's section 17); missing or conflicting serial evidence
+refuses the contact, rather than assigning logs from its address.
+
+Files wait in `robots/<serial>/pulled/` until the ordinary reader reaches EOF. A verified file moves
+into a session's `robot/` directory and appears in the listing. Matching requires the same known
+serial and strong data correlation within 250 ms of zero, with one candidate session; names alone
+cannot match. Missing logged serials are marked `data_alone` in the manifest. No match starts its own
+session. A logged/device serial disagreement is reported, and the logged serial wins for the file.
+Confirmed growth temporarily returns a verified file to staging; its earlier tool paths still resolve
+when it is placed again. Reused names retain the previous copy separately. Resume checks the hash
+of exactly the held bytes; if exec is unavailable, the last 64 KiB is compared, which cannot prove
+the earlier prefix. The robot's files are never deleted or modified.
 
 ### Several Log Directories
 

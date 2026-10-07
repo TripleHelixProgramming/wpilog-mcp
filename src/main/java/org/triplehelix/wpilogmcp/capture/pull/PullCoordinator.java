@@ -1,0 +1,124 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.capture.pull;
+
+import java.io.IOException;
+import java.time.Clock;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
+import org.triplehelix.wpilogmcp.config.PullConfig;
+import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
+import org.triplehelix.wpilogmcp.store.LogStore;
+import org.triplehelix.wpilogmcp.sync.FileTransfer;
+
+/** All SSH and file work runs on its own daemon, never on the NT4 event loop. */
+public final class PullCoordinator implements AutoCloseable {
+  @FunctionalInterface public interface Connector {
+    RobotRemote connect(String address, PullConfig config, String pinnedFingerprint) throws IOException;
+  }
+  public record Identity(long connection, DeviceIdentity device) {}
+  @FunctionalInterface public interface Factory {
+    PullCoordinator create(PullConfig config, PullGate gate, LogStore store, Clock wall, Consumer<Identity> identity);
+  }
+  private final PullConfig config;
+  private final PullGate gate;
+  private final LogStore store;
+  private final Clock wall;
+  private final ClientScheduler worker;
+  private final Connector connector;
+  private final Consumer<Identity> identity;
+  private final AtomicBoolean stopped = new AtomicBoolean(), started = new AtomicBoolean();
+  private final AtomicBoolean busy = new AtomicBoolean();
+  private final java.util.concurrent.CompletableFuture<Void> closing = new java.util.concurrent.CompletableFuture<>();
+  private final AtomicReference<RobotRemote> remote = new AtomicReference<>();
+  private FileTransfer transfer;
+  private long connection = -1;
+  private FileTransfer.Status lastStatus;
+
+  public PullCoordinator(PullConfig config, PullGate gate, LogStore store, Clock wall, Consumer<Identity> identity) {
+    this(config, gate, store, wall, identity, ClientScheduler.daemon("robot-pull"), SftpTransport::connect);
+  }
+  public PullCoordinator(PullConfig config, PullGate gate, LogStore store, Clock wall, Consumer<Identity> identity,
+      ClientScheduler worker, Connector connector) {
+    this.config = config; this.gate = gate; this.store = store; this.wall = wall; this.identity = identity;
+    this.worker = worker; this.connector = connector;
+  }
+  public void start() { if (!stopped.get() && started.compareAndSet(false, true)) worker.execute(this::tick); }
+
+  private void tick() {
+    if (stopped.get()) return;
+    long delay = 250_000;
+    try {
+      var result = step();
+      delay = result.waitUs() > 0 ? Math.min(result.waitUs(), 250_000) : result.status() == FileTransfer.Status.IDLE ? 3_000_000 : 250_000;
+      if (result.status() == FileTransfer.Status.COPIED) delay = Math.max(1, result.waitUs());
+    } catch (Exception e) {
+      closeRemote(); transfer = null;
+      LoggerFactory.getLogger(PullCoordinator.class).warn("Robot pull will retry: {}", e.getMessage()); delay = 3_000_000;
+    } finally {
+      if (!stopped.get()) worker.schedule(this::tick, delay);
+    }
+  }
+
+  /** Test seam for a complete scheduling step; only the coordinator's one worker calls it in use. */
+  public FileTransfer.Result step() throws Exception {
+    if (!busy.compareAndSet(false, true)) throw new IllegalStateException("A pull step is already running");
+    try { return performStep(); } finally { busy.set(false); }
+  }
+  private FileTransfer.Result performStep() throws Exception {
+    if (connection != gate.connection()) { closeRemote(); transfer = null; connection = gate.connection(); }
+    if (stopped.get() || !gate.open()) {
+      if (transfer != null) transfer.step(); // Drop the old prefix proof when the gate closes.
+      return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null));
+    }
+    if (transfer == null) {
+      long episode = gate.connection(); String address = gate.address();
+      if (address == null) return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null));
+      String pin = store.hostKey(address).get();
+      if (stopped.get() || !gate.open() || episode != gate.connection()) return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null));
+      var contact = connector.connect(address, config, pin);
+      remote.set(contact);
+      if (stopped.get() || !gate.open() || episode != gate.connection()) { closeRemote(); return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null)); }
+      var device = contact.identity();
+      if (stopped.get() || !gate.open() || episode != gate.connection()) { closeRemote(); return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null)); }
+      store.identify(device, wall).get();
+      identity.accept(new Identity(episode, device));
+      var local = store.pulls(device, wall);
+      transfer = new FileTransfer(contact, local, local.manifest(), config.rateBytes(), worker::nowUs,
+          () -> !stopped.get() && gate.open() && episode == gate.connection());
+      connection = episode;
+    }
+    return report(transfer.step());
+  }
+  private FileTransfer.Result report(FileTransfer.Result result) {
+    var status = result.status();
+    if (status == FileTransfer.Status.VERIFIED || status == FileTransfer.Status.RETRIED || status == FileTransfer.Status.REFUSED
+        || status != lastStatus && (status == FileTransfer.Status.PAUSED || status == FileTransfer.Status.COPIED)) {
+      LoggerFactory.getLogger(PullCoordinator.class).info("Robot pull {}: {} {}", status, result.remoteName(), result.detail() == null ? "" : result.detail());
+    }
+    if (status != FileTransfer.Status.WAITING) lastStatus = status;
+    return result;
+  }
+  private void closeRemote() {
+    var contact = remote.getAndSet(null);
+    if (contact != null) try { contact.close(); } catch (IOException e) { LoggerFactory.getLogger(PullCoordinator.class).debug("SSH close failed: {}", e.getMessage()); }
+  }
+  /** Transport shutdown must share the capture's deadline, not block before it begins. */
+  public java.util.concurrent.CompletableFuture<Void> closeAsync() {
+    if (stopped.compareAndSet(false, true)) {
+      worker.close();
+      var closer = new Thread(() -> {
+        try { closeRemote(); closing.complete(null); }
+        catch (RuntimeException e) { closing.completeExceptionally(e); }
+      }, "robot-pull-close");
+      closer.setDaemon(true); closer.start();
+    }
+    return closing;
+  }
+  @Override public void close() { closeAsync(); }
+}

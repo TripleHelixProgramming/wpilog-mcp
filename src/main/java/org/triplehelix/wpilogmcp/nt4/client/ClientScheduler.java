@@ -15,10 +15,14 @@ public interface ClientScheduler extends AutoCloseable {
   @Override void close();
 
   static ClientScheduler daemon() {
+    return daemon("nt4-client");
+  }
+
+  static ClientScheduler daemon(String name) {
     return new ClientScheduler() {
       private final long epoch = System.nanoTime();
       private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
-        var thread = new Thread(r, "nt4-client");
+        var thread = new Thread(r, name);
         thread.setDaemon(true);
         return thread;
       });

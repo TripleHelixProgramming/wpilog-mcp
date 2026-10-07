@@ -249,7 +249,7 @@ key history. Rows without a serial can carry `robot_candidates`: each has `seria
 `evidence` (`kind`, `value`). Kinds are `logged_team_number`, `entry_set`, and `rev_can_inventory`;
 the latter two values are hashes of exact sorted fingerprints. Each kind must match exactly one
 known serial; conflicting hints are omitted. This never assigns the file. Unassigned REV rows can
-carry the same candidates. Moved paths remain usable by tools after the seven-day listing notice. A file beyond the current 2 GB mapping limit remains in `logs` with `read_error`, the same refusal reason loading and import report.
+carry the same candidates. With `capture.pull` enabled, partial transfers stay out of the log listing; verified copies appear under their session with device identity unless the file logs its own serial. A logged/device disagreement is kept in the session manifest and server log. Moved paths remain usable by tools after the seven-day listing notice. A file beyond the current 2 GB mapping limit remains in `logs` with `read_error`, the same refusal reason loading and import report.
 
 Store listings additionally return:
 

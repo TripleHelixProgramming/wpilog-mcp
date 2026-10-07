@@ -56,7 +56,11 @@ public final class StoreManifest {
   public record OpenCapture(String path, Provenance provenance, long sizeBytes,
       double minTimestampSec, double maxTimestampSec) {}
   public record Provenance(String kind, String originalPath, String originalName,
-      String importedAt, boolean moved) {}
+      String importedAt, boolean moved, String sourceRobotSerial) {
+    public Provenance(String kind, String originalPath, String originalName, String importedAt, boolean moved) {
+      this(kind, originalPath, originalName, importedAt, moved, null);
+    }
+  }
   public record Matching(String method, String wpilogSha256, long offsetMicros,
       double confidence, double driftRateNanosPerSec, double referenceTimeSec, String identityBasis) {}
   public record LogFile(String path, String sha256, long sizeBytes, String kind,

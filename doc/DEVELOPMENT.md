@@ -60,6 +60,18 @@ read pacing, one retry, manifest round trips, and concurrent-call refusal. `Tran
 copies every generated fixture byte for byte and runs the normal readers, including rejection of
 partial WPILOG records and native REV headers/frames. No test waits for a robot or sleeps for time.
 
+**SFTP, gate and placement.** `PullConfigTest`, `PullGateTest`, `SftpTransportTest`,
+`PullCoordinatorTest`, `PullStoreTest`, and `CapturePullTest` cover configuration and secrets,
+HAL-source reads over a fake channel, command quoting, host-key reporting, disabled settling,
+block-boundary pauses, retry scheduling, and the real capture listener over numeric loopback.
+Store tests hold mapped reads before moves, check hidden staging and path ownership, byte-exact
+placement and hashes, verified growth/rename, serial conflicts, identical signals across serials,
+`data_alone`, and the 250 ms matching bound without chaining earlier offsets. REV and WPILOG
+use the shared correlation machinery. `SshPackagingTest` initializes Ed25519 and RSA SHA-2 from
+the actual fat JAR without optional crypto providers, and checks packaged licenses and dependency
+confinement. `PullDocumentationTest` checks accepted keys and the opt-in hardware invocation.
+Every ordinary fixture remains synthetic; Linux and Windows run these tests without a robot.
+
 **Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
 `LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
 mapped readers, retained old paths, key history, disagreements, and late logged identity outside a
@@ -124,6 +136,26 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 With `-PconformanceLogDir`, the tests run with a 4 GB heap (the launcher's default) instead of the usual test heap; `-PconformanceHeap=8g` changes it.
 
 Use your own team's logs. Logs that another team has deliberately published can be used for testing on your own computer, but keep them there: publishing a log is not permission to redistribute it, and no log belongs in this repository. Nor does a value taken from another team's log: a number copied into a test is a copy too. The exception is a log whose license allows the copy, with the license's notice kept beside the values, as the golden checks do for Team 4065's MIT-licensed match.
+
+### roboRIO SFTP shop test
+
+Keep the robot disabled on a trusted shop network and generate a synthetic robot test log in one
+of the configured default log directories. The hardware-only `SftpRobotTest` is skipped unless
+`pullRobot` is explicitly supplied:
+
+```bash
+./gradlew test --tests '*SftpRobotTest' -PpullRobot=172.22.11.2
+```
+
+An explicit host or team IP can replace the USB address. `-PpullUser=lvuser` selects an account;
+`WPILOG_PULL_PASSWORD` or `WPILOG_PULL_KEY` supplies authentication without command-line secrets.
+The test reads device serial/comments, negotiates SFTP, lists logs, checks an offset read and a
+SHA-256 of exactly the bytes read. It changes nothing on the robot and saves no robot data as
+fixtures. Run it on roboRIO 1 and 2 to verify proc-environment permissions, comments, empty-password
+access, the installed OpenSSH algorithms, and the available hash command. Then exercise the actual
+pit server through disabled/enabled transitions, Wi-Fi loss, reboot, log growth/rename and a reimage;
+measure CPU/network cost at the configured rate. This shop stress test remains the user's and
+unverified here. Pulling stays off by default until those checks pass. System-log pulling is later work.
 
 ### Stress tests
 

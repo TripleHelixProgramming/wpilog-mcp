@@ -111,6 +111,9 @@ dependencies {
     // NT4 gateway framing only (nt4/server); the client uses java.net.http.WebSocket.
     implementation 'org.java-websocket:Java-WebSocket:1.6.0'
 
+    // SSH exec and SFTP confined to capture/pull; JDK 17 provides Ed25519 without extra crypto JARs.
+    implementation 'com.github.mwiede:jsch:2.28.7'
+
     // In-memory cache with weight-based eviction for lazy log value loading
     implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'
 
@@ -207,7 +210,7 @@ shadowJar {
     archiveVersion.set(version)
 
     manifest {
-        attributes 'Main-Class': 'org.triplehelix.wpilogmcp.Main'
+        attributes 'Main-Class': 'org.triplehelix.wpilogmcp.Main', 'Multi-Release': 'true'
     }
 }
 
@@ -246,6 +249,10 @@ tasks.register('install', Exec) {
 tasks.named('test') {
     dependsOn shadowJar
     systemProperty 'install.testJar', tasks.shadowJar.archiveFile.get().asFile.absolutePath
+    if (project.hasProperty('pullRobot')) {
+        systemProperty 'pull.robot', project.property('pullRobot')
+        systemProperty 'pull.user', project.findProperty('pullUser') ?: 'lvuser'
+    }
 }
 
 // ==================== VS Code Extension ====================
