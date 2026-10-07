@@ -18,12 +18,16 @@ import org.triplehelix.wpilogmcp.config.PullConfig;
 import org.triplehelix.wpilogmcp.harness.FakeRoboRio;
 import org.triplehelix.wpilogmcp.store.StoreCatalog;
 import org.triplehelix.wpilogmcp.sync.FileTransfer;
+import org.triplehelix.wpilogmcp.sync.SyncResult;
+import org.triplehelix.wpilogmcp.sync.SynchronizedLogs;
 
 /** Real SSH/SFTP, production transfer verification and store matching; time alone is injected. */
 final class ReplayPull implements AutoCloseable {
   final FakeRoboRio rio;
   final SftpTransport remote;
   final org.triplehelix.wpilogmcp.capture.context.DeviceIdentity device;
+  private int retainedRevlogsPeak;
+  private record Companion(Path path, SyncResult expected) {}
 
   ReplayPull(ReplaySource source, Path root) throws Exception {
     rio = new FakeRoboRio(root, source.serial(), "replay");
@@ -47,14 +51,14 @@ final class ReplayPull implements AutoCloseable {
       long shiftUs, Path expectedCapture) throws Exception {
     var companions = companions(source, capture);
     for (var bus : companions) {
-      var path = Path.of(bus.revlog().path());
+      var path = bus.path();
       Files.copy(path, rio.logs().resolve(path.getFileName()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
     }
     var local = capture.store.pulls(device, wall); var now = new AtomicLong();
     int expectedFiles = remote.list().size();
     var transfer = new FileTransfer(remote, local, local.manifest(), 1_000_000, now::get, () -> true);
     long size = Files.size(source.path);
-    for (var bus : companions) size += Files.size(Path.of(bus.revlog().path()));
+    for (var bus : companions) size += Files.size(bus.path());
     long bound = 2 * (size / FileTransfer.BLOCK_BYTES + 1) + 100L * (companions.size() + 1);
     boolean verified = false;
     for (long step = 0; step < bound; step++) {
@@ -69,7 +73,8 @@ final class ReplayPull implements AutoCloseable {
     var catalog = StoreCatalog.read(capture.directory, security);
     var result = new LinkedHashMap<String, Object>(); result.put("verified", verified);
     result.put("revlogs", compareCompanions(companions, capture, catalog, shiftUs,
-        capture.files.stream().filter(p -> p.getParent().equals(expectedCapture.getParent())).toList(), transfer.manifest()));
+        capture.files.stream().filter(p -> p.getParent().equals(expectedCapture.getParent())).toList(), transfer.manifest(), source.path));
+    result.put("retained_revlogs_peak", retainedRevlogsPeak);
     if (!verified) {
       var entry = transfer.manifest().files().stream().filter(e -> e.remoteName().endsWith("/" + source.path.getFileName())).findFirst().orElseThrow();
       boolean originalRefused = false;
@@ -102,13 +107,17 @@ final class ReplayPull implements AutoCloseable {
     return result;
   }
 
-  private static List<Map<String, Object>> compareCompanions(
-      List<org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog> companions,
+  private List<Map<String, Object>> compareCompanions(
+      List<Companion> companions,
       ReplayCapture capture, StoreCatalog.Snapshot catalog, long shiftUs, List<Path> files,
-      org.triplehelix.wpilogmcp.sync.PullManifest manifest) throws Exception {
+      org.triplehelix.wpilogmcp.sync.PullManifest manifest, Path source) throws Exception {
     var revResults = new ArrayList<Map<String, Object>>();
+    for (var file : files) {
+      waitForSync(capture, file);
+      clearComparedBuses(capture, file);
+    }
     for (var bus : companions) {
-      var original = Path.of(bus.revlog().path());
+      var original = bus.path();
       var held = manifest.files().stream().filter(e -> e.remoteName().endsWith("/" + original.getFileName())).findFirst().orElseThrow();
       var stored = catalog.files().stream().filter(f -> f.file().provenance().kind().equals("pulled")
           && f.file().provenance().originalName().equals(original.getFileName().toString())).findFirst();
@@ -123,14 +132,18 @@ final class ReplayPull implements AutoCloseable {
       var alignments = new ArrayList<org.triplehelix.wpilogmcp.sync.SyncResult>();
       for (var file : files) {
         waitForSync(capture, file);
-        var actual = capture.manager.syncRevLog(file.toString(), copy.toString());
-        alignments.add(actual);
-        var query = new JsonObject(); query.addProperty("path", file.toString());
-        var status = capture.http.call("sync_status", query);
-        visible &= status.has("revlogs") && status.getAsJsonArray("revlogs").asList().stream()
-            .map(v -> v.getAsJsonObject()).anyMatch(v -> v.get("path").getAsString().equals(copy.toString())
-                && v.getAsJsonObject("sync").get("offset_microseconds").getAsLong() == actual.offsetMicros());
-        parts.add(Map.of("method", actual.method(), "offset_us", actual.offsetMicros()));
+        clearComparedBuses(capture, file);
+        try {
+          var actual = capture.manager.syncRevLog(file.toString(), copy.toString());
+          observeRetained(capture, source);
+          alignments.add(actual);
+          var query = new JsonObject(); query.addProperty("path", file.toString());
+          var status = capture.http.call("sync_status", query);
+          visible &= status.has("revlogs") && status.getAsJsonArray("revlogs").asList().stream()
+              .map(v -> v.getAsJsonObject()).anyMatch(v -> v.get("path").getAsString().equals(copy.toString())
+                  && v.getAsJsonObject("sync").get("offset_microseconds").getAsLong() == actual.offsetMicros());
+          parts.add(Map.of("method", actual.method(), "offset_us", actual.offsetMicros()));
+        } finally { clearComparedBuses(capture, file); }
       }
       // Rollover changes a file's input window. Compare the whole captured record set with
       // the whole source for the offset invariant; HTTP above separately checks each file.
@@ -141,7 +154,7 @@ final class ReplayPull implements AutoCloseable {
               .parse(copy);
           actual = new org.triplehelix.wpilogmcp.sync.LogSynchronizer().synchronize(joined, rev);
         }
-        var baseline = bus.syncResult();
+        var baseline = bus.expected();
         var row = new LinkedHashMap<String, Object>(); row.put("path", original.toString());
         row.put("numeric_records_compared", joined.entries().values().stream()
             .filter(e -> List.of("double", "float", "int64").contains(e.type())).mapToLong(e -> joined.sampleCount(e.name())).sum());
@@ -167,23 +180,39 @@ final class ReplayPull implements AutoCloseable {
     }
   }
 
-  private static List<org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog> companions(
+  private List<Companion> companions(
       ReplaySource source, ReplayCapture capture) throws Exception {
     if (!hasRevSiblings(source)) return List.of();
     waitForSync(capture, source.path);
-    var result = new ArrayList<org.triplehelix.wpilogmcp.sync.SynchronizedLogs.SyncedRevLog>();
+    clearComparedBuses(capture, source.path);
+    var result = new ArrayList<Companion>();
     try (var paths = Files.list(source.path.getParent())) {
       for (var path : paths.filter(Files::isRegularFile)
           .filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".revlog")).sorted().toList()) {
         // Include the negative cases normal filename nomination leaves out. A source that
         // cannot synchronize this bus must not gain evidence merely by passing through NT4.
-        capture.manager.syncRevLog(source.path.toString(), path.toString());
-        var logs = capture.manager.getSynchronizedLogs(source.path.toString());
-        result.add(logs.revlogs().stream().filter(b -> Path.of(b.revlog().path()).equals(path.toAbsolutePath()))
-            .findFirst().orElseThrow(() -> new AssertionError(source.path.toString())));
+        try {
+          var expected = capture.manager.syncRevLog(source.path.toString(), path.toString());
+          observeRetained(capture, source.path);
+          result.add(new Companion(path, expected));
+        } finally { clearComparedBuses(capture, source.path); }
       }
     }
     return result;
+  }
+  /**
+   * These are independent comparisons, not a request to retain every bus on every rolled
+   * file. Keep the measured result, then release decoded REV graphs before the next bus.
+   * Holding SyncedRevLog objects here exhausted the 4 GiB suite heap on a boundary-size log.
+   */
+  private static void clearComparedBuses(ReplayCapture capture, Path path) {
+    capture.manager.updateSynchronizedLogs(path.toString(), logs -> new SynchronizedLogs(logs.wpilog()));
+  }
+  private void observeRetained(ReplayCapture capture, Path source) {
+    int retained = java.util.stream.Stream.concat(java.util.stream.Stream.of(source), capture.files.stream())
+        .map(p -> capture.manager.getSynchronizedLogs(p.toString())).filter(java.util.Objects::nonNull)
+        .mapToInt(org.triplehelix.wpilogmcp.sync.SynchronizedLogs::revlogCount).sum();
+    retainedRevlogsPeak = Math.max(retainedRevlogsPeak, retained);
   }
   private static void waitForSync(ReplayCapture capture, Path path) throws Exception {
     var args = new JsonObject(); args.addProperty("path", path.toString()); args.addProperty("timeout_ms", 5_000);

@@ -40,8 +40,11 @@ class ReplayPullTest {
     Files.write(incomplete, new byte[] {0}, java.nio.file.StandardOpenOption.APPEND);
     try (var source = new ReplaySource(path)) {
       var report = gateway(source, directory.resolve("failed-bus"), 120_000);
-      var buses = (java.util.List<?>) ((Map<?, ?>) report.get("pull")).get("revlogs");
+      var pull = (Map<?, ?>) report.get("pull");
+      var buses = (java.util.List<?>) pull.get("revlogs");
       assertEquals(3, buses.size(), "Even a sibling omitted by filename nomination must meet the same data check");
+      assertEquals(1, ((Number) pull.get("retained_revlogs_peak")).intValue(),
+          "Retain only the bus being compared, not every decoded source and capture copy");
       assertEquals(1, buses.stream().map(b -> (Map<?, ?>) b).filter(b -> Boolean.TRUE.equals(b.get("rejected_incomplete_source"))).count());
       for (var item : buses) {
       var bus = (Map<?, ?>) item;

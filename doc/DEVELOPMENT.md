@@ -279,6 +279,10 @@ its measured offset plus the replay shift. Failed inputs keep their scratch capt
 For rollover, the source-wide REV comparison uses a test-only view of all captured parts, without
 creating a file above the reader's size limit. Each part's HTTP synchronization result is checked
 separately and reported: its shorter input window can legitimately produce another alignment.
+REV comparisons retain each measured result and release the decoded bus before comparing the
+next one. `retained_revlogs_peak` reports the observed count in the source/capture sync caches;
+the multi-bus fixture pins it to one. Retaining every decoded source and capture copy exhausted
+the 4 GiB replay heap on a large rolled input.
 No assertion or report copies telemetry values into source control.
 
 The robot also accepts `--replay <file> <control-directory> <nt4-port> <shift-us> [speed]`.
