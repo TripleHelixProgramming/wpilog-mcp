@@ -407,6 +407,26 @@ untrusted Origins. Plants remove each boundary, leak a synthetic credential into
 report the coalesced size instead of the current file length. `ManualSchedulerTest` pins the native
 replay harness race where clock advancement already drained the reply a subsequent wait expected.
 
+`StoreSyncTest` uses two stores on real in-process HTTP transports. Both transfer orders and a
+third round must converge on the same session ids and hash union. It checks overlapping fragments,
+serial separation, provenance and human conflicts, content-proved resume, peer disappearance,
+placement recovery before contacting an offline peer, hash and reader refusals, mirror refusal in
+both directions, and queued-job exclusion. An active writer must retain a peer's capture and match
+facts on its next flush. The network-bind test permits loopback job submission and refuses a
+connection through a nonloopback interface (only that interface check skips if none exists).
+`MainSyncTest` runs child JVMs offline and against a real daemon, checking remembered peers,
+cross-process locking, exit codes and that daemon failures never fall back to an offline writer.
+
+`StoreSyncConformanceTest` imports every generated fixture, syncs over HTTP, and compares every
+log tool and schema-derived argument variant on the source-store file and its copied file.
+It includes the REV companion, verifies identical bytes, and normalizes only execution time and
+the known file paths. Counts are written to `build/reports/conformance/store-sync.txt`.
+Plants change ids, overlap/serial rules, hash deduplication, provenance, conflict handling, resume
+proofs, verification, recovery, move aliases, mirror/HTTP admission and a copied log's tool answer.
+These tests need no robot, real log, external server or new dependency and run in the ordinary
+Linux and Windows builds. Run them with
+`./gradlew test --tests '*StoreSyncTest' --tests '*MainSyncTest' --tests '*StoreSyncConformanceTest'`.
+
 ### The data endpoint's streams
 
 `DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`, and CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.

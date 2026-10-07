@@ -41,10 +41,25 @@ public final class StoreManifest {
     }
   }
   public record IdentityConflict(String path, String loggedSerial, String deviceSerial) {}
+  public record Conflict(String field, String localValue, String peerValue, String peerStoreId) {}
   public record Session(String id, String startedAt, String endedAt, String startBasis,
       String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
-      OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts) {
-    public Session { identityConflicts = identityConflicts == null ? List.of() : List.copyOf(identityConflicts); }
+      OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
+      List<Conflict> conflicts) {
+    public Session {
+      identityConflicts = identityConflicts == null ? List.of() : List.copyOf(identityConflicts);
+      conflicts = conflicts == null ? List.of() : List.copyOf(conflicts);
+    }
+    public Session(String id, String startedAt, String endedAt, String startBasis,
+        String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
+        OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts) {
+      this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
+          openCapture, endReason, deviceIdentity, identityConflicts, List.of());
+    }
+    public Session withFiles(List<LogFile> value) {
+      return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber,
+          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts);
+    }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
         OpenCapture openCapture, String endReason) {
@@ -65,11 +80,16 @@ public final class StoreManifest {
   public record OpenCapture(String path, Provenance provenance, long sizeBytes,
       double minTimestampSec, double maxTimestampSec) {}
   public record Provenance(String kind, String originalPath, String originalName,
-      String importedAt, boolean moved, String sourceRobotSerial) {
+      String importedAt, boolean moved, String sourceRobotSerial, List<PeerCopy> copiedFrom) {
+    public Provenance { copiedFrom = copiedFrom == null ? List.of() : List.copyOf(copiedFrom); }
+    public Provenance(String kind, String originalPath, String originalName, String importedAt, boolean moved, String sourceRobotSerial) {
+      this(kind, originalPath, originalName, importedAt, moved, sourceRobotSerial, List.of());
+    }
     public Provenance(String kind, String originalPath, String originalName, String importedAt, boolean moved) {
       this(kind, originalPath, originalName, importedAt, moved, null);
     }
   }
+  public record PeerCopy(String storeId, String url, String copiedAt) {}
   public record Matching(String method, String wpilogSha256, long offsetMicros,
       double confidence, double driftRateNanosPerSec, double referenceTimeSec, String identityBasis) {}
   public record LogFile(String path, String sha256, long sizeBytes, String kind,

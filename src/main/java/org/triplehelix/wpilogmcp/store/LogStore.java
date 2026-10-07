@@ -73,6 +73,7 @@ public final class LogStore implements AutoCloseable {
   private final CatalogReader catalogReader;
   private final StoreInbox inbox;
   private final AtomicInteger pending = new AtomicInteger();
+  private final java.util.concurrent.atomic.AtomicBoolean syncing = new java.util.concurrent.atomic.AtomicBoolean();
 
   @FunctionalInterface
   interface CatalogReader {
@@ -190,6 +191,22 @@ public final class LogStore implements AutoCloseable {
 
   public boolean importing() {
     return pending.get() > 0;
+  }
+
+  /** Peer synchronization is a store job; a second sync is refused rather than queued indefinitely. */
+  public CompletableFuture<StoreSync.Result> sync(String url, long rateBytes, Consumer<StoreSync.Progress> progress) {
+    return sync(url, rateBytes, progress, java.time.Clock.systemUTC(), StoreSync::http);
+  }
+
+  CompletableFuture<StoreSync.Result> sync(String url, long rateBytes, Consumer<StoreSync.Progress> progress,
+      java.time.Clock clock, StoreSync.Source source) {
+    if (rateBytes < 0) throw new IllegalArgumentException("rate_bytes must be nonnegative (0 means unlimited)");
+    if (!syncing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("A sync is already running for this store"));
+    pending.incrementAndGet();
+    try {
+      return captureAsync(io -> new StoreSync(root, io, security, logManager, clock, source, progress).run(url, rateBytes))
+          .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
+    } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
   }
 
   /** A second caller queues behind the first, including its inspection and identity changes. */
@@ -625,7 +642,7 @@ public final class LogStore implements AutoCloseable {
           if (input.end() != null && input.end().isAfter(end)) end = input.end();
         }
         session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts());
+            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts());
         io.write(manifest, session);
       }
       catalog.placed(io, manifest, robot, session, records);

@@ -156,6 +156,7 @@ public final class StoreCatalog {
             validate(session, manifest);
             sessionDirectories.add(new SessionDirectory(sessionDir, robot, session));
             managed.add(manifest);
+            mergedMetadata(io, sessionDir, managed);
             if (session.openCapture() != null) {
               var capture = session.openCapture();
               var path = io.resolve(sessionDir, capture.path());
@@ -199,6 +200,7 @@ public final class StoreCatalog {
       }
     }
     var unmanaged = new ArrayList<Path>();
+    if (strays) managed.addAll(StoreSync.managed(root, io));
     if (strays) try (var walk = Files.walk(root)) {
       for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
         if (path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))) continue;
@@ -252,6 +254,18 @@ public final class StoreCatalog {
   private static List<Path> children(Path path) throws IOException {
     try (var entries = Files.list(path)) {
       return entries.sorted().toList();
+    }
+  }
+
+  /** Consolidation retains old manifests beside moved payloads; they are history, not sessions. */
+  private static void mergedMetadata(StoreFiles io, Path session, java.util.Set<Path> managed) throws IOException {
+    var merged = io.check(session.resolve("merged"));
+    if (!Files.isDirectory(merged)) return;
+    for (var directory : children(merged)) {
+      var manifest = io.check(directory.resolve("session.json"));
+      if (!Files.isRegularFile(manifest)) continue;
+      validate(io.read(manifest, Session.class), manifest);
+      managed.add(manifest); mergedMetadata(io, directory, managed);
     }
   }
 

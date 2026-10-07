@@ -517,6 +517,51 @@ The peer server must bind to an interface reachable by the other laptop (`WPILOG
 in the peer server's environment); leases and key registration remain refused on that bind.
 The door has no authentication: expose it only on a trusted network or behind the team's authenticated proxy.
 
+### Syncing Stores Between Laptops
+
+Run `wpilog-mcp sync http://other-laptop:2363` to copy missing files into the local server's
+store. The peer needs an HTTP server bound to an address your laptop can reach, as above.
+The default local server is `default`; `--server <name>` and `--config <path>` select another.
+The destination defaults to the first configured store, or the first log directory to create
+one. Use `--store <dir>` to choose another destination inside the configured directories, and
+`?store=<id>` on the peer URL when it publishes several stores. The URL is remembered in
+`store.json`; `wpilog-mcp sync` with no URL visits every remembered peer in turn.
+
+A running daemon owns the job. Without one, the command runs under the same `store.lock` as
+import; a daemon refusal or failed request never starts a second writer. Transfers reuse the
+puller's content proofs, 64 KiB blocks and durable progress. HTTP sync defaults to unlimited
+pacing; `--rate-bytes <bytes/sec>` sets a cap (`0` means unlimited). An interrupted file resumes
+only after the peer proves the held prefix. Each completed copy must match the advertised hash
+and load through the ordinary import inspection. An already imported power-cut tail retains
+its truncation note. An open capture waits for its final hash; it is reported as a refusal for
+this sync, while the read-only door continues to serve its current bytes.
+
+Overlapping sessions of the same serial join, using the lexicographically smallest session id
+so both transfer orders converge. Existing paths remain usable when closed session fragments
+move together. Files keep their original provenance and gain `copied_from` entries with the
+peer's store id, URL and copy time. A peer's robot name or comments fill an empty local field;
+otherwise disagreements appear in the session's `conflicts` and the local text stays. Hashes
+already held are reported present. Nothing is deleted on either side, and mirrors are refused
+as both source and destination. The mirror and extension commands are later work.
+
+The command prints `job`, `progress` and `result` JSON lines (offline runs have no `job` line).
+The result lists `sessions_created`, `files_copied` (including new network `bytes` and total
+`size_bytes`), `files_present`, `conflicts`, `refusals`, and `stopped` with the peer, file and
+held byte count. Exit 0 means no refusals or stopped peers, 1 reports an incomplete or refused
+sync, and 2 is a command-line error. Partial bytes remain journaled; rerun the command to
+resume. Before contacting any peer, the next sync completes pending file/manifest placements
+left by a process exit.
+
+The daemon API is `POST /store/sync` with optional `url`, `store` (local directory), and
+`rate_bytes` fields, for example `{"url":"http://other-laptop:2363","rate_bytes":0}`.
+An absent URL means remembered peers; an absent store requires one configured destination.
+The body is limited to 64 KiB. A `202` response gives `job_id` and `url` (also `Location`);
+`GET /store/sync/<job>` returns `state` (`queued`, `running`, `done`, `failed`), `progress`,
+`result` and `error`. Both routes require a loopback connection and pass the Origin check,
+including on a server bound to the network. A second sync for the same store is refused with
+409; different stores have separate queues. Active jobs keep the daemon alive. The most recent
+100 jobs are retained in memory, with completed jobs evicted first; they disappear at restart.
+
 ### The Import Endpoint
 
 The HTTP transport accepts imports beside the data endpoint:

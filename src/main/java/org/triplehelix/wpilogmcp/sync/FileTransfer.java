@@ -35,7 +35,7 @@ public final class FileTransfer {
     String archive(String name) throws IOException;
     /** A verified file returns to staging before it grows, so its session never keeps a stale hash. */
     default String resume(Entry entry) throws IOException { return entry.localName(); }
-    /** Load through the ordinary reader; refuse a scan that stops before EOF. */
+    /** Load through the ordinary reader: pulls require clean EOF; peers preserve imported truncation notes. */
     void verify(String name) throws IOException;
     /** Placement may change the path, but never the verified bytes. */
     String verified(Entry entry) throws IOException;

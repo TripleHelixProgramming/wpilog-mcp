@@ -37,6 +37,7 @@ import org.triplehelix.wpilogmcp.mcp.McpServer;
 import org.triplehelix.wpilogmcp.mcp.StdioBridge;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.store.ImportCommand;
+import org.triplehelix.wpilogmcp.store.SyncCommand;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
 import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
@@ -104,6 +105,10 @@ public class Main {
     }
     if (args.length >= 1 && "import".equals(args[0])) {
       System.exit(runImport(args));
+      return;
+    }
+    if (args.length >= 1 && "sync".equals(args[0])) {
+      System.exit(runSync(args));
       return;
     }
     if (args.length >= 1 && "install".equals(args[0])) {
@@ -238,6 +243,20 @@ public class Main {
     } catch (Exception e) {
       var cause = e instanceof ExecutionException ? e.getCause() : e;
       logger().error("Import failed: {}", cause.getMessage());
+      if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      return 1;
+    }
+  }
+
+  static int runSync(String[] args) {
+    try {
+      var options = SyncCommand.parse(args);
+      return SyncCommand.run(options, loadConfig(options.server(), options.config()), new DaemonManager(), System.out);
+    } catch (IllegalArgumentException e) {
+      logger().error("{}", e.getMessage()); return 2;
+    } catch (Exception e) {
+      var cause = e instanceof ExecutionException ? e.getCause() : e;
+      logger().error("Sync failed: {}", cause.getMessage());
       if (e instanceof InterruptedException) Thread.currentThread().interrupt();
       return 1;
     }
@@ -756,6 +775,7 @@ public class Main {
     logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
     logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
     logger().info("  import <path>...   Import logs into the configured store, using its daemon when running");
+    logger().info("  sync [url]         Pull missing store files from a peer, or from all remembered peers");
     logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--refresh] [--with-extension --vsix <file>] [--json]");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");

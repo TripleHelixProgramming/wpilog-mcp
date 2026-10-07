@@ -98,6 +98,8 @@ public class HttpTransport {
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
+  private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores, storeDoor,
+      () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getConfiguredDirectories());
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
   private volatile long lastMcpActivityNanos = System.nanoTime();
 
@@ -158,6 +160,7 @@ public class HttpTransport {
     server.createContext(StoreImportEndpoint.PATH, counted(this::handleImport));
     server.createContext(StoreImportEndpoint.ASSIGN_PATH, counted(this::handleImport));
     server.createContext("/store", counted(this::handleStore));
+    server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
@@ -210,7 +213,7 @@ public class HttpTransport {
   /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
   private void exitIfIdle() {
     var idle = idleExit;
-    if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active()) return;
+    if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active()) return;
     long idleFor = System.nanoTime() - lastMcpActivityNanos;
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
@@ -643,6 +646,17 @@ public class HttpTransport {
     }
     noteMcpActivity();
     storeEndpoint.handle(exchange);
+  }
+
+  private void handleSync(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin"); return;
+    }
+    if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Store sync jobs require a loopback connection"); return;
+    }
+    noteMcpActivity(); syncEndpoint.handle(exchange);
   }
 
   /** The size cap of a data response, in bytes (see {@link DataEndpoint}). */

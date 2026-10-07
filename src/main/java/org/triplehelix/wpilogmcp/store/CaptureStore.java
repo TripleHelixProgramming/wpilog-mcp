@@ -131,7 +131,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
           old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
           new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
               previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
-          old.deviceIdentity(), old.identityConflicts()));
+          old.deviceIdentity(), old.identityConflicts(), old.conflicts()));
       return path;
     });
   }
@@ -240,7 +240,11 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var directory = before.getParent();
     var path = directory.resolve("session.json");
     var old = io.read(path, Session.class);
-    var files = old.files().stream().filter(f -> !f.provenance().kind().equals("captured"))
+    // A peer capture has the same provenance kind. Replace only this writer's own files;
+    // a flush must retain the other laptop's contribution to the same boot.
+    var owned = update.files().stream().map(CaptureWriter.ClosedFile::name).collect(java.util.stream.Collectors.toSet());
+    owned.add(update.name());
+    var files = old.files().stream().filter(f -> !owned.contains(f.path()))
         .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
     for (var closed : update.files()) {
       var file = io.check(directory.resolve(closed.name()));
@@ -255,9 +259,11 @@ public final class CaptureStore implements CaptureWriter.Observer {
         new Provenance("captured", null, update.name(), capture.startedAt().toString(), false),
         update.size(), update.min(), update.max()) : null;
     var identityConflicts = java.util.stream.Stream.concat(old.identityConflicts().stream(), update.conflicts().stream()).distinct().toList();
-    var session = new Session(old.id(), old.startedAt(), update.endedAt().toString(),
-        old.startBasis(), update.event(), update.matchType(), update.matchNumber(), update.teamNumber(),
-        List.copyOf(files), open, update.endReason(), update.identity(), identityConflicts);
+    String ended = Instant.parse(old.endedAt()).isAfter(update.endedAt()) ? old.endedAt() : update.endedAt().toString();
+    var session = new Session(old.id(), old.startedAt(), ended,
+        old.startBasis(), update.event() == null ? old.event() : update.event(), update.matchType() == null ? old.matchType() : update.matchType(),
+        update.matchNumber() == null ? old.matchNumber() : update.matchNumber(), update.teamNumber() == null ? old.teamNumber() : update.teamNumber(),
+        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts());
     io.write(path, session); writes.incrementAndGet();
     // Keep the directory stable while its writer can open another rollover file or remap.
     // Creation of a resumed capture is a queue barrier, so it cannot race this close-time move.

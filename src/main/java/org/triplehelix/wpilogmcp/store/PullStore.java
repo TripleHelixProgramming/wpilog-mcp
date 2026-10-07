@@ -249,7 +249,7 @@ public final class PullStore implements FileTransfer.Local {
 
   private static Session copy(Session s, List<LogFile> files, List<IdentityConflict> conflicts) {
     return new Session(s.id(), s.startedAt(), s.endedAt(), s.startBasis(), s.event(), s.matchType(), s.matchNumber(), s.teamNumber(),
-        files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts);
+        files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts, s.conflicts());
   }
   private String move(StoreFiles io, Path from, Path target, boolean retain) throws IOException {
     var catalog = StoreCatalog.read(store.root(), security);

@@ -26,10 +26,11 @@ import org.triplehelix.wpilogmcp.store.StoreManifest;
 /** HTTP is another read-only transport for FileTransfer, not another resume implementation. */
 public final class HttpRemoteFiles implements RemoteFiles {
   private static final int MAX_JSON_BYTES = 16 * 1024 * 1024;
+  private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
   private final URI base;
   private final String selector;
   private final HttpClient client;
-  public HttpRemoteFiles(String url) { this(url, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()); }
+  public HttpRemoteFiles(String url) { this(url, HTTP); }
   public HttpRemoteFiles(String url, HttpClient client) {
     var uri = URI.create(url);
     if (!List.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null
