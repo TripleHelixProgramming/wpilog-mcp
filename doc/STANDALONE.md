@@ -482,6 +482,14 @@ The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise 
 
 Started with flags, `wpilog-mcp --http` runs the HTTP server in the foreground instead, as the Docker image below does.
 
+For a systemd service or a bare terminal, set a UTF-8 locale before starting the JVM:
+`LANG=C.UTF-8 LC_ALL=C.UTF-8` on Linux (install that locale if the operating system does not
+provide it). A systemd unit can use `Environment=LANG=C.UTF-8 LC_ALL=C.UTF-8` in `[Service]`;
+restart an already running server after changing it. The Temurin Docker image below already
+sets a UTF-8 locale. Without one, opening a store warns once, and filenames the platform
+cannot represent are refused with the encoding and this remedy. Changing `file.encoding`
+alone does not change the JVM's native filename encoding.
+
 ### Directories by lease
 
 A local client may grant the shared server access to directories for the life of its MCP session. This is an HTTP registration endpoint, not an MCP tool: the person decides which files the server may read. Leases are visible to all sessions, including agents that connect independently. Both routes require `Mcp-Session-Id`, pass the MCP Origin check, and return 403 when the server is bound to anything except loopback, even for a request arriving locally.
@@ -721,6 +729,11 @@ The `202` response and job polling are the same as a JSON import. Provenance rec
 `upload:<filename>` and `moved: false`; the sender's private laptop path is never sent.
 Duplicates are reported as present. This adds byte transport; the command, inbox, content
 inspection, grouping and duplicate recognition were already the explorer's import pipeline.
+
+Run the receiving server with a UTF-8 locale to accept non-ASCII upload names (see the
+service guidance above; the Docker image already sets it). An unrepresentable name is
+refused before receiving bytes, with the native encoding and the instruction to restart
+with a UTF-8 locale. Windows uses its Unicode path API even with a legacy locale.
 
 The server has no authentication: anyone who can reach this upload route can add logs;
 a team using a proxy should put its password on `/store/import` first. For example, with the

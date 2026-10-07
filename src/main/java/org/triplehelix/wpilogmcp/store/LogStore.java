@@ -127,6 +127,7 @@ public final class LogStore implements AutoCloseable {
   }
 
   LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader) {
+    FileNameEncoding.warnIfNeeded();
     this.root = root;
     this.security = security;
     this.logManager = logManager;
@@ -158,7 +159,8 @@ public final class LogStore implements AutoCloseable {
   }
   private void publishInventory() throws IOException {
     if (observers.isEmpty()) return;
-    var snapshot = StoreCatalog.readManaged(root, security);
+    var snapshot = StoreCatalog.readInventory(root, security, (manifest, reason) ->
+        LoggerFactory.getLogger(LogStore.class).warn("Skipping invalid session inventory {}: {}", manifest, reason));
     observers.forEach(observer -> observer.inventory(snapshot));
   }
   public CompletableFuture<Void> refreshStatus() {

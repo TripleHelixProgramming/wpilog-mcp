@@ -554,6 +554,16 @@ and passes after serialization; no sleep or wider retry was added to hide the ra
 
 Milestone 5 choices:
 
+- Startup inventory publication skips an invalid `session.json`, logs its path and reason,
+  and publishes none of that session's partial facts. Previously recovery skipped the bad
+  file but the following strict inventory scan stopped NT4 startup. The store door and
+  import catalog still require valid manifests; this exception is only for live status.
+- Store filenames are checked with the native path API, preserving Windows' Unicode
+  support. Unrepresentable or malformed Unicode names get an explained encoding refusal,
+  never Java's path exception. Opening the first store warns once when `sun.jnu.encoding`
+  is not UTF-8; services must set a UTF-8 locale before JVM startup. A dedicated Linux
+  CI run unsets LANG and LC_ALL and preserves its own XML beside the normal test results.
+
 - Live tools are registered only on capture servers. The catalog filters by that registry;
   both server locations keep their existing initialize/guide explanation. Tools read published
   recorder snapshots and cached manifests, never store files. Capture counts persist additively

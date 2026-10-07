@@ -22,6 +22,21 @@ import org.triplehelix.wpilogmcp.sync.HttpRemoteFiles;
 
 /** Only synthetic proxy credentials; the same lease serves the mirror and secret-free URL bridge. */
 class PitCredentialTest {
+  @Test void registrationRefusesCredentialsEmbeddedInTheUrl() throws Exception {
+    var leases = org.triplehelix.wpilogmcp.config.ClientLeases.getInstance();
+    var error = assertThrows(IllegalArgumentException.class, () -> leases.registerPit(
+        "synthetic-session", "http://synthetic:password@127.0.0.1:9000/mcp", "Basic eDp5"));
+    assertTrue(error.getMessage().contains("without credentials"), error.getMessage());
+    assertFalse(error.getMessage().contains("synthetic:password"));
+    var local = new HttpTransport(new ToolRegistry(), 0); local.start();
+    try {
+      var refused = request(local, "POST", "/pit-credential", initialize(local),
+          body("http://synthetic:password@127.0.0.1:9000/mcp", "Basic eDp5"));
+      assertEquals(400, refused.statusCode(), refused.body());
+      assertTrue(refused.body().contains("without credentials"), refused.body());
+      assertFalse(refused.body().contains("synthetic:password"));
+    } finally { local.stop(); }
+  }
   final HttpClient http = HttpClient.newHttpClient();
   HttpResponse<String> request(HttpTransport server, String method, String path, String session, String body, String... headers) throws Exception {
     var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getPort() + path)).timeout(Duration.ofSeconds(10))

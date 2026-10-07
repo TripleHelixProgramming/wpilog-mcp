@@ -226,6 +226,20 @@ tasks.named('test') {
 }
 
 // A separate opt-in process suite: harness/run builds the GradleRIO robot first.
+// Run separately so a locale regression cannot overwrite the ordinary suite's XML evidence.
+tasks.register('filenameLocaleTest', Test) {
+    description = 'Filename refusals with LANG and LC_ALL unset (native encoding is chosen at JVM startup)'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching '*FileNameEncodingTest'; includeTestsMatching '*StoreUploadEndpointTest' }
+    setEnvironment(environment.findAll { key, value -> key != 'LANG' && key != 'LC_ALL' })
+    dependsOn extractTestNatives
+    systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
+    environment 'WPILOG_DISK_CACHE_DIR', "$buildDir/filename-locale-cache"
+    doFirst { delete "$buildDir/filename-locale-cache" }
+}
+
 tasks.register('shopHarness', Test) {
     dependsOn testClasses, shadowJar
     testClassesDirs = sourceSets.test.output.classesDirs

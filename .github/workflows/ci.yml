@@ -31,13 +31,21 @@ jobs:
       - name: Build and test
         run: ./gradlew test shadowJar license
 
+      - name: Check filename refusals without a locale
+        if: matrix.os == 'ubuntu-latest'
+        run: env -u LANG -u LC_ALL ./gradlew --no-daemon filenameLocaleTest
+
       # The console names a failing test but not its assertion message; the report has both
       - name: Upload test report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-report-${{ matrix.os }}
-          path: build/reports/tests/test
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+            build/reports/tests/filenameLocaleTest
+            build/test-results/filenameLocaleTest
           retention-days: 14
 
       - name: Set up Node.js

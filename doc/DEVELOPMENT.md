@@ -175,6 +175,11 @@ pit server through disabled/enabled transitions, Wi-Fi loss, reboot, log growth/
 measure CPU/network cost at the configured rate. This shop stress test remains the user's and
 unverified here. Pulling stays off by default until those checks pass. System-log pulling is later work.
 
+The filename regression also runs as `env -u LANG -u LC_ALL ./gradlew --no-daemon filenameLocaleTest`.
+Linux CI checks explained refusals on its native non-UTF-8 encoding; macOS can remain UTF-8
+without these variables. Reports are separate from the main suite. The upload test uses the
+platform path API as its independent representability check.
+
 ### The shop harness
 
 Run `harness/run` on Linux or macOS with JDK 17 and a network connection for the first build.

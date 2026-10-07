@@ -74,6 +74,33 @@ class CaptureRecoveryTest {
     }
   }
 
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"{not json", "{\"id\":\"broken\"}"})
+  void damagedSessionInventoryIsLoggedAndSkippedBeforeCaptureStarts(String damaged) throws Exception {
+    var root = directory.resolve("store"); var bad = plant(root, true, false); var good = plant(root, true, false);
+    var manifest = bad.resolveSibling("session.json"); Files.writeString(manifest, damaged);
+    var messages = new ByteArrayOutputStream(); var stderr = System.err;
+    var started = new java.util.concurrent.CountDownLatch(1);
+    var delegate = org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon();
+    var loop = new org.triplehelix.wpilogmcp.nt4.client.ClientScheduler() {
+      public long nowUs() { return delegate.nowUs(); }
+      public void execute(Runnable task) { started.countDown(); delegate.execute(task); }
+      public void schedule(Runnable task, long delayUs) { delegate.schedule(task, delayUs); }
+      public void close() { delegate.close(); }
+    };
+    try (var out = new PrintStream(messages, true, java.nio.charset.StandardCharsets.UTF_8);
+        var service = new CaptureService(config(root), LogManager.getInstance(), WALL, loop)) {
+      System.setErr(out);
+      service.start().get(10, TimeUnit.SECONDS);
+      assertTrue(started.await(10, TimeUnit.SECONDS), "Inventory damage must not prevent client startup");
+      assertEquals(List.of(manifest(good).id()), service.live().sessions().stream().map(s -> s.session().id()).toList());
+    } finally { System.setErr(stderr); }
+    String logged = messages.toString(java.nio.charset.StandardCharsets.UTF_8);
+    assertTrue(logged.contains("Skipping invalid session inventory " + manifest.toRealPath()), logged);
+    assertEquals(damaged, Files.readString(manifest), "Inventory must not repair or adopt damaged state");
+    assertThrows(java.io.IOException.class, () -> catalog(root), "Import and door catalogs remain strict");
+  }
+
   @Test void startupRecoversEveryAbandonedCaptureFromItsBytesIncludingAnIncompleteTail() throws Exception {
     var root = directory.resolve("store"); var first = plant(root, true, false); var second = plant(root, true, true);
     byte[] original = Files.readAllBytes(first); var modified = Files.getLastModifiedTime(first);

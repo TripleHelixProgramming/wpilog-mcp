@@ -93,6 +93,7 @@ final class StoreFiles {
         || name.toUpperCase(Locale.ROOT).matches("(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?")) {
       throw new IllegalArgumentException("Not a portable robot or file name: " + name);
     }
+    FileNameEncoding.check(name);
     return name;
   }
 

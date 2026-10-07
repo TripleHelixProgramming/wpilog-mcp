@@ -124,14 +124,27 @@ public final class StoreCatalog {
   }
 
   private static Snapshot read(Path directory, SecurityValidator security, boolean strays) throws IOException {
+    return read(directory, security, strays, null);
+  }
+
+  /** A damaged historical session cannot stop a new capture. Only status publication skips
+   * it; imports and the HTTP door continue to require a complete, valid catalog. */
+  static Snapshot readInventory(Path directory, SecurityValidator security,
+      java.util.function.BiConsumer<Path, String> skipped) throws IOException {
+    return read(directory, security, false, skipped);
+  }
+
+  private static Snapshot read(Path directory, SecurityValidator security, boolean strays,
+      java.util.function.BiConsumer<Path, String> skipped) throws IOException {
     try {
-      return readValidated(directory, security, strays);
+      return readValidated(directory, security, strays, skipped);
     } catch (RuntimeException e) {
       throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e);
     }
   }
 
-  private static Snapshot readValidated(Path directory, SecurityValidator security, boolean strays) throws IOException {
+  private static Snapshot readValidated(Path directory, SecurityValidator security, boolean strays,
+      java.util.function.BiConsumer<Path, String> skipped) throws IOException {
     var root = directory.toRealPath();
     var io = new StoreFiles(root, security);
     var headerPath = root.resolve("store.json");
@@ -184,34 +197,16 @@ public final class StoreCatalog {
             io.check(sessionDir);
             var manifest = sessionDir.resolve("session.json");
             if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) continue;
-            var session = io.read(manifest, Session.class);
-            validate(session, manifest);
-            sessionDirectories.add(new SessionDirectory(sessionDir, robot, session));
-            managed.add(manifest);
-            mergedMetadata(io, sessionDir, managed);
-            if (session.openCapture() != null) {
-              var capture = session.openCapture();
-              var path = io.resolve(sessionDir, capture.path());
-              managed.add(io.check(org.triplehelix.wpilogmcp.capture.CaptureLease.lockPath(path)));
-              if (!Files.isRegularFile(path) || capture.provenance() == null
-                  || !"captured".equals(capture.provenance().kind()) || capture.sizeBytes() < 0
-                  || !Double.isFinite(capture.minTimestampSec()) || !Double.isFinite(capture.maxTimestampSec())
-                  || capture.minTimestampSec() > capture.maxTimestampSec() || !managed.add(path)) {
-                throw new IOException("Invalid open capture: " + path);
+            try {
+              var inventory = sessionInventory(io, sessionDir, robot);
+              for (var path : inventory.managed()) {
+                if (managed.contains(path)) throw new IOException("File listed twice: " + path);
               }
-              var file = new LogFile(capture.path(), null, Files.size(path), "wpilog", capture.provenance(),
-                  false, capture.minTimestampSec(), capture.maxTimestampSec(), session.startedAt(), null,
-                  session.startBasis(), false, null);
-              openCaptures.add(new StoredFile(path, manifest, robot, session, file));
-            }
-            for (var file : session.files()) {
-              var path = io.resolve(sessionDir, file.path());
-              if (file.provenance() != null && "captured".equals(file.provenance().kind())) {
-                managed.add(io.check(org.triplehelix.wpilogmcp.capture.CaptureLease.lockPath(path)));
-              }
-              validate(file, path);
-              if (!managed.add(path)) throw new IOException("File listed twice: " + path);
-              files.add(new StoredFile(path, manifest, robot, session, file));
+              managed.addAll(inventory.managed()); files.addAll(inventory.files());
+              openCaptures.addAll(inventory.openCaptures()); sessionDirectories.add(inventory.session());
+            } catch (IOException | RuntimeException invalid) {
+              if (skipped == null) throw invalid;
+              skipped.accept(manifest, invalid.getMessage());
             }
           }
         }
@@ -282,6 +277,44 @@ public final class StoreCatalog {
         && io.resolve(parent, session.openCapture().path()).equals(path)
         && "captured".equals(session.openCapture().provenance().kind()) && Files.isRegularFile(path)) return path;
     throw new IOException("File is not in the store catalog");
+  }
+
+  private record SessionInventory(SessionDirectory session, List<StoredFile> files,
+      List<StoredFile> openCaptures, java.util.Set<Path> managed) {}
+  private static SessionInventory sessionInventory(StoreFiles io, Path sessionDir, Robot robot) throws IOException {
+    var manifest = sessionDir.resolve("session.json");
+    var managed = new HashSet<Path>();
+    var files = new ArrayList<StoredFile>();
+    var openCaptures = new ArrayList<StoredFile>();
+    var session = io.read(manifest, Session.class);
+    validate(session, manifest);
+    managed.add(manifest);
+    mergedMetadata(io, sessionDir, managed);
+    if (session.openCapture() != null) {
+      var capture = session.openCapture();
+      var path = io.resolve(sessionDir, capture.path());
+      managed.add(io.check(org.triplehelix.wpilogmcp.capture.CaptureLease.lockPath(path)));
+      if (!Files.isRegularFile(path) || capture.provenance() == null
+          || !"captured".equals(capture.provenance().kind()) || capture.sizeBytes() < 0
+          || !Double.isFinite(capture.minTimestampSec()) || !Double.isFinite(capture.maxTimestampSec())
+          || capture.minTimestampSec() > capture.maxTimestampSec() || !managed.add(path)) {
+        throw new IOException("Invalid open capture: " + path);
+      }
+      var file = new LogFile(capture.path(), null, Files.size(path), "wpilog", capture.provenance(),
+          false, capture.minTimestampSec(), capture.maxTimestampSec(), session.startedAt(), null,
+          session.startBasis(), false, null);
+      openCaptures.add(new StoredFile(path, manifest, robot, session, file));
+    }
+    for (var file : session.files()) {
+      var path = io.resolve(sessionDir, file.path());
+      if (file.provenance() != null && "captured".equals(file.provenance().kind())) {
+        managed.add(io.check(org.triplehelix.wpilogmcp.capture.CaptureLease.lockPath(path)));
+      }
+      validate(file, path);
+      if (!managed.add(path)) throw new IOException("File listed twice: " + path);
+      files.add(new StoredFile(path, manifest, robot, session, file));
+    }
+    return new SessionInventory(new SessionDirectory(sessionDir, robot, session), files, openCaptures, managed);
   }
 
   private static List<Path> children(Path path) throws IOException {

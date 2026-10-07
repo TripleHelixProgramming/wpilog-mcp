@@ -86,7 +86,20 @@ class StoreUploadEndpointTest {
       base = "http://" + address.orElseThrow().getHostAddress() + ":" + server.getPort();
     }
     String name = "uploaded café.wpilog";
-    var first = await(base, upload(base, name, storeId, bytes, hash(bytes)));
+    var response = upload(base, name, storeId, bytes, hash(bytes));
+    // The native path parser, independently of the server's check, decides what this JVM
+    // can represent. Windows paths are Unicode even with a legacy sun.jnu.encoding.
+    try { Path.of(name); }
+    catch (java.nio.file.InvalidPathException unrepresentable) {
+      assertEquals(400, response.statusCode(), response.body());
+      assertTrue(response.body().contains(System.getProperty("sun.jnu.encoding")), response.body());
+      assertTrue(response.body().contains("start the server with a UTF-8 locale"), response.body());
+      assertFalse(response.body().contains(unrepresentable.getReason()), response.body());
+      assertTrue(StoreCatalog.readManaged(root, manager.testGetSecurityValidator()).files().isEmpty());
+      assertArrayEquals(bytes, Files.readAllBytes(source));
+      return;
+    }
+    var first = await(base, response);
     assertEquals("imported", first.getAsJsonArray("files").get(0).getAsJsonObject().get("status").getAsString());
     var catalog = StoreCatalog.read(root, manager.testGetSecurityValidator());
     assertEquals(1, catalog.files().size()); assertEquals(1, catalog.sessions().size());
