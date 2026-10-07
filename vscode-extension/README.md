@@ -86,7 +86,7 @@ team: 1234
 
 Paths are relative to the bridge's working directory. This file is yours afterwards; changing VS Code settings does not rewrite it. Its `servers` section, if any, cannot configure the shared daemon: `connect` ignores it and records that fact in the server log. See [Directories by lease](../doc/STANDALONE.md#directories-by-lease).
 
-On upgrade, recognized extension-owned entries are removed from untracked or ignored `.mcp.json` files as projects open. Tracked, custom, and unrecognized entries are left with a note in the output. The old `vscode-default` daemon is stopped once, then its private `servers/` and `projects/` settings are removed. A failed stop keeps those settings and is retried next activation.
+On upgrade, recognized extension-owned entries are removed from untracked or ignored `.mcp.json` files as projects open. Tracked, custom, and unrecognized entries are left with a note in the output; the [standalone guide](../doc/STANDALONE.md#moving-from-a-project-mcpjson) says what to remove by hand and how to check what Claude Code sees. The old `vscode-default` daemon is stopped once, then its private `servers/` and `projects/` settings are removed. A failed stop keeps those settings and is retried next activation.
 
 ## Settings
 
