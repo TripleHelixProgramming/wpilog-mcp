@@ -41,10 +41,14 @@ class CaptureWriterTest {
       int id = writer.start("test", "int64", "", 1_000_000);
       var written = writer.append(id, 1_000_000, WpilogOutput.payload(2, 3L));
       assertEquals(44, written.offset()); assertEquals(14, written.size()); assertEquals(50, written.payloadOffset());
+      writer.setMetadata(id, "{\"source\":\"NT\"}", 1_000_000);
+      assertEquals(30, WpilogOutput.metadataSize("{\"source\":\"NT\"}", 1_000_000));
       writer.finish(id, 1_000_000); writer.flush();
       assertArrayEquals(HexFormat.of().parseHex("5750494c4f47000100000000"
           + "20001a40420f0001000000040000007465737405000000696e74363400000000"
-          + "20010840420f0300000000000000" + "20000540420f0101000000"), Files.readAllBytes(path));
+          + "20010840420f0300000000000000"
+          + "20001840420f02010000000f0000007b22736f75726365223a224e54227d"
+          + "20000540420f0101000000"), Files.readAllBytes(path));
       assertTrue(new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(path))).isValid());
     }
   }
@@ -73,6 +77,30 @@ class CaptureWriterTest {
       else if (!record.isControl()) values.add(record.getInteger());
     }
     assertEquals(List.of(1, 2), ids); assertEquals(List.of(3L, 4L), values);
+  }
+
+  @Test void serviceForwardsPropertiesWithoutReplacingRecorderProvenance() throws Exception {
+    var loop = new ManualScheduler(); var file = directory.resolve("properties.wpilog");
+    var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, new CaptureWriter.Observer() {
+      @Override public Path create(String address, Instant start) { return file; }
+    });
+    var listener = CaptureService.listener(writer, new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, 0));
+    var properties = new JsonObject(); properties.addProperty("source", "publisher"); properties.addProperty("unit", "initial");
+    listener.connected(URI.create("ws://127.0.0.1/nt/test"), "networktables.first.wpi.edu");
+    listener.timeSync(1_000_000, 0); listener.announce(new Announce("/x", 17, "int", null, properties));
+    var patch = new JsonObject(); patch.add("source", com.google.gson.JsonNull.INSTANCE); patch.addProperty("unit", "changed");
+    listener.properties(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties("/x", null, patch));
+    listener.disconnected();
+    int updates = 0;
+    for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file)))) {
+      if (!record.isSetMetadata()) continue;
+      updates++;
+      var metadata = com.google.gson.JsonParser.parseString(record.getSetMetadataData().metadata).getAsJsonObject();
+      assertEquals("nt4", metadata.get("source").getAsString()); assertEquals("127.0.0.1", metadata.get("robot").getAsString());
+      assertEquals("changed", metadata.getAsJsonObject("nt4_properties").get("unit").getAsString());
+      assertFalse(metadata.getAsJsonObject("nt4_properties").has("source"));
+    }
+    assertEquals(1, updates);
   }
 
   @Test void exclusionThinningMetadataFlushAndFinishAreExplicit() throws Exception {

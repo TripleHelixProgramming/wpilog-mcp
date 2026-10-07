@@ -51,7 +51,7 @@ public class SyncCacheSerializer {
    * hash is part of the cache key (0.9.0).
    */
   // Version 6 adds capture/WPILOG correlation to the shared synchronization machinery.
-  public static final int CURRENT_FORMAT_VERSION = 6;
+  public static final int CURRENT_FORMAT_VERSION = 7;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(

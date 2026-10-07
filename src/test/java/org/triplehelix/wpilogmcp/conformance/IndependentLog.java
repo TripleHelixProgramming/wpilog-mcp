@@ -36,6 +36,67 @@ import java.util.Set;
  */
 final class IndependentLog {
 
+  /** Complete records for replay, retaining byte offsets rather than another copy of the log. */
+  static final class Records implements AutoCloseable {
+    record Start(long id, String name, String type, String metadata) {}
+    record Record(int offset, int end, long id, long timestampUs, int payloadOffset, int payloadSize) {}
+    private final ByteBuffer data;
+    final int first;
+    String stopped;
+
+    Records(Path file) throws IOException {
+      data = bytes(file);
+      if (data.limit() < 12 || unsigned(data, 0, 6) != 0x474F4C495057L || data.get(7) != 1) {
+        close(); throw new NotALog(file, Files.size(file));
+      }
+      long beginning = 12 + unsigned(data, 8, 4);
+      if (beginning > data.limit()) { close(); throw new IOException("Invalid WPILOG extra header: " + file); }
+      first = (int) beginning;
+    }
+
+    Record at(int offset) {
+      if (offset >= data.limit()) return null;
+      int bits = data.get(offset) & 255;
+      int ids = (bits & 3) + 1, sizes = ((bits >> 2) & 3) + 1, times = ((bits >> 4) & 7) + 1;
+      long payload = (long) offset + 1 + ids + sizes + times;
+      if (payload > data.limit()) { stopped = "incomplete_header"; return null; }
+      long size = unsigned(data, offset + 1L + ids, sizes);
+      if (payload + size > data.limit()) { stopped = "incomplete_payload"; return null; }
+      return new Record(offset, (int) (payload + size), unsigned(data, offset + 1L, ids),
+          unsigned(data, offset + 1L + ids + sizes, times), (int) payload, (int) size);
+    }
+
+    int control(Record record) { return record.id() == 0 && record.payloadSize() > 0 ? data.get(record.payloadOffset()) & 255 : -1; }
+    long controlId(Record record) { return record.payloadSize() >= 5 ? unsigned(data, record.payloadOffset() + 1L, 4) : -1; }
+    Start start(Record record) {
+      var cursor = new long[] {record.payloadOffset() + 5L};
+      String name = string(data, cursor, record.end()), type = string(data, cursor, record.end());
+      String metadata = string(data, cursor, record.end());
+      return name == null || type == null || metadata == null ? null : new Start(controlId(record), name, type, metadata);
+    }
+    String metadata(Record record) { return string(data, new long[] {record.payloadOffset() + 5L}, record.end()); }
+    byte[] payload(Record record) {
+      byte[] bytes = new byte[record.payloadSize()]; data.get(record.payloadOffset(), bytes); return bytes;
+    }
+    boolean samePayload(Record record, Records other, Record expected) {
+      return record.payloadSize() == expected.payloadSize()
+          && data.slice(record.payloadOffset(), record.payloadSize())
+              .equals(other.data.slice(expected.payloadOffset(), expected.payloadSize()));
+    }
+    String extraHeader() {
+      byte[] bytes = new byte[first - 12]; data.get(12, bytes); return new String(bytes, StandardCharsets.UTF_8);
+    }
+    @Override public void close() {
+      if (!data.isDirect()) return;
+      // The independent reader owns this mapping. Releasing it here lets Windows delete a
+      // completed replay's scratch capture without waiting for an unrelated GC cycle.
+      try {
+        var field = sun.misc.Unsafe.class.getDeclaredField("theUnsafe"); field.setAccessible(true);
+        ((sun.misc.Unsafe) field.get(null)).invokeCleaner(data);
+      } catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+  }
+
   /** The file does not start with the WPILOG header. */
   static final class NotALog extends IOException {
     NotALog(Path file, long bytes) {

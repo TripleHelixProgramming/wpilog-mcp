@@ -92,6 +92,20 @@ class ToolConformanceTest {
         List.of(dir.resolve("identity-true.wpilog"), dir.resolve("identity-false.wpilog")), false, null), ignored -> {})
         .get(30, TimeUnit.SECONDS);
     if (identityImport.files().stream().anyMatch(f -> f.status().equals("refused"))) throw new IOException(identityImport.toString());
+    // A verified but uncorrelated pull makes the listing's refusal explanation observable too.
+    var remote = new org.triplehelix.wpilogmcp.capture.pull.FakeRobot();
+    remote.device = org.triplehelix.wpilogmcp.capture.pull.FakeRobot.device("SYNTHETIC-LISTING", "SHA256:fixture");
+    remote.files.put("/home/lvuser/logs/pulled.wpilog", Files.readAllBytes(dir.resolve("identity-true.wpilog")));
+    var local = identityStore.pulls(remote.device, java.time.Clock.systemUTC());
+    var transferClock = new java.util.concurrent.atomic.AtomicLong();
+    var transfer = new org.triplehelix.wpilogmcp.sync.FileTransfer(remote, local, local.manifest(), 1_000_000,
+        transferClock::get, () -> true);
+    for (int step = 0; step < 16; step++) {
+      var result = transfer.step(); transferClock.addAndGet(Math.max(1, result.waitUs()));
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.VERIFIED) break;
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.REFUSED) throw new IOException(result.detail());
+    }
+    if (transfer.manifest().files().stream().noneMatch(org.triplehelix.wpilogmcp.sync.PullManifest.Entry::verified)) throw new IOException("Listing fixture did not verify");
     exportDir = dir.resolveSibling("test-fixtures-export").toAbsolutePath();
     Files.createDirectories(exportDir);
     savedExportDir = ExportTools.getExportDirectory();

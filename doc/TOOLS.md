@@ -216,6 +216,7 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 
 **Response Fields:**
 - `log_directories`: Every configured or leased directory as `{path, origin: "configured" | "leased", team}` (team may be null), permanent configuration first; a duplicate configured path keeps its configured origin.
+- `logs[].matching_reason`: For a pulled file kept in its own session, why it was not automatically matched (insufficient correlation, an offset beyond 250 ms, ambiguous sessions, or clock/identity disagreement). The file remains retrievable by `path`.
 - `log_directory_paths`: The same directories as plain path strings for consumers needing paths. A log reached from two of them (nested directories, or one directory under two names) is listed once
 - `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission). That directory's logs are missing from the list, not from the disk, and the status is `partial`
 - `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected. In those cases no log carries a `tba` field, and that says nothing about whether TBA has data for it

@@ -701,7 +701,7 @@ public final class LogStore implements AutoCloseable {
         var updated = new LogFile(StoreFiles.relative(stored.manifestPath().getParent(), destination),
             file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
             file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(),
-            file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint());
+            file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason());
         io.write(stored.manifestPath(), updated);
         rewriteMoves(io, catalog, stored.path(), destination);
         catalog.placed(io, stored.manifestPath(), null, null, List.of(updated));

@@ -236,6 +236,10 @@ tasks.register('shopHarness', Test) {
     systemProperty 'harness.natives', file('harness/robot/build/jni/release').absolutePath
     systemProperty 'harness.serverJar', tasks.shadowJar.archiveFile.get().asFile.absolutePath
     systemProperty 'harness.output', file('build/shop-harness').absolutePath
+    if (project.hasProperty('conformanceLogDir')) {
+        systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+    }
     environment 'WPILOG_DISK_CACHE_DIR', file('build/harness-test-disk-cache').absolutePath
     doFirst { delete file('build/harness-test-disk-cache') }
     outputs.upToDateWhen { false }

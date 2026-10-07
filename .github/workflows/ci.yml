@@ -122,6 +122,7 @@ jobs:
           path: |
             build/reports/tests/shopHarness
             build/shop-harness
+            build/reports/replay
           retention-days: 14
 
   robot-dependency-submission:

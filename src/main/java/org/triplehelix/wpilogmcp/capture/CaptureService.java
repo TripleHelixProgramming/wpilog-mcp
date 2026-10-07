@@ -99,6 +99,9 @@ public final class CaptureService implements AutoCloseable {
       @Override public void unannounce(org.triplehelix.wpilogmcp.nt4.ControlMessage.Unannounce topic) {
         if (topic.id() == controlId) { controlId = -1; gate.unknown(); } writer.unannounce(topic);
       }
+      @Override public void properties(org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties change) {
+        writer.properties(change);
+      }
       @Override public void value(org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce topic, org.triplehelix.wpilogmcp.nt4.ValueFrame frame, long received) {
         if (topic.id() == controlId) gate.control(frame.value()); writer.value(topic, frame, received);
       }

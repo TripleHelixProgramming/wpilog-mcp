@@ -432,6 +432,15 @@ suite; see [DEVELOPMENT.md](DEVELOPMENT.md#the-shop-harness). Step 2 is an NI-im
 and PhotonVision. Actual roboRIO permissions, installed commands, radio behavior and hash cost
 still need the shop test; desktop simulation cannot establish them.
 
+Real-log replay extends step 1: the independent reader feeds the loopback gateway on every
+platform; the separate robot can publish the same file through native ntcore. Generated fixtures
+exercise both paths in CI. A local `conformanceLogDir` enables directory-wide record comparison,
+logger samples, metadata, cost accounting, signed offsets, pull-placement refusals, clock resets,
+and REV companion comparisons. Reports stay under `build/`; logs and telemetry stay outside git.
+The source robot clock is preserved, while an injected capture calendar clock keeps the overlap
+filter meaningful. A log ending mid-record remains unverified by the puller; replay compares its
+complete records and reports that limitation. See the replay commands in the development guide.
+
 ## Implementation Priority Matrix
 
 | ID | Feature | Impact | Effort | Priority |

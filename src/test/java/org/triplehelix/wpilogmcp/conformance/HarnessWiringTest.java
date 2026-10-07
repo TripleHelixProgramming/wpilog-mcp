@@ -31,6 +31,10 @@ class HarnessWiringTest {
     assertEquals("github.event_name == 'push' && github.ref == 'refs/heads/pit-server'", job.get("if"));
     var steps = (List<?>) job.get("steps");
     assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/run".equals(s.get("run"))));
+    var evidence = steps.stream().map(s -> (Map<?, ?>) s)
+        .filter(s -> "actions/upload-artifact@v4".equals(s.get("uses"))).findFirst().orElseThrow();
+    assertTrue(((Map<?, ?>) evidence.get("with")).get("path").toString().contains("build/reports/replay"),
+        "The harness job retains per-log replay counts");
     var cache = steps.stream().map(s -> (Map<?, ?>) s).filter(s -> "gradle/actions/setup-gradle@v4".equals(s.get("uses"))).findFirst().orElseThrow();
     assertEquals(false, ((Map<?, ?>) cache.get("with")).get("cache-read-only"), "pit-server must save its WPILib downloads");
     assertTrue(((Map<?, ?>) cache.get("with")).get("gradle-home-cache-includes").toString().contains("permwrapper/dists"));
@@ -42,6 +46,10 @@ class HarnessWiringTest {
     assertTrue(runner.contains("set -euo pipefail"));
     int robotBuild = runner.indexOf("-p harness/robot prepareHarness");
     assertTrue(robotBuild >= 0 && runner.indexOf("./gradlew shopHarness") > robotBuild);
+    assertTrue(runner.contains("\"$@\""), "Forward conformanceLogDir and other Gradle properties");
+    assertTrue(task.contains("systemProperty 'conformance.logdir', project.property('conformanceLogDir')"));
+    assertEquals("shop-harness", NtcoreReplayTest.class.getAnnotation(org.junit.jupiter.api.Tag.class).value());
+    assertEquals("shop-harness", RealNtcoreReplayTest.class.getAnnotation(org.junit.jupiter.api.Tag.class).value());
   }
 
   @Test void testSshAndSimulationLibrariesAreAbsentFromTheShippedJar() throws Exception {

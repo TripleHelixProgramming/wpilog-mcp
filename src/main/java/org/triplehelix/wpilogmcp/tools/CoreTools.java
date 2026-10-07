@@ -81,6 +81,7 @@ public final class CoreTools {
           + "this tool first to find logs and get match results, then pass the path to other "
           + "tools. stores lists each store's path and robots; store on a log names its root. "
           + "A file beyond the reader size limit carries read_error instead of disappearing. "
+          + "A pulled file kept in its own session carries matching_reason explaining why automatic placement was refused. "
           + "A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
           + "For store files only, robot_candidates names serial_number and evidence (kind, value) from import manifests for a unique exact fingerprint; a candidate never assigns a robot. "
           + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
@@ -230,6 +231,7 @@ public final class CoreTools {
             session.addProperty("open", stored.session().openCapture() != null);
           }
           logObj.add("session", session);
+          if (stored.file().matchingReason() != null) logObj.addProperty("matching_reason", stored.file().matchingReason());
         }
 
         if (log.robot() != null) logObj.add("robot", StoreJson.JSON.toJsonTree(log.robot()));

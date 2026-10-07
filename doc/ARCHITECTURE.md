@@ -223,14 +223,17 @@ crosses known serials. Addresses select a connection, not a robot's lifetime ide
 Before loading candidates, manifest session ranges nominate overlapping sessions, using the same
 clock slack as import: two hours, or sixteen for filename clocks without a zone. Unknown clocks,
 including REV's unset 1970 filename clock, cannot exclude a candidate.
-Names nominate shared numeric entries (including DataLogManager's `NT:` prefix) or REV signal
+Names nominate shared numeric entries (including DataLogManager's `NT:` prefix and the
+`/AdvantageKit` table added by AdvantageKit's NT publisher) or REV signal
 pairs; the existing correlation machinery decides. Flat, ambiguous or weak data is insufficient.
 A strong match must have an offset within 250 ms of zero and identify one session. Capture files
 anchor their session; already matched members cannot chain small offsets into a larger clock shift.
 A session without a capture may use an unmatched WPILOG as its anchor. A missing logged serial on
 either side records `data_alone`, even when device identity already limits the candidate robot.
 No unique match creates a new session, using the file's clock evidence or modification time with
-that basis. An open capture has no completed hash to invent. A new contact checks held content even
+that basis. Its file manifest and listing retain `matching_reason`, distinguishing insufficient
+data, clock/serial disagreement, excessive offset, and ambiguous sessions. An open capture has
+no completed hash to invent. A new contact checks held content even
 when a reused file has identical size and mtime; a changed listing invalidates an in-progress proof.
 
 ## NT4 foundation
@@ -274,6 +277,13 @@ one writer and one order. Its pure-Java WPILOG output follows WPILib's file spec
 the native DataLog writer cannot run in the Java-only install. The independent fixture writer,
 the differential reader, and wpiutil's reader check its bytes. Storage and live-index observers
 receive complete writes and their byte offsets; context providers can join this loop later.
+Announcement properties are preserved under `nt4_properties` in the entry metadata, separate
+from the recorder's `source`, `robot`, and thinning policy. Property patches merge with null meaning
+deletion and write WPILOG Set Metadata records. The initial declaration remains the metadata shown
+by the existing log index; subsequent changes remain in the file's control stream and seed the next
+rollover declaration. NT4 does not timestamp its text controls, so these controls use the measured
+server clock at receipt. Closed-file accounting snapshots count received data records, including
+their WPILOG headers, and exclude declarations, control changes, identity context and schema seeds.
 An optional `capture` configuration starts this listener beside the HTTP server. Missing robots
 do not delay HTTP startup; shutdown drains tool calls, closes the capture, then retires log readers.
 The capture store uses the existing store queue, path validation, move reservations, and manifests.

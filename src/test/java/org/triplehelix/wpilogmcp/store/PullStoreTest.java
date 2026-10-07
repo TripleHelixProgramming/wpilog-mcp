@@ -148,6 +148,18 @@ class PullStoreTest {
     }
   }
 
+  @Test void outsideToleranceRemainsRetrievableWithAnExplainedRefusal() throws Exception {
+    seed("SYNTHETIC-A", "142233Z", log("capture.wpilog", null, "NT:/x", 0, false));
+    var remote = new FakeRobot();
+    remote.files.put("/u/logs/shifted.wpilog", Files.readAllBytes(log("shifted.wpilog", null, "/x", 6_000_000, false)));
+    var stored = placed(pull(remote));
+    assertNotEquals("142233Z", stored.session().id()); assertNull(stored.file().matching());
+    var facts = StoreJson.JSON.toJsonTree(stored.file()).getAsJsonObject();
+    assertTrue(facts.has("matching_reason"), "A refusal must retain its reason with the file");
+    assertTrue(facts.get("matching_reason").getAsString().contains("250000"));
+    try (var use = manager.acquire(stored.path().toString())) { assertEquals(3001, use.log().sampleCount("/x")); }
+  }
+
   @Test void verifiedGrowthAndRenameReturnToStagingAndKeepOldPathsReadable() throws Exception {
     var source = log("source.wpilog", null, "/x", 0, false); var remote = new FakeRobot();
     byte[] data = Files.readAllBytes(source);

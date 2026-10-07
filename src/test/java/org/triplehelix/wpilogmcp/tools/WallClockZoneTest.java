@@ -23,6 +23,13 @@ import org.triplehelix.wpilogmcp.log.WallClock;
 @DisplayName("WallClock filename zone")
 class WallClockZoneTest {
 
+  @Test void capturedSystemTimeRetainsItsCalendarRole() {
+    var original = log("FRC_20260321_162949.wpilog", "systemTime", Q10_EPOCH_MICROS, 30);
+    var captured = log("capture.wpilog", "NT:systemTime", Q10_EPOCH_MICROS, 30);
+    assertEquals(WallClock.first(original), WallClock.first(captured));
+    assertEquals(WallClock.last(original), WallClock.last(captured));
+  }
+
   /** 2026-03-21 16:29:49 UTC, q10's first wall-clock reading. */
   static final long Q10_EPOCH_MICROS =
       LocalDateTime.of(2026, 3, 21, 16, 29, 49).toEpochSecond(ZoneOffset.UTC) * 1_000_000L;

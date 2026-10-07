@@ -7,4 +7,6 @@ case "$(uname -s)" in
   *) echo 'The WPILib shop runner currently supports Linux and macOS; real SSH tests also run on Windows.' >&2; exit 2 ;;
 esac
 ./gradlew -p harness/robot prepareHarness
-./gradlew shopHarness "-PharnessTimeline=${1:-harness/timelines/reboot-match.json}"
+timeline_path=harness/timelines/reboot-match.json
+if [[ "${1:-}" == *.json ]]; then timeline_path="$1"; shift; fi
+./gradlew shopHarness "-PharnessTimeline=$timeline_path" "$@"

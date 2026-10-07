@@ -32,6 +32,16 @@ class LogSynchronizerTest {
     synchronizer = new LogSynchronizer();
   }
 
+  @Test void advantageKitCapturePrefixRetainsMeasuredPositiveNegativeAndLargeOffsets() {
+    var source = createWpilogWithSignalAtTime("/RealOutputs/drive/output", 10, 2000);
+    for (double shift : List.of(0.0, 0.04, 0.12, 0.20, -0.12, 6.0, -6.0)) {
+      var capture = createWpilogWithSignalAtTime("NT:/AdvantageKit/RealOutputs/drive/output", 10 + shift, 2000);
+      var result = synchronizer.synchronize(capture, source);
+      assertEquals(SyncMethod.CROSS_CORRELATION, result.method());
+      assertEquals(shift, result.offsetSeconds(), 0.005);
+    }
+  }
+
   @Test
   void testSynchronizeWithMatchingSignals() {
     // Create wpilog and revlog with correlated signals

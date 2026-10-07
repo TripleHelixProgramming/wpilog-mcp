@@ -158,7 +158,8 @@ public class LogSynchronizer {
   /**
    * Capture and robot WPILOG files share names and an FPGA clock, but neither fact proves a
    * session match. Use the REV machinery's overlap, non-flat signal, correlation and consensus
-   * checks, with no filename/wall-clock fallback. NT: is the DataLogManager recording prefix.
+   * checks, with no filename/wall-clock fallback. NT: is the DataLogManager recording prefix;
+   * AdvantageKit's NT4Publisher adds /AdvantageKit to the same full keys its WPILOGWriter uses.
    */
   public SyncResult synchronize(LogData capture, LogData robot) {
     var pairs = new ArrayList<SignalPair>();
@@ -178,6 +179,7 @@ public class LogSynchronizer {
     var result = new java.util.LinkedHashMap<String, List<String>>();
     log.entries().values().stream().filter(e -> List.of("double", "float", "int64").contains(e.type())).forEach(e -> {
       String name = e.name().startsWith("NT:") ? e.name().substring(3) : e.name();
+      if (e.name().startsWith("NT:/AdvantageKit/")) name = name.substring("/AdvantageKit".length());
       if (name.startsWith("/")) name = name.substring(1);
       result.computeIfAbsent(name, ignored -> new ArrayList<>()).add(e.name());
     });

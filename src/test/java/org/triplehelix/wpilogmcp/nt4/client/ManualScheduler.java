@@ -35,6 +35,11 @@ public final class ManualScheduler implements ClientScheduler {
     drain();
   }
   public void drain() { Runnable next; while ((next = ready.poll()) != null) next.run(); }
+  /** Let a real socket answer a scheduled ping before moving the injected clock again. */
+  public void receive() throws InterruptedException {
+    var action = ready.poll(10, TimeUnit.SECONDS);
+    assertTrue(action != null, "Client callback missing"); action.run(); drain();
+  }
   public void until(BooleanSupplier condition) throws InterruptedException {
     until(condition, java.time.Duration.ofSeconds(10));
   }

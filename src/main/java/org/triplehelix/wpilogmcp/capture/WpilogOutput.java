@@ -71,6 +71,16 @@ public class WpilogOutput implements AutoCloseable {
     record(0, timestampUs, out.toByteArray());
   }
 
+  public static int metadataSize(String metadata, long timestampUs) {
+    return recordSize(0, timestampUs, 9 + metadata.getBytes(StandardCharsets.UTF_8).length);
+  }
+
+  /** Set Metadata replaces the whole string; NT4 property patches are merged by the listener. */
+  public void setMetadata(int id, String metadata, long timestampUs) throws IOException {
+    var out = new ByteArrayOutputStream(); out.write(2); little(out, id, 4); string(out, metadata);
+    record(0, timestampUs, out.toByteArray());
+  }
+
   public Written append(int id, long timestampUs, byte[] payload) throws IOException {
     if (id <= 0) throw new IllegalArgumentException("Entry id must be positive");
     return record(id, timestampUs, payload);

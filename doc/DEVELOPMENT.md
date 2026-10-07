@@ -140,9 +140,14 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 ```
 
 `-PconformanceMaxLogs` limits a run to the first N logs, `-PconformanceTools` to the tools named, and `-PsimLogDir` is described under the claims check below.
+`-PconformanceLogDir` also enables the real-log replay described under "The shop harness".
+Replay visits the entire directory; the sweep's tool and file limits do not exclude replay inputs.
 
 - Real-log conformance sweep: the fixture sweep's checks (all but the comparison of each description with its outputs) and argument variants, for every tool that reads a log, on every `.wpilog` under the directory (up to 6 levels deep), with the entries reversed for determinism. There is no ratchet, so any violation fails. The report, with the time of every call, is `build/reports/conformance/real-logs.txt`.
 - Real-log differential check: the second reader against the server on every log, with the domain answers above. A file neither can read is counted, and a file only one can read is a finding. The report is `build/reports/conformance/differential.txt`.
+- Real-log replay: every complete record through the gateway, JDK client, writer and HTTP tools,
+  compared against the differential reader's original bytes, including type, metadata history,
+  timestamps and topic accounting. Per-file JSONL reports are under `build/reports/replay/`.
 - Claims on the live service: the server is started on its HTTP transport and called as a client would call it, and each answer is compared with a fact established independently of the tool under test. The facts are about Team 2363's sample logs, and about simulated logs whose `MANIFEST.md` was written by a separate reader; `-PsimLogDir` names the directory holding those. With other logs, or without that directory, a claim whose precondition isn't met is reported as not verifiable, never as passed. The report is `build/reports/conformance/claims.txt`.
 - Golden checks: values from a practice log of Team 2363 (`-PgoldenLog`) and from a 2026 championship elimination match that Team 4065 published under the MIT license (`-PgoldenMatchLog`, its `akit_cmptx_e4_sample.wpilog`), computed separately with WPILib's Python log reader and NumPy. Each property switches on its own set.
 
@@ -222,6 +227,68 @@ check that the actual sshd permits an empty password, `lvuser` can read the robo
 `/proc` environment, `sha256sum` is installed, and whole-prefix hashing has acceptable CPU/disk
 cost on roboRIO 1 and 2. Wi-Fi loss, sustained load, and robot timing remain hardware checks.
 An NI-image container and PhotonVision belong to harness step 2.
+
+#### Replaying a directory of logs
+
+The ordinary suite's `LogReplayTest` uses every generated fixture, including schemas, empty
+entries, metadata changes and colliding names. `ReplayPullTest` adds real SSH/SFTP and measured
+positive and negative offsets, with 240 ms accepted and 260 ms refused by the unchanged 250 ms
+placement rule. `ReplayClockResetTest` keeps one client and writer through two boots, advancing
+an injected scheduler through sync and reconnect, and checks that the two pulls never cross.
+`NtcoreReplayPairTest` repeats that check with two native server processes; the client and store
+remain alive. Real two-log checks choose complete files of one robot with calendar evidence and
+a backward robot clock, without using a correlation result to select them.
+
+For your own directory:
+
+```bash
+# Every WPILOG through the gateway; no native simulation needed, including on Windows
+./gradlew test --tests '*RealLogReplayTest' --tests '*RealReplayPullTest' --tests '*RealReplayPairTest' -PconformanceLogDir=/path/to/logs
+
+# Build the robot once and run the timeline, fixture replay, and native real-log samples
+harness/run -PconformanceLogDir=/path/to/logs
+
+# Repeat just native replay with the existing robot build
+./gradlew shopHarness --tests '*RealNtcoreReplayTest' --tests '*NtcoreReplayPairTest' -PconformanceLogDir=/path/to/logs
+```
+
+Without the directory property the real-log tests skip with a message. CI exercises fixture
+replay in the ordinary Linux/Windows build and native fixture replay in the Linux harness job;
+CI has no real-log directory. Native sampling chooses the smallest recording spanning at least
+ten seconds for each logger kind, plus calendar-bearing and complete calendar-bearing samples
+where available. Selection does not look at correlation results.
+
+The default robot clock uses source timestamps unchanged. Runs with 40, 120 and 200 ms shifts,
+a negative shift, the placement boundary and a several-second refusal test distinguish measured
+offsets from assumed zero. The capture writer and store receive the same injected calendar
+clock, from recorded epoch time or a dated DataLogManager filename. Without either, capture
+still runs and pull placement reports why it was skipped. An incomplete source is retried once
+and refused by the normal pull verifier; the readable prefix is still replayed and checked. Invalid
+UTF-8 cannot be transported as an unchanged NT4 string: the directory report records that refusal
+and an independently checked invalid-record count, separately from successful captures.
+
+`gateway-<directory>.jsonl`, `gateway-pull-<directory>.jsonl`, `ntcore-<directory>.jsonl` and
+the two-log `*-pair-<directory>.json` reports under `build/reports/replay/` record
+paths, logger kinds, entry/record/byte counts, escaped-name counts, mismatch categories, measured
+offsets and wall time. Capture record bytes include their actual WPILOG headers, whose widths
+can differ from the source; `accounted_bytes` and `accounted_records` include schema aliases and
+must equal the writer's per-topic totals. Rollover schema seeds are counted separately and identity
+context is outside topic accounting. Every REV file beside the source goes onto the fake roboRIO,
+including those normal filename nomination leaves out; the same bus must retain its synchronization outcome and
+its measured offset plus the replay shift. Failed inputs keep their scratch captures for diagnosis.
+For rollover, the source-wide REV comparison uses a test-only view of all captured parts, without
+creating a file above the reader's size limit. Each part's HTTP synchronization result is checked
+separately and reported: its shorter input window can legitimately produce another alignment.
+No assertion or report copies telemetry values into source control.
+
+The robot also accepts `--replay <file> <control-directory> <nt4-port> <shift-us> [speed]`.
+Speed defaults to 1 (source pacing); 0 uses receive acknowledgements for the fastest lossless
+replay. The JUnit runner owns this handshake, including metadata acknowledgements, so TCP queue
+acceptance is never mistaken for capture completion. A persistent directory watcher avoids
+macOS registration races during atomic handshake-file replacement.
+The native verifier also checks a digest of every Driver Station state transition, independently
+decoded from the source. HAL's notification forces DS attachment true; replay restores the
+recorded attachment field after notifying so a recorded disconnection remains a disconnection.
 
 ### Stress tests
 

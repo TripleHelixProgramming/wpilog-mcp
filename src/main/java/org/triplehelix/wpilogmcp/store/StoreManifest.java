@@ -66,7 +66,14 @@ public final class StoreManifest {
   public record LogFile(String path, String sha256, long sizeBytes, String kind,
       Provenance provenance, boolean verified, double minTimestampSec, double maxTimestampSec,
       String startedAt, String endedAt, String startBasis, boolean truncated, Matching matching,
-      org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint robotFingerprint) {
+      org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint robotFingerprint, String matchingReason) {
+    public LogFile(String path, String sha256, long sizeBytes, String kind, Provenance provenance,
+        boolean verified, double minTimestampSec, double maxTimestampSec, String startedAt,
+        String endedAt, String startBasis, boolean truncated, Matching matching,
+        org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint robotFingerprint) {
+      this(path, sha256, sizeBytes, kind, provenance, verified, minTimestampSec, maxTimestampSec,
+          startedAt, endedAt, startBasis, truncated, matching, robotFingerprint, null);
+    }
     public LogFile(String path, String sha256, long sizeBytes, String kind, Provenance provenance,
         boolean verified, double minTimestampSec, double maxTimestampSec, String startedAt,
         String endedAt, String startBasis, boolean truncated, Matching matching) {

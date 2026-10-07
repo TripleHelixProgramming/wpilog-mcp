@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Unannounce;
+import org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties;
 import org.triplehelix.wpilogmcp.nt4.NtType;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
@@ -80,6 +81,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private long minUs = Long.MAX_VALUE, maxUs = Long.MIN_VALUE, sizeBytes, observedAtUs;
     private final List<ClosedFile> files = new ArrayList<>();
     private final Map<String, TopicCost> costs = new LinkedHashMap<>();
+    private volatile Map<String, TopicCost.Snapshot> closedCosts = Map.of();
     private Session(Path path, Instant startedAt, String address) {
       this.path = path; this.startedAt = startedAt; this.address = address;
     }
@@ -96,6 +98,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     public long sizeBytes() { return sizeBytes; }
     public long observedAtUs() { return observedAtUs; }
     public List<ClosedFile> files() { return List.copyOf(files); }
+    /** Accounting through the last closed file, safe to inspect after the listener has stopped. */
+    public Map<String, TopicCost.Snapshot> closedCosts() { return closedCosts; }
   }
 
   private static final class Topic {
@@ -190,17 +194,41 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       }
       if (policy.excluded(announce.name()) || topics.containsKey(announce.id())) return;
       long periodUs = policy.periodUs(announce.name());
-      var metadata = new JsonObject(); metadata.addProperty("source", "nt4"); metadata.addProperty("robot", address);
-      if (periodUs > 0) metadata.addProperty("period_sec", periodUs / 1_000_000.0);
+      String metadata = metadata(announce, periodUs);
       String name = "NT:" + announce.name(), type = NtType.fromNt4(announce.type()).wpilog();
-      room(WpilogOutput.startSize(name, type, metadata.toString(), serverUs), 1);
-      int id = output.start(name, type, metadata.toString(), serverUs);
+      room(WpilogOutput.startSize(name, type, metadata, serverUs), 1);
+      int id = output.start(name, type, metadata, serverUs);
       session.sizeBytes = output.size();
-      var entry = new EntryInfo(id, name, type, metadata.toString());
+      var entry = new EntryInfo(id, name, type, metadata);
       topics.put(announce.id(), new Topic(entry, periodUs));
       session.costs.computeIfAbsent(announce.name(), ignored -> new TopicCost());
       observer.entry(session, entry);
     });
+  }
+
+  private String metadata(Announce announce, long periodUs) {
+    var metadata = new JsonObject(); metadata.addProperty("source", "nt4"); metadata.addProperty("robot", address);
+    if (periodUs > 0) metadata.addProperty("period_sec", periodUs / 1_000_000.0);
+    if (!announce.properties().isEmpty()) metadata.add("nt4_properties", announce.properties());
+    return metadata.toString();
+  }
+
+  /** Keep publisher properties apart from recorder provenance, including null-as-delete patches. */
+  @Override public void properties(Properties change) {
+    for (var before : List.copyOf(announced.values())) {
+      if (!before.name().equals(change.name())) continue;
+      var after = before.withUpdate(change.update()); announced.put(after.id(), after);
+      var topic = topics.get(after.id());
+      if (topic == null || output == null || failed) continue;
+      String metadata = metadata(after, topic.periodUs);
+      if (metadata.equals(topic.entry.metadata())) continue;
+      io(() -> {
+        room(WpilogOutput.metadataSize(metadata, serverUs), 0);
+        output.setMetadata(topic.entry.id(), metadata, serverUs);
+        topic.entry = new EntryInfo(topic.entry.id(), topic.entry.name(), topic.entry.type(), metadata);
+        session.sizeBytes = output.size();
+      });
+    }
   }
 
   private void openFile(boolean append) throws IOException {
@@ -352,6 +380,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     session.nextEntry = closing.nextEntry(); session.open = false; session.endedAt = wallClock.instant();
     session.observedAtUs = loop.nowUs();
+    var costs = new LinkedHashMap<String, TopicCost.Snapshot>();
+    session.costs.forEach((name, cost) -> costs.put(name, cost.snapshot(session.observedAtUs)));
+    session.closedCosts = Map.copyOf(costs);
     try {
       session.sizeBytes = Files.size(session.path());
       session.files.add(new ClosedFile(session.path().getFileName().toString(), session.sizeBytes,

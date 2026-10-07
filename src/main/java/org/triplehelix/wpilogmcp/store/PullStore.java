@@ -159,8 +159,10 @@ public final class PullStore implements FileTransfer.Local {
   }
 
   private record Match(StoreCatalog.StoredFile candidate, SyncResult result, String basis) {}
-  private Match match(Path source, ImportInspection input, String serial) throws IOException {
+  private record MatchDecision(Match match, String reason) {}
+  private MatchDecision match(Path source, ImportInspection input, String serial) throws IOException {
     var matches = new java.util.LinkedHashMap<Path, Match>();
+    var reasons = new java.util.TreeSet<String>();
     var synchronizer = new LogSynchronizer();
     var rev = input.kind().equals("revlog") ? new RevLogParser(new DbcLoader().load(null)).parseComplete(source) : null;
     var candidates = StoreCatalog.read(store.root(), security).allFiles();
@@ -172,20 +174,30 @@ public final class PullStore implements FileTransfer.Local {
       if (candidate.file().matching() != null || capturedSessions.contains(candidate.manifestPath())
           && !candidate.file().provenance().kind().equals("captured")) continue;
       if (!input.nearClock(Instant.parse(candidate.session().startedAt()),
-          Instant.parse(candidate.session().endedAt()))) continue;
+          Instant.parse(candidate.session().endedAt()))) { reasons.add("calendar windows do not overlap"); continue; }
       try (var use = manager.acquire(candidate.path().toString())) {
         var facts = LogMetadata.read(use.log());
         String otherSerial = facts.serialNumber() != null ? facts.serialNumber() : candidate.robot().serialNumber();
-        if (serial != null && otherSerial != null && !serial.equals(otherSerial)) continue;
+        if (serial != null && otherSerial != null && !serial.equals(otherSerial)) { reasons.add("known robot serials differ"); continue; }
         SyncResult result;
         if (rev != null) result = synchronizer.synchronize(use.log(), rev);
         else try (var robot = manager.acquire(source.toString())) { result = synchronizer.synchronize(use.log(), robot.log()); }
-        if (result.method() != SyncMethod.CROSS_CORRELATION || result.strongPairCount() == 0 || Math.abs(result.offsetMicros()) > MAX_MATCH_OFFSET_US) continue;
+        if (result.method() != SyncMethod.CROSS_CORRELATION || result.strongPairCount() == 0) {
+          reasons.add("no strong data correlation"); continue;
+        }
+        if (Math.abs(result.offsetMicros()) > MAX_MATCH_OFFSET_US) {
+          reasons.add("measured offset exceeds the " + MAX_MATCH_OFFSET_US + " us automatic matching limit"); continue;
+        }
         String basis = input.metadata() != null && input.metadata().serialNumber() != null && facts.serialNumber() != null ? "serial_and_data" : "data_alone";
         matches.putIfAbsent(candidate.manifestPath(), new Match(candidate, result, basis));
-      } catch (IOException e) { LoggerFactory.getLogger(PullStore.class).warn("Pull matching skipped {}: {}", candidate.path(), e.getMessage()); }
+      } catch (IOException e) {
+        reasons.add("a candidate could not be read");
+        LoggerFactory.getLogger(PullStore.class).warn("Pull matching skipped {}: {}", candidate.path(), e.getMessage());
+      }
     }
-    return matches.size() == 1 ? matches.values().iterator().next() : null;
+    if (matches.size() == 1) return new MatchDecision(matches.values().iterator().next(), null);
+    return new MatchDecision(null, "Not automatically matched: " + (matches.size() > 1 ? "several sessions correlate"
+        : reasons.isEmpty() ? "no eligible session" : String.join("; ", reasons)));
   }
 
   @Override public String verified(PullManifest.Entry entry) throws IOException {
@@ -195,7 +207,7 @@ public final class PullStore implements FileTransfer.Local {
       String serial = input.metadata() != null && input.metadata().serialNumber() != null ? input.metadata().serialNumber() : identity.serialNumber();
       var conflict = !serial.equals(identity.serialNumber()) ? new IdentityConflict(source.getFileName().toString(), serial, identity.serialNumber()) : null;
       if (conflict != null) LoggerFactory.getLogger(PullStore.class).warn("Robot identity disagreement in pulled {}: logged {} versus device {}; logged serial wins", entry.remoteName(), serial, identity.serialNumber());
-      var match = match(source, input, serial);
+      var decision = match(source, input, serial); var match = decision.match();
       Path sessionPath;
       Session session;
       if (match != null) { sessionPath = match.candidate().manifestPath(); session = io.read(sessionPath, Session.class); }
@@ -227,7 +239,7 @@ public final class PullStore implements FileTransfer.Local {
       files.add(new LogFile(StoreFiles.relative(sessionPath.getParent(), target), input.hash(), input.size(), input.kind(),
           new Provenance("pulled", entry.remoteName(), entry.remoteName().substring(entry.remoteName().lastIndexOf('/') + 1), clock.instant().toString(), true, identity.serialNumber()),
           true, input.min(), input.max(), input.start() == null ? session.startedAt() : input.start().toString(),
-          input.end() == null ? session.endedAt() : input.end().toString(), input.startBasis(), false, evidence, input.robotFingerprint()));
+          input.end() == null ? session.endedAt() : input.end().toString(), input.startBasis(), false, evidence, input.robotFingerprint(), decision.reason()));
       var conflicts = new ArrayList<>(session.identityConflicts());
       if (conflict != null) conflicts.add(new IdentityConflict(StoreFiles.relative(sessionPath.getParent(), target), serial, identity.serialNumber()));
       io.write(sessionPath, copy(session, files, conflicts));
@@ -251,7 +263,7 @@ public final class PullStore implements FileTransfer.Local {
       for (var file : old.session().files()) {
         if (!old.manifestPath().getParent().resolve(file.path()).equals(from)) records.add(file);
         else if (retain) records.add(new LogFile(StoreFiles.relative(old.manifestPath().getParent(), target), file.sha256(), file.sizeBytes(), file.kind(),
-            file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint()));
+            file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason()));
       }
       io.write(old.manifestPath(), copy(old.session(), records, old.session().identityConflicts()));
     }
