@@ -54,7 +54,9 @@ public final class Nt4Client implements AutoCloseable {
     default void timeSync(long serverTimeUs, long receivedAtUs) {}
   }
 
-  public record LatestValue(Object value, long serverTimestampUs, long receivedAtUs) {
+  /** The authoritative type travels with its value, even if a concurrent reader observes
+   * a later announcement after this name has been unpublished and reused. */
+  public record LatestValue(Object value, long serverTimestampUs, long receivedAtUs, String type) {
     public LatestValue { if (value instanceof byte[] b) value = b.clone(); }
     @Override public Object value() { return value instanceof byte[] b ? b.clone() : value; }
   }
@@ -250,7 +252,7 @@ public final class Nt4Client implements AutoCloseable {
         if (topic == null) continue;
         if (topic.cached()) latest.compute(topic.name(), (name, old) -> old == null
             || frame.timestampUs() >= old.serverTimestampUs()
-                ? new LatestValue(frame.value(), frame.timestampUs(), received) : old);
+                ? new LatestValue(frame.value(), frame.timestampUs(), received, topic.type()) : old);
         listener.value(topic, frame, received); // Older timestamps still reach the lossless listener.
       }
     }

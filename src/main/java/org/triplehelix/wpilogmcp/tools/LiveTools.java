@@ -170,12 +170,17 @@ public final class LiveTools {
       }
       if (current == null || !current.open()) return inactive(current);
       var latest = live.latest(); var topics = live.topics(); Double now = live.robotNowUs();
+      return currentValues(names, latest, topics, now);
+    }
+    static ResponseBuilder currentValues(java.util.Set<String> names,
+        Map<String, org.triplehelix.wpilogmcp.nt4.client.Nt4Client.LatestValue> latest,
+        Map<String, org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce> topics, Double now) {
       var values = new JsonArray(); var missing = new JsonArray();
       for (String name : names) {
         String topic = topics.containsKey(name) ? name : name.startsWith("NT:") ? name.substring(3) : name;
         var value = latest.get(topic); var declaration = topics.get(topic);
         if (value == null || declaration == null) { missing.add(name); continue; }
-        var row = value(name, declaration.type(), value.value(), value.serverTimestampUs());
+        var row = value(name, value.type(), value.value(), value.serverTimestampUs());
         row.addProperty("age_ms", now == null ? null : (now - value.serverTimestampUs()) / 1000.0); values.add(row);
       }
       var result = values.isEmpty() ? ResponseBuilder.noMatch("None of the named topics has a current published value")

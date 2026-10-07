@@ -695,7 +695,10 @@ opens a file nor joins that queue, so an import cannot delay a latest-value quer
 for closed sessions; older manifests report unknown counts. An open session is a matching
 candidate even before its first file has a final hash.
 
-The NT4 client's concurrent latest-value table supplies publication values and timestamps.
+The NT4 client's concurrent latest-value table keeps each value, timestamp and authoritative
+type together. A concurrent unannounce and redeclaration cannot relabel an already-read value
+with the next topic's type. Multiple requested entries are independent latest publications,
+not a simultaneous robot sample.
 Ages use its measured robot offset and monotonic clock. Waiters are keyed by topic and MCP
 session, claimed once by the ordered listener, then completed outside the small registry lock.
 The injected scheduler supplies deadlines. Disconnect, unannounce and capture end cancel

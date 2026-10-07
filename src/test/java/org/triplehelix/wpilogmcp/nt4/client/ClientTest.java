@@ -111,6 +111,7 @@ class ClientTest {
       loop.until(() -> values.size() == 2);
       assertEquals(List.of("announce:json", "value:20", "value:10"), events);
       assertEquals("{}", client.latestValues().get("/j").value());
+      assertEquals("json", client.latestValues().get("/j").type());
       assertEquals(20, client.latestValues().get("/j").serverTimestampUs());
       assertEquals(7, client.latestValues().get("/j").receivedAtUs());
       peer.text("[{\"method\":\"properties\",\"params\":{\"name\":\"/j\",\"update\":{\"cached\":false}}}]");

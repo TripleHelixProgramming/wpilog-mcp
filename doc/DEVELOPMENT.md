@@ -488,7 +488,7 @@ outputs are checked against these actual results. `StoreManifestReplaceTest` inj
 access denials and a pause recorder: it pins complete atomic replacement, six attempts, error
 selection, interruption, temporary cleanup and publication only after success, without sleeps. `LiveReplayTest` replays every generated fixture,
 compares current values and timestamps with the independent reader, counts WPILOG record bytes,
-and repeats calls for determinism. `LiveCaptureConformanceTest` continues to compare every
+and repeats calls for determinism. `LiveValueSnapshotTest` supplies snapshots on opposite sides of a topic redeclaration and pins the value's original authoritative type; the client's hand-encoded-frame test checks that the type is stored with the value. `LiveCaptureConformanceTest` continues to compare every
 ordinary log tool on the live prefix and finished file. The only silent-empty exception is
 `wait_for_change`'s specified successful `changed:false` timeout; empty analyses still fail.
 
