@@ -54,6 +54,11 @@ export class StoreClient {
       request.end(data);
     });
   }
+  async uploadTargets(): Promise<{ stores: { id: string }[]; unreadable: { path: string; reason: string }[] }> {
+    const value = await this.request<{ id?: string; mirror?: boolean; stores?: { id: string; mirror: boolean }[]; unreadable?: { path: string; reason: string }[] }>("/store");
+    const stores = value.stores ?? (value.id ? [{ id: value.id, mirror: value.mirror ?? false }] : []);
+    return { stores: stores.filter(store => !store.mirror), unreadable: value.unreadable ?? [] };
+  }
   status(): Promise<MirrorStatus> { return this.request("/store/mirror"); }
   configure(config: MirrorRequest): Promise<MirrorStatus> { return this.request("/store/mirror/configure", "POST", config); }
   disable(): Promise<MirrorStatus> { return this.request("/store/mirror", "DELETE"); }

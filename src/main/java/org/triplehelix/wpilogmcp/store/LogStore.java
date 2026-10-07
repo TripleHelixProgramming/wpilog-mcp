@@ -74,6 +74,8 @@ public final class LogStore implements AutoCloseable {
   private final StoreInbox inbox;
   private final AtomicInteger pending = new AtomicInteger();
   private final java.util.concurrent.atomic.AtomicBoolean syncing = new java.util.concurrent.atomic.AtomicBoolean();
+  /** HTTP-owned staging paths are unique; source provenance lives only for their import job. */
+  private final java.util.concurrent.ConcurrentHashMap<Path, Provenance> uploadSources = new java.util.concurrent.ConcurrentHashMap<>();
 
   @FunctionalInterface
   interface CatalogReader {
@@ -257,6 +259,29 @@ public final class LogStore implements AutoCloseable {
   /** A second caller queues behind the first, including its inspection and identity changes. */
   public CompletableFuture<Result> importPaths(Request request, Consumer<Progress> progress) {
     return importPrepared(request, progress, r -> r, result -> {});
+  }
+
+  public StoreUpload receiveUpload(String name, long length, String hash, java.io.InputStream input) throws IOException {
+    return StoreUpload.receive(root, security, name, length, hash, input);
+  }
+
+  /** The laptop original is never moved; only the HTTP-owned staging file may be consumed. */
+  public CompletableFuture<Result> importUpload(StoreUpload upload, String robot, Consumer<Progress> progress) throws IOException {
+    if (!upload.root().equals(root)) throw new IOException("Upload belongs to another store");
+    String name = upload.path().getFileName().toString();
+    uploadSources.put(upload.path(), new Provenance("imported", "upload:" + name, name, Instant.now().toString(), false));
+    try {
+      return importPaths(new Request(List.of(upload.path()), true, robot), progress).handle((result, error) -> {
+        uploadSources.remove(upload.path());
+        try { upload.close(); } catch (IOException e) {
+          if (error != null) error.addSuppressed(e); else throw new java.util.concurrent.CompletionException(e);
+        }
+        if (error != null) throw new java.util.concurrent.CompletionException(error);
+        return new Result(result.files().stream().map(f -> new Outcome(Path.of(name), f.status(), f.path(), f.reason())).toList(), result.sameRobots());
+      });
+    } catch (RuntimeException e) {
+      uploadSources.remove(upload.path()); upload.close(); throw e;
+    }
   }
 
   /** Assignment is explicit: a duplicate elsewhere must never silently move a stored file. */
@@ -667,8 +692,8 @@ public final class LogStore implements AutoCloseable {
       for (var placement : placements) {
         var input = placement.input();
         var previous = catalog.assigning.get(input.hash());
-        var provenance = previous == null ? new Provenance("imported", input.path().toString(),
-            input.path().getFileName().toString(), now, move) : previous.file().provenance();
+        var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
+            input.path().getFileName().toString(), now, move)) : previous.file().provenance();
         records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
             input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
             input.start() == null ? null : input.start().toString(),

@@ -20,6 +20,8 @@ import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.store.LogStore;
 import org.triplehelix.wpilogmcp.store.StoreJson;
 import org.triplehelix.wpilogmcp.store.StoreRegistry;
+import org.triplehelix.wpilogmcp.store.StoreDoor;
+import org.triplehelix.wpilogmcp.store.StoreUpload;
 
 /**
  * A job wraps the existing store queue, never another executor. Active jobs cannot be evicted:
@@ -52,6 +54,7 @@ final class StoreImportEndpoint {
 
   private final StoreRegistry stores;
   private final int capacity;
+  private final StoreDoor door;
   private final LinkedHashMap<String, Job> jobs = new LinkedHashMap<>();
 
   StoreImportEndpoint(StoreRegistry stores) {
@@ -61,6 +64,11 @@ final class StoreImportEndpoint {
   StoreImportEndpoint(StoreRegistry stores, int capacity) {
     this.stores = stores;
     this.capacity = capacity;
+    this.door = new StoreDoor(() -> org.triplehelix.wpilogmcp.log.LogManager.getInstance().getConfiguredDirectories());
+  }
+
+  StoreImportEndpoint(StoreRegistry stores, StoreDoor door) {
+    this.stores = stores; this.capacity = HISTORY_SIZE; this.door = door;
   }
 
   synchronized boolean active() {
@@ -70,7 +78,8 @@ final class StoreImportEndpoint {
   void handle(HttpExchange exchange) throws IOException {
     var path = exchange.getRequestURI().getPath();
     if ((path.equals(PATH) || path.equals(ASSIGN_PATH)) && exchange.getRequestMethod().equals("POST")) {
-      submit(exchange, path.equals(ASSIGN_PATH));
+      if (path.equals(PATH) && "application/octet-stream".equals(exchange.getRequestHeaders().getFirst("Content-Type"))) upload(exchange);
+      else submit(exchange, path.equals(ASSIGN_PATH));
     } else if (path.startsWith(PATH + "/") && exchange.getRequestMethod().equals("GET")) {
       Job job;
       synchronized (this) {
@@ -82,6 +91,53 @@ final class StoreImportEndpoint {
       refuse(exchange, path.equals(PATH) || path.startsWith(PATH + "/") ? 405 : 404,
           "No such import route or method", "POST /store/import; GET /store/import/<job>");
     }
+  }
+
+  /** Bytes from a laptop select a catalog store ID; they never name a server filesystem path. */
+  private void upload(HttpExchange exchange) throws IOException {
+    Job job = null;
+    try {
+      var query = DataEndpoint.query(exchange.getRequestURI().getRawQuery());
+      for (String key : query.keySet()) if (!java.util.Set.of("store", "filename", "stated_robot").contains(key)) {
+        throw new IllegalArgumentException("Unknown upload query key: " + key);
+      }
+      var selected = door.select(StoreEndpoint.one(query, "store"));
+      if (selected.description().mirror()) { refuse(exchange, 409, "A mirror refuses uploads", "Choose an origin or laptop store"); return; }
+      String name = StoreEndpoint.one(query, "filename"), hash = exchange.getRequestHeaders().getFirst("X-WPILOG-SHA256");
+      String size = exchange.getRequestHeaders().getFirst("Content-Length");
+      if (size == null) { refuse(exchange, 411, "Content-Length is required", "Send one file with its exact size"); return; }
+      long length = Long.parseLong(size);
+      if (length > StoreUpload.MAX_BYTES) { refuse(exchange, 413, "Upload exceeds the 2 GB reader limit", "Windowed mapping is a later milestone"); return; }
+      StoreUpload.validate(name, length, hash);
+      String robot = StoreEndpoint.one(query, "stated_robot");
+      new LogStore.Request(java.util.List.of(), false, robot); // Validate a stated identity before receiving bytes.
+      job = admit(exchange); if (job == null) return;
+      var store = stores.store(selected.root());
+      var upload = store.receiveUpload(name, length, hash, exchange.getRequestBody());
+      var accepted = job;
+      store.importUpload(upload, robot, job::progress).whenComplete((result, error) -> complete(accepted, result, error));
+      accepted(exchange, job);
+    } catch (IllegalArgumentException e) {
+      if (job != null) complete(job, null, e);
+      refuse(exchange, 400, "Invalid upload: " + e.getMessage(), "POST one file as application/octet-stream with filename and X-WPILOG-SHA256");
+    } catch (IllegalStateException e) {
+      if (job != null) complete(job, null, e);
+      refuse(exchange, 503, "Import queue is closed", "Retry after the server restarts");
+    } catch (IOException e) {
+      if (job != null) complete(job, null, e);
+      refuse(exchange, job == null ? 404 : 400, "Upload refused: " + e.getMessage(), "Only configured writable stores accept uploads");
+    }
+  }
+
+  private static void complete(Job job, LogStore.Result result, Throwable error) {
+    job.view = new View(job.view.jobId(), error == null ? "done" : "failed", job.view.progress(), result,
+        error == null ? null : error.getMessage());
+    LoggerFactory.getLogger(StoreImportEndpoint.class).info("Import job {}: {}", job.view.jobId(), job.view.state());
+  }
+
+  private static void accepted(HttpExchange exchange, Job job) throws IOException {
+    var body = new JsonObject(); body.addProperty("job_id", job.view.jobId()); body.addProperty("url", PATH + "/" + job.view.jobId());
+    exchange.getResponseHeaders().set("Location", body.get("url").getAsString()); send(exchange, 202, body);
   }
 
   private void submit(HttpExchange exchange, boolean assignment) throws IOException {
@@ -110,6 +166,20 @@ final class StoreImportEndpoint {
           "Choose a writable directory inside configured log directories with a regular store.lock file");
       return;
     }
+    Job job = admit(exchange);
+    if (job == null) return;
+    try {
+      var future = assignment
+          ? store.assignPaths(request.request().paths(), request.request().statedRobot(), job::progress)
+          : store.importPaths(request.request(), job::progress);
+      future.whenComplete((result, error) -> complete(job, result, error));
+    } catch (RuntimeException e) {
+      job.view = new View(job.view.jobId(), "failed", null, null, "Import queue is closed");
+    }
+    accepted(exchange, job);
+  }
+
+  private Job admit(HttpExchange exchange) throws IOException {
     Job job;
     synchronized (this) {
       if (jobs.size() >= capacity) {
@@ -122,26 +192,9 @@ final class StoreImportEndpoint {
     if (job == null) {
       exchange.getResponseHeaders().set("Retry-After", "3");
       refuse(exchange, 503, "Import job queue is full", "Wait for a running job to finish, then retry");
-      return;
+      return null;
     }
-    try {
-      var future = assignment
-          ? store.assignPaths(request.request().paths(), request.request().statedRobot(), job::progress)
-          : store.importPaths(request.request(), job::progress);
-      future.whenComplete((result, error) -> {
-        job.view = new View(job.view.jobId(), error == null ? "done" : "failed",
-            job.view.progress(), result, error == null ? null : error.getMessage());
-        LoggerFactory.getLogger(StoreImportEndpoint.class).info("Import job {}: {}",
-            job.view.jobId(), job.view.state());
-      });
-    } catch (RuntimeException e) {
-      job.view = new View(job.view.jobId(), "failed", null, null, "Import queue is closed");
-    }
-    var body = new JsonObject();
-    body.addProperty("job_id", job.view.jobId());
-    body.addProperty("url", PATH + "/" + job.view.jobId());
-    exchange.getResponseHeaders().set("Location", body.get("url").getAsString());
-    send(exchange, 202, body);
+    return job;
   }
 
   private static Request parse(String body, boolean assignment) {

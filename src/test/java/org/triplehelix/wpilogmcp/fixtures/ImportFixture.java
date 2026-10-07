@@ -14,11 +14,19 @@ public final class ImportFixture {
   private ImportFixture() {}
 
   public static Path write(Path path, int tag) throws Exception {
+    return write(path, tag, null, 1_767_225_600_000_000L);
+  }
+
+  public static Path write(Path path, int tag, String serial, long epochUs) throws Exception {
     Files.createDirectories(path.getParent());
     try (var writer = new WpilogWriter(path, "import fixture " + tag)) {
       int clock = writer.start("systemTime", "int64", "", 0);
       int value = writer.start("/Value", "double", "", 0);
-      writer.append(clock, 0, WpilogWriter.encodeInt64(1_767_225_600_000_000L));
+      writer.append(clock, 0, WpilogWriter.encodeInt64(epochUs));
+      if (serial != null) {
+        int identity = writer.start("/SystemStats/SerialNumber", "string", "", 0);
+        writer.append(identity, 0, serial.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      }
       writer.append(value, 0, WpilogWriter.encodeDouble(tag));
       writer.append(value, 1_000_000, WpilogWriter.encodeDouble(tag + 1));
     }

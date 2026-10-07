@@ -103,6 +103,7 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.syncNow",
     "wpilog-mcp.openMirrorFolder",
     "wpilog-mcp.syncFromLaptop",
+    "wpilog-mcp.uploadToPitServer",
     "wpilog-mcp.explorer.organizeLogs",
     "wpilog-mcp.explorer.importLogs",
     "wpilog-mcp.explorer.assignRobot",

@@ -15,6 +15,8 @@ import { claudeCommand, claudeCommandText, claudePitCommand, claudePitCommandTex
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
 import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
 import { MirrorStatus, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, serverDefinitions, sessionPicks } from "./explorer/pitServer";
+import { uploadLog } from "./explorer/upload";
+import { resultSummary, resultDetails, progressText } from "./explorer/importJobs";
 import { StoreClient, rememberedPeers, syncSummary } from "./explorer/storeClient";
 import { Explorer } from "./explorer";
 import { TBA_KEY_QUIET_MS, TBA_KEY_SETTING, planTbaKeyMove } from "./tbaKey";
@@ -468,6 +470,27 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(JSON.stringify(result, null, 2));
     void vscode.window.showInformationMessage(syncSummary(result)); explorer.serversChanged();
   }
+  async function uploadToPitServer() {
+    const endpoint = pitEndpoint(pitUrl()); if (!endpoint) throw new Error("Set wpilog-mcp.pitServerUrl first.");
+    const inventory = await new StoreClient(endpoint).uploadTargets();
+    for (const failed of inventory.unreadable) outputChannel.appendLine(`${failed.path}: ${failed.reason}`);
+    if (!inventory.stores.length) throw new Error("The pit server has no configured writable store.");
+    const target = inventory.stores.length === 1 ? inventory.stores[0] : (await vscode.window.showQuickPick(
+      inventory.stores.map(store => ({ label: store.id, store })), { title: "Upload into which pit store?" }))?.store;
+    if (!target) return;
+    const files = await vscode.window.showOpenDialog({ title: "Upload Logs to Pit Server", canSelectMany: true, canSelectFolders: false,
+      filters: { "Robot logs": ["wpilog", "revlog"], "All files": ["*"] } });
+    if (!files?.length) return;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Upload Logs to Pit Server", cancellable: false }, async progress => {
+      for (const file of files) {
+        progress.report({ message: path.basename(file.fsPath) });
+        const result = await uploadLog(endpoint, file.fsPath, target.id, job => progress.report({ message: progressText(job) }));
+        for (const line of resultDetails(result)) outputChannel.appendLine(line);
+        void vscode.window.showInformationMessage(`${path.basename(file.fsPath)}: ${resultSummary(result)}`);
+      }
+    });
+    explorer.serversChanged();
+  }
   let pitRegistrationOffered = "";
   async function registerPitClaude(requested: boolean) {
     const url = pitEndpoint(pitUrl()); if (!url) { if (requested) throw new Error("Set wpilog-mcp.pitServerUrl first."); return; }
@@ -509,6 +532,7 @@ export function activate(context: vscode.ExtensionContext) {
       await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(folder));
     })),
     vscode.commands.registerCommand("wpilog-mcp.syncFromLaptop", command(syncFromLaptop)),
+    vscode.commands.registerCommand("wpilog-mcp.uploadToPitServer", command(uploadToPitServer)),
     vscode.commands.registerCommand("wpilog-mcp.registerPitWithClaudeCode", command(() => registerPitClaude(true)))
   );
 

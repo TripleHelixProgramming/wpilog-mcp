@@ -74,6 +74,55 @@ class StoreInboxTest {
     return Files.readAllLines(root.resolve("inbox").resolve("imported.log"));
   }
 
+  @Test void httpOwnedUploadsSurviveInboxSweepsAndAnInterruptedUploadLeavesNothing() throws Exception {
+    var source = ImportFixture.write(temp.resolve("upload.wpilog"), 3);
+    byte[] bytes = Files.readAllBytes(source);
+    String sha = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+    var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+    var input = new java.io.ByteArrayInputStream(bytes) {
+      boolean first = true;
+      @Override public synchronized int read(byte[] b, int offset, int count) {
+        if (first) { first = false; entered.countDown(); try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+          catch (InterruptedException e) { throw new AssertionError(e); } }
+        return super.read(b, offset, count);
+      }
+    };
+    var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+    var receiving = executor.submit(() -> store.receiveUpload("uploaded.wpilog", bytes.length, sha, input));
+    try {
+      assertTrue(entered.await(10, TimeUnit.SECONDS));
+      store.inbox().poll(0); store.inbox().poll(LOOK); store.awaitImports();
+      assertTrue(StoreCatalog.readManaged(root, manager.testGetSecurityValidator()).files().isEmpty());
+      release.countDown();
+      var upload = receiving.get(10, TimeUnit.SECONDS);
+      assertArrayEquals(bytes, Files.readAllBytes(upload.path()));
+      store.importUpload(upload, null, p -> {}).get();
+      assertEquals(1, StoreCatalog.readManaged(root, manager.testGetSecurityValidator()).files().size());
+      assertThrows(java.io.IOException.class, () -> store.receiveUpload("broken.wpilog", bytes.length + 1, sha, new java.io.ByteArrayInputStream(bytes)));
+      assertThrows(java.io.IOException.class, () -> store.receiveUpload("long.wpilog", bytes.length - 1, sha, new java.io.ByteArrayInputStream(bytes)));
+      assertThrows(IllegalArgumentException.class, () -> store.receiveUpload("huge.wpilog", 1L + Integer.MAX_VALUE, sha, input));
+      try (var files = Files.walk(root.resolve("inbox"))) { assertEquals(0, files.filter(Files::isRegularFile).count()); }
+    } finally { release.countDown(); executor.shutdownNow(); }
+  }
+
+  @Test void captureEnabledWithAnAbsentRobotStillImportsItsInbox() throws Exception {
+    var config = new org.triplehelix.wpilogmcp.config.CaptureConfig(
+        List.of(java.net.URI.create("ws://127.0.0.1:1/nt/synthetic")), root, .01,
+        org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, 0);
+    var server = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0, "127.0.0.1", null, null);
+    server.setStoreDirectories(Set.of(root)); server.start();
+    try (var capture = new org.triplehelix.wpilogmcp.capture.CaptureService(config, manager)) {
+      capture.start();
+      var source = ImportFixture.write(root.resolve("inbox/dropped.wpilog"), 4, "SYNTHETIC-INBOX", 1_767_225_600_000_000L);
+      byte[] bytes = Files.readAllBytes(source);
+      store.inbox().poll(0); store.inbox().poll(LOOK); store.awaitImports();
+      var catalog = StoreCatalog.readManaged(root, manager.testGetSecurityValidator());
+      assertEquals(1, catalog.files().size()); assertEquals("SYNTHETIC-INBOX", catalog.files().get(0).robot().serialNumber());
+      assertArrayEquals(bytes, Files.readAllBytes(catalog.files().get(0).path())); assertFalse(Files.exists(source));
+      assertEquals("imported", JsonParser.parseString(receipts().get(0)).getAsJsonObject().get("status").getAsString());
+    } finally { server.stop(); }
+  }
+
   @Test void twoStableLooksRequireBothSizeAndMtimeAndMoveVerifiedBytesOnce() throws Exception {
     var file = ImportFixture.write(root.resolve("inbox").resolve("growing.data"), 1);
     store.inbox().poll(0);

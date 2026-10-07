@@ -196,6 +196,35 @@ class MainImportTest {
     }
   }
 
+  @Test void aUsbDirectoryGroupsTwoRobotsAndTwoBootsAndRecognizesDuplicates() throws Exception {
+    temp = temp.toRealPath();
+    var root = Files.createDirectory(temp.resolve("store"));
+    var usb = Files.createDirectory(temp.resolve("usb"));
+    var originals = new java.util.LinkedHashMap<Path, byte[]>();
+    for (int robot = 0; robot < 2; robot++) for (int boot = 0; boot < 2; boot++) for (int log = 0; log < 2; log++) {
+      var file = ImportFixture.write(usb.resolve(robot + "-" + boot + "-" + log + ".wpilog"),
+          1 + robot * 4 + boot * 2 + log, "SYNTHETIC-USB-" + robot,
+          1_767_225_600_000_000L + boot * 3_600_000_000L);
+      originals.put(file, Files.readAllBytes(file));
+    }
+    Files.copy(originals.keySet().iterator().next(), usb.resolve("duplicate.wpilog"));
+    var configuration = config("default", 2363, root);
+    var first = result(run(configuration, usb.toString()));
+    assertEquals(8, first.getAsJsonArray("files").asList().stream()
+        .filter(f -> f.getAsJsonObject().get("status").getAsString().equals("imported")).count(), first.toString());
+    var security = new org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator();
+    security.addAllowedDirectory(root);
+    var catalog = org.triplehelix.wpilogmcp.store.StoreCatalog.readManaged(root, security);
+    assertEquals(8, catalog.files().size()); assertEquals(4, catalog.sessions().size());
+    assertEquals(2, catalog.files().stream().map(f -> f.robot().serialNumber()).distinct().count());
+    for (var session : catalog.sessions()) assertEquals(2, session.session().files().size());
+    for (var original : originals.entrySet()) assertArrayEquals(original.getValue(), Files.readAllBytes(original.getKey()));
+    var again = result(run(configuration, usb.toString()));
+    assertTrue(again.getAsJsonArray("files").asList().stream().allMatch(f ->
+        f.getAsJsonObject().get("status").getAsString().equals("present")), again.toString());
+    assertEquals(8, org.triplehelix.wpilogmcp.store.StoreCatalog.readManaged(root, security).files().size());
+  }
+
   @Test void usageAndMissingConfigurationHaveExitCodes() throws Exception {
     assertAll(List.of(new String[] {"import"}, new String[] {"import", "--move"},
         new String[] {"import", "--robot"}, new String[] {"import", "--store"},

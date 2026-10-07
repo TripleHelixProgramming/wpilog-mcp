@@ -53,7 +53,7 @@ export function sameRobotMessages(result: ImportResult): string[] {
   return result.same_robots.map(r => `Robot serial ${r.serial_number} appears in ${r.directories.join(" and ")}. These directories remain separate.`);
 }
 
-type Exchange = { status: number; headers: http.IncomingHttpHeaders; body: string };
+export type Exchange = { status: number; headers: http.IncomingHttpHeaders; body: string };
 type Pause = (ms: number) => Promise<void>;
 const pause: Pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -73,7 +73,7 @@ function exchange(url: URL, body?: string): Promise<Exchange> {
   });
 }
 
-function refusal(response: Exchange): ImportError {
+export function refusal(response: Exchange): ImportError {
   try {
     const body = JSON.parse(response.body) as { error?: string; hint?: string };
     if (typeof body.error === "string") return new ImportError(body.error, body.hint, response.status);
@@ -99,6 +99,11 @@ export async function runImport(mcpUrl: string, request: ImportRequest,
   report: (job: ImportJob) => void, assignment = false, sleep: Pause = pause): Promise<ImportResult> {
   const endpoint = importEndpointOf(mcpUrl, assignment);
   const accepted = await admitted(endpoint, JSON.stringify(request), sleep);
+  return pollImport(endpoint, accepted, report, sleep);
+}
+
+export async function pollImport(endpoint: URL, accepted: Exchange, report: (job: ImportJob) => void,
+  sleep: Pause = pause): Promise<ImportResult> {
   if (accepted.status !== 202) throw refusal(accepted);
   const body = JSON.parse(accepted.body) as { job_id: string; url: string };
   const poll = new URL(body.url, endpoint);

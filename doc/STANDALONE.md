@@ -676,7 +676,9 @@ A growing local prefix can be evicted only when the origin's prefix hash proves 
 
 ### The Import Endpoint
 
-The HTTP transport accepts imports beside the data endpoint:
+The HTTP transport accepts imports beside the data endpoint. Server-path JSON imports and
+assignments require a loopback connection; the byte-upload route below also accepts network
+connections. All keep the Origin check:
 
 ```http
 POST /store/import
@@ -692,6 +694,48 @@ A `202` response contains `job_id` and a relative `url` such as `/store/import/<
 `POST /store/assign` takes `store`, `paths`, and a required `stated_robot`. It moves only manifested unassigned files within that store, retaining their original provenance; ordinary imports still report duplicates as `present`. Assignment uses the same job response, polling URL, queue, lock, and path/Origin checks. Files already assigned, files outside this store's unassigned manifests, and REV files without a unique correlated wpilog are refused. An active HTTP or inbox import keeps an otherwise idle daemon alive until it finishes.
 
 At most 100 jobs are retained in memory. Completed jobs are evicted first when a new job needs room; if all slots are active, admission returns `503` with `Retry-After`. History disappears at restart. Refusals are JSON with `error` and `hint`: `400` for malformed input, `403` for paths outside configured directories (with the inbox hint), and `404` for an unknown or expired job. The endpoint shares `/mcp`'s Origin refusal and the transport's loopback default. The server log records job IDs and outcomes, never uploaded file contents; this endpoint accepts paths, not uploaded bytes.
+
+### Uploading from a laptop
+
+The extension's **Upload Logs to Pit Server** command streams selected files to its
+`wpilog-mcp.pitServerUrl`, retaining the laptop originals. An HTTP client can do the same:
+
+```text
+POST /store/import?store=<store-id>&filename=<URL-encoded-basename>
+Content-Type: application/octet-stream
+Content-Length: <exact bytes>
+X-WPILOG-SHA256: <lowercase source SHA-256>
+
+<one file's bytes>
+```
+
+Get the store id from `GET /store`; it may be omitted when exactly one configured store
+exists. Optional `stated_robot` names a robot where the file has no logged serial. Only
+configured writable stores accept uploads; neither a mirror nor a leased directory becomes
+a network upload target. The filename is one portable path component. Files above the
+reader's 2 GB limit are refused before reception. Receipt uses bounded buffers into a hidden,
+locked inbox transfer, outside the store queue; the inbox watcher cannot adopt half a file.
+The declared size and hash must agree before the existing importer inspects or places it.
+A disconnect removes the temporary bytes, and crash leftovers follow inbox recovery.
+The `202` response and job polling are the same as a JSON import. Provenance records
+`upload:<filename>` and `moved: false`; the sender's private laptop path is never sent.
+Duplicates are reported as present. This adds byte transport; the command, inbox, content
+inspection, grouping and duplicate recognition were already the explorer's import pipeline.
+
+The server has no authentication: anyone who can reach this upload route can add logs;
+a team using a proxy should put its password on `/store/import` first. For example, with the
+pit server bound to loopback, an nginx TLS server can protect MCP and upload together:
+
+```nginx
+# Inside an existing TLS server block; create the password file with htpasswd.
+location / {
+  auth_basic "Team pit server";
+  auth_basic_user_file /etc/nginx/pit.htpasswd;
+  proxy_pass http://127.0.0.1:2363;
+  client_max_body_size 2047m;
+  proxy_request_buffering off;
+}
+```
 
 ## Containerization
 

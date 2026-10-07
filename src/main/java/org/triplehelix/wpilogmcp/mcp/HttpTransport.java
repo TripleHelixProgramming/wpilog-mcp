@@ -92,12 +92,12 @@ public class HttpTransport {
       new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance());
   private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
       org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
-  private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores);
   private volatile java.util.Set<java.nio.file.Path> storeDirectories;
   private final org.triplehelix.wpilogmcp.store.StoreDoor storeDoor = new org.triplehelix.wpilogmcp.store.StoreDoor(
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
+  private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores, storeDoor);
   private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores);
   private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores,
       new org.triplehelix.wpilogmcp.store.StoreDoor(() -> storeDirectories != null ? storeDirectories
@@ -633,6 +633,12 @@ public class HttpTransport {
     if (origin != null && !isAllowedOrigin(origin)) {
       sendError(exchange, 403, "Forbidden: invalid origin");
       return;
+    }
+    boolean bytes = exchange.getRequestURI().getPath().equals(StoreImportEndpoint.PATH)
+        && "application/octet-stream".equals(exchange.getRequestHeaders().getFirst("Content-Type"));
+    if (exchange.getRequestMethod().equals("POST") && !bytes
+        && !exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Server-path imports and assignments require a loopback connection; upload file bytes instead"); return;
     }
     noteMcpActivity();
     importEndpoint.handle(exchange);

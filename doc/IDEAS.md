@@ -425,6 +425,11 @@ Direct access to the data without an agent, and real data in an agent's answers.
 
 ---
 
+The pit import milestone is complete: existing command and inbox grouping now have bulk USB
+and capture-enabled coverage, and the extension can upload verified copies to the pit store.
+The server accepts only file bytes at its network write surface; server-path operations remain
+local. Live tools are the next pit milestone.
+
 ### 9.4 Shop Harness
 
 Step 1 is implemented: a scripted WPILib 2026 headless robot, real SSH/SFTP from a synthetic

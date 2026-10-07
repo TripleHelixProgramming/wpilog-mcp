@@ -107,7 +107,16 @@ in the status tooltip. Settings apply through the local server without rewriting
 | `wpilog-mcp.syncNow` | Start a mirror pass immediately |
 | `wpilog-mcp.openMirrorFolder` | Reveal the mirror directory in the OS file explorer |
 | `wpilog-mcp.syncFromLaptop` | Pull missing files into a local writable store from another laptop |
+| `wpilog-mcp.uploadToPitServer` | Select laptop files and upload verified copies to the pit store |
 | `wpilog-mcp.registerPitWithClaudeCode` | Register the pit URL as the second user-scope Claude server |
+
+**Upload Logs to Pit Server** uses `wpilog-mcp.pitServerUrl`. Pick files (a USB drive is
+fine) and, if the pit server has several stores, a store id. Files stream one at a time;
+the importer verifies their hash and content, groups them by robot and session, and reports
+imports, duplicates, unassigned files and refusals in WPILog Analyzer output. Originals stay
+on the laptop. The pit server must be bound to the network (or reachable through its proxy).
+A lost connection does not silently resubmit; retrying explicitly recognizes a completed copy
+by its hash. A mirror cannot receive uploads. With a proxy, protect `/store/import` first.
 
 **Sync from Laptop** needs no pit-server setting. Choose a local store, enter the peer's
 `host:port` once, then choose its remembered URL on later runs. The peer must bind its server
