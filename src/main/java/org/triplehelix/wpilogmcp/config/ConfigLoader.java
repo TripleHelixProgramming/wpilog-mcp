@@ -373,12 +373,17 @@ public class ConfigLoader {
         expandPath(interpolate(getString(block, "exportdir"), warnings)),
         getInteger(block, "scandepth"),
         getInteger(block, "idle_exit_minutes"),
-        CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings))
+        CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings)),
+        MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings)))
     );
   }
 
   private void validate(ServerConfig config) throws ConfigException {
     if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
+    if (config.mirror() != null && !config.isHttp()) throw new ConfigException("mirror requires transport: http");
+    if (config.mirror() != null && config.capture() != null && config.mirror().folder().equals(config.capture().store())) {
+      throw new ConfigException("mirror.folder cannot be capture.store");
+    }
     if (config.capture() != null && config.idleExit().isPresent()) throw new ConfigException("capture requires idle_exit_minutes: 0 (recording must continue without MCP sessions)");
     var transport = config.effectiveTransport();
     if (!"stdio".equals(transport) && !"http".equals(transport)) {

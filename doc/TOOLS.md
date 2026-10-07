@@ -81,6 +81,8 @@ What each wpilog-mcp tool takes, what it does, and what it returns. Every tool t
 These two tools tell an agent which tools exist and when to use them. The description of `get_server_guide` asks the agent to call it first.
 
 ### `get_server_guide`
+
+`server_location` identifies this server as local or the pit server and explains that completed mirrors answer from the same bytes offline.
 An overview of every tool, grouped by category, with usage guidance and the mistakes each category is meant to prevent. Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code keeps the description loaded even when it defers other MCP tools.
 
 **Parameters:**
@@ -260,6 +262,11 @@ Store listings additionally return:
 - `unmanaged`: files outside the inbox absent from every manifest, each with `store`, `path`, and `reason`; they are never indexed into a session, even if placed inside its directory.
 - `unassigned`: imported files awaiting robot assignment or a unique REV pairing, each with `store`, `path`, `kind`, and `sha256`.
 - `moved_to`: notices with `original_path`, `moved_to`, and `moved_at`, retained in the listing for seven days after a move. Copy imports create no notice.
+
+For a mirrored log, `session` also reports `origin` (the origin URL), `complete`, `growing`,
+`last_sync` and `age_sec`. The last successful synchronization stays visible offline. The
+`stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
+imports and leaves unmanaged files untouched; pinning is a local HTTP UI control, not a tool.
 
 An unsupported store format is reported as an unavailable directory with its reason; when no directory can be read the result is `error`. The standalone [import command and inbox](STANDALONE.md#importing-logs) and [HTTP jobs](STANDALONE.md#the-import-endpoint) organize files; the extension's [organizing controls](../vscode-extension/README.md#organizing-your-logs) offer the same pipeline and explicit assignment.
 

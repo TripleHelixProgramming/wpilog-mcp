@@ -155,7 +155,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/store endpoints and import/sync jobs, and the tool registry |
 | `tools` | The tools, grouped by subject, and what they share: the base every tool runs through, the result builder and result contract, the signal resolver, time scopes, field paths, data quality, and the guidance text |
 | `log` | Finding and loading logs: the log manager, the lazy log and its scan, the writer-built live log, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
-| `store` | File manifests, content inspection, one mutation queue per store, and abandoned-capture recovery; the catalog door, peer sync and placement recovery, robot identity, session placement, provenance, duplicate detection, and unmanaged files |
+| `store` | File manifests, content inspection, one mutation queue per store, and abandoned-capture recovery; the catalog door, peer sync and placement recovery, scoped mirror synchronization and local controls, robot identity, session placement, provenance, duplicate detection, and unmanaged files |
 | `revlog` | REV log parsing. `revlog/dbc` reads CAN database (DBC) files and decodes frames with them |
 | `sync` | Signal synchronization and combined logs; transport-independent content-checked transfers, the HTTP remote, pacing, pull manifests, and verification |
 | `cache` | The disk cache of sync results, the cache directory, file fingerprints, and the older disk cache of parsed logs, which is no longer used |
@@ -175,7 +175,7 @@ Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small cl
 
 `sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock
 and gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
-SFTP now and the mirror later; a local interface supplies append, archive, rename, verification,
+SFTP and the HTTP store door; a local interface supplies append, archive, rename, verification,
 placement, and atomic manifest writes. One caller owns a step; a concurrent call is refused.
 One remote listing serves a whole pass across files and blocks. A long-running pass refreshes after
 ten seconds; verification requires stable size and modification time across distinct listings.
@@ -470,11 +470,28 @@ A directory with `store.json` is a store. Its format version and creation time d
 
 The log manager owns one `StoreRegistry`, which provides one `LogStore` object and daemon import queue for each real store path. Its `importPaths` future and progress callback are independent of HTTP and the extension. Imports classify by the WPILOG header or native REV record header (REV can also use a WPILOG container), hash the complete file, and read through the lazy decoder before placing anything. The shared signal resolver supplies the identity and Driver Station conventions. The session's start comes from the logged wall clock, else the filename convention, else modification time minus the log's duration; the manifest records that basis. A known robot's overlapping wall-clock session receives the log. REV files require a unique successful correlation through the existing synchronizer, and the manifest keeps the offset, clock drift, confidence, and matching wpilog hash. Clock alignment alone cannot identify a robot; ambiguous and unmatched REV files wait unassigned.
 
-Peer synchronization reads the catalog door with the JDK HTTP client and uses `FileTransfer` unchanged. `StoreSync` supplies the local placement policy: verify the advertised size and SHA-256, run the import inspection, then admit the file. Network pacing defaults to unlimited and can be capped per job. Open captures have no final hash and wait until closed; the door itself still serves their growing prefixes for the later mirror. Mirrors refuse peer sync in either direction.
+Peer synchronization reads the catalog door with the JDK HTTP client and uses `FileTransfer` unchanged. `StoreSync` supplies the local placement policy: verify the advertised size and SHA-256, run the import inspection, then admit the file. Network pacing defaults to unlimited and can be capped per job. Open captures have no final hash and wait until closed; the door itself still serves their growing prefixes for the mirror. Mirrors refuse peer sync in either direction.
 
 Overlapping windows with the same serial describe one boot. Taking the smallest session id makes both transfer orders converge without inventing another id. If a peer bridges multiple local fragments, closed directories move below one session's `merged/` directory, retaining their bytes and historical manifests. The catalog exposes the merged manifest once and old file paths remain aliases. Multiple still-open writers wait until closed before consolidation. A capture flush replaces only its own files and retains peer files and match facts. Peer captures go under `peer/<sha256>/`, because a currently unused `capture-N.wpilog` name still belongs to the local writer's future rollover. The original file provenance stays intact, with an append-only `copied_from` history; local nonempty robot names/comments win and disagreements go to session conflicts. None of these additive fields changes format 1.
 
 A sync is a reader of the peer and a queued, locked writer of its own store. The loopback-only `POST /store/sync` job and the offline command share that operation; a second sync to the same store is refused. The command never bypasses a failing running daemon. `store.json` remembers peer URLs. `.sync/peer-<store-id>/pull.json` owns incomplete bytes and superseded transfer attempts without exposing them through the door. Atomic placement and session-merge receipts bridge filesystem moves and manifest replacements; the next sync finishes pending receipts before network contact, even with the peer offline. An occupied unmanifested path is kept as a stray, never adopted or overwritten. Results name copied bytes, existing hashes, conflicts, refusals and the offset of an interrupted file.
+
+`MirrorSync` keeps the origin's IDs and relative session paths instead of coalescing peer
+sessions. It snapshots the origin catalog for each pass, wraps remote names with the session
+ID, and delegates byte copying to `FileTransfer`. A growing prefix is reader-checked and
+published as open, while a finished file must also match its advertised hash. Its header holds
+origin identity, pins and per-session freshness; the session manifests preserve provenance
+and matching evidence. Recorded REV alignments are used on the origin and mirror alike;
+new associations retain the complete synchronization result, while older summaries behave as
+recorded manual offsets. Cache format 9 retires preceding synchronization state.
+
+`MirrorService` schedules daemon work without blocking HTTP workers. Loopback-only mirror
+endpoints configure an allowed folder, report progress, request a pass and queue pins. The
+mirror's queue and store lock serialize these changes. Imports and inboxes refuse mirrors.
+Scope and cap eviction considers whole sessions, preserves pins and origin-missing content,
+and removes only manifested files. Moves reserve readers and release mappings first, including
+on Windows; pending file and directory moves are journaled. A stopped origin leaves the last
+successful per-session time in the listing. No mirror read asks the origin to answer a tool.
 
 There must never be two store writers. `POST /store/import` submits to that registry and exposes an in-memory job for polling; the command finds the named daemon through its PID file and health check and posts to it. It imports in its own process only when no daemon is running, and never falls back after an HTTP failure. Every import, including an inbox import, takes a nonblocking `FileChannel` lock on `store.lock` before inspection and holds it through placement and manifests. A daemon started during an offline import therefore reports the held lock instead of writing beside it or waiting indefinitely. The lock file stays in place after release: deleting it could give two processes different inodes to lock. Shutdown stops polling and drains imports before closing shared log readers.
 

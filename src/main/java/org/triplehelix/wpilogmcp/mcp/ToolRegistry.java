@@ -23,6 +23,11 @@ public class ToolRegistry {
 
   private final Map<String, Tool> tools = new ConcurrentHashMap<>();
   private volatile String serverInstructions;
+  public static final String LOCAL_LOCATION = "This server reads files on this machine and its mirrors. Use the pit server for live sessions; a completed mirrored file has the same bytes and answers offline.";
+  public static final String PIT_LOCATION = "This is the pit server: use it for the team's sessions and live captures. A completed mirror on a laptop has the same bytes and answers offline.";
+  private volatile String serverLocation = LOCAL_LOCATION;
+  public void setServerLocation(String value) { serverLocation = value; }
+  public String getServerLocation() { return serverLocation; }
 
   /**
    * Sets the server-level instructions returned to clients in the {@code initialize} response

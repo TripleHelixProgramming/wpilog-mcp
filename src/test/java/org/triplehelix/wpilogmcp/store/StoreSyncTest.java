@@ -316,7 +316,7 @@ class StoreSyncTest {
     String network = "http://" + address.orElseThrow().getHostAddress() + ":" + httpA.getPort();
     var read = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(network + "/store")).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofString());
     assertEquals(200, read.statusCode());
-    for (String path : List.of("/store/sync", "/store/sync/not-a-job")) {
+    for (String path : List.of("/store/sync", "/store/sync/not-a-job", "/store/mirror", "/store/mirror/pin_session")) {
       var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(network + path));
       if (path.equals("/store/sync")) request.POST(java.net.http.HttpRequest.BodyPublishers.ofString("{}")); else request.GET();
       var denied = client.send(request.build(), java.net.http.HttpResponse.BodyHandlers.ofString());

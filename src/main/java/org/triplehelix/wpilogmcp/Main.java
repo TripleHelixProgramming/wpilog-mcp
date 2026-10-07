@@ -216,7 +216,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = System.getenv(DaemonManager.STOP_TOKEN_ENV);
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture());
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture(), config.mirror());
     } catch (ConfigException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
@@ -659,12 +659,13 @@ public class Main {
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit) {
-    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null);
   }
 
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
-      String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig) {
+      String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig,
+      org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -692,6 +693,8 @@ public class Main {
     // Create tool registry and register all tools
     var toolRegistry = new ToolRegistry();
     WpilogTools.registerAll(toolRegistry);
+    toolRegistry.setServerLocation(captureConfig == null ? ToolRegistry.LOCAL_LOCATION : ToolRegistry.PIT_LOCATION);
+    toolRegistry.setServerInstructions(toolRegistry.getServerLocation() + "\n" + toolRegistry.getServerInstructions());
     logger().debug("Registered all MCP tools");
 
     if (httpMode) {
@@ -727,6 +730,7 @@ public class Main {
       }, "shutdown-hook"));
       try {
         httpTransport.start();
+        if (mirrorConfig != null) httpTransport.configureMirror(mirrorConfig);
         if (capture != null) capture.start();
         // The guide tells an agent with shell access where to get every sample of an entry
         DiscoveryTools.setDataEndpoint(

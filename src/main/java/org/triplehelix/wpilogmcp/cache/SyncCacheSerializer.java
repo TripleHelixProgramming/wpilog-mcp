@@ -54,7 +54,9 @@ public class SyncCacheSerializer {
   // normalization and the NT:systemTime calendar role were recognized during replay.
   // Version 8 accompanies portable CAN-bus naming, following the rule to invalidate older
   // REV synchronization state when its interpretation changes.
-  public static final int CURRENT_FORMAT_VERSION = 8;
+  // Version 9 makes store associations use their recorded alignment, including in a mirror,
+  // rather than letting a previous automatic correlation replace the manifest's evidence.
+  public static final int CURRENT_FORMAT_VERSION = 9;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(

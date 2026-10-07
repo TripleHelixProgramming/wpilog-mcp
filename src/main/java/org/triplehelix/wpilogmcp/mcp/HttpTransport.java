@@ -98,6 +98,7 @@ public class HttpTransport {
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
+  private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores);
   private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores, storeDoor,
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getConfiguredDirectories());
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
@@ -161,6 +162,7 @@ public class HttpTransport {
     server.createContext(StoreImportEndpoint.ASSIGN_PATH, counted(this::handleImport));
     server.createContext("/store", counted(this::handleStore));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
+    server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
     httpExecutor = Executors.newFixedThreadPool(
         Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
     server.setExecutor(httpExecutor);
@@ -213,7 +215,7 @@ public class HttpTransport {
   /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
   private void exitIfIdle() {
     var idle = idleExit;
-    if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active()) return;
+    if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active() || mirrorEndpoint.active()) return;
     long idleFor = System.nanoTime() - lastMcpActivityNanos;
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
@@ -242,6 +244,7 @@ public class HttpTransport {
     if (!stopped.compareAndSet(false, true)) {
       return;
     }
+    mirrorEndpoint.close();
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
     //    which closes the exchange. They would otherwise stay open until the client went away.
     if (sseExecutor != null) {
@@ -657,6 +660,22 @@ public class HttpTransport {
       sendError(exchange, 403, "Store sync jobs require a loopback connection"); return;
     }
     noteMcpActivity(); syncEndpoint.handle(exchange);
+  }
+
+  /** Called after the listener starts, so an offline origin cannot delay daemon health. */
+  public void configureMirror(org.triplehelix.wpilogmcp.config.MirrorConfig config) throws IOException {
+    mirrorEndpoint.configure(config);
+  }
+
+  private void handleMirror(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin"); return;
+    }
+    if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Mirror controls require a loopback connection"); return;
+    }
+    noteMcpActivity(); mirrorEndpoint.handle(exchange);
   }
 
   /** The size cap of a data response, in bytes (see {@link DataEndpoint}). */

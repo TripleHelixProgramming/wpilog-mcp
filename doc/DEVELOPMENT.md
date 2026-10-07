@@ -436,6 +436,21 @@ These tests need no robot, real log, external server or new dependency and run i
 Linux and Windows builds. Run them with
 `./gradlew test --tests '*StoreSyncTest' --tests '*MainSyncTest' --tests '*StoreSyncConformanceTest'`.
 
+### Mirrors
+
+`MirrorSyncTest` serves a generated origin store on the real loopback HTTP transport. It checks
+scope, whole events, serial filters, exact manifests and bytes, resume offsets and prefix proofs,
+replacement, local reloads, ID-based moves, pins, cap/window eviction, offline retention and
+interrupted transfers. `MirrorEndpointTest` exercises configuration, status, pin/unpin, Origin
+and path refusals, offline listing age, and health while an origin is blocked. `MirrorConfigTest`
+pins defaults and key-specific validation. `StoreRecordedAlignmentTest` plants a recorded offset
+that differs from fresh correlation and proves the correlator is never called.
+
+The `StoreSyncConformanceTest` sweep now runs both peer sync and mirror copies on every generated
+fixture, including REV, and compares every log tool's results; its reports are
+`build/reports/conformance/store-sync.txt` and `build/reports/conformance/mirror.txt`.
+No robot log or robot value is needed. Linux and Windows CI run these in the ordinary suite.
+
 ### The data endpoint's streams
 
 `DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`, and CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.

@@ -82,6 +82,7 @@ public final class CoreTools {
           + "tools. stores lists each store's path and robots; store on a log names its root. "
           + "A file beyond the reader size limit carries read_error instead of disappearing. "
           + "A pulled file kept in its own session carries matching_reason explaining why automatic placement was refused. "
+          + "Mirrored session metadata adds origin, complete, growing, last_sync, and age_sec; offline tools read the same local bytes. "
           + "A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
           + "For store files only, robot_candidates names serial_number and evidence (kind, value) from import manifests for a unique exact fingerprint; a candidate never assigns a robot. "
           + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
@@ -230,6 +231,15 @@ public final class CoreTools {
           if ("captured".equals(stored.file().provenance().kind())) {
             session.addProperty("open", stored.session().openCapture() != null);
           }
+          if (owner.header().mirror() && owner.header().origin() != null) {
+            var origin = owner.header().origin(); var mirrored = origin.sessions().get(stored.session().id());
+            session.addProperty("origin", origin.url());
+            if (mirrored != null) {
+              session.addProperty("complete", mirrored.complete()); session.addProperty("growing", mirrored.growing());
+              session.addProperty("last_sync", mirrored.lastSync());
+              session.addProperty("age_sec", Math.max(0, java.time.Duration.between(java.time.Instant.parse(mirrored.lastSync()), java.time.Instant.now()).getSeconds()));
+            }
+          }
           logObj.add("session", session);
           if (stored.file().matchingReason() != null) logObj.addProperty("matching_reason", stored.file().matchingReason());
         }
@@ -290,9 +300,12 @@ public final class CoreTools {
         for (var store : scan.stores()) {
           var summary = new JsonObject();
           summary.addProperty("path", store.root().toString());
+          summary.addProperty("mirror", store.header().mirror());
+          if (store.header().origin() != null) summary.add("origin", StoreJson.JSON.toJsonTree(store.header().origin()));
           summary.add("robots", StoreJson.JSON.toJsonTree(store.robots().stream().map(r -> r.robot()).toList()));
           stores.add(summary);
-          for (var entry : logManager.stores().store(store.root()).inbox().listing()) {
+          for (var entry : store.header().mirror() ? java.util.List.<org.triplehelix.wpilogmcp.store.StoreInbox.Entry>of()
+              : logManager.stores().store(store.root()).inbox().listing()) {
             var item = StoreJson.JSON.toJsonTree(entry).getAsJsonObject();
             item.addProperty("store", store.root().toString());
             inbox.add(item);
@@ -301,7 +314,9 @@ public final class CoreTools {
             var item = new JsonObject();
             item.addProperty("path", path.toString());
             item.addProperty("store", store.root().toString());
-            item.addProperty("reason", "Not listed by a manifest; import this file to assign it");
+            item.addProperty("reason", store.header().mirror()
+                ? "Not listed by a mirror manifest; mirror synchronization never adopts strays"
+                : "Not listed by a manifest; import this file to assign it");
             unmanaged.add(item);
           }
           for (var file : store.files()) {
@@ -323,11 +338,12 @@ public final class CoreTools {
             moved.add(item);
           }
         }
-        result.add("stores", stores);
-        result.add("inbox", inbox);
-        result.add("unmanaged", unmanaged);
-        result.add("unassigned", unassigned);
-        result.add("moved_to", moved);
+        // These inventories are complete, independent of the log page's limit.
+        ResultContract.addLimitedList(result, "stores", stores, stores.size(), stores.size());
+        ResultContract.addLimitedList(result, "inbox", inbox, inbox.size(), inbox.size());
+        ResultContract.addLimitedList(result, "unmanaged", unmanaged, unmanaged.size(), unmanaged.size());
+        ResultContract.addLimitedList(result, "unassigned", unassigned, unassigned.size(), unassigned.size());
+        ResultContract.addLimitedList(result, "moved_to", moved, moved.size(), moved.size());
       }
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);

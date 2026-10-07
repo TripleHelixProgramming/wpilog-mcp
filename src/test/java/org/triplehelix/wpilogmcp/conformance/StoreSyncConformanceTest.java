@@ -30,7 +30,9 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
 class StoreSyncConformanceTest {
   @TempDir Path temp;
 
-  @Test void everyFixtureToolAnswerSurvivesAnHttpStoreHop() throws Exception {
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void everyFixtureToolAnswerSurvivesAnHttpStoreHop(boolean mirror) throws Exception {
     temp = temp.toRealPath(); var manager = LogManager.getInstance();
     var allowed = manager.getAllowedDirectories(); var oldExport = ExportTools.getExportDirectory();
     var export = Files.createDirectory(temp.resolve("export")); ExportTools.setExportDirectory(export.toString());
@@ -51,8 +53,15 @@ class StoreSyncConformanceTest {
       assertTrue(imported.files().stream().noneMatch(f -> f.status().equals("refused")), imported.toString());
       var source = StoreCatalog.readManaged(a.root(), manager.testGetSecurityValidator());
       http.setStoreDirectories(Set.of(a.root())); http.start();
-      var result = b.sync("http://127.0.0.1:" + http.getPort(), 0, p -> {}).get();
-      assertEquals(List.of(), result.refusals(), result.toString()); assertEquals(List.of(), result.stopped(), result.toString());
+      String url = "http://127.0.0.1:" + http.getPort();
+      if (mirror) {
+        var result = b.mirror(new org.triplehelix.wpilogmcp.config.MirrorConfig(url, b.root(), 365_000,
+            Long.MAX_VALUE, List.of(), List.of(), 30, 0), p -> {}).get();
+        assertEquals("synchronized", result.state(), result.toString());
+      } else {
+        var result = b.sync(url, 0, p -> {}).get();
+        assertEquals(List.of(), result.refusals(), result.toString()); assertEquals(List.of(), result.stopped(), result.toString());
+      }
       var copy = StoreCatalog.readManaged(b.root(), manager.testGetSecurityValidator());
       assertEquals(source.files().size(), copy.files().size());
       var copiedPaths = new LinkedHashMap<String, Path>(); var aliases = new LinkedHashMap<String, String>();
@@ -82,7 +91,7 @@ class StoreSyncConformanceTest {
           }
         }
       }
-      var report = Path.of("build/reports/conformance/store-sync.txt"); Files.createDirectories(report.getParent());
+      var report = Path.of("build/reports/conformance/" + (mirror ? "mirror" : "store-sync") + ".txt"); Files.createDirectories(report.getParent());
       Files.writeString(report, "fixtures=" + fixtures.size() + " files=" + source.files().size() + " tool_pairs=" + calls + "\n");
     } finally {
       http.stop(); manager.unloadAllLogs(); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory);

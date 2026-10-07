@@ -582,7 +582,7 @@ Files keep their original provenance and gain `copied_from` entries with the
 peer's store id, URL and copy time. A peer's robot name or comments fill an empty local field;
 otherwise disagreements appear in the session's `conflicts` and the local text stays. Hashes
 already held are reported present. Nothing is deleted on either side, and mirrors are refused
-as both source and destination. The mirror and extension commands are later work.
+as both source and destination. Use the mirror below for a scoped offline cache.
 
 The command prints `job`, `progress` and `result` JSON lines (offline runs have no `job` line).
 The result lists `sessions_created`, `files_copied` (including new network `bytes` and total
@@ -601,6 +601,67 @@ The body is limited to 64 KiB. A `202` response gives `job_id` and `url` (also `
 including on a server bound to the network. A second sync for the same store is refused with
 409; different stores have separate queues. Active jobs keep the daemon alive. The most recent
 100 jobs are retained in memory, with completed jobs evicted first; they disappear at restart.
+
+### The Mirror
+
+A mirror is a local cache of a team's store, read by every tool while offline. The origin must
+serve its HTTP door on an address this laptop can reach. The local server owns copying and
+retention; imports, assignments, capture writers, inbox processing, and peer sync cannot write
+into a mirror. Strays are reported and left alone. SSH contact history is never copied.
+
+```yaml
+servers:
+  http:
+    transport: http
+    mirror:
+      origin: http://pit-server:2363
+      folder: ~/wpilog-mirror
+      days: 14
+      max_size_gb: 20
+      robots: []
+      events: []
+      interval_sec: 30
+      rate_bytes: 0
+```
+
+| Key | Meaning |
+|-----|---------|
+| `mirror.origin` | HTTP(S) origin URL; append `?store=<id>` if that server exposes several stores |
+| `mirror.folder` | Empty destination, or this origin's existing mirror; also admitted as a log directory |
+| `mirror.days` | Nonnegative calendar window in days, default `14` |
+| `mirror.max_size_gb` | Positive decimal GB cap, default `20` (20,000,000,000 bytes) |
+| `mirror.robots` | Robot serials to include; empty means all |
+| `mirror.events` | Whole named events to include beyond the day window, subject to the robot filter |
+| `mirror.interval_sec` | Positive integer seconds between attempts, default `30` |
+| `mirror.rate_bytes` | Nonnegative integer bytes per second; default `0` means unlimited |
+
+Pinned session IDs override the window and robot filter. The cap favors newer sessions and
+evicts the oldest unpinned ones first. Pins can exceed the cap; that is reported, and none is
+deleted. A copy whose origin no longer advertises its held content is retained with a reason,
+not deleted on an assumption. Retention deletes only manifested mirror files, never a stray.
+Open sessions advance to the origin's current prefix each pass, using the same content proof
+and resume engine as peer sync; ordinary log reloads notice the appended bytes. A replaced
+prefix is fetched from the start. Session IDs follow directory renames and robot moves.
+
+`list_available_logs` adds `origin`, `complete`, `growing`, `last_sync`, and `age_sec` to a
+mirrored log's `session`. `complete` means the origin closed it and all its advertised files
+were verified. The bytes, provenance, and recorded matching offsets are the origin's; no REV
+correlation is rerun. A disconnected origin leaves the existing listing and files readable.
+
+Local user controls require a loopback connection and the normal Origin check:
+
+| Endpoint | Result |
+|----------|--------|
+| `GET /store/mirror` | State (`disabled`, `waiting`, `synchronizing`, `synchronized`, `offline`, `partial`, `error`), configuration, last sync and age, remaining file/byte counts, result and origin policy |
+| `POST /store/mirror/configure` | The mirror block as JSON; starts background synchronization, returns 202; folder must already be allowed by configuration or a directory lease |
+| `POST /store/mirror/sync` | `{}` requests Sync Now, returns 202; an active pass returns 409 |
+| `POST /store/mirror/pin_session` | `{ "session_id": "..." }` queues a pin; 202; polling status shows it applied |
+| `POST /store/mirror/unpin_session` | The same body removes the pin; 202 |
+| `DELETE /store/mirror` | Stops future passes and leaves existing files intact |
+
+These controls are endpoints for a person's UI actions, not assistant tools. Mirror configuration
+starts after the HTTP listener, so an unavailable or slow origin cannot delay daemon health.
+The mirror uses additive fields in store format 1 and refuses a different origin store ID.
 
 ### The Import Endpoint
 

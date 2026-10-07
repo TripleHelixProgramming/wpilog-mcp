@@ -201,9 +201,10 @@ public final class StoreCatalog {
     }
     var unmanaged = new ArrayList<Path>();
     if (strays) managed.addAll(StoreSync.managed(root, io));
+    if (strays && header.mirror()) managed.addAll(MirrorSync.managed(root, io));
     if (strays) try (var walk = Files.walk(root)) {
       for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
-        if (path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))) continue;
+        if (!header.mirror() && path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))) continue;
         io.check(path);
         if (!managed.contains(path)) unmanaged.add(path);
       }

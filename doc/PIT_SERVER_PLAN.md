@@ -430,6 +430,10 @@ Each leaves the project working and tested on its own.
 
 Milestone 6, second-half choices:
 
+- Mirror pins use loopback-only `/store/mirror/pin_session` and `/unpin_session` endpoints, not assistant tools, preserving the proposed read-only assistant policy. Configuration and Sync Now use the same local control surface; the HTTP listener starts before the first pass.
+- Format 1 gains additive origin identity, pins and per-session freshness. Transfer journal names start with the session ID, so directory changes do not restart copying. A pass copies a bounded catalog snapshot; open prefixes are reader-checked and remain open. Finished files additionally require the advertised hash. Recorded REV matches are reused on both copies; full matching results are retained additively, older summaries act as recorded manual offsets, and the sync cache advances to 9.
+- Scope is the day window or a named whole event, narrowed by robot serial; pins override both. Size is decimal GB. Newer unpinned sessions have priority. Pins, and content the origin no longer proves it holds, are retained even if that exceeds the cap, with the reason reported. Only manifested files are evicted; no recursive directory deletion can remove a stray. Renaming a directory containing a stray is refused until the person moves the stray out.
+
 - SSH contact history stays local to the store that made the contact; copying a robot's identity and human fields does not copy its `contacts`. A damaged configured store header is reported under `GET /store`'s `unreadable` (`path`, `reason`), alongside the readable `stores`; one damaged neighbor cannot hide the others.
 
 Milestone 6, first-half choices:

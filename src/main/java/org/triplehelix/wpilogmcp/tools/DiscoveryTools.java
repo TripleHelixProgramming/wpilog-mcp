@@ -37,7 +37,7 @@ public final class DiscoveryTools {
    * Registers all discovery tools with the MCP server.
    */
   public static void registerAll(ToolRegistry registry) {
-    registry.registerTool(new GetServerGuideTool());
+    registry.registerTool(new GetServerGuideTool(registry::getServerLocation));
     registry.registerTool(new SuggestToolsTool());
   }
 
@@ -452,6 +452,9 @@ public final class DiscoveryTools {
   }
 
   static class GetServerGuideTool extends ToolBase {
+    private final java.util.function.Supplier<String> location;
+    GetServerGuideTool() { this(() -> ToolRegistry.LOCAL_LOCATION); }
+    GetServerGuideTool(java.util.function.Supplier<String> location) { this.location = location; }
 
     @Override
     public String name() {
@@ -462,7 +465,7 @@ public final class DiscoveryTools {
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
           + "Returns a structured overview of all " + TOOL_CATALOG.size() + " tools organized by category, with usage guidance "
-          + "and anti-patterns to avoid, plus analysis_principles: how to reason about results "
+          + "and anti-patterns to avoid, plus server_location describing this server's local or pit role, and analysis_principles: how to reason about results "
           + "without confabulating (method, confidence calibration, traps, report format). "
           + "This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
@@ -501,6 +504,7 @@ public final class DiscoveryTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
+      result.addProperty("server_location", location.get());
 
       // Overview section
       var overview = new JsonObject();

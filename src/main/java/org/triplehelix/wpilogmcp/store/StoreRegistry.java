@@ -142,7 +142,10 @@ public final class StoreRegistry implements AutoCloseable {
       for (var store : stores.values()) {
         try {
           validate(store.root());
-          if (StoreCatalog.isStore(store.root())) store.inbox().poll(now);
+          if (StoreCatalog.isStore(store.root())
+              && !new StoreFiles(store.root(), security).read(store.root().resolve("store.json"), StoreManifest.Header.class).mirror()) {
+            store.inbox().poll(now);
+          }
         } catch (IOException | RuntimeException e) {
           LoggerFactory.getLogger(StoreRegistry.class).warn("Inbox scan could not finish");
         }

@@ -235,7 +235,7 @@ public final class PullStore implements FileTransfer.Local {
       move(io, source, target, false);
       var files = new ArrayList<>(session.files());
       Matching evidence = match == null ? null : new Matching("by_correlation", match.candidate().file().sha256(),
-          match.result().offsetMicros(), match.result().confidence(), match.result().driftRateNanosPerSec(), match.result().referenceTimeSec(), match.basis());
+          match.result().offsetMicros(), match.result().confidence(), match.result().driftRateNanosPerSec(), match.result().referenceTimeSec(), match.basis(), match.result());
       files.add(new LogFile(StoreFiles.relative(sessionPath.getParent(), target), input.hash(), input.size(), input.kind(),
           new Provenance("pulled", entry.remoteName(), entry.remoteName().substring(entry.remoteName().lastIndexOf('/') + 1), clock.instant().toString(), true, identity.serialNumber()),
           true, input.min(), input.max(), input.start() == null ? session.startedAt() : input.start().toString(),

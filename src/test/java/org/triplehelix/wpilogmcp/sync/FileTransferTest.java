@@ -217,6 +217,6 @@ class FileTransferTest {
       assertTrue(text.contains("64 KiB") || text.contains("64-KiB"), name);
       assertTrue(text.contains("EOF"), name);
     }
-    assertEquals(8, org.triplehelix.wpilogmcp.cache.SyncCacheSerializer.CURRENT_FORMAT_VERSION);
+    assertEquals(9, org.triplehelix.wpilogmcp.cache.SyncCacheSerializer.CURRENT_FORMAT_VERSION);
   }
 }

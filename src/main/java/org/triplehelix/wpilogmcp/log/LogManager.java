@@ -1162,6 +1162,7 @@ public class LogManager {
       if (use == null) return;
       try (use) {
         SynchronizedLogs.Builder builder = new SynchronizedLogs.Builder().wpilog(wpilog);
+        var recorded = recordedStoreOffsets(wpilog);
 
         for (RevLogFileInfo revlogInfo : matchingRevLogs) {
           try {
@@ -1169,6 +1170,13 @@ public class LogManager {
             if (kept != null) {
               addRevLog(builder, kept.revlog(), kept.syncResult(), revlogInfo);
               logger.info("Kept the offset set by hand for {}", revlogInfo.path().getFileName());
+              continue;
+            }
+
+            var offset = recorded.get(revlogInfo.path());
+            if (offset != null) {
+              var revlog = revLogParser.parse(revlogInfo.path());
+              if (overlaps(wpilog, revlog, offset)) addRevLog(builder, revlog, offset, revlogInfo);
               continue;
             }
 
@@ -1331,6 +1339,38 @@ public class LogManager {
 
   /** Wider tolerance when using file modification time as fallback (minutes). */
   private static final int REVLOG_MTIME_TOLERANCE_MINUTES = 30;
+
+  /** Recorded store alignments are facts about these bytes; offline readers must not correlate them again. */
+  private Map<Path, SyncResult> recordedStoreOffsets(LogData wpilog) {
+    var root = StoreCatalog.containing(Path.of(wpilog.path()));
+    if (root.isEmpty()) return Map.of();
+    try {
+      var catalog = StoreCatalog.readManaged(root.get(), securityValidator);
+      var path = Path.of(wpilog.path()).toRealPath();
+      var source = catalog.files().stream().filter(f -> f.path().equals(path)).findFirst();
+      if (source.isEmpty()) return Map.of();
+      var result = new HashMap<Path, SyncResult>();
+      for (var companion : catalog.files()) if (StoreCatalog.isRevCompanion(companion, source.get())) {
+        var match = companion.file().matching();
+        var recorded = match.synchronization();
+        if (recorded == null) recorded = new SyncResult(match.offsetMicros(), match.confidence(),
+            org.triplehelix.wpilogmcp.sync.ConfidenceLevel.fromScore(match.confidence()), List.of(),
+            org.triplehelix.wpilogmcp.sync.SyncMethod.USER_PROVIDED, "Alignment recorded in the store manifest",
+            match.driftRateNanosPerSec(), match.referenceTimeSec());
+        if (recorded.offsetMicros() != match.offsetMicros() || recorded.method() == null || recorded.confidenceLevel() == null
+            || recorded.signalPairs() == null || recorded.confidence() < 0 || recorded.confidence() > 1
+            || recorded.confidence() != match.confidence() || recorded.driftRateNanosPerSec() != match.driftRateNanosPerSec()
+            || recorded.referenceTimeSec() != match.referenceTimeSec()
+            || !Double.isFinite(recorded.confidence()) || !Double.isFinite(recorded.driftRateNanosPerSec())
+            || !Double.isFinite(recorded.referenceTimeSec())) throw new IOException("Invalid recorded store alignment");
+        result.put(companion.path(), recorded);
+      }
+      return Map.copyOf(result);
+    } catch (IOException e) {
+      // A broken recorded association is not permission to guess a new one, especially offline.
+      throw new java.io.UncheckedIOException(e);
+    }
+  }
 
   /**
    * Finds revlog files that match the given wpilog by time overlap.

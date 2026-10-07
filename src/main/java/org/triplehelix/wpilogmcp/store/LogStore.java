@@ -135,6 +135,12 @@ public final class LogStore implements AutoCloseable {
     return root;
   }
 
+  /** Atomic manifest replacement permits nonblocking status reads while a sync is queued. */
+  public StoreManifest.MirrorOrigin mirrorOrigin() throws IOException {
+    if (!StoreCatalog.isStore(root)) return null;
+    return new StoreFiles(root, security).read(root.resolve("store.json"), Header.class).origin();
+  }
+
   @FunctionalInterface interface CaptureOperation<T> { T run(StoreFiles files) throws IOException; }
 
   /** Capture manifest changes share the import queue and the cross-process store lock. */
@@ -145,6 +151,10 @@ public final class LogStore implements AutoCloseable {
   }
 
   <T> CompletableFuture<T> captureAsync(CaptureOperation<T> operation) {
+    return mutate(operation, false);
+  }
+
+  private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror) {
     var result = new CompletableFuture<T>();
     queue.execute(() -> {
       try (var lock = StoreLock.acquire(root, security)) {
@@ -153,6 +163,7 @@ public final class LogStore implements AutoCloseable {
             new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
         var header = io.read(root.resolve("store.json"), Header.class);
         if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
+        if (header.mirror() && !allowMirror) throw new IOException("A mirror is written only by its mirror synchronization");
         result.complete(operation.run(io));
       } catch (Throwable e) { result.completeExceptionally(e); }
     });
@@ -204,9 +215,43 @@ public final class LogStore implements AutoCloseable {
     if (!syncing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("A sync is already running for this store"));
     pending.incrementAndGet();
     try {
-      return captureAsync(io -> new StoreSync(root, io, security, logManager, clock, source, progress).run(url, rateBytes))
+      return mutate(io -> new StoreSync(root, io, security, logManager, clock, source, progress).run(url, rateBytes), true)
           .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
     } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
+  }
+
+  public CompletableFuture<MirrorSync.Result> mirror(org.triplehelix.wpilogmcp.config.MirrorConfig config,
+      Consumer<MirrorSync.Progress> progress) {
+    return mirror(config, progress, java.time.Clock.systemUTC(), StoreSync::http);
+  }
+
+  CompletableFuture<MirrorSync.Result> mirror(org.triplehelix.wpilogmcp.config.MirrorConfig config,
+      Consumer<MirrorSync.Progress> progress, java.time.Clock clock, StoreSync.Source source) {
+    if (!root.equals(config.folder().toAbsolutePath().normalize()) && !sameRealFolder(root, config.folder())) return CompletableFuture.failedFuture(new IOException("mirror.folder differs from this store"));
+    if (!syncing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("A sync is already running for this store"));
+    pending.incrementAndGet();
+    try {
+      return mutate(io -> new MirrorSync(root, io, security, logManager, clock, progress).run(config, source), true)
+          .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
+    } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
+  }
+
+  private static boolean sameRealFolder(Path left, Path right) {
+    try { return left.toRealPath().equals(right.toRealPath()); }
+    catch (IOException e) { return false; }
+  }
+
+  /** Pins are local cache policy, not a change to the origin's session or a robot command. */
+  public CompletableFuture<StoreManifest.MirrorOrigin> pin(String sessionId, boolean pinned) {
+    StoreFiles.component(sessionId);
+    return mutate(io -> {
+      var header = io.read(root.resolve("store.json"), Header.class); var origin = header.origin();
+      if (!header.mirror() || origin == null) throw new IOException("pin_session requires a mirror");
+      var ids = new java.util.TreeSet<>(origin.pinnedSessions());
+      if (pinned) ids.add(sessionId); else ids.remove(sessionId);
+      var updated = new MirrorOrigin(origin.storeId(), origin.url(), origin.lastSync(), List.copyOf(ids), origin.sessions());
+      io.write(root.resolve("store.json"), header.withOrigin(updated)); return updated;
+    }, true);
   }
 
   /** A second caller queues behind the first, including its inspection and identity changes. */
@@ -242,6 +287,9 @@ public final class LogStore implements AutoCloseable {
         try {
           Result imported;
           try (var lock = StoreLock.acquire(root, security)) {
+            if (StoreCatalog.isStore(root) && new StoreFiles(root, security).read(root.resolve("store.json"), Header.class).mirror()) {
+              throw new IOException("A mirror is owned by its synchronization; imports and assignments are refused");
+            }
             notify(progress, new Progress("starting", root, 0, request.paths().size()));
             imported = run(preparation.prepare(request), progress, assignment);
             beforeUnlock.accept(imported);
@@ -590,7 +638,7 @@ public final class LogStore implements AutoCloseable {
       var pair = pairs.get(input.path());
       var matching = pair == null ? null : new Matching("by_correlation", pair.wpilog().hash(),
           pair.sync().offsetMicros(), pair.sync().confidence(), pair.sync().driftRateNanosPerSec(),
-          pair.sync().referenceTimeSec(), "data_alone");
+          pair.sync().referenceTimeSec(), "data_alone", pair.sync());
       placements.add(new Placement(input, destination, matching));
     }
     if (placements.isEmpty()) return;

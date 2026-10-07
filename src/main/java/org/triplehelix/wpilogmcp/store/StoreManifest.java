@@ -16,7 +16,7 @@ public final class StoreManifest {
   public static final int FORMAT_VERSION = 1;
 
   public record Header(int formatVersion, String createdAt, String id, List<Move> moves,
-      Map<String, String> addresses, boolean mirror, List<String> peers) {
+      Map<String, String> addresses, boolean mirror, List<String> peers, MirrorOrigin origin) {
     public Header {
       addresses = addresses == null ? Map.of() : Map.copyOf(addresses);
       peers = peers == null ? List.of() : List.copyOf(peers);
@@ -24,13 +24,27 @@ public final class StoreManifest {
     public Header(int version, String createdAt, String id, List<Move> moves, Map<String, String> addresses) {
       this(version, createdAt, id, moves, addresses, false, List.of());
     }
+    public Header(int version, String createdAt, String id, List<Move> moves, Map<String, String> addresses,
+        boolean mirror, List<String> peers) {
+      this(version, createdAt, id, moves, addresses, mirror, peers, null);
+    }
     public Header(int version, String createdAt, String id, List<Move> moves) {
       this(version, createdAt, id, moves, Map.of());
     }
-    public Header withMoves(List<Move> value) { return new Header(formatVersion, createdAt, id, value, addresses, mirror, peers); }
-    public Header withAddresses(Map<String, String> value) { return new Header(formatVersion, createdAt, id, moves, value, mirror, peers); }
-    public Header withPeers(List<String> value) { return new Header(formatVersion, createdAt, id, moves, addresses, mirror, value); }
+    public Header withMoves(List<Move> value) { return new Header(formatVersion, createdAt, id, value, addresses, mirror, peers, origin); }
+    public Header withAddresses(Map<String, String> value) { return new Header(formatVersion, createdAt, id, moves, value, mirror, peers, origin); }
+    public Header withPeers(List<String> value) { return new Header(formatVersion, createdAt, id, moves, addresses, mirror, value, origin); }
+    public Header withOrigin(MirrorOrigin value) { return new Header(formatVersion, createdAt, id, moves, addresses, true, peers, value); }
   }
+  /** Mirror policy state belongs to the copy; the origin's session manifests remain unchanged. */
+  public record MirrorOrigin(String storeId, String url, String lastSync, List<String> pinnedSessions,
+      Map<String, MirrorSession> sessions) {
+    public MirrorOrigin {
+      pinnedSessions = pinnedSessions == null ? List.of() : List.copyOf(pinnedSessions);
+      sessions = sessions == null ? Map.of() : Map.copyOf(sessions);
+    }
+  }
+  public record MirrorSession(String path, String lastSync, boolean complete, boolean growing) {}
   public record Move(String originalPath, String movedTo, String movedAt) {}
   public record Contact(String address, String hostKeyFingerprint, String seenAt) {}
   public record Robot(String id, String serialNumber, String name, String comments, String basis,
@@ -91,7 +105,13 @@ public final class StoreManifest {
   }
   public record PeerCopy(String storeId, String url, String copiedAt) {}
   public record Matching(String method, String wpilogSha256, long offsetMicros,
-      double confidence, double driftRateNanosPerSec, double referenceTimeSec, String identityBasis) {}
+      double confidence, double driftRateNanosPerSec, double referenceTimeSec, String identityBasis,
+      org.triplehelix.wpilogmcp.sync.SyncResult synchronization) {
+    public Matching(String method, String wpilogSha256, long offsetMicros, double confidence,
+        double driftRateNanosPerSec, double referenceTimeSec, String identityBasis) {
+      this(method, wpilogSha256, offsetMicros, confidence, driftRateNanosPerSec, referenceTimeSec, identityBasis, null);
+    }
+  }
   public record LogFile(String path, String sha256, long sizeBytes, String kind,
       Provenance provenance, boolean verified, double minTimestampSec, double maxTimestampSec,
       String startedAt, String endedAt, String startBasis, boolean truncated, Matching matching,

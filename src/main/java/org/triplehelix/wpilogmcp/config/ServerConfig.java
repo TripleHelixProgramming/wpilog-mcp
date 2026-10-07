@@ -34,11 +34,20 @@ public record ServerConfig(
     String exportdir,
     Integer scandepth,
     Integer idleExitMinutes,
-    CaptureConfig capture
+    CaptureConfig capture,
+    MirrorConfig mirror
 ) {
 
   public ServerConfig {
     logdirs = logdirs == null ? null : List.copyOf(logdirs);
+  }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, capture, null);
   }
 
   public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
@@ -52,6 +61,7 @@ public record ServerConfig(
   public List<String> effectiveLogdirs() {
     var paths = new java.util.LinkedHashSet<String>(logdirs == null ? List.of() : logdirs);
     if (capture != null) paths.add(capture.store().toString());
+    if (mirror != null) paths.add(mirror.folder().toString());
     return List.copyOf(paths);
   }
 
@@ -111,7 +121,8 @@ public record ServerConfig(
         exportdir != null ? exportdir : defaults.exportdir(),
         scandepth != null ? scandepth : defaults.scandepth(),
         idleExitMinutes != null ? idleExitMinutes : defaults.idleExitMinutes(),
-        capture != null ? capture : defaults.capture()
+        capture != null ? capture : defaults.capture(),
+        mirror != null ? mirror : defaults.mirror()
     );
   }
 }

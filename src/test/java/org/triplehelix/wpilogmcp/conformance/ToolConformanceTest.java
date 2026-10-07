@@ -106,6 +106,23 @@ class ToolConformanceTest {
       if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.REFUSED) throw new IOException(result.detail());
     }
     if (transfer.manifest().files().stream().noneMatch(org.triplehelix.wpilogmcp.sync.PullManifest.Entry::verified)) throw new IOException("Listing fixture did not verify");
+    // A real mirror makes its freshness fields observable to the same description checks.
+    var mirrorRoot = dir.resolve("listing-mirror");
+    if (Files.exists(mirrorRoot)) {
+      logManager.release(mirrorRoot);
+      try (var paths = Files.walk(mirrorRoot)) {
+        for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
+      }
+    }
+    var originHttp = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0);
+    originHttp.setStoreDirectories(java.util.Set.of(identityStore.root())); originHttp.start();
+    try {
+      var mirror = logManager.stores().store(mirrorRoot);
+      var config = new org.triplehelix.wpilogmcp.config.MirrorConfig("http://127.0.0.1:" + originHttp.getPort(),
+          mirror.root(), 365_000, 20_000_000_000L, List.of(), List.of(), 30, 0);
+      var copied = mirror.mirror(config, ignored -> {}).get(30, TimeUnit.SECONDS);
+      if (!copied.state().equals("synchronized")) throw new IOException(copied.toString());
+    } finally { originHttp.stop(); }
     exportDir = dir.resolveSibling("test-fixtures-export").toAbsolutePath();
     Files.createDirectories(exportDir);
     savedExportDir = ExportTools.getExportDirectory();
