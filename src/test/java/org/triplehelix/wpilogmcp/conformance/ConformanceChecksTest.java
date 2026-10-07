@@ -20,6 +20,14 @@ class ConformanceChecksTest {
     return JsonParser.parseString(s).getAsJsonObject();
   }
 
+  @Test void aLiveWaitTimeoutIsAnObservedAbsenceNotAnEmptyAnalysis() {
+    var result = json("{\"success\":true,\"status\":\"ok\",\"changed\":false,\"inputs\":{\"session\":\"/capture.wpilog\"}}");
+    assertEquals(java.util.List.of(), ConformanceChecks.check(result, null, false, "wait_for_change", new JsonObject()));
+    assertTrue(ConformanceChecks.check(result, null, false, "find_peaks", new JsonObject()).contains(Check.SILENT_EMPTY));
+    result.remove("status");
+    assertTrue(ConformanceChecks.check(result, null, false, "wait_for_change", new JsonObject()).contains(Check.STATUS));
+  }
+
   @Test
   @DisplayName("labels and echoed arguments are not findings: such a success is silent-empty")
   void labelsAndEchoesAreNotFindings() {

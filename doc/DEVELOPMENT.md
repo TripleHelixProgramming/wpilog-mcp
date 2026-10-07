@@ -477,6 +477,34 @@ refusal reporting and uncertain POST behavior. Manually check Upload Logs to Pit
 both supported VS Code versions, including the picker, several files, a duplicate, a refusal
 and a network interruption; real VS Code has not been available for this work.
 
+### Live tool checks
+
+`LiveToolsTest` crosses HTTP MCP with the production capture service, a loopback gateway and
+injected robot/calendar clocks. It pins ages, first-publication and per-session waits, exact
+record bytes, thinning/exclusion, costs and session limits, closed summaries, missing topics,
+bad arguments, shutdown/unannounce registration ordering, and import visibility while the store
+queue is blocked. Description outputs are checked against these actual results. `LiveReplayTest` replays every generated fixture,
+compares current values and timestamps with the independent reader, counts WPILOG record bytes,
+and repeats calls for determinism. `LiveCaptureConformanceTest` continues to compare every
+ordinary log tool on the live prefix and finished file. The only silent-empty exception is
+`wait_for_change`'s specified successful `changed:false` timeout; empty analyses still fail.
+
+Run `./gradlew test --tests '*Live*Test' --tests '*ClaimChecksTest'`. The existing
+`-PconformanceLogDir=/path/to/logs` also feeds the live replay's relational checks, with path-only
+failures and reports under `build/reports/live-tools/`; no real values are written into tests
+or docs. Both stress entry points add concurrent HTTP live queries during fixture replay.
+Recovery checks plant stale summaries and require unknown counts after both successful and
+failed file recovery. The responses scenarios include all three capture-only tools; the ordinary reference server
+answers that capture is not enabled.
+
+`PitCredentialTest` uses synthetic credentials and real HTTP to check lease precedence,
+removal/expiry, exact endpoint forwarding, origin-scoped store authorization, and network/Origin
+refusals. Node tests cover SecretStorage key selection, headers on MCP/data/upload/polling,
+registration and secret-free Claude arguments. Real VS Code remains unverified: on the oldest
+supported and current releases, exercise Set/Clear Pit Proxy Credential, a proxy login from
+agents/Logs/plots/uploads/mirror, Claude re-registration, lease expiry after closing the window,
+and offline mirror access through `servers.yaml`.
+
 ## Changing or Adding a Tool
 
 A tool is more than its code: agents read its description and schema, and several tests hold them to what the code does. When you add a tool or change what one takes or returns:

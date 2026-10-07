@@ -99,6 +99,20 @@ final class ToolArguments {
     String toolName = tool.name();
 
     switch (toolName) {
+      case "get_latest_values", "wait_for_change" -> {
+        var names = log == null ? List.<String>of() : log.entries().keySet().stream().sorted().limit(3).toList();
+        var args = base.deepCopy();
+        if (toolName.equals("get_latest_values")) {
+          var entries = new com.google.gson.JsonArray(); names.forEach(entries::add);
+          if (entries.isEmpty()) entries.add("/Missing/Entry");
+          args.add("entries", entries);
+        } else {
+          args.addProperty("entry", names.isEmpty() ? "/Missing/Entry" : names.get(0));
+          args.addProperty("timeout_ms", 0);
+        }
+        return List.of(new Variant("latest-or-timeout", args));
+      }
+
       case "get_entry_info", "read_entry", "get_statistics", "detect_anomalies", "find_peaks",
           "rate_of_change", "find_condition", "export_csv" -> {
         for (var kind : Kind.values()) {

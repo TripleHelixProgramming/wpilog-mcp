@@ -737,6 +737,33 @@ location / {
 }
 ```
 
+### Live session tools and a proxy login
+
+A server with `capture` enabled adds `list_sessions`, `get_latest_values`, and
+`wait_for_change` to its Live tool category. The first lists sessions and recorded value costs
+(top ten topics, records and bytes, rates over the last minute); the others query and wait on
+NT4 publications in memory. `inputs.session` names the capture for ordinary log tools.
+Counts update on the 250 ms flush tick. Robot-clock timestamps and ages describe publication,
+not a measurement requested by the caller. [TOOLS.md](TOOLS.md#live-tools) defines the fields,
+missing-topic results, and the 30-second maximum wait.
+
+For the reverse proxy's Basic login, the extension's **Set Pit Proxy Credential** command
+keeps the credential in SecretStorage, scoped to the pit URL's HTTP origin. It sends it to
+`POST /pit-credential` on the local loopback server for its live MCP session, like the TBA
+key. The body is `{url, authorization}`; null authorization removes that session's lease.
+Session deletion or expiry also removes it. Nothing persists it in the store, YAML, a URL
+or a process command. Use HTTPS when carrying a proxy password across the network.
+
+The local mirror and peer HTTP reader use the credential only for that origin and never
+follow a redirect. Claude's URL bridge uses local `/pit-mcp?url=<encoded-pit-MCP-URL>` so
+its registration contains no password. Forwarding requires an active lease for exactly that
+MCP endpoint; it and registration are refused on a listener bound off loopback and retain
+the Origin check. Re-register Claude after setting or clearing the credential, or changing
+the local server's port. With VS Code closed, no window leases the credential: the configured
+local mirror remains available for offline analysis, but password-protected origin access
+requires the credential's window to be open. This is a client of the team's proxy, not new
+authentication in the pit server.
+
 ## Containerization
 
 You can run wpilog-mcp in a Docker container for a team-shared or cloud-hosted server. This `Dockerfile` uses a multi-stage build to keep the runtime image small.

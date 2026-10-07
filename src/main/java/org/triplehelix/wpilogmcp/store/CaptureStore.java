@@ -53,7 +53,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private record Update(CaptureWriter.Session owner, String name, boolean open, Instant endedAt,
       long size, double min, double max, List<CaptureWriter.ClosedFile> files,
       String event, String matchType, Integer matchNumber, Integer teamNumber, String endReason,
-      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, List<IdentityConflict> conflicts) {}
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, List<IdentityConflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats statistics) {}
   private record Pending(Update update, CompletableFuture<Void> done) {}
   private final AtomicReference<Pending> pending = new AtomicReference<>();
   private final AtomicBoolean queued = new AtomicBoolean();
@@ -61,6 +61,12 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private volatile CompletableFuture<Void> completion = CompletableFuture.completedFuture(null);
   private long submittedAtUs;
   private org.triplehelix.wpilogmcp.capture.context.DeviceIdentity recordedIdentity;
+  /** The NT4 loop publishes these facts before any asynchronous manifest work. */
+  public record Status(Path path, Instant startedAt, Instant endedAt, String address, boolean open,
+      String endReason, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity,
+      org.triplehelix.wpilogmcp.capture.CaptureStats statistics, String event, String matchType, Integer matchNumber) {}
+  private java.util.function.Consumer<Status> status = ignored -> {};
+  public void onStatus(java.util.function.Consumer<Status> listener) { status = listener; }
   private BiConsumer<Path, Path> moved = (from, to) -> {};
 
   CaptureStore(LogStore store, LogManager manager, Clock clock) { this(store, manager, clock, Files::move); }
@@ -131,7 +137,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
           old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
           new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
               previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
-          old.deviceIdentity(), old.identityConflicts(), old.conflicts()));
+          old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats()));
       return path;
     });
   }
@@ -187,6 +193,9 @@ public final class CaptureStore implements CaptureWriter.Observer {
             capture.path().resolveSibling(path), serial, conflict.deviceSerial());
       }
     });
+    var statistics = capture.statistics();
+    status.accept(new Status(capture.path(), capture.startedAt(), capture.endedAt(), capture.address(), capture.open(),
+        capture.endReason(), capture.identity(), statistics, event, matchType, matchNumber));
     long now = capture.observedAtUs();
     boolean due = factChanged || now - submittedAtUs >= UPDATE_PERIOD_US;
     if (!due && pending.get() == null) return;
@@ -194,7 +203,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var snapshot = new Update(capture, capture.path().getFileName().toString(), capture.open(),
         capture.open() ? clock.instant() : capture.endedAt(), capture.sizeBytes(),
         capture.minTimestampUs() / 1_000_000.0, capture.maxTimestampUs() / 1_000_000.0,
-        capture.files(), event, matchType, matchNumber, teamNumber, capture.endReason(), capture.identity(), List.copyOf(conflicts));
+        capture.files(), event, matchType, matchNumber, teamNumber, capture.endReason(), capture.identity(), List.copyOf(conflicts), statistics);
     var next = pending.updateAndGet(old -> new Pending(snapshot,
         old == null ? new CompletableFuture<>() : old.done()));
     completion = next.done();
@@ -263,7 +272,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var session = new Session(old.id(), old.startedAt(), ended,
         old.startBasis(), update.event() == null ? old.event() : update.event(), update.matchType() == null ? old.matchType() : update.matchType(),
         update.matchNumber() == null ? old.matchNumber() : update.matchNumber(), update.teamNumber() == null ? old.teamNumber() : update.teamNumber(),
-        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts());
+        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts(), update.statistics());
     io.write(path, session); writes.incrementAndGet();
     // Keep the directory stable while its writer can open another rollover file or remap.
     // Creation of a resumed capture is a queue barrier, so it cannot race this close-time move.

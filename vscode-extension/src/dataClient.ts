@@ -1,3 +1,4 @@
+import { HttpHeaders, noHeaders } from "./pitCredential";
 /**
  * The data client: fetches an Arrow stream from a server's data endpoint and hands its bytes to
  * whoever asked, the webview above all, which opens them with its own reader. The extension
@@ -58,14 +59,15 @@ export class DataClient {
    */
   constructor(
     private readonly maxEntries = 32,
-    private readonly maxBytes = 256 * 1024 * 1024
+    private readonly maxBytes = 256 * 1024 * 1024,
+    private readonly headersFor: HttpHeaders = noHeaders
   ) {}
 
   /** Fetches a request's stream from the server whose MCP endpoint is `mcpUrl`. */
   async fetch(mcpUrl: string, request: DataRequest): Promise<DataResponse> {
     const key = `${mcpUrl} ${dataQuery(request)}`;
     const known = this.remembered.get(key);
-    const headers: Record<string, string> = { Accept: "application/vnd.apache.arrow.stream, application/json" };
+    const headers: Record<string, string> = { ...await this.headersFor(mcpUrl), Accept: "application/vnd.apache.arrow.stream, application/json" };
     if (known) headers["If-None-Match"] = known.etag;
     const url = dataUrl(mcpUrl, request);
     const response = await this.get(url, headers);

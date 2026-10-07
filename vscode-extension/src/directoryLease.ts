@@ -14,6 +14,7 @@ export interface SessionRegistration {
   directories: DirectoryRegistration;
   /** Sent only to /tba-key, never to a tool, a command, or a file. Null clears this session's key. */
   key: string | null;
+  pitCredential?: { url: string; authorization: string | null };
 }
 
 /** Preserve User roots; projects add their own roots and resolve inherited relative settings locally. */

@@ -216,7 +216,7 @@ public final class StoreSync {
       path = root.resolve("robots").resolve(robot.id()).resolve("sessions").resolve(day).resolve(time + "_" + remote.id()).resolve("session.json");
       if (Files.exists(io.check(path))) throw new IOException("Session destination already exists outside the catalog");
       merged = new Session(remote.id(), remote.startedAt(), remote.endedAt(), remote.startBasis(), remote.event(), remote.matchType(),
-          remote.matchNumber(), remote.teamNumber(), List.of(), null, remote.endReason(), remote.deviceIdentity(), remote.identityConflicts(), remote.conflicts());
+          remote.matchNumber(), remote.teamNumber(), List.of(), null, remote.endReason(), remote.deviceIdentity(), remote.identityConflicts(), remote.conflicts(), remote.captureStats());
       created.add(new Created(peer.url(), merged.id(), path.getParent()));
     } else {
       path = candidates.get(0).getKey(); var local = candidates.get(0).getValue().session();
@@ -225,7 +225,7 @@ public final class StoreSync {
     for (var conflict : disagreements) conflicts.add(new Disagreement(merged.id(), conflict));
     merged = new Session(merged.id(), merged.startedAt(), merged.endedAt(), merged.startBasis(), merged.event(), merged.matchType(),
         merged.matchNumber(), merged.teamNumber(), merged.files(), merged.openCapture(), merged.endReason(), merged.deviceIdentity(),
-        merged.identityConflicts(), union(merged.conflicts(), disagreements));
+        merged.identityConflicts(), union(merged.conflicts(), disagreements), merged.captureStats());
     io.write(path, merged); sessions.put(path, new StoreCatalog.SessionDirectory(path.getParent(), localRobot, merged));
     return path;
   }
@@ -238,7 +238,7 @@ public final class StoreSync {
     return new Session(id, earlier ? remote.startedAt() : local.startedAt(), end, earlier ? remote.startBasis() : local.startBasis(),
         fill(local.event(), remote.event()), fill(local.matchType(), remote.matchType()), local.matchNumber() == null ? remote.matchNumber() : local.matchNumber(),
         local.teamNumber() == null ? remote.teamNumber() : local.teamNumber(), files, local.openCapture(), local.endReason(),
-        local.deviceIdentity() == null ? remote.deviceIdentity() : local.deviceIdentity(), union(local.identityConflicts(), remote.identityConflicts()), union(local.conflicts(), remote.conflicts()));
+        local.deviceIdentity() == null ? remote.deviceIdentity() : local.deviceIdentity(), union(local.identityConflicts(), remote.identityConflicts()), union(local.conflicts(), remote.conflicts()), local.captureStats() == null ? remote.captureStats() : local.captureStats());
   }
 
   /** Move closed fragments as directories, retaining their manifests and every old path alias. */

@@ -1,3 +1,4 @@
+import { HttpHeaders, noHeaders } from "../pitCredential";
 /** Imports run in the daemon that owns the store. Retrying an uncertain POST could duplicate
  * work, so only an explicit 503 admission refusal is retried; job polling never resubmits. */
 import * as http from "http";
@@ -57,11 +58,12 @@ export type Exchange = { status: number; headers: http.IncomingHttpHeaders; body
 type Pause = (ms: number) => Promise<void>;
 const pause: Pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function exchange(url: URL, body?: string): Promise<Exchange> {
+async function exchange(url: URL, body?: string, headersFor: HttpHeaders = noHeaders): Promise<Exchange> {
+  const authorization = await headersFor(url.href);
   return new Promise((resolve, reject) => {
     const send = url.protocol === "https:" ? https : http;
     const request = send.request(url, { method: body === undefined ? "GET" : "POST", timeout: 30_000,
-      headers: body === undefined ? { Accept: "application/json" } : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } }, response => {
+      headers: { ...authorization, ...(body === undefined ? { Accept: "application/json" } : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }) } }, response => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(chunk));
       response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") }));
@@ -82,9 +84,9 @@ export function refusal(response: Exchange): ImportError {
 }
 
 /** Bound retries of an explicit busy response, preserving its exact words if it stays busy. */
-async function admitted(url: URL, body: string | undefined, sleep: Pause): Promise<Exchange> {
+async function admitted(url: URL, body: string | undefined, sleep: Pause, headersFor: HttpHeaders = noHeaders): Promise<Exchange> {
   for (let attempt = 0; ; attempt++) {
-    const response = await exchange(url, body);
+    const response = await exchange(url, body, headersFor);
     if (response.status !== 503) return response;
     const header = response.headers["retry-after"];
     const seconds = typeof header === "string" && /^\d+$/.test(header) ? Number(header) : undefined;
@@ -103,7 +105,7 @@ export async function runImport(mcpUrl: string, request: ImportRequest,
 }
 
 export async function pollImport(endpoint: URL, accepted: Exchange, report: (job: ImportJob) => void,
-  sleep: Pause = pause): Promise<ImportResult> {
+  sleep: Pause = pause, headersFor: HttpHeaders = noHeaders): Promise<ImportResult> {
   if (accepted.status !== 202) throw refusal(accepted);
   const body = JSON.parse(accepted.body) as { job_id: string; url: string };
   const poll = new URL(body.url, endpoint);
@@ -111,7 +113,7 @@ export async function pollImport(endpoint: URL, accepted: Exchange, report: (job
     throw new ImportError("The server returned an invalid import job URL");
   }
   for (;;) {
-    const response = await admitted(poll, undefined, sleep);
+    const response = await admitted(poll, undefined, sleep, headersFor);
     if (response.status !== 200) throw refusal(response);
     const job = JSON.parse(response.body) as ImportJob;
     report(job);

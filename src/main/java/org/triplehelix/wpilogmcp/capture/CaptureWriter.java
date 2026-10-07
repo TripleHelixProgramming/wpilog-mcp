@@ -74,6 +74,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private volatile Path path;
     private final Instant startedAt;
     private final String address;
+    private final CapturePolicy policy;
     private Instant endedAt;
     private boolean open;
     private String endReason;
@@ -83,8 +84,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private final List<ClosedFile> files = new ArrayList<>();
     private final Map<String, TopicCost> costs = new LinkedHashMap<>();
     private volatile Map<String, TopicCost.Snapshot> closedCosts = Map.of();
-    private Session(Path path, Instant startedAt, String address) {
-      this.path = path; this.startedAt = startedAt; this.address = address;
+    private Session(Path path, Instant startedAt, String address, CapturePolicy policy) {
+      this.path = path; this.startedAt = startedAt; this.address = address; this.policy = policy;
     }
     public Path path() { return path; }
     public void relocate(Path path) { this.path = path; }
@@ -101,6 +102,13 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     public List<ClosedFile> files() { return List.copyOf(files); }
     /** Accounting through the last closed file, safe to inspect after the listener has stopped. */
     public Map<String, TopicCost.Snapshot> closedCosts() { return closedCosts; }
+    /** Only the writer calls this; consumers receive an immutable snapshot. */
+    public CaptureStats statistics() {
+      var values = new java.util.TreeMap<String, TopicCost.Snapshot>();
+      costs.forEach((name, cost) -> values.put(name, cost.snapshot(observedAtUs)));
+      return new CaptureStats(values.size(), values.values().stream().mapToLong(TopicCost.Snapshot::records).sum(),
+          values.values().stream().mapToLong(TopicCost.Snapshot::bytes).sum(), values, policy.exclude(), policy.thinUs());
+    }
   }
 
   private static final class Topic {
@@ -184,7 +192,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
           var now = wallClock.instant();
           session = null; // A failed new create must not overwrite the previous session's reason.
           var device = identity != null && identity.address().equals(address) ? identity : null;
-          session = new Session(observer.create(address, now, null, device), now, address);
+          session = new Session(observer.create(address, now, null, device), now, address, policy);
           session.identity = device;
         } else {
           if (identity != null && identity.address().equals(address)) session.identity = identity;

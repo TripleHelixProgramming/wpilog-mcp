@@ -36,7 +36,7 @@ final class RegistrationEndpoint {
   void handle(HttpExchange exchange) throws IOException {
     var route = exchange.getRequestURI().getPath();
     boolean directories = route.equals("/directories");
-    if (!directories && !route.equals("/tba-key")) {
+    if (!directories && !route.equals("/tba-key") && !route.equals("/pit-credential")) {
       reply(exchange, 404, "Unknown registration endpoint");
       return;
     }
@@ -92,6 +92,13 @@ final class RegistrationEndpoint {
             LoggerFactory.getLogger(RegistrationEndpoint.class).info(
                 "connect ignored the project file's servers section; the shared server uses its home configuration");
           }
+        } else if (route.equals("/pit-credential")) {
+          var url = body.get("url"); var auth = body.get("authorization");
+          if (url == null || !url.isJsonPrimitive() || !url.getAsJsonPrimitive().isString()
+              || auth == null || !(auth.isJsonNull() || auth.isJsonPrimitive() && auth.getAsJsonPrimitive().isString())) {
+            throw new IllegalArgumentException("Pit registration requires url and authorization (string or null)");
+          }
+          updated = sessions.update(id, session -> leases.registerPit(id, url.getAsString(), auth.isJsonNull() ? null : auth.getAsString()));
         } else {
           if (!body.has("key")) {
             throw new IllegalArgumentException("key must be a string or null");

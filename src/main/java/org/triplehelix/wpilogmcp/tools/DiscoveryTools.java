@@ -37,8 +37,10 @@ public final class DiscoveryTools {
    * Registers all discovery tools with the MCP server.
    */
   public static void registerAll(ToolRegistry registry) {
-    registry.registerTool(new GetServerGuideTool(registry::getServerLocation));
-    registry.registerTool(new SuggestToolsTool());
+    java.util.function.Predicate<String> available = name -> !List.of("list_sessions", "get_latest_values", "wait_for_change").contains(name)
+        || registry.getTool(name) != null;
+    registry.registerTool(new GetServerGuideTool(registry::getServerLocation, available));
+    registry.registerTool(new SuggestToolsTool(available));
   }
 
   // ==================== TOOL CATALOG ====================
@@ -71,6 +73,16 @@ public final class DiscoveryTools {
 
   private static List<ToolInfo> buildToolCatalog() {
     var tools = new ArrayList<ToolInfo>();
+
+    tools.add(new ToolInfo("list_sessions", "live", "Current and recent pit sessions, recorder costs and matched imports",
+        List.of("live", "session", "connected", "capture", "cost"), List.of("List the current robot session"), false,
+        List.of("get_latest_values", "list_available_logs")));
+    tools.add(new ToolInfo("get_latest_values", "live", "Latest published NT4 values with robot timestamps and ages",
+        List.of("live", "latest", "value", "age"), List.of("Read the latest battery publication"), false,
+        List.of("list_sessions", "wait_for_change")));
+    tools.add(new ToolInfo("wait_for_change", "live", "Wait for the next topic publication with a bounded timeout",
+        List.of("live", "wait", "change"), List.of("Wait for the next publication of a named topic"), false,
+        List.of("get_latest_values")));
 
     // === CORE TOOLS ===
     tools.add(new ToolInfo("list_available_logs", "core",
@@ -390,6 +402,8 @@ public final class DiscoveryTools {
 
   private static List<CategoryInfo> buildCategories() {
     return List.of(
+        new CategoryInfo("live", "Live capture sessions and publications",
+            "A stale publication does not prove the robot stopped; use logged history for analysis"),
         new CategoryInfo("core",
             "Log loading and data access. Start here to discover available data.",
             "Don't manually parse log files—use list_entries and read_entry."),
@@ -454,7 +468,10 @@ public final class DiscoveryTools {
   static class GetServerGuideTool extends ToolBase {
     private final java.util.function.Supplier<String> location;
     GetServerGuideTool() { this(() -> ToolRegistry.LOCAL_LOCATION); }
-    GetServerGuideTool(java.util.function.Supplier<String> location) { this.location = location; }
+    private final java.util.function.Predicate<String> available;
+    GetServerGuideTool(java.util.function.Supplier<String> location) { this(location, name -> !name.equals("list_sessions") && !name.equals("get_latest_values") && !name.equals("wait_for_change")); }
+    GetServerGuideTool(java.util.function.Supplier<String> location, java.util.function.Predicate<String> available) { this.location = location; this.available = available; }
+    private List<ToolInfo> catalog() { return TOOL_CATALOG.stream().filter(t -> available.test(t.name())).toList(); }
 
     @Override
     public String name() {
@@ -464,7 +481,7 @@ public final class DiscoveryTools {
     @Override
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
-          + "Returns a structured overview of all " + TOOL_CATALOG.size() + " tools organized by category, with usage guidance "
+          + "Returns a structured overview of all " + catalog().size() + " tools organized by category, with usage guidance "
           + "and anti-patterns to avoid, plus server_location describing this server's local or pit role, and analysis_principles: how to reason about results "
           + "without confabulating (method, confidence calibration, traps, report format). "
           + "This server has extensive built-in analysis—don't write custom "
@@ -484,7 +501,7 @@ public final class DiscoveryTools {
     public JsonObject inputSchema() {
       return new SchemaBuilder()
           .addProperty("category", "string",
-              "Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery",
+              "Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery, live (capture only)",
               false)
           .addProperty("include_examples", "boolean",
               "Include example use cases for each tool (default: true)", false)
@@ -510,7 +527,7 @@ public final class DiscoveryTools {
       var overview = new JsonObject();
       overview.addProperty("server_name", "wpilog-mcp");
       overview.addProperty("version", org.triplehelix.wpilogmcp.Version.VERSION);
-      overview.addProperty("total_tools", TOOL_CATALOG.size());
+      overview.addProperty("total_tools", catalog().size());
       overview.addProperty("purpose",
           "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)");
       result.add("overview", overview);
@@ -519,7 +536,7 @@ public final class DiscoveryTools {
       var guidance = new JsonObject();
       guidance.addProperty("primary_rule",
           "ALWAYS check for a built-in tool before writing custom analysis code. "
-          + "This server has " + TOOL_CATALOG.size() + " specialized tools covering statistics, power analysis, "
+          + "This server has " + catalog().size() + " specialized tools covering statistics, power analysis, "
           + "swerve diagnostics, cycle detection, battery health prediction, and more.");
       guidance.addProperty("tba_tip",
           "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. "
@@ -580,6 +597,7 @@ public final class DiscoveryTools {
           continue;
         }
 
+        if (catalog().stream().noneMatch(t -> t.category().equals(category.name()))) continue;
         var catObj = new JsonObject();
         catObj.addProperty("name", category.name());
         catObj.addProperty("description", category.description());
@@ -587,7 +605,7 @@ public final class DiscoveryTools {
 
         // Tools in this category
         var toolsArray = new JsonArray();
-        for (var toolInfo : TOOL_CATALOG) {
+        for (var toolInfo : catalog()) {
           if (!toolInfo.category().equals(category.name())) continue;
 
           var toolObj = new JsonObject();
@@ -656,6 +674,9 @@ public final class DiscoveryTools {
    * Recommends tools based on a natural language task description.
    */
   static class SuggestToolsTool extends ToolBase {
+    private final java.util.function.Predicate<String> available;
+    SuggestToolsTool() { this(name -> !name.equals("list_sessions") && !name.equals("get_latest_values") && !name.equals("wait_for_change")); }
+    SuggestToolsTool(java.util.function.Predicate<String> available) { this.available = available; }
 
     @Override
     public String name() {
@@ -688,6 +709,7 @@ public final class DiscoveryTools {
       // Score each tool based on keyword matches
       var scores = new HashMap<ToolInfo, Integer>();
       for (var tool : TOOL_CATALOG) {
+        if (!available.test(tool.name())) continue;
         int score = 0;
 
         // Check keywords

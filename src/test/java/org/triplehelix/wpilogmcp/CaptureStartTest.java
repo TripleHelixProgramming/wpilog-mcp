@@ -60,6 +60,11 @@ class CaptureStartTest {
           .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}"))
           .build(), HttpResponse.BodyHandlers.ofString());
       assertEquals(200, init.statusCode()); String session = init.headers().firstValue("Mcp-Session-Id").orElseThrow();
+      var tools = http.send(HttpRequest.newBuilder(endpoint).header("Mcp-Session-Id", session)
+          .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/list\"}")).build(), HttpResponse.BodyHandlers.ofString());
+      var names = JsonParser.parseString(tools.body()).getAsJsonObject().getAsJsonObject("result")
+          .getAsJsonArray("tools").asList().stream().map(t -> t.getAsJsonObject().get("name").getAsString()).toList();
+      assertTrue(names.containsAll(List.of("list_sessions", "get_latest_values", "wait_for_change")), names.toString());
       var request = HttpRequest.newBuilder(endpoint).timeout(Duration.ofSeconds(5)).header("Mcp-Session-Id", session)
           .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_available_logs\",\"arguments\":{}}}")).build();
       var empty = result(http.send(request, HttpResponse.BodyHandlers.ofString()).body());

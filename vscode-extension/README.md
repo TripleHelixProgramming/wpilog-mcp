@@ -226,3 +226,23 @@ Before uninstalling, use **Clear The Blue Alliance API Key** if you want it remo
 - [Main README](../README.md): overview and tools
 - [Standalone guide](../doc/STANDALONE.md): configuration, installation, and other clients
 - [Tool reference](../doc/TOOLS.md): parameters and result contracts
+
+### Live tools and a pit proxy password
+
+A capture-enabled pit server gives agents `list_sessions` (current/recent sessions, recorder
+costs and matched imports), `get_latest_values` (named publications with robot timestamps and
+ages), and `wait_for_change` (first publication, at most 30 seconds). Ordinary log tools use the
+capture path returned in `inputs.session`; the local mirror has the same finished file answers.
+
+**Set Pit Proxy Credential** (`wpilog-mcp.setPitProxyCredential`) asks for the reverse proxy's
+username and masked password. The credential stays in SecretStorage by HTTP origin, never in
+settings or `.mcp.json`. MCP, plots, uploads and mirror reads use it for that origin only, with
+no redirects. Use HTTPS across the network. **Clear Pit Proxy Credential**
+(`wpilog-mcp.clearPitProxyCredential`) removes it and its local lease.
+
+After setting or clearing one, run **Register Pit Server with Claude Code** again. With a
+credential, that registration uses a secret-free URL through the local server; it needs the
+extension's window open to hold the in-memory credential lease. Re-register if the local server
+port changes. After VS Code closes, analyze the offline mirror through its `servers.yaml`
+mirror block (preferred for regular terminal use) or an explicit bridge `--logdir`; a window's
+folder lease alone does not survive. A proxy password is not put in permanent YAML.

@@ -136,6 +136,20 @@ class CaptureRecoveryTest {
     startup(root); assertNull(manifest(file).openCapture());
   }
 
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void anAbandonedRecorderSummaryIsNotPresentedAsFinalCounts(boolean readable) throws Exception {
+    var root = directory.resolve("store"); var file = plant(root, readable, false);
+    var old = manifest(file);
+    var stale = new CaptureStats(1, 1, 14, java.util.Map.of(), List.of(), java.util.Map.of());
+    Files.writeString(file.resolveSibling("session.json"), StoreJson.JSON.toJson(new Session(old.id(), old.startedAt(),
+        old.endedAt(), old.startBasis(), old.event(), old.matchType(), old.matchNumber(), old.teamNumber(),
+        old.files(), old.openCapture(), null, old.deviceIdentity(), old.identityConflicts(), old.conflicts(), stale)));
+    startup(root);
+    assertNull(manifest(file).captureStats(), "The last queued summary can predate records flushed before a crash");
+    assertEquals(!readable, manifest(file).openCapture() != null);
+  }
+
   @Test void startupWaitsBehindTheStoreQueueBeforeStartingTheClient() throws Exception {
     var root = directory.resolve("store"); var file = plant(root, true, false);
     var manager = LogManager.getInstance(); var entered = new java.util.concurrent.CountDownLatch(1);

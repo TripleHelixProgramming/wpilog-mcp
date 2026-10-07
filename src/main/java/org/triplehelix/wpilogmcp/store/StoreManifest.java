@@ -59,10 +59,17 @@ public final class StoreManifest {
   public record Session(String id, String startedAt, String endedAt, String startBasis,
       String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
       OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
-      List<Conflict> conflicts) {
+      List<Conflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats captureStats) {
     public Session {
       identityConflicts = identityConflicts == null ? List.of() : List.copyOf(identityConflicts);
       conflicts = conflicts == null ? List.of() : List.copyOf(conflicts);
+    }
+    public Session(String id, String startedAt, String endedAt, String startBasis,
+        String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
+        OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
+        List<Conflict> conflicts) {
+      this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
+          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, null);
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
@@ -72,7 +79,7 @@ public final class StoreManifest {
     }
     public Session withFiles(List<LogFile> value) {
       return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber,
-          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts);
+          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats);
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,

@@ -61,6 +61,7 @@ class ToolResponsesDoc {
   private static Map<String, String> titles() {
     var titles = new LinkedHashMap<String, String>();
     titles.put("discovery", "Discovery Tools");
+    titles.put("live", "Live Tools");
     titles.put("core", "Core Tools");
     titles.put("query", "Query Tools");
     titles.put("statistics", "Statistics Tools");
@@ -75,12 +76,10 @@ class ToolResponsesDoc {
   /** Every tool the server registers, by name. */
   static Map<String, Tool> registeredTools() {
     var byName = new LinkedHashMap<String, Tool>();
-    WpilogTools.registerAll(new ToolRegistry() {
-      @Override
-      public void registerTool(Tool tool) {
-        byName.put(tool.name(), tool);
-      }
-    });
+    var registry = new ToolRegistry();
+    WpilogTools.registerAll(registry);
+    org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(registry, null);
+    registry.getToolNames().stream().sorted().forEach(name -> byName.put(name, registry.getTool(name)));
     return byName;
   }
 

@@ -1,3 +1,4 @@
+import { HttpHeaders, noHeaders } from "../pitCredential";
 /** User commands use local HTTP jobs; only the Java store owner writes mirror or peer files. */
 import * as http from "http";
 import * as https from "https";
@@ -25,14 +26,15 @@ export function syncSummary(result: SyncResult): string {
 export function rememberedPeers(target: SyncTarget): string[] { return [...new Set(target.peers)]; }
 
 export class StoreClient {
-  constructor(readonly endpoint: string, private readonly timeoutMs = 30_000) {}
+  constructor(readonly endpoint: string, private readonly timeoutMs = 30_000, private readonly headersFor: HttpHeaders = noHeaders) {}
   private async request<T>(route: string, method = "GET", body?: unknown): Promise<T> {
     const url = new URL(route, this.endpoint);
     if (url.origin !== new URL(this.endpoint).origin) throw new StoreControlError("Store control URL changed server");
+    const authorization = await this.headersFor(url.href);
     const data = body === undefined ? undefined : JSON.stringify(body);
     return new Promise((resolve, reject) => {
       const request = (url.protocol === "https:" ? https : http).request(url, { method,
-        headers: { Accept: "application/json", ...(data === undefined ? {} : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }) } }, response => {
+        headers: { ...authorization, Accept: "application/json", ...(data === undefined ? {} : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }) } }, response => {
         const chunks: Buffer[] = []; let size = 0;
         response.on("data", (chunk: Buffer) => {
           size += chunk.length;

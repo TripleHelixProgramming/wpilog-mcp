@@ -51,6 +51,7 @@ class ClaimChecksTest {
       }
     };
     WpilogTools.registerAll(registry);
+    org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(registry, null);
     captured.sort(Comparator.comparing(Tool::name));
     tools = List.copyOf(captured);
   }

@@ -157,6 +157,8 @@ public class HttpTransport {
     server.createContext(this.mcpPath, counted(this::handleRequest));
     server.createContext("/directories", counted(this::handleRegistration));
     server.createContext("/tba-key", counted(this::handleRegistration));
+    server.createContext("/pit-credential", counted(this::handleRegistration));
+    server.createContext("/pit-mcp", counted(this::handlePitMcp));
     server.createContext("/health", counted(this::handleHealthCheck));
     server.createContext("/stop", counted(this::handleStop));
     server.createContext(DATA_PATH, counted(this::handleData));
@@ -611,6 +613,16 @@ public class HttpTransport {
     }
     noteMcpActivity();
     registration.handle(exchange);
+  }
+
+  /** A secret-free URL for Claude's bridge; only the local listener can use the person's lease. */
+  private void handlePitMcp(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin) || !server.getAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Pit credential forwarding requires loopback and an allowed Origin"); return;
+    }
+    noteMcpActivity();
+    PitMcpEndpoint.handle(exchange);
   }
 
   /** The scheduler and transport tests use the same session expiry path. */

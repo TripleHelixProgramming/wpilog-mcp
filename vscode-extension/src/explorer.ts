@@ -1,3 +1,4 @@
+import { HttpHeaders, noHeaders } from "./pitCredential";
 /**
  * WPILog Explorer's VS Code side (EXPLORER_PLAN.md §3, §4): the client to the shared server,
  * the Logs and Entries views, and the custom editor that opens a log and shows its entries and
@@ -48,7 +49,7 @@ interface OpenLog {
 export class Explorer implements vscode.Disposable {
   private readonly clients = new Map<string, { url: string; client: McpClient }>();
   /** The data endpoint's client: one memory of streams for every editor. */
-  readonly data = new DataClient();
+  readonly data = new DataClient(32, 256 * 1024 * 1024, url => this.headersFor(url));
   readonly logs: LogsProvider;
   readonly entries: EntriesProvider;
   readonly editor: ExplorerEditorProvider;
@@ -66,7 +67,8 @@ export class Explorer implements vscode.Disposable {
     private readonly windowSpec: () => DaemonSpec,
     private readonly windowDirectories: () => string[] | undefined = () => undefined,
     private readonly registration?: () => Promise<SessionRegistration>,
-    private readonly pitUrl: () => string | undefined = () => undefined
+    private readonly pitUrl: () => string | undefined = () => undefined,
+    private readonly headersFor: HttpHeaders = noHeaders
   ) {
     this.choices = { never: context.globalState.get<string[]>(NEVER_ORGANIZE_KEY) ?? [], deferred: [], offered: {} };
     this.logs = new LogsProvider(this);
@@ -295,7 +297,7 @@ export class Explorer implements vscode.Disposable {
       // A server at a new URL was started again, perhaps with other directories: its streams are new
       this.data.clear();
     }
-    const client = new McpClient(url, this.extensionVersion, spec.kind === "pit" ? undefined : this.registration);
+    const client = new McpClient(url, this.extensionVersion, spec.kind === "pit" ? undefined : this.registration, this.headersFor);
     this.clients.set(spec.name, { url, client });
     return client;
   }

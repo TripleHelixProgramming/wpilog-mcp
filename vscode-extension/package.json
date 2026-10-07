@@ -162,6 +162,16 @@
         "category": "WPILog Analyzer"
       },
       {
+        "command": "wpilog-mcp.setPitProxyCredential",
+        "title": "Set Pit Proxy Credential",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.clearPitProxyCredential",
+        "title": "Clear Pit Proxy Credential",
+        "category": "WPILog Analyzer"
+      },
+      {
         "command": "wpilog-mcp.explorer.organizeLogs",
         "title": "Organize Logs…",
         "category": "WPILog Explorer",
@@ -451,7 +461,7 @@
           "wpilog-mcp.pitServerUrl": {
             "type": "string",
             "default": "",
-            "markdownDescription": "Pit server HTTP MCP URL (for example `http://pit:2363/mcp`). Adds a second server for agents and sessions to Logs. [Register the pit server with Claude Code](command:wpilog-mcp.registerPitWithClaudeCode) at user scope. Use [Upload Logs to Pit Server](command:wpilog-mcp.uploadToPitServer) to copy laptop logs into its store.",
+            "markdownDescription": "Pit server HTTP MCP URL (for example `http://pit:2363/mcp`). Adds a second server for agents and sessions to Logs. [Register the pit server with Claude Code](command:wpilog-mcp.registerPitWithClaudeCode) at user scope. Use [Upload Logs to Pit Server](command:wpilog-mcp.uploadToPitServer) to copy laptop logs into its store. For a password-protected reverse proxy, use [Set Pit Proxy Credential](command:wpilog-mcp.setPitProxyCredential); it stays in SecretStorage. [Clear Pit Proxy Credential](command:wpilog-mcp.clearPitProxyCredential) revokes this window's lease.",
             "order": 50
           },
           "wpilog-mcp.mirror.enabled": {

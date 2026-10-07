@@ -1,3 +1,4 @@
+import { HttpHeaders, noHeaders } from "../pitCredential";
 /** A selected laptop file is streamed, with a separately computed hash, to the pit importer.
  * Never repeat an uncertain POST: the user can retry and the store recognizes its hash. */
 import * as http from "http";
@@ -8,7 +9,7 @@ import { createHash } from "crypto";
 import { Exchange, ImportJob, ImportResult, importEndpointOf, pollImport } from "./importJobs";
 
 export async function uploadLog(mcpUrl: string, file: string, storeId: string,
-  report: (job: ImportJob) => void, sleep?: (ms: number) => Promise<void>): Promise<ImportResult> {
+  report: (job: ImportJob) => void, sleep?: (ms: number) => Promise<void>, headersFor: HttpHeaders = noHeaders): Promise<ImportResult> {
   const endpoint = importEndpointOf(mcpUrl);
   if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error("Use an HTTP(S) pit URL without credentials");
   const info = await fs.promises.stat(file);
@@ -16,10 +17,11 @@ export async function uploadLog(mcpUrl: string, file: string, storeId: string,
   const hash = createHash("sha256");
   for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
   endpoint.searchParams.set("store", storeId); endpoint.searchParams.set("filename", path.basename(file));
+  const authorization = await headersFor(endpoint.href);
   const accepted = await new Promise<Exchange>((resolve, reject) => {
     const input = fs.createReadStream(file);
     const request = (endpoint.protocol === "https:" ? https : http).request(endpoint, { method: "POST", timeout: 30_000,
-      headers: { "Content-Type": "application/octet-stream", "Content-Length": info.size, "X-WPILOG-SHA256": hash.digest("hex") } }, response => {
+      headers: { ...authorization, "Content-Type": "application/octet-stream", "Content-Length": info.size, "X-WPILOG-SHA256": hash.digest("hex") } }, response => {
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
@@ -33,5 +35,5 @@ export async function uploadLog(mcpUrl: string, file: string, storeId: string,
     request.on("error", error => { input.destroy(); reject(error); });
     input.pipe(request);
   });
-  return pollImport(endpoint, accepted, report, sleep);
+  return pollImport(endpoint, accepted, report, sleep, headersFor);
 }

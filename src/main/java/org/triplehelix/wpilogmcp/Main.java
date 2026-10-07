@@ -708,6 +708,7 @@ public class Main {
         System.exit(1);
         return;
       }
+      if (capture != null) org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, capture.live());
       // A stop request and the idle exit end the server as a signal would: the transport
       // finishes the calls in flight, then the shutdown hook closes the logs
       Runnable exit = () -> {

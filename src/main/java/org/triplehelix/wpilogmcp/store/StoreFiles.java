@@ -26,7 +26,12 @@ final class StoreFiles {
   private final SecurityValidator security;
   private final SecurityValidator containment = new SecurityValidator();
 
+  private final java.util.function.BiConsumer<Path, Object> published;
   StoreFiles(Path root, SecurityValidator security) throws IOException {
+    this(root, security, (path, value) -> {});
+  }
+  StoreFiles(Path root, SecurityValidator security, java.util.function.BiConsumer<Path, Object> published) throws IOException {
+    this.published = published;
     security.validate(root);
     this.root = root.toRealPath();
     this.security = security;
@@ -101,6 +106,7 @@ final class StoreFiles {
     // A crash leaves the old manifest or the complete new one, never a half-written catalog.
     // A filesystem without atomic rename is refused rather than weakening that guarantee.
     Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    published.accept(path, value);
   }
 
   static String hash(Path path) throws IOException {

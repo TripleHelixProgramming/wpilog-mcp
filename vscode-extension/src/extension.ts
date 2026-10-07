@@ -1,3 +1,4 @@
+import { PIT_SECRET_PREFIX, basicCredential, pitBridgeUrl, pitHeaders, pitRegistration, pitSecretKey } from "./pitCredential";
 import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
@@ -254,6 +255,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   const projects = () => localFolders().map(folder => ({ folderPath: folder.uri.fsPath, own: projectSettings(folder) }));
   const pitUrl = () => vscode.workspace.getConfiguration("wpilog-mcp").get<string>("pitServerUrl");
+  const proxyHeaders = pitHeaders(pitUrl, context.secrets);
   const mirrorSettings = () => {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     return { enabled: config.get<boolean>("mirror.enabled"), folder: config.get<string>("mirror.folder"),
@@ -270,10 +272,10 @@ export function activate(context: vscode.ExtensionContext) {
     const directories = directoryRegistration(user, projects());
     const mirror = mirrorRequest(pitUrl(), { ...mirrorSettings(), enabled: true }, context.globalStorageUri.fsPath);
     if (mirror && !directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
-    return { directories, key: await context.secrets.get(TBA_SECRET) || null };
+    return { directories, key: await context.secrets.get(TBA_SECRET) || null, pitCredential: await pitRegistration(pitUrl(), context.secrets) };
   }
   const explorer = new Explorer(context, outputChannel, serverManager, standaloneSpec,
-    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration, pitUrl);
+    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration, pitUrl, proxyHeaders);
   context.subscriptions.push(serverManager, explorer, outputChannel, didChangeEmitter);
 
   /** Registration finishes before an agent receives its URL; a third session can then read the lease. */
@@ -299,8 +301,8 @@ export function activate(context: vscode.ExtensionContext) {
     onDidChangeMcpServerDefinitions: didChangeEmitter.event,
     provideMcpServerDefinitions: async () => {
       const url = await connectWindow();
-      return serverDefinitions(url, pitUrl()).map(server => new vscode.McpHttpServerDefinition(server.label,
-        vscode.Uri.parse(server.url), undefined, context.extension.packageJSON.version));
+      return Promise.all(serverDefinitions(url, pitUrl()).map(async server => new vscode.McpHttpServerDefinition(server.label,
+        vscode.Uri.parse(server.url), await proxyHeaders(server.url), context.extension.packageJSON.version)));
     },
     resolveMcpServerDefinition: async server => server,
   };
@@ -472,7 +474,7 @@ export function activate(context: vscode.ExtensionContext) {
   }
   async function uploadToPitServer() {
     const endpoint = pitEndpoint(pitUrl()); if (!endpoint) throw new Error("Set wpilog-mcp.pitServerUrl first.");
-    const inventory = await new StoreClient(endpoint).uploadTargets();
+    const inventory = await new StoreClient(endpoint, undefined, proxyHeaders).uploadTargets();
     for (const failed of inventory.unreadable) outputChannel.appendLine(`${failed.path}: ${failed.reason}`);
     if (!inventory.stores.length) throw new Error("The pit server has no configured writable store.");
     const target = inventory.stores.length === 1 ? inventory.stores[0] : (await vscode.window.showQuickPick(
@@ -484,7 +486,7 @@ export function activate(context: vscode.ExtensionContext) {
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Upload Logs to Pit Server", cancellable: false }, async progress => {
       for (const file of files) {
         progress.report({ message: path.basename(file.fsPath) });
-        const result = await uploadLog(endpoint, file.fsPath, target.id, job => progress.report({ message: progressText(job) }));
+        const result = await uploadLog(endpoint, file.fsPath, target.id, job => progress.report({ message: progressText(job) }), undefined, proxyHeaders);
         for (const line of resultDetails(result)) outputChannel.appendLine(line);
         void vscode.window.showInformationMessage(`${path.basename(file.fsPath)}: ${resultSummary(result)}`);
       }
@@ -501,18 +503,39 @@ export function activate(context: vscode.ExtensionContext) {
     const cli = findClaude(process.env.PATH ?? "", process.platform, file => {
       try { fs.accessSync(file, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
     });
-    const text = claudePitCommandText(spec.launcher, url, process.platform);
+    const credential = await pitRegistration(url, context.secrets);
+    const local = credential.authorization ? await connectWindow() : undefined;
+    if (credential.authorization && !local) throw new Error("Start the local server to lease the pit proxy credential.");
+    const bridgeUrl = local ? pitBridgeUrl(local, url) : url;
+    const text = claudePitCommandText(spec.launcher, bridgeUrl, process.platform);
     if (!cli) {
       outputChannel.appendLine(text);
       if (await vscode.window.showInformationMessage("Claude Code CLI was not found. Copy its user registration command?", "Copy Command") === "Copy Command") await vscode.env.clipboard.writeText(text);
       return;
     }
-    const run = claudePitCommand(cli, spec.launcher, url, process.platform);
+    const run = claudePitCommand(cli, spec.launcher, bridgeUrl, process.platform);
     await new Promise<void>((resolve, reject) => execFile(run.command, run.args, { timeout: 30_000, windowsHide: true,
       windowsVerbatimArguments: run.windowsVerbatimArguments }, error => error ? reject(new Error(`Pit registration failed. Run: ${text}`)) : resolve()));
     await context.globalState.update("wpilog-mcp.claudePitUrl", url);
     void vscode.window.showInformationMessage("Pit server registered as wpilog-pit at user scope. Restart existing Claude Code sessions to use it.");
   }
+  async function changePitCredential(clear: boolean) {
+    const url = pitEndpoint(pitUrl()); if (!url) throw new Error("Set wpilog-mcp.pitServerUrl first.");
+    if (clear) await context.secrets.delete(pitSecretKey(url));
+    else {
+      const user = await vscode.window.showInputBox({ title: `Proxy username for ${new URL(url).host}`, ignoreFocusOut: true });
+      if (user === undefined) return;
+      const password = await vscode.window.showInputBox({ title: "Pit proxy password", password: true, ignoreFocusOut: true });
+      if (password === undefined) return;
+      await context.secrets.store(pitSecretKey(url), basicCredential(user, password));
+    }
+    await refreshLease(); didChangeEmitter.fire(); explorer.serversChanged();
+    void vscode.window.showInformationMessage(clear ? "Pit proxy credential cleared. Re-register Claude Code to use the direct pit URL."
+      : "Pit proxy credential saved in SecretStorage. Re-register Claude Code to use its credential-free local bridge URL.");
+  }
+  context.subscriptions.push(context.secrets.onDidChange(event => {
+    if (event.key.startsWith(PIT_SECRET_PREFIX)) { void refreshLease(); didChangeEmitter.fire(); explorer.serversChanged(); }
+  }));
   const mirrorActions = [
     { label: "Sync Now", id: "syncNow" }, { label: "Pin Session", id: "pinSession" },
     { label: "Unpin Session", id: "unpinSession" }, { label: "Open Mirror Folder", id: "openMirrorFolder" },
@@ -533,6 +556,8 @@ export function activate(context: vscode.ExtensionContext) {
     })),
     vscode.commands.registerCommand("wpilog-mcp.syncFromLaptop", command(syncFromLaptop)),
     vscode.commands.registerCommand("wpilog-mcp.uploadToPitServer", command(uploadToPitServer)),
+    vscode.commands.registerCommand("wpilog-mcp.setPitProxyCredential", command(() => changePitCredential(false))),
+    vscode.commands.registerCommand("wpilog-mcp.clearPitProxyCredential", command(() => changePitCredential(true))),
     vscode.commands.registerCommand("wpilog-mcp.registerPitWithClaudeCode", command(() => registerPitClaude(true)))
   );
 

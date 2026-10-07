@@ -112,6 +112,10 @@ public final class ConformanceChecks {
         && "ok".equals(obj.get("status").getAsString()) && !hasQuality(obj, 3)) {
       failed.add(Check.QUALITY_MISSING);
     }
+    // A timeout is an observation from a bounded wait, explicitly ok/changed:false in the
+    // live-tool contract. This exception is tool-specific; empty analyses still fail R4.
+    if ("wait_for_change".equals(tool) && new com.google.gson.JsonPrimitive("ok").equals(obj.get("status"))
+        && new com.google.gson.JsonPrimitive(false).equals(obj.get("changed"))) failed.remove(Check.SILENT_EMPTY);
     return failed;
   }
 

@@ -492,6 +492,7 @@ tasks.register('stdioStressTest') {
 
             args 'execute',
                  '--select-class', 'org.triplehelix.wpilogmcp.integration.StressTest',
+                 '--select-method', 'org.triplehelix.wpilogmcp.conformance.LiveReplayTest#concurrentLiveCallsDuringReplay',
                  '--details', 'tree',
                  '--details-theme', 'unicode',
                  '--disable-banner'
@@ -549,6 +550,7 @@ tasks.register('httpStressTest') {
 
             args 'execute',
                  '--select-class', 'org.triplehelix.wpilogmcp.integration.HttpStressTest',
+                 '--select-method', 'org.triplehelix.wpilogmcp.conformance.LiveReplayTest#concurrentLiveCallsDuringReplay',
                  '--details', 'tree',
                  '--details-theme', 'unicode',
                  '--disable-banner'

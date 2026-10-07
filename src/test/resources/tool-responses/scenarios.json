@@ -68,6 +68,10 @@
     {"tool": "wait_for_sync", "title": "Wait for sync", "args": {"path": "${q10}", "timeout_ms": 30000}},
     {"tool": "list_revlog_signals", "title": "Signals", "args": {"path": "${q10}", "signal_filter": "Velocity"}},
     {"tool": "get_revlog_data", "title": "One signal", "args": {"path": "${q10}", "signal_key": "${first_revlog_signal}", "limit": 3, "include_stats": true}},
-    {"tool": "set_revlog_offset", "title": "Manual offset", "args": {"path": "${q10}", "offset_ms": 0}}
+    {"tool": "set_revlog_offset", "title": "Manual offset", "args": {"path": "${q10}", "offset_ms": 0}},
+
+    {"tool": "list_sessions", "title": "Recent sessions (capture-disabled reference server)", "args": {"limit": 20}},
+    {"tool": "get_latest_values", "title": "Latest publications need a running capture", "args": {"entries": ["/Example/Counter"]}},
+    {"tool": "wait_for_change", "title": "A live wait needs a running capture", "args": {"entry": "/Example/Counter", "timeout_ms": 5000}}
   ]
 }

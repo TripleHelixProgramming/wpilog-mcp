@@ -134,8 +134,11 @@ class StoreInboxTest {
         org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, 0);
     var server = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0, "127.0.0.1", null, null);
     server.setStoreDirectories(Set.of(root)); server.start();
+    // This test advances the poll clock itself. A real watcher observing first would mix
+    // System.nanoTime with 0/LOOK and keep the injected clock before its first observation.
+    manager.stores().stopWatching();
     try (var capture = new org.triplehelix.wpilogmcp.capture.CaptureService(config, manager)) {
-      capture.start();
+      capture.start().get(10, TimeUnit.SECONDS);
       var source = ImportFixture.write(root.resolve("inbox/dropped.wpilog"), 4, "SYNTHETIC-INBOX", 1_767_225_600_000_000L);
       byte[] bytes = Files.readAllBytes(source);
       store.inbox().poll(0); store.inbox().poll(LOOK); store.awaitImports();

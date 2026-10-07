@@ -26,6 +26,10 @@ public final class ClientLeases {
 
   private final ConcurrentHashMap<String, Directories> directories = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, Key> keys = new ConcurrentHashMap<>();
+  private record Pit(java.net.URI endpoint, String authorization, long order) {
+    @Override public String toString() { return "Pit credential lease"; }
+  }
+  private final ConcurrentHashMap<String, Pit> pitCredentials = new ConcurrentHashMap<>();
   private final AtomicLong sequence = new AtomicLong();
   private final AtomicInteger transports = new AtomicInteger();
   private volatile boolean used;
@@ -89,8 +93,40 @@ public final class ClientLeases {
         .map(Key::value).orElse(configured);
   }
 
+  /** One configured pit per window; neither this value nor its representation enters a manifest. */
+  public void registerPit(String session, String url, String authorization) {
+    if (authorization == null) { pitCredentials.remove(session); return; }
+    java.net.URI endpoint;
+    try {
+      endpoint = java.net.URI.create(url);
+      if (!List.of("http", "https").contains(endpoint.getScheme()) || endpoint.getHost() == null
+          || endpoint.getUserInfo() != null || endpoint.getRawQuery() != null || endpoint.getFragment() != null) throw new IllegalArgumentException();
+      if (endpoint.getPath().isEmpty() || endpoint.getPath().equals("/")) endpoint = endpoint.resolve("/mcp");
+    } catch (RuntimeException e) { throw new IllegalArgumentException("Pit URL must be HTTP(S), without credentials, query or fragment"); }
+    if (!authorization.matches("Basic [A-Za-z0-9+/]+={0,2}") || authorization.length() > 8192) {
+      throw new IllegalArgumentException("Pit authorization must be a Basic credential");
+    }
+    pitCredentials.put(session, new Pit(endpoint, authorization, sequence.incrementAndGet()));
+  }
+  private static String origin(java.net.URI uri) {
+    int port = uri.getPort() == -1 ? "https".equals(uri.getScheme()) ? 443 : 80 : uri.getPort();
+    return uri.getScheme() + "://" + uri.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+  }
+  /** Outbound store reads use the most recent live lease for exactly this HTTP origin. */
+  public String pitAuthorization(java.net.URI request) {
+    if (request.getHost() == null || request.getUserInfo() != null) return null;
+    return pitCredentials.values().stream().filter(p -> origin(p.endpoint()).equals(origin(request)))
+        .max(Comparator.comparingLong(Pit::order)).map(Pit::authorization).orElse(null);
+  }
+  /** The URL bridge may forward only the exact MCP endpoint a person registered. */
+  public String pitMcpAuthorization(java.net.URI endpoint) {
+    return pitCredentials.values().stream().filter(p -> p.endpoint().equals(endpoint))
+        .max(Comparator.comparingLong(Pit::order)).map(Pit::authorization).orElse(null);
+  }
+
   public void remove(String session) {
     removeDirectories(session);
     keys.remove(session);
+    pitCredentials.remove(session);
   }
 }

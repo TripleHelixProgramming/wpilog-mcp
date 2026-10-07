@@ -380,7 +380,7 @@ The standalone guide gains a short section for teams that want more: an nginx co
 - Both servers' instructions and `get_server_guide` say which server is which: the local one for files on this laptop and the mirror, the pit server for the team's sessions and for anything live. A session that is in the mirror is answered the same by either, from the same bytes, and the instructions say so, so an agent offline knows the mirror is not a lesser copy.
 - **Synchronization** (§11, the mirror), transparent once turned on: `wpilog-mcp.mirror.enabled` (default off until a pit server URL is set, then on), `wpilog-mcp.mirror.folder` (default under the extension's own storage), `wpilog-mcp.mirror.days`, `wpilog-mcp.mirror.maxSizeGb`, and `wpilog-mcp.mirror.robots` to narrow to some serials. The local server does the work; the extension passes the settings and shows the state in a status bar item: synchronized, the count and size still to copy, or offline with the age of the mirror. Commands: `wpilog-mcp.pinSession` and `wpilog-mcp.unpinSession` (from the status bar's quick pick, listing the pit server's recent sessions), `wpilog-mcp.syncNow`, and `wpilog-mcp.openMirrorFolder`. The settings declare an `order` after the pit server URL, and the tests pin them as they pin the others.
 - **Syncing between laptops** (§11, decision 17): a command `wpilog-mcp.syncFromLaptop` that asks for the other laptop's address (`host:port`, remembered afterwards in a quick pick), runs the local server's sync against it, and reports what was copied and what conflicted. It is the mirror's machinery pointed at a peer, so a laptop needs no pit server setting to use it, only the other laptop's server bound to the network.
-- When the pit server is behind a proxy that asks for a password, the credential is entered once through a command and kept in VS Code's secret storage, passed to the local server the way the TBA key is, and never written to `.mcp.json` or a settings file. The `pitServerUrl` entry in `.mcp.json` stays a URL and nothing else.
+- When the pit server is behind a proxy that asks for a password, the credential is entered once through a command and kept in VS Code's secret storage, passed to the local server the way the TBA key is, and never written to `.mcp.json` or a settings file. Claude's user-scope registration holds the local credential bridge's URL, with no secret in its arguments.
 
 ### 15. Milestones
 
@@ -390,7 +390,7 @@ Each leaves the project working and tested on its own.
 2. **Session writer, live log, and the store** (§5, §6, §11) (done: pure-Java WPILOG capture, clock-based session detection/resumption, policy and topic costs; HTTP configuration/start wiring and additive store manifests with immediate match facts and close-time directory rename; nonblocking coalesced manifests, bounded capture files, contained write failures, bounded shutdown and recovery of abandoned open manifests; the writer-built live index, consistent tool prefixes, a configurable hot window and mapped cold reads; every generated fixture checked by two readers and every existing log tool compared with a fresh finished-file load, plus concurrent append, eviction/resume, and planted faults. Context, identity, pulling, live tools, and the other-process rescan remain later work. The real-robot shop stress test is the user's and remains unverified).
 3. **Log puller** (§10) and **robot identity** (§8.5) (done: logged identity and candidates, device context and serial placement, content-checked transfer with a fake remote, gated SFTP and store/session placement, and opt-in roboRIO transport coverage. Pulling defaults off; roboRIO 1/2 permissions, interoperability and shop stress remain unverified): the robot's logs arrive on their own, mapped to the robot by its serial; tested against a real roboRIO in the shop before it is on by default. The system logs and `search_system_logs` follow in the puller's second pass, once the file set is verified on real hardware. The listing's reading of a logged serial comes first, since it needs no pit server.
 4. **Import** (§11) (done: the explorer already supplied the command, inbox, inspection, grouping and duplicate recognition; generated USB batches and the capture-enabled inbox now pin those together, and the extension uploads streamed, hash-checked files through the pit server import endpoint. Automated HTTP and Node checks pass; the real VS Code picker remains manual).
-5. **Live tools** (§9), and the extension's pit server setting (§14).
+5. **Live tools** (§9), and the extension's pit server setting (§14) (done: capture-only session/latest/wait tools, cached manifest facts and persisted recorder costs; HTTP fixture replay, independent values/bytes, per-session waits and injected-clock checks; the remaining proxy credential commands use SecretStorage and local leases. Real VS Code and the shop hardware checks remain manual).
 6. **Store over HTTP, peer sync, and the mirror** (§11, §14) (first half done: catalog-only HTTP reads, growing prefixes and hashes; peer sync through daemon jobs or the offline store lock, content-checked resume, serial/window session union with convergent ids, provenance and human conflicts, remembered peers and recovery; generated fixtures, tool conformance and planted failures. Second half done: scoped and capped mirror with pins, growing-prefix resume, id-based moves, offline age and recorded REV alignment; local controls; extension registration, status/actions, pit Logs/follow/offline copy and remembered peer sync. Automated checks and planted faults pass; real VS Code remains the manual checklist): the store's read-only door; `wpilog-mcp sync <url>` between two laptops' stores, built first because it needs no pit server and tests with two daemons on one machine; then the mirror on the same door, with the local server's synchronization, the extension's settings, status bar, and pins. From here the laptop analyzes offline.
 7. **Metrics endpoint** (§12): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
 8. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
@@ -550,3 +550,37 @@ Its retained ordinary-test XML identified inbox transfer cleanup, which used the
 the store queue. Cleanup now queues behind imports, at most one pending job per inbox, and
 polling returns while it waits. A blocked-queue test failed on the previous implementation
 and passes after serialization; no sleep or wider retry was added to hide the race.
+
+
+Milestone 5 choices:
+
+- Live tools are registered only on capture servers. The catalog filters by that registry;
+  both server locations keep their existing initialize/guide explanation. Tools read published
+  recorder snapshots and cached manifests, never store files. Capture counts persist additively
+  as `capture_stats` in format 1; older manifests and crash-recovered sessions have unknown
+  counts. Recovery clears the last queued summary because it can predate durable records. Counts include value
+  record headers, omit context/control records and copied schema seeds, span rollover files and refresh every 250 ms.
+  Rates use the full preceding minute even at startup, and are null after close. Cost ties sort
+  by topic name. Imports can join a session that still holds only an open capture.
+- Latest values accept NT4 names and their `NT:` aliases. Binary/struct values stay raw signed
+  byte arrays; ordinary tools decode structs. Ages use robot time, can be negative for future
+  publisher timestamps, and are null without sync. Waits mean the next publication, including
+  an unchanged value, and are installed atomically per topic per MCP session. Timeouts are
+  `ok`/`changed:false`; unannounce, disconnect and session end cancel them with a reason.
+  Registration rechecks the topic under the wait lock, and shutdown closes admission before
+  stopping the client clock, so neither ordering can strand a waiter.
+- Proxy Basic credentials are origin-scoped SecretStorage values, entered/cleared through
+  commands and leased to the local server in memory. The mirror HTTP client never redirects
+  with them. Claude's URL bridge goes through loopback `/pit-mcp` for exactly the registered
+  endpoint, leaving its command and user registration secret-free. Set/clear needs Claude
+  re-registration; with the window closed only the configured offline mirror remains usable.
+- Windows CI on the inbox correction caught a replay capture create failing its atomic
+  `store.json` replacement, followed by a null-session assertion. Its HTML report was retained;
+  it is a filesystem replacement failure, not evidence of a wrong replay value. The unchanged
+  job passed on an unchanged rerun; no timeout or numerical tolerance was widened and the
+  transient replacement cause remains unverified.
+
+- The capture-enabled inbox check now stops the real watcher before driving its injected poll
+  clock. A full build caught a real watcher observation racing the test's `0`/settle-time
+  observations; a planted later-clock first observation reproduced the refusal to import.
+  One clock drives the test now, with no longer wait or production settle-time change.

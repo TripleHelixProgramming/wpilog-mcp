@@ -91,16 +91,21 @@ public final class LogStore implements AutoCloseable {
     final Map<String, Robot> robots = new LinkedHashMap<>();
     final Map<String, StoredFile> files = new LinkedHashMap<>();
     final Map<String, StoredFile> assigning = new LinkedHashMap<>();
+    final Map<Path, Session> sessions = new LinkedHashMap<>();
 
     ImportCatalog(StoreCatalog.Snapshot snapshot) {
       header = snapshot.header();
       snapshot.robots().forEach(r -> robots.put(r.robot().id(), r.robot()));
       snapshot.files().forEach(f -> files.put(f.file().sha256(), f));
+      snapshot.sessions().forEach(s -> sessions.put(s.path().resolve("session.json"), s.session()));
     }
 
     void robot(Robot robot, Path old, Path target) {
       robots.remove(old.getFileName().toString());
       robots.put(robot.id(), robot);
+      var movedSessions = new LinkedHashMap<Path, Session>();
+      sessions.forEach((path, session) -> movedSessions.put(path.startsWith(old) ? target.resolve(old.relativize(path)) : path, session));
+      sessions.clear(); sessions.putAll(movedSessions);
       files.replaceAll((hash, file) -> file.path().startsWith(old)
           ? new StoredFile(target.resolve(old.relativize(file.path())),
               target.resolve(old.relativize(file.manifestPath())), robot, file.session(), file.file())
@@ -109,6 +114,7 @@ public final class LogStore implements AutoCloseable {
 
     void placed(StoreFiles io, Path manifest, Robot robot, Session session, List<LogFile> records)
         throws IOException {
+      if (session != null) sessions.put(manifest, session);
       for (var file : records) {
         files.put(file.sha256(), new StoredFile(io.resolve(manifest.getParent(), file.path()),
             manifest, robot, session, file));
@@ -137,10 +143,32 @@ public final class LogStore implements AutoCloseable {
     return root;
   }
 
+  /** The capture service observes durable facts on the store queue; tools never join that queue. */
+  public interface Observer {
+    void manifest(Path path, Object value);
+    void inventory(StoreCatalog.Snapshot snapshot);
+  }
+  private final java.util.Set<Observer> observers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  public AutoCloseable observe(Observer observer) { observers.add(observer); return () -> observers.remove(observer); }
+  private void published(Path path, Object value) {
+    for (var observer : observers) {
+      try { observer.manifest(path, value); }
+      catch (RuntimeException e) { org.slf4j.LoggerFactory.getLogger(LogStore.class).warn("Session status update failed", e); }
+    }
+  }
+  private void publishInventory() throws IOException {
+    if (observers.isEmpty()) return;
+    var snapshot = StoreCatalog.readManaged(root, security);
+    observers.forEach(observer -> observer.inventory(snapshot));
+  }
+  public CompletableFuture<Void> refreshStatus() {
+    return captureAsync(io -> { publishInventory(); return null; });
+  }
+
   /** Atomic manifest replacement permits nonblocking status reads while a sync is queued. */
   public StoreManifest.MirrorOrigin mirrorOrigin() throws IOException {
     if (!StoreCatalog.isStore(root)) return null;
-    return new StoreFiles(root, security).read(root.resolve("store.json"), Header.class).origin();
+    return new StoreFiles(root, security, this::published).read(root.resolve("store.json"), Header.class).origin();
   }
 
   @FunctionalInterface interface CaptureOperation<T> { T run(StoreFiles files) throws IOException; }
@@ -160,13 +188,15 @@ public final class LogStore implements AutoCloseable {
     var result = new CompletableFuture<T>();
     queue.execute(() -> {
       try (var lock = StoreLock.acquire(root, security)) {
-        var io = new StoreFiles(root, security);
+        var io = new StoreFiles(root, security, this::published);
         if (!StoreCatalog.isStore(root)) io.write(root.resolve("store.json"),
             new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
         var header = io.read(root.resolve("store.json"), Header.class);
         if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
         if (header.mirror() && !allowMirror) throw new IOException("A mirror is written only by its mirror synchronization");
-        result.complete(operation.run(io));
+        var value = operation.run(io);
+        if (allowMirror) publishInventory();
+        result.complete(value);
       } catch (Throwable e) { result.completeExceptionally(e); }
     });
     return result;
@@ -312,12 +342,13 @@ public final class LogStore implements AutoCloseable {
         try {
           Result imported;
           try (var lock = StoreLock.acquire(root, security)) {
-            if (StoreCatalog.isStore(root) && new StoreFiles(root, security).read(root.resolve("store.json"), Header.class).mirror()) {
+            if (StoreCatalog.isStore(root) && new StoreFiles(root, security, this::published).read(root.resolve("store.json"), Header.class).mirror()) {
               throw new IOException("A mirror is owned by its synchronization; imports and assignments are refused");
             }
             notify(progress, new Progress("starting", root, 0, request.paths().size()));
             imported = run(preparation.prepare(request), progress, assignment);
             beforeUnlock.accept(imported);
+            publishInventory();
           }
           result.complete(imported);
         } catch (Exception e) {
@@ -349,7 +380,7 @@ public final class LogStore implements AutoCloseable {
 
   private Result run(Request request, Consumer<Progress> progress, boolean assignment) throws IOException {
     if (request.statedRobot() != null) StoreFiles.robotName(request.statedRobot());
-    var io = new StoreFiles(root, security);
+    var io = new StoreFiles(root, security, this::published);
     var outcomes = new ArrayList<Outcome>();
     var sameRobots = new ArrayList<SameRobot>();
     var sources = expand(request.paths(), outcomes);
@@ -617,14 +648,16 @@ public final class LogStore implements AutoCloseable {
       }
       return;
     }
-    var overlap = catalog.files.values().stream()
-        .filter(f -> f.robot() != null && f.robot().id().equals(robot.id()) && f.session() != null)
-        .filter(f -> !primary.end().isBefore(Instant.parse(f.session().startedAt()))
-            && !primary.start().isAfter(Instant.parse(f.session().endedAt())))
+    // A session with only an open capture has no finished hash in catalog.files yet.
+    // Nominate sessions from their manifests so a live boot can receive an overlapping import.
+    var overlap = catalog.sessions.entrySet().stream()
+        .filter(s -> s.getKey().startsWith(root.resolve("robots").resolve(robot.id())))
+        .filter(s -> !primary.end().isBefore(Instant.parse(s.getValue().startedAt()))
+            && !primary.start().isAfter(Instant.parse(s.getValue().endedAt())))
         .findFirst();
     if (overlap.isPresent()) {
       var found = overlap.get();
-      placeGroup(io, catalog, inputs, found.manifestPath(), robot, found.session(), pairs, move, parser, outcomes, progress);
+      placeGroup(io, catalog, inputs, found.getKey(), robot, found.getValue(), pairs, move, parser, outcomes, progress);
       return;
     }
     var metadata = primary.metadata();
@@ -715,7 +748,7 @@ public final class LogStore implements AutoCloseable {
           if (input.end() != null && input.end().isAfter(end)) end = input.end();
         }
         session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts());
+            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats());
         io.write(manifest, session);
       }
       catalog.placed(io, manifest, robot, session, records);

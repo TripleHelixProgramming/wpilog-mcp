@@ -13,6 +13,7 @@
  * to do next. Needs Node's http only, so it is tested against a server in the test; nothing here
  * touches the VS Code API.
  */
+import { HttpHeaders, noHeaders } from "./pitCredential";
 import * as http from "http";
 import * as https from "https";
 import { leaseChanged, SessionRegistration } from "./directoryLease";
@@ -67,7 +68,8 @@ export class McpClient {
   constructor(
     readonly endpoint: string,
     private readonly clientVersion: string,
-    private readonly registration?: () => Promise<SessionRegistration>
+    private readonly registration?: () => Promise<SessionRegistration>,
+    private readonly headersFor: HttpHeaders = noHeaders
   ) {}
 
   /** Whether a session is open. */
@@ -184,7 +186,9 @@ export class McpClient {
     if (!this.registration) return;
     const registration = await this.registration();
     if (!leaseChanged(this.lastRegistration, registration, this.registeredSession !== session)) return;
-    for (const [route, payload] of [["/directories", registration.directories], ["/tba-key", { key: registration.key }]] as const) {
+    const changes: [string, unknown][] = [["/directories", registration.directories], ["/tba-key", { key: registration.key }]];
+    if (registration.pitCredential) changes.push(["/pit-credential", registration.pitCredential]);
+    for (const [route, payload] of changes) {
       const reply = await this.exchange(new URL(route, this.endpoint).toString(), "POST", payload, session);
       if (reply.status !== 200) {
         // Directory errors explain the named path. Never echo a key response or request body.
@@ -222,10 +226,11 @@ export class McpClient {
     return this.exchange(this.endpoint, "POST", message, sessionId);
   }
 
-  private exchange(endpoint: string, method: string, payload?: unknown, sessionId?: string,
+  private async exchange(endpoint: string, method: string, payload?: unknown, sessionId?: string,
     timeout = REQUEST_TIMEOUT_MS): Promise<Exchange> {
     const body = payload === undefined ? "" : JSON.stringify(payload);
     const headers: Record<string, string> = {
+      ...await this.headersFor(endpoint),
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "Content-Length": String(Buffer.byteLength(body)),

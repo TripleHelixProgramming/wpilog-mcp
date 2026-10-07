@@ -45,6 +45,7 @@ public final class HttpRemoteFiles implements RemoteFiles {
     if (path.endsWith("/store")) path = path.substring(0, path.length() - 6);
     try { base = new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(), path, null, null); }
     catch (URISyntaxException e) { throw new IllegalArgumentException("Invalid peer URL", e); }
+    if (client.followRedirects() != HttpClient.Redirect.NEVER) throw new IllegalArgumentException("Store HTTP must not follow redirects with a credential");
     this.selector = selected; this.client = client;
   }
   public String url() { return base.toASCIIString() + (selector == null ? "" : "?store=" + encode(selector)); }
@@ -120,7 +121,11 @@ public final class HttpRemoteFiles implements RemoteFiles {
     }
   }
   private HttpRequest.Builder request(String path, String query) {
-    return HttpRequest.newBuilder(endpoint(path, query)).timeout(Duration.ofMinutes(2)).GET();
+    var uri = endpoint(path, query);
+    var request = HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(2)).GET();
+    var authorization = org.triplehelix.wpilogmcp.config.ClientLeases.getInstance().pitAuthorization(uri);
+    if (authorization != null) request.header("Authorization", authorization);
+    return request;
   }
   private HttpResponse<byte[]> send(HttpRequest request, int limit) throws IOException {
     var pending = client.sendAsync(request, info -> new LimitedBody(limit));

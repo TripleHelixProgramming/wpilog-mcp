@@ -167,7 +167,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
 | `capture/pull` | Disabled-state gate, SSH/SFTP adapter, and the daemon coordinating transfer and device identity outside the NT4 loop |
 | `capture/context` | Device identity from the HAL sources, with source provenance and capture context |
-| `capture` | Pure-Java WPILOG output and writer ownership leases, session clock continuity, ordered recording, topic policy/cost accounting, and the service/index observer connecting the NT4 listener to the store and log manager |
+| `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
 
@@ -684,3 +684,27 @@ Typed arrays are bounded by the plot budget and retain a preceding hold sample. 
 pages a fixed time range without collapsing repeats, retains the latest 500 matches, and
 advances only after the final page. Offline fallback requires origin, session id and relative
 file path and labels the copy; it never chooses by a similar basename.
+
+### Live publication tools
+
+`tools/LiveTools` is registered only with capture. `capture/LiveCapture` publishes immutable
+recorder status and an in-memory catalog of session and robot manifests. Store writers notify
+it on their queue; startup and completed imports refresh the manifest inventory. A tool neither
+opens a file nor joins that queue, so an import cannot delay a latest-value query or recording.
+`capture/CaptureStats` is an additive format-1 manifest field, retaining value counts and costs
+for closed sessions; older manifests report unknown counts. An open session is a matching
+candidate even before its first file has a final hash.
+
+The NT4 client's concurrent latest-value table supplies publication values and timestamps.
+Ages use its measured robot offset and monotonic clock. Waiters are keyed by topic and MCP
+session, claimed once by the ordered listener, then completed outside the small registry lock.
+The injected scheduler supplies deadlines. Disconnect, unannounce and capture end cancel
+waiters, and duplicate waits return an explained error. The ordinary log tools retain their
+consistent-prefix read of the writer-built index.
+
+Proxy credentials follow `config/ClientLeases`: a SecretStorage value belongs to one local
+MCP session and one HTTP origin. `sync/HttpRemoteFiles` uses it for store reads without
+redirects. `mcp/PitMcpEndpoint` forwards only the exact leased MCP endpoint for Claude's URL
+bridge, keeping secrets out of registration commands and files. Registration and forwarding
+are loopback-only; neither is an assistant tool. The extension's `pitCredential.ts` holds
+origin selection and bridge URL logic; VS Code input and secret storage stay in the glue.

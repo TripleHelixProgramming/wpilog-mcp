@@ -7,6 +7,10 @@ What each wpilog-mcp tool takes, what it does, and what it returns. Every tool t
 - [Discovery Tools](#discovery-tools)
   - [get_server_guide](#get_server_guide)
   - [suggest_tools](#suggest_tools)
+- [Live Tools](#live-tools)
+  - [list_sessions](#list_sessions)
+  - [get_latest_values](#get_latest_values)
+  - [wait_for_change](#wait_for_change)
 - [Core Tools](#core-tools)
   - [list_available_logs](#list_available_logs)
   - [list_loaded_logs](#list_loaded_logs)
@@ -86,7 +90,7 @@ These two tools tell an agent which tools exist and when to use them. The descri
 An overview of every tool, grouped by category, with usage guidance and the mistakes each category is meant to prevent. Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code keeps the description loaded even when it defers other MCP tools.
 
 **Parameters:**
-- `category` (optional): Only this category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, or `discovery`. Any other value is an error that lists the categories
+- `category` (optional): Only this category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`, or `live` (capture enabled). Any other value is an error that lists the categories
 - `include_examples` (optional): Include example uses for each tool (default: true)
 
 **Returns:**
@@ -144,6 +148,74 @@ Recommends tools for a task described in plain language, with a suggested order.
 }
 ```
 The task said "brown out" (two words), so the keyword `brownout` did not match and `power_analysis` was not suggested.
+
+---
+
+## Live Tools
+
+These three tools are registered only when capture is enabled, in the catalog's Live category.
+They open no file. Every result carries `inputs.session`, the current or last capture path
+(null before a session begins). Other tools read that path through the live log as usual.
+These are publication facts, not statistical inferences, so they carry no data-quality score.
+
+### `list_sessions`
+
+Current and recent store sessions, newest first.
+
+**Parameters:**
+
+- `limit` (optional): Newest sessions to return, from 1 to 100; default 20.
+
+**Returns:** `sessions[]` with `id`, `path` (capture, or null), `started_at`, `ended_at` (null
+while open), `robot` (`serial_number`, `comments`, `address`, `basis`), `connected`,
+`topic_count`, `records`, `bytes`, `bytes_per_sec`, `event`, `match` (`type`, `number`),
+`cost[]`, `thinned[]`, `excluded[]`, `imports[]`, `end_reason` and `counts_basis`.
+`cost` contains the ten topics with the greatest last-minute byte rate, each with `name`,
+`records`, `bytes` and `bytes_per_sec`; ties are sorted by name. Counts cover captured value
+records across rollover files, including record headers, excluding declarations, finishes, context and copied rollover schema seeds. The writer publishes counts every 250 ms. Rates divide bytes in the last minute
+by 60 seconds, including at startup; closed-session rates are null. Older manifests without
+recorder summaries have null counts with a reason, never a new scan of their files. Crash
+recovery clears a possibly stale summary, so recovered sessions also report unknown counts.
+`thinned` lists `prefix` and `period_sec`; `excluded` lists configured prefixes.
+`imports` lists each non-capture file's `path`, `method`, `offset_sec` and `reason`:
+correlation uses its recorded offset; time-overlap placement has a null offset.
+`limits.sessions` and each row's `limits.cost` report true totals when cut. An empty store
+is `not_applicable` with its reason.
+
+### `get_latest_values`
+
+Read the latest values by NT4 topic name or its `NT:` capture name.
+
+**Parameters:**
+
+- `entries` (required): Array of 1 to 2000 nonempty names; repeated names are returned once.
+
+**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`) and `missing[]`.
+The timestamp is the robot's clock. Age is robot now minus that timestamp, using measured NT4
+time sync, independent of the laptop's calendar clock; before sync it is null. A future
+publisher timestamp can have a negative age. Type is the announce's authoritative NT4 string.
+Binary values, including structs, are signed-byte arrays; use the ordinary log tools to decode
+structs. Raw NaN and infinities are strings. Missing some names is `partial` with `skipped`;
+all missing is `no_match` with `looked_for` and `hint`. No open session is `not_applicable`
+with `last_session` and `ended_at`. A stale age means the topic stopped publishing, not that
+the robot stopped. These are the latest published values, not fresh measurements on demand.
+
+### `wait_for_change`
+
+Wait for the first publication received after the waiter is installed, even if its value is
+unchanged. NT4 topic names and `NT:` capture aliases identify the same waiter.
+
+**Parameters:**
+
+- `entry` (required): One nonempty topic name.
+- `timeout_ms` (optional): Nonnegative integer; default 5000, capped at 30000.
+
+**Returns:** `changed`; when true, also `name`, `value`, `type`, `timestamp_sec` and `age_ms`,
+with the same meaning as `get_latest_values`. Timeout is `ok` with `changed: false`.
+One outstanding wait per topic per MCP session is allowed; a second is an explained `error`.
+An unknown topic is `no_match` with `looked_for` and `hint`. No open capture is
+`not_applicable` with `last_session` and `ended_at`; disconnect or unannounce cancels a wait
+with `not_applicable` and `reason`. Waiting blocks its HTTP request, never the NT4 listener.
 
 ---
 

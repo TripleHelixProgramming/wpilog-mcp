@@ -428,7 +428,9 @@ Direct access to the data without an agent, and real data in an agent's answers.
 The pit import milestone is complete: existing command and inbox grouping now have bulk USB
 and capture-enabled coverage, and the extension can upload verified copies to the pit store.
 The server accepts only file bytes at its network write surface; server-path operations remain
-local. Live tools are the next pit milestone.
+local. Capture-only session/latest/wait tools now exist, with recorder costs and matched imports.
+The remaining §14 proxy login uses SecretStorage and local credential leases; real VS Code
+and hardware validation remain on the manual checklist.
 
 ### 9.4 Shop Harness
 
