@@ -371,6 +371,8 @@ macOS registration races during atomic handshake-file replacement.
 The native verifier fails after 30 seconds without receipt progress, including metadata receipts,
 instead of imposing a total duration on a whole file. The former five-minute deadline stopped a
 healthy large replay mid-stream; injected-clock checks pin continued progress and stalled receipts.
+The publisher's stop handshake finishes before offline auditing and SFTP verification, so a large
+transfer cannot expire that handshake after all records have already arrived.
 The native verifier also checks a digest of every Driver Station state transition, independently
 decoded from the source. HAL's notification forces DS attachment true; replay restores the
 recorded attachment field after notifying so a recorded disconnection remains a disconnection.

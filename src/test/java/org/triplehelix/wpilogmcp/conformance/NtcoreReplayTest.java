@@ -18,6 +18,20 @@ import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 /** Uses native ntcore in a separate process; assertions still come from the independent reader. */
 @Tag("shop-harness")
 class NtcoreReplayTest {
+  @org.junit.jupiter.api.Test void publisherStopsBeforeTheOfflineAuditAndTransfersBegin(
+      @org.junit.jupiter.api.io.TempDir Path directory) throws Exception {
+    var path = directory.resolve("audit-order.wpilog");
+    try (var out = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(path, "")) {
+      int id = out.start("NT:/counter", "int64", "", 1_000_000);
+      for (int i = 0; i < 3; i++) out.append(id, 1_000_000 + i * 20_000L,
+          org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(i));
+    }
+    try (var source = new ReplaySource(path)) {
+      replay(source, 0, false, robot -> org.junit.jupiter.api.Assertions.assertFalse(robot.isAlive(),
+          "Offline comparisons and transfers must not consume the native stop-handshake deadline"));
+    }
+  }
+
   @org.junit.jupiter.api.Test void nativeReplayRefusesMalformedUtf8BeforeAnnouncing(
       @org.junit.jupiter.api.io.TempDir Path directory) throws Exception {
     var path = directory.resolve("invalid-string.wpilog");
@@ -80,6 +94,11 @@ class NtcoreReplayTest {
   }
 
   static Map<String, Object> replay(ReplaySource source, long shiftUs, boolean pull) throws Exception {
+    return replay(source, shiftUs, pull, robot -> {});
+  }
+
+  private static Map<String, Object> replay(ReplaySource source, long shiftUs, boolean pull,
+      java.util.function.Consumer<NativeReplayProcess> beforeAudit) throws Exception {
     var run = Files.createTempDirectory(Files.createDirectories(Path.of("build/replay-native")), "run-").toAbsolutePath();
     int port = NativeReplayProcess.freePort();
     try (var robot = new NativeReplayProcess(source, shiftUs, run, port);
@@ -88,11 +107,15 @@ class NtcoreReplayTest {
       try (var capture = new ReplayCapture(RobotAddress.uri("127.0.0.1", port, "replay"), source.path, run.resolve("capture"), wall,
           remote == null ? null : remote.device)) {
         capture.ready(robot.topics); robot.consume(capture); capture.stop();
+        // All receipts are acknowledged. Offline audits and SFTP retries can outlast the
+        // publisher's bounded stop handshake, so finish it before that independent work.
+        robot.finish();
+        beforeAudit.accept(robot);
         var result = new ReplayAudit().verify(source, capture, shiftUs);
         result.put("calendar_basis", source.calendar().map(ReplaySource.Calendar::basis).orElse("unavailable"));
         if (remote != null) result.put("pull", remote.verify(source, capture, wall, shiftUs));
         else if (pull) result.put("pull_skipped", "No recorded calendar clock or dated DataLogManager filename");
-        robot.finish(); return result;
+        return result;
       }
     }
   }

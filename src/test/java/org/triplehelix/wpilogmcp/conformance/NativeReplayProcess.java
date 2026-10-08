@@ -79,6 +79,7 @@ final class NativeReplayProcess implements AutoCloseable {
     Files.writeString(control.resolve("stop"), "stop");
     assertTrue(process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0, source.path.toString());
   }
+  boolean isAlive() { return process.isAlive(); }
   @Override public void close() throws Exception {
     if (process.isAlive()) { process.destroyForcibly(); process.waitFor(10, TimeUnit.SECONDS); }
   }

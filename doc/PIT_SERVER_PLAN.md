@@ -689,6 +689,10 @@ deadline on a large input while receipt acknowledgements were still advancing. T
 bounds a lack of received-value or metadata progress to 30 seconds; file size does not determine
 success. Injected-clock checks cover a healthy ten-minute replay, unchanged/rewound receipts and
 repeated handshake read errors. This changes no NT4 socket timeout or matching tolerance.
+The same large input exposed a second ordering limit: the publisher's bounded stop handshake
+was left waiting during offline auditing and SFTP retries. Capture now acknowledges and stops
+the publisher before that work; a fixture check fails if the publisher remains alive at the audit
+boundary. Its handshake timeout is unchanged.
 
 Release-preparation socket investigation:
 
