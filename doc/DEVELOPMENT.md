@@ -247,6 +247,11 @@ injected clock: a held port leaves capture and pull running, health and sessions
 waiting state, and releasing it restores downstream service. A nonloopback-interface check
 pins the service's HTTP bind choice (skipped only if no such interface exists). Other sockets
 use literal loopback addresses on Linux and Windows.
+
+`SocketWriteDemandTest` plants a queued RFC 6455 frame with read-only selector interest, on
+both the gateway and the independent scripted peer. Each must deliver it once without another
+publication or a 4.1 ping. This pins the Java-WebSocket write-demand race reproduced by looping
+the socket classes beside CPU workers, rather than increasing their wall-clock guards.
 They check subscription periods/options, truthful write acknowledgements, queue bounds with a
 real unread TCP peer, robot-clock round trips and absent-clock reconnects, session boundaries,
 and forwarding/flushes during a blocked store operation. `MetricsDaemonTest` checks the port and

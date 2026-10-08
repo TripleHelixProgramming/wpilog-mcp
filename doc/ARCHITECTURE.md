@@ -265,6 +265,12 @@ adapter checks the queue's constant-time size before each send and drops an over
 immediately, logging its reason. Neither a socket write nor a store operation runs on the NT4 loop.
 The connected count is a volatile publication for metrics, not a call into the fan-out lock.
 
+The 200 ms aliveness tick also restores lost socket write interest. Java-WebSocket 1.6.0 can
+clear `OP_WRITE` after a concurrent sender sets it, leaving an open 4.0 connection with queued
+bytes and no next message to wake it. A constant-time queue check rearms the selector; it does
+not resend bytes or add protocol pings. The independent scripted wire fixture needs the same
+RFC 6455 adapter repair. A regression plants that exact selector state on real sockets.
+
 Time-sync replies apply the client's measured robot offset to its monotonic clock. Without an
 estimate they use that local clock, following ntcore's server reply. The first synchronized sample
 after each upstream connection resets downstream connections: ntcore 2026 uses its first reply,

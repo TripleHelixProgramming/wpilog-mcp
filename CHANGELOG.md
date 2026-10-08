@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Socket delivery:** a queued gateway reply no longer waits indefinitely when Java-WebSocket loses its write notification. The existing aliveness tick restores selector interest without resending data or adding 4.0 pings. A CPU-loaded run reproduced the fixture client's announcement stall; both server adapters now pass a planted lost-notification regression with unchanged timeouts.
 - **Gateway startup:** a busy port no longer stops capture and pulling or produces a misleading shutdown-timeout warning. Address reuse and perpetual backoff from 1 to 30 seconds let it recover; health and live sessions show waiting/listening state, cause and time, and only state changes are logged.
 - **Capture durability:** abandoned recordings are recovered with hash, size, scanned range, file-time ending and reason. Recovery runs after HTTP opens, shutdown is bounded, unreadable files remain explained, and a corrupt historical manifest is skipped and logged during live inventory. Previously an open manifest could remain forever or prevent capture from starting after restart.
 - **Capture size and write failures:** recordings roll to numbered files before the mapping limit, with declarations and rollover-time schema copies in each. An I/O failure ends recording with its reason while keeping NT4 connected until a new robot clock. Previously large files or disk failures could cause repeated reconnects without recording.

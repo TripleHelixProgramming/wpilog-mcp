@@ -219,6 +219,7 @@ public final class Nt4Gateway implements AutoCloseable {
     long now = nowUs();
     for (var entry : List.copyOf(peers.entrySet())) {
       var peer = entry.getValue();
+      SocketWrites.rearm(server, peer.socket);
       if (!Nt4Client.V41.equals(peer.socket.getProtocol().getProvidedProtocol())) continue;
       if (now - peer.pongUs >= 1_000_000) drop(entry.getKey(), "NT4 pong timeout");
       else if (peer.socket.isOpen()) {

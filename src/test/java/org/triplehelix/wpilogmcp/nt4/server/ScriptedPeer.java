@@ -33,11 +33,18 @@ public final class ScriptedPeer extends WebSocketServer implements AutoCloseable
   public volatile boolean answerPing = true;
   public volatile String offeredProtocols;
   public volatile String resource;
+  private final java.util.concurrent.ScheduledExecutorService writes = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+    var thread = new Thread(r, "scripted-peer-writes"); thread.setDaemon(true); return thread;
+  });
 
   public ScriptedPeer(String protocol) throws Exception {
     super(new InetSocketAddress("127.0.0.1", 0), 1,
         List.of(new Draft_6455(List.of(), List.of(new Protocol(protocol)))));
     setDaemon(true); setConnectionLostTimeout(0); start(); listening.get(5, TimeUnit.SECONDS);
+    // The independent wire fixture uses the same RFC 6455 library, including its write-demand race.
+    writes.scheduleAtFixedRate(() -> {
+      var socket = connected.getNow(null); if (socket != null) SocketWrites.rearm(this, socket);
+    }, 200, 200, TimeUnit.MILLISECONDS);
   }
 
   @Override public void onStart() { listening.complete(null); }
@@ -66,5 +73,5 @@ public final class ScriptedPeer extends WebSocketServer implements AutoCloseable
     for (int i = 0; i < json.length; i++) socket.sendFragmentedFrame(Opcode.TEXT, ByteBuffer.wrap(json, i, 1), i == json.length - 1);
     for (int i = 0; i < bytes.length; i++) socket.sendFragmentedFrame(Opcode.BINARY, ByteBuffer.wrap(bytes, i, 1), i == bytes.length - 1);
   }
-  @Override public void close() throws InterruptedException { stop(1000); }
+  @Override public void close() throws InterruptedException { writes.shutdownNow(); stop(1000); }
 }

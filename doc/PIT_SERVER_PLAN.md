@@ -682,3 +682,31 @@ Milestone 8 choices:
   loopback controls and the upload policy are unchanged. Real dashboard and AdvantageScope
   operation against a robot remains the user's manual check; simulation proves ntcore protocol
   interoperability and the scripted data path, not radio behavior or a dashboard's UI.
+
+Release-preparation socket investigation:
+
+- Both preserved failures were read before running again: `ClientTest.wrongValueFamilyIsCountedWithoutLosingTheNextFrameOrConnection`
+  waited for its announcement, and `GatewaySocketTest.realClientsSeeEveryChangeOrLatestAndWritesDoNotLeak`
+  waited for the 4.0 peer's publish acknowledgement. With 18 parallel CPU workers, looping both
+  complete classes reproduced the first at repetition 27 (294 completed test methods). A focused
+  instrumented run reproduced it at repetition 76: the peer was open with one output frame queued,
+  but selector interest was only `OP_READ`. The library selector was waiting, not writing.
+- [Java-WebSocket 1.6.0's server](https://github.com/TooTallNate/Java-WebSocket/blob/v1.6.0/src/main/java/org/java_websocket/server/WebSocketServer.java)
+  clears write interest after draining a batch, concurrently with a sender enabling it. The
+  gateway's existing 200 ms aliveness tick now rearms pending output when write interest was lost;
+  the independent scripted peer uses the same adapter repair. No bytes are resent, queue checks
+  are constant time, and no 4.0 ping or new dependency is added. Both real-socket variants failed
+  first with that state planted and then delivered the hand-encoded frame once. The historical
+  gateway timeout fits the same path, but its saved evidence did not include selector state, so
+  that attribution remains an inference. Both named cases passed 400 repetitions each under the
+  same CPU load after the repair, with unchanged timeouts.
+- The full-class loops also exposed a distinct missing disconnect callback in
+  `ClientTest.reconnectUsesNewAnnouncementsAndContinuingValuesAndResetsBackoff`, at repetition 251
+  before the repair and 110 afterward. CI for the bind fix separately timed out at
+  `ReplayClockResetTest.pair` waiting for the first native replay process's disconnect; its
+  unchanged rerun passed. Reports and stacks are preserved under the release-preparation build
+  reports. These are not claimed fixed by the write repair: the native server does not use this
+  library. The working hypothesis is EOF notification/demand ordering in the JDK client while
+  the injected aliveness clock is stationary, rather than lost values. A confirming run needs
+  the live socket's input state, receive demand and callback queue captured before teardown;
+  advancing or widening a timeout would hide that distinction. Neither was done.
