@@ -82,10 +82,21 @@ public final class MetricsEndpoint {
         out.counter("wpilog_pull_files_total", "Successful file verifications in this process, including growing file updates.", labels, progress.files());
         out.gauge("wpilog_pull_files_waiting", "Known unfinished files held by the disabled and connected gate.", labels, progress.waitingFiles());
       });
+      for (var provider : live.providers()) {
+        var labels = Map.of("provider", provider.name());
+        if (provider.lastRoundTripMs() != null) out.gauge("wpilog_provider_sample_duration_seconds", "Last completed provider sample cost.", labels, provider.lastRoundTripMs() / 1000.0);
+        out.gauge("wpilog_provider_sample_bytes", "Last completed provider sample payload size.", labels, provider.sampleBytes());
+        out.gauge("wpilog_provider_period_seconds", "Current provider sampling or follow interval.", labels, provider.periodSec());
+        if (provider.robotCpuSec() != null) out.gauge("wpilog_provider_robot_cpu_seconds", "Robot processor time between samples; not CPU attributed to this provider.", labels, provider.robotCpuSec());
+        out.gauge("wpilog_provider_lines_per_second", "Accepted lines in the current one-second bucket.", labels, provider.linesPerSec());
+        out.counter("wpilog_provider_dropped_lines_total", "Follower lines dropped by bounded rate, line size or buffer.", labels, provider.droppedLines());
+        out.counter("wpilog_provider_dropped_before_sync_total", "Stats samples dropped before an NT4 time estimate.", labels, provider.droppedBeforeSync());
+      }
       topics(out, config, live);
     } else out.gauge("wpilog_capture_open", "Whether a capture session is open.", Map.of(), 0);
     out.gauge("wpilog_gateway_clients", "Connected gateway clients; zero without a wired gateway.", Map.of(), components.gatewayClients());
     components.providers().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+      if (live != null && live.providers().stream().anyMatch(p -> p.name().equals(entry.getKey()))) return;
       var labels = Map.of("provider", entry.getKey());
       out.gauge("wpilog_provider_sample_duration_seconds", "Last completed provider sample cost.", labels, entry.getValue().seconds());
       out.gauge("wpilog_provider_sample_bytes", "Last completed provider sample payload size.", labels, entry.getValue().bytes());
@@ -148,7 +159,7 @@ public final class MetricsEndpoint {
   private static boolean number(Exposition out, Map<String, String> labels, Object value) {
     Number n = value instanceof Boolean b ? b ? 1 : 0 : value instanceof Number number ? number : null;
     if (n == null) return false;
-    out.gauge("nt_value", "Latest numeric NT4 publication; a sampled view, not the capture record.", labels, n);
+    out.gauge("nt_value", "Latest numeric NT4 or provider value; a sampled view, not the capture record.", labels, n);
     return true;
   }
 

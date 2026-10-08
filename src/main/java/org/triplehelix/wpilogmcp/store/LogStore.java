@@ -210,11 +210,25 @@ public final class LogStore implements AutoCloseable {
     return new PullStore(this, logManager, security, identity, clock);
   }
 
+  public record SshHosts(java.util.Map<String, String> fingerprints) {}
+  /** Non-robot followers also pin first contact; this file contains fingerprints, never credentials. */
+  public CompletableFuture<Void> recordHostKey(String address, String fingerprint) {
+    return captureAsync(io -> {
+      var path = root.resolve("ssh-hosts.json");
+      var pins = new java.util.TreeMap<String, String>();
+      if (java.nio.file.Files.exists(path)) pins.putAll(io.read(path, SshHosts.class).fingerprints());
+      pins.put(address, fingerprint); io.write(path, new SshHosts(pins)); return null;
+    });
+  }
+
   /** Pin lookup is queued like every identity read/modify/write; callers are background pullers. */
   public CompletableFuture<String> hostKey(String address) {
     return captureAsync(io -> {
       String serial = io.read(root.resolve("store.json"), Header.class).addresses().get(address);
-      if (serial == null) return null;
+      if (serial == null) {
+        var pins = root.resolve("ssh-hosts.json");
+        return java.nio.file.Files.exists(pins) ? io.read(pins, SshHosts.class).fingerprints().get(address) : null;
+      }
       var robot = io.read(root.resolve("robots").resolve(StoreFiles.component(serial)).resolve("robot.json"), Robot.class);
       return robot.contacts().stream().filter(c -> c.address().equals(address)).reduce((a, b) -> b)
           .map(Contact::hostKeyFingerprint).orElse(null);

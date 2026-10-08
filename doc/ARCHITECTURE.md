@@ -117,7 +117,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | Arrow's format library (`arrow-format`, with the Flatbuffers runtime) | The Flatbuffers schema and message headers of the Arrow IPC stream the data endpoint writes. Only the generated format classes: the arrays' layout is the server's own, on the heap. |
 | The JDK's HTTP client | The Blue Alliance API. |
 | The JDK's WebSocket client | The NT4 capture client. |
-| Maintained JSch (BSD-3-Clause, with ISC jBCrypt) | SSH exec and SFTP in `capture/pull`; JDK 17 supplies Ed25519 and RSA SHA-2. |
+| Maintained JSch (BSD-3-Clause, with ISC jBCrypt) | SSH connection and channels in `ssh`; JDK 17 supplies Ed25519 and RSA SHA-2. |
 | Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway and its loopback fixture; confined to `nt4/server`. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
@@ -165,8 +165,9 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and a bounded WebSocket adapter, used by configured capture and the loopback robot fixture |
-| `capture/pull` | Disabled-state gate, SSH/SFTP adapter, and the daemon coordinating transfer and device identity outside the NT4 loop |
-| `capture/context` | Device identity from the HAL sources, with source provenance and capture context |
+| `ssh` | One authenticated connection per host, pinned keys, bounded exec channels and independent SFTP/follow channels; reconnect only during NT4 presence |
+| `capture/pull` | Disabled-state gate, borrowed SFTP adapter, and transfer coordination outside the NT4 loop |
+| `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers and published provider state |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
@@ -193,7 +194,7 @@ placement; a recoverable truncated log is not verified. One failed verification 
 refetch. The REV parser has a strict verification entry point beside its ordinary recovery behavior;
 sync cache format 6 invalidates older reader/synchronization results. There is no remote deletion operation.
 
-`capture/pull.PullCoordinator` owns the SFTP connection and runs on a separate daemon. It reads
+`ssh.SharedSsh` owns each host connection. `capture/pull.PullCoordinator` borrows its SFTP channel and runs on a separate daemon. It reads
 the ordered capture listener's `/FMSInfo/FMSControlData` enabled bit: only a continuously disabled
 robot, settled for five seconds with NT4 still connected, permits work. Unknown state and each new
 connection close the gate. Polling, retries and pacing use a scheduler; neither SSH nor transfer
@@ -668,9 +669,49 @@ The key is never logged or returned by a tool.
 
 Game data is one file per season, bundled in the JAR. The current season's is loaded at startup, and the others on first use. It holds match timing, scoring, field geometry, and robot limits, transcribed from that season's final game manual, which it cites.
 
+## SSH context in the capture
+
+The providers need one authenticated connection per host, not one per feature. `ssh.SharedSsh`
+owns connection attempts and backoff on a host worker. The puller owns a borrowed SFTP channel,
+stats own one exec channel per sample, and each follower owns a long-lived channel and reader.
+NT4 presence admits them all; only file pulling has the disabled-state gate. First contact
+records identity even with pulling disabled. Pin writes and identity promotion use the store
+queue, while provider readers never wait for it.
+
+`ProcStats` parses explicit Linux ticks, pages and KiB; no unit comes from the pit computer.
+Busy CPU excludes idle/iowait and does not count guest time twice. Rates need two monotonic
+kernel samples, and program CPU needs the same PID and start tick. `StatsProvider` captures
+the NT4 offset and monotonic send time before exec; an estimate arriving with the reply cannot
+retroactively timestamp the request. Round-trip cost adapts the period from its base up to
+30 seconds and back down. The kernel/FPGA pairing and provider costs are additive manifest
+fields, with no store format change. No robot CPU cost is attributed to this shell command. Numeric quality and data-endpoint views
+respect `sampled: true` metadata even when adaptive periods are irregular.
+
+`ContextProviders` hands bounded results to the writer's ordered context hook. It declares
+`/Daemon/` entries, retains metadata changes and rollover declarations, and feeds the same live
+index as topics. The latest-value map adds their source; HTTP tools and metrics read published
+facts without joining provider workers. Tails accept 200 lines per second per file, bound
+pending history to 1000 lines and individual lines to 64 KiB, and record losses. Buffered
+pre-session receipt times use the next measured offset, clamped at zero with a metadata note.
+Missing sources stand down for that session; SSH loss resets channels without inventing text.
+
 ## Concurrency
 
 In stdio mode the server handles one message at a time. In HTTP mode, requests run in parallel on a fixed pool of max(4, 2 × CPU count) threads, with up to 64 further threads for event streams. Requests are not serialized per session. Directory/key registration is serialized only with that session's removal, through the session map's per-key computation; validation and filesystem I/O happen beforehand. DELETE, expiry, and transport shutdown discard the session's permissions together, so a late registration cannot resurrect them. Keys remain in memory, with the most recent live registration taking precedence over the file. Registration is HTTP-only, behind the Origin check and refused on any non-loopback bind: a model's tool call cannot grant itself access.
+
+A single-thread loop serializes like a lock. Its blocking work is a budget: keep it only where
+ordering or backpressure requires it, with a stated outcome. Capture record writes still order
+records; periodic `channel.force` runs on the writer's worker, and close/rollover are durability
+barriers covered by capture's 30-second shutdown bound. SSH connect/channel opens have five-second
+deadlines; stats exec has a 30-second bound, on its own worker. No SSH request runs on NT4.
+`LoopWatchdog` posts at most one probe and measures it from a separate thread, logging a stall
+of at least a second once, then recovery. It neither disconnects a peer nor changes timeouts.
+
+The failure behind this rule was the pair of Windows keepalive drops of October 8 recorded in
+the pit plan's section 17: delayed application loops judged healthy peers dead, with capture
+fsync a likely source of the delay. A loop must never charge its own backlog to a peer.
+Pong receipt and replies stay on network threads; only a sent, unanswered ping can expire.
+A check scheduled on the stalled loop cannot detect that loop's stall while it is happening.
 
 The design keeps shared mutable state small:
 

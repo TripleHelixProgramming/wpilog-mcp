@@ -196,6 +196,81 @@ servers:
 | `capture.pull.ssh.key` | Unencrypted private-key path instead of password; supports `~/` and `${NAME}`. Password and key cannot both be configured |
 | `capture.pull.ssh.accept_changed_host_key` | Default `false`. Explicitly accept a changed pinned key when password or private-key authentication is configured; verify the replacement first and turn this off afterwards |
 
+#### SSH stats and followed files
+
+When `capture.pull.ssh` is present (even `{}`), or pulling is enabled, stats and the program
+console follow are **on by default**. Pulling remains disabled unless explicitly enabled.
+Stats and tails run while the robot is enabled too, and stop making SSH requests when NT4
+is disconnected. One connection per configured host carries independent SFTP, sample and
+follow channels; connection failures retry after 1, 2, 4, 8, 16, then 30 seconds.
+The defaults make the providers available for shop testing; revisit their measured cost on
+roboRIO 1 and 2 after the shop measurement.
+
+| Key | Meaning |
+|---|---|
+| `capture.stats` | Optional system-stats block; absent with SSH configured means enabled |
+| `capture.stats.enabled` | Boolean; set `false` to disable stats |
+| `capture.stats.period_sec` | Positive seconds through `30`, default `2`; slow samples double the interval up to 30 seconds, fitting samples halve it toward this base |
+| `capture.stats.budget_ms` | Positive milliseconds through `30000`, default `100`; the sample round-trip budget for adapting the period |
+| `capture.tail` | List of files; absent with SSH configured follows `/home/lvuser/FRC_UserProgram.log` as `program_console`; `[]` disables following |
+| `capture.tail[].path` | Absolute remote file path; required with `role` when not using `files` |
+| `capture.tail[].role` | One entry-path component; known roles are `program_console`, `kernel`, `syslog`, `journal` |
+| `capture.tail[].host` | Optional other host; omission means the connected robot and `capture.pull.ssh` settings |
+| `capture.tail[].user` | Other host's account, default `lvuser`; supports `${NAME}` |
+| `capture.tail[].password` | Other host's password, required to be an environment reference `${NAME}`, never a literal; omitted means empty |
+| `capture.tail[].key` | Other host's unencrypted private-key path, required to be an environment reference `${NAME}`; choose key or password |
+| `capture.tail[].port` | Other host's SSH port, default `22`; integer `1`–`65535` |
+| `capture.tail[].files` | Alternative list of `{path, role}` under one host; do not combine with outer `path` or `role` |
+
+```yaml
+capture:
+  robot: {team: 2363}
+  store: ~/wpilog-store
+  pull:
+    ssh: {}                 # default lvuser, empty password; pulling is still off
+  stats: {period_sec: 2, budget_ms: 100}
+  tail:
+    - {path: /home/lvuser/FRC_UserProgram.log, role: program_console}
+    - {path: /var/log/messages, role: syslog}
+    - host: coprocessor.local
+      user: service
+      key: ${COPROCESSOR_SSH_KEY}
+      files:
+        - {path: /var/log/application.log, role: program_console}
+```
+
+Stats make one bounded exec request per sample for `/proc` and `df -Pk`, with the device's
+clock tick and page sizes. `/Daemon/roboRIO/` entries carry explicit units, `source: ssh`,
+`host`, `sampled: true` and `period_sec`. The command's **send** time is mapped to FPGA time;
+samples sent before an NT4 estimate are counted and dropped. CPU and network interval rates
+need two samples; a missing or ambiguous deployed JAR omits program fields with a reason.
+The JAR path comes from the quoted `-jar` argument in `/home/lvuser/robotCommand`, then exact
+arguments in `/proc/*/cmdline`. A custom launcher that does not expose that path is reported.
+Exec replies are bounded to 64 KiB and 30 seconds; sample waits never occupy the NT4 loop.
+
+Each tail uses `tail -n 0 -F -s 0.25`, with one string record per line at **receipt** time.
+Kernel and journal roles use `dmesg -w` and `journalctl -f` when supported, else poll the
+configured file by inode and byte offset at the current stats period. Missing/unreadable
+sources log a reason and stand down for the session. An SSH reconnect resumes following,
+but cannot recover lines written during the interruption; the later system-log pull is still
+planned. Each file admits 200 lines per one-second bucket and bounds a line to 64 KiB and
+pending history to 1000 lines. Excess is counted and one drop notice is recorded after a full second without another
+drop, including when a sustained burst ends in silence. Pre-session lines retain receipt time, mapped through the next session's measured offset
+and clamped at zero, with `buffered_before_session` in metadata.
+
+`list_sessions` reports `providers[]` and `get_latest_values` includes these entries with
+`source: ssh` or `tail`. Provider state and costs are also in `session.json` under
+`capture_stats.providers`; `capture_stats.kernel_clock` pairs `uptime_sec`,
+`fpga_timestamp_sec`, `offset_sec` (FPGA minus uptime), and `round_trip_ms`. Processor time
+between samples measures the whole robot, not CPU attributed to the provider. Numeric values
+appear as `nt_value` metrics, with provider duration, period, processor time and drop counters.
+Unsupported stats output stands down for the session with its reason; a new session retries it. These are sampled views; the capture remains the record.
+
+Other hosts pin fingerprints locally in `ssh-hosts.json`, never credentials. Robot contacts
+continue to use `robot.json`; pins in this store are not copied from a peer. If another host's
+key changes and authentication would send a password or key, verify it and remove that host's
+pin before restarting. Never place authentication secrets directly in the tail block.
+
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
 Unknown capture keys and invalid values name the key in the startup error. Capture requires
 `transport: http` and `idle_exit_minutes: 0` (the default). A robot that is off is normal: HTTP
@@ -257,7 +332,7 @@ Pulling is opt-in: set `capture.pull.enabled: true` after the [shop test](DEVELO
 The gate uses bit 0 of `/FMSInfo/FMSControlData`; enabled, unknown or disconnected state pauses the
 worker within its current 64 KiB block. Reopening the gate resumes at the held offset after a content
 check. The cap also covers fallback comparison reads. SSH errors retry; they do not stop HTTP or NT4.
-The server log reports starts, pauses, completion and failures; `list_sessions` comes later. One
+The server log reports starts, pauses, completion and failures; `list_sessions` reports matched imports. One
 recursive listing serves each transfer pass, refreshing after ten seconds during a long pass.
 Hash commands read the whole held prefix on the robot, using CPU and storage bandwidth outside
 the transfer byte cap. Their deadline is 30 seconds plus one second per 256 KiB, rounded up; SSH
@@ -856,7 +931,10 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
 | `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: copied payload bytes, including retransfers, and successful verifications, including growing-file updates. |
 | `wpilog_pull_files_waiting` | Per-`robot` known unfinished files at a closed gate, from the last listing; unknown remote files are not counted. |
-| `wpilog_provider_sample_duration_seconds`, `wpilog_provider_sample_bytes` | Last completed sample cost by `provider`; no samples until providers are implemented. |
+| `wpilog_provider_sample_duration_seconds`, `wpilog_provider_sample_bytes` | Last completed sample's round trip and response bytes, by `provider`. |
+| `wpilog_provider_period_seconds`, `wpilog_provider_robot_cpu_seconds` | Current sampling period and the robot's processor time between samples, by `provider`; unknown processor time is omitted. |
+| `wpilog_provider_lines_per_second`, `wpilog_provider_dropped_lines_total` | Followed-file line rate and process-lifetime dropped lines, by `provider`. |
+| `wpilog_provider_dropped_before_sync_total` | Process-lifetime stats samples dropped before an NT4 time estimate, by `provider`; their timestamps are never guessed. Tails use their bounded buffer while waiting. |
 | `wpilog_jvm_memory_used_bytes`, `wpilog_jvm_memory_committed_bytes`, `wpilog_jvm_memory_max_bytes` | Platform MBean memory by `area` (`heap`, `nonheap`); an undefined maximum is omitted. |
 | `wpilog_jvm_gc_collections_total`, `wpilog_jvm_gc_duration_seconds_total` | Collection count and total collection seconds by `collector`; unsupported MBean values are omitted. |
 

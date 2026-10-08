@@ -631,6 +631,30 @@ proxy credential. On the oldest supported and current releases, manually exercis
 agents/Logs/plots/uploads/mirror, Claude re-registration, lease expiry after closing the window,
 and offline mirror access through `servers.yaml`.
 
+### SSH context provider checks
+
+```bash
+./gradlew test --tests '*StatsProviderTest' --tests '*TailProviderTest' --tests '*SharedSshTest' \
+  --tests '*ProviderCaptureTest' --tests '*ContextProviderStateTest' --tests '*ProviderConfigTest' --tests '*LoopWatchdogTest'
+```
+
+This suite
+uses only synthetic `/proc` text and generated logs. MINA SSHD serves exact scripted commands,
+never a general shell: independent expected CPU fractions, kernel tick/page/KiB conversions,
+network rates, send-time stamping and missing-sync drops; injected period/backoff clocks;
+append, rotation, split UTF-8, missing files and SSH reconnect; line caps and bounded buffering.
+The full provider path shares one SSH authentication with device identity, records while the
+robot is enabled, and compares HTTP/live/fresh-file results through the conformance and
+differential readers. Resolver, metadata, manifest, metrics and configuration claims are checked.
+The outside-loop watchdog is tested with two independent manual clocks. These tests run in
+ordinary Linux and Windows CI, with no robot, native SSH executable or locale dependency.
+
+Before a shop deployment, measure the two-second/100 ms defaults on roboRIO 1 and 2; check
+`/proc` and `df` output and permissions, the deployed JAR lookup, console file, tail options,
+`dmesg -w`/`journalctl -f`, rotations and resource cost. Scripted MINA replies prove the parser,
+transport and capture path, not the shell utilities or permissions on an NI image. A stratified
+real-log replay is sufficient for this provider addition; the full set runs before the next tag.
+
 ## Changing or Adding a Tool
 
 A tool is more than its code: agents read its description and schema, and several tests hold them to what the code does. When you add a tool or change what one takes or returns:

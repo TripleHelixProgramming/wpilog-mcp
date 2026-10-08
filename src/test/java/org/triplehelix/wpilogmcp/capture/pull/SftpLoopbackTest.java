@@ -34,12 +34,18 @@ class SftpLoopbackTest {
       return session = super.getSession(user, host, port);
     }
   }
-  static final class Deadlines implements SftpTransport.Deadlines {
+  static final class Deadlines implements org.triplehelix.wpilogmcp.ssh.JschConnection.Deadlines {
     volatile Runnable pending;
     volatile long delay;
     volatile boolean cancelled;
     public Runnable schedule(Runnable action, long delayMs) { delay = delayMs; pending = action; return () -> cancelled = true; }
     public void close() {}
+  }
+
+  private static SftpTransport connected(FakeRoboRio rio, Connection jsch, Deadlines deadlines) throws IOException {
+    var settings = config(rio.port(), "", false);
+    return SftpTransport.using(org.triplehelix.wpilogmcp.ssh.JschConnection.connect("127.0.0.1", settings.ssh(), null, jsch, deadlines),
+        settings.directories(), "127.0.0.1", true);
   }
 
   @Test void deviceFilesSftpOffsetsAndExactHashUseRealEd25519Ssh() throws Exception {
@@ -68,7 +74,7 @@ class SftpLoopbackTest {
       rio.beforeHash = h -> { entered.countDown(); assertTrue(release.await(10, TimeUnit.SECONDS)); };
       rio.onKeepalive = n -> alive.countDown();
       var jsch = new Connection(); var deadlines = new Deadlines();
-      try (var remote = SftpTransport.connect("127.0.0.1", config(rio.port(), "", false), null, jsch, deadlines)) {
+      try (var remote = connected(rio, jsch, deadlines)) {
         assertEquals("ssh-ed25519", jsch.session.getHostKey().getType());
         assertEquals(5000, jsch.session.getServerAliveInterval()); assertEquals(3, jsch.session.getServerAliveCountMax());
         // Accelerate actual socket keepalives, not the production command deadline. No clock sleeps.
@@ -124,7 +130,7 @@ class SftpLoopbackTest {
     try (var rio = new FakeRoboRio(temp.resolve("jail"), "HARNESS-JAIL", "")) {
       Files.write(rio.logs().resolve("short.wpilog"), new byte[] {1, 2});
       var jsch = new Connection();
-      try (var remote = SftpTransport.connect("127.0.0.1", config(rio.port(), "", false), null, jsch, null)) {
+      try (var remote = connected(rio, jsch, null)) {
         for (String command : List.of("id", "head -c 1 -- '/../outside' | sha256sum",
             "head -c 3 -- '/home/lvuser/logs/short.wpilog' | sha256sum")) {
           var channel = (com.jcraft.jsch.ChannelExec) jsch.session.openChannel("exec");

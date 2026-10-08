@@ -145,6 +145,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
   @Override public void flushed(CaptureWriter.Session session) { update(session, false); }
   @Override public void closed(CaptureWriter.Session session) { update(session, true); }
   @Override public void identity(CaptureWriter.Session session) { update(session, true); }
+  @Override public void providers(CaptureWriter.Session session) { update(session, true); }
   public CompletableFuture<Void> completion() { return completion; }
   private void awaitPrevious() throws IOException {
     try { completion.get(); }

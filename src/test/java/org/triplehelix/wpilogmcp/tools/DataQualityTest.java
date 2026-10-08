@@ -364,4 +364,15 @@ class DataQualityTest {
       assertEquals(0, q.gapCount());
     }
   }
+  @Test void sampledMetadataKeepsAdaptivePeriodsPeriodicAndMalformedMetadataDoesNotClaimIt() {
+    assertTrue(DataQuality.sampled("{\"sampled\":true,\"period_sec\":2}"));
+    for (String text : List.of("", "{}", "[]", "{sampled:false}", "{sampled:'true'}")) assertFalse(DataQuality.sampled(text));
+    var values = new java.util.ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+    double time = 0;
+    for (int n = 0; n < 6; n++) { values.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(time, (double) n)); time += 1 << n; }
+    assertEquals(DataQuality.Sampling.CHANGE_ONLY, DataQuality.fromValues(values).sampling());
+    var measured = DataQuality.fromSegments(List.of(values), true);
+    assertEquals(DataQuality.Sampling.PERIODIC, measured.sampling());
+    assertTrue(measured.reasons().stream().anyMatch(reason -> reason.contains("irregular timing")));
+  }
 }

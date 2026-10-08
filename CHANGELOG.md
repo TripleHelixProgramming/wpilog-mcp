@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Pit server
 
+- SSH-configured captures now record adaptive roboRIO system stats and followed console/files under `/Daemon/`, sharing one host connection with pulling. Previously these operating-system measurements and live console lines were absent. Send/receipt-time mapping, bounded buffering, reported drops and provider costs appear in live tools, manifests and metrics; both providers default on for shop testing, with explicit opt-outs.
 - The read-only HTTP store door serves configured catalogs, session manifests, ranged file reads and prefix hashes. Previously stores were readable only through their filesystem. Inbox files, strays, credentials and lease-only directories remain outside the door.
 - Opt-in `capture.pull` fetches robot WPILOG and REV files over SFTP only while the connected robot is disabled and settled. Content checks protect resume and DataLogManager renames, reused names retain old generations, and verified copies join sessions by serial and near-zero correlation. Previously the server had no robot-file transport. Pulling stays off by default pending the shop test and never changes or deletes robot files.
 - Laptop uploads can reach a pit server's verified importer over HTTP, retaining the source, checking its hash and reporting duplicates. Previously network access could read sessions but not send a log; server-path imports and assignments remain loopback-only.
@@ -102,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Synthetic MINA SSH scripts now check stats units, rates and clock mapping, adaptive budgets, tail limits, missing sources, rotations and reconnects, with provider conformance/differential checks. Previously SSH tests covered identity and file transfer only. An outside-loop watchdog test pins stall reporting independently of the stalled loop.
 - Injected-clock regressions cover 1.5-second gateway/listener/disk stalls, the unchanged one-second unanswered-ping deadline, network-thread pong replies, bounded client receive work, and close/rollover force barriers. Capture and replay failures now name disconnects instead of missing topics or stalled placement; previously these paths obscured the two preserved Windows failures.
 - Release headings are checked for uniqueness, preventing unreleased work from being hidden under a duplicated published version.
 - Gateway bind checks now reuse a port left in server-side TIME_WAIT; the earlier option getter could pass when reuse was enabled only after binding. Listener failures also pin the reset backoff, and shutdown failures must report their cause without claiming that the deadline expired.

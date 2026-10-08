@@ -187,6 +187,10 @@ public final class EntryData {
     return DataQuality.fromValues(values).sampling().name().toLowerCase(java.util.Locale.ROOT);
   }
 
+  public static String sampling(LogData log, Series series) {
+    return DataQuality.fromSegments(log, series.entry(), List.of(series.values())).sampling().name().toLowerCase(java.util.Locale.ROOT);
+  }
+
   /** Suffixes a name may end with, and the unit each states. */
   private static final String[][] UNIT_SUFFIXES = {
       {"MetersPerSecondSquared", "m/s^2"}, {"MetersPerSecSquared", "m/s^2"},

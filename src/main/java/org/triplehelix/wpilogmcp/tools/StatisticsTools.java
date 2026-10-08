@@ -108,7 +108,7 @@ public final class StatisticsTools {
       var measured = flatten(measuredWindows);
       // Quality is scored on every sample in scope, before non-finite values are dropped, so
       // NaN is counted and the timing classification is of the series as logged
-      var quality = DataQuality.fromSegments(scope.split(signal.values()));
+      var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
       var data = measured.stream()
           .mapToDouble(tv -> toDouble(tv.value()))
           .toArray();
@@ -298,8 +298,8 @@ public final class StatisticsTools {
             + "second signal follows the first.");
       }
 
-      DataQuality q1 = DataQuality.fromSegments(scope.split(v1));
-      DataQuality q2 = DataQuality.fromSegments(scope.split(v2));
+      DataQuality q1 = DataQuality.fromSegments(log, s1.entry(), scope.split(v1));
+      DataQuality q2 = DataQuality.fromSegments(log, s2.entry(), scope.split(v2));
       var quality = q1.qualityScore() <= q2.qualityScore() ? q1 : q2;
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
@@ -562,7 +562,7 @@ public final class StatisticsTools {
       bounds.addProperty("lower", low);
       bounds.addProperty("upper", high);
 
-      var quality = DataQuality.fromSegments(scope.split(signal.values()));
+      var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addFollowup("Use find_peaks if looking for signal extrema rather than statistical outliers");
@@ -672,7 +672,7 @@ public final class StatisticsTools {
         }
       }
 
-      var quality = DataQuality.fromSegments(scope.split(signal.values()));
+      var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addFollowup("Use get_statistics to understand baseline before interpreting peaks");
@@ -813,7 +813,7 @@ public final class StatisticsTools {
       }
       stats.addProperty("rate_count", rateCount);
 
-      var quality = DataQuality.fromSegments(scope.split(signal.values()));
+      var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
           .addGuidance("Derivatives amplify noise — increase window_size for smoother results");
@@ -998,8 +998,8 @@ public final class StatisticsTools {
         }
       }
 
-      var q1 = DataQuality.fromSegments(scope.split(v1));
-      var q2 = DataQuality.fromSegments(scope.split(v2));
+      var q1 = DataQuality.fromSegments(log, s1.entry(), scope.split(v1));
+      var q2 = DataQuality.fromSegments(log, s2.entry(), scope.split(v2));
       var quality = q1.qualityScore() <= q2.qualityScore() ? q1 : q2;
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()

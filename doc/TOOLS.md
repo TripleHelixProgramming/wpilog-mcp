@@ -173,7 +173,7 @@ published view as `GET /health`; a waiting gateway does not stop capture or pull
 **Returns:** `sessions[]` with `id`, `path` (capture, or null), `started_at`, `ended_at` (null
 while open), `robot` (`serial_number`, `comments`, `address`, `basis`), `connected`,
 `topic_count`, `records`, `bytes`, `bytes_per_sec`, `event`, `match` (`type`, `number`),
-`cost[]`, `thinned[]`, `excluded[]`, `imports[]`, `end_reason` and `counts_basis`.
+`cost[]`, `thinned[]`, `excluded[]`, `imports[]`, `providers[]`, `end_reason` and `counts_basis`.
 `cost` contains the ten topics with the greatest last-minute byte rate, each with `name`,
 `records`, `bytes` and `bytes_per_sec`; ties are sorted by name. Counts cover captured value
 records across rollover files, including record headers, excluding declarations, finishes, context and copied rollover schema seeds. The writer publishes counts every 250 ms. Rates divide bytes in the last minute
@@ -186,15 +186,23 @@ correlation uses its recorded offset; time-overlap placement has a null offset.
 `limits.sessions` and each row's `limits.cost` report true totals when cut. An empty store
 is `not_applicable` with its reason.
 
+`providers[]` contains `name`, `state`, `reason` (stand-down or partial-sample explanation),
+`period_sec`, `last_round_trip_ms`, `robot_cpu_sec` (whole-robot processor time between samples,
+not CPU attributed to this provider), `lines_per_sec` (accepted in the current second),
+`dropped_lines`, `dropped_before_sync`, `records`, `bytes`, and `sample_bytes` (last stats reply).
+Unknown measurements are null. Provider records/bytes cover the session across rollover files;
+drop counters cover the provider's process lifetime. They are separate from NT4 topic counts.
+The same provider summary is retained in the manifest; old manifests return an empty list.
+
 ### `get_latest_values`
 
-Read the latest values by NT4 topic name or its `NT:` capture name.
+Read the latest values by NT4 topic name, its `NT:` capture name, or a `/Daemon/` provider entry name.
 
 **Parameters:**
 
 - `entries` (required): Array of 1 to 2000 nonempty names; repeated names are returned once.
 
-**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`) and `missing[]`.
+**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`, `source`) and `missing[]`. `source` is `nt4`, `ssh`, or `tail`.
 The timestamp is the robot's clock. Age is robot now minus that timestamp, using measured NT4
 time sync, independent of the laptop's calendar clock; before sync it is null. A future
 publisher timestamp can have a negative age. Type is the announce's authoritative NT4 string.
@@ -559,6 +567,16 @@ The conventions:
 **Parameters:**
 - `path` (required): Path to the log file
 - `roles` (optional): Only these roles, as an array of role names (default: all). An unknown role is an error that lists them, and so is anything but an array of names, or an empty array
+
+The capture's `/Daemon/` convention records context alongside NT4 entries without an `NT:`
+prefix. `/Daemon/roboRIO/` holds sampled operating-system measurements with units in their
+names; entry metadata gives the SSH host and period. `/Daemon/Tail/<host>/<role>` holds
+received text. The resolver recognizes `program_console`, `kernel`, `syslog`, and `journal`
+as followed-file roles, including `program_console` in the console-text role; unknown roles
+remain ordinary string entries. `search_strings`, timeline error counts and CAN text analysis
+read them through the same text path as `messages` and `console` in robot logs. Tail timestamps
+are receipt times, not timestamps parsed from the line; pre-session buffering is stated in
+metadata. A drop notice is recorder text, not a robot message.
 
 **Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `vision_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
 

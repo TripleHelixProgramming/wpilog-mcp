@@ -64,6 +64,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default void value(Session session, EntryInfo entry, ValueFrame value, WpilogOutput.Written written) throws IOException {}
     default void flushed(Session session) throws IOException {}
     default void timeSync(Session session, long serverTimeUs) throws IOException {}
+    default void providers(Session session) throws IOException {}
     default void fileClosed(Session session) throws IOException {}
     default void closed(Session session) throws IOException {}
     default void cost(String topic, TopicCost.Snapshot cost) {
@@ -89,6 +90,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private final List<ClosedFile> files = new ArrayList<>();
     private final Map<String, TopicCost> costs = new LinkedHashMap<>();
     private volatile Map<String, TopicCost.Snapshot> closedCosts = Map.of();
+    private List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers = List.of();
+    private org.triplehelix.wpilogmcp.capture.context.ProviderStatus.KernelClock kernelClock;
     private Session(Path path, Instant startedAt, String address, CapturePolicy policy) {
       this.path = path; this.startedAt = startedAt; this.address = address; this.policy = policy;
     }
@@ -112,7 +115,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var values = new java.util.TreeMap<String, TopicCost.Snapshot>();
       costs.forEach((name, cost) -> values.put(name, cost.snapshot(observedAtUs)));
       return new CaptureStats(values.size(), values.values().stream().mapToLong(TopicCost.Snapshot::records).sum(),
-          values.values().stream().mapToLong(TopicCost.Snapshot::bytes).sum(), values, policy.exclude(), policy.thinUs());
+          values.values().stream().mapToLong(TopicCost.Snapshot::bytes).sum(), values, policy.exclude(), policy.thinUs(), providers, kernelClock);
     }
   }
 
@@ -130,6 +133,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private final OutputFactory outputs;
   private final long maxFileBytes;
   private final Map<Integer, Topic> topics = new LinkedHashMap<>();
+  private final Map<String, EntryInfo> contexts = new LinkedHashMap<>();
+  private List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers = List.of();
+  private org.triplehelix.wpilogmcp.capture.context.ProviderStatus.KernelClock kernelClock;
   private final Map<Integer, Announce> announced = new LinkedHashMap<>();
   private Session session;
   private WpilogOutput output;
@@ -200,7 +206,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
           session = null; // A failed new create must not overwrite the previous session's reason.
           var device = identity != null && identity.address().equals(address) ? identity : null;
           session = new Session(observer.create(address, now, null, device), now, address, policy);
-          session.identity = device;
+          session.identity = device; session.providers = providers; session.kernelClock = kernelClock;
         } else {
           if (identity != null && identity.address().equals(address)) session.identity = identity;
           session.relocate(observer.create(address, session.startedAt(), session, session.identity));
@@ -272,8 +278,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private void writeIdentity() throws IOException {
     if (session.identity == null) return;
     int bytes = identitySize();
-    if (output.size() + bytes + (long) topics.size() * FINISH_RESERVE_BYTES > maxFileBytes) {
-      if (12L + bytes + (long) topics.size() * FINISH_RESERVE_BYTES > maxFileBytes) {
+    if (output.size() + bytes + (long) activeEntries() * FINISH_RESERVE_BYTES > maxFileBytes) {
+      if (12L + bytes + (long) activeEntries() * FINISH_RESERVE_BYTES > maxFileBytes) {
         throw new IOException("capture.max_file_bytes cannot hold robot identity context");
       }
       closeFile(); nextFile(); return;
@@ -291,14 +297,60 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     observer.value(session, entry, frame, written); output.finish(id, serverUs); session.sizeBytes = output.size();
   }
 
+  /** Ordered provider hook: its own entry ids, metadata updates, rollover and the same live index. */
+  public int recordContext(String name, String type, Object value, long timestampUs, JsonObject metadata) {
+    if (output == null || failed) return 0;
+    if (!name.startsWith("/Daemon/")) throw new IllegalArgumentException("Context entries belong under /Daemon/");
+    var nt = NtType.fromWpilog(type); byte[] payload = WpilogOutput.payload(nt.code(), value);
+    String meta = metadata.toString(); int[] bytes = {0};
+    io(() -> {
+      var before = contexts.get(name);
+      if (before != null && !before.type().equals(type)) throw new IOException("Provider entry changed type: " + name);
+      int declaration = before == null ? WpilogOutput.startSize(name, type, meta, timestampUs)
+          : before.metadata().equals(meta) ? 0 : WpilogOutput.metadataSize(meta, timestampUs);
+      room(declaration + WpilogOutput.recordSize(Integer.MAX_VALUE, timestampUs, payload.length), before == null ? 1 : 0);
+      var entry = contexts.get(name);
+      if (entry == null) {
+        entry = new EntryInfo(output.start(name, type, meta, timestampUs), name, type, meta);
+        contexts.put(name, entry); observer.entry(session, entry);
+      } else if (!entry.metadata().equals(meta)) {
+        output.setMetadata(entry.id(), meta, timestampUs);
+        entry = new EntryInfo(entry.id(), name, type, meta); contexts.put(name, entry); observer.metadata(session, entry);
+      }
+      var frame = new ValueFrame(entry.id(), timestampUs, nt.code(), value);
+      var written = output.append(entry.id(), timestampUs, payload);
+      session.minUs = Math.min(session.minUs, timestampUs); session.maxUs = Math.max(session.maxUs, timestampUs);
+      session.sizeBytes = output.size(); observer.value(session, entry, frame, written); bytes[0] = written.size();
+    });
+    return bytes[0];
+  }
+  /** Facts are copied on the writer thread; state changes publish immediately, costs on flush. */
+  public void providers(List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> values,
+      org.triplehelix.wpilogmcp.capture.context.ProviderStatus.KernelClock kernel) {
+    boolean changed = providers.size() != values.size();
+    if (!changed) for (int i = 0; i < values.size(); i++) {
+      var a = providers.get(i); var b = values.get(i);
+      if (!a.name().equals(b.name()) || !a.state().equals(b.state()) || !java.util.Objects.equals(a.reason(), b.reason())) changed = true;
+    }
+    providers = List.copyOf(values); kernelClock = kernel;
+    if (session != null && output != null) {
+      session.providers = providers; session.kernelClock = kernelClock;
+      if (changed) io(() -> observer.providers(session));
+    }
+  }
+  private int activeEntries() { return topics.size() + contexts.size(); }
+  private long contextDeclarations() {
+    return contexts.values().stream().mapToLong(e -> WpilogOutput.startSize(e.name(), e.type(), e.metadata(), serverUs)).sum();
+  }
+
   /** Reserve every finish before appending, so even the closed file stays below the bound. */
   private void room(int bytes, int extraEntries) throws IOException {
-    long reserved = (topics.size() + (long) extraEntries) * FINISH_RESERVE_BYTES;
+    long reserved = (activeEntries() + (long) extraEntries) * FINISH_RESERVE_BYTES;
     if (output.size() + bytes + reserved <= maxFileBytes) return;
     long declarations = topics.values().stream().mapToLong(t -> WpilogOutput.startSize(
         t.entry.name(), t.entry.type(), rolloverMetadata(t), serverUs)
         + (t.schema == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, ((byte[]) t.schema.value()).length))).sum();
-    if (12 + declarations + identitySize() + bytes + reserved > maxFileBytes) {
+    if (12 + declarations + contextDeclarations() + identitySize() + bytes + reserved > maxFileBytes) {
       throw new IOException("capture.max_file_bytes cannot hold the active declarations, record, and finishes");
     }
     closeFile();
@@ -309,7 +361,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     long declarations = topics.values().stream().mapToLong(t -> WpilogOutput.startSize(
         t.entry.name(), t.entry.type(), rolloverMetadata(t), serverUs)
         + (t.schema == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, ((byte[]) t.schema.value()).length))).sum();
-    if (12 + declarations + identitySize() + (long) topics.size() * FINISH_RESERVE_BYTES > maxFileBytes) {
+    if (12 + declarations + contextDeclarations() + identitySize() + (long) activeEntries() * FINISH_RESERVE_BYTES > maxFileBytes) {
       throw new IOException("capture.max_file_bytes cannot hold identity and active declarations");
     }
     session.path = session.path().resolveSibling("capture-" + ++session.fileNumber + ".wpilog");
@@ -327,6 +379,11 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         session.minUs = Math.min(session.minUs, seed.timestampUs()); session.maxUs = Math.max(session.maxUs, seed.timestampUs());
         observer.value(session, topic.entry, seed, written);
       }
+    }
+    for (var before : List.copyOf(contexts.values())) {
+      int id = output.start(before.name(), before.type(), before.metadata(), serverUs);
+      var entry = new EntryInfo(id, before.name(), before.type(), before.metadata());
+      contexts.put(entry.name(), entry); observer.entry(session, entry);
     }
     session.sizeBytes = output.size();
   }
@@ -406,6 +463,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     observer.flushed(session);
     if (session.observedAtUs >= nextReportUs) {
       session.costs.forEach((name, cost) -> observer.cost(name, cost.snapshot(session.observedAtUs)));
+      session.providers.forEach(provider -> LoggerFactory.getLogger(CaptureWriter.class).info("Capture provider {}: {}", provider.name(), provider));
       nextReportUs = session.observedAtUs + REPORT_PERIOD_US;
     }
   }
@@ -420,7 +478,10 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     try { finishForce(); }
     catch (IOException e) { failure = e; }
     finally { forceThread.shutdown(); }
-    try { for (var topic : topics.values()) closing.finish(topic.entry.id(), serverUs); }
+    try {
+      for (var topic : topics.values()) closing.finish(topic.entry.id(), serverUs);
+      for (var entry : contexts.values()) closing.finish(entry.id(), serverUs);
+    }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     try { closing.close(); }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
@@ -440,7 +501,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   @Override public void close() {
     if (output == null) return;
-    io(() -> { closeFile(); topics.clear(); observer.closed(session); });
+    io(() -> { closeFile(); topics.clear(); contexts.clear(); observer.closed(session); });
   }
 
   @FunctionalInterface private interface IO { void run() throws IOException; }
@@ -451,7 +512,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       if (session != null) session.endReason = "Capture write failed: " + e.getMessage();
       LoggerFactory.getLogger(CaptureWriter.class).error("Capture recording stopped until a new robot clock: {}", e.getMessage());
       try { closeFile(); } catch (IOException close) { e.addSuppressed(close); }
-      topics.clear();
+      topics.clear(); contexts.clear();
       if (session != null) {
         session.open = false; session.endedAt = wallClock.instant(); session.observedAtUs = loop.nowUs();
         try { observer.closed(session); }

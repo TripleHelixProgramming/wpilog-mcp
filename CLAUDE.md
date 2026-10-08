@@ -152,6 +152,7 @@ This server handles concurrent access from multiple MCP clients (especially in H
 - Assume any public method on shared state (caches, registries, managers) may be called concurrently.
 - Prefer Caffeine caches, `ConcurrentHashMap`, volatile fields, and atomics over manual locking, and keep the locks few.
 - When manual locking is necessary, hold locks for the shortest time possible and never perform I/O or blocking operations while holding a lock.
+- A single-thread loop serializes like a lock. Blocking work on it has a stated budget and outcome, and stays only where it supplies ordering or backpressure. Never charge the loop's own delay to a peer; detect loop stalls from outside the loop. See the Windows keepalive failure in `doc/ARCHITECTURE.md`.
 - Serialize store mutations on the store queue and under its cross-process lock. Recording and snapshot readers must not wait behind imports: coalesce asynchronous manifest updates, and keep shutdown waits bounded. See `doc/ARCHITECTURE.md` for the ownership boundaries.
 - The live-value wait lock only orders registration, removal and shutdown admission. Claim a waiter under that lock and complete its future outside it; completion can run another caller's code. Never join the NT4 loop or store queue while holding it.
 - Watch for TOCTOU bugs: check-then-act sequences on shared state must be atomic (look again under the lock, compute through the cache's per-key computation, replace a placeholder only if it is still there, claim a file with an atomic create).

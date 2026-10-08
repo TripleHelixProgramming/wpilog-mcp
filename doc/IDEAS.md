@@ -442,6 +442,11 @@ Grafana dashboard live in `doc/metrics`. The optional gateway now serves dashboa
 the pit computer and reports its client count; provider startup remains later work.
 The capture remains the full record behind the sampled dashboard.
 
+The roboRIO stats and followed-file providers are implemented on one shared SSH connection.
+They are enabled with SSH configuration for shop testing, with cost reports and bounded tails;
+measure the defaults and NI-image command support before recommending them to teams. JVM/JFR,
+vision providers and the second-pass system-log pull remain planned in the pit plan.
+
 ### 9.4 Shop Harness
 
 Step 1 is implemented: a scripted WPILib 2026 headless robot, real SSH/SFTP from a synthetic

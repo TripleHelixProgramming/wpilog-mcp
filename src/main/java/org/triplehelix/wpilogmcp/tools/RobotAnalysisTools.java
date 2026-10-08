@@ -1317,7 +1317,7 @@ public final class RobotAnalysisTools {
                   + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
             }
           }
-          var quality = DataQuality.fromSegments(scope.split(signal.values()));
+          var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
           stats.add("data_quality", quality.toJson());
           if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
           found.add(sObj);

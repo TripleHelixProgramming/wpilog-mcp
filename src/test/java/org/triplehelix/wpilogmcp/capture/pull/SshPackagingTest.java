@@ -32,7 +32,7 @@ class SshPackagingTest {
     }
     try (var paths = Files.walk(Path.of("src/main/java"))) {
       for (var file : paths.filter(p -> p.toString().endsWith(".java")).toList()) {
-        if (Files.readString(file).contains("com.jcraft.jsch")) assertTrue(file.endsWith(Path.of("capture", "pull", "SftpTransport.java")), file.toString());
+        if (Files.readString(file).contains("com.jcraft.jsch")) assertTrue(file.endsWith(Path.of("ssh", "JschConnection.java")), file.toString());
       }
     }
   }

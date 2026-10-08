@@ -290,11 +290,27 @@ public final class SignalResolver {
         var type = role == Role.CONSOLE_TEXT ? "string" : "string[]";
         var names = TextEvents.textEntries(log).stream().filter(e -> e.type().equals(type))
             .map(EntryInfo::name).toList();
-        yield new Resolution(role, names, names.isEmpty() ? "no " + type + " entries"
+        var followed = role == Role.CONSOLE_TEXT ? followedText(log) : java.util.Map.<String, java.util.List<String>>of();
+        yield new Resolution(role, names, !followed.isEmpty()
+            ? "followed-file roles " + followed.keySet() + " by /Daemon/Tail/<host>/<role> convention; other string entries by type"
+            : names.isEmpty() ? "no " + type + " entries"
             : "every " + type + " entry", names, false, null,
-            names.isEmpty() ? Tier.NONE : Tier.TYPE);
+            !followed.isEmpty() ? Tier.CONVENTION : names.isEmpty() ? Tier.NONE : Tier.TYPE);
       }
     };
+  }
+
+  /** Capture-owned roles, not words guessed from an arbitrary telemetry entry's name. */
+  public static java.util.Map<String, java.util.List<String>> followedText(LogData log) {
+    var result = new java.util.TreeMap<String, java.util.List<String>>();
+    for (var entry : byId(log)) {
+      var parts = entry.name().split("/", -1);
+      if (entry.type().equals("string") && parts.length == 5 && parts[1].equals("Daemon") && parts[2].equals("Tail")
+          && !parts[3].isEmpty() && java.util.Set.of("program_console", "kernel", "syslog", "journal").contains(parts[4])) {
+        result.computeIfAbsent(parts[4], ignored -> new java.util.ArrayList<>()).add(entry.name());
+      }
+    }
+    result.replaceAll((role, names) -> java.util.List.copyOf(names)); return java.util.Collections.unmodifiableSortedMap(result);
   }
 
   // ==================== shared helpers ====================

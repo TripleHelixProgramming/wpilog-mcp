@@ -71,7 +71,10 @@ public final class LiveTools {
           + "(captured value records over the last minute), event, match (type, number), cost[] "
           + "(ten highest bytes_per_sec topics: name, records, bytes, bytes_per_sec), thinned[] "
           + "(prefix, period_sec), excluded[], imports[] (path, method, offset_sec, reason), end_reason and "
-          + "counts_basis. Old manifests without recorder summaries return null counts, never a file scan. "
+          + "counts_basis. providers[] reports name, state, reason (stand-down or partial sample), period_sec, "
+          + "last_round_trip_ms, robot_cpu_sec (processor time between samples, not provider-only CPU), lines_per_sec, "
+          + "dropped_lines, dropped_before_sync, records, bytes (provider value records), and sample_bytes (last reply). "
+          + "Old manifests without recorder summaries return null counts, never a file scan. "
           + "Recorder counts are published every 250 ms; closed-session rates are null. limits.sessions "
           + "reports the true total when limit cuts sessions, and each session's limits.cost reports a cut "
           + "topic list. gateway reports state (disabled, waiting, listening, stopped), port, cause "
@@ -116,6 +119,7 @@ public final class LiveTools {
       row.addProperty("topic_count", stats == null ? null : stats.topicCount());
       row.addProperty("records", stats == null ? null : stats.records()); row.addProperty("bytes", stats == null ? null : stats.bytes());
       row.addProperty("bytes_per_sec", open && stats != null ? stats.costs().values().stream().mapToDouble(c -> c.bytesPerSecond()).sum() : null);
+      row.add("providers", GSON.toJsonTree(open ? live.providers() : stats == null ? List.of() : stats.providers()));
       row.addProperty("counts_basis", stats == null ? "no complete recorder summary in this manifest" : "capture value records; excludes control records, context and copied schema seeds");
       row.addProperty("end_reason", thisCapture ? current.endReason() : session.endReason());
       row.addProperty("event", thisCapture && current.event() != null ? current.event() : session.event());
@@ -153,7 +157,7 @@ public final class LiveTools {
     @Override public String description() {
       return "Read named entries from the capture client's concurrent latest-value table. Returns values[] "
           + "with name, value, timestamp_sec (robot clock), age_ms (robot now minus timestamp, null before time sync), "
-          + "and type (authoritative NT4 announce string), plus missing[]. Missing some is partial with skipped; "
+          + "source (nt4, ssh or tail), and type (authoritative entry type), plus missing[]. Missing some is partial with skipped; "
           + "all missing is no_match with looked_for and hint. No open capture is not_applicable with last_session "
           + "and ended_at. inputs.session names the capture." + MEANING;
     }
@@ -172,17 +176,23 @@ public final class LiveTools {
       }
       if (current == null || !current.open()) return inactive(current);
       var latest = live.latest(); var topics = live.topics(); Double now = live.robotNowUs();
-      return currentValues(names, latest, topics, now);
+      return currentValues(names, latest, topics, now, live.providerSources());
     }
     static ResponseBuilder currentValues(java.util.Set<String> names,
         Map<String, org.triplehelix.wpilogmcp.nt4.client.Nt4Client.LatestValue> latest,
         Map<String, org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce> topics, Double now) {
+      return currentValues(names, latest, topics, now, Map.of());
+    }
+    static ResponseBuilder currentValues(java.util.Set<String> names,
+        Map<String, org.triplehelix.wpilogmcp.nt4.client.Nt4Client.LatestValue> latest,
+        Map<String, org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce> topics, Double now, Map<String, String> sources) {
       var values = new JsonArray(); var missing = new JsonArray();
       for (String name : names) {
         String topic = topics.containsKey(name) ? name : name.startsWith("NT:") ? name.substring(3) : name;
         var value = latest.get(topic); var declaration = topics.get(topic);
         if (value == null || declaration == null) { missing.add(name); continue; }
         var row = value(name, value.type(), value.value(), value.serverTimestampUs());
+        row.addProperty("source", sources.getOrDefault(topic, "nt4"));
         row.addProperty("age_ms", now == null ? null : (now - value.serverTimestampUs()) / 1000.0); values.add(row);
       }
       var result = values.isEmpty() ? ResponseBuilder.noMatch("None of the named topics has a current published value")

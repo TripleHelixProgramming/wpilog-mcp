@@ -46,7 +46,8 @@ final class LiveToolRig implements AutoCloseable {
   final HarnessHttp http;
   final ToolRegistry tools = new ToolRegistry();
   java.util.function.BiConsumer<String, JsonObject> observed = (name, result) -> {};
-  LiveToolRig(Path root, CapturePolicy policy) throws Exception {
+  LiveToolRig(Path root, CapturePolicy policy) throws Exception { this(root, policy, java.util.function.UnaryOperator.identity()); }
+  LiveToolRig(Path root, CapturePolicy policy, java.util.function.UnaryOperator<CaptureConfig> configure) throws Exception {
     this.root = Files.createDirectories(root).toRealPath(); manager.addAllowedDirectory(this.root);
     org.triplehelix.wpilogmcp.log.LogDirectory.getInstance().setLogDirectory(this.root.toString());
     gateway = new Nt4Gateway(new java.net.InetSocketAddress("127.0.0.1", 0), robot::get, List.of(Nt4Client.V40));
@@ -56,8 +57,8 @@ final class LiveToolRig implements AutoCloseable {
       public ZoneId getZone() { return java.time.ZoneOffset.UTC; }
       public Clock withZone(ZoneId zone) { return this; }
     };
-    service = new CaptureService(new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "live-test")),
-        this.root, .001, policy, 0), manager, clock, loop);
+    service = new CaptureService(configure.apply(new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "live-test")),
+        this.root, .001, policy, 0)), manager, clock, loop);
     WpilogTools.registerAll(tools); LiveTools.registerAll(tools, service.live());
     transport = new HttpTransport(tools, 0); transport.setStoreDirectories(java.util.Set.of(this.root));
     transport.configureMetrics(null, service.live()); transport.start();

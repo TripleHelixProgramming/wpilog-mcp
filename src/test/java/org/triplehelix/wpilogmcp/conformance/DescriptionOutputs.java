@@ -35,6 +35,13 @@ final class DescriptionOutputs {
    * by the named test instead.
    */
   static final Map<String, String> VERIFIED_ELSEWHERE = Map.ofEntries(
+      Map.entry("list_sessions | last_round_trip_ms", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | robot_cpu_sec", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | lines_per_sec", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | dropped_lines", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | dropped_before_sync", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | sample_bytes", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+
       Map.entry("detect_anomalies | spike_interval_sec", "ScopeToolsTest.spikeCadence"),
       Map.entry("get_entry_info | decode_problem", "StructToolsFixtureTest.entryInfoMystery"),
       Map.entry("get_statistics | records_in_window", "FieldPathToolsTest.wildcardPools"),

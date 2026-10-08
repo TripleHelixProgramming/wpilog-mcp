@@ -15,6 +15,12 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class SftpTransportTest {
+  static SftpTransport connect(String host, org.triplehelix.wpilogmcp.config.PullConfig config, String pin,
+      com.jcraft.jsch.SlowSsh ssh, Timers deadlines) throws IOException {
+    return SftpTransport.using(org.triplehelix.wpilogmcp.ssh.JschConnection.connect(host, config.ssh(), pin, ssh, deadlines),
+        config.directories(), host, true);
+  }
+
   static final class Fake implements SftpTransport.Channel {
     final Map<String, List<SftpTransport.Item>> directories = new HashMap<>();
     final Map<String, byte[]> files = new HashMap<>();
@@ -54,7 +60,7 @@ class SftpTransportTest {
       assertThrows(IOException.class, remote::list);
     }
     assertTrue(fake.closed);
-    assertEquals("/u/a\\*b\\?c\\\\d", SftpTransport.sftpLiteral("/u/a*b?c\\d"));
+    assertEquals("/u/a\\*b\\?c\\\\d", org.triplehelix.wpilogmcp.ssh.JschConnection.sftpLiteral("/u/a*b?c\\d"));
   }
 
   @Test void hashCommandQuotesEveryPathAndRefusesUnavailableOrMalformedAnswers() throws Exception {
@@ -67,7 +73,7 @@ class SftpTransportTest {
     assertThrows(IllegalArgumentException.class, () -> SftpTransport.shellQuote("a\0b"));
   }
 
-  static final class Timers implements SftpTransport.Deadlines {
+  static final class Timers implements org.triplehelix.wpilogmcp.ssh.JschConnection.Deadlines {
     long delay; Runnable pending; boolean cancelled, closed;
     public Runnable schedule(Runnable task, long delayMs) { delay = delayMs; pending = task; return () -> cancelled = true; }
     void advance(long elapsedMs) { if (pending != null && elapsedMs >= delay && !cancelled) pending.run(); }
@@ -76,7 +82,7 @@ class SftpTransportTest {
   @Test void slowHashKeepsItsConnectionAndHasALengthScaledDeadline() throws Exception {
     var ssh = new com.jcraft.jsch.SlowSsh(); var timers = new Timers();
     ssh.elapsedMs = 15_000; ssh.onRead = () -> timers.advance(ssh.elapsedMs);
-    try (var remote = SftpTransport.connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, null, ssh, timers)) {
+    try (var remote = connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, null, ssh, timers)) {
       assertEquals("0".repeat(64), remote.prefixHash("/u/large.wpilog", 300L * 1024 * 1024).orElseThrow());
       assertFalse(ssh.disconnected); assertEquals(5000, ssh.session.getServerAliveInterval());
       assertEquals(3, ssh.session.getServerAliveCountMax()); assertEquals(5000, ssh.connectTimeout); assertEquals(5000, ssh.channelTimeout);
@@ -92,14 +98,14 @@ class SftpTransportTest {
         timers.advance(length == 0 ? 30_000 : 32_000);
         assertTrue(ssh.commandClosed, "the deadline itself must interrupt a blocked read");
       };
-      try (var remote = SftpTransport.connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, null, ssh, timers)) {
+      try (var remote = connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, null, ssh, timers)) {
         var error = assertThrows(IOException.class, () -> remote.prefixHash("slow", length));
         assertTrue(error.getMessage().contains("deadline")); assertTrue(ssh.commandClosed); assertTrue(timers.cancelled);
         assertEquals(length == 0 ? 30_000 : 32_000, timers.delay);
       }
     }
     var ssh = new com.jcraft.jsch.SlowSsh(); var timers = new Timers(); ssh.reply = "x".repeat(4097);
-    try (var remote = SftpTransport.connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, null, ssh, timers)) {
+    try (var remote = connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, null, ssh, timers)) {
       assertTrue(assertThrows(IOException.class, () -> remote.prefixHash("large", 1)).getMessage().contains("too large"));
       assertTrue(ssh.commandClosed); assertTrue(timers.cancelled);
     }
@@ -113,19 +119,19 @@ class SftpTransportTest {
           new org.triplehelix.wpilogmcp.config.PullConfig.Ssh("lvuser", "", java.nio.file.Path.of("synthetic-key")))) {
         var config = new org.triplehelix.wpilogmcp.config.PullConfig(true, List.of(), 0, 1_000_000, secret);
         var refused = new com.jcraft.jsch.SlowSsh();
-        assertThrows(IOException.class, () -> SftpTransport.connect("127.0.0.1", config, "SHA256:old", refused, new Timers()));
+        assertThrows(IOException.class, () -> connect("127.0.0.1", config, "SHA256:old", refused, new Timers()));
         assertFalse(refused.authenticated, "refuse before offering a password or signature"); assertTrue(refused.disconnected);
         var accepted = new org.triplehelix.wpilogmcp.config.PullConfig(true, List.of(), 0, 1_000_000,
             new org.triplehelix.wpilogmcp.config.PullConfig.Ssh(secret.user(), secret.password(), secret.key(), true));
         var ssh = new com.jcraft.jsch.SlowSsh();
-        try (var remote = SftpTransport.connect("127.0.0.1", accepted, "SHA256:old", ssh, new Timers())) { assertTrue(ssh.authenticated); }
+        try (var remote = connect("127.0.0.1", accepted, "SHA256:old", ssh, new Timers())) { assertTrue(ssh.authenticated); }
         ssh = new com.jcraft.jsch.SlowSsh();
-        try (var remote = SftpTransport.connect("127.0.0.1", config, SftpTransport.fingerprint(ssh.hostKey), ssh, new Timers())) { assertTrue(ssh.authenticated); }
+        try (var remote = connect("127.0.0.1", config, SftpTransport.fingerprint(ssh.hostKey), ssh, new Timers())) { assertTrue(ssh.authenticated); }
         ssh = new com.jcraft.jsch.SlowSsh();
-        try (var remote = SftpTransport.connect("127.0.0.1", config, null, ssh, new Timers())) { assertTrue(ssh.authenticated); }
+        try (var remote = connect("127.0.0.1", config, null, ssh, new Timers())) { assertTrue(ssh.authenticated); }
       }
       var ssh = new com.jcraft.jsch.SlowSsh();
-      try (var remote = SftpTransport.connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, "SHA256:old", ssh, new Timers())) { assertTrue(ssh.authenticated); }
+      try (var remote = connect("127.0.0.1", org.triplehelix.wpilogmcp.config.PullConfig.DISABLED, "SHA256:old", ssh, new Timers())) { assertTrue(ssh.authenticated); }
     } finally { System.setErr(original); }
     String log = bytes.toString(StandardCharsets.UTF_8);
     assertTrue(log.contains("capture.pull.ssh.accept_changed_host_key")); assertTrue(log.contains("robot.json"));
@@ -144,12 +150,12 @@ class SftpTransportTest {
     var original = System.err; var bytes = new java.io.ByteArrayOutputStream();
     try (var stream = new java.io.PrintStream(bytes)) {
       System.setErr(stream);
-      assertEquals(0, new SftpTransport.Pin("127.0.0.1", null).check("127.0.0.1", new byte[0]));
+      assertEquals(0, new org.triplehelix.wpilogmcp.ssh.JschConnection.Pin("127.0.0.1", null).check("127.0.0.1", new byte[0]));
       assertEquals(0, bytes.size());
-      assertEquals(0, new SftpTransport.Pin("127.0.0.1", "SHA256:old").check("127.0.0.1", new byte[0]));
+      assertEquals(0, new org.triplehelix.wpilogmcp.ssh.JschConnection.Pin("127.0.0.1", "SHA256:old").check("127.0.0.1", new byte[0]));
       assertTrue(bytes.toString(StandardCharsets.UTF_8).contains("SSH host key changed"));
       assertTrue(bytes.toString(StandardCharsets.UTF_8).contains("SHA256:old"));
     } finally { System.setErr(original); }
-    assertEquals("ssh-ed25519,rsa-sha2-512,rsa-sha2-256", SftpTransport.HOST_KEY_ALGORITHMS);
+    assertEquals("ssh-ed25519,rsa-sha2-512,rsa-sha2-256", org.triplehelix.wpilogmcp.ssh.JschConnection.HOST_KEY_ALGORITHMS);
   }
 }

@@ -41,6 +41,8 @@ public final class FakeRoboRio implements AutoCloseable {
   public record Read(long wallTimeUs, String path, long offset, int bytes) {}
   public record Hash(String path, long length) {}
   @FunctionalInterface public interface BeforeHash { void run(Hash request) throws Exception; }
+  @FunctionalInterface public interface Script { void run(OutputStream output) throws Exception; }
+  private final java.util.Map<String, Script> scripts = new java.util.concurrent.ConcurrentHashMap<>();
   private final SshServer server = SshServer.setUpDefaultServer();
   private final Path root;
   private final List<Read> reads = new CopyOnWriteArrayList<>();
@@ -89,6 +91,9 @@ public final class FakeRoboRio implements AutoCloseable {
   public int port() { return server.getPort(); }
   public Path logs() { return root.resolve("home/lvuser/logs"); }
   public List<Read> reads() { return List.copyOf(reads); }
+  /** Exact provider commands may have scripted replies; this fixture still never executes a shell. */
+  public void script(String command, Script script) { scripts.put(command, script); }
+  public void dropConnections() { server.getActiveSessions().forEach(session -> session.close(true)); }
 
   /** Parse the exact shell quoting emitted by the puller, including embedded apostrophes. */
   public static Hash parseHash(String command) throws IOException {
@@ -131,8 +136,12 @@ public final class FakeRoboRio implements AutoCloseable {
       worker = new Thread(() -> {
         int status = 0;
         try {
-          var request = parseHash(text); commands.incrementAndGet(); beforeHash.run(request);
-          out.write(hash(request).getBytes(StandardCharsets.US_ASCII)); out.flush();
+          var script = scripts.get(text);
+          if (script != null) { commands.incrementAndGet(); script.run(out); }
+          else {
+            var request = parseHash(text); commands.incrementAndGet(); beforeHash.run(request);
+            out.write(hash(request).getBytes(StandardCharsets.US_ASCII)); out.flush();
+          }
         } catch (Exception e) {
           status = 1; refusedCommands.incrementAndGet();
           try { err.write((e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8)); err.flush(); }

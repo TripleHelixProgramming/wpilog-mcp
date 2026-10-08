@@ -255,7 +255,7 @@ final class DataEndpoint {
         rows += count;
         estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
         prepared.add(new Prepared(series, values, valueType, buckets,
-            EntryData.sampling(series.values()),
+            EntryData.sampling(log, series),
             rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev,
             EntryData.decodingMetadata(log, series)));
       }

@@ -41,6 +41,23 @@ public final class LiveCapture implements LogStore.Observer {
   private final Path root;
   private final ClientScheduler clock;
   private volatile Nt4Client client;
+  private final Map<String, Nt4Client.LatestValue> providerValues = new ConcurrentHashMap<>();
+  private final Map<String, Announce> providerTopics = new ConcurrentHashMap<>();
+  private volatile List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers = List.of();
+  public List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers() { return providers; }
+  public void providers(List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> value) { providers = List.copyOf(value); }
+  public void clearProviders() { providerValues.clear(); providerTopics.clear(); }
+  public void context(String name, String type, Object value, long timestampUs, long receivedUs, com.google.gson.JsonObject metadata) {
+    var topic = new Announce(name, -1, type, null, metadata);
+    providerTopics.put(name, topic);
+    providerValues.put(name, new Nt4Client.LatestValue(value, timestampUs, receivedUs, type));
+    changed(topic, new ValueFrame(-1, timestampUs, org.triplehelix.wpilogmcp.nt4.NtType.fromNt4(type).code(), value));
+  }
+  public Map<String, String> providerSources() {
+    var result = new HashMap<String, String>();
+    providerTopics.forEach((name, topic) -> result.put(name, topic.properties().get("source").getAsString()));
+    return result;
+  }
   private final java.util.concurrent.atomic.AtomicLong receivedValues = new java.util.concurrent.atomic.AtomicLong();
   public long receivedValues() { return receivedValues.get(); }
   private volatile CaptureStore.Status current;
@@ -60,13 +77,18 @@ public final class LiveCapture implements LogStore.Observer {
   public org.triplehelix.wpilogmcp.nt4.server.GatewayStatus gateway() { return gateway.get(); }
   public record Metrics(boolean connected, String address, CaptureStore.Status current,
       Map<String, Nt4Client.LatestValue> latest, TimeSync.Sample time,
-      Double robotNowUs, Map<String, PullCoordinator.Progress> pull) {}
+      Double robotNowUs, Map<String, PullCoordinator.Progress> pull,
+      List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers) {
+    public Metrics(boolean connected, String address, CaptureStore.Status current,
+        Map<String, Nt4Client.LatestValue> latest, TimeSync.Sample time, Double robotNowUs,
+        Map<String, PullCoordinator.Progress> pull) { this(connected, address, current, latest, time, robotNowUs, pull, List.of()); }
+  }
   /** Independent published components, just like live tools; no event-loop call or store read. */
   public Metrics metrics() {
     var value = client;
     var estimate = timeEstimate().orElse(null);
     return new Metrics(connected(), value == null ? "" : value.connectedAddress(), current,
-        latest(), estimate, estimate == null ? null : (double) clock.nowUs() + estimate.offsetUs(), pull.get());
+        latest(), estimate, estimate == null ? null : (double) clock.nowUs() + estimate.offsetUs(), pull.get(), providers);
   }
   public CaptureStore.Status current() { return current; }
   public void status(CaptureStore.Status status) {
@@ -75,8 +97,14 @@ public final class LiveCapture implements LogStore.Observer {
   }
   public boolean connected() { var value = client; return value != null && value.isConnected(); }
   public String disconnectReason() { var value = client; return value == null ? "Not started" : value.disconnectReason(); }
-  public Map<String, Nt4Client.LatestValue> latest() { var value = client; return value == null ? Map.of() : value.latestValues(); }
-  public Map<String, Announce> topics() { var value = client; return value == null ? Map.of() : value.topics(); }
+  public Map<String, Nt4Client.LatestValue> latest() {
+    var value = client; var result = new HashMap<String, Nt4Client.LatestValue>(value == null ? Map.of() : value.latestValues());
+    result.putAll(providerValues); return Map.copyOf(result);
+  }
+  public Map<String, Announce> topics() {
+    var value = client; var result = new HashMap<String, Announce>(value == null ? Map.of() : value.topics());
+    result.putAll(providerTopics); return Map.copyOf(result);
+  }
   public java.util.Optional<org.triplehelix.wpilogmcp.nt4.TimeSync.Sample> timeEstimate() {
     var value = client; return value == null ? java.util.Optional.empty() : value.timeEstimate();
   }
@@ -157,7 +185,9 @@ public final class LiveCapture implements LogStore.Observer {
   private void finish(Wait wait, Change change) { if (remove(wait)) wait.result().complete(change); }
   /** Called by the same ordered listener after the writer saw this publication. */
   public void value(Announce topic, ValueFrame frame) {
-    receivedValues.incrementAndGet();
+    receivedValues.incrementAndGet(); changed(topic, frame);
+  }
+  private void changed(Announce topic, ValueFrame frame) {
     List<Wait> targets;
     synchronized (waitLock) {
       var slots = waiting.remove(topic.name());

@@ -18,11 +18,16 @@ import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 
 /** Capture is opt-in, and misspelled nested keys must never silently turn recording policy off. */
 public record CaptureConfig(List<URI> addresses, Path store, double periodSeconds,
-    CapturePolicy policy, long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort) {
-  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes", "pull", "gateway");
+    CapturePolicy policy, long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort, ProviderConfig providers) {
+  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes", "pull", "gateway", "stats", "tail");
   public static final Set<String> GATEWAY_KEYS = Set.of("port");
   public static final Set<String> ROBOT_KEYS = Set.of("team", "usb", "host", "port");
   public CaptureConfig { addresses = List.copyOf(addresses); }
+  /** Existing programmatic capture fixtures explicitly have no SSH providers. YAML applies defaults. */
+  public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy,
+      long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort) {
+    this(addresses, store, periodSeconds, policy, hotWindowUs, maxFileBytes, pull, gatewayPort, ProviderConfig.DISABLED);
+  }
   public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy,
       long hotWindowUs, long maxFileBytes, PullConfig pull) {
     this(addresses, store, periodSeconds, policy, hotWindowUs, maxFileBytes, pull, 0);
@@ -82,8 +87,14 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
         var gateway = object(block.get("gateway"), "capture.gateway"); keys(gateway, GATEWAY_KEYS, "capture.gateway");
         gatewayPort = gateway.has("port") ? integer(gateway.get("port"), "capture.gateway.port", 0, 65535) : 5810;
       }
-      return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot, max,
-          PullConfig.parse(block.get("pull"), expand, text), gatewayPort);
+      var pull = PullConfig.parse(block.get("pull"), expand, text);
+      var providers = ProviderConfig.parse(block, pull, expand, text);
+      for (var tail : providers.tails()) {
+        if (tail.host() != null && hosts.stream().anyMatch(host -> host.equalsIgnoreCase(tail.host())) && !pull.ssh().equals(tail.ssh())) {
+          throw bad("capture.tail", "a robot host must use capture.pull.ssh credentials; one host has one SSH connection");
+        }
+      }
+      return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot, max, pull, gatewayPort, providers);
     } catch (IllegalArgumentException e) { throw new ConfigException("Invalid capture configuration: " + e.getMessage(), e); }
   }
   private static JsonObject object(JsonElement value, String key) throws ConfigException {

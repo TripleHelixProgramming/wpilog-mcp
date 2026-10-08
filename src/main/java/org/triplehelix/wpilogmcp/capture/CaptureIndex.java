@@ -59,6 +59,7 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   @Override public void fileClosed(CaptureWriter.Session session) throws IOException {
     manager.finishCapture(live); placement.fileClosed(session);
   }
+  @Override public void providers(CaptureWriter.Session session) throws IOException { placement.providers(session); }
   @Override public void closed(CaptureWriter.Session session) throws IOException { placement.closed(session); }
   @Override public void cost(String topic, TopicCost.Snapshot cost) { placement.cost(topic, cost); }
   public LiveLog live() { return live; }

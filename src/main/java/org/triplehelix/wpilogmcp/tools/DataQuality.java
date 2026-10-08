@@ -113,9 +113,25 @@ public record DataQuality(
    * @since 0.9.0
    */
   public static DataQuality fromSegments(List<List<TimestampedValue>> segments) {
+    return fromSegments(segments, false);
+  }
+
+  /** A provider declares sampling; changing values or adaptive periods must not imply change-only logging. */
+  public static DataQuality fromSegments(org.triplehelix.wpilogmcp.log.LogData log, String entry,
+      List<List<TimestampedValue>> segments) {
+    var info = log.entries().get(entry);
+    return fromSegments(segments, info != null && sampled(info.metadata()));
+  }
+  static boolean sampled(String metadata) {
+    try {
+      var value = com.google.gson.JsonParser.parseString(metadata).getAsJsonObject().get("sampled");
+      return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean() && value.getAsBoolean();
+    } catch (RuntimeException invalid) { return false; }
+  }
+  static DataQuality fromSegments(List<List<TimestampedValue>> segments, boolean sampled) {
     int n = segments.stream().mapToInt(List::size).sum();
     if (n == 0) {
-      return new DataQuality(0, 0, 0, 0, 0, 0, 0, 0, Sampling.EVENT, 0,
+      return new DataQuality(0, 0, 0, 0, 0, 0, 0, 0, sampled ? Sampling.PERIODIC : Sampling.EVENT, 0,
           List.of("no samples"));
     }
 
@@ -148,7 +164,7 @@ public record DataQuality(
     var reasons = new ArrayList<String>();
     if (intervalList.isEmpty()) {
       reasons.add("one sample per window: no timing information");
-      return new DataQuality(n, timeSpan, 0, 0, 0, nanCount, 0, 0.4, Sampling.EVENT, 0, reasons);
+      return new DataQuality(n, timeSpan, 0, 0, 0, nanCount, 0, 0.4, sampled ? Sampling.PERIODIC : Sampling.EVENT, 0, reasons);
     }
 
     double[] intervals = intervalList.stream().mapToDouble(Double::doubleValue).toArray();
@@ -164,7 +180,7 @@ public record DataQuality(
     }
     double regularFraction = (double) regular / intervals.length;
     Sampling sampling;
-    if (n >= 3 && regularFraction >= PERIODIC_FRACTION) {
+    if (sampled || n >= 3 && regularFraction >= PERIODIC_FRACTION) {
       sampling = Sampling.PERIODIC;
     } else if (n >= 3 && equalPairs <= pairs * 0.01) {
       sampling = Sampling.CHANGE_ONLY;
