@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Response Reference
 
-The JSON every tool of **wpilog-mcp 0.9.1** returns, captured from real logs by running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate (see [DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):
+The JSON every tool of **wpilog-mcp 0.10.0-dev1** returns, captured from real logs by running the calls in `src/test/resources/tool-responses/scenarios.json`. To regenerate (see [DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):
 
 ```
 ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/riologs
@@ -17,6 +17,10 @@ Each result travels as the text of an MCP `tools/call` result (`result.content[0
 - [Discovery Tools](#discovery-tools)
   - [`get_server_guide`](#get_server_guide)
   - [`suggest_tools`](#suggest_tools)
+- [Live Tools](#live-tools)
+  - [`list_sessions`](#list_sessions)
+  - [`get_latest_values`](#get_latest_values)
+  - [`wait_for_change`](#wait_for_change)
 - [Core Tools](#core-tools)
   - [`list_available_logs`](#list_available_logs)
   - [`list_entries`](#list_entries)
@@ -77,13 +81,13 @@ Each result travels as the text of an MCP `tools/call` result (`result.content[0
 
 ### `get_server_guide`
 
-IMPORTANT: Call this tool first to understand what analysis capabilities are available. Returns a structured overview of all 49 tools organized by category, with usage guidance and anti-patterns to avoid, plus analysis_principles: how to reason about results without confabulating (method, confidence calibration, traps, report format). This server has extensive built-in analysis—don't write custom code when a tool already exists.
+IMPORTANT: Call this tool first to understand what analysis capabilities are available. Returns a structured overview of all 52 tools organized by category, with usage guidance and anti-patterns to avoid, plus server_location describing this server's local or pit role, and analysis_principles: how to reason about results without confabulating (method, confidence calibration, traps, report format). This server has extensive built-in analysis—don't write custom code when a tool already exists.
 
 **Parameters** ([TOOLS.md](TOOLS.md#get_server_guide))
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `category` | string | no | Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery |
+| `category` | string | no | Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery, live (capture only) |
 | `include_examples` | boolean | no | Include example use cases for each tool (default: true) |
 
 **Example: Overview**
@@ -101,14 +105,15 @@ Response:
 {
   "success": true,
   "status": "ok",
+  "server_location": "This server reads files on this machine and its mirrors. Use the pit server for live sessions; a completed mirrored file has the same bytes and answers offline.",
   "overview": {
     "server_name": "wpilog-mcp",
-    "version": "0.9.1",
-    "total_tools": 49,
+    "version": "0.10.0-dev1",
+    "total_tools": 52,
     "purpose": "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)"
   },
   "critical_guidance": {
-    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 49 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
+    "primary_rule": "ALWAYS check for a built-in tool before writing custom analysis code. This server has 52 specialized tools covering statistics, power analysis, swerve diagnostics, cycle detection, battery health prediction, and more.",
     "tba_tip": "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. TBA data includes autonomous points, final scores, and win/loss results.",
     "statistics_tip": "Use get_statistics (mean, std, percentiles) and time_correlate rather than computing them by hand; for data they cannot read, export_csv and compute externally, citing the export.",
     "match_phases_tip": "NEVER manually parse timestamps to find auto/teleop—use get_match_phases.",
@@ -186,6 +191,49 @@ Response:
     "log_loading": "Logs are loaded on demand when referenced by path. No 'active log' concept — each tool call is self-contained. Idle logs are evicted after 30 minutes. Under heap pressure, least-recently-used logs are evicted automatically."
   },
   "categories": [
+    {
+      "name": "live",
+      "description": "Live capture sessions and publications",
+      "anti_pattern": "A stale publication does not prove the robot stopped; use logged history for analysis",
+      "tools": [
+        {
+          "name": "list_sessions",
+          "description": "Current and recent pit sessions, recorder costs and matched imports",
+          "requires_log": false,
+          "example_uses": [
+            "List the current robot session"
+          ],
+          "related_tools": [
+            "get_latest_values",
+            "list_available_logs"
+          ]
+        },
+        {
+          "name": "get_latest_values",
+          "description": "Latest published NT4 values with robot timestamps and ages",
+          "requires_log": false,
+          "example_uses": [
+            "Read the latest battery publication"
+          ],
+          "related_tools": [
+            "list_sessions",
+            "wait_for_change"
+          ]
+        },
+        {
+          "name": "wait_for_change",
+          "description": "Wait for the next topic publication with a bounded timeout",
+          "requires_log": false,
+          "example_uses": [
+            "Wait for the next publication of a named topic"
+          ],
+          "related_tools": [
+            "get_latest_values"
+          ]
+        }
+      ],
+      "tool_count": 3
+    },
     {
       "name": "core",
       "description": "Log loading and data access. Start here to discover available data.",
@@ -301,58 +349,7 @@ Response:
       ],
       "tool_count": 4
     },
-    {
-      "name": "statistics",
-      "description": "Statistical analysis on numeric data. Compute stats, find correlations, detect anomalies.",
-      "anti_pattern": "Use get_statistics and time_correlate rather than computing statistics or correlations by hand; for data they cannot read, export_csv and compute externally, citing the export.",
-      "tools": [
-        {
-          "name": "get_statistics",
-          "description": "Compute comprehensive statistics on numeric entries",
-          "requires_log": true,
-          "example_uses": [
-            "Get battery voltage statistics",
-            "Analyze motor current distribution",
-            "Compute percentiles"
-          ],
-          "related_tools": [
-            "compare_entries",
-            "detect_anomalies"
-          ]
-        },
-        {
-          "name": "compare_entries",
-          "description": "Compare two entries (e.g., setpoint vs actual)",
-          "requires_log": true,
-          "example_uses": [
-            "Compare commanded vs actual velocity",
-            "Validate replay outputs",
-            "Find tracking error"
-          ],
-          "related_tools": [
-            "get_statistics",
-            "time_correlate"
-          ]
-        },
-        {
-          "name": "detect_anomalies",
-          "description": "Find outliers using IQR method",
-          "requires_log": true,
-          "example_uses": [
-            "Find current spikes",
-            "Detect unusual sensor readings",
-            "Identify outliers"
-          ],
-          "related_tools": [
-            "get_statistics",
-            "find_peaks"
-          ]
-        },
-        "... (4 more items)"
-      ],
-      "tool_count": 7
-    },
-    "... (6 more items)"
+    "... (7 more items)"
   ],
   "common_workflows": [
     {
@@ -462,11 +459,131 @@ Response:
 }
 ```
 
+## Live Tools
+
+### `list_sessions`
+
+List current and recent store sessions, newest first, without scanning logs. Returns sessions[] with id, path (capture, null if none), started_at, ended_at (null while open), robot (serial_number, comments, address, basis), connected, topic_count, records, bytes, bytes_per_sec (captured value records over the last minute), event, match (type, number), cost[] (ten highest bytes_per_sec topics: name, records, bytes, bytes_per_sec), thinned[] (prefix, period_sec), excluded[], imports[] (path, method, offset_sec, reason), end_reason and counts_basis. Old manifests without recorder summaries return null counts, never a file scan. Recorder counts are published every 250 ms; closed-session rates are null. limits.sessions reports the true total when limit cuts sessions, and each session's limits.cost reports a cut topic list. gateway reports state (disabled, waiting, listening, stopped), port, cause (while waiting), and since (UTC time of that state). inputs.session names the current or last capture. Capture-disabled use is not_applicable.
+
+**Parameters** ([TOOLS.md](TOOLS.md#list_sessions))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `limit` | integer | no | Newest sessions to return, 1 to 100 (default 20) |
+
+**Example: Recent sessions (capture-disabled reference server)**
+
+Request:
+```json
+{
+  "name": "list_sessions",
+  "arguments": {
+    "limit": 20
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": false,
+  "status": "not_applicable",
+  "reason": "Capture is not enabled",
+  "last_session": null,
+  "ended_at": null,
+  "gateway": {
+    "state": "disabled",
+    "port": 0,
+    "cause": null,
+    "since": null
+  },
+  "inputs": {
+    "session": null
+  }
+}
+```
+
+### `get_latest_values`
+
+Read named entries from the capture client's concurrent latest-value table. Returns values[] with name, value, timestamp_sec (robot clock), age_ms (robot now minus timestamp, null before time sync), and type (authoritative NT4 announce string), plus missing[]. Missing some is partial with skipped; all missing is no_match with looked_for and hint. No open capture is not_applicable with last_session and ended_at. inputs.session names the capture. These are the latest published, not measured, values; a stale age_ms means publishing stopped, not that the robot stopped. NT4 names and their NT: capture names are accepted. Binary values (including structs) are raw signed-byte arrays; use the ordinary log tools to decode structs. Raw NaN and infinities are strings.
+
+**Parameters** ([TOOLS.md](TOOLS.md#get_latest_values))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `entries` | array | yes | NT4 topic names or NT: capture names; 1 to 2000 names |
+
+**Example: Latest publications need a running capture**
+
+Request:
+```json
+{
+  "name": "get_latest_values",
+  "arguments": {
+    "entries": [
+      "/Example/Counter"
+    ]
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": false,
+  "status": "not_applicable",
+  "reason": "Capture is not enabled",
+  "last_session": null,
+  "ended_at": null,
+  "inputs": {
+    "session": null
+  }
+}
+```
+
+### `wait_for_change`
+
+Wait for the first publication received after this call installs its waiter, even if its value equals the previous one. Returns changed, and on a publication name, value, type, timestamp_sec (robot clock) and age_ms. A timeout is ok with changed:false. One outstanding wait per entry per MCP session; a second is error. No open capture is not_applicable with last_session and ended_at; disconnect or unannounce cancels with reason. An unknown topic is no_match with looked_for and hint. inputs.session names the capture. timeout_ms defaults to 5000 and is capped at 30000. These are the latest published, not measured, values; a stale age_ms means publishing stopped, not that the robot stopped. NT4 names and their NT: capture names are accepted. Binary values (including structs) are raw signed-byte arrays; use the ordinary log tools to decode structs. Raw NaN and infinities are strings.
+
+**Parameters** ([TOOLS.md](TOOLS.md#wait_for_change))
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `entry` | string | yes | One NT4 topic name or NT: capture name |
+| `timeout_ms` | integer | no | Wait duration in milliseconds, nonnegative; capped at 30000 |
+
+**Example: A live wait needs a running capture**
+
+Request:
+```json
+{
+  "name": "wait_for_change",
+  "arguments": {
+    "entry": "/Example/Counter",
+    "timeout_ms": 5000
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": false,
+  "status": "not_applicable",
+  "reason": "Capture is not enabled",
+  "last_session": null,
+  "ended_at": null,
+  "inputs": {
+    "session": null
+  }
+}
+```
+
 ## Core Tools
 
 ### `list_available_logs`
 
-List WPILOG files available in the configured log directories with friendly names, newest first, paged: log_count is the number matching the filters, offset/limit select a page (default 50), has_more says whether another page exists. log_directories names the directories searched; one that could not be read (a drive not mounted, no permission) is listed in skipped with the reason, and the result is partial: its logs are missing from the list, not absent. Filters: name (substring of the file or friendly name), event (event code, e.g. VACHE), match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). IMPORTANT: When TBA is configured, this tool automatically enriches each listed log with match data including alliance scores, win/loss results, and actual match times. Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! tba_enrichment.available says whether The Blue Alliance answered for this page; when false, its reason (not configured, an outage, a rejected key) is why no log carries a tba field. A tba field's match_key and lookup_method say which TBA match it came from: an 'Elimination N' log is read as double-elimination bracket match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use this tool first to find logs and get match results, then pass the path to other tools.
+List WPILOG files available in the configured log directories with friendly names, newest first, paged: log_count is the number matching the filters, offset/limit select a page (default 50), has_more says whether another page exists. log_directories names the directories searched with path, origin (configured or leased), and team; log_directory_paths keeps their plain paths; one that could not be read (a drive not mounted, no permission) is listed in skipped with the reason, and the result is partial: its logs are missing from the list, not absent. Filters: name (substring of the file or friendly name), event (event code, e.g. VACHE), match_type (qm, sf, f, p, ...), since (a date like 2026-03-20: logs from then on). IMPORTANT: When TBA is configured, this tool automatically enriches each listed log with match data including alliance scores, win/loss results, and actual match times. Check the 'tba' field in each log entry for match outcomes—don't guess from telemetry! tba_enrichment.available says whether The Blue Alliance answered for this page; when false, its reason (not configured, an outage, a rejected key) is why no log carries a tba field. A tba field's match_key and lookup_method say which TBA match it came from: an 'Elimination N' log is read as double-elimination bracket match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use this tool first to find logs and get match results, then pass the path to other tools. stores lists each store's path and robots; store on a log names its root. A file beyond the reader size limit, or a REV companion with an invalid recorded alignment, carries read_error instead of disappearing. A pulled file kept in its own session carries matching_reason explaining why automatic placement was refused. Mirrored session metadata adds origin, complete, growing, last_sync, and age_sec; offline tools read the same local bytes. A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; For store files only, robot_candidates names serial_number and evidence (kind, value) from import manifests for a unique exact fingerprint; a candidate never assigns a robot. inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), or refused files with their reason; unmanaged lists files absent from manifests outside the inbox, unassigned lists imported files awaiting assignment, and moved_to gives original paths and their destinations for seven days.
 
 **Parameters** ([TOOLS.md](TOOLS.md#list_available_logs))
 
@@ -498,21 +615,28 @@ Response:
   "success": true,
   "status": "ok",
   "log_directories": [
+    {
+      "path": "<logdir>",
+      "origin": "configured",
+      "team": null
+    }
+  ],
+  "log_directory_paths": [
     "<logdir>"
   ],
-  "log_count": 37,
-  "total_logs": 88,
+  "log_count": 2,
+  "total_logs": 3,
   "offset": 0,
-  "returned": 3,
-  "has_more": true,
+  "returned": 2,
+  "has_more": false,
   "tba_enrichment": {
     "available": false,
     "reason": "not configured. In VS Code, run 'WPILog Analyzer: Set The Blue Alliance API Key'; for the standalone server, set tba_key in ~/.wpilog-mcp/servers.yaml (or pass -tba-key, or set TBA_API_KEY)"
   },
   "metadata_cache": {
-    "size": 88,
+    "size": 3,
     "hits": 0,
-    "misses": 88
+    "misses": 3
   },
   "logs": [
     {
@@ -524,33 +648,40 @@ Response:
       "match_number": 4,
       "team_number": 2363,
       "size_bytes": 36375831,
-      "last_modified": 1774240859575
+      "last_modified": 1774240859575,
+      "robot": {
+        "id": "032363EC",
+        "serial_number": "032363EC",
+        "name": null,
+        "comments": null,
+        "basis": "logged",
+        "contacts": []
+      }
     },
     {
-      "friendly_name": "VACHE Elimination 8",
-      "path": "<logdir>/vache/session_57/akit_26-03-22_18-52-56_vache_e8.wpilog",
-      "filename": "akit_26-03-22_18-52-56_vache_e8.wpilog",
+      "friendly_name": "VACHE Qualification 10",
+      "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+      "filename": "akit_26-03-21_16-29-56_vache_q10.wpilog",
       "event": "VACHE",
-      "match_type": "Elimination",
-      "match_number": 8,
+      "match_type": "Qualification",
+      "match_number": 10,
       "team_number": 2363,
-      "size_bytes": 38551552,
-      "last_modified": 1774220356000
-    },
-    {
-      "friendly_name": "VACHE",
-      "path": "<logdir>/vache/session_56/akit_26-03-22_18-44-53_vache.wpilog",
-      "filename": "akit_26-03-22_18-44-53_vache.wpilog",
-      "event": "VACHE",
-      "team_number": 2363,
-      "size_bytes": 1785856,
-      "last_modified": 1774219502000
+      "size_bytes": 34996224,
+      "last_modified": 1774125310000,
+      "robot": {
+        "id": "032363EC",
+        "serial_number": "032363EC",
+        "name": null,
+        "comments": null,
+        "basis": "logged",
+        "contacts": []
+      }
     }
   ],
   "limits": {
     "logs": {
-      "total": 37,
-      "returned": 3,
+      "total": 2,
+      "returned": 2,
       "limit": 3
     }
   }
@@ -815,7 +946,7 @@ Response:
 
 ### `read_entry`
 
-Read values from an entry, in time order, with optional time range and paging: total_in_range is the true count, offset/limit select a page, has_more says whether another page exists, and limits.samples gives total (after offset) and returned. Struct values are decoded by the log's own schema: nested objects with the schema's field names, enum fields as {value, label}, rotations with a _derived block (degrees; roll, pitch, yaw). A NaN or infinite value is returned as the string 'NaN', 'Infinity', or '-Infinity'. Records that could not be decoded are reported in warnings. One page is not the whole signal: use get_statistics, find_condition, or find_peaks for claims about a window.
+Read values from an entry, in time order, with optional time range and paging: total_in_range is the true count, offset/limit select a page, has_more says whether another page exists, and limits.samples gives total (after offset) and returned. Struct values are decoded by the log's own schema: nested objects with the schema's field names, enum fields as {value, label}, rotations with a _derived block (degrees; roll, pitch, yaw). A NaN or infinite value is returned as the string 'NaN', 'Infinity', or '-Infinity'. Records that could not be decoded are reported in warnings. One page is not the whole signal: use get_statistics, find_condition, or find_peaks for claims about a window. max_points reads a numeric entry or field at a resolution: when the window holds more samples than max_points, it is divided into that many buckets of equal duration (bucketed is true, bucket_sec their length), and each bucket with samples gives timestamp_sec (its start), count, min, max, mean (null when no sample is finite), first, and last, so a spike one sample wide is still seen in min or max; with no more samples than max_points the read is exact (bucketed false). A non-numeric entry is read exactly and max_points is reported in skipped.
 
 **Parameters** ([TOOLS.md](TOOLS.md#read_entry))
 
@@ -826,6 +957,7 @@ Read values from an entry, in time order, with optional time range and paging: t
 | `end_time` | number | no | End timestamp in seconds (optional) |
 | `limit` | integer | no | Maximum number of samples to return (default: 100, max: 10000) |
 | `offset` | integer | no | Number of samples to skip |
+| `max_points` | integer | no | Read at a resolution: at most this many buckets of equal duration over the window, each with count, min, max, mean, first, and last (a numeric entry, or an entry with a field path appended, as get_statistics takes); a window with no more samples than this is read exactly (max: 10000) |
 | `path` | string | yes | Path to the log file (from list_available_logs) |
 
 **Example: A schema-decoded PoseObservation**
@@ -914,6 +1046,95 @@ Response:
 }
 ```
 
+**Example: At a resolution: five buckets of the battery voltage**
+
+Request:
+```json
+{
+  "name": "read_entry",
+  "arguments": {
+    "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "name": "/SystemStats/BatteryVoltage",
+    "start_time": 20,
+    "end_time": 40,
+    "max_points": 5
+  }
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "status": "ok",
+  "name": "/SystemStats/BatteryVoltage",
+  "type": "double",
+  "total_in_range": 136,
+  "max_points": 5,
+  "bucketed": true,
+  "bucket_sec": 4.0,
+  "bucket_count": 4,
+  "returned_count": 4,
+  "offset": 0,
+  "limit": 5,
+  "has_more": false,
+  "samples": [
+    {
+      "timestamp_sec": 24.0,
+      "count": 1,
+      "min": 12.517093994140625,
+      "max": 12.517093994140625,
+      "mean": 12.517093994140625,
+      "first": 12.517093994140625,
+      "last": 12.517093994140625
+    },
+    {
+      "timestamp_sec": 28.0,
+      "count": 25,
+      "min": 12.491964111328125,
+      "max": 12.52337646484375,
+      "mean": 12.506790742187498,
+      "first": 12.49824658203125,
+      "last": 12.517093994140625
+    },
+    {
+      "timestamp_sec": 32.0,
+      "count": 50,
+      "min": 12.485681640625,
+      "max": 12.52337646484375,
+      "mean": 12.505282949218747,
+      "first": 12.504529052734375,
+      "last": 12.504529052734375
+    },
+    {
+      "timestamp_sec": 36.0,
+      "count": 60,
+      "min": 12.491964111328125,
+      "max": 12.517093994140625,
+      "mean": 12.50494788411458,
+      "first": 12.49824658203125,
+      "last": 12.517093994140625
+    }
+  ],
+  "limits": {
+    "samples": {
+      "total": 4,
+      "returned": 4,
+      "limit": 5
+    }
+  },
+  "_metadata": {
+    "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
+  },
+  "inputs": {
+    "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
+    "entries_read": [
+      "/SystemStats/BatteryVoltage"
+    ]
+  }
+}
+```
+
 ### `list_loaded_logs`
 
 List the log files currently loaded in the server's cache (path, entry count, duration) and the cache status: how many are loaded and the JVM heap they share (logs are evicted when idle or when the heap runs short). Logs load on demand, so an empty list is normal.
@@ -941,7 +1162,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 29,
+    "heap_used_mb": 14,
     "heap_max_mb": 512
   }
 }
@@ -1468,17 +1689,17 @@ Response:
 {
   "success": true,
   "status": "ok",
-  "server_version": "0.9.1",
+  "server_version": "0.10.0-dev1",
   "loaded_logs": 2,
   "tba_available": false,
-  "revlog_sync_in_progress": true,
+  "revlog_sync_in_progress": false,
   "jvm_memory": {
-    "used_mb": 288,
-    "total_mb": 344,
+    "used_mb": 115,
+    "total_mb": 279,
     "max_mb": 512,
-    "free_mb": 55
+    "free_mb": 163
   },
-  "jvm_heap_used_mb": 288,
+  "jvm_heap_used_mb": 115,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
@@ -6649,70 +6870,12 @@ Request:
 Response:
 ```json
 {
-  "success": true,
-  "status": "ok",
-  "signal_count": 4,
-  "signals": [
-    {
-      "key": "REV/SparkMax_12/Velocity",
-      "device": "SparkMax_12",
-      "signal": "Velocity",
-      "unit": "rpm unless converted",
-      "sample_count": 16959,
-      "can_bus": "rio",
-      "sync_method": "CROSS_CORRELATION",
-      "timestamps_aligned": true,
-      "offset_seconds": -0.016616,
-      "sync_confidence": "medium"
-    },
-    {
-      "key": "REV/SparkFlex_16/Velocity",
-      "device": "SparkFlex_16",
-      "signal": "Velocity",
-      "unit": "rpm unless converted",
-      "sample_count": 16960,
-      "can_bus": "rio",
-      "sync_method": "CROSS_CORRELATION",
-      "timestamps_aligned": true,
-      "offset_seconds": -0.016616,
-      "sync_confidence": "medium"
-    },
-    {
-      "key": "REV/SparkFlex_17/Velocity",
-      "device": "SparkFlex_17",
-      "signal": "Velocity",
-      "unit": "rpm unless converted",
-      "sample_count": 16960,
-      "can_bus": "rio",
-      "sync_method": "CROSS_CORRELATION",
-      "timestamps_aligned": true,
-      "offset_seconds": -0.016616,
-      "sync_confidence": "medium"
-    },
-    {
-      "key": "REV/SparkMax_13/Velocity",
-      "device": "SparkMax_13",
-      "signal": "Velocity",
-      "unit": "rpm unless converted",
-      "sample_count": 16960,
-      "can_bus": "rio",
-      "sync_method": "CROSS_CORRELATION",
-      "timestamps_aligned": true,
-      "offset_seconds": -0.016616,
-      "sync_confidence": "medium"
-    }
-  ],
-  "revlog_count": 1,
-  "overall_sync_confidence": "medium",
-  "warnings": [
-    "REV log 'rio': timestamps aligned by cross-correlation at medium confidence (accuracy about 5-50 ms); sync_status has the signal pairs."
-  ],
+  "success": false,
+  "status": "not_applicable",
+  "reason": "No REV log (.revlog) files were found for this wpilog.",
+  "hint": "Revlogs are discovered by recording time in the configured log directory that holds this wpilog and in the wpilog's own folder (other configured directories are not searched): a .revlog whose time range overlaps this wpilog's is synchronized with it when the wpilog is loaded.",
   "_metadata": {
-    "timing_accuracy_ms": "5-50",
     "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
-  },
-  "inputs": {
-    "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
 }
 ```
@@ -6740,7 +6903,7 @@ Request:
   "name": "get_revlog_data",
   "arguments": {
     "path": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "signal_key": "REV/SparkMax_12/Velocity",
+    "signal_key": "unknown",
     "limit": 3,
     "include_stats": true
   }
@@ -6750,68 +6913,12 @@ Request:
 Response:
 ```json
 {
-  "success": true,
-  "status": "ok",
-  "signal_key": "REV/SparkMax_12/Velocity",
-  "can_bus": "rio",
-  "sample_count": 3,
-  "total_samples": 16959,
-  "data": [
-    {
-      "timestamp": 11.918384,
-      "value": 0.0
-    },
-    {
-      "timestamp": 11.938384,
-      "value": 0.0
-    },
-    {
-      "timestamp": 11.958383999999999,
-      "value": 0.0
-    }
-  ],
-  "limits": {
-    "data": {
-      "total": 16959,
-      "returned": 3,
-      "limit": 3
-    }
-  },
-  "sync_method": "CROSS_CORRELATION",
-  "timestamps_aligned": true,
-  "offset_seconds": -0.016616,
-  "sync_confidence": "medium",
-  "statistics": {
-    "min": -10.937395095825195,
-    "max": 10.881987571716309,
-    "mean": 0.0015677934587479134,
-    "count": 16959
-  },
-  "data_quality": {
-    "sample_count": 16959,
-    "time_span_seconds": 339.16,
-    "sampling": "periodic",
-    "gap_count": 0,
-    "effective_sample_rate_hz": 50.0,
-    "quality_score": 1.0
-  },
-  "server_analysis_directives": {
-    "confidence_level": "high",
-    "sample_context": "Based on 16959 samples over 339.2 seconds",
-    "interpretation_guidance": [
-      "This analysis is based on a single log. Patterns should be confirmed across multiple matches before drawing conclusions.",
-      "Revlog timestamps were aligned by cross-correlation of matching signals (confidence: medium, accuracy: 5-50 ms); sync_status has the details."
-    ]
-  },
-  "warnings": [
-    "REV log 'rio': timestamps aligned by cross-correlation at medium confidence (accuracy about 5-50 ms); sync_status has the signal pairs."
-  ],
+  "success": false,
+  "status": "not_applicable",
+  "reason": "No REV log (.revlog) files were found for this wpilog.",
+  "hint": "Revlogs are discovered by recording time in the configured log directory that holds this wpilog and in the wpilog's own folder (other configured directories are not searched): a .revlog whose time range overlaps this wpilog's is synchronized with it when the wpilog is loaded.",
   "_metadata": {
-    "timing_accuracy_ms": "5-50",
     "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
-  },
-  "inputs": {
-    "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
 }
 ```
@@ -6842,45 +6949,12 @@ Request:
 Response:
 ```json
 {
-  "success": true,
-  "status": "ok",
-  "synchronized": true,
-  "revlog_count": 1,
-  "sync_in_progress": false,
-  "overall_confidence": "medium",
-  "overall_confidence_value": 0.67,
-  "revlog_filename_zone": "UTC, the zone the wpilog's own filename time shows against its wall clock (the same clock is taken to have named the REV log)",
-  "revlogs": [
-    {
-      "can_bus": "rio",
-      "path": "<logdir>/vache/REV_20260321_162932.revlog",
-      "device_count": 4,
-      "signal_count": 184,
-      "sync": {
-        "method": "CROSS_CORRELATION",
-        "confidence": 0.84,
-        "confidence_level": "medium",
-        "offset_microseconds": -16616,
-        "offset_milliseconds": -16.616,
-        "offset_seconds": -0.016616,
-        "explanation": "Synchronized using 5 signal pair(s). Offset: -16.6ms. The pairs' offsets range from -17.8 to 8.6 ms (standard deviation 16.2 ms). Medium confidence - reasonable signal agreement.",
-        "successful": true
-      }
-    }
-  ],
-  "warnings": [
-    "Medium synchronization confidence. Timestamps are approximate (accuracy: ~5-50ms)."
-  ],
+  "success": false,
+  "status": "not_applicable",
+  "reason": "No REV log (.revlog) files were found for this wpilog.",
+  "hint": "Revlogs are discovered by recording time in the configured log directory that holds this wpilog and in the wpilog's own folder (other configured directories are not searched): a .revlog whose time range overlaps this wpilog's is synchronized with it when the wpilog is loaded.",
   "_metadata": {
-    "timing_accuracy_ms": "5-50",
-    "confidence_description": "Some signals correlate well, minor disagreement",
     "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
-  },
-  "inputs": {
-    "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog",
-    "entries_read": [
-      "/SystemStats/EpochTimeMicros"
-    ]
   }
 }
 ```
@@ -6913,19 +6987,12 @@ Request:
 Response:
 ```json
 {
-  "success": true,
-  "status": "ok",
-  "can_bus": "rio",
-  "offset_ms": 0.0,
-  "offset_us": 0,
-  "previous_offset_ms": -16.616,
-  "previous_method": "CROSS_CORRELATION",
-  "new_method": "USER_PROVIDED",
+  "success": false,
+  "status": "not_applicable",
+  "reason": "No REV log (.revlog) files were found for this wpilog.",
+  "hint": "Revlogs are discovered by recording time in the configured log directory that holds this wpilog and in the wpilog's own folder (other configured directories are not searched): a .revlog whose time range overlaps this wpilog's is synchronized with it when the wpilog is loaded.",
   "_metadata": {
     "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
-  },
-  "inputs": {
-    "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
 }
 ```
@@ -6957,17 +7024,12 @@ Request:
 Response:
 ```json
 {
-  "success": true,
-  "status": "ok",
-  "completed": true,
-  "was_in_progress": false,
-  "revlog_count": 1,
-  "synchronized": true,
+  "success": false,
+  "status": "not_applicable",
+  "reason": "No REV log (.revlog) files were found for this wpilog.",
+  "hint": "Revlogs are discovered by recording time in the configured log directory that holds this wpilog and in the wpilog's own folder (other configured directories are not searched): a .revlog whose time range overlaps this wpilog's is synchronized with it when the wpilog is loaded.",
   "_metadata": {
     "log_truncation": "Log file is truncated or damaged: the file ends inside a record at byte 34996216; the rest of the file was not read. Data from 11.90 to 347.90 s was recovered."
-  },
-  "inputs": {
-    "log": "<logdir>/vache/session_23/akit_26-03-21_16-29-56_vache_q10.wpilog"
   }
 }
 ```

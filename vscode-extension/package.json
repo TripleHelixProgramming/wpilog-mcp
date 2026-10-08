@@ -2,7 +2,7 @@
   "name": "wpilog-analyzer",
   "displayName": "WPILog Analyzer",
   "description": "AI-powered FRC robot log analysis via MCP. Analyzes .wpilog telemetry from the roboRIO.",
-  "version": "0.9.1",
+  "version": "0.10.0-dev1",
   "publisher": "TripleHelixProgramming",
   "license": "MIT",
   "icon": "images/icon.png",

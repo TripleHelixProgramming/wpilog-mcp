@@ -72,6 +72,11 @@ Most people want the extension. It installs and updates the same standalone serv
 
 Without VS Code, use the [standalone installer](doc/STANDALONE.md), which prompts for directories, team, and the optional matching extension. Point clients at the launcher's `connect http` bridge. For permanent directories or advanced server settings, edit `~/.wpilog-mcp/servers.yaml`; VS Code's Settings UI does not edit it. A Blue Alliance key is optional: the extension registers its secret-storage key in memory, while standalone users can configure the key in YAML or the environment.
 
+For a published pre-release, pass the installer `--tag v0.10.0-dev1 --with-extension` to select
+that server and its matching extension together; the [pre-release instructions](doc/STANDALONE.md#trying-a-pre-release)
+cover both platforms. The tag must already exist on Releases. Upgrades use user-scope Claude Code
+registration; the [migration guide](doc/STANDALONE.md#moving-from-a-project-mcpjson) covers old project entries.
+
 ## Guardrails
 
 A language model tends to find an explanation that fits the data, whether or not the data can bear a firm conclusion. The server is built to resist that tendency:
