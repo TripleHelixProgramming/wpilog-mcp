@@ -124,8 +124,13 @@ class ProviderCaptureTest {
         // End the writer through the same ordered callback used on a real connection loss.
         rig.gateway.dropClients().get(); rig.pump(() -> !rig.service.live().connected());
         rig.pump(() -> rig.service.live().current() != null && !rig.service.live().current().open());
-        var manifestDone = rig.manager.stores().store(rig.root).refreshStatus(); rig.pump(manifestDone::isDone); manifestDone.join();
+        // A catalog refresh can overtake a coalesced close update that has not dispatched yet.
+        // Join the writer's actual final-manifest barrier before resolving its promoted path.
+        var closed = java.util.concurrent.CompletableFuture.runAsync(rig.service::close);
+        rig.pump(closed::isDone); closed.get(10, java.util.concurrent.TimeUnit.SECONDS);
         String beforeMove = capture.toString(); capture = rig.service.live().resolve(capture);
+        assertTrue(capture.startsWith(rig.root.resolve("robots").resolve("PROVIDER-FIXTURE")),
+            "The close barrier includes promotion to the device serial");
         var manifest = com.google.gson.JsonParser.parseString(Files.readString(capture.getParent().resolve("session.json"))).getAsJsonObject();
         var summary = manifest.getAsJsonObject("capture_stats");
         assertEquals(2, summary.getAsJsonArray("providers").size());

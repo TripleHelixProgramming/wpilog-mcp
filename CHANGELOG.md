@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Calls whose file disappears during opening or reading now explain that it moved or was removed and point to `list_available_logs`; previously this race could return an unexplained internal error during capture identity promotion.
 - **NT4 liveness:** keepalives now expire only an unanswered ping, pong receipt and replies run off the application loops, and periodic capture fsync runs on its own thread. Previously a one-second stall of either loop could drop a healthy connection and split a session; close and rollover still wait for pending disk forces.
 - **Socket delivery:** a queued gateway reply no longer waits indefinitely when Java-WebSocket loses its write notification. The existing aliveness tick restores selector interest without resending data or adding 4.0 pings. A CPU-loaded run reproduced the fixture client's announcement stall; both server adapters now pass a planted lost-notification regression with unchanged timeouts.
 - **Gateway startup:** a busy port no longer stops capture and pulling or produces a misleading shutdown-timeout warning. Address reuse and perpetual backoff from 1 to 30 seconds let it recover; health and live sessions show waiting/listening state, cause and time, and only state changes are logged.
@@ -103,6 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The default-cache check now tests the OS path without creating it, instead of mistaking Gradle's cache override for the default; previously it depended on the checkout directory containing the application name.
 - Synthetic MINA SSH scripts now check stats units, rates and clock mapping, adaptive budgets, tail limits, missing sources, rotations and reconnects, with provider conformance/differential checks. Previously SSH tests covered identity and file transfer only. An outside-loop watchdog test pins stall reporting independently of the stalled loop.
 - Injected-clock regressions cover 1.5-second gateway/listener/disk stalls, the unchanged one-second unanswered-ping deadline, network-thread pong replies, bounded client receive work, and close/rollover force barriers. Capture and replay failures now name disconnects instead of missing topics or stalled placement; previously these paths obscured the two preserved Windows failures.
 - Release headings are checked for uniqueness, preventing unreleased work from being hidden under a duplicated published version.

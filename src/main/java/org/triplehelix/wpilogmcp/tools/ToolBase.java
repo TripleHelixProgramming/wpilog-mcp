@@ -163,6 +163,11 @@ public abstract class ToolBase implements McpServer.Tool {
       // The file is missing, empty, not a log, or too large: a fact about the caller's file,
       // explained, not a server fault
       result = errorResult(e.getMessage());
+    } catch (java.nio.file.NoSuchFileException e) {
+      // A move can land between validation and opening a path. This is a retryable file
+      // change, not an unexplained server failure (seen during capture identity promotion).
+      result = errorResult("File was not found while opening or reading it: " + e.getFile()
+          + ". It may have been moved or removed. Retry with a path from list_available_logs.");
     } catch (Exception e) {
       // Unexpected errors - return error response instead of propagating
       // raw exceptions to the MCP layer

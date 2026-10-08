@@ -78,7 +78,8 @@ public class CacheDirectory {
     return resolved;
   }
 
-  private Path resolveOsDefault() {
+  /** Resolve without creating directories, so tests never touch the user's default cache. */
+  Path resolveOsDefault() {
     String os = System.getProperty("os.name", "").toLowerCase();
     String home = System.getProperty("user.home");
 

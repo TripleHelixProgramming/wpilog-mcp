@@ -831,3 +831,8 @@ Release-review keepalive failures (before the tag):
 - NI-image command availability/permissions, actual rotation behavior, and roboRIO 1/2 processor,
   storage and network cost remain shop measurements. All committed proc/tail fixtures are
   synthetic. No native server dependency, version bump or tag is part of this milestone.
+- The first provider CI run failed the same fresh-file comparison on Linux and Windows:
+  catalog refresh could overtake the coalesced close update and its identity directory move.
+  The test now joins capture's final-manifest barrier before resolving the path, rather than
+  sleeping. The Windows run also exposed a missing-file exception reported as an internal error;
+  a separate regression now requires an explained moved-or-removed-file result.
