@@ -434,7 +434,7 @@ class ToolResponsesDoc {
         .append("[DEVELOPMENT.md](DEVELOPMENT.md#changing-or-adding-a-tool)):\n\n")
         .append("```\n./gradlew test --tests '*.docs.*' ")
         .append("-PtoolResponsesLogDir=/path/to/riologs\n```\n\n")
-        .append("The logs: Team 2363 at VACHE 2026 (qualification 10, with its REV log), a ")
+        .append("The logs: Team 2363 at VACHE 2026 (qualification 10), a ")
         .append("practice session (the robustness review's log), and an AdvantageKit replay ")
         .append("(`_sim`) log. Responses are ")
         .append("verbatim except that arrays longer than ").append(MAX_ITEMS)

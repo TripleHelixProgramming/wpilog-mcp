@@ -502,7 +502,7 @@ It finishes the calls in progress, then exits, and `stop` returns once it has. A
 
 ### One Server for Every Client
 
-An `http` server can serve every MCP client on the machine at once, where a stdio server serves the one client that started it. A client that takes a URL (Claude Code's `.mcp.json` does, with `"type": "http"`) connects to `http://127.0.0.1:2363/mcp` directly. A client whose configuration takes only a command to run (Claude Desktop's file is one) uses `connect`, which relays the client's standard input and output to the server:
+An `http` server can serve every MCP client on the machine at once, where a stdio server serves the one client that started it. A client that takes a URL connects to `http://127.0.0.1:2363/mcp` directly. A client whose configuration takes only a command to run (Claude Desktop's file is one) uses `connect`, which relays the client's standard input and output to the server:
 ```bash
 wpilog-mcp connect http                      # the "http" server, started first if it is not running
 wpilog-mcp connect --url http://pit:2363     # any server, by URL, started by nobody
@@ -980,7 +980,7 @@ Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your s
   ```
 - **Where the files are**:
   - Server: `~/.wpilog-mcp/servers.yaml`. `start` also searches the working directory; `connect` reads its project YAML only for directory/team leases
-  - Claude Code: `~/.claude.json` (user scope) or the project's `.mcp.json`
+  - Claude Code: `~/.claude.json` for the current user-scope registration; a project's `.mcp.json` may still contain a retained manual or legacy entry (see [migration](#moving-from-a-project-mcpjson))
   - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
   - Codex: `~/.codex/config.toml`; Antigravity: `~/.gemini/antigravity/mcp_config.json`
   - HTTP server log: `~/.wpilog-mcp/logs/<name>.log`; its process ID and port: `~/.wpilog-mcp/run/<name>.pid`; the token `stop` presents: `~/.wpilog-mcp/run/<name>.token`

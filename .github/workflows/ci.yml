@@ -190,7 +190,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: editor-smoke-${{ matrix.vscode }}
-          path: build/extension-smoke
+          # Keep assertions and host/daemon logs, not six copies of an installed JAR or browser cache.
+          include-hidden-files: true
+          path: |
+            build/extension-smoke/**/result.json
+            build/extension-smoke/**/plants.json
+            build/extension-smoke/**/install.json
+            build/extension-smoke/**/claude-args.json
+            build/extension-smoke/**/*.log
+            build/extension-smoke/fixture/*.wpilog
           retention-days: 14
 
   robot-dependency-submission:

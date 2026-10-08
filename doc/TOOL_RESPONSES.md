@@ -6,7 +6,7 @@ The JSON every tool of **wpilog-mcp 0.10.0-dev1** returns, captured from real lo
 ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/riologs
 ```
 
-The logs: Team 2363 at VACHE 2026 (qualification 10, with its REV log), a practice session (the robustness review's log), and an AdvantageKit replay (`_sim`) log. Responses are verbatim except that arrays longer than 5 items keep their first 3 and end with `"... (N more items)"`, strings longer than 400 characters are cut the same way, and paths are shown as `<logdir>`, `<exportdir>`, and `~`. What each field means is in [TOOLS.md](TOOLS.md); this file shows what the fields look like on real data.
+The logs: Team 2363 at VACHE 2026 (qualification 10), a practice session (the robustness review's log), and an AdvantageKit replay (`_sim`) log. Responses are verbatim except that arrays longer than 5 items keep their first 3 and end with `"... (N more items)"`, strings longer than 400 characters are cut the same way, and paths are shown as `<logdir>`, `<exportdir>`, and `~`. What each field means is in [TOOLS.md](TOOLS.md); this file shows what the fields look like on real data.
 
 ## Transport envelope
 
@@ -1162,7 +1162,7 @@ Response:
   "logs": [],
   "cache": {
     "loaded_count": 0,
-    "heap_used_mb": 14,
+    "heap_used_mb": 30,
     "heap_max_mb": 512
   }
 }
@@ -1694,12 +1694,12 @@ Response:
   "tba_available": false,
   "revlog_sync_in_progress": false,
   "jvm_memory": {
-    "used_mb": 115,
-    "total_mb": 279,
+    "used_mb": 109,
+    "total_mb": 280,
     "max_mb": 512,
-    "free_mb": 163
+    "free_mb": 170
   },
-  "jvm_heap_used_mb": 115,
+  "jvm_heap_used_mb": 109,
   "sync_disk_cache": {
     "enabled": true,
     "directory": "~/th/wpilog-mcp/build/test-disk-cache",
