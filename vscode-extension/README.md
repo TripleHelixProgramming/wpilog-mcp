@@ -61,7 +61,7 @@ The editor shows the time range, entries, sample counts, and any truncation note
 - **Field:** the logged pose is drawn on the season's field outline, colored by time. The server's signal resolver selects a documented convention or asks you to choose among candidates.
 - **REV:** signals appear by bus and device with their synchronization method, confidence, and offset. They plot on the wpilog's clock; a bus that could not be synchronized is explained and not plotted.
 
-The extension host calls the same tools as the assistant and fetches samples through the [data endpoint](../doc/STANDALONE.md#the-data-endpoint). The webview draws those results and opens no network connection. Pit-server views, notebooks, and assistant chart links remain [planned work](../doc/EXPLORER_PLAN.md).
+The extension host calls the same tools as the assistant and fetches samples through the [data endpoint](../doc/STANDALONE.md#the-data-endpoint). The webview draws those results and opens no network connection. Pit-server views are described below; notebooks and assistant chart links remain [planned work](../doc/EXPLORER_PLAN.md).
 
 ## Organizing Your Logs
 
@@ -265,3 +265,9 @@ The local and pit HTTP servers also serve `/metrics`. The
 Prometheus/Grafana Compose files and a starter dashboard. Configure `metrics` in the server's
 YAML; this adds no extension setting. Scrapes show latest values and ages, while the capture
 and the explorer retain the record between scrapes.
+
+
+The [real-editor smoke](../doc/DEVELOPMENT.md#the-real-editor-smoke) runs in CI on the oldest
+supported VS Code and current stable. It checks activation, shared-server startup, a generated
+log in the Logs tree, its editor opening, and secret-free pit registration arguments. Interactive
+plots, credentials, organizing and mirror controls still have a manual checklist there.

@@ -341,6 +341,14 @@ tasks.register('bundleExtension', Copy) {
     rename { 'wpilog-mcp-all.jar' }
 }
 
+// A real editor runs separately from the ordinary Java and Node suites, using no team's log.
+tasks.register('extensionSmokeFixture', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.triplehelix.wpilogmcp.fixtures.ExtensionSmokeFixture'
+    args file('build/extension-smoke/fixture/smoke.wpilog').absolutePath
+}
+
 // ==================== Build VS Code Extension ====================
 // Builds the shadow JAR, bundles it into the extension, compiles the extension,
 // and packages it as a VSIX. Does NOT install it.

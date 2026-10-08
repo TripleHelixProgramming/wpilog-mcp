@@ -436,7 +436,37 @@ npm test
 
 New checks must fail on planted production faults. In particular, queue checks use latches and immediate exchanges to force ordering; a passing test that never exercised the competing update proves little.
 
-A real VS Code was not available for milestones 6–7; the pit/mirror UI in milestone 8 has not been exercised in a real VS Code either. Check the oldest supported and current versions by hand:
+#### The real editor smoke
+
+```bash
+./gradlew bundleExtension extensionSmokeFixture
+cd vscode-extension
+npm ci
+VSCODE_VERSION=1.101.0 xvfb-run -a npm run test:smoke
+VSCODE_VERSION=stable xvfb-run -a npm run test:smoke
+```
+
+These commands run on Linux with Xvfb installed. From macOS or Windows, use the two
+`editor-smoke` CI jobs; the runner refuses to open an editor on those desktops.
+CI runs both versions in separate Linux jobs. `@vscode/test-electron` 2.5.2 is a development
+only dependency (MIT); that line supports CI's Node 20. It downloads a separate VS Code,
+cached in `.vscode-test`, without using the installed editor. `npm test` is unchanged.
+The smoke generates its log with the pure-Java fixture writer, seeds a standalone install
+in a temporary home under `build/extension-smoke`, and lets the extension start its server.
+It checks activation, the shared daemon's health/version, the actual Logs provider's leased
+fixture listing, the custom editor tab, and the real pit command's user-scope arguments.
+A test `claude` executable records argv without registering anything. The runner stops its
+own daemon, retains logs/results under `build/extension-smoke`, and never changes the user's
+install or account. Test code, downloaded editors and dependencies are excluded from the VSIX.
+CI then runs `test:smoke:plants`: five faults in disposable compiled output remove activation,
+startup, listing or editor opening, or add a synthetic secret argument. Each must fail at its
+own assertion after the earlier checks passed; a timeout or unrelated crash is not accepted.
+The script restores every compiled file and runs only in Linux CI.
+
+This retires the real-editor caveat for those five surfaces. It does not inspect rendered
+plots, exercise credential dialogs, contact the Claude service, or prove agent discovery.
+The older milestones were checked without a real editor; these interactions still need the
+oldest supported and current versions by hand:
 
 1. Install from a fresh home: one offer, Not now lasting until activation, installer progress/PATH notice, and successful server startup. Verify only absolute User directories/team seed a new file and no key does.
 2. Update an older launcher with its YAML preserved; keep a newer hand install. Test the on-demand install command and a development suffix.
@@ -523,7 +553,7 @@ duplicate copies and a second import. No robot values enter these fixtures.
 The extension's `upload.test.ts` checks streamed bytes and hash, store selection, polling,
 refusal reporting and uncertain POST behavior. Manually check Upload Logs to Pit Server on
 both supported VS Code versions, including the picker, several files, a duplicate, a refusal
-and a network interruption; real VS Code has not been available for this work.
+and a network interruption; the editor smoke does not exercise the upload picker.
 
 ### Live tool checks
 
@@ -551,8 +581,8 @@ answers that capture is not enabled.
 `PitCredentialTest` uses synthetic credentials and real HTTP to check lease precedence,
 removal/expiry, exact endpoint forwarding, origin-scoped store authorization, and network/Origin
 refusals. Node tests cover SecretStorage key selection, headers on MCP/data/upload/polling,
-registration and secret-free Claude arguments. Real VS Code remains unverified: on the oldest
-supported and current releases, exercise Set/Clear Pit Proxy Credential, a proxy login from
+registration and secret-free Claude arguments. The real-editor smoke checks the command without a
+proxy credential. On the oldest supported and current releases, manually exercise Set/Clear Pit Proxy Credential, a proxy login from
 agents/Logs/plots/uploads/mirror, Claude re-registration, lease expiry after closing the window,
 and offline mirror access through `servers.yaml`.
 

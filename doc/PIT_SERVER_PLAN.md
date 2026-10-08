@@ -704,9 +704,26 @@ Release-preparation socket investigation:
   `ClientTest.reconnectUsesNewAnnouncementsAndContinuingValuesAndResetsBackoff`, at repetition 251
   before the repair and 110 afterward. CI for the bind fix separately timed out at
   `ReplayClockResetTest.pair` waiting for the first native replay process's disconnect; its
-  unchanged rerun passed. Reports and stacks are preserved under the release-preparation build
+  unchanged rerun passed. The socket-repair commit's CI reproduced that same native-disconnect
+  wait again while both ordinary Linux/Windows builds passed. Reports and stacks are preserved under the release-preparation build
   reports. These are not claimed fixed by the write repair: the native server does not use this
   library. The working hypothesis is EOF notification/demand ordering in the JDK client while
   the injected aliveness clock is stationary, rather than lost values. A confirming run needs
   the live socket's input state, receive demand and callback queue captured before teardown;
   advancing or widening a timeout would hide that distinction. Neither was done.
+
+
+Release-preparation editor choices:
+
+- Explorer milestone 11 uses the development-only MIT `@vscode/test-electron` 2.5.2 line,
+  which supports CI's Node 20. Linux `xvfb` runs the minimum supported VS Code (1.101.0)
+  and current stable independently; the helper downloads isolated editor builds and caches
+  them. The runner is Linux-only so invoking it from another desktop cannot open a GUI;
+  those developers use CI. A generated WPILOG, disposable user/settings/install directories and an argv-recording
+  Claude executable keep the run independent of an installed editor, account or robot log.
+- Five surfaces are exercised inside the real host: activation, shared daemon startup,
+  the actual Logs provider, the custom editor opening, and secret-free user-scope pit command
+  arguments. This does not claim rendering, credentials, agent discovery or the remaining
+  interactive mirror/organizer checklist. The ordinary Node test command is unchanged, and
+  smoke code/dependencies/downloads are excluded from the VSIX. CI repeats it with five
+  restored compiled-output faults; an unrelated failure or timeout does not count as a caught plant.

@@ -6,3 +6,5 @@ tsconfig.json
 **/*.map
 server/.gitkeep
 out/test/**
+out/smoke/**
+.vscode-test/**

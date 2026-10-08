@@ -433,8 +433,8 @@ The pit import milestone is complete: existing command and inbox grouping now ha
 and capture-enabled coverage, and the extension can upload verified copies to the pit store.
 The server accepts only file bytes at its network write surface; server-path operations remain
 local. Capture-only session/latest/wait tools now exist, with recorder costs and matched imports.
-The remaining §14 proxy login uses SecretStorage and local credential leases; real VS Code
-and hardware validation remain on the manual checklist.
+The remaining §14 proxy login uses SecretStorage and local credential leases; its interactive
+credential flows and hardware validation remain on the manual checklist.
 
 The metrics milestone is complete: `/metrics` serves latest numeric topics with ages,
 recorded struct fields, capture/pull counters and JVM MBeans. A Compose setup and starter
@@ -485,3 +485,9 @@ complete records and reports that limitation. See the replay commands in the dev
 - Performance improvements should include before and after benchmarks.
 - New tools should follow the existing `ToolBase` and `LogRequiringTool` patterns.
 - A cache format change needs a migration path or a clear invalidation.
+
+
+Explorer verification: milestone 11 now drives real VS Code in CI at the oldest supported
+version and current stable for activation, the shared server, fixture Logs listing, editor
+opening and pit command arguments. Rendered plots, interactive credential/organizer/mirror
+flows and agent discovery remain the manual/future automated coverage in DEVELOPMENT.md.

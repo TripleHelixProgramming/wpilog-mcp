@@ -122,7 +122,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
 | Apache MINA SSHD and EdDSA (test only) | A synthetic roboRIO's SSH/SFTP server on loopback, including actual host-key negotiation and exec channels. |
-| TypeScript and the VS Code extension API | The VS Code extension. It has no runtime npm dependencies, and its tests use Node's built-in test runner. |
+| TypeScript and the VS Code extension API | The VS Code extension has no runtime npm dependencies. Pure logic uses Node tests; the separate development-only Electron smoke drives real VS Code on the oldest supported and current stable releases. |
 
 The JAR has no other runtime dependencies.
 
@@ -690,6 +690,12 @@ The extension installs and updates the standalone layout from its bundled JAR an
 `legacyMigration.ts` recognizes the old `connect vscode-default` entry or `connect http --config` pointing inside extension storage. It removes only the named entry from untracked or ignored `.mcp.json`; other contents, tracked files, custom entries, and symlinks are left alone with a note. After the old daemon stops, private `servers/` and `projects/` files are removed once. Failed stops preserve the files for a later activation.
 
 The explorer shares this server through `mcpClient.ts` and `dataClient.ts`. The webview only draws results under its content security policy and opens no network connection. Pure models handle tree grouping, organizing decisions, and requests; `explorer.ts` and `extension.ts` hold the VS Code glue. Node tests cover those models, both platform path/command rules, fake transports, and a real JAR; real VS Code checks are listed in [DEVELOPMENT.md](DEVELOPMENT.md#extension-tests).
+
+The extension's activation export exposes readiness and a read-only view of its actual Logs
+provider, so the real-editor smoke can inspect the same tree users see without a second model
+or a test command. It does not expose the extension context, SecretStorage, or server manager.
+The smoke owns a disposable standalone install and an argv-recording Claude executable;
+ordinary Node tests and packaged extension code do not load its Electron runner.
 
 ## Known Limits
 

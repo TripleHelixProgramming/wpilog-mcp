@@ -15,6 +15,20 @@ const settings = Object.assign(
   ...manifest.contributes.configuration.map((section: { properties: object }) => section.properties)
 );
 
+test("the real editor smoke is opt-in, packaged out, and runs at both supported endpoints", () => {
+  assert.equal(manifest.scripts.test, "tsc -p ./ && node out/test/runTests.js");
+  assert.ok(manifest.devDependencies["@vscode/test-electron"], "Electron test runner is development only");
+  assert.equal(manifest.dependencies, undefined, "the extension still has no runtime npm dependencies");
+  assert.equal(manifest.scripts["test:smoke"], "tsc -p ./ && node out/smoke/run.js");
+  const root = path.join(__dirname, "..", "..", "..");
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const oldest = manifest.engines.vscode.replace(/^\^/, "");
+  assert.ok(workflow.includes(`vscode: ['${oldest}', 'stable']`), "oldest supported and current VS Code");
+  assert.match(workflow, /^\s*xvfb-run -a npm run test:smoke\r?$/m, "real Linux Electron, under Xvfb");
+  const ignore = fs.readFileSync(path.join(root, "vscode-extension", ".vscodeignore"), "utf8").split(/\r?\n/);
+  for (const pattern of ["node_modules/**", "out/smoke/**", ".vscode-test/**"]) assert.ok(ignore.includes(pattern), pattern);
+});
+
 test("the team number is empty until the user sets it: never another team's number", () => {
   const team = settings["wpilog-mcp.teamNumber"];
   assert.equal(team.default, null);

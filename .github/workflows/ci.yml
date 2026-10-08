@@ -143,9 +143,54 @@ jobs:
           name: shop-harness
           path: |
             build/reports/tests/shopHarness
+            build/test-results/shopHarness
             build/test-results/test
             build/shop-harness
             build/reports/replay
+          retention-days: 14
+
+  editor-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        vscode: ['1.101.0', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/cache@v4
+        with:
+          path: vscode-extension/.vscode-test
+          key: vscode-smoke-${{ runner.os }}-${{ matrix.vscode }}-${{ github.run_id }}
+          restore-keys: vscode-smoke-${{ runner.os }}-${{ matrix.vscode }}-
+      - name: Prepare a server and a synthetic log
+        run: ./gradlew bundleExtension extensionSmokeFixture
+      - name: Run the actual editor
+        working-directory: vscode-extension
+        env:
+          VSCODE_VERSION: ${{ matrix.vscode }}
+        run: |
+          npm ci
+          xvfb-run -a npm run test:smoke
+      - name: Prove the smoke catches broken integration
+        working-directory: vscode-extension
+        env:
+          VSCODE_VERSION: ${{ matrix.vscode }}
+        run: xvfb-run -a npm run test:smoke:plants
+      - name: Upload editor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-smoke-${{ matrix.vscode }}
+          path: build/extension-smoke
           retention-days: 14
 
   robot-dependency-submission:

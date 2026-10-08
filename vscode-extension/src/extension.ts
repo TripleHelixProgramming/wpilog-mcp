@@ -19,7 +19,7 @@ import { MirrorStatus, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, se
 import { uploadLog } from "./explorer/upload";
 import { resultSummary, resultDetails, progressText } from "./explorer/importJobs";
 import { StoreClient, rememberedPeers, syncSummary } from "./explorer/storeClient";
-import { Explorer } from "./explorer";
+import { Explorer, LogsProvider } from "./explorer";
 import { TBA_KEY_QUIET_MS, TBA_KEY_SETTING, planTbaKeyMove } from "./tbaKey";
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
@@ -30,7 +30,13 @@ const TBA_ACCOUNT_URL = "https://www.thebluealliance.com/account";
 const CLAUDE_REGISTERED = "wpilog-mcp.claudeUserRegistration";
 const LEGACY_RETIRED = "wpilog-mcp.retiredOwnedDaemon";
 
-export function activate(context: vscode.ExtensionContext) {
+/** A read-only extension API; never export context, credentials or mutable service owners. */
+export interface ExtensionApi {
+  ready: Promise<void>;
+  logs: Pick<LogsProvider, "getChildren">;
+}
+
+export function activate(context: vscode.ExtensionContext): ExtensionApi {
   const outputChannel = vscode.window.createOutputChannel("WPILog Analyzer");
   const didChangeEmitter = new vscode.EventEmitter<void>();
 
@@ -590,7 +596,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  void (async () => {
+  const ready = (async () => {
     await moveTbaKeyNow();
     await updateStandaloneAtActivation();
     if (await connectWindow()) { void explorer.offerOrganizing(); await command(configureMirror)(); }
@@ -598,6 +604,7 @@ export function activate(context: vscode.ExtensionContext) {
     void command(() => registerPitClaude(false))();
   })();
   outputChannel.appendLine("WPILog Analyzer extension activated.");
+  return { ready, logs: { getChildren: explorer.logs.getChildren.bind(explorer.logs) } };
 }
 
 /**
