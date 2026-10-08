@@ -84,7 +84,7 @@ class CaptureIdentityTest {
       var placement = stores.store(root).captures(WALL); var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
         connect(writer, 10_000_000, 0); var old = writer.session().path();
-        writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 7L), 0); loop.advance(250_000);
+        writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 7L), 0); loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
         try (var use = LogManager.getInstance().acquire(old.toString())) { assertEquals(7L, use.log().values().get("NT:/x").get(0).value()); }
         placement.completion().get(10, TimeUnit.SECONDS);
         String session = StoreCatalog.read(root, security).openCaptures().get(0).session().id();
@@ -133,7 +133,8 @@ class CaptureIdentityTest {
         assertTrue(blocked.await(5, TimeUnit.SECONDS));
         var work = worker.submit(() -> {
           writer.identity(device("SYNTHETIC-A", "SHA256:fixture-a"));
-          writer.value(VALUE, new ValueFrame(1, 11_000_000, 2, 8L), 0); loop.advance(250_000);
+          writer.value(VALUE, new ValueFrame(1, 11_000_000, 2, 8L), 0); loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
+          return null;
         });
         try {
           work.get(5, TimeUnit.SECONDS);

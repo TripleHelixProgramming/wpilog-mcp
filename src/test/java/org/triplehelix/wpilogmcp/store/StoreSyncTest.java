@@ -425,7 +425,8 @@ class StoreSyncTest {
       catalog(b).files().forEach(f -> peerHashes.add(f.file().sha256()));
       if (rollover) assertTrue(peerHashes.size() > 1, "The peer must offer the local writer's future rollover filenames");
       var copied = sync(a, httpB).filesCopied(); assertEquals(peerHashes.size(), copied.size());
-      firstLoop.advance(5_000_000); first.completion().get();
+      firstLoop.advance(5_000_000); firstLoop.until(() -> writer.session().observedAtUs() == firstLoop.nowUs());
+      first.completion().get();
       var during = catalog(a); assertEquals(peerHashes, during.files().stream().map(f -> f.file().sha256()).collect(java.util.stream.Collectors.toSet()));
       assertEquals("SYNTHETIC", during.sessions().get(0).session().event());
       if (rollover) for (int i = 0; i < 200; i++) writer.value(value,

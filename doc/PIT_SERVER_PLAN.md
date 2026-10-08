@@ -126,6 +126,12 @@ The pit server is `wpilog-mcp start <name>` for a server whose configuration ena
 
 **Reconnection.** A dropped connection is retried with backoff from 1 s to 10 s, forever. The pit server is a daemon; a robot that is off for the night is the normal case, not an error.
 
+**Keepalives.** In 4.1 both client and gateway send pings every 200 ms. Only a sent, unanswered
+ping can expire after one second; later pings do not reset its deadline. Pongs are stamped on
+network receipt, and replies bypass the application loops. The client's receive demand continues
+while its ordered listener runs, with a bounded copied-message queue. A loop stall alone is not
+evidence of a dead peer. The 4.0 time-sync timers remain the choice recorded in §17.
+
 **Subscription.** One `subscribe` with `topics: [""]`, `options: {prefix: true, all: true, periodic: <configured, default 0.01>}`. The server sends `announce` for every topic (name, id, type string, properties) and `unannounce` when one goes away; both are recorded in the session's entry table.
 
 **Values.** Each binary frame is a MessagePack array `[topic id, server timestamp µs, type code, value]`. Type codes and WPILOG type strings:
@@ -158,7 +164,7 @@ The type string in the `announce` is authoritative; the code in a value frame on
 
 **Entry names.** A topic is written under its own name with the `NT:` prefix DataLogManager uses for the topics it logs (`NT:/SmartDashboard/...`), so a capture of a robot running DataLogManager looks like that robot's own log to the signal resolver. Entry metadata is `{"source":"nt4","robot":"<address>"}`. Robots running AdvantageKit publish under `/AdvantageKit/...`, while their logs use `/RealOutputs/...` and similar; the resolver's conventions for captures of such robots are added only once verified against real captures, per the no-guessing rule, and until then those entries are candidates like any other.
 
-**Records.** Each value frame becomes one data record with the server timestamp, written by the pure-Java WPILOG writer. An `announce` for a new topic starts an entry; `unannounce` finishes it. The writer flushes every 250 ms and on session end, so a reader of the growing file sees whole records at most a quarter second behind. A wrong MessagePack family is dropped and counted, without disconnecting or losing other frames in its packet.
+**Records.** Each value frame becomes one data record with the server timestamp, written by the pure-Java WPILOG writer. An `announce` for a new topic starts an entry; `unannounce` finishes it. Every 250 ms the writer requests a flush on its own daemon thread, coalescing while a force is pending. Disk completion supplies `observedAtUs` and the ordered observer notification; a slow disk does not hold the NT4 loop. Close and rollover wait for a pending force before closing the file. Record writes remain on the loop, and the live index publishes complete writes without waiting for disk force. A wrong MessagePack family is dropped and counted, without disconnecting or losing other frames in its packet.
 
 **Bounded files.** `capture.max_file_bytes` defaults to 1,073,741,824 bytes (1 GiB). Reserve room for every finish and roll before a record would exceed the bound: finish and close the current file, then start `capture-2.wpilog`, `capture-3.wpilog`, etc. in the same session with active entries redeclared. Each closed file has its own hash and size in `files`; `open_capture` names only the current file. Each file has its own live index and tools still read one log per call. Retained struct schemas seed a new file at the rollover's server time (the time used for its declarations), with `capture_schema_seed: true` in the entry metadata; these are explicitly marked copies, not new received changes. A bound too small for declarations, schema seeds, one record and finishes stops recording with the reason.
 
@@ -747,3 +753,32 @@ Release-preparation editor choices:
   interactive mirror/organizer checklist. The ordinary Node test command is unchanged, and
   smoke code/dependencies/downloads are excluded from the VSIX. CI repeats it with five
   restored compiled-output faults; an unrelated failure or timeout does not count as a caught plant.
+
+Release-review keepalive failures (before the tag):
+
+- **Third load-sensitive socket failure:** Windows CI on `6dc0542`, run `37816626941`,
+  first attempt: `CaptureGatewayTest.orderedCaptureFeedMirrorsTypesPropertiesValuesClockAndSessionBoundariesWithoutAcceptingWrites`
+  dereferenced a missing `/signal` announcement. Its preserved XML says the fixture gateway
+  dropped client `capture` with `NT4 pong timeout`; the capture had cleared its topics before
+  the downstream assertion. The assertion now checks connection state and reports its last reason.
+- **Fourth load-sensitive socket failure:** the same run's unchanged Windows retry:
+  `ReplayPullTest.measuredShiftsPassThroughSftpAndPreserveThePlacementLimit` failed for the
+  generated DataLogManager and other-layout fixtures with `Replay capture stalled`. Its XML
+  twice says the fixture gateway dropped client `replay` with `NT4 pong timeout`. Replay now
+  reports the disconnect before waiting for missing records or attempting pull placement.
+- Both failures have the same liveness defect: heartbeats judged time since a pong processed
+  on the application loop, even when that loop had sent no ping during a stall. The review's
+  controlled probes reproduced healthy disconnections after 1.3 seconds; injected-clock tests
+  now pin 1.5 seconds on both sides, network pong receipt/replies, and the exact one-second
+  deadline of an unanswered ping. The 200 ms interval and one-second limit are unchanged.
+  Periodic `channel.force` also ran on the client loop; slow Windows disk force is a plausible
+  trigger, not a disk-latency measurement present in the saved XML. It now runs on a writer-owned
+  daemon with one pending force, completion-time observation and loop-owned observer callbacks.
+  Close/rollover await that force. Record writes stay on the loop; no evidence yet requires
+  moving those writes. No protocol deadline was widened.
+- JDK WebSocket receive demand is renewed on its network callback, since waiting for a listener
+  also withholds automatic pong replies and incoming pong delivery. Copied work has a 32 MiB
+  bound (at least 64 bytes charged per callback); exceeding it records a receive-queue reason.
+  Gateway ping replies retain the existing socket-queue check, with only an overrun drop queued
+  to fan-out. The real-log stratified sample is the verification scope for this timing fix;
+  the full set passed on `9d7a408` and remains required again before 0.10.0.

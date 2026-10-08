@@ -51,6 +51,7 @@ final class ReplayCapture implements AutoCloseable {
   private final Nt4Client client;
   private final Object progress = new Object();
   private boolean stopped;
+  private int readyConnection;
 
   ReplayCapture(URI address, Path source, Path directory, Clock wallClock) throws Exception {
     this(address, source, directory, wallClock, null);
@@ -126,7 +127,11 @@ final class ReplayCapture implements AutoCloseable {
         synchronized (progress) { received.incrementAndGet(); progress.notifyAll(); }
       }
       public void invalidValue(Announce topic, int code) { writer.invalidValue(topic, code); }
-      public void disconnected() { announcements.set(0); writer.disconnected(); }
+      public void disconnected() {
+        announcements.set(0);
+        synchronized (progress) { progress.notifyAll(); }
+        writer.disconnected();
+      }
     }, HttpClient.newHttpClient(), loop);
     client.start();
   }
@@ -136,9 +141,9 @@ final class ReplayCapture implements AutoCloseable {
     // can otherwise overshoot a lifetime counter and make equality impossible forever.
     try {
       if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) {
-        manual.until(() -> client.isConnected() && announcements.get() == count); return;
-      }
-      HarnessHttp.await("replay subscription", 30, () -> client.isConnected() && announcements.get() == count);
+        manual.until(() -> client.isConnected() && announcements.get() == count);
+      } else HarnessHttp.await("replay subscription", 30, () -> client.isConnected() && announcements.get() == count);
+      readyConnection = connections.get();
     } catch (AssertionError failure) {
       throw new AssertionError("Replay subscription: connected=" + client.isConnected() + ", connections=" + connections.get()
           + ", announcements=" + announcements.get() + ", expected=" + count + ", topics=" + client.topics().size(), failure);
@@ -154,17 +159,25 @@ final class ReplayCapture implements AutoCloseable {
 
   private void through(AtomicLong counter, long count) {
     if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) {
-      try { manual.until(() -> counter.get() >= count); return; }
+      try { manual.until(() -> { requireConnection(); return counter.get() >= count; }); return; }
       catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
     }
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
     synchronized (progress) {
+      requireConnection();
       while (counter.get() < count) {
+        requireConnection();
         long left = deadline - System.nanoTime();
         if (left <= 0) throw new AssertionError("Replay capture stalled");
         try { TimeUnit.NANOSECONDS.timedWait(progress, left); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
       }
+    }
+  }
+
+  private void requireConnection() {
+    if (!client.isConnected() || connections.get() != readyConnection) {
+      throw new AssertionError("Replay capture disconnected: " + client.disconnectReason());
     }
   }
 

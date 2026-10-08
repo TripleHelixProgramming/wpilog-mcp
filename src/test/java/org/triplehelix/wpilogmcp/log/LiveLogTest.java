@@ -103,7 +103,7 @@ class LiveLogTest {
       for (String field : List.of("inputs.session_time_range", "inputs.session_time_ranges", "start_sec", "end_sec")) {
         assertTrue(guide.contains("`" + field + "`"), field);
       }
-      loop.advance(250_000);
+      loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
       assertEquals(0, index.live().hotRecordCount());
       assertFalse(manager.release(path).released(), "An import cannot move an active writer");
       try (var canonical = manager.acquire(path.toRealPath().toString())) {
@@ -120,7 +120,7 @@ class LiveLogTest {
     try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
       connect(writer, 10_000_000, 0);
       for (int i = 0; i < 2200; i++) writer.value(X, new ValueFrame(1, 10_000_000L + i * 1_000_000L, 2, (long) i), i);
-      loop.advance(250_000);
+      loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
       assertEquals(2, index.live().hotRecordCount());
       try (var use = manager.acquire(path.toString())) {
         assertInstanceOf(LiveLog.View.class, use.log()); assertNull(use.snapshot());
@@ -178,7 +178,7 @@ class LiveLogTest {
         try (var use = manager.acquire(path.toString())) { hotResults.put("NT:" + name, json.toJson(use.log().values().get("NT:" + name))); }
       }
       writer.timeSync(3_000_000, 1_000_000);
-      loop.advance(250_000);
+      loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
       assertEquals(0, index.live().hotRecordCount(), "Idle topics expire on the flush after clock sync, without another value");
       writer.value(X, new ValueFrame(1, 2_000_000, 2, 7L), 0);
       try (var use = manager.acquire(path.toString())) {
@@ -211,7 +211,7 @@ class LiveLogTest {
         assertEquals(mappings + tick, index.live().mappingCount());
         loop.advance(249_999);
         assertEquals(100, index.live().hotRecordCount());
-        loop.advance(1);
+        loop.advance(1); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
         assertEquals(0, index.live().hotRecordCount());
         assertEquals(mappings + tick + 1, index.live().mappingCount());
       }
@@ -243,7 +243,7 @@ class LiveLogTest {
         writer.value(point, new ValueFrame(3, 1_000_001 + i, 5, payload), i);
       }
       assertNotEquals(path, writer.session().path());
-      loop.advance(250_000);
+      loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
       try (var use = manager.acquire(writer.session().path().toString())) {
         var values = use.log().values().get("NT:/point");
         assertFalse(values.isEmpty(), "The rolled file needs its schema to decode point values");

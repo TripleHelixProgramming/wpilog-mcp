@@ -27,12 +27,14 @@ import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Unannounce;
 import org.triplehelix.wpilogmcp.nt4.MessagePack;
+import org.triplehelix.wpilogmcp.nt4.Keepalive;
 import org.triplehelix.wpilogmcp.nt4.TimeSync;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 
 /**
- * Read-only NT4 client. All connection state and listener calls belong to one event loop; JDK
- * callbacks hand off completed messages with backpressure. A robot being off is normal: candidate
+ * Read-only NT4 client. Topic state and listener calls belong to one event loop; JDK
+ * callbacks hand off copied messages to a bounded queue while retaining receive demand for
+ * keepalives. A robot being off is normal: candidate
  * sweeps retry forever at 1, 2, 4, 8, 10 seconds, reset after a successful connection. IDs and clock
  * estimates never cross a connection boundary. Capture startup supplies its listener and loop.
  * Each new sweep starts at the last successfully connected candidate, then tries the others in
@@ -42,6 +44,7 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 public final class Nt4Client implements AutoCloseable {
   public static final String V41 = "v4.1.networktables.first.wpi.edu";
   public static final String V40 = "networktables.first.wpi.edu";
+  static final long MAX_PENDING_BYTES = 32L << 20;
 
   public interface Listener {
     default void connected(URI address, String protocol) {}
@@ -79,6 +82,7 @@ public final class Nt4Client implements AutoCloseable {
   private long retryUs = 1_000_000;
   private int preferredIndex;
   private volatile long invalidValues;
+  private volatile String disconnectReason = "Not connected";
 
   public Nt4Client(List<URI> addresses, double periodSeconds, Listener listener) {
     this(addresses, captureSubscription(periodSeconds), listener,
@@ -109,6 +113,8 @@ public final class Nt4Client implements AutoCloseable {
   }
 
   public boolean isConnected() { return connected; }
+  /** Last failed attempt, retained across reconnects for capture/replay diagnostics. */
+  public String disconnectReason() { return disconnectReason; }
   private volatile String connectedAddress = "";
   public String connectedAddress() { return connectedAddress; }
   public long invalidValueCount() { return invalidValues; }
@@ -128,13 +134,14 @@ public final class Nt4Client implements AutoCloseable {
     attempt.connecting = http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(2))
         .subprotocols(V41, V40).buildAsync(addresses.get(attempt.index), attempt);
     attempt.connecting.whenComplete((socket, error) -> {
-      if (error != null) submit(() -> failed(attempt));
+      if (error != null) submit(() -> failed(attempt, error.toString()));
       else if (closed.get()) socket.abort();
     });
   }
 
-  private void failed(Attempt attempt) {
+  private void failed(Attempt attempt, String reason) {
     if (current != attempt) return;
+    disconnectReason = reason;
     current = null;
     if (attempt.socket != null) attempt.socket.abort();
     if (attempt.open) {
@@ -161,12 +168,11 @@ public final class Nt4Client implements AutoCloseable {
   private void opened(Attempt attempt, WebSocket socket) {
     if (closed.get() || current != attempt) { socket.abort(); return; }
     attempt.socket = socket;
-    if (!List.of(V41, V40).contains(socket.getSubprotocol())) { failed(attempt); return; }
+    if (!List.of(V41, V40).contains(socket.getSubprotocol())) { failed(attempt, "Unsupported NT4 subprotocol"); return; }
     attempt.open = true;
     preferredIndex = attempt.index;
     retryUs = 1_000_000;
     connected = true;
-    attempt.lastPongUs = loop.nowUs();
     attempt.lastSyncUs = loop.nowUs();
     connectedAddress = addresses.get(attempt.index).getHost();
     listener.connected(addresses.get(attempt.index), socket.getSubprotocol());
@@ -187,11 +193,15 @@ public final class Nt4Client implements AutoCloseable {
     if (current != attempt || closed.get()) return;
     long now = loop.nowUs();
     boolean v41 = V41.equals(attempt.socket.getSubprotocol());
-    if (now - attempt.lastSyncUs >= 10_000_000 || v41 && now - attempt.lastPongUs >= 1_000_000) {
-      failed(attempt);
+    boolean pongExpired = v41 && attempt.keepalive.expired(now);
+    if (now - attempt.lastSyncUs >= 10_000_000 || pongExpired) {
+      failed(attempt, pongExpired ? "NT4 pong timeout" : "NT4 time-sync timeout");
       return;
     }
-    if (v41) send(attempt, () -> attempt.socket.sendPing(ByteBuffer.allocate(0)));
+    if (v41) send(attempt, () -> {
+      attempt.keepalive.sent(loop.nowUs());
+      return attempt.socket.sendPing(ByteBuffer.allocate(0));
+    });
     loop.schedule(() -> heartbeat(attempt), 200_000);
   }
 
@@ -201,7 +211,7 @@ public final class Nt4Client implements AutoCloseable {
       return action.get();
     });
     attempt.outgoing.whenComplete((ignored, error) -> {
-      if (error != null) submit(() -> failed(attempt));
+      if (error != null) submit(() -> failed(attempt, "NT4 send failed: " + error));
     });
   }
 
@@ -276,7 +286,7 @@ public final class Nt4Client implements AutoCloseable {
       try {
         if (current != null) {
           if (current.connecting != null) current.connecting.cancel(true);
-          failed(current);
+          failed(current, "NT4 client closed");
         }
       } finally { loop.close(); stopped.complete(null); }
     });
@@ -291,31 +301,43 @@ public final class Nt4Client implements AutoCloseable {
     CompletableFuture<WebSocket> outgoing = CompletableFuture.completedFuture(null);
     boolean open;
     boolean subscribed;
-    long lastPongUs;
+    final Keepalive keepalive = new Keepalive();
+    final java.util.concurrent.atomic.AtomicLong pendingBytes = new java.util.concurrent.atomic.AtomicLong();
+    final AtomicBoolean overrun = new AtomicBoolean();
     long lastSyncUs;
     final StringBuilder text = new StringBuilder();
     final ByteArrayOutputStream binary = new ByteArrayOutputStream();
 
     Attempt(int index, int tried) { this.index = index; this.tried = tried; }
 
-    private CompletionStage<Void> dispatch(WebSocket ws, Runnable action) {
-      var done = new CompletableFuture<Void>();
+    private CompletionStage<Void> dispatch(WebSocket ws, long bytes, Runnable action) {
       if (closed.get()) { ws.abort(); return CompletableFuture.completedFuture(null); }
+      long charge = Math.max(64, bytes);
+      if (pendingBytes.addAndGet(charge) > MAX_PENDING_BYTES) {
+        pendingBytes.addAndGet(-charge);
+        if (overrun.compareAndSet(false, true)) {
+          ws.abort(); submit(() -> failed(this, "NT4 listener fell behind: receive queue limit"));
+        }
+        return CompletableFuture.completedFuture(null);
+      }
       submit(() -> {
         try {
           if (current == this) action.run();
         } catch (RuntimeException e) {
           LoggerFactory.getLogger(Nt4Client.class).warn("NT4 connection stopped: {}", e.toString());
-          failed(this);
-        } finally { done.complete(null); ws.request(1); }
+          failed(this, "NT4 listener or protocol failure: " + e);
+        } finally { pendingBytes.addAndGet(-charge); }
       });
-      return done;
+      // JDK pong delivery and automatic ping replies also consume demand. Waiting for the
+      // listener here makes a healthy TCP connection look dead during a local disk stall.
+      ws.request(1);
+      return CompletableFuture.completedFuture(null);
     }
 
-    @Override public void onOpen(WebSocket ws) { dispatch(ws, () -> opened(this, ws)); }
+    @Override public void onOpen(WebSocket ws) { dispatch(ws, 0, () -> opened(this, ws)); }
     @Override public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
       var part = data.toString();
-      return dispatch(ws, () -> {
+      return dispatch(ws, (long) part.length() * 2, () -> {
         if (text.length() + part.length() > MessagePack.MAX_BYTES) throw new IllegalArgumentException("NT4 text too large");
         text.append(part);
         if (last) { Nt4Client.this.text(text.toString()); text.setLength(0); }
@@ -324,18 +346,19 @@ public final class Nt4Client implements AutoCloseable {
     @Override public CompletionStage<?> onBinary(WebSocket ws, ByteBuffer data, boolean last) {
       var part = new byte[data.remaining()];
       data.get(part);
-      return dispatch(ws, () -> {
+      return dispatch(ws, part.length, () -> {
         if (binary.size() + part.length > MessagePack.MAX_BYTES) throw new IllegalArgumentException("NT4 binary too large");
         binary.writeBytes(part);
         if (last) { Nt4Client.this.binary(this, binary.toByteArray()); binary.reset(); }
       });
     }
     @Override public CompletionStage<?> onPong(WebSocket ws, ByteBuffer data) {
-      return dispatch(ws, () -> lastPongUs = loop.nowUs());
+      keepalive.received(loop.nowUs()); ws.request(1);
+      return CompletableFuture.completedFuture(null);
     }
     @Override public CompletionStage<?> onClose(WebSocket ws, int status, String reason) {
-      return dispatch(ws, () -> failed(this));
+      return dispatch(ws, 0, () -> failed(this, "NT4 peer closed (" + status + "): " + reason));
     }
-    @Override public void onError(WebSocket ws, Throwable error) { submit(() -> failed(this)); }
+    @Override public void onError(WebSocket ws, Throwable error) { submit(() -> failed(this, "NT4 socket failed: " + error)); }
   }
 }

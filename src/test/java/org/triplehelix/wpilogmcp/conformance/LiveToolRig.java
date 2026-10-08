@@ -77,7 +77,10 @@ final class LiveToolRig implements AutoCloseable {
     long before = service.live().receivedValues(); gateway.value(name, timestamp, code, value).get();
     pump(() -> service.live().receivedValues() > before);
   }
-  void flush() { loop.advance(250_000); }
+  void flush() {
+    var before = service.live().current(); loop.advance(250_000);
+    if (before != null) pump(() -> service.live().current() != before);
+  }
   JsonObject call(String tool, String args) throws Exception {
     var result = CompletableFuture.supplyAsync(() -> {
       try { return http.call(tool, JsonParser.parseString(args).getAsJsonObject()); }

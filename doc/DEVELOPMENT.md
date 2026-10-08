@@ -109,6 +109,9 @@ that same port without a retry; reading the socket option after binding cannot p
 enabled in time. An injected listener error checks that successful binding resets the next backoff
 to one second. `GatewayLifecycleTest` checks that a failed close names its cause without claiming
 the shutdown deadline expired.
+`GatewayKeepaliveTest` and `ClientKeepaliveTest` stall injected clocks by 1.5 seconds while
+network callbacks continue: healthy peers survive, an unanswered ping expires at one second,
+and ping replies do not wait for fan-out. Receive demand and its queue bound are checked separately.
 These tests need no robot, native NT library, external service, or committed log. Actual ntcore and
 dashboard interoperability and native Windows execution still require their respective environments.
 
@@ -399,6 +402,11 @@ They take their settings from a server named `stresstest`. It is looked for in t
 `./gradlew test --tests '*.capture.*' --tests '*CaptureFidelityTest'` checks WPILOG bytes against
 hand-encoded format examples, all NT4 payload families, clock continuity and reboot detection,
 exclusion/thinning metadata, flushes, and minute-bounded cost accounting with injected clocks.
+`CaptureFlushTest` holds a disk force behind a latch while the next listener task writes a record;
+completion publishes the injected clock time, and close/rollover wait for the outstanding force.
+Tests of cold values and manifests wait for this completion rather than assuming a timer tick
+finished the disk operation. `ReplayCaptureTest` reports a disconnect immediately with its cause,
+before a missing-record wait can obscure it as a later pull-placement failure.
 Every generated fixture is replayed through the loopback gateway and JDK client into a capture;
 the independent reader checks every entry, payload, and timestamp, and wpiutil checks the result
 too. The bounded-file pass verifies the same received frames across every rollover, with marked

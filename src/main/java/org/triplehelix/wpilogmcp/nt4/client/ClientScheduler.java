@@ -13,6 +13,8 @@ public interface ClientScheduler extends AutoCloseable {
   void execute(Runnable action);
   void schedule(Runnable action, long delayUs);
   @Override void close();
+  /** Socket adapters may drain already-enqueued cleanup after stopping their listener. */
+  default void awaitTermination(long timeoutUs) throws InterruptedException {}
 
   static ClientScheduler daemon() {
     return daemon("nt4-client");
@@ -33,6 +35,9 @@ public interface ClientScheduler extends AutoCloseable {
         executor.schedule(action, delayUs, TimeUnit.MICROSECONDS);
       }
       @Override public void close() { executor.shutdown(); }
+      @Override public void awaitTermination(long timeoutUs) throws InterruptedException {
+        executor.awaitTermination(timeoutUs, TimeUnit.MICROSECONDS);
+      }
     };
   }
 }

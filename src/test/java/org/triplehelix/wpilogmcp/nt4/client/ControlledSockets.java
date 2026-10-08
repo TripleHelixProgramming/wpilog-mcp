@@ -16,11 +16,17 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 
 /** Delivers even a queued callback from an aborted socket, an interleaving TCP timing cannot pin. */
 public final class ControlledSockets extends HttpClient {
+  public String protocol = Nt4Client.V40;
   public final java.util.ArrayList<Peer> peers = new java.util.ArrayList<>();
   public static final class Peer implements WebSocket {
     private final Listener listener;
     private final java.util.ArrayList<ValueFrame> sent = new java.util.ArrayList<>();
-    Peer(Listener listener) { this.listener = listener; }
+    private final String protocol;
+    public boolean answerPing = true;
+    public int pings;
+    public long demand;
+    Peer(Listener listener, String protocol) { this.listener = listener; this.protocol = protocol; }
+    public void pong() { listener.onPong(this, ByteBuffer.allocate(0)); }
     public void sync(long timeUs) { binary(new ValueFrame(-1, timeUs, 2, sent.get(sent.size() - 1).value())); }
     public void text(ControlMessage message) { listener.onText(this, ControlMessage.encode(List.of(message)), true); }
     public void binary(ValueFrame frame) { listener.onBinary(this, ByteBuffer.wrap(frame.encode()), true); }
@@ -30,11 +36,11 @@ public final class ControlledSockets extends HttpClient {
     public CompletableFuture<WebSocket> sendBinary(ByteBuffer data, boolean last) {
       byte[] bytes = new byte[data.remaining()]; data.get(bytes); sent.addAll(ValueFrame.decode(bytes)); return done();
     }
-    public CompletableFuture<WebSocket> sendPing(ByteBuffer bytes) { return done(); }
+    public CompletableFuture<WebSocket> sendPing(ByteBuffer bytes) { pings++; if (answerPing) pong(); return done(); }
     public CompletableFuture<WebSocket> sendPong(ByteBuffer bytes) { return done(); }
     public CompletableFuture<WebSocket> sendClose(int status, String reason) { return done(); }
-    public void request(long n) {}
-    public String getSubprotocol() { return Nt4Client.V40; }
+    public void request(long n) { demand += n; }
+    public String getSubprotocol() { return protocol; }
     public boolean isOutputClosed() { return false; }
     public boolean isInputClosed() { return false; }
     public void abort() {}
@@ -45,7 +51,7 @@ public final class ControlledSockets extends HttpClient {
       public WebSocket.Builder connectTimeout(Duration duration) { return this; }
       public WebSocket.Builder subprotocols(String first, String... others) { return this; }
       public CompletableFuture<WebSocket> buildAsync(URI uri, WebSocket.Listener listener) {
-        var peer = new Peer(listener); peers.add(peer); listener.onOpen(peer); return CompletableFuture.completedFuture(peer);
+        var peer = new Peer(listener, protocol); peers.add(peer); listener.onOpen(peer); return CompletableFuture.completedFuture(peer);
       }
     };
   }

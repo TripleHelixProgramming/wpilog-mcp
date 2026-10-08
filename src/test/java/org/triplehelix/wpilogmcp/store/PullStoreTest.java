@@ -226,7 +226,7 @@ class PullStoreTest {
       writer.timeSync(10_000_000, 0); writer.announce(topic);
       for (int n = 0; n <= 3000; n++) writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 10_000_000 + n * 20_000L, 1,
           FixtureLogs.revlogPairOutput(10 + n * 0.02)), 0);
-      loop.advance(250_000); placement.completion().get(10, TimeUnit.SECONDS);
+      loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, TimeUnit.SECONDS);
       String session = StoreCatalog.read(root, security).openCaptures().get(0).session().id();
       var remote = new FakeRobot(); remote.device = FakeRobot.device("SYNTHETIC-B", "SHA256:second");
       store.identify(remote.device, WALL).get(10, TimeUnit.SECONDS);
@@ -237,7 +237,8 @@ class PullStoreTest {
       var conflict = new IdentityConflict(stored.file().path(), "SYNTHETIC-A", "SYNTHETIC-B");
       assertEquals(List.of(conflict), stored.session().identityConflicts());
       writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 71_000_000, 1, 0.5), 0);
-      loop.advance(5_000_000); placement.completion().get(10, TimeUnit.SECONDS);
+      loop.advance(5_000_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
+      placement.completion().get(10, TimeUnit.SECONDS);
       assertEquals(List.of(conflict), placed(entry).session().identityConflicts());
       assertEquals(stored.file(), placed(entry).file());
     }

@@ -120,9 +120,9 @@ class CaptureWriterTest {
     for (long time : List.of(0L, 999_999L, 1_000_000L)) writer.value(TOPIC, new ValueFrame(17, time, 2, time), time);
     writer.invalidValue(TOPIC, 2);
     writer.value(TOPIC, new ValueFrame(17, 2_000_000, 1, 1.0), 2_000_000);
-    loop.advance(249_999); assertEquals(0, flushes.get()); loop.advance(1); assertEquals(1, flushes.get());
+    loop.advance(249_999); assertEquals(0, flushes.get()); loop.advance(1); loop.until(() -> flushes.get() == 1); assertEquals(1, flushes.get());
     loop.advance(CaptureWriter.REPORT_PERIOD_US - CaptureWriter.FLUSH_PERIOD_US - 1); assertEquals(0, reports.get());
-    loop.advance(CaptureWriter.FLUSH_PERIOD_US); assertEquals(1, reports.get());
+    loop.advance(CaptureWriter.FLUSH_PERIOD_US); loop.until(() -> reports.get() == 1); assertEquals(1, reports.get());
     int flushedBeforeClose = flushes.get();
     writer.unannounce(new Unannounce("/x", 17)); writer.disconnected();
     assertEquals(2, writer.rejectedValues()); assertEquals(1, closed.get());
@@ -271,7 +271,7 @@ class CaptureWriterTest {
           }
         })) {
       connect(writer, 10_000_000, 0); writer.value(TOPIC, new ValueFrame(17, 10_000_000, 2, 1L), 0);
-      armed.set(true); assertDoesNotThrow(() -> loop.advance(250_000));
+      armed.set(true); assertDoesNotThrow(() -> loop.advance(250_000)); loop.until(() -> !writer.session().open());
       assertEquals("Capture write failed: planted force failure", writer.session().endReason());
       assertFalse(writer.session().open()); assertEquals(1, closes.get());
       int stoppedAt = flushes.get(); loop.advance(100_000_000);

@@ -57,7 +57,7 @@ class CaptureStoreTest {
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
         connect(writer, 10_000_000, 0);
         assertEquals(root.resolve("robots/address-127.0.0.1/sessions/2026-03-07/142233Z/capture.wpilog"), writer.session().path());
-        writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 5L), 0); loop.advance(5_000_000); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 5L), 0); loop.advance(5_000_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         var open = StoreCatalog.read(root, security); assertEquals(1, open.openCaptures().size());
         assertTrue(open.files().isEmpty()); assertTrue(open.unmanaged().isEmpty());
         var first = open.openCaptures().get(0); assertEquals("captured", first.file().provenance().kind());
@@ -190,9 +190,10 @@ class CaptureStoreTest {
           for (int i = 0; i < 40; i++) {
             writer.value(VALUE, new ValueFrame(1, 10_000_000 + i * 250_000L, 2, (long) i), loop.nowUs());
             writer.value(event, new ValueFrame(2, 10_000_000 + i * 250_000L, 4, "TEST"), loop.nowUs());
-            loop.advance(250_000);
+            loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
           }
           writer.disconnected();
+          return null;
         });
         try {
           recording.get(2, java.util.concurrent.TimeUnit.SECONDS);
@@ -228,10 +229,10 @@ class CaptureStoreTest {
         for (int i = 0; i < 19; i++) {
           writer.value(event, new ValueFrame(2, 10_000_000 + i, 4, "TEST"), loop.nowUs());
           writer.value(VALUE, new ValueFrame(1, 10_000_000 + i, 2, (long) i), loop.nowUs());
-          loop.advance(250_000); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+          loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         }
         assertEquals(initial + 1, placement.manifestWrites(), "Identical facts and 4.75 seconds need no manifest write");
-        loop.advance(250_000); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         assertEquals(initial + 2, placement.manifestWrites());
         var team = new Announce("/SystemStats/TeamNumber", 3, "int", null, new JsonObject());
         writer.announce(team); writer.value(team, new ValueFrame(3, 11_000_000, 2, 9999L), loop.nowUs());
@@ -303,7 +304,7 @@ class CaptureStoreTest {
           writer.value(point, new ValueFrame(3, 21_000_000 + i, 5, value), i);
         }
         assertNotEquals(first, writer.session().path());
-        loop.advance(5_000_000); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        loop.advance(5_000_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         var catalog = StoreCatalog.read(store.root(), security);
         for (var file : catalog.allFiles()) {
           if (file.path().equals(first.toRealPath())) continue;

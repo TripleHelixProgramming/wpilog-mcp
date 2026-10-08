@@ -15,6 +15,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
@@ -30,6 +33,8 @@ import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
  * The NT4 listener is the only writer. Time-sync replies, not possibly ancient retained values,
  * identify a continuing robot clock. Completed writes publish the live index on this loop;
  * manifest work takes snapshots and never waits here, except when creating a capture.
+ * Periodic force runs on a dedicated thread, with at most one outstanding flush. Completion
+ * returns to the listener loop before touching the index; close/rollover wait for that force.
  */
 public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   /** Five seconds tolerates connection/RTT jitter; any backward server clock is a new boot. */
@@ -128,6 +133,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private final Map<Integer, Announce> announced = new LinkedHashMap<>();
   private Session session;
   private WpilogOutput output;
+  private ExecutorService forceThread;
+  private CompletableFuture<Long> pendingForce;
   private String address;
   private DeviceIdentity identity;
   private boolean connected, synchronizedClock, resume, failed;
@@ -243,6 +250,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   private void openFile(boolean append) throws IOException {
     output = outputs.open(session.path(), session.nextEntry, append);
+    forceThread = Executors.newSingleThreadExecutor(r -> {
+      var thread = new Thread(r, "capture-flush"); thread.setDaemon(true); return thread;
+    });
     session.files.removeIf(f -> f.name().equals(session.path().getFileName().toString()));
     session.open = true; session.endedAt = null; session.sizeBytes = output.size();
     session.observedAtUs = loop.nowUs();
@@ -365,16 +375,39 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private void scheduleFlush(WpilogOutput expected) {
     loop.schedule(() -> {
       if (output != expected) return;
-      io(() -> {
-        output.flush(); session.observedAtUs = loop.nowUs(); observer.flushed(session);
-      });
-      if (output != expected) return;
-      if (loop.nowUs() >= nextReportUs) {
-        session.costs.forEach((name, cost) -> observer.cost(name, cost.snapshot(loop.nowUs())));
-        nextReportUs = loop.nowUs() + REPORT_PERIOD_US;
+      if (pendingForce == null) {
+        var force = CompletableFuture.supplyAsync(() -> {
+          try { expected.flush(); return loop.nowUs(); }
+          catch (IOException e) { throw new java.util.concurrent.CompletionException(e); }
+        }, forceThread);
+        pendingForce = force;
+        force.whenComplete((time, failure) -> {
+          try { loop.execute(() -> {
+            if (output == expected && pendingForce == force) io(this::finishForce);
+          }); } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // Shutdown/rollover owns the completion barrier and failure reporting now.
+          }
+        });
       }
       scheduleFlush(expected);
     }, FLUSH_PERIOD_US);
+  }
+
+  /** Called only by the listener loop: ordinary ticks never wait; close is a durability barrier. */
+  private void finishForce() throws IOException {
+    var pending = pendingForce;
+    if (pending == null) return;
+    pendingForce = null;
+    try { session.observedAtUs = pending.join(); }
+    catch (java.util.concurrent.CompletionException e) {
+      if (e.getCause() instanceof IOException failure) throw failure;
+      throw new IOException("Capture flush failed", e.getCause());
+    }
+    observer.flushed(session);
+    if (session.observedAtUs >= nextReportUs) {
+      session.costs.forEach((name, cost) -> observer.cost(name, cost.snapshot(session.observedAtUs)));
+      nextReportUs = session.observedAtUs + REPORT_PERIOD_US;
+    }
   }
 
   @Override public void disconnected() { connected = false; announced.clear(); close(); }
@@ -384,8 +417,11 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (closing == null) return;
     output = null;
     IOException failure = null;
-    try { for (var topic : topics.values()) closing.finish(topic.entry.id(), serverUs); }
+    try { finishForce(); }
     catch (IOException e) { failure = e; }
+    finally { forceThread.shutdown(); }
+    try { for (var topic : topics.values()) closing.finish(topic.entry.id(), serverUs); }
+    catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     try { closing.close(); }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     session.nextEntry = closing.nextEntry(); session.open = false; session.endedAt = wallClock.instant();

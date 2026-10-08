@@ -71,6 +71,7 @@ class GatewayLifecycleTest {
         robot.value("/signal", 10_000_001, 2, 7L).join();
         robot.value("/FMSInfo/FMSControlData", 10_000_002, 2, 0L).join();
         client.until(() -> capture.live().receivedValues() == 2); client.advance(250_000);
+        client.until(() -> capture.live().current().statistics().records() == 2);
         worker.drain(); assertEquals(1, contacts.get(), "The puller must start even when the view cannot bind");
         var waiting = health("127.0.0.1", http.getPort()).getAsJsonObject("gateway");
         assertEquals("waiting", waiting.get("state").getAsString());

@@ -182,7 +182,7 @@ class StoreDoorTest {
       writer.timeSync(1_000_000, 0);
       var topic = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/x", 1, "int", null, new com.google.gson.JsonObject());
       writer.announce(topic); writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 1_000_000, 2, 1L), 0);
-      loop.advance(250_000); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+      loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
       log = writer.session().path(); long before = Files.size(log);
       writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 2_000_000, 2, 2L), 0);
       var response = get(path()); assertEquals(200, response.statusCode());

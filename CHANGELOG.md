@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **NT4 liveness:** keepalives now expire only an unanswered ping, pong receipt and replies run off the application loops, and periodic capture fsync runs on its own thread. Previously a one-second stall of either loop could drop a healthy connection and split a session; close and rollover still wait for pending disk forces.
 - **Socket delivery:** a queued gateway reply no longer waits indefinitely when Java-WebSocket loses its write notification. The existing aliveness tick restores selector interest without resending data or adding 4.0 pings. A CPU-loaded run reproduced the fixture client's announcement stall; both server adapters now pass a planted lost-notification regression with unchanged timeouts.
 - **Gateway startup:** a busy port no longer stops capture and pulling or produces a misleading shutdown-timeout warning. Address reuse and perpetual backoff from 1 to 30 seconds let it recover; health and live sessions show waiting/listening state, cause and time, and only state changes are logged.
 - **Capture durability:** abandoned recordings are recovered with hash, size, scanned range, file-time ending and reason. Recovery runs after HTTP opens, shutdown is bounded, unreadable files remain explained, and a corrupt historical manifest is skipped and logged during live inventory. Previously an open manifest could remain forever or prevent capture from starting after restart.
@@ -101,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Injected-clock regressions cover 1.5-second gateway/listener/disk stalls, the unchanged one-second unanswered-ping deadline, network-thread pong replies, bounded client receive work, and close/rollover force barriers. Capture and replay failures now name disconnects instead of missing topics or stalled placement; previously these paths obscured the two preserved Windows failures.
 - Release headings are checked for uniqueness, preventing unreleased work from being hidden under a duplicated published version.
 - Gateway bind checks now reuse a port left in server-side TIME_WAIT; the earlier option getter could pass when reuse was enabled only after binding. Listener failures also pin the reset backoff, and shutdown failures must report their cause without claiming that the deadline expired.
 - Real-log checks now share a deterministic stratified sample by default, with runtime path/coverage reports and `conformanceSample=full` for release checks. Previously gateway and live replay read the full season on every milestone while native replay used a separate logger-only sample; all suites now honor the file limit, and full runs retain the clock-shift matrix on small logger/REV representatives. Native replay now bounds missing receipt progress instead of stopping a healthy large file at five minutes. Publisher shutdown precedes offline verification, so slow transfers cannot expire its control handshake.

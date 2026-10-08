@@ -32,10 +32,12 @@ public final class ManualScheduler implements ClientScheduler {
 
   public void advance(long deltaUs) {
     beforeAdvance = callbacks;
-    now += deltaUs;
+    elapse(deltaUs);
     while (!timers.isEmpty() && timers.peek().due() <= now) timers.remove().action().run();
     drain();
   }
+  /** The loop is occupied by a listener; network callbacks can still observe elapsed time. */
+  public void elapse(long deltaUs) { now += deltaUs; }
   public void drain() { Runnable next; while ((next = ready.poll()) != null) { next.run(); callbacks++; } }
   /** A fast reply may already have run in advance's drain; never demand a second reply. */
   public void receive() throws InterruptedException {

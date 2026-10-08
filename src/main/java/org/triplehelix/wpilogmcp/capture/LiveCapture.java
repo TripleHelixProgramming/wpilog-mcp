@@ -74,6 +74,7 @@ public final class LiveCapture implements LogStore.Observer {
     if (!status.open()) endWaits("The capture session ended");
   }
   public boolean connected() { var value = client; return value != null && value.isConnected(); }
+  public String disconnectReason() { var value = client; return value == null ? "Not started" : value.disconnectReason(); }
   public Map<String, Nt4Client.LatestValue> latest() { var value = client; return value == null ? Map.of() : value.latestValues(); }
   public Map<String, Announce> topics() { var value = client; return value == null ? Map.of() : value.topics(); }
   public java.util.Optional<org.triplehelix.wpilogmcp.nt4.TimeSync.Sample> timeEstimate() {

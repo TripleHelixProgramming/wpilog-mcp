@@ -246,6 +246,13 @@ lock. The adapter sends those deliveries on its own daemon loop. The client has 
 loop, so every announcement, removal, property update, and value reaches its listener in order on
 one thread. The capture service feeds the writer, live tools and gateway from that listener.
 
+Both 4.1 endpoints ping every 200 ms and expire the oldest unanswered ping after one second;
+a local loop that has not sent a ping cannot blame the peer for its own stall. Pong receipt is
+stamped on the network callback, and gateway pong replies bypass fan-out while retaining the
+send-queue bound. The JDK client renews receive demand there too (automatic pong replies consume
+that demand). Copied listener work is bounded to 32 MiB, charging at least 64 bytes per callback;
+an overrun closes with an explained reason instead of growing the application queue indefinitely.
+
 The gateway has its own configured port and the HTTP bind address. Recorder policy does not filter
 its feed. A robot disconnect flushes pending values before unannouncing every upstream topic; new
 announcements allocate new gateway ids. Client publications are private acknowledgement sinks,
@@ -386,7 +393,10 @@ take no writer lock. Short lifetime transitions and the existing file leases pro
 
 The default ten-minute hot window keeps the client's decoded values, with array/struct conversion
 when a tool requests them. Expiry follows server time sync as well as new data, so idle topics age
-out too. Expiry is batched on the 250 ms flush tick, at most four growth remaps per second even
+out too. Each 250 ms flush tick hands disk force to the writer's daemon thread, with only one
+force outstanding. Its completion time and index/manifest notification are published back on the
+ordered listener loop; close and rollover wait before closing the channel or replacing its file.
+Record writes remain on the listener loop. Expiry follows completed flushes, at most four growth remaps per second even
 with a zero hot window. Before discarding a hot value, the writer ensures a read-only mapping covers its complete
 record. Older values use their offsets; replacing a mapping waits for its last atomic reader
 reference before unmapping it. The write channel remains open beside the mapping on Windows.

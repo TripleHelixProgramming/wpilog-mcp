@@ -181,7 +181,7 @@ servers:
 | `capture.exclude` | List of topic prefixes to omit, default `[]` |
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
 | `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `2147483647`. Rollover stays in the same session |
-| `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry runs on the 250 ms flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
+| `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry follows completion of the 250 ms asynchronous flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
 | `capture.gateway` | Optional read-only NT4 gateway; omitted means disabled; `{}` enables its default port |
 | `capture.gateway.port` | Integer `0`–`65535`, default `5810` within the gateway block; `0` disables it. Binds to the same address as HTTP, on this separate port |
 | `capture.pull` | Optional robot log pulling block; capture alone needs no SSH |
@@ -789,7 +789,7 @@ A server with `capture` enabled adds `list_sessions`, `get_latest_values`, and
 `wait_for_change` to its Live tool category. The first lists sessions and recorded value costs
 (top ten topics, records and bytes, rates over the last minute); the others query and wait on
 NT4 publications in memory. `inputs.session` names the capture for ordinary log tools.
-Counts update on the 250 ms flush tick. Robot-clock timestamps and ages describe publication,
+Counts update when the 250 ms asynchronous flush completes; a slow disk delays that snapshot, not NT4 keepalives. Robot-clock timestamps and ages describe publication,
 not a measurement requested by the caller. [TOOLS.md](TOOLS.md#live-tools) defines the fields,
 missing-topic results, and the 30-second maximum wait.
 
@@ -851,7 +851,7 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_nt_address_info` | 1 with the last connected `address`; absent before any connection. |
 | `wpilog_capture_open` | 0/1 recording session state. |
 | `wpilog_capture_topics` | Session entry count, including finished entries. |
-| `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh on the 250 ms flush tick. |
+| `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh after the 250 ms asynchronous flush completes. |
 | `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
 | `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
 | `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: copied payload bytes, including retransfers, and successful verifications, including growing-file updates. |

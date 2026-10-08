@@ -90,7 +90,10 @@ class CaptureGatewayTest {
           downstream.start(); var announcement = (Announce) next(events);
           assertEquals("/signal", announcement.name()); assertEquals("int", announcement.type());
           assertEquals(properties, announcement.properties());
-          assertNotEquals(capture.live().topics().get("/signal").id(), announcement.id(), "Gateway ids belong to its own session");
+          var upstream = capture.live().topics().get("/signal");
+          assertTrue(capture.live().connected(), () -> "Capture disconnected: " + capture.live().disconnectReason());
+          assertNotNull(upstream, () -> "Capture topic disappeared: " + capture.live().disconnectReason());
+          assertNotEquals(upstream.id(), announcement.id(), "Gateway ids belong to its own session");
           for (long n = 1; n <= 3; n++) {
             robot.value("/signal", 11_000_000 + n, 2, n * 7).join();
             var value = (ValueFrame) next(events);
