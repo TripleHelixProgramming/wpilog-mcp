@@ -74,7 +74,9 @@ public final class LiveTools {
           + "counts_basis. Old manifests without recorder summaries return null counts, never a file scan. "
           + "Recorder counts are published every 250 ms; closed-session rates are null. limits.sessions "
           + "reports the true total when limit cuts sessions, and each session's limits.cost reports a cut "
-          + "topic list. inputs.session names the current or last capture. Capture-disabled use is not_applicable.";
+          + "topic list. gateway reports state (disabled, waiting, listening, stopped), port, cause "
+          + "(while waiting), and since (UTC time of that state). inputs.session names the current or last capture. "
+          + "Capture-disabled use is not_applicable.";
     }
     @Override public JsonObject inputSchema() {
       return new SchemaBuilder().addIntegerProperty("limit", "Newest sessions to return, 1 to 100 (default 20)", false, 20).build();
@@ -82,11 +84,11 @@ public final class LiveTools {
     @Override ResponseBuilder read(JsonObject arguments, CaptureStore.Status current) {
       int limit = getOptWhole(arguments, "limit", 20);
       if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be an integer from 1 to 100");
-      if (live == null) return inactive(current);
+      if (live == null) return inactive(current).addData("gateway", org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED.json());
       var sessions = live.sessions(); var rows = new JsonArray();
       for (var session : sessions.stream().limit(limit).toList()) rows.add(row(session, current));
       return (sessions.isEmpty() ? ResponseBuilder.notApplicable("No capture or imported session has been recorded") : ResponseBuilder.success())
-          .addLimitedList("sessions", rows, sessions.size(), limit);
+          .addLimitedList("sessions", rows, sessions.size(), limit).addData("gateway", live.gateway().json());
     }
     private JsonObject row(LiveCapture.SessionView view, CaptureStore.Status current) {
       var session = view.session(); var row = new JsonObject();

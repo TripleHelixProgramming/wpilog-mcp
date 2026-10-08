@@ -241,8 +241,12 @@ assertion messages, so later targeted runs cannot erase a socket failure. The lo
 the opt-in harness; `./gradlew build` runs the ordinary suite separately.
 
 The ordinary gateway checks are `GatewayCoreTest`, `GatewaySocketTest`,
-`GatewayBackpressureTest`, `CaptureGatewayTest`, and `GatewayConfigTest`; run them with
-`./gradlew test --tests '*Gateway*Test'`. They use literal loopback addresses on Linux and Windows.
+`GatewayBackpressureTest`, `CaptureGatewayTest`, `GatewayBindTest`, `GatewayLifecycleTest`, and
+`GatewayConfigTest`; run them with `./gradlew test --tests '*Gateway*Test'`. Bind retries use an
+injected clock: a held port leaves capture and pull running, health and sessions agree on the
+waiting state, and releasing it restores downstream service. A nonloopback-interface check
+pins the service's HTTP bind choice (skipped only if no such interface exists). Other sockets
+use literal loopback addresses on Linux and Windows.
 They check subscription periods/options, truthful write acknowledgements, queue bounds with a
 real unread TCP peer, robot-clock round trips and absent-clock reconnects, session boundaries,
 and forwarding/flushes during a blocked store operation. `MetricsDaemonTest` checks the port and

@@ -98,6 +98,11 @@ public class HttpTransport {
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
   private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null);
+  private volatile java.util.function.Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> gatewayStatus =
+      () -> org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED;
+  public void setGatewayStatus(java.util.function.Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> status) {
+    gatewayStatus = java.util.Objects.requireNonNull(status);
+  }
   public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
       org.triplehelix.wpilogmcp.capture.LiveCapture capture) { metricsEndpoint = new MetricsEndpoint(config, capture); }
   public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
@@ -729,6 +734,7 @@ public class HttpTransport {
     // it finds on the port without a PID file
     health.addProperty("version", Version.VERSION);
     health.addProperty("pid", ProcessHandle.current().pid());
+    health.add("gateway", gatewayStatus.get().json());
     var bytes = gson.toJson(health).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", "application/json");
     exchange.sendResponseHeaders(200, bytes.length);

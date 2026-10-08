@@ -709,6 +709,7 @@ public class Main {
         return;
       }
       if (capture != null) org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, capture.live());
+      if (capture != null) httpTransport.setGatewayStatus(capture.live()::gateway);
       httpTransport.configureMetrics(metricsConfig, capture == null ? null : capture.live(),
           () -> new org.triplehelix.wpilogmcp.mcp.MetricsEndpoint.Components(capture == null ? 0 : capture.gatewayClients(), java.util.Map.of()));
       // A stop request and the idle exit end the server as a signal would: the transport

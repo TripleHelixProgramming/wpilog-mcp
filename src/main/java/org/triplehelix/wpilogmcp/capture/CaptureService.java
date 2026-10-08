@@ -64,6 +64,14 @@ public final class CaptureService implements AutoCloseable {
   private CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop,
       CaptureWriter.OutputFactory outputs, Duration closeTimeout,
       org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory pulls, String bindAddress) throws IOException {
+    this(config, manager, clock, loop, outputs, closeTimeout, pulls, bindAddress,
+        config.gatewayPort() == 0 ? null : ClientScheduler.daemon("nt4-gateway-bind"));
+  }
+
+  CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop,
+      CaptureWriter.OutputFactory outputs, Duration closeTimeout,
+      org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory pulls, String bindAddress,
+      ClientScheduler binds) throws IOException {
     this.closeTimeout = closeTimeout;
     store = manager.stores().store(config.store());
     live = new LiveCapture(store.root(), loop);
@@ -73,7 +81,8 @@ public final class CaptureService implements AutoCloseable {
           // ntcore servers answer with their local monotonic clock. Until upstream sync exists,
           // ours is the only reference; the first valid estimate resets downstream connections.
           return robotNow == null ? loop.nowUs() : Math.round(robotNow);
-        });
+        }, clock, binds);
+    if (gateway != null) live.attachGateway(gateway::status);
     observation = store.observe(live);
     placement = store.captures(clock);
     placement.onStatus(live::status);
@@ -91,12 +100,13 @@ public final class CaptureService implements AutoCloseable {
   public synchronized java.util.concurrent.CompletableFuture<Void> start() {
     if (starting != null) return starting;
     if (stopping.get()) return java.util.concurrent.CompletableFuture.completedFuture(null);
-    var listening = gateway == null ? java.util.concurrent.CompletableFuture.<Void>completedFuture(null) : gateway.start();
-    starting = listening.thenCompose(ignored -> placement.recoverAsync()).thenCompose(ignored -> store.refreshStatus()).thenRun(() -> {
+    // The gateway is a view. Its independent bind retry must never hold up the record or puller.
+    if (gateway != null) gateway.start();
+    starting = placement.recoverAsync().thenCompose(ignored -> store.refreshStatus()).thenRun(() -> {
       if (!stopping.get()) { client.start(); if (pull != null) pull.start(); }
     }).whenComplete((ignored, error) -> {
       if (error != null) org.slf4j.LoggerFactory.getLogger(CaptureService.class)
-          .error("Capture startup failed (capture.gateway.port or store recovery); NT4 capture has not started", error);
+          .error("Capture startup failed (store recovery); NT4 capture has not started", error);
     });
     return starting;
   }
@@ -113,13 +123,15 @@ public final class CaptureService implements AutoCloseable {
       // One bound covers stopping the writer and waiting behind imports for the final manifest.
       var recovery = starting;
       java.util.concurrent.CompletableFuture.allOf(client.closeAsync(), recovery == null
-          ? java.util.concurrent.CompletableFuture.completedFuture(null) : recovery, pullClosed, gatewayClosed)
+          ? java.util.concurrent.CompletableFuture.completedFuture(null) : recovery.handle((ignored, error) -> null), pullClosed, gatewayClosed)
           .thenCompose(ignored -> placement.completion())
           .get(closeTimeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt(); deferred(e);
-    } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+    } catch (java.util.concurrent.TimeoutException e) {
       deferred(e);
+    } catch (java.util.concurrent.ExecutionException e) {
+      org.slf4j.LoggerFactory.getLogger(CaptureService.class).warn("Capture shutdown failed; the next startup sweep will recover unowned captures", e.getCause());
     } finally {
       try { observation.close(); } catch (Exception e) { deferred(e); }
     }

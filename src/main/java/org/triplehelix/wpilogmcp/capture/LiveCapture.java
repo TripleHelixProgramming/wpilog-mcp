@@ -50,10 +50,14 @@ public final class LiveCapture implements LogStore.Observer {
   private final Map<String, Map<String, Wait>> waiting = new HashMap<>();
   private boolean stopped;
   private volatile Supplier<Map<String, PullCoordinator.Progress>> pull = Map::of;
+  private volatile Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> gateway =
+      () -> org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED;
 
   public LiveCapture(Path root, ClientScheduler clock) { this.root = root; this.clock = clock; }
   public void attach(Nt4Client client) { this.client = client; }
   public void attachPull(Supplier<Map<String, PullCoordinator.Progress>> progress) { pull = progress; }
+  public void attachGateway(Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> status) { gateway = status; }
+  public org.triplehelix.wpilogmcp.nt4.server.GatewayStatus gateway() { return gateway.get(); }
   public record Metrics(boolean connected, String address, CaptureStore.Status current,
       Map<String, Nt4Client.LatestValue> latest, TimeSync.Sample time,
       Double robotNowUs, Map<String, PullCoordinator.Progress> pull) {}

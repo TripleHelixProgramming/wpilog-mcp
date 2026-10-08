@@ -301,6 +301,13 @@ the team network for other machines to connect. This separate port has **no auth
 belongs on the **private network**; an HTTP proxy login does not protect it. HTTP's Origin and
 loopback-control checks remain unchanged.
 
+A busy gateway port does not stop capture or pulling. The listener enables address reuse and
+retries forever, after 1, 2, 4, 8, 16, then 30 seconds between attempts. The server logs changes
+between waiting and listening, rather than every attempt. `GET /health` and `list_sessions`
+publish the same `gateway` object: `state` (`disabled`, `waiting`, `listening`, or `stopped`),
+`port`, `cause` while waiting, and `since` in UTC. A recovered listener serves the topics already
+received while it was waiting.
+
 A robot disconnect unannounces its topics. Reconnection announces them with new gateway ids.
 Time-sync replies use the measured robot clock; while that estimate is absent they use the pit
 server's local monotonic clock, as an ntcore server does. The first valid estimate after each

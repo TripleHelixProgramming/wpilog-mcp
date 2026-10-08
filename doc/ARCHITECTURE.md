@@ -251,6 +251,12 @@ its feed. A robot disconnect flushes pending values before unannouncing every up
 announcements allocate new gateway ids. Client publications are private acknowledgement sinks,
 never a second route to the robot or capture. Properties acknowledgements report unchanged facts.
 
+The listener's bind lifecycle is independent of capture startup. A busy port retries with
+1-second exponential backoff capped at 30 seconds; topics remain in the gateway core while
+waiting. The adapter binds a reusable socket before handing it to Java-WebSocket, so failed
+attempts close their channel and do not emit the library's repeated fatal-startup log.
+Health and live sessions read a published state, cause and state-change time without waiting.
+
 The fan-out thread coalesces sends at the minimum requested value period per client, deduplicating
 overlapping subscriptions as NT4 permits. Period-pending values are bounded by 32 MiB and 65,536
 records per client. Java-WebSocket's nonblocking selector drains the socket queues; every text and

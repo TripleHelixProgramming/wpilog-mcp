@@ -192,6 +192,10 @@ An NT4 server on the pit server's own port, serving every topic the client has a
 defaults to port 5810. It follows the HTTP bind address on that separate port. Capture exclusion
 and thinning do not filter the gateway's feed.
 
+The listener enables address reuse and retries a busy bind forever with 1 s doubling to 30 s.
+Capture and pulling start independently. `GET /health` and `list_sessions` publish its state,
+port, cause while waiting and UTC time of the state change; the log records state changes only.
+
 - **Handshake**: accepts the two subprotocols; the client name from the path is logged.
 - **Announce**: on subscribe, every topic matching the subscription's prefixes is announced with the robot's type string and properties, and the gateway's own ids.
 - **Values**: per client, per subscription, honoring `periodic`, `all`, `topicsonly`, and `prefix` as the robot would: with `all`, every change since the last send; without it, the latest value per topic per period. Sends are coalesced per period per client on the fan-out thread.
@@ -648,8 +652,14 @@ Milestone 8 choices:
 
 - `capture.gateway` is absent by default. An empty block selects 5810; port 0 disables it.
   The gateway follows the existing HTTP bind address rather than adding another bind setting.
-  It starts after HTTP is listening and before the upstream client. Bind failures name
-  `capture.gateway.port` in the server log. No new WebSocket dependency or server native library
+  It starts after HTTP is listening, independently of the upstream client and puller. A busy
+  port retries forever after 1, 2, 4, 8, 16, then 30 seconds, with address reuse enabled. Bind
+  failures name `capture.gateway.port` and their cause once per state change. Health and
+  `list_sessions` expose the port, state, cause and UTC `since`; a retry with the same cause
+  preserves that time. The gateway core keeps received topics while waiting, and shutdown
+  cancels retries without waiting for a never-bound listener. The socket is bound before
+  Java-WebSocket takes ownership to close failed channels and avoid its repeated fatal log.
+  No new WebSocket dependency or server native library
   was added; Java-WebSocket still owns framing only.
 - The same ordered listener feeds recording, live waiters and gateway publications. Capture
   exclusion/thinning does not filter downstream clients. A disconnect ends the visible gateway

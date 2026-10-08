@@ -85,6 +85,10 @@ class MetricsDaemonTest {
               }
             }).get(5, TimeUnit.SECONDS);
         try {
+          var health = com.google.gson.JsonParser.parseString(client.send(HttpRequest.newBuilder(
+              URI.create("http://127.0.0.1:" + port + "/health")).GET().build(), HttpResponse.BodyHandlers.ofString()).body())
+              .getAsJsonObject().getAsJsonObject("gateway");
+          assertEquals("listening", health.get("state").getAsString()); assertEquals(gatewayPort, health.get("port").getAsInt());
           org.triplehelix.wpilogmcp.harness.HarnessHttp.await("gateway metric", 5, () -> {
             var samples = PrometheusText.parse(client.send(request, HttpResponse.BodyHandlers.ofString()).body());
             assertEquals(1, samples.value("wpilog_nt_connected", Map.of()));

@@ -7,6 +7,8 @@ package org.triplehelix.wpilogmcp.nt4.server;
 import com.google.gson.JsonObject;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -29,6 +31,7 @@ import org.triplehelix.wpilogmcp.nt4.ControlMessage;
 import org.triplehelix.wpilogmcp.nt4.MessagePack;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
+import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
 
 /**
  * Read-only gateway adapter, also used as the robot fixture on loopback.
@@ -54,7 +57,15 @@ public final class Nt4Gateway implements AutoCloseable {
   private final Map<String, Peer> peers = new HashMap<>();
   private final Map<WebSocket, String> connections = new HashMap<>();
   private final CompletableFuture<Void> listening = new CompletableFuture<>();
-  private final SocketServer server;
+  private final InetSocketAddress address;
+  private final List<String> protocols;
+  private final Clock wallClock;
+  private final ClientScheduler binds;
+  private final Object lifecycle = new Object();
+  private volatile SocketServer server;
+  private boolean started;
+  private long retryUs = 1_000_000;
+  private volatile GatewayStatus status;
   private int nextClient;
   private volatile boolean closed;
   private volatile int clientCount;
@@ -69,31 +80,91 @@ public final class Nt4Gateway implements AutoCloseable {
     this(address, serverClock, protocols, MAX_QUEUED_FRAGMENTS, (name, reason) -> {});
   }
 
+  /** Capture supplies its wall clock; tests advance bind backoff without sleeping. */
+  public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, Clock wallClock, ClientScheduler binds) {
+    this(address, serverClock, List.of(Nt4Client.V41, Nt4Client.V40), MAX_QUEUED_FRAGMENTS,
+        (name, reason) -> {}, wallClock, binds);
+  }
+
   /** Queue and diagnostic seams for real-socket slow-reader tests, without machine-size buffers. */
   Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols,
       int maxQueuedFragments, java.util.function.BiConsumer<String, String> disconnected) {
+    this(address, serverClock, protocols, maxQueuedFragments, disconnected, Clock.systemUTC(),
+        ClientScheduler.daemon("nt4-gateway-bind"));
+  }
+
+  private Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols,
+      int maxQueuedFragments, java.util.function.BiConsumer<String, String> disconnected,
+      Clock wallClock, ClientScheduler binds) {
     if (address.isUnresolved()) throw new IllegalArgumentException("Gateway bind address must resolve");
     if (maxQueuedFragments <= 0) throw new IllegalArgumentException("Positive socket queue limit required");
     this.maxQueuedFragments = maxQueuedFragments; this.disconnected = disconnected;
     this.serverClock = serverClock;
+    this.address = address; this.protocols = List.copyOf(protocols); this.wallClock = wallClock; this.binds = binds;
+    status = new GatewayStatus(GatewayStatus.State.WAITING, address.getPort(), "Not started", wallClock.instant());
     loop = new ScheduledThreadPoolExecutor(1, r -> {
       var t = new Thread(r, "nt4-gateway"); t.setDaemon(true); return t;
     });
     loop.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
-    server = new SocketServer(address, protocols);
-    server.setDaemon(true);
-    // The library's global pinger also pings 4.0 peers, which NT4 forbids. Use our per-peer pinger.
-    server.setConnectionLostTimeout(0);
   }
 
   public CompletableFuture<Void> start() {
-    server.start();
-    loop.scheduleAtFixedRate(() -> send(core.tick(nowUs())), 1, 1, TimeUnit.MILLISECONDS);
-    loop.scheduleAtFixedRate(this::heartbeat, 200, 200, TimeUnit.MILLISECONDS);
+    synchronized (lifecycle) {
+      if (closed) return CompletableFuture.failedFuture(new IllegalStateException("Gateway closed"));
+      if (started) return listening;
+      started = true;
+      loop.scheduleAtFixedRate(() -> send(core.tick(nowUs())), 1, 1, TimeUnit.MILLISECONDS);
+      loop.scheduleAtFixedRate(this::heartbeat, 200, 200, TimeUnit.MILLISECONDS);
+      binds.execute(this::bind);
+    }
     return listening;
   }
 
-  public int port() { return server.getPort(); }
+  public int port() { return status.port(); }
+  public GatewayStatus status() { return status; }
+  /** Socket option diagnostic, also pinning the pre-bound socket's option in tests. */
+  boolean reusesAddress() throws java.io.IOException {
+    var bound = server;
+    return bound != null && bound.channel.getOption(java.net.StandardSocketOptions.SO_REUSEADDR);
+  }
+
+  private void bind() {
+    if (closed) return;
+    ServerSocketChannel channel = null;
+    try {
+      // Pre-bind so a normal busy port neither leaks the library's failed channel nor
+      // produces its fatal-error log on every retry. Ownership passes only on success.
+      channel = ServerSocketChannel.open();
+      channel.setOption(java.net.StandardSocketOptions.SO_REUSEADDR, true);
+      channel.bind(address);
+      var candidate = new SocketServer(channel, protocols);
+      synchronized (lifecycle) {
+        if (!closed) { server = candidate; candidate.start(); channel = null; }
+      }
+    } catch (java.io.IOException | RuntimeException error) { retry(error); }
+    finally {
+      if (channel != null) try { channel.close(); } catch (java.io.IOException ignored) { }
+    }
+  }
+
+  private void retry(Exception error) {
+    if (closed) return;
+    String cause = error.getClass().getSimpleName() + ": " + error.getMessage();
+    if (status.state() != GatewayStatus.State.WAITING || !cause.equals(status.cause())) {
+      status = new GatewayStatus(GatewayStatus.State.WAITING, address.getPort(), cause, wallClock.instant());
+      LoggerFactory.getLogger(Nt4Gateway.class).error("capture.gateway.port: waiting for port {}: {}; capture continues",
+          address.getPort(), cause);
+    }
+    try { binds.schedule(this::bind, retryUs); }
+    catch (java.util.concurrent.RejectedExecutionException ignored) { /* Shutdown won the race. */ }
+    retryUs = Math.min(30_000_000, retryUs * 2);
+  }
+
+  private void onBindThread(Runnable action) {
+    if (closed) return;
+    try { binds.execute(() -> { if (!closed) action.run(); }); }
+    catch (java.util.concurrent.RejectedExecutionException ignored) { /* Shutdown won the race. */ }
+  }
   /** Published on the fan-out thread; a metrics scrape never acquires the core's state lock. */
   public int clientCount() { return clientCount; }
 
@@ -206,18 +277,41 @@ public final class Nt4Gateway implements AutoCloseable {
   }
 
   @Override public void close() throws InterruptedException {
-    if (closed) return;
-    closed = true;
-    server.stop(1000);
+    final SocketServer bound;
+    synchronized (lifecycle) {
+      if (closed) return;
+      closed = true; bound = server;
+      status = new GatewayStatus(GatewayStatus.State.STOPPED, status.port(), null, wallClock.instant());
+    }
+    binds.close();
+    listening.cancel(false);
+    if (bound != null) bound.stopListening();
     loop.shutdown();
     loop.awaitTermination(5, TimeUnit.SECONDS);
     clientCount = 0;
+    if (started) LoggerFactory.getLogger(Nt4Gateway.class).info("capture.gateway.port: stopped on port {}", status.port());
   }
 
   private final class SocketServer extends WebSocketServer {
-    SocketServer(InetSocketAddress address, List<String> protocols) {
-      super(address, 1, List.of(new Draft_6455(List.of(),
-          new ArrayList<>(protocols.stream().map(Protocol::new).toList()), MessagePack.MAX_BYTES)));
+    private final ServerSocketChannel channel;
+    SocketServer(ServerSocketChannel channel, List<String> protocols) {
+      super(channel);
+      this.channel = channel;
+      // The pre-bound constructor has no draft/worker overload. Configure both before start.
+      decoders.subList(1, decoders.size()).clear();
+      var drafts = List.<Draft>of(new Draft_6455(List.of(),
+          new ArrayList<>(protocols.stream().map(Protocol::new).toList()), MessagePack.MAX_BYTES));
+      setWebSocketFactory(new org.java_websocket.server.DefaultWebSocketServerFactory() {
+        @Override public org.java_websocket.WebSocketImpl createWebSocket(org.java_websocket.WebSocketAdapter adapter,
+            List<Draft> ignored) { return super.createWebSocket(adapter, drafts); }
+      });
+      setReuseAddr(true); setDaemon(true);
+      // The library's global pinger also pings 4.0 peers, which NT4 forbids.
+      setConnectionLostTimeout(0);
+    }
+    void stopListening() throws InterruptedException {
+      try { stop(1000); }
+      finally { try { channel.close(); } catch (java.io.IOException ignored) { } }
     }
     @Override public ServerHandshakeBuilder onWebsocketHandshakeReceivedAsServer(
         WebSocket socket, Draft draft, ClientHandshake request) throws InvalidDataException {
@@ -226,7 +320,14 @@ public final class Nt4Gateway implements AutoCloseable {
       }
       return super.onWebsocketHandshakeReceivedAsServer(socket, draft, request);
     }
-    @Override public void onStart() { listening.complete(null); }
+    @Override public void onStart() {
+      onBindThread(() -> {
+        status = new GatewayStatus(GatewayStatus.State.LISTENING, getPort(), null, wallClock.instant());
+        retryUs = 1_000_000;
+        LoggerFactory.getLogger(Nt4Gateway.class).info("capture.gateway.port: listening on port {}", getPort());
+        listening.complete(null);
+      });
+    }
     @Override public void onOpen(WebSocket socket, ClientHandshake request) {
       enqueue(() -> {
         String id = Integer.toString(nextClient++);
@@ -279,7 +380,10 @@ public final class Nt4Gateway implements AutoCloseable {
       });
     }
     @Override public void onError(WebSocket socket, Exception error) {
-      if (socket == null) listening.completeExceptionally(error);
+      if (socket == null) onBindThread(() -> {
+        try { stopListening(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        retry(error);
+      });
       else socket.closeConnection(1011, "WebSocket error");
     }
   }

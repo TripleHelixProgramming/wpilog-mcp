@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On project open, the extension retires only recognized old bridge entries from untracked or ignored `.mcp.json`, preserving other contents and leaving tracked/custom files with a note. It stops `vscode-default` once and removes private `servers/` and `projects/` settings only after a successful stop; previously those entries and settings remained active.
 
 ### Fixed
+- A busy gateway port no longer prevents capture and pulling from starting or produces a misleading shutdown-timeout warning. The listener reuses its address, retries with bounded backoff, and reports waiting/listening state in health and live sessions; retries log state changes only.
 - A configured store beneath a directory alias can now start before the store exists. Previously admission kept the alias while validation resolved its parent, rejecting the same directory on macOS and other symlinked paths.
 - Store uploads now explain filename encoding refusals and how to start with a UTF-8 locale; previously a service without a locale returned Java path errors. Store startup warns once for non-UTF-8 native encoding, with a separate locale-unset CI check.
 - A corrupt historical session manifest no longer prevents capture startup: live inventory skips and logs that session while strict catalog readers still refuse it. Previously recovery completed but the inventory refresh kept NT4 from starting.

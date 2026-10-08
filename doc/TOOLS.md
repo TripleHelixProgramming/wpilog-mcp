@@ -162,6 +162,10 @@ These are publication facts, not statistical inferences, so they carry no data-q
 
 Current and recent store sessions, newest first.
 
+The top-level `gateway` reports `state` (`disabled`, `waiting`, `listening`, `stopped`), `port`,
+`cause` while waiting, and `since` (UTC state-change time, null when disabled). It is the same
+published view as `GET /health`; a waiting gateway does not stop capture or pulling.
+
 **Parameters:**
 
 - `limit` (optional): Newest sessions to return, from 1 to 100; default 20.

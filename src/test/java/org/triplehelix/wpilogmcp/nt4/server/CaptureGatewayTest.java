@@ -40,6 +40,29 @@ class CaptureGatewayTest {
   }
   private static long monotonicUs() { return System.nanoTime() / 1000; }
 
+  @Test void busyGatewayPortDoesNotPreventCaptureOrDelayShutdown() throws Exception {
+    temp = temp.toRealPath(); var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories();
+    manager.addAllowedDirectory(temp);
+    var stderr = System.err; var messages = new java.io.ByteArrayOutputStream();
+    System.setErr(new java.io.PrintStream(messages, true, java.nio.charset.StandardCharsets.UTF_8));
+    try (var held = new java.net.ServerSocket();
+        var robot = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 10_000_000)) {
+      held.bind(new InetSocketAddress("127.0.0.1", 0)); robot.start().get(10, TimeUnit.SECONDS);
+      robot.announce("/signal", "int", new JsonObject()).join();
+      var config = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", robot.port(), "busy-port")), temp.resolve("store"),
+          .001, CapturePolicy.ALL, 0, 1 << 20, PullConfig.DISABLED, held.getLocalPort());
+      var capture = new CaptureService(config, manager);
+      try {
+        capture.start().get(5, TimeUnit.SECONDS);
+        HarnessHttp.await("capture despite busy gateway", 5, () -> capture.live().topics().containsKey("/signal"));
+        robot.value("/signal", 10_000_001, 2, 7L).join();
+        HarnessHttp.await("captured value", 5, () -> capture.live().current().statistics().records() == 1);
+        assertEquals(7L, capture.live().latest().get("/signal").value());
+      } finally { assertTimeoutPreemptively(java.time.Duration.ofSeconds(5), capture::close); }
+      assertFalse(messages.toString(java.nio.charset.StandardCharsets.UTF_8).contains("shutdown could not finish"));
+    } finally { System.setErr(stderr); manager.release(temp); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
+  }
+
   @Test void orderedCaptureFeedMirrorsTypesPropertiesValuesClockAndSessionBoundariesWithoutAcceptingWrites() throws Exception {
     temp = temp.toRealPath(); var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories();
     manager.addAllowedDirectory(temp);
