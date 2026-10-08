@@ -18,6 +18,10 @@ The server has a layered architecture (`doc/ARCHITECTURE.md` has the code map):
 4. **RevLog layer** — REV log parsing with DBC-based CAN signal decoding, and synchronization to the wpilog's clock by cross-correlation, where names only nominate signal pairs and the data decides. Results are cached on disk (see Disk Cache).
 5. **External integrations** — The Blue Alliance API for match data, bundled game data, named server configurations with environment variable interpolation, and a background server for the standalone install.
 6. **VS Code extension** — Installs and updates the standalone server, registers its HTTP endpoint with VS Code’s agents and its bridge with Claude Code at user scope, and leases each window’s directories and secret-storage TBA key to its MCP session. The home YAML remains the user’s permanent configuration.
+7. **Capture service** — One ordered NT4 client listener feeds the session writer and its live index. The writer applies exclusion and thinning policy, accounts for each topic's cost, and publishes a fixed prefix for readers. Session continuity follows the robot's clock; `doc/ARCHITECTURE.md` explains the ownership and `doc/STANDALONE.md` the configuration.
+8. **Store** — Manifests are the record of robots, sessions, files and provenance. The inbox, import, pull, peer sync and mirror share placement and transfer rules: content proves continuity and matching, and names only nominate. The store owns its writes; only mirror synchronization evicts mirror files. See `doc/ARCHITECTURE.md` and `doc/PIT_SERVER_PLAN.md`.
+9. **Live tools and metrics** — Live tools read published session facts and the latest-value table without joining capture or store work. Ordinary log tools read a consistent prefix of the live index. Metrics are a sampled view; the capture is the record. `doc/TOOLS.md` owns the result contract and `doc/STANDALONE.md` the metrics setup.
+10. **Pit HTTP services** — The HTTP transport also carries registration leases, the catalog-backed store door, uploads and the credential bridge. Local controls and network access have separate admission rules; a configured store is not an arbitrary directory share. `doc/STANDALONE.md` describes the routes and exposure, and `doc/ARCHITECTURE.md` their ownership.
 
 ## Java 17 Best Practices
 
@@ -135,6 +139,7 @@ REV log synchronizations are cached on disk, keyed by the two files and the CAN 
 
 - Path traversal prevention with symlink resolution is enforced for all file access. When handling file paths, always validate through the security validator; a path must resolve to a file inside the configured log directories. CSV exports are restricted to a configured export directory.
 - The HTTP transport listens on `127.0.0.1` by default, checks `Origin` against DNS rebinding, and has no authentication; binding it elsewhere exposes the logs to anyone who can reach the port.
+- Directory/key/credential registration, the credential bridge, peer-sync jobs and mirror controls are loopback-only, even when the read endpoints serve the network. The upload route is the deliberate network write surface: validate its destination through the store, and put proxy authentication on that path first. `doc/STANDALONE.md` owns the route policy.
 - The Blue Alliance key is never logged and never returned by a tool. Nothing this project writes or launches puts it on a command line (process lists are visible to other users) or into a project file: the extension keeps it in VS Code’s secret storage and registers it in memory with the shared server for the life of its session. The standalone server still accepts a `-tba-key` flag, and `doc/STANDALONE.md` says why the configuration file or the environment variable is better.
 - Dependencies: Dependabot covers the extension's npm packages and, through the dependency-submission job in CI, the server's Gradle dependencies, build plugins included. An alert on a build plugin or a packaging tool is about the build, not the server JAR or the `.vsix`; say which in the changelog.
 
@@ -146,6 +151,8 @@ This server handles concurrent access from multiple MCP clients (especially in H
 - Assume any public method on shared state (caches, registries, managers) may be called concurrently.
 - Prefer Caffeine caches, `ConcurrentHashMap`, volatile fields, and atomics over manual locking, and keep the locks few.
 - When manual locking is necessary, hold locks for the shortest time possible and never perform I/O or blocking operations while holding a lock.
+- Serialize store mutations on the store queue and under its cross-process lock. Recording and snapshot readers must not wait behind imports: coalesce asynchronous manifest updates, and keep shutdown waits bounded. See `doc/ARCHITECTURE.md` for the ownership boundaries.
+- The live-value wait lock only orders registration, removal and shutdown admission. Claim a waiter under that lock and complete its future outside it; completion can run another caller's code. Never join the NT4 loop or store queue while holding it.
 - Watch for TOCTOU bugs: check-then-act sequences on shared state must be atomic (look again under the lock, compute through the cache's per-key computation, replace a placeholder only if it is still there, claim a file with an atomic create).
 - Background executors use daemon threads so they don't prevent JVM shutdown, and shutdown lets calls in progress finish before their logs are closed.
 
