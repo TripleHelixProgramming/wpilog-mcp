@@ -89,5 +89,6 @@ class CaptureConfigTest {
     assertTrue(guide.contains("at most four remaps per second"));
     for (var key : CaptureConfig.KEYS) assertTrue(guide.contains("`capture." + key + "`"), key);
     for (var key : CaptureConfig.ROBOT_KEYS) assertTrue(guide.contains("`capture.robot." + key + "`"), key);
+    for (var key : CaptureConfig.GATEWAY_KEYS) assertTrue(guide.contains("`capture.gateway." + key + "`"), key);
   }
 }

@@ -42,6 +42,9 @@ public final class ScriptedRobot extends TimedRobot {
   private final java.util.List<Publisher> publishers = new java.util.ArrayList<>();
   private boolean matchApplied, logClosed;
   private java.io.BufferedWriter ticks;
+  private final int gatewayPort;
+  private final Path gatewayOutput;
+  private GatewayProbe gateway;
 
   public ScriptedRobot(String[] args) {
     super(0.02);
@@ -49,6 +52,8 @@ public final class ScriptedRobot extends TimedRobot {
       timeline = JsonParser.parseString(Files.readString(Path.of(args[0]))).getAsJsonObject();
       bootNumber = Integer.parseInt(args[1]); boot = timeline.getAsJsonArray("boots").get(bootNumber).getAsJsonObject();
       logs = Path.of(args[2]); control = Path.of(args[3]);
+      gatewayPort = args.length > 5 ? Integer.parseInt(args[5]) : 0;
+      gatewayOutput = args.length > 6 ? Path.of(args[6]) : null;
       periodUs = timeline.get("period_us").getAsLong();
       if (periodUs != 20000) throw new IllegalArgumentException("TimedRobot harness period_us must be 20000");
     } catch (Exception e) { throw new IllegalArgumentException("Invalid harness arguments", e); }
@@ -77,6 +82,7 @@ public final class ScriptedRobot extends TimedRobot {
       publishers.addAll(java.util.List.of(sine, counter, toggle, string, raw, pose, modules));
       applyDriverStation(0); nt.flush();
       Files.createDirectories(control);
+      if (gatewayPort != 0) gateway = new GatewayProbe(gatewayPort, control, gatewayOutput);
       ticks = Files.newBufferedWriter(control.resolve("ticks.csv"));
       Files.writeString(control.resolve("ready"), "ready\n");
       var pacer = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -138,6 +144,9 @@ public final class ScriptedRobot extends TimedRobot {
     if (!logClosed && timeUs >= end + 1_000_000) {
       // stop() closes the file; DS/NT still own references to the DataLog object.
       DataLogManager.stop(); logClosed = true;
+      if (gateway != null) {
+        try { gateway.close(); } catch (Exception e) { throw new IllegalStateException("Gateway probe shutdown failed", e); }
+      }
     }
     if (timeUs >= boot.get("end_us").getAsLong()) {
       try { ticks.close(); Files.writeString(control.resolve("done"), "done\n"); }

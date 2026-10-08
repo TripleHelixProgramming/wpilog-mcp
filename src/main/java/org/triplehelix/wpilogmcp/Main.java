@@ -702,14 +702,15 @@ public class Main {
       final org.triplehelix.wpilogmcp.capture.CaptureService capture;
       try {
         capture = captureConfig == null ? null
-            : new org.triplehelix.wpilogmcp.capture.CaptureService(captureConfig, logManager);
+            : new org.triplehelix.wpilogmcp.capture.CaptureService(captureConfig, logManager, httpBind);
       } catch (IOException e) {
         logger().error("capture.store: {}", e.getMessage(), e);
         System.exit(1);
         return;
       }
       if (capture != null) org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, capture.live());
-      httpTransport.configureMetrics(metricsConfig, capture == null ? null : capture.live());
+      httpTransport.configureMetrics(metricsConfig, capture == null ? null : capture.live(),
+          () -> new org.triplehelix.wpilogmcp.mcp.MetricsEndpoint.Components(capture == null ? 0 : capture.gatewayClients(), java.util.Map.of()));
       // A stop request and the idle exit end the server as a signal would: the transport
       // finishes the calls in flight, then the shutdown hook closes the logs
       Runnable exit = () -> {

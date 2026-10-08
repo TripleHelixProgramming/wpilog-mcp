@@ -31,16 +31,23 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 
 /**
- * Loopback gateway adapter, deliberately unwired from server startup until the gateway milestone.
+ * Read-only gateway adapter, also used as the robot fixture on loopback.
  * Java-WebSocket owns only RFC 6455; an ordered daemon loop owns core transitions and fan-out.
- * The supplied clock is robot time, allowing time-sync replies to mirror the upstream clock later.
+ * The supplied clock is robot time. Socket writes only enqueue bounded, MTU-sized fragments;
+ * a client that stops reading loses its connection, never another client's publications.
  */
 public final class Nt4Gateway implements AutoCloseable {
   private static final class Peer {
     final WebSocket socket;
+    final String name;
     long pongUs;
-    Peer(WebSocket socket, long nowUs) { this.socket = socket; this.pongUs = nowUs; }
+    Peer(WebSocket socket, String name, long nowUs) { this.socket = socket; this.name = name; this.pongUs = nowUs; }
   }
+  // 32 MiB of period-pending values in the core, and at most 32,768 fragments (~38 MiB)
+  // in a socket queue. A maximum-size NT4 message fits; an unread socket cannot grow forever.
+  static final int MAX_QUEUED_FRAGMENTS = 32768;
+  private static final int FRAGMENT_BYTES = 1200;
+  private static final class SlowClient extends RuntimeException {}
   private final GatewayCore core = new GatewayCore();
   private final LongSupplier serverClock;
   private final ScheduledThreadPoolExecutor loop;
@@ -50,15 +57,24 @@ public final class Nt4Gateway implements AutoCloseable {
   private final SocketServer server;
   private int nextClient;
   private volatile boolean closed;
+  private volatile int clientCount;
+  private final int maxQueuedFragments;
+  private final java.util.function.BiConsumer<String, String> disconnected;
 
   public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock) {
     this(address, serverClock, List.of(Nt4Client.V41, Nt4Client.V40));
   }
 
   public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols) {
-    if (address.isUnresolved() || !address.getAddress().isLoopbackAddress()) {
-      throw new IllegalArgumentException("Milestone 1 gateway is loopback-only");
-    }
+    this(address, serverClock, protocols, MAX_QUEUED_FRAGMENTS, (name, reason) -> {});
+  }
+
+  /** Queue and diagnostic seams for real-socket slow-reader tests, without machine-size buffers. */
+  Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols,
+      int maxQueuedFragments, java.util.function.BiConsumer<String, String> disconnected) {
+    if (address.isUnresolved()) throw new IllegalArgumentException("Gateway bind address must resolve");
+    if (maxQueuedFragments <= 0) throw new IllegalArgumentException("Positive socket queue limit required");
+    this.maxQueuedFragments = maxQueuedFragments; this.disconnected = disconnected;
     this.serverClock = serverClock;
     loop = new ScheduledThreadPoolExecutor(1, r -> {
       var t = new Thread(r, "nt4-gateway"); t.setDaemon(true); return t;
@@ -78,7 +94,8 @@ public final class Nt4Gateway implements AutoCloseable {
   }
 
   public int port() { return server.getPort(); }
-  public int clientCount() { return core.clientCount(); }
+  /** Published on the fan-out thread; a metrics scrape never acquires the core's state lock. */
+  public int clientCount() { return clientCount; }
 
   public CompletableFuture<Void> announce(String name, String type, JsonObject properties) {
     var copy = properties.deepCopy();
@@ -87,7 +104,11 @@ public final class Nt4Gateway implements AutoCloseable {
   public CompletableFuture<Void> value(String name, long timestampUs, int code, Object value) {
     // Freeze mutable binary payloads before crossing the event-loop boundary.
     var frame = new ValueFrame(0, timestampUs, code, value);
-    return enqueue(() -> core.value(name, timestampUs, code, frame.value()));
+    return enqueue(() -> {
+      for (String client : core.value(name, timestampUs, code, frame.value())) {
+        drop(client, "NT4 client fell behind: pending subscription queue limit");
+      }
+    });
   }
   public CompletableFuture<Void> unannounce(String name) {
     return enqueue(() -> send(core.unannounce(name)));
@@ -95,6 +116,13 @@ public final class Nt4Gateway implements AutoCloseable {
   public CompletableFuture<Void> properties(String name, JsonObject update) {
     var copy = update.deepCopy();
     return enqueue(() -> send(core.properties(name, copy)));
+  }
+  public CompletableFuture<Void> endSession() { return enqueue(() -> send(core.endSession())); }
+  /** ntcore 2026 retains the first time estimate on a connection. A changed clock needs a new one. */
+  public CompletableFuture<Void> resetClock() {
+    return enqueue(() -> {
+      for (String id : List.copyOf(peers.keySet())) drop(id, "NT4 robot clock changed; reconnect to synchronize");
+    });
   }
   public CompletableFuture<Void> dropClients() {
     return enqueue(() -> {
@@ -118,11 +146,13 @@ public final class Nt4Gateway implements AutoCloseable {
 
   private void heartbeat() {
     long now = nowUs();
-    for (var peer : peers.values()) {
+    for (var entry : List.copyOf(peers.entrySet())) {
+      var peer = entry.getValue();
       if (!Nt4Client.V41.equals(peer.socket.getProtocol().getProvidedProtocol())) continue;
-      if (now - peer.pongUs >= 1_000_000) peer.socket.closeConnection(1001, "NT4 pong timeout");
+      if (now - peer.pongUs >= 1_000_000) drop(entry.getKey(), "NT4 pong timeout");
       else if (peer.socket.isOpen()) {
-        try { peer.socket.sendPing(); }
+        try { checkQueue(peer.socket); peer.socket.sendPing(); }
+        catch (SlowClient e) { drop(entry.getKey(), "NT4 client fell behind: socket send queue limit"); }
         catch (org.java_websocket.exceptions.WebsocketNotConnectedException e) {
           // The peer can close between isOpen and sendPing; other peers still need keepalives.
         }
@@ -135,7 +165,8 @@ public final class Nt4Gateway implements AutoCloseable {
       var peer = peers.get(delivery.client());
       if (peer == null || !peer.socket.isOpen()) continue;
       try {
-        if (delivery.control() != null) peer.socket.send(ControlMessage.encode(List.of(delivery.control())));
+        if (delivery.control() != null) sendBytes(peer.socket,
+            ControlMessage.encode(List.of(delivery.control())).getBytes(java.nio.charset.StandardCharsets.UTF_8), org.java_websocket.enums.Opcode.TEXT);
         // Bound/coalesce packets near the MTU; a large individual value is fragmented by RFC 6455.
         var packet = new java.io.ByteArrayOutputStream();
         for (var value : delivery.values()) {
@@ -146,16 +177,32 @@ public final class Nt4Gateway implements AutoCloseable {
           packet.writeBytes(encoded);
         }
         if (packet.size() > 0) sendBinary(peer.socket, packet.toByteArray());
-      } catch (RuntimeException e) { peer.socket.closeConnection(1011, "NT4 send failed"); }
+      } catch (SlowClient e) { drop(delivery.client(), "NT4 client fell behind: socket send queue limit"); }
+      catch (RuntimeException e) { drop(delivery.client(), "NT4 send failed"); }
     }
   }
 
-  private static void sendBinary(WebSocket socket, byte[] bytes) {
-    for (int offset = 0; offset < bytes.length; offset += 1200) {
-      int length = Math.min(1200, bytes.length - offset);
-      socket.sendFragmentedFrame(org.java_websocket.enums.Opcode.BINARY,
+  private void checkQueue(WebSocket socket) {
+    // Java-WebSocket uses a LinkedBlockingQueue (constant-time size) drained by its selector.
+    // Every application frame is fragmented below, so a count also bounds queued payload bytes.
+    if (((org.java_websocket.WebSocketImpl) socket).outQueue.size() >= maxQueuedFragments) throw new SlowClient();
+  }
+  private void sendBinary(WebSocket socket, byte[] bytes) { sendBytes(socket, bytes, org.java_websocket.enums.Opcode.BINARY); }
+  private void sendBytes(WebSocket socket, byte[] bytes, org.java_websocket.enums.Opcode opcode) {
+    for (int offset = 0; offset < bytes.length; offset += FRAGMENT_BYTES) {
+      checkQueue(socket);
+      int length = Math.min(FRAGMENT_BYTES, bytes.length - offset);
+      socket.sendFragmentedFrame(opcode,
           ByteBuffer.wrap(bytes, offset, length), offset + length == bytes.length);
     }
+  }
+
+  private void drop(String id, String reason) {
+    var peer = peers.remove(id);
+    if (peer == null) return;
+    connections.remove(peer.socket); core.disconnect(id); clientCount = peers.size();
+    LoggerFactory.getLogger(Nt4Gateway.class).warn("NT4 gateway client {} disconnected: {}", peer.name, reason);
+    peer.socket.closeConnection(1001, reason); disconnected.accept(peer.name, reason);
   }
 
   @Override public void close() throws InterruptedException {
@@ -164,6 +211,7 @@ public final class Nt4Gateway implements AutoCloseable {
     server.stop(1000);
     loop.shutdown();
     loop.awaitTermination(5, TimeUnit.SECONDS);
+    clientCount = 0;
   }
 
   private final class SocketServer extends WebSocketServer {
@@ -183,15 +231,17 @@ public final class Nt4Gateway implements AutoCloseable {
       enqueue(() -> {
         String id = Integer.toString(nextClient++);
         connections.put(socket, id);
-        peers.put(id, new Peer(socket, nowUs()));
+        String name = request.getResourceDescriptor().substring(4);
+        peers.put(id, new Peer(socket, name, nowUs()));
         core.connect(id);
-        LoggerFactory.getLogger(Nt4Gateway.class).debug("NT4 client connected: {}", request.getResourceDescriptor());
+        clientCount = peers.size();
+        LoggerFactory.getLogger(Nt4Gateway.class).info("NT4 gateway client connected: {} ({})", name, socket.getProtocol().getProvidedProtocol());
       });
     }
     @Override public void onClose(WebSocket socket, int code, String reason, boolean remote) {
       enqueue(() -> {
         var id = connections.remove(socket);
-        if (id != null) { peers.remove(id); core.disconnect(id); }
+        if (id != null) { peers.remove(id); core.disconnect(id); clientCount = peers.size(); }
       });
     }
     @Override public void onMessage(WebSocket socket, String text) {
@@ -217,6 +267,15 @@ public final class Nt4Gateway implements AutoCloseable {
       enqueue(() -> {
         var peer = peers.get(connections.get(socket));
         if (peer != null) peer.pongUs = nowUs();
+      });
+    }
+    @Override public void onWebsocketPing(WebSocket socket, Framedata frame) {
+      var pong = new org.java_websocket.framing.PongFrame((org.java_websocket.framing.PingFrame) frame);
+      enqueue(() -> {
+        var id = connections.get(socket); if (id == null) return;
+        try { checkQueue(socket); socket.sendFrame(pong); }
+        catch (SlowClient e) { drop(id, "NT4 client fell behind: socket send queue limit"); }
+        catch (org.java_websocket.exceptions.WebsocketNotConnectedException ignored) { }
       });
     }
     @Override public void onError(WebSocket socket, Exception error) {

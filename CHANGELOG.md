@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Capture can now serve a read-only NT4 gateway on its own optional port, with robot-clock timestamps, topic properties and schemas, session boundaries, bounded subscriber queues and connected-client metrics. Previously the gateway existed only as a fixture; dashboards can now point at the pit computer, with real-robot dashboard and AdvantageScope checks still manual.
 - Every HTTP server now exposes dependency-free Prometheus metrics: latest numeric NT4 values and ages, bounded arrays and recorded-schema fields, capture/pull counters and server JVM measurements. Scrapes read published snapshots without joining capture or store work; a Compose setup provisions a starter Grafana dashboard. Previously dashboards had no supported metrics endpoint.
 - Capture-enabled servers now expose `list_sessions`, `get_latest_values`, and `wait_for_change`: session costs and matched imports, current NT4 publications with robot-clock ages, and bounded per-client waits. Previously these facts required reading captures or server logs; live queries now use published memory snapshots and closed summaries persist in the manifest.
 - The extension can set and clear a pit proxy login in SecretStorage, lease it to the local server for mirror reads, and register a secret-free Claude bridge URL. Previously password-protected pit URLs had no supported credential path; secrets never enter settings, manifests or command arguments.
@@ -87,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Imports read the store catalog once per batch and nominate REV candidates by robot and a generous clock window before correlation, replacing repeated whole-store scans and correlations against a season's unrelated sessions; unknown REV clocks still consider every session of the stated robot, and only the signal data establishes a match.
 
 ### Testing
+- The shop harness now records a separate ntcore client's view through the configured gateway and checks every scripted value and timestamp against the timeline. Ordinary socket tests also cover an unread peer, clock-reference changes, ignored writes, and forwarding while the store queue is blocked.
 - REV replay verification releases each decoded companion after comparing it and retains the measured result. Previously the verifier accumulated source and rolled-capture copies of every bus and exhausted its heap on large inputs; a generated multi-bus test now pins the retained count.
 - Log replay uses the independent WPILOG reader through the loopback gateway and WPILib's reader through native ntcore, checking generated fixtures over HTTP and against captured record bytes. A real-log directory is opt-in through `conformanceLogDir`; reports stay under `build/` and contain counts and mismatch categories, never telemetry values.
 - The blocked-store regression counts flush calls with real record writes and a hot index, leaving disk forces and expiry to the live-log tests. Previously it required 40 real forces and remaps within two seconds and timed out in Windows CI, conflating queue independence with disk throughput.
@@ -95,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Store fixtures now pin serial-first identity for new named robots, separate non-overlapping sessions, and widening only the overlapping session; mapping-lifetime and import-scaling checks guard the review gaps with synthetic files and planted production bugs.
 
 ### Documentation
+- Project guidance now names the capture, store, live-view and pit HTTP layers, with their queue, wait-lock and network admission rules; previously its architecture summary stopped at the original six layers.
 - The guides now describe one shared standalone server, session leases, user-scope Claude Code registration, preserved install settings, and legacy migration. They distinguish VS Code settings from permanent YAML, replace the plan's superseded private-daemon proposals with the implementation record, and list the real-VS-Code checks still required.
 
 ## [0.9.1] - 2026-10-04

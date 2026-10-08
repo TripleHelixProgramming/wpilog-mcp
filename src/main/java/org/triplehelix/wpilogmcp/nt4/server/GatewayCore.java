@@ -28,13 +28,15 @@ public final class GatewayCore {
   public record Delivery(String client, ControlMessage control, List<ValueFrame> values) {
     public Delivery { values = List.copyOf(values); }
   }
-  private record Pending(long sequence, ValueFrame frame) {}
+  private record Pending(long sequence, ValueFrame frame, int bytes) {}
   private static final class Client {
     final Map<Integer, Subscribe> subscriptions = new LinkedHashMap<>();
     final Set<Integer> announced = new HashSet<>();
     final Map<Integer, Announce> publishers = new HashMap<>();
     final Map<Integer, List<Pending>> pending = new HashMap<>();
     long dueUs;
+    long pendingBytes;
+    int pendingValues;
     boolean warned;
   }
 
@@ -43,6 +45,15 @@ public final class GatewayCore {
   private final Map<Integer, ValueFrame> latest = new HashMap<>();
   private int nextId;
   private long sequence;
+  private final long maxPendingBytes;
+  private final int maxPendingValues;
+
+  public GatewayCore() { this(32L << 20, 65536); }
+  /** Explicit limits let tests exercise a long-period subscriber without allocating megabytes. */
+  GatewayCore(long maxPendingBytes, int maxPendingValues) {
+    if (maxPendingBytes <= 0 || maxPendingValues <= 0) throw new IllegalArgumentException("Positive gateway queue limits required");
+    this.maxPendingBytes = maxPendingBytes; this.maxPendingValues = maxPendingValues;
+  }
 
   public synchronized void connect(String client) { clients.put(client, new Client()); }
   public synchronized void disconnect(String client) { clients.remove(client); }
@@ -91,20 +102,39 @@ public final class GatewayCore {
     return List.copyOf(out);
   }
 
-  public synchronized void value(String name, long timestampUs, int code, Object value) {
+  /** Returns subscribers removed for exceeding their period's bounded pending queue. */
+  public synchronized List<String> value(String name, long timestampUs, int code, Object value) {
     var topic = topics.get(name);
     if (topic == null) throw new IllegalArgumentException("Topic not announced: " + name);
     var frame = new ValueFrame(topic.id(), timestampUs, code, value);
     var old = latest.get(topic.id());
     if (topic.cached() && (old == null || timestampUs >= old.timestampUs())) latest.put(topic.id(), frame);
-    var pending = new Pending(sequence++, frame);
-    for (var c : clients.values()) {
+    long order = sequence++;
+    int bytes = -1;
+    var dropped = new ArrayList<String>();
+    for (var iterator = clients.entrySet().iterator(); iterator.hasNext();) {
+      var entry = iterator.next(); var c = entry.getValue();
       var matching = valueSubscriptions(c, name);
       if (matching.isEmpty()) continue;
+      if (bytes < 0) bytes = frame.encode().length;
       var queue = c.pending.computeIfAbsent(topic.id(), ignored -> new ArrayList<>());
-      if (matching.stream().noneMatch(Subscribe::all)) queue.clear();
-      queue.add(pending);
+      if (matching.stream().noneMatch(Subscribe::all)) {
+        for (var previous : queue) c.pendingBytes -= previous.bytes();
+        c.pendingValues -= queue.size(); queue.clear();
+      }
+      if (c.pendingBytes + bytes > maxPendingBytes || c.pendingValues >= maxPendingValues) {
+        dropped.add(entry.getKey()); iterator.remove(); continue;
+      }
+      queue.add(new Pending(order, frame, bytes)); c.pendingBytes += bytes; c.pendingValues++;
     }
+    return List.copyOf(dropped);
+  }
+
+  /** A disconnect ends the visible session even if capture later resumes its file. */
+  public synchronized List<Delivery> endSession() {
+    var deliveries = new ArrayList<Delivery>();
+    for (String name : List.copyOf(topics.keySet())) deliveries.addAll(unannounce(name));
+    return List.copyOf(deliveries);
   }
 
   public synchronized List<Delivery> tick(long nowUs) {
@@ -195,6 +225,8 @@ public final class GatewayCore {
         }
       }
     }
+    c.pendingBytes = c.pending.values().stream().flatMap(List::stream).mapToLong(Pending::bytes).sum();
+    c.pendingValues = c.pending.values().stream().mapToInt(List::size).sum();
   }
 
   private static List<Subscribe> valueSubscriptions(Client c, String name) {
@@ -211,6 +243,7 @@ public final class GatewayCore {
         .sorted(Comparator.comparingLong(Pending::sequence)).map(Pending::frame).toList();
     if (!frames.isEmpty()) out.add(new Delivery(id, null, frames));
     c.pending.clear();
+    c.pendingBytes = 0; c.pendingValues = 0;
   }
 
   private static void announce(List<Delivery> out, String id, Client c, Announce topic) {

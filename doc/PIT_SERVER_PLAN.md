@@ -187,14 +187,18 @@ The writer and the reader are one process, so an open session is a `LogData` the
 
 ### 7. The gateway
 
-An NT4 server on the pit server's own port 5810 (configurable), serving every topic the client has announced.
+An NT4 server on the pit server's own port, serving every topic the client has announced.
+`capture.gateway` is opt-in: omission or `capture.gateway.port: 0` disables it; an empty block
+defaults to port 5810. It follows the HTTP bind address on that separate port. Capture exclusion
+and thinning do not filter the gateway's feed.
 
 - **Handshake**: accepts the two subprotocols; the client name from the path is logged.
 - **Announce**: on subscribe, every topic matching the subscription's prefixes is announced with the robot's type string and properties, and the gateway's own ids.
 - **Values**: per client, per subscription, honoring `periodic`, `all`, `topicsonly`, and `prefix` as the robot would: with `all`, every change since the last send; without it, the latest value per topic per period. Sends are coalesced per period per client on the fan-out thread.
-- **Time sync**: answered with the robot's clock (the client's offset applied to the local monotonic clock), so a gateway client's "server time" is robot time.
+- **Time sync**: answered with the robot's clock (the client's offset applied to the local monotonic clock), so a gateway client's "server time" is robot time. Without that estimate, replies use local monotonic time, as an ntcore server does; the first valid estimate after each robot connection resets downstream connections so their first time-sync reply uses the new clock.
 - **Publish**: a client's `publish` and `setproperties` are acknowledged as the protocol requires and otherwise ignored, with one warning per client in the server log. Nothing a gateway client sends reaches the robot.
 - **Robot absent**: topics are unannounced to clients when the session ends, and announced again on the next.
+- **Slow clients**: both period-pending values and socket send queues are bounded per client. Overflow drops that connection with a logged reason, without waiting on the NT4 loop, writer, store or other subscribers. The published connected count feeds `wpilog_gateway_clients`; `wpilog_nt_connected` stays robot-side.
 
 The gateway doubles as the test fixture for the client: the test suite runs a gateway fed from a fixture log and connects the client to it, so the whole path is exercised without a robot, on every platform CI runs.
 
@@ -370,7 +374,7 @@ A later step, when a dashboard wants the record and not its samples: the data en
 
 ### 13. Network exposure
 
-The pit server binds to an address on the team's network (`WPILOG_HTTP_BIND`, as today) and serves the MCP endpoint, the gateway, and `GET /health` without authentication. The `Origin` check stays: it protects a browser on the network from being used against the server by a web page, and costs non-browser clients nothing.
+The pit server defaults to loopback; binding it to the team's network is deliberate (`WPILOG_HTTP_BIND`, as today). HTTP serves the MCP endpoint and `GET /health` without authentication. The optional gateway follows that address on its separate port. HTTP's `Origin` check stays, as do its loopback-only control routes; uploads remain the deliberate network write surface.
 
 The standalone guide gains a short section for teams that want more: an nginx configuration that terminates TLS and asks for a password in front of the MCP endpoint, with the pit server itself bound to loopback behind it. The gateway's NT4 port is a separate matter; a dashboard cannot present a password to it, and the protocol has no place for one, so it is exposed on the private network or not at all.
 
@@ -392,8 +396,8 @@ Each leaves the project working and tested on its own.
 4. **Import** (§11) (done: the explorer already supplied the command, inbox, inspection, grouping and duplicate recognition; generated USB batches and the capture-enabled inbox now pin those together, and the extension uploads streamed, hash-checked files through the pit server import endpoint. Automated HTTP and Node checks pass; the real VS Code picker remains manual).
 5. **Live tools** (§9), and the extension's pit server setting (§14) (done: capture-only session/latest/wait tools, cached manifest facts and persisted recorder costs; HTTP fixture replay, independent values/bytes, per-session waits and injected-clock checks; the remaining proxy credential commands use SecretStorage and local leases. Real VS Code and the shop hardware checks remain manual).
 6. **Store over HTTP, peer sync, and the mirror** (§11, §14) (first half done: catalog-only HTTP reads, growing prefixes and hashes; peer sync through daemon jobs or the offline store lock, content-checked resume, serial/window session union with convergent ids, provenance and human conflicts, remembered peers and recovery; generated fixtures, tool conformance and planted failures. Second half done: scoped and capped mirror with pins, growing-prefix resume, id-based moves, offline age and recorded REV alignment; local controls; extension registration, status/actions, pit Logs/follow/offline copy and remembered peer sync. Automated checks and planted faults pass; real VS Code remains the manual checklist): the store's read-only door; `wpilog-mcp sync <url>` between two laptops' stores, built first because it needs no pit server and tests with two daemons on one machine; then the mirror on the same door, with the local server's synchronization, the extension's settings, status bar, and pins. From here the laptop analyzes offline.
-7. **Metrics endpoint** (§12) (done: dependency-free Prometheus text on every HTTP server, published capture/pull/time snapshots, recorded-schema field paths, bounded arrays and JVM MBeans; independent parser, fixture replay and blocked-worker checks; Compose and starter dashboard. Gateway/provider samples await their own milestones): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
-8. **Gateway** (§7) complete: dashboards and AdvantageScope pointed at the pit server.
+7. **Metrics endpoint** (§12) (done: dependency-free Prometheus text on every HTTP server, published capture/pull/time snapshots, recorded-schema field paths, bounded arrays and JVM MBeans; independent parser, fixture replay and blocked-worker checks; Compose and starter dashboard. Provider samples await their own milestones): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
+8. **Gateway** (§7) (done: optional capture startup on a separate port, ordered topic/property/value forwarding, session unannounces and new ids, robot-clock replies and reconnects when the reference changes, bounded per-client queues and published connection counts; real-socket slow-reader checks and an independent ntcore harness client checked against the timeline. Real dashboards and AdvantageScope against a robot remain the user's manual check).
 9. **Windowed WPILOG mapping**: replace the single int-indexed buffer with mapping windows under 2 GB and long offsets everywhere. Read a straddling record through a small extra mapping or a copy; make the window size injectable so tests cross boundaries in small fixtures. Until then, refuse oversized imports and explain oversized plain-directory files in the listing.
 10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings`.
 11. **roboRIO system stats** (§8.2) and **followed files** (§8.4), on the puller's SSH connection; the stats provider's cost measured on a roboRIO 1 and a roboRIO 2 before it is on by default, and the program's console followed by default once its file is verified (§17).
@@ -411,7 +415,7 @@ Each leaves the project working and tested on its own.
 - **Sessions**: reconnection with continuing timestamps resumes; with restarted timestamps begins a new session. A blocked store queue does not delay values or flushes, updates coalesce, unchanged facts do not trigger writes, and shutdown waits within its 30 second bound for the final manifest. Startup recovers abandoned captures, preserves active writers across processes, and reports unreadable files without hashing them; a killed process after a blocked-queue timeout is recovered by the next service start. Injected writer failures preserve the connection, record the reason, and suppress recording until a new robot clock. Match facts appear before the close-time directory rename.
 - **Live log**: a session replayed through the writer answers every tool the same as a fresh load of the finished file (entries, sample counts, statistics, time range); a reader that starts mid-session sees a consistent prefix while the writer appends from another thread, checked under the stress test's concurrent calls; values past the hot window read from the file equal the values that were in memory.
 - **Growing files** (§6, secondary path): the resumed scan equals a fresh scan.
-- **Gateway**: a client with `all` receives every change; one without receives the latest per period; a `publish` from a client changes nothing upstream; the time-sync answer is robot time within the measured offset's error.
+- **Gateway**: a client with `all` receives every change; one without receives the latest per period; exact/prefix and topics-only subscriptions agree with the protocol; a `publish` from a client changes nothing upstream or in the capture. Real sockets check both subprotocols, property acknowledgements, an unread client's bounded queue while a second receives every value, session unannounce/reannounce and new ids, unknown-clock replies and first-sync reconnects, and robot time within the measured round trips. A blocked store cannot delay forwarding or writer flushes. Packaged startup exposes the port and separate robot/downstream metrics; the harness's independent ntcore instance records the gateway view for the same timeline oracle and HTTP checks.
 - **Puller**: the gate, the listing comparison, resume offsets, the content check, the rename rule, the throttle's pacing, and the manifest are pure logic tested against a fake remote in memory: a file that grew with matching content is fetched from its old size; a file that shrank is a new file; a larger file under a seen name whose content does not match is fetched from the start and never concatenated with the old copy, which is kept, both for a REV log named by an unset clock and for two logs of the same code that share a prefix; the DataLogManager rename is recognized by content; a transfer in progress pauses within one block of the state leaving disabled and resumes at the same offset; the manifest round-trips. The SFTP client itself is covered by an opt-in test against a real roboRIO, named by a property, like the real-log suites.
 - **Live tools**: the claim checks, the conformance sweep (with capture enabled on a replayed fixture), and determinism.
 - **Mirror**: against a pit server's store served in-process over the HTTP transport on loopback: a session in scope appears locally with the same hashes and the same manifests; every tool's result on the mirrored file equals its result on the store's file (the conformance sweep run on both); a growing capture grows locally through resume after the prefix hash, and a prefix that stopped matching is fetched from the start; a session renamed or moved on the pit server is followed by its id; the scope's window moving on evicts the oldest unpinned session and never a pinned one, and the cap is respected; with the pit server stopped, the listing answers from the mirror with its age and no error, and the sync resumes without a duplicate when it returns; the local server refuses to import into a mirror and reports a stray in it; the extension's settings, order, commands, and status text are pinned by its Node tests.
@@ -624,7 +628,7 @@ Milestone 5 choices:
 - Pull bytes and successful verification events are process counters by serial, including
   retransfers and grown-file verifications. Gate counts cover only unfinished files known
   from the last remote listing, without a listing during scrape. JVM totals omit unsupported
-  MBean values. The gateway has zero connected clients until milestone 8 wires it; provider
+  MBean values. Milestone 8 now supplies the gateway's published connected count; provider
   costs have no samples until those providers exist. Owners supply published component facts
   through the metrics interface; the renderer keeps no state between requests.
 - The Compose example pins Prometheus 3.15.0 and Grafana 13.2.3. Robot dashboard topic boxes
@@ -639,3 +643,32 @@ Milestone 5 choices:
   for its announcement, before sending either value. Both platform build jobs passed;
   the failed harness job's unchanged rerun passed ordinary tests and the harness. Its XML
   and job log were saved. The cause remains unverified; no timeout was widened.
+
+Milestone 8 choices:
+
+- `capture.gateway` is absent by default. An empty block selects 5810; port 0 disables it.
+  The gateway follows the existing HTTP bind address rather than adding another bind setting.
+  It starts after HTTP is listening and before the upstream client. Bind failures name
+  `capture.gateway.port` in the server log. No new WebSocket dependency or server native library
+  was added; Java-WebSocket still owns framing only.
+- The same ordered listener feeds recording, live waiters and gateway publications. Capture
+  exclusion/thinning does not filter downstream clients. A disconnect ends the visible gateway
+  session even when capture later resumes its file. Values flush before unannounce, and ids are
+  never reused. Overlapping subscriptions share the minimum requested value period, permitted
+  by the [NT4 subscription specification](https://github.com/wpilibsuite/allwpilib/blob/v2026.2.1/ntcore/doc/networktables4.adoc#subscription-options).
+- Without upstream sync, the gateway answers with its own monotonic clock, following
+  [ntcore's server reply](https://github.com/wpilibsuite/allwpilib/blob/v2026.2.1/ntcore/src/main/native/cpp/server/ServerClient4.cpp).
+  On the first valid estimate of each upstream connection, downstream sockets reconnect:
+  [ntcore 2026's client](https://github.com/wpilibsuite/allwpilib/blob/v2026.2.1/ntcore/src/main/native/cpp/net/ClientImpl.cpp)
+  takes its first RTT reply, so changing the reference under an existing connection would leave
+  its offset wrong. No topic timestamp is rewritten. The harness uses a separate ntcore instance
+  in each simulated robot process and checks the received server timestamps, not local timestamps.
+- Each client has at most 32 MiB or 65,536 period-pending value records and 32,768 socket fragments
+  of at most 1,200 payload bytes. Both bounds disconnect and log, rather than silently losing
+  `all` publications. Socket queue size is constant-time; no queue walk occurs per publication.
+  The metrics count is published without the fan-out lock. Queue sizes are internal constants;
+  tests inject smaller bounds and stop reading a real TCP connection.
+- The gateway port has no authentication and belongs on the private network. HTTP Origin,
+  loopback controls and the upload policy are unchanged. Real dashboard and AdvantageScope
+  operation against a robot remains the user's manual check; simulation proves ntcore protocol
+  interoperability and the scripted data path, not radio behavior or a dashboard's UI.

@@ -160,6 +160,7 @@ servers:
       thin: {}
       hot_window_sec: 600
       max_file_bytes: 1073741824
+      gateway: {port: 0}  # Set 5810 to serve dashboards through the pit server
       pull:
         enabled: false
         directories: [/home/lvuser/logs, /u/logs, /U/logs]
@@ -181,6 +182,8 @@ servers:
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
 | `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `2147483647`. Rollover stays in the same session |
 | `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry runs on the 250 ms flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
+| `capture.gateway` | Optional read-only NT4 gateway; omitted means disabled; `{}` enables its default port |
+| `capture.gateway.port` | Integer `0`–`65535`, default `5810` within the gateway block; `0` disables it. Binds to the same address as HTTP, on this separate port |
 | `capture.pull` | Optional robot log pulling block; capture alone needs no SSH |
 | `capture.pull.enabled` | Opt in to SFTP pulling, default `false` until the shop test passes |
 | `capture.pull.directories` | Absolute remote directories, recursively scanned for `.wpilog` and `.revlog`; defaults `/home/lvuser/logs`, `/u/logs`, `/U/logs`. Missing USB directories are normal; links are skipped |
@@ -282,6 +285,29 @@ Confirmed growth temporarily returns a verified file to staging; its earlier too
 when it is placed again. Reused names retain the previous copy separately. Resume checks the hash
 of exactly the held bytes; if exec is unavailable, the last 64 KiB is compared, which cannot prove
 the earlier prefix. The robot's files are never deleted or modified.
+
+#### NT4 gateway for dashboards
+
+Enable `capture.gateway: {port: 5810}` and point a dashboard or AdvantageScope's NT4 connection
+at the pit computer's address and that port, rather than at the robot. The gateway accepts NT4.1
+and NT4.0, mirrors exact topic names, types, properties and schema topics, and forwards the robot's
+timestamps. It serves everything the NT4 client receives; capture exclusion and thinning affect
+the file, not this stream. Subscriptions choose prefixes, periods, all changes or announcements only.
+Client writes are acknowledged but ignored, with one warning per connection; dashboard controls
+cannot change the robot. A slow subscriber is disconnected with an explained server-log reason.
+
+The gateway follows `WPILOG_HTTP_BIND`, including its default `127.0.0.1`. Bind deliberately to
+the team network for other machines to connect. This separate port has **no authentication** and
+belongs on the **private network**; an HTTP proxy login does not protect it. HTTP's Origin and
+loopback-control checks remain unchanged.
+
+A robot disconnect unannounces its topics. Reconnection announces them with new gateway ids.
+Time-sync replies use the measured robot clock; while that estimate is absent they use the pit
+server's local monotonic clock, as an ntcore server does. The first valid estimate after each
+robot connection resets downstream connections so clients synchronize again before reading the
+new session. Dashboards and AdvantageScope against a real robot remain the user's manual check.
+
+`wpilog_gateway_clients` counts downstream clients; `wpilog_nt_connected` is the robot connection.
 
 ### Several Log Directories
 
@@ -820,7 +846,7 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_capture_topics` | Session entry count, including finished entries. |
 | `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh on the 250 ms flush tick. |
 | `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
-| `wpilog_gateway_clients` | Connected gateway clients; currently 0 because gateway startup is the next milestone. |
+| `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
 | `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: copied payload bytes, including retransfers, and successful verifications, including growing-file updates. |
 | `wpilog_pull_files_waiting` | Per-`robot` known unfinished files at a closed gate, from the last listing; unknown remote files are not counted. |
 | `wpilog_provider_sample_duration_seconds`, `wpilog_provider_sample_bytes` | Last completed sample cost by `provider`; no samples until providers are implemented. |

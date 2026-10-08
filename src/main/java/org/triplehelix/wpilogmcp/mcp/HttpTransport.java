@@ -100,6 +100,10 @@ public class HttpTransport {
   private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null);
   public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
       org.triplehelix.wpilogmcp.capture.LiveCapture capture) { metricsEndpoint = new MetricsEndpoint(config, capture); }
+  public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
+      org.triplehelix.wpilogmcp.capture.LiveCapture capture, java.util.function.Supplier<MetricsEndpoint.Components> components) {
+    metricsEndpoint = new MetricsEndpoint(config, capture, components);
+  }
   private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores, storeDoor);
   private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores);
   private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores,

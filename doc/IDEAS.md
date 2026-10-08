@@ -396,7 +396,11 @@ Remaining:
 ### 9.1 Live Capture, Gateway, and the Long-Term Record
 Priority: High. Complexity: High.
 
-Milestone 1 is implemented: the NT4 protocol/client and the gateway's loopback fixture, without startup wiring or capture. [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md#15-milestones) records the remaining work.
+Milestones 1 through 8 are implemented: capture and its live index, identity/pulling, import,
+live tools, store sync/mirroring, metrics and the optional read-only NT4 gateway. The shop harness
+now checks a separate ntcore client's gateway observations against its timeline. Real dashboards,
+AdvantageScope and roboRIO shop behavior remain manual checks.
+[PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md#15-milestones) records the remaining work.
 
 A daemon in the shop and the pit that subscribes once to the robot's NetworkTables, records every change of every topic as a `.wpilog` capture per robot boot, re-publishes the stream as a read-only NetworkTables gateway so the robot has one client, pulls the robot's own log files and the roboRIO's system logs whenever it sits disabled, follows configured files such as the program's console into the capture as they are written, answers the existing tools and a few live ones over the HTTP MCP transport on the team's private network, records vision coprocessor settings, the roboRIO's system stats, and the robot program's garbage collection and profile beside the data, serves its latest values for Prometheus and Grafana, maps every session and pulled file to a robot by the roboRIO's serial number, and keeps all of it in a store it owns, by robot and session, that files enter only by capture, pull, or import; the extension keeps a synchronized mirror of the sessions a laptop wants, so analysis continues offline from the same files. The process that writes a capture is the process that answers questions about it, so an open session is served from the index and values the writer builds as it writes, never by reading the file back. [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) is the proposal and the specification, with milestones.
 
@@ -434,8 +438,9 @@ and hardware validation remain on the manual checklist.
 
 The metrics milestone is complete: `/metrics` serves latest numeric topics with ages,
 recorded struct fields, capture/pull counters and JVM MBeans. A Compose setup and starter
-Grafana dashboard live in `doc/metrics`. Gateway and provider startup remain later work;
-the capture remains the full record behind the sampled dashboard.
+Grafana dashboard live in `doc/metrics`. The optional gateway now serves dashboards through
+the pit computer and reports its client count; provider startup remains later work.
+The capture remains the full record behind the sampled dashboard.
 
 ### 9.4 Shop Harness
 

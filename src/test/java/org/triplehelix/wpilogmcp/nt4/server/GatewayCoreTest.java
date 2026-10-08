@@ -140,4 +140,37 @@ class GatewayCoreTest {
     }
     assertTrue(core.receive("missing", new ValueFrame(-1, 0, 2, 100L), 1).isEmpty());
   }
+
+  @Test void bothPendingBoundsDropOnlyTheSubscriberWhoExceededThem() {
+    for (var core : List.of(new GatewayCore(10, 100), new GatewayCore(100, 2))) {
+      core.connect("all"); core.connect("sampled"); core.announce("/x", "int", new JsonObject());
+      core.receive("all", sub(0, "/x", "{all:true,periodic:60}"), 0);
+      core.receive("sampled", sub(0, "/x", "{periodic:60}"), 0);
+      // Each hand-encoded frame is five bytes: [array4, id0, timestamp, type2, value].
+      assertTrue(core.value("/x", 1, 2, 1L).isEmpty());
+      assertTrue(core.value("/x", 2, 2, 2L).isEmpty());
+      assertEquals(List.of("all"), core.value("/x", 3, 2, 3L));
+      assertEquals(1, core.clientCount());
+      assertEquals(List.of(3L), values(core.tick(60_000_000), "sampled").stream().map(ValueFrame::value).toList());
+      for (long n = 4; n <= 6; n++) {
+        assertTrue(core.value("/x", n, 2, n).isEmpty());
+        assertEquals(List.of(n), values(core.tick(n * 60_000_000), "sampled").stream().map(ValueFrame::value).toList());
+      }
+    }
+  }
+
+  @Test void sessionEndFlushesThenRemovesEveryTopicAndItsRetainedValue() {
+    var core = new GatewayCore(); core.connect("c");
+    core.receive("c", sub(0, "", "{prefix:true,all:true,periodic:60}"), 0);
+    var old = (Announce) controls(core.announce("/x", "int", new JsonObject()), "c").get(0);
+    core.announce("/.schema/struct:S", "structschema", new JsonObject());
+    core.value("/x", 10, 2, 4L);
+    var ended = core.endSession();
+    assertEquals(4L, ended.get(0).values().get(0).value());
+    assertEquals(List.of("/x", "/.schema/struct:S"), controls(ended, "c").stream().map(m -> ((Unannounce) m).name()).toList());
+    assertTrue(core.topics().isEmpty());
+    var next = (Announce) controls(core.announce("/x", "double", new JsonObject()), "c").get(0);
+    assertNotEquals(old.id(), next.id()); assertEquals("double", next.type());
+    assertTrue(core.tick(60_000_000).isEmpty(), "No old value can leak into the next boot");
+  }
 }

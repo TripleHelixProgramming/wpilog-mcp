@@ -18,10 +18,15 @@ import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 
 /** Capture is opt-in, and misspelled nested keys must never silently turn recording policy off. */
 public record CaptureConfig(List<URI> addresses, Path store, double periodSeconds,
-    CapturePolicy policy, long hotWindowUs, long maxFileBytes, PullConfig pull) {
-  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes", "pull");
+    CapturePolicy policy, long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort) {
+  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes", "pull", "gateway");
+  public static final Set<String> GATEWAY_KEYS = Set.of("port");
   public static final Set<String> ROBOT_KEYS = Set.of("team", "usb", "host", "port");
   public CaptureConfig { addresses = List.copyOf(addresses); }
+  public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy,
+      long hotWindowUs, long maxFileBytes, PullConfig pull) {
+    this(addresses, store, periodSeconds, policy, hotWindowUs, maxFileBytes, pull, 0);
+  }
   public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy,
       long hotWindowUs, long maxFileBytes) {
     this(addresses, store, periodSeconds, policy, hotWindowUs, maxFileBytes, PullConfig.DISABLED);
@@ -72,8 +77,13 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
       }
       long max = block.has("max_file_bytes") ? integer(block.get("max_file_bytes"), "capture.max_file_bytes", 256, Integer.MAX_VALUE)
           : org.triplehelix.wpilogmcp.capture.CaptureWriter.DEFAULT_MAX_FILE_BYTES;
+      int gatewayPort = 0;
+      if (block.has("gateway")) {
+        var gateway = object(block.get("gateway"), "capture.gateway"); keys(gateway, GATEWAY_KEYS, "capture.gateway");
+        gatewayPort = gateway.has("port") ? integer(gateway.get("port"), "capture.gateway.port", 0, 65535) : 5810;
+      }
       return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot, max,
-          PullConfig.parse(block.get("pull"), expand, text));
+          PullConfig.parse(block.get("pull"), expand, text), gatewayPort);
     } catch (IllegalArgumentException e) { throw new ConfigException("Invalid capture configuration: " + e.getMessage(), e); }
   }
   private static JsonObject object(JsonElement value, String key) throws ConfigException {

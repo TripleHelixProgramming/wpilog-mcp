@@ -78,6 +78,13 @@ The server must be bound to the team network for another laptop to reach it; thi
 logs to anyone who can reach the port. VS Code's agents see **WPILog Pit Server** beside
 **WPILog Analyzer**. The remote client sends no local directory lease or TBA key.
 
+Dashboards and AdvantageScope can use the pit server's optional read-only NT4 gateway on its
+separate port (default 5810 when enabled). See the standalone guide's
+[NT4 gateway configuration](https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#nt4-gateway-for-dashboards).
+It carries no authentication and belongs on the private network; the HTTP proxy login does not
+protect it. Writes are ignored. Checking a real dashboard or AdvantageScope against a robot
+remains the user's manual step.
+
 The Logs view gains **This laptop** and **Pit server** roots. Pit sessions are newest first,
 with the robot, event/match, open state, and whether the mirror holds them. Opening one uses
 its exact path through the pit server. **Follow live session** polls once a second: the window

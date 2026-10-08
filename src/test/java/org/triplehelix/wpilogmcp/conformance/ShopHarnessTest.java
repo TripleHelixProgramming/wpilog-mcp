@@ -44,9 +44,13 @@ class ShopHarnessTest {
     var robots = new ArrayList<Process>(); Process server = null;
     try (var rio = new FakeRoboRio(run.resolve("rio"), timeline.get("serial_number").getAsString(), timeline.get("comments").getAsString())) {
       int httpPort = port(), ntPort; do { ntPort = port(); } while (ntPort == httpPort);
+      int gatewayPort; do { gatewayPort = port(); } while (gatewayPort == httpPort || gatewayPort == ntPort);
+      var probes = Files.createDirectory(run.resolve("gateway-probes"));
       var config = run.resolve("servers.yaml");
       Files.writeString(config, "servers:\n  harness:\n    transport: http\n    port: " + httpPort
+          + "\n    logdir: [" + StoreJson.JSON.toJson(probes.toString()) + "]"
           + "\n    capture:\n      robot: {host: 127.0.0.1, port: " + ntPort + "}\n      store: " + StoreJson.JSON.toJson(store.toString())
+          + "\n      gateway: {port: " + gatewayPort + "}"
           + "\n      period_sec: 0.01\n      pull:\n        enabled: true\n        rate_bytes: 65536\n        settle_sec: " + timeline.get("settle_sec")
           + "\n        ssh: {port: " + rio.port() + "}\n");
       server = launch(List.of(javaExe, "-Xmx512m", "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
@@ -59,7 +63,8 @@ class ShopHarnessTest {
         var boot = timeline.getAsJsonArray("boots").get(index).getAsJsonObject();
         var robot = launch(List.of(javaExe, "-Xmx256m", "-Djava.library.path=" + System.getProperty("harness.natives"),
             "-jar", System.getProperty("harness.robotJar"), timelinePath.toString(), Integer.toString(index),
-            rio.logs().toString(), control.toString(), Integer.toString(ntPort)), run, control.resolve("robot.log"),
+            rio.logs().toString(), control.toString(), Integer.toString(ntPort), Integer.toString(gatewayPort),
+            probes.resolve("boot-" + index + ".wpilog").toString()), run, control.resolve("robot.log"),
             java.util.Map.of("serialnum", timeline.get("serial_number").getAsString(),
                 "LD_LIBRARY_PATH", System.getProperty("harness.natives"), "DYLD_LIBRARY_PATH", System.getProperty("harness.natives")));
         robots.add(robot);
@@ -74,6 +79,10 @@ class ShopHarnessTest {
           if (!listing.has("logs")) return false;
           return listing.getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
               .filter(e -> e.get("path").getAsString().endsWith("capture.wpilog")).count() >= expected;
+        });
+        HarnessHttp.await("ntcore subscribed through gateway", 30, () -> {
+          assertTrue(robot.isAlive(), "robot stopped: " + Files.readString(control.resolve("robot.log")));
+          return Files.exists(control.resolve("gateway-ready"));
         });
         Files.writeString(control.resolve("go"), "go\n");
         long endSeconds = Math.floorDiv(boot.get("end_us").getAsLong(), 1_000_000);

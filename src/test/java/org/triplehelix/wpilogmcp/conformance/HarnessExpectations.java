@@ -76,6 +76,7 @@ final class HarnessExpectations {
       assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(pulledPath))), file.get("sha256").getAsString());
       verifyValues(timeline, boot, bootIndex, capture, http, run);
       verifyValues(timeline, boot, bootIndex, pulledPath, http, run);
+      verifyValues(timeline, boot, bootIndex, run.resolve("gateway-probes").resolve("boot-" + bootIndex + ".wpilog"), http, run);
       verifyGate(boot, run.resolve("boot-" + bootIndex).resolve("ticks.csv"), reads);
     }
     var progress = json(root.resolve("pull.json"));
@@ -119,7 +120,9 @@ final class HarnessExpectations {
         }
         var args = new JsonObject(); args.addProperty("path", file.toString()); args.addProperty("name", entry); args.addProperty("limit", count);
         var result = http.call("read_entry", args);
-        Files.writeString(run.resolve("boot-" + bootIndex + "-" + (file.getFileName().toString().equals("capture.wpilog") ? "capture-" : "pulled-") + topic + ".json"), result.toString());
+        String source = file.getParent().getFileName().toString().equals("gateway-probes") ? "gateway-"
+            : file.getFileName().toString().equals("capture.wpilog") ? "capture-" : "pulled-";
+        Files.writeString(run.resolve("boot-" + bootIndex + "-" + source + topic + ".json"), result.toString());
         assertEquals("ok", result.get("status").getAsString(), result.toString()); assertEquals(count, result.get("total_in_range").getAsInt());
         assertEquals(count, result.getAsJsonArray("samples").size(), "HTTP returns every scripted sample");
         for (int i = 0; i < result.getAsJsonArray("samples").size(); i++) {

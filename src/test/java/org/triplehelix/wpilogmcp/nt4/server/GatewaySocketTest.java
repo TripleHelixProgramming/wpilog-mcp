@@ -25,10 +25,11 @@ import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 
 class GatewaySocketTest {
-  private static final class WireClient implements WebSocket.Listener, AutoCloseable {
+  static final class WireClient implements WebSocket.Listener, AutoCloseable {
     final BlockingQueue<Object> events = new LinkedBlockingQueue<>();
     final StringBuilder text = new StringBuilder();
     final ByteArrayOutputStream binary = new ByteArrayOutputStream();
+    final java.util.concurrent.CompletableFuture<Integer> closed = new java.util.concurrent.CompletableFuture<>();
     final WebSocket socket;
     WireClient(int port, String protocol) throws Exception {
       socket = HttpClient.newHttpClient().newWebSocketBuilder().subprotocols(protocol)
@@ -45,6 +46,10 @@ class GatewaySocketTest {
       if (last) { events.addAll(ValueFrame.decode(binary.toByteArray())); binary.reset(); }
       socket.request(1); return null;
     }
+    @Override public CompletionStage<?> onClose(WebSocket socket, int status, String reason) {
+      closed.complete(status); return null;
+    }
+    @Override public void onError(WebSocket socket, Throwable error) { closed.completeExceptionally(error); }
     void send(ControlMessage m) { socket.sendText(ControlMessage.encode(List.of(m)), true).join(); }
     void send(ValueFrame v) { socket.sendBinary(ByteBuffer.wrap(v.encode()), true).join(); }
     Object next() throws Exception {
@@ -86,8 +91,13 @@ class GatewaySocketTest {
     }
   }
 
-  @Test void handshakeNeedsNtPathAndCommonSubprotocolAndLoopback() throws Exception {
-    assertThrows(IllegalArgumentException.class, () -> new Nt4Gateway(new InetSocketAddress("0.0.0.0", 5810), () -> 0));
+  @Test void handshakeNeedsNtPathAndCommonSubprotocolOnAConfiguredNetworkBind() throws Exception {
+    try (var network = new Nt4Gateway(new InetSocketAddress("0.0.0.0", 0), () -> 0)) {
+      network.start().get(5, TimeUnit.SECONDS);
+      try (var valid = new WireClient(network.port(), Nt4Client.V40)) {
+        assertEquals(Nt4Client.V40, valid.socket.getSubprotocol());
+      }
+    }
     try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 0)) {
       gateway.start().get(5, TimeUnit.SECONDS);
       var http = HttpClient.newHttpClient();

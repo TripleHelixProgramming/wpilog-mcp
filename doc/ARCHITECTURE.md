@@ -118,7 +118,7 @@ A test run without failures shows that the tools keep their contract, not that t
 | The JDK's HTTP client | The Blue Alliance API. |
 | The JDK's WebSocket client | The NT4 capture client. |
 | Maintained JSch (BSD-3-Clause, with ISC jBCrypt) | SSH exec and SFTP in `capture/pull`; JDK 17 supplies Ed25519 and RSA SHA-2. |
-| Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway fixture; confined to `nt4/server`. |
+| Java-WebSocket (MIT) | RFC 6455 framing for the NT4 gateway and its loopback fixture; confined to `nt4/server`. |
 | Gradle with the Shadow plugin | Building one self-contained JAR. |
 | JUnit 5 | Tests. |
 | Apache MINA SSHD and EdDSA (test only) | A synthetic roboRIO's SSH/SFTP server on loopback, including actual host-key negotiation and exec channels. |
@@ -164,7 +164,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `config` | File configuration, session leases, daemon lifecycle, and the shared install/refresh implementation |
 | `nt4` | NT4 control/value records, the spec-written MessagePack subset, type mapping, and time-sync arithmetic; no network or file I/O |
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
-| `nt4/server` | Pure subscription/announcement/value fan-out and the loopback WebSocket adapter; a robot fixture first |
+| `nt4/server` | Pure subscription/announcement/value fan-out and a bounded WebSocket adapter, used by configured capture and the loopback robot fixture |
 | `capture/pull` | Disabled-state gate, SSH/SFTP adapter, and the daemon coordinating transfer and device identity outside the NT4 loop |
 | `capture/context` | Device identity from the HAL sources, with source provenance and capture context |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
@@ -239,12 +239,32 @@ when a reused file has identical size and mtime; a changed listing invalidates a
 ## NT4 foundation
 
 The NT4 layer was first exercised as an unwired fixture; the configured capture service now uses
-its client. The client and a loopback gateway exercise each other on every generated fixture to
+its client and optional gateway. The client and a loopback gateway exercise each other on every generated fixture to
 pin the delivery order the capture writer depends on. The gateway's core
 takes messages and explicit times and returns deliveries; it performs no I/O under its short state
 lock. The adapter sends those deliveries on its own daemon loop. The client has a separate daemon
 loop, so every announcement, removal, property update, and value reaches its listener in order on
-one thread. The capture writer implements that listener.
+one thread. The capture service feeds the writer, live tools and gateway from that listener.
+
+The gateway has its own configured port and the HTTP bind address. Recorder policy does not filter
+its feed. A robot disconnect flushes pending values before unannouncing every upstream topic; new
+announcements allocate new gateway ids. Client publications are private acknowledgement sinks,
+never a second route to the robot or capture. Properties acknowledgements report unchanged facts.
+
+The fan-out thread coalesces sends at the minimum requested value period per client, deduplicating
+overlapping subscriptions as NT4 permits. Period-pending values are bounded by 32 MiB and 65,536
+records per client. Java-WebSocket's nonblocking selector drains the socket queues; every text and
+binary message is fragmented near the MTU, with at most 32,768 queued fragments per client. The
+adapter checks the queue's constant-time size before each send and drops an overrun connection
+immediately, logging its reason. Neither a socket write nor a store operation runs on the NT4 loop.
+The connected count is a volatile publication for metrics, not a call into the fan-out lock.
+
+Time-sync replies apply the client's measured robot offset to its monotonic clock. Without an
+estimate they use that local clock, following ntcore's server reply. The first synchronized sample
+after each upstream connection resets downstream connections: ntcore 2026 uses its first reply,
+so retaining a connection across a clock change would retain the wrong offset. The native harness
+probe verifies its received timestamps through a separate NetworkTableInstance. A real dashboard
+or AdvantageScope session remains a manual hardware check.
 
 The MessagePack subset is written from the format specification, like the Arrow data writer, and
 checked against hand-encoded bytes, including every integer width, floating-point bits, variable
@@ -264,11 +284,10 @@ connection succeeds, sweeps start with the first configured address.
 
 The lossless listener sees every received value, including an older timestamp. In accordance with
 WPILib's protocol, the latest table keeps the greatest timestamp (ties replace), honors `cached: false`,
-and removes values on unannounce or disconnect. The gateway deduplicates overlapping
-subscriptions, batches at the client's minimum requested period, and honors `all`, `topicsonly`,
-and exact/prefix matching. Downstream publications are private acknowledgement sinks: values never
-enter the upstream table, and property replies state the unchanged properties. Full gateway
-integration, metadata topics, and real dashboard interoperability remain the later gateway milestone.
+and removes values on unannounce or disconnect. The gateway keeps the same retained-value rule
+for a new subscriber, while an `all` subscription receives every publication in arrival order.
+Native ntcore interoperability is checked by the harness; real dashboard interoperability remains
+the user's manual check.
 
 ## Capture writer
 
@@ -719,8 +738,8 @@ MBeans. It owns no history or counters. The recorder publishes costs at flush; t
 worker publishes copy/verification progress; time sync publishes an immutable window so
 reads cannot join the NT4 writer's monitor. The HTTP thread never queues work on either
 capture or store, reads files, or contacts the robot. Ordinary HTTP servers expose JVM and
-inactive-component state even without capture. Gateway/provider owners have a snapshot
-interface, with no gateway wiring or provider startup added here.
+inactive-component state even without capture. The gateway supplies its published client count
+through the component snapshot interface; provider costs remain absent until providers exist.
 
 Topic types travel atomically with latest values. Only published struct schemas enter the
 metrics decoder, including nested dependencies: a dashboard cannot state the assumptions

@@ -219,7 +219,7 @@ Each run owns fresh ports, a home directory, a disk cache, synthetic device file
 under `build/shop-harness/`. `FakeRoboRio` serves `/home/lvuser/logs`, `/proc/42/environ`, and
 `/etc/machine-info`; `/u/logs` and `/U/logs` are absent. Its exec channel accepts only the puller's
 quoted `head -c N -- <path> | sha256sum` command and computes that prefix in Java, without a shell.
-The packaged server starts from the shadow JAR with capture and pull enabled. No robot is used,
+The packaged server starts from the shadow JAR with capture, pull and the gateway enabled. No robot is used,
 and no generated log belongs in the repository.
 The harness caps pulling at 64 KiB/s so the timeline exercises transfers on both sides of an
 enable transition; the production default remains 1 MB/s.
@@ -231,9 +231,22 @@ timestamp too. The checks cover serial/device identity, one session per boot, sc
 and struct-array topics with schemas, verified pulls matched near zero offset, DataLogManager's
 rename, event/match manifests, and SFTP reads gated by disabled state. Saved manifests, HTTP
 results, server/robot output, and the SFTP read audit explain failures. CI uploads this evidence.
+The simulated robot also owns a separate ntcore client instance connected only to the gateway.
+It subscribes to every scripted topic and schema, records the received server timestamps in a
+separate observation log, and waits for gateway announcements before the runner releases the
+timeline. The same independent oracle and HTTP calls check that log, including every struct
+record, in each boot. This is native ntcore interoperability, not a real dashboard UI test.
 The CI harness job first runs the ordinary suite and retains `build/test-results/test`, including
 assertion messages, so later targeted runs cannot erase a socket failure. The local runner remains
 the opt-in harness; `./gradlew build` runs the ordinary suite separately.
+
+The ordinary gateway checks are `GatewayCoreTest`, `GatewaySocketTest`,
+`GatewayBackpressureTest`, `CaptureGatewayTest`, and `GatewayConfigTest`; run them with
+`./gradlew test --tests '*Gateway*Test'`. They use literal loopback addresses on Linux and Windows.
+They check subscription periods/options, truthful write acknowledgements, queue bounds with a
+real unread TCP peer, robot-clock round trips and absent-clock reconnects, session boundaries,
+and forwarding/flushes during a blocked store operation. `MetricsDaemonTest` checks the port and
+connected-client counter in the packaged process and one log warning per writing client.
 
 To add a timeline, copy `harness/timelines/reboot-match.json`. Times ending in `_us` use the
 robot's microsecond clock, reset on every boot. Keep `period_us: 20000`; samples cover
