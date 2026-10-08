@@ -129,4 +129,30 @@ class GatewayLifecycleTest {
       } finally { socket.abort(); }
     } finally { http.stop(); manager.release(temp); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
   }
+
+  @Test void failedGatewayCloseReportsItsCauseWithoutClaimingADeadlineExpired() throws Exception {
+    var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
+    var client = new ManualScheduler();
+    var binds = new ClientScheduler() {
+      public long nowUs() { return 0; }
+      public void execute(Runnable action) { fail("The service was never started"); }
+      public void schedule(Runnable action, long delayUs) { fail("The service was never started"); }
+      public void close() { throw new IllegalStateException("synthetic bind-scheduler close failure"); }
+    };
+    var config = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", 9, "absent")), temp.resolve("store"), .01,
+        CapturePolicy.ALL, 0, 1 << 20, PullConfig.DISABLED, 5810);
+    var messages = new java.io.ByteArrayOutputStream(); var stderr = System.err;
+    try (var output = new java.io.PrintStream(messages, true, java.nio.charset.StandardCharsets.UTF_8)) {
+      System.setErr(output);
+      var service = new CaptureService(config, manager, Clock.systemUTC(), client, WpilogOutput::new,
+          Duration.ofSeconds(30), PullCoordinator::new, "127.0.0.1", binds);
+      var closed = CompletableFuture.runAsync(service::close);
+      closed.whenComplete((ignored, error) -> client.execute(() -> {}));
+      client.until(closed::isDone, Duration.ofSeconds(5)); closed.get(5, TimeUnit.SECONDS);
+    } finally { System.setErr(stderr); manager.release(temp); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
+    String log = messages.toString(java.nio.charset.StandardCharsets.UTF_8);
+    assertTrue(log.contains("WARN") && log.contains("Capture shutdown failed"), log);
+    assertTrue(log.contains("synthetic bind-scheduler close failure"), log);
+    assertFalse(log.contains("shutdown could not finish"), log);
+  }
 }

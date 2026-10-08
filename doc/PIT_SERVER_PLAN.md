@@ -662,6 +662,15 @@ Milestone 8 choices:
   Java-WebSocket takes ownership to close failed channels and avoid its repeated fatal log.
   No new WebSocket dependency or server native library
   was added; Java-WebSocket still owns framing only.
+- Release review replaced the address-reuse option check with an actual rebind after a plain
+  server actively closes a connection, leaving its port in TIME_WAIT. Java-WebSocket reapplies
+  the option after binding, so its eventual value proved nothing about whether the initial bind
+  could succeed. The test requires LISTENING before advancing the retry clock and has no OS skip.
+  This macOS JDK defaults reuse to true: deleting the setter alone passed, while explicitly
+  disabling it before bind failed with BindException. Windows may allow either setting; Linux
+  rejects the missing pre-bind option as the review demonstrated. Listener-error injection also
+  pins the one-second reset after a successful bind; an injected close failure must log its cause
+  rather than the thirty-second-bound warning.
 - The same ordered listener feeds recording, live waiters and gateway publications. Capture
   exclusion/thinning does not filter downstream clients. A disconnect ends the visible gateway
   session even when capture later resumes its file. Values flush before unannounce, and ids are

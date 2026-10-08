@@ -104,6 +104,11 @@ The replay helper also accepts a pace and an injected pacer. The client tests in
 and clock to observe infinite 1–10 second backoff, reconnection, and time-sync/keepalive timers
 without sleeping. A separate scripted peer checks fragmentation, the 4.0 fallback, unknown IDs,
 malformed messages, and listener order. A planted server clock is checked within the measured RTT.
+`GatewayBindTest` leaves a plain server connection in TIME_WAIT and requires the gateway to bind
+that same port without a retry; reading the socket option after binding cannot prove reuse was
+enabled in time. An injected listener error checks that successful binding resets the next backoff
+to one second. `GatewayLifecycleTest` checks that a failed close names its cause without claiming
+the shutdown deadline expired.
 These tests need no robot, native NT library, external service, or committed log. Actual ntcore and
 dashboard interoperability and native Windows execution still require their respective environments.
 
@@ -121,7 +126,7 @@ The output must also be deterministic: each call on a log is repeated with the l
 
 Directory lease tests drive the real transport: session expiry/deletion/replacement, cached-read revocation, independent clients, origin/team listings, key precedence and captured logs, loopback/Origin refusals, symlinks, imports, and the actual inbox poller. A packaged bridge runs in a temporary home and project to prove home-only server configuration, project/flag leases, relative paths, URL connections, repeated initialization, and cleanup at EOF. The fake TBA service sees only synthetic keys. Mutation checks cover these boundaries; no live API or user's home is used.
 
-**Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
+**Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one. `ChangelogTest` requires one section per release and Unreleased first, so a duplicated published heading cannot hide pending changes.
 
 **Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails. The CI workflow must run the license check, which neither `test` nor `shadowJar` includes.
 

@@ -122,11 +122,6 @@ public final class Nt4Gateway implements AutoCloseable {
 
   public int port() { return status.port(); }
   public GatewayStatus status() { return status; }
-  /** Socket option diagnostic, also pinning the pre-bound socket's option in tests. */
-  boolean reusesAddress() throws java.io.IOException {
-    var bound = server;
-    return bound != null && bound.channel.getOption(java.net.StandardSocketOptions.SO_REUSEADDR);
-  }
 
   private void bind() {
     if (closed) return;
@@ -135,6 +130,7 @@ public final class Nt4Gateway implements AutoCloseable {
       // Pre-bind so a normal busy port neither leaks the library's failed channel nor
       // produces its fatal-error log on every retry. Ownership passes only on success.
       channel = ServerSocketChannel.open();
+      // The library reapplies this after binding, too late to reuse a port in TIME_WAIT.
       channel.setOption(java.net.StandardSocketOptions.SO_REUSEADDR, true);
       channel.bind(address);
       var candidate = new SocketServer(channel, protocols);
