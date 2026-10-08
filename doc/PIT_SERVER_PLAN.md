@@ -782,3 +782,8 @@ Release-review keepalive failures (before the tag):
   Gateway ping replies retain the existing socket-queue check, with only an overrun drop queued
   to fan-out. The real-log stratified sample is the verification scope for this timing fix;
   the full set passed on `9d7a408` and remains required again before 0.10.0.
+- The first CI pass after this fix was green on Linux and Windows but exposed an obsolete
+  native-pair test assumption: `ManualScheduler.receive()` waited for a queued pong callback,
+  which the fix intentionally removed. That test now advances to its three-second time-sync
+  exchange and waits for the actual reply before reboot, retaining the existing assertion and
+  deadline. It does not treat missing application-loop pong work as a dead connection.

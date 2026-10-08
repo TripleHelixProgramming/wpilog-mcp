@@ -48,8 +48,9 @@ class ReplayClockResetTest {
           if (nativeServer) nativeFirst.consume(capture);
           else a.replay(0, 0, ignored -> fail("Fast replay paced"), capture::receivedThrough, capture::propertiesThrough);
           robot.set(first.maxUs);
-          if (nativeServer) for (int i = 0; i < 15; i++) { loop.advance(200_000); loop.receive(); }
-          else loop.advance(3_000_000);
+          // Pongs are consumed on the network callback, not queued to this loop. Advance
+          // to the time-sync exchange and wait for its reply, not a synthetic pong task.
+          loop.advance(3_000_000);
           loop.until(() -> capture.synchronizedServerUs.get() == first.maxUs);
           if (nativeServer) nativeFirst.finish(); else gateway.dropClients().get(10, TimeUnit.SECONDS);
           loop.until(() -> !capture.connected());
