@@ -51,7 +51,8 @@ final class NativeReplayProcess implements AutoCloseable {
   void consume(ReplayCapture capture) throws Exception {
     long values = capture.received.get(), properties = capture.receivedProperties.get();
     Files.writeString(control.resolve("go"), "go");
-    HarnessHttp.await("native replay consumed", 300, () -> {
+    HarnessHttp.awaitProgress("native replay consumed", 30,
+        () -> capture.received.get() + capture.receivedProperties.get(), () -> {
       if (capture.loop instanceof ManualScheduler manual) manual.drain();
       assertTrue(process.isAlive(), source.path.toString());
       acknowledge("sent", "received", capture.received.get() - values);

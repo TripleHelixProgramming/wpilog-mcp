@@ -42,6 +42,34 @@ public final class HarnessHttp {
     return result;
   }
   @FunctionalInterface public interface Condition { boolean ready() throws Exception; }
+  /** A long replay is bounded by missing receipt progress, not by the source file's size. */
+  public static void awaitProgress(String what, int seconds, java.util.function.LongSupplier progress,
+      Condition condition) throws Exception {
+    awaitProgress(what, seconds, progress, System::nanoTime, condition);
+  }
+
+  static void awaitProgress(String what, int seconds, java.util.function.LongSupplier progress,
+      java.util.function.LongSupplier clock, Condition condition) throws Exception {
+    var done = new CompletableFuture<Void>();
+    var last = new java.util.concurrent.atomic.AtomicReference<Exception>();
+    long[] observed = {progress.getAsLong(), clock.getAsLong()};
+    var poller = Executors.newSingleThreadScheduledExecutor(r -> { var t = new Thread(r, "harness-progress"); t.setDaemon(true); return t; });
+    try {
+      poller.scheduleWithFixedDelay(() -> {
+        try {
+          if (condition.ready()) { done.complete(null); return; }
+        } catch (Exception e) { last.set(e); }
+        catch (Error e) { done.completeExceptionally(e); }
+        long count = progress.getAsLong(), now = clock.getAsLong();
+        if (count > observed[0]) { observed[0] = count; observed[1] = now; }
+        if (now - observed[1] >= TimeUnit.SECONDS.toNanos(seconds)) {
+          done.completeExceptionally(new AssertionError("Timed out waiting for " + what, last.get()));
+        }
+      }, 0, 50, TimeUnit.MILLISECONDS);
+      done.get();
+    } finally { poller.shutdownNow(); }
+  }
+
   /** Wall-time bounds for processes/sockets only; no assertion advances a simulated clock by sleeping. */
   public static void await(String what, int seconds, Condition condition) throws Exception {
     var done = new CompletableFuture<Void>();

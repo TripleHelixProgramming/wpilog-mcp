@@ -180,10 +180,11 @@ tasks.named('test') {
     if (project.hasProperty('goldenMatchLog')) {
         systemProperty 'golden.matchlog', project.property('goldenMatchLog')
     }
-    // Conformance rules on every real log in a directory (opt-in): -PconformanceLogDir=/path/to/logs
+    // Conformance on a deterministic sample (opt-in); -PconformanceSample=full includes every log.
     // (-PconformanceMaxLogs=N limits it to the first N)
     if (project.hasProperty('conformanceLogDir')) {
         systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        systemProperty 'conformance.sample', project.findProperty('conformanceSample') ?: 'sample'
         // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
     }
@@ -252,7 +253,11 @@ tasks.register('shopHarness', Test) {
     systemProperty 'harness.output', file('build/shop-harness').absolutePath
     if (project.hasProperty('conformanceLogDir')) {
         systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        systemProperty 'conformance.sample', project.findProperty('conformanceSample') ?: 'sample'
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+    }
+    if (project.hasProperty('conformanceMaxLogs')) {
+        systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
     }
     environment 'WPILOG_DISK_CACHE_DIR', file('build/harness-test-disk-cache').absolutePath
     doFirst { delete file('build/harness-test-disk-cache') }

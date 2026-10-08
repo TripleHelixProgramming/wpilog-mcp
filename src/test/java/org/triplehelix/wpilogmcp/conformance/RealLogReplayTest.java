@@ -25,8 +25,8 @@ class RealLogReplayTest {
     var scratch = Files.createDirectories(Path.of("build/replay-work"));
     var failures = new ArrayList<String>();
     long started = System.nanoTime();
-    try (var out = Files.newBufferedWriter(report); var walk = Files.walk(root)) {
-      for (var path : walk.filter(Files::isRegularFile).filter(p -> p.toString().toLowerCase(java.util.Locale.ROOT).endsWith(".wpilog")).sorted().toList()) {
+    try (var out = Files.newBufferedWriter(report)) {
+      for (var path : ConformanceSample.configured(root, "gateway").paths()) {
         java.util.Map<String, Object> counts = new LinkedHashMap<>(); counts.put("path", path.toString());
         System.out.println(path);
         long logStarted = System.nanoTime();

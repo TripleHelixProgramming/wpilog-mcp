@@ -23,7 +23,8 @@ class RealReplayPullTest {
     var report = Files.createDirectories(Path.of("build/reports/replay")).resolve("gateway-pull-" + root.getFileName() + ".jsonl");
     var scratch = Files.createDirectories(Path.of("build/replay-pull"));
     try (var out = Files.newBufferedWriter(report)) {
-      for (var path : RealNtcoreReplayTest.samples(root)) for (long shift : new long[] {0, 40_000, 120_000, 200_000, -120_000, 240_000, 260_000, 6_000_000}) {
+      var selected = ConformanceSample.configured(root, "gateway-pull");
+      for (var path : selected.paths()) for (long shift : selected.shifts(path)) {
         long started = System.nanoTime(); Map<String, Object> result;
         try (var source = new ReplaySource(path)) {
           var run = Files.createTempDirectory(scratch, "run-");

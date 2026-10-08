@@ -35,14 +35,12 @@ public class LiveReplayTest {
     String folder = System.getProperty("conformance.logdir");
     org.junit.jupiter.api.Assumptions.assumeTrue(folder != null, "Live replay skipped; set -PconformanceLogDir=/path/to/logs");
     var failures = new ArrayList<String>();
-    try (var paths = Files.walk(Path.of(folder))) {
-      for (var path : paths.filter(Files::isRegularFile).filter(p -> p.toString().toLowerCase(java.util.Locale.ROOT).endsWith(".wpilog")).sorted().toList()) {
-        try { check(path, Files.createTempDirectory(directory, "live-"), false); }
-        catch (IndependentLog.NotALog | ReplaySource.InvalidUtf8 invalid) {
-          // The ordinary replay suite separately checks these input refusals with both readers.
-          System.out.println("Live replay input refused: " + path);
-        } catch (Exception | AssertionError error) { failures.add(path.toString()); }
-      }
+    for (var path : ConformanceSample.configured(Path.of(folder).toRealPath(), "live").paths()) {
+      try { check(path, Files.createTempDirectory(directory, "live-"), false); }
+      catch (IndependentLog.NotALog | ReplaySource.InvalidUtf8 invalid) {
+        // The ordinary replay suite separately checks these input refusals with both readers.
+        System.out.println("Live replay input refused: " + path);
+      } catch (Exception | AssertionError error) { failures.add(path.toString()); }
     }
     assertTrue(failures.isEmpty(), String.join("\n", failures));
   }

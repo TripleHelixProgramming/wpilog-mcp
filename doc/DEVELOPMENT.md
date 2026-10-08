@@ -133,22 +133,28 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 
 ```bash
 # The real-log suites, on a directory of logs
-./gradlew test --tests '*.conformance.*' -PconformanceLogDir=/path/to/logs [-PsimLogDir=/path/to/sim-logs] [-PconformanceMaxLogs=N] [-PconformanceTools=a,b]
+./gradlew test --tests '*.conformance.*' -PconformanceLogDir=/path/to/logs [-PsimLogDir=/path/to/sim-logs] [-PconformanceSample=full] [-PconformanceMaxLogs=N] [-PconformanceTools=a,b]
 
 # Golden values from known logs
 ./gradlew test --tests '*.golden.*' -PgoldenLog=/path/to/akit_26-09-30_00-10-26.wpilog -PgoldenMatchLog=/path/to/akit_cmptx_e4_sample.wpilog
 ```
 
-`-PconformanceMaxLogs` limits a run to the first N logs, `-PconformanceTools` to the tools named, and `-PsimLogDir` is described under the claims check below.
-`-PconformanceLogDir` also enables the real-log replay described under "The shop harness".
-Replay visits the entire directory; the sweep's tool and file limits do not exclude replay inputs.
+`-PconformanceLogDir` enables a deterministic stratified sample by default; use
+`-PconformanceSample=full` for every file. The same selector serves the tool sweep, differential
+check, real-log claims and every gateway, native, pull, pair and live replay. Reports under
+`build/reports/conformance-sample/` name the selected paths, their strata and unavailable strata.
+`-PconformanceMaxLogs=N` still restricts the input to the first N paths in sorted order, before
+sampling, in both ordinary and harness tasks. A limited run may therefore lack a stratum or a
+two-boot pair; its report says so. `-PconformanceTools` limits only the tool sweep, and
+`-PsimLogDir` is described under the claims check below. See "The shop harness" for the selector's
+rules and the sample/full verification policy.
 
-- Real-log conformance sweep: the fixture sweep's checks (all but the comparison of each description with its outputs) and argument variants, for every tool that reads a log, on every `.wpilog` under the directory (up to 6 levels deep), with the entries reversed for determinism. There is no ratchet, so any violation fails. The report, with the time of every call, is `build/reports/conformance/real-logs.txt`.
-- Real-log differential check: the second reader against the server on every log, with the domain answers above. A file neither can read is counted, and a file only one can read is a finding. The report is `build/reports/conformance/differential.txt`.
+- Real-log conformance sweep: the fixture sweep's checks (all but the comparison of each description with its outputs) and argument variants, for every tool that reads a log, on each selected `.wpilog` recursively under the directory, with the entries reversed for determinism. There is no ratchet, so any violation fails. The report, with the time of every call, is `build/reports/conformance/real-logs.txt`.
+- Real-log differential check: the second reader against the server on each selected log, with the domain answers above. A file neither can read is counted, and a file only one can read is a finding. The report is `build/reports/conformance/differential.txt`.
 - Real-log replay: every complete record through the gateway, JDK client, writer and HTTP tools,
   compared against the differential reader's original bytes, including type, metadata history,
   timestamps and topic accounting. Per-file JSONL reports are under `build/reports/replay/`.
-- Claims on the live service: the server is started on its HTTP transport and called as a client would call it, and each answer is compared with a fact established independently of the tool under test. The facts are about Team 2363's sample logs, and about simulated logs whose `MANIFEST.md` was written by a separate reader; `-PsimLogDir` names the directory holding those. With other logs, or without that directory, a claim whose precondition isn't met is reported as not verifiable, never as passed. The report is `build/reports/conformance/claims.txt`.
+- Claims on the live service: the server is started on its HTTP transport and called as a client would call it, and each answer is compared with a fact established independently of the tool under test. The facts are about Team 2363's sample logs, and about simulated logs whose `MANIFEST.md` was written by a separate reader; `-PsimLogDir` names the directory holding those. With other logs, without that directory, or when a named log is outside the selected sample, a claim whose precondition isn't met is reported as not verifiable, never as passed. The report is `build/reports/conformance/claims.txt`.
 - Golden checks: values from a practice log of Team 2363 (`-PgoldenLog`) and from a 2026 championship elimination match that Team 4065 published under the MIT license (`-PgoldenMatchLog`, its `akit_cmptx_e4_sample.wpilog`), computed separately with WPILib's Python log reader and NumPy. Each property switches on its own set.
 
 With `-PconformanceLogDir`, the tests run with a 4 GB heap (the launcher's default) instead of the usual test heap; `-PconformanceHeap=8g` changes it.
@@ -293,10 +299,10 @@ a backward robot clock, without using a correlation result to select them.
 For your own directory:
 
 ```bash
-# Every WPILOG through the gateway; no native simulation needed, including on Windows
+# Stratified sample through the gateway; no native simulation needed, including on Windows
 ./gradlew test --tests '*RealLogReplayTest' --tests '*RealReplayPullTest' --tests '*RealReplayPairTest' -PconformanceLogDir=/path/to/logs
 
-# Build the robot once and run the timeline, fixture replay, and native real-log samples
+# Build the robot once and run the timeline, fixture replay, and the same native sample
 harness/run -PconformanceLogDir=/path/to/logs
 
 # Repeat just native replay with the existing robot build
@@ -305,9 +311,30 @@ harness/run -PconformanceLogDir=/path/to/logs
 
 Without the directory property the real-log tests skip with a message. CI exercises fixture
 replay in the ordinary Linux/Windows build and native fixture replay in the Linux harness job;
-CI has no real-log directory. Native sampling chooses the smallest recording spanning at least
-ten seconds for each logger kind, plus calendar-bearing and complete calendar-bearing samples
-where available. Selection does not look at correlation results.
+CI has no real-log directory. Sampling is the milestone default. It chooses the smallest log
+spanning at least ten seconds per logger kind, or the smallest if that kind has only short logs,
+plus a complete calendar-bearing representative where available. It also covers each size class
+(below 1 MiB, 1 to below 64 MiB, and 64 MiB or larger), the largest file, a REV companion, an
+incomplete tail, calendar evidence present and absent, and one complete calendar-bearing pair
+of the same identity and layout whose robot clock resets. Representatives can cover several
+strata and are deduplicated. Logger strata use the replayer's exact classification from its
+header and recorded prefixes. Each file it cannot classify (`OTHER`) is its own stratum and
+stays selected, as does each unreadable input whose refusal needs checking. Ties use normalized
+path order; no random seed or correlation result enters selection. Inventory uses the independent reader and is shared within the test JVM;
+readers close before replay. Reports contain paths, categories and counts, never telemetry.
+
+Use the sample for milestone and per-item checks. Run the full set before a release tag and
+after a change to the NT4 client, capture writer, replayer or matching code; a sync-cache format
+bump marks a change to REV parsing or matching. Append `-PconformanceSample=full` to both the
+ordinary and `shopHarness` commands above, and include `--tests '*LiveReplayTest.realLogs'` in
+the ordinary command. In full mode every file runs at zero shift. The eight-shift matrix runs in both modes on the smallest qualifying logger representatives
+and a REV companion: positive and negative offsets, 240 ms accepted, 260 ms refused,
+and the several-second refusal exercise matching rules without multiplying the whole corpus.
+Files selected only for size, tail, calendar-absence or reset-pair coverage run at zero shift;
+a file that also represents a logger or REV companion keeps the matrix. Each report lists
+`shifts_us`, so matrix coverage is explicit.
+The two-boot tests use the same selected pair in either mode. `-PconformanceMaxLogs` remains
+available for diagnosis; omit it for a closing full run.
 
 The default robot clock uses source timestamps unchanged. Runs with 40, 120 and 200 ms shifts,
 a negative shift, the placement boundary and a several-second refusal test distinguish measured
@@ -341,6 +368,9 @@ Speed defaults to 1 (source pacing); 0 uses receive acknowledgements for the fas
 replay. The JUnit runner owns this handshake, including metadata acknowledgements, so TCP queue
 acceptance is never mistaken for capture completion. A persistent directory watcher avoids
 macOS registration races during atomic handshake-file replacement.
+The native verifier fails after 30 seconds without receipt progress, including metadata receipts,
+instead of imposing a total duration on a whole file. The former five-minute deadline stopped a
+healthy large replay mid-stream; injected-clock checks pin continued progress and stalled receipts.
 The native verifier also checks a digest of every Driver Station state transition, independently
 decoded from the source. HAL's notification forces DS attachment true; replay restores the
 recorded attachment field after notifying so a recorded disconnection remains a disconnection.
@@ -605,6 +635,8 @@ A tool is more than its code: agents read its description and schema, and severa
 ## Releasing
 
 The installer branch must merge together with the release carrying the `install` verb, since the installers on `main` download the latest release; older releases fall back to their own tagged installer.
+
+Before tagging, run the real-log replay commands above with `-PconformanceSample=full` and no file limit. A sampled milestone run is not the release check.
 
 1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; a test fails until the extension's files match.
 2. Regenerate [TOOL_RESPONSES.md](TOOL_RESPONSES.md), whose first lines carry the version (step 7 of [Changing or Adding a Tool](#changing-or-adding-a-tool)).

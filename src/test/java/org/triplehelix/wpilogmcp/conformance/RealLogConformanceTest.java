@@ -22,7 +22,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -39,7 +38,7 @@ import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
 /**
- * Runs every log-reading tool against every {@code .wpilog} under a directory of real logs and
+ * Runs every log-reading tool against the shared sample (or full set) of real logs and
  * checks each result against the same robustness rules as {@link ToolConformanceTest} (status,
  * no non-finite numbers, no silent empties, inputs, limits, and determinism under a reversed
  * entry order), with the same argument variants.
@@ -48,7 +47,8 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  * <pre>
  * ./gradlew test --tests '*RealLogConformanceTest*' -PconformanceLogDir=/path/to/logs
  * </pre>
- * {@code -PconformanceMaxLogs=N} limits the run to the first N logs (path order). There is no
+ * {@code -PconformanceSample=full} selects every log; {@code -PconformanceMaxLogs=N} limits
+ * the inputs to the first N paths before selection. There is no
  * known-failures list: every violation fails the test. A report of every call is written to
  * {@code build/reports/conformance/real-logs.txt}.
  */
@@ -57,11 +57,6 @@ class RealLogConformanceTest {
 
   static final Path REPORT = Path.of("build", "reports", "conformance", "real-logs.txt");
   static final long CALL_TIMEOUT_SECONDS = 180;
-  /**
-   * Folder levels searched below the log directory, here and in the differential check: enough
-   * for an archive sorted by team, year, event, and day under a folder of archives.
-   */
-  static final int SCAN_DEPTH = 6;
   static final java.util.Set<String> REVLOG_TOOLS = java.util.Set.of("list_revlog_signals",
       "get_revlog_data", "sync_status", "set_revlog_offset", "wait_for_sync");
 
@@ -78,17 +73,12 @@ class RealLogConformanceTest {
     var property = System.getProperty("conformance.logdir");
     Assumptions.assumeTrue(property != null && !property.isBlank(),
         "conformance.logdir not set; run with -PconformanceLogDir=/path/to/logs");
-    logDir = Path.of(property).toAbsolutePath().normalize();
+    logDir = Path.of(property).toRealPath();
     Assumptions.assumeTrue(Files.isDirectory(logDir), "not a directory: " + logDir);
 
-    int maxLogs = Integer.getInteger("conformance.maxlogs", Integer.MAX_VALUE);
-    try (Stream<Path> files = Files.walk(logDir, SCAN_DEPTH)) {
-      logs = files.filter(p -> p.getFileName().toString().endsWith(".wpilog"))
-          .sorted()
-          .limit(maxLogs)
-          .map(p -> new Fixture(logDir.relativize(p).toString(), p, "real log", List.of()))
-          .toList();
-    }
+    logs = ConformanceSample.configured(logDir, "tools").paths().stream()
+        .map(p -> new Fixture(logDir.relativize(p).toString(), p, "real log", List.of()))
+        .toList();
     Assumptions.assumeFalse(logs.isEmpty(), "no .wpilog files under " + logDir);
 
     var logManager = LogManager.getInstance();

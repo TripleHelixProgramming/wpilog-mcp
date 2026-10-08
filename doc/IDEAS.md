@@ -453,8 +453,11 @@ still need the shop test; desktop simulation cannot establish them.
 
 Real-log replay extends step 1: the independent reader feeds the loopback gateway on every
 platform; the separate robot can publish the same file through native ntcore. Generated fixtures
-exercise both paths in CI. A local `conformanceLogDir` enables directory-wide record comparison,
-logger samples, metadata, cost accounting, signed offsets, pull-placement refusals, clock resets,
+exercise both paths in CI. A local `conformanceLogDir` enables stratified record comparison by default, with
+`conformanceSample=full` for releases and changes to the recording or matching path. One shared
+selector covers logger kinds, file sizes and the largest file, REV companions, damaged tails,
+calendar evidence and a two-boot pair; the runtime report explains every choice. Both modes
+check metadata, cost accounting, signed offsets, pull-placement refusals, clock resets,
 and REV companion comparisons. Reports stay under `build/`; logs and telemetry stay outside git.
 The source robot clock is preserved, while an injected capture calendar clock keeps the overlap
 filter meaningful. A log ending mid-record remains unverified by the puller; replay compares its
