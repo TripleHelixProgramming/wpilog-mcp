@@ -1178,17 +1178,6 @@ class RevLogToolsTest extends ToolTestBase {
 
       assertTrue(logManager.isRevLogSyncInProgress(wpilog1.path()));
 
-      // Load a second log with a small delay so Caffeine sees distinct access times
-      Thread.sleep(20);
-      var wpilog2 = new ParsedLog("/test2.wpilog",
-          new java.util.HashMap<>(), new java.util.HashMap<>(), 0, 1);
-      logManager.testPutLog(wpilog2.path(), wpilog2);
-
-      // Access wpilog2 to ensure wpilog1 is the LRU
-      Thread.sleep(20);
-      logManager.testGetLogCache().get(
-          java.nio.file.Path.of(wpilog2.path()).toAbsolutePath().normalize().toString());
-
       // Force LRU eviction (heap-pressure-based eviction won't trigger in tests)
       logManager.testGetLogCache().evictOne();
 

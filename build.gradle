@@ -77,8 +77,19 @@ jacocoTestReport {
     }
 }
 
+// Instrument only an explicitly requested coverage run. A normal targeted test does no report work.
+def coverageRequested = project.hasProperty('coverage') || gradle.startParameter.taskNames.any {
+    it.tokenize(':').last() == 'jacocoTestReport'
+}
+tasks.withType(Test).configureEach { jacoco.enabled = name == 'test' && coverageRequested }
+jacocoTestReport.dependsOn test
+if (project.hasProperty('coverage')) test.finalizedBy jacocoTestReport
+
 test {
-    finalizedBy jacocoTestReport
+    // Two 768 MiB forks fit the four-core/7 GiB CI runners, alongside Gradle and child processes.
+    // Larger hosts stop at four; large opt-in corpora keep one explicitly budgeted heap below.
+    maxParallelForks = Math.max(1, Math.min(4, Runtime.runtime.availableProcessors().intdiv(2)))
+    maxHeapSize = '768m'
 }
 
 repositories {
@@ -187,6 +198,7 @@ tasks.named('test') {
         systemProperty 'conformance.sample', project.findProperty('conformanceSample') ?: 'sample'
         // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+        maxParallelForks = 1
     }
     // The simulated logs and their MANIFEST.md, for the claims test: -PsimLogDir=/path/to/sim-logs
     if (project.hasProperty('simLogDir')) {
@@ -226,6 +238,12 @@ tasks.named('test') {
         .withPropertyName('extensionManifests')
 }
 
+// Replay policy is independent of the Java real-log selector. Ordinary test never runs natives.
+def nativeReplay = project.findProperty('conformanceNative') ?: 'sample'
+if (!(nativeReplay in ['none', 'sample', 'full'])) {
+    throw new GradleException('conformanceNative must be none, sample, or full')
+}
+
 // A separate opt-in process suite: harness/run builds the GradleRIO robot first.
 // Run separately so a locale regression cannot overwrite the ordinary suite's XML evidence.
 tasks.register('filenameLocaleTest', Test) {
@@ -246,6 +264,7 @@ tasks.register('shopHarness', Test) {
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
     useJUnitPlatform { includeTags 'shop-harness' }
+    systemProperty 'conformance.native', nativeReplay
     systemProperty 'harness.timeline', file(project.findProperty('harnessTimeline') ?: 'harness/timelines/reboot-match.json').absolutePath
     systemProperty 'harness.robotJar', file('harness/robot/build/libs/shop-robot.jar').absolutePath
     systemProperty 'harness.natives', file('harness/robot/build/jni/release').absolutePath
@@ -255,6 +274,7 @@ tasks.register('shopHarness', Test) {
         systemProperty 'conformance.logdir', project.property('conformanceLogDir')
         systemProperty 'conformance.sample', project.findProperty('conformanceSample') ?: 'sample'
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+        maxParallelForks = 1
     }
     if (project.hasProperty('conformanceMaxLogs')) {
         systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')

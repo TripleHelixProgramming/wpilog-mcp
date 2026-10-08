@@ -23,6 +23,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 public final class LiveTools {
   private LiveTools() {}
   public static void registerAll(ToolRegistry registry, LiveCapture live) {
+    registry.setCurrentSession(() -> org.triplehelix.wpilogmcp.mcp.CurrentSessionResource.read(live));
     registry.registerTool(new ListSessions(live));
     registry.registerTool(new GetLatestValues(live));
     registry.registerTool(new WaitForChange(live));

@@ -92,21 +92,18 @@ class StoreImportEndpointTest {
   }
 
   private JsonObject await(String url, String state) throws Exception {
-    long until = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-    JsonObject job;
-    do {
-      job = get(url);
-      if (job.get("state").getAsString().equals(state)) return job;
-      Thread.sleep(10);
-    } while (System.nanoTime() < until);
-    fail("Job never reached " + state + ": " + job);
-    return null;
+    var observed = new java.util.concurrent.atomic.AtomicReference<JsonObject>();
+    org.triplehelix.wpilogmcp.harness.HarnessHttp.await("import job " + state, 10, () -> {
+      var job = get(url); observed.set(job); return job.get("state").getAsString().equals(state);
+    });
+    return observed.get();
   }
 
   @Test void idleExitWaitsForAnHttpImportWithoutAnySession() throws Exception {
     transport.stop();
     var exited = new CountDownLatch(1);
     transport = new HttpTransport(new ToolRegistry(), 0);
+    var idle = new HttpIdleProbe(transport);
     transport.setIdleExit(Duration.ofMillis(400), exited::countDown);
     transport.start();
     var input = ImportFixture.write(temp.resolve("idle.wpilog"), 15);
@@ -115,13 +112,15 @@ class StoreImportEndpointTest {
       url = submit(root, true, input);
       await(url, "running");
       assertEquals(0, transport.sessionCount());
-      assertFalse(exited.await(900, TimeUnit.MILLISECONDS), "An import outlives the idle deadline");
+      idle.advance(Duration.ofMillis(900));
+      assertEquals(1, exited.getCount(), "An import outlives the idle deadline");
       assertEquals(200, request("/health", null).statusCode());
     }
     var job = await(url, "done");
     assertEquals("imported", job.getAsJsonObject("result").getAsJsonArray("files").get(0)
         .getAsJsonObject().get("status").getAsString());
-    assertTrue(exited.await(2, TimeUnit.SECONDS), "The daemon exits once its import finishes");
+    idle.advance(Duration.ofMillis(900));
+    assertEquals(0, exited.getCount(), "The daemon exits once its import finishes");
   }
 
   @Test void assignmentMovesOnlyUnassignedFilesAndKeepsOriginalProvenance() throws Exception {

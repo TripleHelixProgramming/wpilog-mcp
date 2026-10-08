@@ -193,6 +193,13 @@ Each leaves the repository building, tested, and releasable.
 10. **Charts for the assistant** (§6, §7): `render_chart`, the URI handler that opens its specification, and "Ask about this selection".
 11. **A real VS Code in CI** (§10) (done: an isolated `@vscode/test-electron` host on the oldest supported version and current stable under Linux `xvfb`; activation, the shared daemon, generated-fixture Logs listing, custom editor opening, and actual pit command arguments. Node tests remain separate; dependencies and smoke files stay out of the VSIX. Rendering, offers, credential dialogs, agent discovery, organizing and mirror controls retain the manual checklist).
 
+The assistant's fresh-data route is now explicit: `list_sessions`, `get_latest_values` and
+`wait_for_change` answer for the present, while ordinary tools analyze the recorded past.
+`pit://session/current` advertises the current file/identity/gateway/providers through MCP
+resources. `list_available_logs` marks that file `open`; tools with a time scope accept
+`last_seconds` and report its resolved bounds. A mirror remains a recorded copy with a stated
+sync age, not a claim about the robot's present value.
+
 ### 12. Open questions
 
 - **Decided by the maintainer:** `POST /store/import` admits source paths only inside configured log directories, as the Java importer does. A USB stick or any other outside path goes through the inbox. A move-anything write surface on a server with no authentication is not acceptable; the inbox is a folder the user owns.

@@ -26,6 +26,8 @@ public final class StoreRegistry implements AutoCloseable {
   private boolean closed;
   private ScheduledExecutorService watcher;
   private int watchers;
+  java.util.function.Supplier<ScheduledExecutorService> watcherFactory = StoreRegistry::newWatcher;
+  java.util.function.LongSupplier watchClock = System::nanoTime;
   private final AtomicBoolean polling = new AtomicBoolean();
   private final Discovery discovery;
   private volatile boolean discoverNext = true;
@@ -93,12 +95,14 @@ public final class StoreRegistry implements AutoCloseable {
     if (closed) throw new IllegalStateException("Store registry is closed");
     if (watchers++ > 0) return;
     discoverNext = true;
-    watcher = Executors.newSingleThreadScheduledExecutor(task -> {
-      var thread = new Thread(task, "store-inbox");
-      thread.setDaemon(true);
-      return thread;
+    watcher = watcherFactory.get();
+    watcher.scheduleWithFixedDelay(() -> poll(watchClock.getAsLong()), 0, 3, TimeUnit.SECONDS);
+  }
+
+  static ScheduledExecutorService newWatcher() {
+    return Executors.newSingleThreadScheduledExecutor(task -> {
+      var thread = new Thread(task, "store-inbox"); thread.setDaemon(true); return thread;
     });
-    watcher.scheduleWithFixedDelay(() -> poll(System.nanoTime()), 0, 3, TimeUnit.SECONDS);
   }
 
   public void stopWatching() {

@@ -577,6 +577,11 @@ public class LogManager {
   }
 
   public record Release(boolean released, String reason) {}
+  @FunctionalInterface interface ReleaseWait { boolean await(Path path, Duration timeout) throws IOException; }
+  private java.util.function.LongSupplier releaseClock = System::nanoTime;
+  private ReleaseWait releaseWait = LogFileAccess::awaitFree;
+  /** Tests advance the deadline while retaining the real ownership check. */
+  void releaseTiming(java.util.function.LongSupplier clock, ReleaseWait wait) { releaseClock = clock; releaseWait = wait; }
 
   /**
    * Evicts every spelling of a path (or directory subtree), then gives its in-flight calls up
@@ -593,18 +598,18 @@ public class LogManager {
         return new Release(false, "An active capture is still writing in " + path);
       }
     }
-    long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+    long deadline = releaseClock.getAsLong() + Duration.ofSeconds(3).toNanos();
     do {
       for (var entry : logCache.getAllEntries().entrySet()) {
         var cached = Path.of(entry.getKey());
         var resolved = Files.exists(cached) ? cached.toRealPath() : cached.toAbsolutePath().normalize();
         if (resolved.startsWith(real)) logCache.remove(entry.getKey(), entry.getValue());
       }
-      long remaining = Math.max(0, deadline - System.nanoTime());
-      if (LogFileAccess.awaitFree(real, Duration.ofNanos(Math.min(remaining, 100_000_000)))) {
+      long remaining = Math.max(0, deadline - releaseClock.getAsLong());
+      if (releaseWait.await(real, Duration.ofNanos(Math.min(remaining, 100_000_000)))) {
         return new Release(true, null);
       }
-    } while (System.nanoTime() < deadline);
+    } while (releaseClock.getAsLong() < deadline);
     return new Release(false, "Log is still held by an in-flight call or reader after waiting 3 seconds: "
         + path + ". Retry when the call finishes, or import by copy.");
   }

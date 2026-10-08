@@ -2,6 +2,20 @@
 
 What each wpilog-mcp tool takes, what it does, and what it returns. Every tool that reads a log takes a required `path` (from `list_available_logs`) and loads the log on first use. [TOOL_RESPONSES.md](TOOL_RESPONSES.md) shows the JSON each tool returned on real logs.
 
+For fresh data, use `list_sessions`, `get_latest_values` and `wait_for_change`. The current
+capture is the file `list_available_logs` marks `open`. The MCP resource `pit://session/current`
+is discoverable without a tool call: it returns session identity/file/start/connection,
+gateway status and providers, or `not_applicable` with a reason when no session is open.
+It uses published snapshots and supports reads, not resource subscriptions; prompts remain empty.
+
+Every tool with a time scope accepts `last_seconds`: a positive finite N, ending at the open
+capture's estimated robot time fixed for that call, or a closed log's last record. Without an
+estimate, the captured prefix's end is the anchor. It cannot be combined with `start_time` or
+`end_time`; scope/windows intersect it. `inputs.last_seconds` records N and `inputs.window`
+the resolved absolute start/end; `compare_matches` resolves independently for each log and
+reports `inputs.windows` keyed by path. `inputs.session_time_range` still reports the captured
+prefix's range, not an assertion that fresh values were published throughout that window.
+
 ## Table of Contents
 
 - [Discovery Tools](#discovery-tools)
@@ -443,6 +457,7 @@ Read an entry's values in time order, one page at a time, optionally within a ti
 **Parameters:**
 - `path` (required): Path to the log file
 - `name` (required): The entry name
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `limit` (optional): Max samples to return (default 100; larger values are cut to 10000; zero or less is an error)
@@ -636,6 +651,7 @@ Find when a numeric or boolean entry satisfies a condition, or several entries a
     {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vy", "operator": "abs_lt", "threshold": 0.05}
   ]}
   ```
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)); each window is searched on its own
 - `limit` (optional): Maximum transitions and intervals to return (default 100)
 
@@ -685,6 +701,7 @@ List or search the text a log holds, completely and in time order across all ent
 - `regex` (optional): Treat `pattern` as a Java regex, case-insensitive (Unicode-aware) with `^`/`$` anchoring to lines of a multi-line sample; `.` does not cross a line break. Default `false`. An invalid regex is an error; so is a pattern that backtracks for more than a second on one value (nested quantifiers on long text), which would otherwise hang the server
 - `level` (optional): `error`, `warning`, `info`, or `any` (default). An alert's level comes from its entry name (`errors`, `warnings`, `infos`); other text is classified line by line by the same rule `get_ds_timeline` uses for `text_event_counts`, so the numbers agree
 - `entry_pattern` (optional): Only search entries whose name contains this (case-insensitive)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` / `end_time` (optional): Time window in seconds; an alert matches when it was present in the window, whenever it appeared
 - `offset` and `limit` (optional; defaults 0 and 100, `limit` at most 1000): Paging over the time-ordered result. Values outside those ranges are clamped, and the clamped values are echoed
 - `collapse_repeats` (optional, default `false`): Fold runs of identical samples that are **adjacent in the same entry's stream** into one match with `repeat_count` and `last_timestamp_sec`. Any other sample in between, even one the filters exclude, ends the run, so a `repeat_count` never spans a gap
@@ -773,6 +790,7 @@ Statistics of a numeric entry or field over the finite samples in scope, with da
 - `name` (required): The entry name, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
 - `angle` (optional): `radians` or `degrees`: treat the values as an angle (unwrapped across ±180°, circular statistics) when it is logged as a plain number, such as a gyro yaw double. Struct angle fields are recognized without it
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (number, optional): Start timestamp in seconds
 - `end_time` (number, optional): End timestamp in seconds
 - `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows)
@@ -810,6 +828,7 @@ Compare two numeric entries or fields, such as a setpoint and a measurement, or 
 - `name2` (required): Second entry name, optionally with a field path
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
 - `angle` (optional): `radians` or `degrees`: treat both signals as angles when they are logged as plain numbers ([Field paths](#field-paths))
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Only the reference signal's samples in this time are compared ([Scopes and windows](#scopes-and-windows))
 - `max_lag_sec`, `lag_step_sec` (optional): Also search for the time shift that minimizes RMSE, as in `time_correlate` (here the first signal's samples are the reference). Returns `lag_search` with `lags_evaluated`, `lag_step_sec`, `best_lag_sec`, `rmse_at_best_lag`, `samples_at_best_lag`, `rmse_at_zero_lag`, and a `note`
 
@@ -825,6 +844,7 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 - `angle` (optional): `radians` or `degrees`: treat the values as an angle when it is logged as a plain number ([Field paths](#field-paths))
 - `iqr_multiplier` (optional): Multiplier k for the IQR fences (default 1.5). Use 3.0 for extreme outliers only
 - `spike_threshold` (optional): Flag consecutive samples that differ by more than this, in the entry's units (off by default; must be positive)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)). Boot transients and disabled time count unless the scope excludes them, for example with `scope: "enabled"`. Spikes are jumps within one window
 - `sort` (optional): `time` (default) or `severity` (distance beyond the fence, or jump size)
 - `limit` (optional): Maximum anomalies to return (default 50)
@@ -863,6 +883,7 @@ Find local maxima and minima (peaks and valleys) in numeric data. A sample is a 
 - `type` (optional): `max` (maxima only), `min` (minima only), or `both` (default); any other value is an error
 - `min_height_diff` (optional): Minimum `height_diff` to count as a peak, to filter out noise
 - `limit` (optional): Maximum peaks to return per type (default 20)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time ([Scopes and windows](#scopes-and-windows)); a peak's neighbors are in its own window
 
 **Returns:** `name`, `samples_analyzed`, `maxima` and `maxima_count`, `minima` and `minima_count` (the counts are true totals; `limits` gives total vs returned for each list), `inputs`, `data_quality`, and `server_analysis_directives`. Angles are unwrapped first (`angle_unit`), so a wrap is not a peak. A struct or array entry without a field path is an error listing its numeric fields.
@@ -899,6 +920,7 @@ The derivative of numeric data, dv/dt, in the signal's units per second: velocit
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
 - `angle` (optional): `radians` or `degrees`: treat the values as an angle when it is logged as a plain number ([Field paths](#field-paths))
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows); derivatives never span the gap between two windows
@@ -937,6 +959,7 @@ A common rule of thumb for |r|: 0.9 and up is very strong, 0.7 strong, 0.5 moder
 - `name2` (required): Second entry name, optionally with a field path
 - `field1`, `field2` (optional): Field paths, instead of appending them to the names
 - `angle` (optional): `radians` or `degrees`: treat both signals as angles when they are logged as plain numbers ([Field paths](#field-paths))
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `scope`, `windows` (optional): The first signal's samples in this time are paired with the second ([Scopes and windows](#scopes-and-windows))
@@ -979,6 +1002,7 @@ Sample several numeric signals at common times, to read them side by side or to 
 - `interpolation` (optional): `previous` (default: the value in force, right for values logged when they change), `linear` (between the samples around the time; no extrapolation), or `nearest`. Angles interpolate along the shortest arc
 - `difference` (optional): With exactly two signals, `difference_statistics` of signal 1 minus signal 2 (two angles by their shortest difference, in the first one's unit)
 - `angle` (optional): `radians` or `degrees`: treat every signal as an angle when logged as a plain number ([Field paths](#field-paths))
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Which sample times to use ([Scopes and windows](#scopes-and-windows))
 - `offset`, `limit` (optional): Row paging (default limit 100, max 2000)
 
@@ -1079,6 +1103,7 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - `slip_threshold` (optional): Speed tracking error, in m/s, counted as an event (default: 0.5)
 - `sync_threshold_rad` (optional): Steer error, in radians, counted as an event (default: 0.1)
 - `odometry_entry`, `vision_entry` (optional): Scalar pose entries for the drift comparison. An entry named here that is missing or not a `Pose2d`/`Pose3d` is an error, as with `measured_entry`. By default these are the `robot_pose` and `vision_pose` roles (a conventional name, or the only candidate); several name-only candidates are listed in `skipped` to confirm, never guessed
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
 - `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 
@@ -1140,6 +1165,7 @@ Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are exc
 **Parameters:**
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` ([Scopes and windows](#scopes-and-windows)); default `enabled` when the log records enabled state, else `all`
 - `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
@@ -1275,6 +1301,7 @@ Compare one numeric signal across two log files, over the same phase of each.
 - `name` (required): Entry name to compare, optionally with a [field path](#field-paths) (`/PowerDistribution/ChannelCurrent[3]`; `[*]` pools elements)
 - `field` (optional): The field path, instead of appending it to `name`
 - `angle` (optional): `radians` or `degrees` for an angle logged as a plain number ([Field paths](#field-paths))
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.windows` records each log’s resolved bounds, keyed by path.
 - `scope` (optional): `enabled`, `teleop`, `segment:<i>`, ..., resolved in **each log's own timeline**, so the same phase is compared. A log that cannot be scoped (no DriverStation data) is reported with a `reason` and the other is still compared
 - `start_time`, `end_time` (optional): On each log's own clock
 - `windows` (optional): Explicit `{start, end}` windows ([Scopes and windows](#scopes-and-windows)), on each log's own clock
@@ -1356,6 +1383,7 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 - `motor_count` (optional): Number of motors driving the mechanism in parallel (default 1)
 - `wheel_radius` (optional): Wheel radius (m), positive, for converting linear velocity to angular
 - `applied_volts_entry` (optional): Entry for applied voltage, used to recover the torque's sign when current is always non-negative (TalonFX/SparkMax)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` / `end_time` (optional): Analysis time window
 - `alpha_threshold` (optional): Minimum |α| (rad/s²) for a sample to enter the fit, which drops near-steady-state samples (default 1.0)
 - `smooth_window` (optional): Moving-average half-width applied to velocity before differentiating; must be non-negative, and 0 disables smoothing (default 2)
@@ -1379,6 +1407,7 @@ Analyze CAN bus health from the counters the log records, per bus: utilization, 
 **Parameters:**
 - `path` (required): Path to the log file
 - `bus_name` (optional): Bus to analyze: `"rio"`, a CANivore name such as `"CANHD"`, or a path prefix (default: every bus found)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 
@@ -1435,6 +1464,7 @@ A chronological timeline of robot events: enable/disable transitions, match phas
 
 **Parameters:**
 - `path` (required): Path to the log file
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
@@ -1538,6 +1568,7 @@ Analyze vision data: pose observation streams, target streams, pose sets, has-ta
 - `vision_prefix` (optional): Only vision entries under this prefix (case-insensitive). It limits vision entries only; the robot pose can live elsewhere, and so can entries passed as `vision_entries`
 - `vision_entries` (optional): Entries to analyze besides the conventional ones. Each is analyzed by its shape: a boolean or a number as a has-target flag (above 0.5 means a target), a `Pose2d[]` or `Pose3d[]` as a pose set, a scalar pose as a pose estimate checked for jumps, a struct array holding a timestamp and a pose as an observation stream, a struct with yaw and pitch as a target stream. An entry that is missing or has another shape is an error
 - `pose_entry` (optional): Robot pose entry (`struct:Pose2d` or `Pose3d`) for residuals and jump detection. Default: the `robot_pose` role (a conventional name, or the only `Pose2d` outside vision paths; several others are listed in `skipped` to confirm, not guessed)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time` (optional): Time window
 - `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
@@ -1598,6 +1629,7 @@ The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter
 - `frame` (optional): `field` (default: `dx_m`, `dy_m` in field coordinates) or `reference` (`along_m`, positive when the pose is ahead of the reference along its heading, and `cross_m`, positive to its left: a path-following error as it is usually read)
 - `interpolation` (optional): `linear` (default; heading along the shortest arc) or `previous` (for a reference logged when it changes)
 - `max_gap_sec` (optional): Longest reference gap to interpolate across (default 0.25 s); records without a reference value are counted in `unaligned`
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time scope, as for the statistics tools
 
 **Returns:** `pose_entry`, `reference_entry`, `frame`, `interpolation`, `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (median, p95, and max of its size, and `mean_signed`); the two components (count, mean, std_dev, p5, p95); `largest` (the times of the five largest distances, with `limits.largest`); `inputs`; `data_quality` of the pose entry and `server_analysis_directives`. When `pose_entry` was not passed, `robot_pose` shows how it was chosen. `no_match` when no record in scope has a reference value. To measure each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
@@ -1632,6 +1664,7 @@ How much a pose changed beyond what odometry predicts. For each pair of consecut
 - `threshold_m` (optional): Residual translation that counts as a correction (default 0.05 m)
 - `heading_threshold_rad` (optional): Residual heading that also counts (default: none)
 - `max_interval_sec` (optional): Longest interval between pose records to compare (default 0.1 s)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time scope; both records of an interval must fall in the same window
 - `limit` (optional): Corrections listed (default 50, max 500)
 
@@ -1672,6 +1705,7 @@ Profile one closed-loop mechanism from the entries passed for its roles: followi
 - `path` (required): Path to the log file
 - `setpoint_entry`, `measurement_entry`, `velocity_entry`, `current_entry`, `temperature_entry` (optional): The mechanism's entries (scalar numbers). Only entries passed here are analyzed. The setpoint and the measurement must be in the same units
 - `mechanism_name` (optional if role entries are given): Text the mechanism's entry names contain (case-insensitive, anywhere in the name; e.g. `Elevator`, or `ModuleFrontLeft/Drive`). It finds candidates; it does not choose entries
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time` (optional): Time window (applies to every section)
 - `stall_current_threshold` (optional): Current above which a stopped mechanism counts as stalled (default: 30 A)
 - `stall_velocity_threshold` (optional): `|velocity|` below this counts as stopped, in the velocity entry's units (default: 0.01)
@@ -1783,6 +1817,7 @@ Game piece cycle times from a mechanism's state entry: complete and incomplete c
 - `cycle_start_state` (optional in the schema, but required by both modes): State value marking a cycle's start (e.g., `"INTAKING"`)
 - `cycle_end_state` (optional): State value marking a cycle's end (e.g., `"SCORING"`); required for `start_to_end`
 - `idle_state` (optional): State value for idle (dead) time (e.g., `"IDLE"`)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time` (optional): Time window in seconds
 - `case_sensitive` (optional, default `true`): Whether state matching is case-sensitive
 - `limit` (optional, default 10): Maximum cycles and dead periods to list
@@ -1913,6 +1948,7 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 
 **Parameters:**
 - `path` (required): Path to the log file
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (default: `enabled` when the log records enabled state, else `all`, so averages do not mix in idle time); combined with `start_time`/`end_time`
 - `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 - `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
@@ -1984,6 +2020,7 @@ How often robot code exceeded the loop period, and the distribution of loop time
 - `entry` (optional): The loop time entry (default: discovered, below)
 - `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20 ms, the standard 50 Hz period)
 - `unit` (optional): `ms`, `s`, `us`, or `auto`. By default the unit comes from the entry name (ending in `MS`, `Ms`, `_ms`, or `Millis`; `US`, `Us`, `_us`, or `Micros`; `Sec`, `Seconds`, or `_s`), else from the median: 0.001 to 1 looks like seconds, above 500 like microseconds
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>`; combined with `start_time`/`end_time`
 - `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 
@@ -2084,6 +2121,7 @@ Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return 
 - `path` (required): Path to the log file
 - `name` (required): Entry to export
 - `output_path` (optional): File name or path **inside the export directory**. A bare name (`pose.csv`) or relative path (`run1/pose.csv`) is resolved inside it, and subdirectories are created; an absolute path must already lie inside it. Default: a name generated from the log and entry (`<log>__<entry>.csv`)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time` (optional): Time window
 - `inline` (optional): Return the rows in the response instead of writing a file (default false), for agents that cannot read the export directory
 - `max_rows` (optional): Rows returned inline (default 500; 1 to 5000, anything else is an error)
@@ -2451,6 +2489,7 @@ Read a REV log signal with its timestamps converted to FPGA time, like `read_ent
 **Parameters:**
 - `path` (required): Path to the log file
 - `signal_key` (required): Signal key from `list_revlog_signals` (e.g., `REV/SparkMax_1/AppliedOutput`, or `REV/rio/SparkMax_1/Velocity` when the wpilog has several REV logs)
+- `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds (FPGA time)
 - `end_time` (optional): End timestamp in seconds (FPGA time)
 - `limit` (optional): Maximum samples to return (default: 1000)

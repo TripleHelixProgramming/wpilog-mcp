@@ -75,13 +75,13 @@ public final class DiscoveryTools {
     var tools = new ArrayList<ToolInfo>();
 
     tools.add(new ToolInfo("list_sessions", "live", "Current and recent pit sessions, recorder costs and matched imports",
-        List.of("live", "session", "connected", "capture", "cost"), List.of("List the current robot session"), false,
+        List.of("live", "session", "connected", "capture", "cost", "now", "currently", "right now", "recent"), List.of("List the current robot session"), false,
         List.of("get_latest_values", "list_available_logs")));
     tools.add(new ToolInfo("get_latest_values", "live", "Latest published NT4 values with robot timestamps and ages",
-        List.of("live", "latest", "value", "age"), List.of("Read the latest battery publication"), false,
+        List.of("live", "latest", "value", "age", "now", "currently", "right now", "recent"), List.of("Read the latest battery publication"), false,
         List.of("list_sessions", "wait_for_change")));
     tools.add(new ToolInfo("wait_for_change", "live", "Wait for the next topic publication with a bounded timeout",
-        List.of("live", "wait", "change"), List.of("Wait for the next publication of a named topic"), false,
+        List.of("live", "wait", "change", "now", "currently", "right now", "recent"), List.of("Wait for the next publication of a named topic"), false,
         List.of("get_latest_values")));
 
     // === CORE TOOLS ===

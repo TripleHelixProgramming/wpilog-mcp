@@ -145,18 +145,12 @@ class MainImportTest {
     var client = HttpClient.newHttpClient();
     var base = URI.create("http://127.0.0.1:" + port);
     try {
-      long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
-      boolean ready = false;
-      while (child.isAlive() && System.nanoTime() < deadline) {
-        try {
+      org.triplehelix.wpilogmcp.harness.HarnessHttp.await("daemon health", 15, () -> {
+        assertTrue(child.isAlive(), Files.readString(output));
           var response = client.send(HttpRequest.newBuilder(base.resolve("/health"))
               .timeout(Duration.ofSeconds(1)).GET().build(), HttpResponse.BodyHandlers.ofString());
-          ready = response.statusCode() == 200;
-          if (ready) break;
-        } catch (java.io.IOException ignored) { }
-        Thread.sleep(30);
-      }
-      assertTrue(ready, Files.readString(output));
+        return response.statusCode() == 200;
+      });
       var runDir = Files.createDirectories(temp.resolve(".wpilog-mcp").resolve("run"));
       Files.writeString(runDir.resolve("pit.pid"), child.pid() + "\n" + port + "\n");
       var inside = ImportFixture.write(root.resolve("inside.wpilog"), 6);
@@ -169,6 +163,7 @@ class MainImportTest {
           HttpResponse.BodyHandlers.ofString());
       assertEquals("done", JsonParser.parseString(polled.body()).getAsJsonObject().get("state").getAsString());
       assertTrue(Files.readString(output).contains("Import job " + job.get("job_id").getAsString()));
+      var stagedBytes = new java.util.LinkedHashMap<String, byte[]>();
       for (boolean move : List.of(false, true)) {
         var outside = ImportFixture.write(temp.resolve("usb").resolve("outside-" + move + ".wpilog"), move ? 8 : 7);
         byte[] bytes = Files.readAllBytes(outside);
@@ -179,17 +174,21 @@ class MainImportTest {
         assertTrue(staged.output().contains(move ? "Moved to inbox:" : "Copied to inbox:"), staged.output());
         assertFalse(staged.output().contains("--robot applies to direct imports only"));
         assertEquals(!move, Files.exists(outside));
-        var receiptPath = root.resolve("inbox").resolve("imported.log");
-        int count = move ? 2 : 1;
-        deadline = System.nanoTime() + Duration.ofSeconds(12).toNanos();
-        while ((!Files.exists(receiptPath) || Files.readAllLines(receiptPath).size() < count)
-            && System.nanoTime() < deadline) Thread.sleep(30);
-        var receipt = JsonParser.parseString(Files.readAllLines(receiptPath).get(count - 1)).getAsJsonObject();
-        assertEquals("imported", receipt.get("status").getAsString());
-        assertTrue(Path.of(receipt.get("path").getAsString()).startsWith(root.resolve("robots").resolve("inbox_robot")));
-        assertArrayEquals(bytes, Files.readAllBytes(Path.of(receipt.get("path").getAsString())));
-        assertFalse(Files.exists(Path.of(receipt.get("original_path").getAsString())));
+        stagedBytes.put(outside.getFileName().toString(), bytes);
       }
+      // Both complete batches can share one stability interval; sequential waits proved no extra rule.
+      var receiptPath = root.resolve("inbox").resolve("imported.log");
+      org.triplehelix.wpilogmcp.harness.HarnessHttp.await("inbox receipts", 12,
+          () -> Files.exists(receiptPath) && Files.readAllLines(receiptPath).size() >= stagedBytes.size());
+      for (String line : Files.readAllLines(receiptPath)) {
+        var receipt = JsonParser.parseString(line).getAsJsonObject();
+        assertEquals("imported", receipt.get("status").getAsString());
+        Path original = Path.of(receipt.get("original_path").getAsString());
+        assertTrue(Path.of(receipt.get("path").getAsString()).startsWith(root.resolve("robots").resolve("inbox_robot")));
+        assertArrayEquals(stagedBytes.remove(original.getFileName().toString()), Files.readAllBytes(Path.of(receipt.get("path").getAsString())));
+        assertFalse(Files.exists(original));
+      }
+      assertTrue(stagedBytes.isEmpty());
     } finally {
       child.destroy();
       if (!child.waitFor(10, TimeUnit.SECONDS)) child.destroyForcibly();

@@ -291,16 +291,17 @@ class StoreInboxTest {
     assertTrue(inboxEntry().get("reason").getAsString().contains("symbolic links"));
   }
 
-  @Test void realDaemonPollerDiscoversANestedStore() throws Exception {
+  @Test void daemonPollerDiscoversANestedStore() throws Exception {
     var file = ImportFixture.write(root.resolve("inbox").resolve("drop.wpilog"), 6);
-    manager.stores().startWatching();
-    long deadline = System.nanoTime() + Duration.ofSeconds(12).toNanos();
-    while (Files.exists(file) && System.nanoTime() < deadline) Thread.sleep(30);
-    store.awaitImports();
-    assertFalse(Files.exists(file), "Polling watcher did not consume the stable drop");
-    assertEquals(1, receipts().size());
-    assertTrue(Thread.getAllStackTraces().keySet().stream()
-        .anyMatch(thread -> thread.getName().equals("store-inbox") && thread.isDaemon()));
+    try (var poller = new StorePollerProbe(manager.stores())) {
+      manager.stores().startWatching();
+      try { poller.advance(); poller.advance(); store.awaitImports(); }
+      finally { manager.stores().stopWatching(); }
+      assertFalse(Files.exists(file), "Scheduled polling must consume the stable drop"); assertEquals(1, receipts().size());
+    }
+    var executor = StoreRegistry.newWatcher();
+    try { assertTrue(executor.submit(() -> Thread.currentThread().isDaemon() && Thread.currentThread().getName().equals("store-inbox")).get(5, TimeUnit.SECONDS)); }
+    finally { executor.shutdownNow(); }
   }
 
   @Test void fileLockCoversInspectionVerificationAndReceiptsAndIsReleasedOnCompletion() throws Exception {
@@ -339,6 +340,7 @@ class StoreInboxTest {
     var file = ImportFixture.write(root.resolve("inbox").resolve("idle.wpilog"), 21);
     var exited = new CountDownLatch(1);
     var transport = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0);
+    var idle = new org.triplehelix.wpilogmcp.mcp.HttpIdleProbe(transport);
     transport.setIdleExit(Duration.ofMillis(200), exited::countDown);
     try {
       try (var reader = org.triplehelix.wpilogmcp.log.LogFileAccess.read(file)) {
@@ -346,11 +348,12 @@ class StoreInboxTest {
         store.inbox().poll(LOOK);
         transport.start();
         assertEquals(0, transport.sessionCount());
-        assertFalse(exited.await(700, TimeUnit.MILLISECONDS), "Inbox work keeps the daemon alive past idle");
+        idle.advance(Duration.ofMillis(700));
+        assertEquals(1, exited.getCount(), "Inbox work keeps the daemon alive past idle");
       }
       store.awaitImports();
       assertFalse(Files.exists(file));
-      assertTrue(exited.await(2, TimeUnit.SECONDS));
+      idle.advance(Duration.ofMillis(700)); assertEquals(0, exited.getCount());
     } finally {
       transport.stop();
     }

@@ -17,7 +17,9 @@ class RealReplayPairTest {
     String property = System.getProperty("conformance.logdir");
     Assumptions.assumeTrue(property != null && !property.isBlank(), "Two-log replay skipped; set -PconformanceLogDir=/path/to/logs");
     var root = Path.of(property).toRealPath();
-    var pair = ConformanceSample.configured(root, nativeServer ? "ntcore-pair" : "gateway-pair").pair();
+    var pair = (nativeServer
+        ? ConformanceSample.configured(root, "ntcore-pair", System.getProperty("conformance.native", "sample"), false)
+        : ConformanceSample.configured(root, "gateway-pair")).pair();
     Assumptions.assumeTrue(!pair.isEmpty(), "Two-log placement skipped: no complete calendar-bearing pair of one robot with a reset clock");
     var scratch = Files.createTempDirectory(Files.createDirectories(Path.of("build/replay-pairs")), "run-");
     var report = Files.createDirectories(Path.of("build/reports/replay"))

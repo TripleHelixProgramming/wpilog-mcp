@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Live tools and metrics
 
+- Time-scoped tools accept `last_seconds`, reporting the resolved window for each call; agents previously needed absolute robot timestamps to ask about recent data. Present-tense discovery, startup guidance and the `pit://session/current` resource expose the current capture and its identity, gateway and providers.
 - `read_entry` accepts `max_points` and numeric field paths, returning exact samples when they fit or time buckets with count, minimum, maximum, mean, first and last values. Previously callers had to page through every sample to see a long entry's shape; buckets preserve single-sample spikes and explain when nonnumeric entries cannot be reduced.
 - `GET /data/entries` streams entries and struct fields as Arrow or CSV, with optional buckets, input metadata, ETags, a size cap and notice of changes during a stream. Previously whole-entry export required a separate CSV file per entry. The endpoint shares MCP's path and Origin checks, and `get_server_guide` advertises it on HTTP servers.
 - The data endpoint also streams `REV/<device>/<signal>` entries on the WPILOG clock, with alignment method, offset and confidence. Previously it served only WPILOG entries; unsynchronized REV signals are refused with their reason, and signals still synchronizing return a retry hint.
@@ -71,11 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Harness replay allows 32,768 records per batch, bounds bytes for ntcore’s smaller publisher queue and wakes on pipe/receipt events; the former 1,024-record handshake dominated fast replay. Native replay now checks zero-shift transport fidelity, with `conformanceNative=none|sample|full`; Java keeps the placement matrix.
+- SSH stats cache PID/start time and platform constants per connection, rediscovering only after process changes. Previously every sample scanned process command lines and fetched unchanged constants; steady samples use fixed proc reads and one combined `df`.
 - `start <name>` and `connect <name>` replace a running daemon of another version and keep one of the current version. Previously an upgrade left the old JAR serving until the user stopped it; concurrent upgrade starts now share one replacement daemon instead of overwriting each other's claims.
 - `start` verifies that a process answering its port is wpilog-mcp, adopts a matching server missing its PID file, and reports an unrelated listener without starting another process. Previously any HTTP response counted as the daemon and a busy port could spawn a server that immediately failed to bind.
 
 ### Fixed
 
+- `find_condition` explains a window with neither true intervals nor newly evaluated samples as `no_match`; a recent window after a false change-only sample previously returned an empty success.
 - Calls whose file disappears during opening or reading now explain that it moved or was removed and point to `list_available_logs`; previously this race could return an unexplained internal error during capture identity promotion.
 - **NT4 liveness:** keepalives now expire only an unanswered ping, pong receipt and replies run off the application loops, and periodic capture fsync runs on its own thread. Previously a one-second stall of either loop could drop a healthy connection and split a session; close and rollover still wait for pending disk forces.
 - **Socket delivery:** a queued gateway reply no longer waits indefinitely when Java-WebSocket loses its write notification. The existing aliveness tick restores selector interest without resending data or adding 4.0 pings. A CPU-loaded run reproduced the fixture client's announcement stall; both server adapters now pass a planted lost-notification regression with unchanged timeouts.
@@ -104,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Ordinary tests use bounded parallel forks and private fixture paths, explicit clocks/conditions instead of sleeps, and shared conformance views instead of rescanning for each tool. Coverage is opt-in and Linux CI runs it once; harness/Arrow jobs reuse ordinary build artifacts. DEVELOPMENT records which optional checks a change warrants, replacing repeated full-suite and native shift-matrix work.
 - The default-cache check now tests the OS path without creating it, instead of mistaking Gradle's cache override for the default; previously it depended on the checkout directory containing the application name.
 - Synthetic MINA SSH scripts now check stats units, rates and clock mapping, adaptive budgets, tail limits, missing sources, rotations and reconnects, with provider conformance/differential checks. Previously SSH tests covered identity and file transfer only. An outside-loop watchdog test pins stall reporting independently of the stalled loop.
 - Injected-clock regressions cover 1.5-second gateway/listener/disk stalls, the unchanged one-second unanswered-ping deadline, network-thread pong replies, bounded client receive work, and close/rollover force barriers. Capture and replay failures now name disconnects instead of missing topics or stalled placement; previously these paths obscured the two preserved Windows failures.

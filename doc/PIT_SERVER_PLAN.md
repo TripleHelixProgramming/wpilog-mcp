@@ -836,3 +836,31 @@ Release-review keepalive failures (before the tag):
   The test now joins capture's final-manifest barrier before resolving the path, rather than
   sleeping. The Windows run also exposed a missing-file exception reported as an internal error;
   a separate regression now requires an explained moved-or-removed-file result.
+
+### Round 12 choices: bounded verification and present-time access
+
+- Native transport proves zero-shift fidelity once per selected file; Java alone proves the
+  placement shift matrix. `conformanceNative=none|sample|full` is independent of the Java
+  directory selector. Ordinary tests exclude natives; sample is the harness default. Native
+  batches allow 32,768 records. A separate 1 MiB estimate, including a conservative native
+  message envelope, protects ntcore's own 2 MiB local publisher queue: count-only batches
+  lost fixture values there before the capture socket. Blocking pipe notifications replace
+  timed handshake polling; JDK directory-watch polling added seconds per barrier on this Mac.
+  Control files remain progress evidence, and capture receipts acknowledge every record.
+  The queue limit is from allwpilib's `net/ClientMessageQueue.h` in WPILib 2026.1.1.
+- Verification follows DEVELOPMENT's policy: targeted checks while editing, one final build,
+  only affected optional suites, and full real-log replay before a tag. Coverage is explicit
+  and runs once on Linux CI. Forks share atomic cache claims but own fixture files; tests which
+  inspect cache contents use temporary caches. No telemetry or machine-local input path is
+  stored here; selections, timings and counts stay under `build/reports`.
+- Stats retain one `df` per sample (free space has no proc file). PID/start ticks and `getconf`
+  constants are cached per SSH connection. Fixed proc reads check process identity; a mismatch
+  omits program fields and requests one discovery on the next sample. Shop CPU costs remain
+  unmeasured.
+- `last_seconds` uses the acquired view's robot-time estimate for an open capture, otherwise
+  the last record; without an estimate it uses the prefix end. Positive finite durations only,
+  incompatible with absolute start/end, intersected with scopes/windows. `compare_matches`
+  resolves each log separately. Inputs distinguish the resolved window from the captured range.
+- `pit://session/current` is a read-only JSON resource, always discoverable, with an explained
+  `not_applicable` when capture is absent/closed. It uses published snapshots. Prompts stay
+  empty and resource subscriptions are not offered. No new assistant write surface is added.

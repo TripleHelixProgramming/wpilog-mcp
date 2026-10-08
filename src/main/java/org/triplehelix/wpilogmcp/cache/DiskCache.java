@@ -175,12 +175,12 @@ public class DiskCache {
    * @param log The parsed log to cache
    * @param wpilogFile The original .wpilog file path
    */
-  public void saveAsync(ParsedLog log, Path wpilogFile) {
+  public java.util.concurrent.Future<?> saveAsync(ParsedLog log, Path wpilogFile) {
     if (!enabled) {
-      return;
+      return java.util.concurrent.CompletableFuture.completedFuture(null);
     }
 
-    writeExecutor.submit(() -> {
+    return writeExecutor.submit(() -> {
       try {
         save(log, wpilogFile);
       } catch (Exception e) {

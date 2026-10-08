@@ -694,7 +694,7 @@ public class Main {
     var toolRegistry = new ToolRegistry();
     WpilogTools.registerAll(toolRegistry);
     toolRegistry.setServerLocation(captureConfig == null ? ToolRegistry.LOCAL_LOCATION : ToolRegistry.PIT_LOCATION);
-    toolRegistry.setServerInstructions(toolRegistry.getServerLocation() + "\n" + toolRegistry.getServerInstructions());
+    toolRegistry.setServerInstructions(org.triplehelix.wpilogmcp.tools.AnalysisGuidance.forLocation(toolRegistry.getServerLocation()));
     logger().debug("Registered all MCP tools");
 
     if (httpMode) {

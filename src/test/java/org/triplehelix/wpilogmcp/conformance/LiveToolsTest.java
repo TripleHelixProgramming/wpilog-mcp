@@ -30,6 +30,36 @@ class LiveToolsTest {
     var registry = new ToolRegistry(); LiveTools.registerAll(registry, null);
     assertEquals(java.util.Set.of(), DescriptionOutputs.missing(registry.getToolNames().stream().map(registry::getTool).toList(), outputs));
   }
+  @Test void currentResourceAndRelativeScopeUsePublishedCaptureFactsThroughHttp() throws Exception {
+    try (var rig = rig(CapturePolicy.ALL)) {
+      var advertised = rig.http.request("resources/list", new JsonObject()).getAsJsonObject("result").getAsJsonArray("resources");
+      assertEquals(1, advertised.size()); assertEquals("pit://session/current", advertised.get(0).getAsJsonObject().get("uri").getAsString());
+      var params = new JsonObject(); params.addProperty("uri", "pit://session/current");
+      assertEquals("not_applicable", resource(rig, params).get("status").getAsString());
+      rig.announce("/x", "int");
+      for (long time = 10; time <= 12; time++) rig.value("/x", time * 1_000_000, 2, time);
+      rig.robot.set(13_000_000); rig.loop.advance(3_000_000);
+      rig.pump(() -> rig.service.live().timeEstimate().orElseThrow().receivedUs() == rig.loop.nowUs());
+      var current = resource(rig, params); var session = rig.session();
+      assertEquals("ok", current.get("status").getAsString());
+      assertEquals(session.get("id"), current.getAsJsonObject("session").get("id"));
+      assertEquals(session.get("path"), current.getAsJsonObject("session").get("file"));
+      assertEquals(session.getAsJsonObject("robot").get("address"), current.getAsJsonObject("session").getAsJsonObject("identity").get("address"));
+      assertEquals(rig.service.live().gateway().json(), current.get("gateway")); assertEquals(session.get("providers"), current.get("providers"));
+      var args = new JsonObject(); args.addProperty("path", session.get("path").getAsString()); args.addProperty("name", "NT:/x"); args.addProperty("last_seconds", 2);
+      var stats = rig.call("get_statistics", args.toString());
+      assertEquals(2, stats.get("count").getAsInt()); assertEquals(11.5, stats.get("mean").getAsDouble());
+      assertEquals(11, stats.getAsJsonObject("inputs").getAsJsonObject("window").get("start").getAsDouble(), 1e-6);
+      assertEquals(13, stats.getAsJsonObject("inputs").getAsJsonObject("window").get("end").getAsDouble(), 1e-6);
+      assertEquals(12, stats.getAsJsonObject("inputs").getAsJsonObject("session_time_range").get("end_sec").getAsDouble());
+    }
+  }
+  private static JsonObject resource(LiveToolRig rig, JsonObject params) throws Exception {
+    var result = rig.http.request("resources/read", params).getAsJsonObject("result").getAsJsonArray("contents").get(0).getAsJsonObject();
+    assertEquals("application/json", result.get("mimeType").getAsString());
+    return com.google.gson.JsonParser.parseString(result.get("text").getAsString()).getAsJsonObject();
+  }
+
   @Test void latestValuesUseTheRobotClockAndUnannounceDropsThem() throws Exception {
     try (var rig = rig(CapturePolicy.ALL)) {
       assertEquals("not_applicable", rig.call("get_latest_values", "{\"entries\":[\"/x\"]}").get("status").getAsString());

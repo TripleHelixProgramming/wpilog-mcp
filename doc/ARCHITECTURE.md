@@ -818,3 +818,18 @@ an exposition timestamp: the robot clock is not calendar time. Ages report stale
 capture remains the record of changes a scrape missed. The independent parser and replay
 oracle compare every numeric topic with source records, using WPILib's DynamicStruct rather
 than the server's compiled decoder for structs. The Compose example stays outside the server.
+
+### Relative scopes and discoverable live state
+
+`LogRequiringTool` resolves `last_seconds` once on the acquired log view, before delegating to
+any tool. `LiveLog.View` captures the NT4 estimate at acquisition; closed views use the last
+record. The window and the recorded session prefix are distinct facts in `inputs`. The
+multiple-log comparator applies the same resolver separately to each log. No scrape, tool or
+resource joins the NT4 loop to read its clock. `pit://session/current` exposes the live tools'
+published identity, file, gateway and provider facts through ordinary MCP resource discovery.
+
+The SSH stats worker discovers the deployed JAR's PID/start ticks and tick/page constants once
+per connection. Its sample reads the fixed proc files and checks the start ticks, rediscovering
+only after the process disappears or changes. Steady samples use shell builtins plus one `df`
+for all filesystems; a changed filesystem set omits free-space values with a reason instead of
+attaching a row to the wrong path.

@@ -113,6 +113,12 @@ public abstract class LogRequiringTool extends ToolBase {
     pathProp.addProperty("description",
         "Path to the log file (from list_available_logs)");
     properties.add("path", pathProp);
+    if (TimeScope.acceptsRelative(properties)) {
+      var recent = new JsonObject(); recent.addProperty("type", "number");
+      recent.addProperty("exclusiveMinimum", 0);
+      recent.addProperty("description", TimeScope.LAST_SECONDS_DESCRIPTION);
+      properties.add("last_seconds", recent);
+    }
 
     // Add to required array
     var required = schema.has("required")
@@ -139,9 +145,14 @@ public abstract class LogRequiringTool extends ToolBase {
       // not lose it; the call's result is trusted only if the file is still that file afterwards
       var before = use.snapshot();
       var log = new AccessTrackingLogData(loaded);
+      boolean relative = arguments.has("last_seconds") && !arguments.get("last_seconds").isJsonNull();
+      if (relative && !TimeScope.acceptsRelative(toolSchema().getAsJsonObject("properties"))) {
+        throw new IllegalArgumentException(name() + " does not accept last_seconds");
+      }
+      var resolved = relative ? TimeScope.relativeArguments(log, arguments) : arguments;
       JsonElement result;
       try {
-        result = executeWithLog(log, arguments);
+        result = executeWithLog(log, resolved);
       } catch (InternalError e) {
         // A read of the memory-mapped file faulted: the file was truncated or rewritten in place
         // under the mapping. The attributes may or may not show it, so the fault itself counts
@@ -160,7 +171,13 @@ public abstract class LogRequiringTool extends ToolBase {
           log.recordInputs(object);
         }
         if (object.has("inputs") && object.get("inputs").isJsonObject()) {
-          log.recordSessionRange(object.getAsJsonObject("inputs"));
+          var inputs = object.getAsJsonObject("inputs");
+          log.recordSessionRange(inputs);
+          if (relative) {
+            var window = new JsonObject();
+            window.add("start", resolved.get("start_time")); window.add("end", resolved.get("end_time"));
+            inputs.add("window", window); inputs.add("last_seconds", arguments.get("last_seconds"));
+          }
         }
         // A session that used this log before its file changed is told once that it was reloaded
         var reload = logManager.reloadNoticeFor(sessionKey(), path);

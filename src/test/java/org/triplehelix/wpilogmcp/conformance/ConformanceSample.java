@@ -41,8 +41,9 @@ final class ConformanceSample {
   }
   private record Input(Path path, long bytes, FileTime modified, boolean rev) {}
   record Selection(String mode, List<Fact> available, List<Path> paths,
-      Map<Path, List<String>> reasons, List<Path> pair, List<String> unavailable) {
+      Map<Path, List<String>> reasons, List<Path> pair, List<String> unavailable, boolean shiftMatrix) {
     List<Long> shifts(Path path) {
+      if (!shiftMatrix) return List.of(0L);
       // Offsets test the correlator and placement rule; size/tail coverage needs one zero-shift
       // differential replay. A boundary-size source need not be pulled eight times per transport.
       boolean matrix = reasons.getOrDefault(path, List.of()).stream().anyMatch(reason ->
@@ -54,7 +55,10 @@ final class ConformanceSample {
   private ConformanceSample() {}
 
   static Selection configured(Path root, String suite) throws IOException {
-    String mode = System.getProperty("conformance.sample", "sample");
+    return configured(root, suite, System.getProperty("conformance.sample", "sample"), true);
+  }
+
+  static Selection configured(Path root, String suite, String mode, boolean matrix) throws IOException {
     if (mode.isBlank()) mode = "sample";
     if (!Set.of("sample", "full").contains(mode)) throw new IllegalArgumentException("conformanceSample must be sample or full");
     int limit;
@@ -70,16 +74,18 @@ final class ConformanceSample {
         try { return inspect(input); } catch (IOException e) { throw new UncheckedIOException(e); }
       }).toList());
     } catch (UncheckedIOException e) { throw e.getCause(); }
-    var selection = select(facts, mode);
+    var selected = select(facts, mode);
+    var selection = new Selection(selected.mode, selected.available, selected.paths, selected.reasons,
+        selected.pair, selected.unavailable, matrix);
     var report = new LinkedHashMap<String, Object>();
     report.put("mode", mode); report.put("available_files", inputs.size()); report.put("limited_files", bounded.size());
     report.put("selected_files", selection.paths.size()); report.put("unavailable_strata", selection.unavailable);
-    report.put("matrix_files", selection.paths.stream().filter(path -> selection.shifts(path).size() > 1).count());
+    report.put("matrix_files", matrix ? selection.paths.stream().filter(path -> selection.shifts(path).size() > 1).count() : 0);
     report.put("files", selection.paths.stream().map(path -> {
       var fact = facts.stream().filter(f -> f.path.equals(path)).findFirst().orElseThrow();
       return Map.of("path", path.toString(), "bytes", fact.bytes, "kind", fact.kind,
           "strata", selection.reasons.getOrDefault(path, List.of("full")),
-          "shifts_us", selection.shifts(path));
+          "shifts_us", matrix ? selection.shifts(path) : List.of(0L));
     }).toList());
     report.put("two_boot_pair", selection.pair.stream().map(Path::toString).toList());
     var output = Files.createDirectories(Path.of("build/reports/conformance-sample"))
@@ -141,7 +147,7 @@ final class ConformanceSample {
     else pair.forEach(path -> add(representatives, path, "two_boot_pair"));
     var selected = inventory.stream().sorted(BY_PATH).filter(f -> mode.equals("full") || representatives.containsKey(f.path))
         .map(Fact::path).toList();
-    return new Selection(mode, List.copyOf(inventory), selected, Map.copyOf(representatives), pair, List.copyOf(unavailable));
+    return new Selection(mode, List.copyOf(inventory), selected, Map.copyOf(representatives), pair, List.copyOf(unavailable), true);
   }
 
   private static void pick(Map<Path, List<String>> chosen, List<String> missing, String stratum, List<Fact> candidates) {

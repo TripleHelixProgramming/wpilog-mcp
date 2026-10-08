@@ -139,7 +139,13 @@ public class McpMessageHandler {
         }
         case "resources/list" -> {
           var res = new JsonObject();
-          res.add("resources", new JsonArray());
+          var resources = new JsonArray(); resources.add(CurrentSessionResource.descriptor());
+          res.add("resources", resources);
+          yield HandlerResult.of(JsonRpc.createResponse(id, res));
+        }
+        case "resources/read" -> handleResourceRead(id, params);
+        case "resources/templates/list" -> {
+          var res = new JsonObject(); res.add("resourceTemplates", new JsonArray());
           yield HandlerResult.of(JsonRpc.createResponse(id, res));
         }
         case "completion/complete" -> {
@@ -184,6 +190,7 @@ public class McpMessageHandler {
 
     var capabilities = new JsonObject();
     capabilities.add("tools", new JsonObject());
+    capabilities.add("resources", new JsonObject());
     result.add("capabilities", capabilities);
 
     var serverInfo = new JsonObject();
@@ -203,6 +210,22 @@ public class McpMessageHandler {
       return HandlerResult.withSession(JsonRpc.createResponse(id, result), session.getId());
     }
 
+    return HandlerResult.of(JsonRpc.createResponse(id, result));
+  }
+
+  private HandlerResult handleResourceRead(JsonElement id, JsonElement params) {
+    if (params == null || !params.isJsonObject()) return invalidParams(id, "resources/read needs params.uri");
+    var uri = params.getAsJsonObject().get("uri");
+    if (uri == null || !uri.isJsonPrimitive() || !uri.getAsJsonPrimitive().isString()) {
+      return invalidParams(id, "resources/read uri must be a string");
+    }
+    if (!CurrentSessionResource.URI.equals(uri.getAsString())) {
+      return HandlerResult.of(JsonRpc.createErrorResponse(id, -32002, "Resource not found: " + uri.getAsString()));
+    }
+    var content = new JsonObject(); content.add("uri", uri); content.addProperty("mimeType", "application/json");
+    content.addProperty("text", gson.toJson(toolRegistry.currentSession()));
+    var contents = new JsonArray(); contents.add(content);
+    var result = new JsonObject(); result.add("contents", contents);
     return HandlerResult.of(JsonRpc.createResponse(id, result));
   }
 

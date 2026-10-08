@@ -73,7 +73,11 @@ public class SessionManager {
   }
 
   public int cleanupExpired(Duration maxIdle) {
-    var cutoff = Instant.now().minus(maxIdle);
+    return cleanupExpired(maxIdle, Instant.now());
+  }
+
+  int cleanupExpired(Duration maxIdle, Instant now) {
+    var cutoff = now.minus(maxIdle);
     var count = new AtomicInteger();
     sessions.keySet().forEach(id -> sessions.computeIfPresent(id, (key, session) -> {
       if (session.getLastAccessedAt().isBefore(cutoff)) {

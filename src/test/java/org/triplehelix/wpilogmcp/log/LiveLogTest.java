@@ -39,6 +39,25 @@ class LiveLogTest {
     }, manager, hot);
   }
 
+  @Test void relativeClockIsFixedForTheCallAndClosedLogsUseTheirLastRecord() throws Exception {
+    var manager = new LogManager(); manager.addAllowedDirectory(directory);
+    var now = new java.util.concurrent.atomic.AtomicReference<Double>(12_000_000.0);
+    var path = directory.resolve("relative-live.wpilog");
+    var index = new CaptureIndex((address, start) -> path, manager, 0, now::get);
+    var loop = new ManualScheduler();
+    try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
+      connect(writer, 10_000_000, 0); writer.value(X, new ValueFrame(1, 10_000_000, 2, 10L), 0);
+      try (var first = manager.acquire(path.toString())) {
+        assertEquals(12, first.log().timeScopeEnd()); now.set(15_000_000.0);
+        try (var second = manager.acquire(path.toString())) {
+          assertEquals(15, second.log().timeScopeEnd()); assertEquals(12, first.log().timeScopeEnd());
+        }
+      }
+      writer.disconnected();
+      try (var finished = manager.acquire(path.toString())) { assertEquals(10, finished.log().timeScopeEnd()); }
+    } finally { manager.shutdown(); }
+  }
+
   @Test void changedMetadataMatchesTheFileWithoutChangingAnExistingView() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("metadata.wpilog"); var index = index(manager, path, 0);

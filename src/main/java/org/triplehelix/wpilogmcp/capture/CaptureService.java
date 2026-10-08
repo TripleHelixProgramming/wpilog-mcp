@@ -89,7 +89,7 @@ public final class CaptureService implements AutoCloseable {
     observation = store.observe(live);
     placement = store.captures(clock);
     placement.onStatus(live::status);
-    var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs()), config.maxFileBytes(), outputs);
+    var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs), config.maxFileBytes(), outputs);
     var gate = new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, config.pull().settleUs());
     providers = (config.providers().robotSsh() || !config.providers().tails().isEmpty() || pulls == null && config.pull().enabled())
         ? new org.triplehelix.wpilogmcp.capture.context.ContextProviders(config, writer, live, loop, store, clock) : null;

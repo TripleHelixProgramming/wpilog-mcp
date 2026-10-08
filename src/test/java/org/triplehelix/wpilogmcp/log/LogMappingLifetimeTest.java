@@ -17,7 +17,6 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,8 +51,16 @@ class LogMappingLifetimeTest {
       writer.append(value, 3_000_000, encodeDouble(18));
     }
     manager = new LogManager();
+    advanceReleaseDeadline(manager);
     manager.addAllowedDirectory(temp);
     stores = new StoreRegistry(manager.testGetSecurityValidator(), manager);
+  }
+
+  private static void advanceReleaseDeadline(LogManager manager) {
+    var nanos = new java.util.concurrent.atomic.AtomicLong();
+    manager.releaseTiming(nanos::get, (path, timeout) -> {
+      nanos.addAndGet(timeout.toNanos()); return LogFileAccess.awaitFree(path, java.time.Duration.ZERO);
+    });
   }
 
   @AfterEach
@@ -154,6 +161,7 @@ class LogMappingLifetimeTest {
     };
     var path = FixtureLogs.writeRevlogPair(temp, "2026-pair.wpilog", ZoneOffset.UTC, "systemTime");
     var own = new LogManager(synchronizer);
+    advanceReleaseDeadline(own);
     own.addAllowedDirectory(temp);
     own.getSyncDiskCache().setEnabled(false);
     try {
@@ -186,12 +194,12 @@ class LogMappingLifetimeTest {
       assertEquals(18.0, second.log().values().get("/value").get(1).value());
       assertThrows(LogFileException.class, () -> manager.acquire(source.toString()));
       var waiting = new CountDownLatch(1);
-      var released = executor.submit(() -> {
-        waiting.countDown();
-        return manager.release(source);
+      manager.releaseTiming(System::nanoTime, (path, timeout) -> {
+        waiting.countDown(); return LogFileAccess.awaitFree(path, timeout);
       });
+      var released = executor.submit(() -> manager.release(source));
       assertTrue(waiting.await(5, TimeUnit.SECONDS));
-      assertThrows(TimeoutException.class, () -> released.get(100, TimeUnit.MILLISECONDS));
+      assertFalse(released.isDone(), "The reader is held after release entered its wait");
       second.close();
       assertTrue(released.get(2, TimeUnit.SECONDS).released());
       Files.move(source, temp.resolve("freed.wpilog"));

@@ -29,7 +29,7 @@ public final class HarnessHttp {
     return JsonParser.parseString(reply.getAsJsonObject("result").getAsJsonArray("content")
         .get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
   }
-  private JsonObject request(String method, JsonObject params) throws Exception {
+  public JsonObject request(String method, JsonObject params) throws Exception {
     var body = new JsonObject(); body.addProperty("jsonrpc", "2.0"); body.addProperty("id", ++id);
     body.addProperty("method", method); body.add("params", params);
     var builder = HttpRequest.newBuilder(endpoint).timeout(Duration.ofSeconds(15)).header("Content-Type", "application/json");

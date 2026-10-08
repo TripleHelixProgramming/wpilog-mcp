@@ -17,6 +17,7 @@ import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 
 /** Uses native ntcore in a separate process; assertions still come from the independent reader. */
 @Tag("shop-harness")
+@org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "conformance.native", matches = "sample|full")
 class NtcoreReplayTest {
   @org.junit.jupiter.api.Test void publisherStopsBeforeTheOfflineAuditAndTransfersBegin(
       @org.junit.jupiter.api.io.TempDir Path directory) throws Exception {

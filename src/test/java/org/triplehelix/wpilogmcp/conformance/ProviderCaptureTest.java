@@ -35,7 +35,8 @@ class ProviderCaptureTest {
     var phase = new AtomicInteger(); var tailLines = new LinkedBlockingQueue<String>();
     var values = new ArrayList<Map.Entry<String, com.google.gson.JsonElement>>(); Path capture;
     try (var rio = new FakeRoboRio(temp.resolve("remote"), "PROVIDER-FIXTURE", "synthetic comments")) {
-      rio.script(StatsCommand.sample(PullConfig.DISABLED.directories()), out -> out.write(ProcFixture.sample(phase.get()).getBytes(StandardCharsets.UTF_8)));
+      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8)));
+      rio.script(StatsCommand.sample(PullConfig.DISABLED.directories(), org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.sample(0), null)), out -> out.write(ProcFixture.sample(phase.get()).getBytes(StandardCharsets.UTF_8)));
       rio.script(TailCommand.open(ProviderConfig.CONSOLE, "program_console"), out -> {
         out.write((TailCommand.FOLLOW + "\n").getBytes(StandardCharsets.UTF_8)); out.flush();
         while (true) { String line = tailLines.take(); if (line.equals("STOP")) return; out.write((line + "\n").getBytes(StandardCharsets.UTF_8)); out.flush(); }
@@ -117,7 +118,25 @@ class ProviderCaptureTest {
               var result = tool.execute(variant.args());
               Integer limit = variant.args().has("limit") ? variant.args().get("limit").getAsInt() : null;
               assertEquals(List.of(), ConformanceChecks.check(result, limit, true, name, variant.args()), name);
-              values.add(Map.entry(name + "\n" + variant.args(), normalized(result)));
+              var comparisonArgs = variant.args().deepCopy();
+              var comparisonResult = result;
+              if (comparisonArgs.has("last_seconds")) {
+                // Closing changes the relative anchor from robot-now to the last record.
+                // Use the fixed view's absolute scope even for error results without inputs.
+                double end = log.timeScopeEnd();
+                double start = Math.max(log.minTimestamp(), end - comparisonArgs.remove("last_seconds").getAsDouble());
+                comparisonArgs.addProperty("start_time", start); comparisonArgs.addProperty("end_time", end);
+                if (result.isJsonObject() && result.getAsJsonObject().has("inputs")) {
+                  var inputs = result.getAsJsonObject().getAsJsonObject("inputs");
+                  if (inputs.has("window")) {
+                    assertEquals(start, inputs.getAsJsonObject("window").get("start").getAsDouble(), name);
+                    assertEquals(end, inputs.getAsJsonObject("window").get("end").getAsDouble(), name);
+                  }
+                }
+                comparisonResult = tool.execute(comparisonArgs);
+                assertEquals(withoutRelativeBookkeeping(result), withoutRelativeBookkeeping(comparisonResult), name);
+              }
+              values.add(Map.entry(name + "\n" + comparisonArgs, normalized(comparisonResult)));
             }
           }
         } finally { ExportTools.setExportDirectory(oldExport.toString()); }
@@ -154,6 +173,14 @@ class ProviderCaptureTest {
         } finally { ExportTools.setExportDirectory(oldExport.toString()); }
       } finally { tailLines.add("STOP"); }
     }
+  }
+  private static com.google.gson.JsonElement withoutRelativeBookkeeping(com.google.gson.JsonElement value) {
+    var copy = normalized(value);
+    if (copy.isJsonObject() && copy.getAsJsonObject().has("inputs")) {
+      var inputs = copy.getAsJsonObject().getAsJsonObject("inputs");
+      inputs.remove("window"); inputs.remove("windows"); inputs.remove("last_seconds");
+    }
+    return copy;
   }
   private static com.google.gson.JsonElement normalized(com.google.gson.JsonElement value) {
     var copy = ConformanceChecks.normalize(value);

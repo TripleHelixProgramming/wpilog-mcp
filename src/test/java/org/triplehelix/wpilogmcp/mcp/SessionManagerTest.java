@@ -81,10 +81,7 @@ class SessionManagerTest {
     manager.createSession();
     assertEquals(2, manager.size());
 
-    // Sessions were just created, so zero-duration cleanup should remove them
-    // (their last access is in the past relative to "now + 0")
-    Thread.sleep(10); // Ensure some time has passed
-    int cleaned = manager.cleanupExpired(Duration.ZERO);
+    int cleaned = manager.cleanupExpired(Duration.ZERO, java.time.Instant.now().plusSeconds(1));
     assertEquals(2, cleaned);
     assertEquals(0, manager.size());
   }

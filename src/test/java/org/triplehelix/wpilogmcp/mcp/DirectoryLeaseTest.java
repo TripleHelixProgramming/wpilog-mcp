@@ -248,6 +248,10 @@ class DirectoryLeaseTest {
   }
 
   @Test void leasedStoresImportAndWatchTheInboxAndStopWhenTheLeaseEnds() throws Exception {
+    transport.stop();
+    try (var poller = new org.triplehelix.wpilogmcp.store.StorePollerProbe(logs.stores())) {
+    var registry = new ToolRegistry(); CoreTools.registerAll(registry); TbaTools.registerAll(registry);
+    transport = new HttpTransport(registry, 0); transport.start();
     var root = Files.createDirectory(temp.resolve("store"));
     var source = ImportFixture.write(root.resolve("source.wpilog"), 5);
     String owner = session();
@@ -264,8 +268,7 @@ class DirectoryLeaseTest {
     assertEquals(root.toString(), result.getAsJsonArray("stores").get(0).getAsJsonObject().get("path").getAsString());
     var dropped = ImportFixture.write(root.resolve("inbox").resolve("drop.wpilog"), 6);
     var receipt = root.resolve("inbox").resolve("imported.log");
-    long deadline = System.nanoTime() + Duration.ofSeconds(12).toNanos();
-    while (!Files.exists(receipt) && System.nanoTime() < deadline) Thread.sleep(30);
+    poller.advance(); poller.advance(); logs.stores().awaitImports();
     assertTrue(Files.exists(receipt), "The live poller must watch a leased store");
     assertFalse(Files.exists(dropped));
     var receiptEntry = JsonParser.parseString(Files.readAllLines(receipt).get(0)).getAsJsonObject();
@@ -273,6 +276,7 @@ class DirectoryLeaseTest {
     assertTrue(Files.isRegularFile(Path.of(receiptEntry.get("path").getAsString())));
     request("DELETE", "/directories", owner, null);
     assertEquals(403, request("POST", "/store/import", null, body.toString()).statusCode());
+    }
   }
 
   @Test void keyOverridesTheFileWithoutEnteringResultsOrDiagnosticsAndFallsBackOnRemoval() throws Exception {

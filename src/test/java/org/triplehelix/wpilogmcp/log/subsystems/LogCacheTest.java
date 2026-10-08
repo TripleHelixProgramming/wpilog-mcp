@@ -16,10 +16,11 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
 class LogCacheTest {
   private LogCache cache;
+  private final java.util.concurrent.atomic.AtomicLong time = new java.util.concurrent.atomic.AtomicLong();
 
   @BeforeEach
   void setUp() {
-    cache = new LogCache();
+    cache = new LogCache(1_800_000, time::get);
   }
 
   private ParsedLog createMockLog(String path, int entryCount) {
@@ -118,18 +119,18 @@ class LogCacheTest {
   void testEvictOneRemovesLRU() {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
-    // Small sleep to ensure different access times
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    // Distinct access instants, advanced by the test
+    time.addAndGet(50_000_000);
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
 
     // Access log1 and log3 to make log2 the LRU
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.get("/log1.wpilog");
 
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.get("/log3.wpilog");
 
     cache.evictOne();
@@ -147,14 +148,14 @@ class LogCacheTest {
   void testLRUOrder() {
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.put("/log3.wpilog", createMockLog("/log3.wpilog", 1));
 
     // Access log1 to move it to MRU
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.get("/log1.wpilog");
 
     // Evict should remove log2 (oldest not-recently-accessed)
@@ -222,11 +223,11 @@ class LogCacheTest {
 
     cache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.put("/log2.wpilog", createMockLog("/log2.wpilog", 1));
 
     // Access log2 to make it MRU
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    time.addAndGet(50_000_000);
     cache.get("/log2.wpilog");
 
     cache.evictOne();
@@ -265,11 +266,11 @@ class LogCacheTest {
   @Test
   void evictIfNeededEvictsIdleLogs() {
     // Create cache with 1ms idle timeout
-    var shortCache = new LogCache(1);
+    var shortCache = new LogCache(1, time::get);
     shortCache.put("/log1.wpilog", createMockLog("/log1.wpilog", 1));
 
-    // Wait for idle expiration
-    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    // Advance past idle expiration
+    time.addAndGet(50_000_000);
 
     shortCache.evictIfNeeded();
 

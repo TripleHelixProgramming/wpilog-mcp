@@ -98,6 +98,7 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   private volatile Path path;
   private final long hotWindowUs;
+  private final java.util.function.Supplier<Double> robotNowUs;
   private volatile State state = new State(Map.of(), Map.of(), 0, 0, 0, 0, -1, true);
   private final PriorityQueue<Record> hot = new PriorityQueue<>(Comparator.comparingLong(r -> r.timestampUs));
   private final AtomicReference<Mapping> mapping = new AtomicReference<>();
@@ -108,7 +109,10 @@ public final class LiveLog implements LogData, AutoCloseable {
   private final Object lifetime = new Object();
   private long coldBefore = Long.MIN_VALUE;
 
-  public LiveLog(Path path, long hotWindowUs) {
+  public LiveLog(Path path, long hotWindowUs) { this(path, hotWindowUs, () -> null); }
+
+  public LiveLog(Path path, long hotWindowUs, java.util.function.Supplier<Double> robotNowUs) {
+    this.robotNowUs = robotNowUs;
     if (hotWindowUs < 0) throw new IllegalArgumentException("Negative hot window");
     this.path = path.toAbsolutePath().normalize(); this.hotWindowUs = hotWindowUs;
   }
@@ -232,6 +236,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   public final class View implements LogData, AutoCloseable {
     LiveLog source() { return LiveLog.this; }
     private final State seen;
+    private final double scopeEnd;
     private final String seenPath;
     private final Map<String, EntryInfo> entries;
     private final ConcurrentHashMap<String, Integer> lengths = new ConcurrentHashMap<>();
@@ -242,6 +247,8 @@ public final class LiveLog implements LogData, AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private View(State seen, String seenPath, LogFileAccess.Lease claim) {
       this.seen = seen; this.seenPath = seenPath; this.claim = claim;
+      Double now = seen.open() ? robotNowUs.get() : null;
+      scopeEnd = now == null ? seen.max() : Math.max(seen.max(), now / 1_000_000.0);
       entries = seen.infos();
       schemas = StructSchemas.fromLog(entries, name -> {
         var series = seen.entries().get(name);
@@ -252,6 +259,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     @Override public Map<String, EntryInfo> entries() { return entries; }
     @Override public double minTimestamp() { return seen.min(); }
     @Override public double maxTimestamp() { return seen.max(); }
+    @Override public double timeScopeEnd() { return scopeEnd; }
     @Override public boolean truncated() { return seen.jumps() > 0; }
     @Override public boolean damaged() { return truncated(); }
     @Override public String truncationMessage() {

@@ -204,6 +204,7 @@ final class AccessTrackingLogData implements LogData {
   @Override public Map<String, List<TimestampedValue>> values() { return values; }
   @Override public double minTimestamp() { return delegate.minTimestamp(); }
   @Override public double maxTimestamp() { return delegate.maxTimestamp(); }
+  @Override public double timeScopeEnd() { return delegate.timeScopeEnd(); }
   @Override public boolean truncated() { return delegate.truncated(); }
   @Override public boolean damaged() { return delegate.damaged(); }
   @Override public String truncationMessage() { return delegate.truncationMessage(); }

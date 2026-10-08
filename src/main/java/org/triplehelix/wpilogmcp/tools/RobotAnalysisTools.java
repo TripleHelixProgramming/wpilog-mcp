@@ -1187,7 +1187,7 @@ public final class RobotAnalysisTools {
           + "data_quality; and the differences "
           + "(second minus first) of mean, median, and p95. scope ('enabled', 'teleop', "
           + "'segment:<i>', ...) is resolved in each log's own timeline, so the same phase is "
-          + "compared; start_time/end_time apply to each log's own clock. The name may carry a "
+          + "compared; start_time/end_time apply to each log's own clock; last_seconds resolves from each log's end or current capture time, reported in inputs.windows. The name may carry a "
           + "field path (/RealOutputs/Drive/Pose.translation.x, ChannelCurrent[3]). A maximum or "
           + "minimum in the first 5 s of a log is flagged as a likely boot transient: compare "
           + "scope 'enabled' instead. Samples within a log are autocorrelated, so no "
@@ -1204,6 +1204,7 @@ public final class RobotAnalysisTools {
               true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
+          .addNumberProperty("last_seconds", TimeScope.LAST_SECONDS_DESCRIPTION + " Resolved separately for each log; inputs.windows names each log.", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION
               + " Resolved in each log's own timeline.", false)
           .addNumberProperty("start_time", "Start timestamp (s), on each log's clock", false, null)
@@ -1229,6 +1230,7 @@ public final class RobotAnalysisTools {
         logs.put(path1, new AccessTrackingLogData(first.log()));
         logs.put(path2, new AccessTrackingLogData(second.log()));
 
+        var relativeWindows = new JsonObject();
         var comparisons = new JsonArray();
         var warnings = new ArrayList<String>();
         var found = new ArrayList<JsonObject>();
@@ -1236,6 +1238,12 @@ public final class RobotAnalysisTools {
         for (var entry : logs.entrySet()) {
           var logPath = entry.getKey();
           var log = entry.getValue();
+          var args = TimeScope.relativeArguments(log, arguments);
+          if (arguments.has("last_seconds") && !arguments.get("last_seconds").isJsonNull()) {
+            Double start = getOptDouble(args, "start_time"), end = getOptDouble(args, "end_time");
+            var window = new JsonObject(); window.addProperty("start", start); window.addProperty("end", end);
+            relativeWindows.add(logPath, window);
+          }
           var filename = Path.of(logPath).getFileName().toString();
           var stats = new JsonObject();
           stats.addProperty("log_path", logPath);
@@ -1263,7 +1271,7 @@ public final class RobotAnalysisTools {
           stats.addProperty("signal", signal.label());
           TimeScope scope;
           try {
-            scope = TimeScope.fromArguments(log, null, arguments);
+            scope = TimeScope.fromArguments(log, null, args);
           } catch (IllegalArgumentException e) {
             // this log cannot be scoped (e.g. no DriverStation data): report it, compare the rest
             stats.addProperty("reason", e.getMessage());
@@ -1343,6 +1351,7 @@ public final class RobotAnalysisTools {
         var inputLogs = new JsonArray();
         logs.keySet().forEach(inputLogs::add);
         inputs.add("logs", inputLogs);
+        if (!relativeWindows.isEmpty()) { inputs.add("windows", relativeWindows); inputs.add("last_seconds", arguments.get("last_seconds")); }
         inputs.addProperty("entry", name);
         var sessionRanges = new JsonObject();
         logs.forEach((logPath, log) -> {

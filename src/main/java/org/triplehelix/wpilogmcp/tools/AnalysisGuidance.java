@@ -54,18 +54,22 @@ public final class AnalysisGuidance {
    * Server-level instructions returned on {@code initialize}. Keep under
    * {@link #INSTRUCTIONS_BYTE_LIMIT}; put the most important rules first; ASCII only.
    */
+  public static final String FRESH_DATA_INSTRUCTIONS = "list_sessions, get_latest_values and wait_for_change answer for the present; log tools answer for the recorded past.\n"
+      + "The current capture file is the one list_available_logs marks open.";
+  public static String forLocation(String location) {
+    return location + "\n" + FRESH_DATA_INSTRUCTIONS + "\n" + SERVER_INSTRUCTIONS;
+  }
   public static final String SERVER_INSTRUCTIONS = """
-      wpilog-mcp analyzes FRC robot logs. Answer the question asked first, then the evidence.
-
-      1. Never name an entry not seen in a list/search result or quote a number not in a tool result. no_match means the data was not found: say what was searched, ask how the team names it; absent data is not absent problems. A read_entry page is not the whole log.
-      2. An entry's name does not prove what it measures. Read the robot source code that logs it (mechanism, units, measured or commanded), or call the mapping an assumption.
-      3. Never compute statistics, correlations, rates, or durations by hand; use the tools (struct/array numbers: Entry.field, Entry[i]), or export_csv and compute outside if no tool reads it. Call get_match_phases before any time reasoning.
-      4. Verify the premise (get_ds_timeline, find_condition) before explaining an event. BROWNOUT_START/END are voltage threshold crossings; only RIO_BROWNOUT_START (a logged flag) means the roboRIO cut outputs.
-      5. Three tiers. A discrete event (logged flag, 149 A peak, error string) is a fact: state it plainly. A mean, trend, or correlation is an inference: bound it by confidence_level and data_quality.reasons; it caps statistics, not events. A cause outside the telemetry (wiring, wear, battery) is a hypothesis to check physically.
-      6. For "why" questions, even when the user names a cause: answer it (yes/no/cannot tell), then test it against a rival: normal for this phase/state, a logging or timing artifact, or another simultaneous load.
-      7. Scope statistics to the phase and enabled state (pass scope; whole-log numbers mix in disabled time and boot); cite entry, window, n, statistic. One log is one sample: generalize only across matches (compare_matches).
-      8. A log that ends early is "log ends at Xs", not "match ended". Revlog timing is only as good as sync_status. Scores come only from TBA (get_tba_match_data).
-      9. End a diagnosis with ranked findings, confidence with reason, and a next check. get_server_guide has the full method.""";
+      wpilog-mcp analyzes FRC logs. Answer the question asked first, then the evidence.
+      1. Never name an entry not listed or quote a number not returned by a tool. no_match means not found: say what was searched; ask for the team's naming. A read_entry page is not the whole log.
+      2. An entry's name does not prove what it measures. Check robot source code (mechanism, units, measured or commanded), or state the mapping as an assumption.
+      3. Use tools for statistics, rates, durations and correlations, never mental math. Struct/array fields: Entry.field, Entry[i]. Otherwise export_csv. Call get_match_phases before time reasoning.
+      4. Verify premises (get_ds_timeline, find_condition). BROWNOUT_START/END are voltage crossings; only RIO_BROWNOUT_START means logged output cutoff.
+      5. Three tiers: a logged event is fact; a statistic is inference, bounded by confidence_level and data_quality.reasons; a cause outside telemetry is a hypothesis to check physically. Quality bounds statistics, not events.
+      6. For why questions, answer yes/no/cannot tell, then test a rival: phase/state, logging/timing artifact, or simultaneous load.
+      7. Scope statistics by phase/state (scope); cite entry, window, n, statistic. Generalize only across matches (compare_matches).
+      8. An early end is "log ends", not "match ended". REV timing depends on sync_status. Scores only from TBA (get_tba_match_data).
+      9. End diagnoses with ranked findings, confidence and a next check. get_server_guide has the full method.""";
 
   /**
    * Long-form principles returned by {@code get_server_guide}. Authored as JSON for readability;

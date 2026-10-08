@@ -29,6 +29,36 @@ The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` runs the fat JAR
 
 The extension's version is the project version in `build.gradle`. Every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release, and the release that follows it installs over the development version.
 
+## Verification policy
+
+Checks should cost what they prove. Measure wall time before and after a speed change on the same
+machine; record the command, selection, counts, failures and timing under `build/reports/`.
+Do not rerun a passing check for reassurance. A failure which does not reproduce gets one retry;
+report both results. Keep the Gradle daemon warm, build once, use `--tests` while working, and
+never run `./gradlew clean` inside a round.
+
+| Change or boundary | Required check |
+|---|---|
+| Each item while editing | Targeted `./gradlew test --tests '*RelevantTest'`; plant the bug and see that check fail. |
+| End of a round, after the last change | One `env -u LANG -u LC_ALL ./gradlew build`. CI supplies Windows; report without waiting for it to start. |
+| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also gates Node/editor checks by these paths. |
+| Capture, pull, NT4 or harness code changed | One `harness/run` after those changes; use `-PconformanceNative=none` if none of the native-triggering surfaces below changed. |
+| NT4 client, gateway, capture writer, replayer or harness changed | Native replay with `-PconformanceNative=sample`, in that same harness run; zero shift only. |
+| Writer output, replayer output or matching changed | Stratified Java real-log sample with `-PconformanceLogDir=/path/to/logs`. A harness pacing-only change does not trigger it. |
+| Before a release tag | Full real-log directory (`-PconformanceSample=full` and `-PconformanceNative=full`), without a file limit. |
+| Coverage wanted | `./gradlew jacocoTestReport`, or add `-Pcoverage` to the build/test command. CI instruments and reports once, on Linux only. |
+
+Ordinary tests never run native replay. They use half the available processors, at least one
+fork and at most four, with 768 MiB per fork (at most 3 GiB combined heap). The real-log opt-in
+uses one larger fork. Each task has its own disk cache; concurrent forks share its atomic cache
+claims, while tests inspecting cache contents use `@TempDir` caches. Generated corpus files live
+under `build/test-fixtures/worker-<worker>` and are written once per JVM, so Windows mappings in
+another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
+uses decoded immutable views for entry-order permutations, preserving raw sample counts separately
+from successfully decoded values. Coverage instrumentation is absent from ordinary/targeted runs.
+The harness CI job downloads the ordinary job's XML evidence instead of rerunning its suite;
+the Arrow cross-check similarly consumes that build's streams.
+
 ## Testing
 
 ```bash
@@ -149,7 +179,7 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 
 `-PconformanceLogDir` enables a deterministic stratified sample by default; use
 `-PconformanceSample=full` for every file. The same selector serves the tool sweep, differential
-check, real-log claims and every gateway, native, pull, pair and live replay. Reports under
+check, real-log claims and every Java gateway, pull, pair and live replay. Native selection is independently controlled by `-PconformanceNative=none|sample|full` (default `sample` for `shopHarness`). Reports under
 `build/reports/conformance-sample/` name the selected paths, their strata and unavailable strata.
 `-PconformanceMaxLogs=N` still restricts the input to the first N paths in sorted order, before
 sampling, in both ordinary and harness tasks. A limited run may therefore lack a stratum or a
@@ -310,11 +340,11 @@ For your own directory:
 # Stratified sample through the gateway; no native simulation needed, including on Windows
 ./gradlew test --tests '*RealLogReplayTest' --tests '*RealReplayPullTest' --tests '*RealReplayPairTest' -PconformanceLogDir=/path/to/logs
 
-# Build the robot once and run the timeline, fixture replay, and the same native sample
-harness/run -PconformanceLogDir=/path/to/logs
+# Build the robot once; timeline, Java fixture matrix, native fixtures and real-log native sample
+harness/run -PconformanceNative=sample -PconformanceLogDir=/path/to/logs
 
-# Repeat just native replay with the existing robot build
-./gradlew shopHarness --tests '*RealNtcoreReplayTest' --tests '*NtcoreReplayPairTest' -PconformanceLogDir=/path/to/logs
+# Native only, when required and the robot is already built (one zero-shift replay per selected file)
+./gradlew shopHarness --tests '*RealNtcoreReplayTest' -PconformanceNative=sample -PconformanceLogDir=/path/to/logs
 ```
 
 Without the directory property the real-log tests skip with a message. CI exercises fixture
@@ -331,18 +361,21 @@ stays selected, as does each unreadable input whose refusal needs checking. Ties
 path order; no random seed or correlation result enters selection. Inventory uses the independent reader and is shared within the test JVM;
 readers close before replay. Reports contain paths, categories and counts, never telemetry.
 
-Use the sample for milestone and per-item checks. Run the full set before a release tag and
-after a change to the NT4 client, capture writer, replayer or matching code; a sync-cache format
-bump marks a change to REV parsing or matching. Append `-PconformanceSample=full` to both the
-ordinary and `shopHarness` commands above, and include `--tests '*LiveReplayTest.realLogs'` in
-the ordinary command. In full mode every file runs at zero shift. The eight-shift matrix runs in both modes on the smallest qualifying logger representatives
-and a REV companion: positive and negative offsets, 240 ms accepted, 260 ms refused,
-and the several-second refusal exercise matching rules without multiplying the whole corpus.
-Files selected only for size, tail, calendar-absence or reset-pair coverage run at zero shift;
-a file that also represents a logger or REV companion keeps the matrix. Each report lists
-`shifts_us`, so matrix coverage is explicit.
-The two-boot tests use the same selected pair in either mode. `-PconformanceMaxLogs` remains
-available for diagnosis; omit it for a closing full run.
+Use the sample when the verification policy above calls for real-log checks. Full mode is for
+before a release tag, not every milestone: use `-PconformanceSample=full` for Java and
+`-PconformanceNative=full` for native. The properties are independent; `none` skips native
+classes without skipping the timeline or Java fixture matrix. `conformanceMaxLogs` retains its
+file-count limit; omit it for release verification.
+
+Every selected file runs at zero shift. Only Java runs the eight-shift matrix on the smallest
+qualifying logger representatives and a REV companion: negative offsets, small positive offsets,
+240 ms accepted, 260 ms refused, and several-second refusal. Native proves publisher/transport
+fidelity, not the same placement arithmetic again, and does not repeat the SFTP pull checks.
+The generated two-boot native check still proves ntcore reset/reconnect interoperability; real
+native boot pairs are additional full-mode checks. Selection reports name paths and strata,
+with native `shifts_us: [0]`. Ordinary `ReplayPullTest` keeps four propositions per layout:
+zero/identity, -120 ms/sign, +240 ms/inside boundary, +260 ms/outside boundary; `ReplayMatrixTest`
+runs all eight through Java under the `shop-harness` tag. The boundary is 250 **milliseconds**.
 
 The default robot clock uses source timestamps unchanged. Runs with 40, 120 and 200 ms shifts,
 a negative shift, the placement boundary and a several-second refusal test distinguish measured
@@ -374,8 +407,15 @@ No assertion or report copies telemetry values into source control.
 The robot also accepts `--replay <file> <control-directory> <nt4-port> <shift-us> [speed]`.
 Speed defaults to 1 (source pacing); 0 uses receive acknowledgements for the fastest lossless
 replay. The JUnit runner owns this handshake, including metadata acknowledgements, so TCP queue
-acceptance is never mistaken for capture completion. A persistent directory watcher avoids
-macOS registration races during atomic handshake-file replacement.
+acceptance is never mistaken for capture completion. The native publisher allows up to
+32,768 records rather than 1,024: the largest generated-fixture window accounts for 3,460,352
+bytes under the conservative copied-work estimate, below the client's 32 MiB bound. ntcore
+also has its own **2 MiB local publisher queue**; a separate 1 MiB byte budget (including a
+conservative native message envelope) drains it before it can drop values. This bound can
+end a batch before the record limit. Both sides use blocking pipe notifications and receipt
+conditions, keeping control files as progress evidence. JDK directory watchers poll on some
+platforms; replacing the 50/100 ms application polls with those events alone slowed this Mac
+and exposed ntcore's smaller queue. Native zero-shift reports include per-file wall time.
 The native verifier fails after 30 seconds without receipt progress, including metadata receipts,
 instead of imposing a total duration on a whole file. The former five-minute deadline stopped a
 healthy large replay mid-stream; injected-clock checks pin continued progress and stalled receipts.
@@ -675,7 +715,7 @@ A tool is more than its code: agents read its description and schema, and severa
 
 The installer branch must merge together with the release carrying the `install` verb, since the installers on `main` download the latest release; older releases fall back to their own tagged installer.
 
-Before tagging, run the real-log replay commands above with `-PconformanceSample=full` and no file limit. A sampled milestone run is not the release check.
+Before tagging, run the Java real-log replay commands above with `-PconformanceSample=full` and native with `-PconformanceNative=full`, with no file limit. A sampled milestone run is not the release check.
 
 1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; a test fails until the extension's files match.
 2. Regenerate [TOOL_RESPONSES.md](TOOL_RESPONSES.md), whose first lines carry the version (step 7 of [Changing or Adding a Tool](#changing-or-adding-a-tool)).
@@ -703,3 +743,11 @@ store discovery. VM tests exercise the webview's actual plot/console handlers an
 check incremental boundary, pagination and memory limits. Plants remove the URL definition,
 identity checks, prefix boundary, pin/cap defaults, endpoint routes and polling safeguards.
 These tests do not replace the real VS Code checklist above.
+
+`RelativeTimeTest` and the HTTP `LiveToolsTest` check last-seconds scopes on closed and open logs,
+including separate endpoints for two-log comparisons, invalid/ambiguous bounds and a moving
+robot clock. `LiveLogTest` pins the clock for an already acquired call. The schema-driven sweep
+includes a recent-window variant. `McpMessageHandlerTest` and the HTTP fixture check current-session
+resource discovery/read, unknown URI refusal, absent capture and empty prompts; discovery tests
+pin each present-tense keyword. Stats MINA tests count initial/PID-restart/SSH-reconnect discovery,
+assert scan-free steady commands and one combined `df`, and reject a reused PID until reidentified.

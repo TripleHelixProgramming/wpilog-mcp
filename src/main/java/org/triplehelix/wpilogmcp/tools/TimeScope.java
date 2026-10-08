@@ -51,6 +51,31 @@ public final class TimeScope {
       + "returned by find_condition (whose end is the sample where the condition turned false). "
       + "Intersected with scope and start_time/end_time.";
 
+  public static final String LAST_SECONDS_DESCRIPTION = "Last N seconds ending at the call's current robot time for an open capture, or the last record for a closed log. N must be positive and finite. Cannot combine with start_time/end_time; scope and windows still intersect. inputs.window gives the resolved absolute bounds.";
+
+  static boolean acceptsRelative(JsonObject properties) {
+    return properties != null && List.of("scope", "windows", "start_time", "end_time").stream().anyMatch(properties::has);
+  }
+
+  /** Resolve once on the acquired view, before any tool reads entries or the writer appends. */
+  static JsonObject relativeArguments(LogData log, JsonObject arguments) {
+    if (!arguments.has("last_seconds") || arguments.get("last_seconds").isJsonNull()) return arguments;
+    var number = arguments.get("last_seconds");
+    if (!number.isJsonPrimitive() || !number.getAsJsonPrimitive().isNumber()) {
+      throw new IllegalArgumentException("last_seconds must be a positive finite number");
+    }
+    double seconds = number.getAsDouble();
+    if (!Double.isFinite(seconds) || seconds <= 0) throw new IllegalArgumentException("last_seconds must be a positive finite number");
+    for (String key : List.of("start_time", "end_time")) if (arguments.has(key) && !arguments.get(key).isJsonNull()) {
+      throw new IllegalArgumentException("last_seconds cannot be combined with " + key);
+    }
+    double end = log.timeScopeEnd();
+    var resolved = arguments.deepCopy(); resolved.remove("last_seconds");
+    resolved.addProperty("start_time", Math.max(log.minTimestamp(), end - seconds));
+    resolved.addProperty("end_time", end);
+    return resolved;
+  }
+
   /** Windows listed in {@link #toJson()}, at most; the count is always complete. */
   static final int LISTED_WINDOWS = 50;
 

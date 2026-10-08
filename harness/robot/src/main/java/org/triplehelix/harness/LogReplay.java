@@ -19,7 +19,6 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardWatchEventKinds;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -33,7 +32,17 @@ import java.util.concurrent.TimeUnit;
  */
 final class LogReplay {
   private record Entry(String name, String type, String metadata, int firstValue) {}
-  private static final int BATCH = 1024;
+  // A 32,768-record window in the generated fixtures is at most 3,460,352 bytes
+  // using the conservative 2 * payload + 64 envelope allowance: < 4 MiB, well below
+  // the client's 32 MiB copied-work bound. ReplayPacingTest checks that arithmetic.
+  // A byte barrier also bounds larger external records, whose sizes need not match fixtures.
+  private static final int BATCH = 32_768;
+  // ntcore has a separate 2 MiB local publisher queue before our 32 MiB client queue.
+  // Use at most half of it, including a conservative 256-byte native message envelope.
+  // Larger count-only batches dropped fixture values before they ever reached the socket.
+  private static final long BATCH_BYTES = 1L << 20;
+  private static final java.io.BufferedReader notifications = new java.io.BufferedReader(
+      new java.io.InputStreamReader(System.in, java.nio.charset.StandardCharsets.UTF_8));
   private static final String METADATA = "wpilog_metadata";
   private static int dsUpdates;
   private static final java.security.MessageDigest dsDigest = digest();
@@ -48,12 +57,10 @@ final class LogReplay {
     int port = Integer.parseInt(args[3]); long shift = Long.parseLong(args[4]);
     double speed = args.length > 5 ? Double.parseDouble(args[5]) : 1;
     if (!Double.isFinite(speed) || speed < 0) throw new IllegalArgumentException("speed");
-    try (var channel = FileChannel.open(path); var nt = NetworkTableInstance.create();
-         var watcher = control.getFileSystem().newWatchService()) {
-      // macOS scans a directory when registering. Register once before publishing ready, so
-      // atomic replacements of handshake files cannot disappear during another registration.
-      control.register(watcher, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
-      write(control.resolve("watch_registrations"), "1");
+    try (var channel = FileChannel.open(path); var nt = NetworkTableInstance.create()) {
+      // Pipe notifications wake on the actual handshake, including on JDKs whose WatchService
+      // polls directories. Files remain as inspectable progress evidence, not a timer.
+      write(control.resolve("control_transport"), "pipe");
       var bytes = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size()).order(ByteOrder.LITTLE_ENDIAN);
       var reader = new DataLogReader(bytes); if (!reader.isValid()) throw new IllegalArgumentException();
       int first = 12 + bytes.getInt(8);
@@ -102,8 +109,8 @@ final class LogReplay {
           aliases.put(entry.name, nt.getTopic(canonical.substring(schema)).genericPublishEx(type, "{\"wpilog_replay_schema_alias\":true}", options));
         }
       }
-      write(control.resolve("ready"), Integer.toString(publishers.size() + aliases.size()));
-      waitFor(watcher, () -> Files.exists(control.resolve("go")));
+      write(control.resolve("ready"), Integer.toString(publishers.size() + aliases.size())); notifyVerifier();
+      waitFor(() -> Files.exists(control.resolve("go")));
       long propertiesSent = 0;
       var metadata = new HashMap<String, String>(); entries.values().forEach(e -> metadata.put(e.name, e.metadata));
       long sent = 0, started = System.nanoTime();
@@ -113,22 +120,22 @@ final class LogReplay {
         if (aliases.containsKey(entry.name)) { publish(aliases.get(entry.name), entry.type, record, shift); sent++; }
         publish(publishers.get(entry.name), entry.type, record, shift); sent++;
       }
-      barrier(nt, control, watcher, sent, propertiesSent);
-      active.clear(); var declared = new HashSet<String>(); long elapsed = 0, sinceBarrier = 0;
+      barrier(nt, control, sent, propertiesSent);
+      active.clear(); var declared = new HashSet<String>(); long elapsed = 0, sinceBarrier = 0, bytesSinceBarrier = 0;
       for (int offset = first, end; (end = ReplayRecords.end(reader, offset)) != -1; offset = end) {
         var record = ReplayRecords.at(reader, offset);
         if (record.isStart()) {
           var start = record.getStartData(); active.put(start.entry, start.name);
           if (!declared.add(start.name) && !start.metadata.equals(metadata.put(start.name, start.metadata))) {
-            barrier(nt, control, watcher, sent, propertiesSent); property(publishers.get(start.name), start.metadata);
-            barrier(nt, control, watcher, sent, ++propertiesSent);
+            barrier(nt, control, sent, propertiesSent); property(publishers.get(start.name), start.metadata);
+            barrier(nt, control, sent, ++propertiesSent);
           }
         } else if (record.isFinish()) active.remove(record.getFinishEntry());
         else if (record.isSetMetadata()) {
           var update = record.getSetMetadataData(); var name = active.get(update.entry);
           if (name != null && !update.metadata.equals(metadata.put(name, update.metadata))) {
-            barrier(nt, control, watcher, sent, propertiesSent); property(publishers.get(name), update.metadata);
-            barrier(nt, control, watcher, sent, ++propertiesSent);
+            barrier(nt, control, sent, propertiesSent); property(publishers.get(name), update.metadata);
+            barrier(nt, control, sent, ++propertiesSent);
           }
         } else if (!record.isControl()) {
           var name = active.get(record.getEntry()); if (name == null) break;
@@ -140,17 +147,22 @@ final class LogReplay {
           }
           WPIUtilJNI.setMockTime(record.getTimestamp() + shift);
           driveDriverStation(name, record, entries.get(name).type, shift);
-          publish(publishers.get(name), entries.get(name).type, record, shift); sent++; sinceBarrier++;
+          long copiedBytes = 2L * record.getSize() + 256;
+          if (aliases.containsKey(name)) copiedBytes *= 2;
+          if (bytesSinceBarrier + copiedBytes > BATCH_BYTES && sinceBarrier > 0) {
+            barrier(nt, control, sent, propertiesSent); sinceBarrier = 0; bytesSinceBarrier = 0;
+          }
+          publish(publishers.get(name), entries.get(name).type, record, shift); sent++; sinceBarrier++; bytesSinceBarrier += copiedBytes;
           if (aliases.containsKey(name)) { publish(aliases.get(name), entries.get(name).type, record, shift); sent++; }
-          if (sinceBarrier >= BATCH) { barrier(nt, control, watcher, sent, propertiesSent); sinceBarrier = 0; }
+          if (sinceBarrier >= BATCH || bytesSinceBarrier >= BATCH_BYTES) { barrier(nt, control, sent, propertiesSent); sinceBarrier = 0; bytesSinceBarrier = 0; }
         }
       }
-      barrier(nt, control, watcher, sent, propertiesSent);
+      barrier(nt, control, sent, propertiesSent);
       WPIUtilJNI.setMockTime(max + shift);
       write(control.resolve("ds_updates"), Integer.toString(dsUpdates));
       write(control.resolve("ds_digest"), java.util.HexFormat.of().formatHex(dsDigest.digest()));
-      write(control.resolve("done"), Long.toString(sent));
-      waitFor(watcher, () -> Files.exists(control.resolve("stop")));
+      write(control.resolve("done"), Long.toString(sent)); notifyVerifier();
+      waitFor(() -> Files.exists(control.resolve("stop")));
       publishers.values().forEach(GenericPublisher::close); aliases.values().forEach(GenericPublisher::close);
       nt.stopServer();
     }
@@ -244,21 +256,19 @@ final class LogReplay {
     }
   }
 
-  private static void barrier(NetworkTableInstance nt, Path control, java.nio.file.WatchService watcher, long sent, long properties) throws Exception {
+  private static void barrier(NetworkTableInstance nt, Path control, long sent, long properties) throws Exception {
     nt.flush(); write(control.resolve("sent"), Long.toString(sent));
-    write(control.resolve("sent_properties"), Long.toString(properties));
-    waitFor(watcher, () -> Files.exists(control.resolve("received")) && Long.parseLong(Files.readString(control.resolve("received")).strip()) >= sent
+    write(control.resolve("sent_properties"), Long.toString(properties)); notifyVerifier();
+    waitFor(() -> Files.exists(control.resolve("received")) && Long.parseLong(Files.readString(control.resolve("received")).strip()) >= sent
         && Files.exists(control.resolve("received_properties"))
         && Long.parseLong(Files.readString(control.resolve("received_properties")).strip()) >= properties);
   }
   @FunctionalInterface private interface Ready { boolean get() throws Exception; }
-  private static void waitFor(java.nio.file.WatchService watcher, Ready ready) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
-    while (!ready.get()) {
-      long left = deadline - System.nanoTime(); if (left <= 0) throw new IllegalStateException("Replay handshake timeout");
-      var key = watcher.poll(Math.min(left, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
-      if (key != null) { key.pollEvents(); key.reset(); }
-    }
+  private static void waitFor(Ready ready) throws Exception {
+    while (!ready.get()) if (notifications.readLine() == null) throw new java.io.EOFException("Replay verifier stopped");
+  }
+  private static void notifyVerifier() {
+    System.out.println("WPILOG_REPLAY_CONTROL"); System.out.flush();
   }
   private static void write(Path path, String value) throws Exception {
     var temporary = path.resolveSibling(path.getFileName() + ".tmp"); Files.writeString(temporary, value);

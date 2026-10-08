@@ -23,6 +23,9 @@ public class ToolRegistry {
 
   private final Map<String, Tool> tools = new ConcurrentHashMap<>();
   private volatile String serverInstructions;
+  private volatile java.util.function.Supplier<JsonObject> currentSession = () -> CurrentSessionResource.read(null);
+  public void setCurrentSession(java.util.function.Supplier<JsonObject> value) { currentSession = value; }
+  public JsonObject currentSession() { return currentSession.get(); }
   public static final String LOCAL_LOCATION = "This server reads files on this machine and its mirrors. Use the pit server for live sessions; a completed mirrored file has the same bytes and answers offline.";
   public static final String PIT_LOCATION = "This is the pit server: use it for the team's sessions and live captures. A completed mirror on a laptop has the same bytes and answers offline.";
   private volatile String serverLocation = LOCAL_LOCATION;

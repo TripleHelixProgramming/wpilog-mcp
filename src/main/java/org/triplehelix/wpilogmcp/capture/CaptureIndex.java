@@ -19,8 +19,14 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   private final CaptureWriter.Observer placement;
   private final LogManager manager;
   private final long hotWindowUs;
+  private final java.util.function.Supplier<Double> robotNowUs;
   private LiveLog live;
   public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs) {
+    this(placement, manager, hotWindowUs, () -> null);
+  }
+  public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs,
+      java.util.function.Supplier<Double> robotNowUs) {
+    this.robotNowUs = robotNowUs;
     this.placement = placement; this.manager = manager; this.hotWindowUs = hotWindowUs;
     if (placement instanceof CaptureStore store) store.onMove((from, to) -> {
       try { if (live != null && Path.of(live.path()).equals(from)) manager.relocateCapture(live, from, to); } catch (IOException e) { throw new UncheckedIOException(e); }
@@ -36,7 +42,7 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   }
   @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
-    if (!resumed) live = new LiveLog(session.path(), hotWindowUs);
+    if (!resumed) live = new LiveLog(session.path(), hotWindowUs, robotNowUs);
     manager.beginCapture(live);
     placement.opened(session, resumed);
   }

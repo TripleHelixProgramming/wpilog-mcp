@@ -245,7 +245,11 @@ clock tick and page sizes. `/Daemon/roboRIO/` entries carry explicit units, `sou
 samples sent before an NT4 estimate are counted and dropped. CPU and network interval rates
 need two samples; a missing or ambiguous deployed JAR omits program fields with a reason.
 The JAR path comes from the quoted `-jar` argument in `/home/lvuser/robotCommand`, then exact
-arguments in `/proc/*/cmdline`. A custom launcher that does not expose that path is reported.
+arguments in `/proc/*/cmdline`. This lookup and `getconf` run once per SSH connection. Each
+sample checks the cached PID's start ticks; a missing/reused PID triggers one new lookup on the
+next sample. Tick/page constants remain cached until SSH reconnects. Steady samples read fixed
+`/proc` files with shell builtins and run one `df` for all selected filesystems. A custom launcher
+that does not expose the JAR path is reported.
 Exec replies are bounded to 64 KiB and 30 seconds; sample waits never occupy the NT4 loop.
 
 Each tail uses `tail -n 0 -F -s 0.25`, with one string record per line at **receipt** time.
@@ -884,6 +888,22 @@ the local server's port. With VS Code closed, no window leases the credential: t
 local mirror remains available for offline analysis, but password-protected origin access
 requires the credential's window to be open. This is a client of the team's proxy, not new
 authentication in the pit server.
+
+For "right now", use `list_sessions` then `get_latest_values` (robot timestamps and ages), or
+`wait_for_change` for the next publication. For "the last 10 seconds", pass `last_seconds: 10`
+to any tool with a time scope. It ends at the open capture's current estimated robot time,
+fixed when the call acquires its view, or at the last record of a closed log. Before time sync,
+it uses the captured prefix's end; it never invents an offset. Do not combine it with
+`start_time` or `end_time`; named scopes and explicit windows still intersect. `inputs.window`
+shows the absolute bounds (`inputs.windows` by path for `compare_matches`). The listing's `open`
+flag identifies the file being written; `inputs.session_time_range` describes the records the
+call could see, which can end before the robot's current time.
+
+MCP `resources/list` advertises `pit://session/current`. Read it with `resources/read` for
+`session` (id, file, started_at, connected, identity), `gateway` and `providers`. It reads
+published facts without waiting on capture or store work; with no open session, `status` is
+`not_applicable` and `reason` explains why. `prompts/list` remains empty. Resource subscriptions
+are not advertised; read again for a newer snapshot.
 
 ### Metrics and a starter dashboard
 

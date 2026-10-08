@@ -382,7 +382,7 @@ class DaemonManagerTest {
 
   /**
    * Stands in for the daemon process: counts the launches, and starts a server on the port only
-   * after {@code bootMillis}, as a real daemon answers only once its JVM is up. The "process" is
+   * after the test releases {@code finishBoot}, as a real daemon answers only once its JVM is up. The "process" is
    * this JVM, which is alive throughout.
    */
   private static final class FakeLauncher implements DaemonManager.Launcher {
@@ -391,11 +391,11 @@ class DaemonManagerTest {
     /** The stop token each launch was given in its environment. */
     final List<String> tokens = new CopyOnWriteArrayList<>();
     final int port;
-    final long bootMillis;
+    final CountDownLatch finishBoot;
 
-    FakeLauncher(int port, long bootMillis) {
+    FakeLauncher(int port, boolean held) {
       this.port = port;
-      this.bootMillis = bootMillis;
+      this.finishBoot = new CountDownLatch(held ? 1 : 0);
     }
 
     @Override
@@ -405,7 +405,7 @@ class DaemonManagerTest {
       tokens.add(environment.get(DaemonManager.STOP_TOKEN_ENV));
       var boot = new Thread(() -> {
         try {
-          Thread.sleep(bootMillis);
+          assertTrue(finishBoot.await(10, TimeUnit.SECONDS), "Test did not release daemon boot");
           var server = new HttpTransport(new ToolRegistry(), port);
           server.start();
           servers.add(server);
@@ -437,11 +437,7 @@ class DaemonManagerTest {
   }
 
   private static void await(java.util.function.BooleanSupplier condition) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    while (!condition.getAsBoolean()) {
-      assertTrue(System.nanoTime() < deadline, "condition not reached in 10 s");
-      Thread.sleep(5);
-    }
+    org.triplehelix.wpilogmcp.harness.HarnessHttp.await("daemon condition", 10, condition::getAsBoolean);
   }
 
   @Nested
@@ -454,7 +450,7 @@ class DaemonManagerTest {
       // The first start has spawned its server and recorded it; the server does not answer yet.
       // A second start used to take that record for a reused PID, delete it, and spawn again.
       int port = freePort();
-      var launcher = new FakeLauncher(port, 700);
+      var launcher = new FakeLauncher(port, true);
       var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
       var pool = Executors.newFixedThreadPool(2);
       try {
@@ -468,6 +464,7 @@ class DaemonManagerTest {
             return false;
           }
         });
+        manager.onJoiningStart(launcher.finishBoot::countDown);
         Future<Boolean> second = pool.submit(() -> manager.spawnDaemon("test", port, null));
 
         assertTrue(first.get(15, TimeUnit.SECONDS));
@@ -488,7 +485,7 @@ class DaemonManagerTest {
       for (int round = 0; round < 6; round++) {
         var runDir = Files.createDirectories(tempDir.resolve("round" + round));
         int port = freePort();
-        var launcher = new FakeLauncher(port, 150);
+        var launcher = new FakeLauncher(port, false);
         var manager = new DaemonManager(runDir, Duration.ofSeconds(8), launcher);
         manager.writePidFile("test", DEAD_PID, port);
         int starts = 12;
@@ -556,7 +553,7 @@ class DaemonManagerTest {
     @DisplayName("a start records its server as booting until it answers")
     void startRecordsBooting() throws Exception {
       int port = freePort();
-      var launcher = new FakeLauncher(port, 600);
+      var launcher = new FakeLauncher(port, true);
       var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
       var pool = Executors.newSingleThreadExecutor();
       try {
@@ -565,6 +562,7 @@ class DaemonManagerTest {
             && !pidLines(manager).contains(DaemonManager.STARTING_MARKER));
         assertEquals(List.of(Long.toString(OWN_PID), Integer.toString(port),
             DaemonManager.BOOTING_MARKER), pidLines(manager));
+        launcher.finishBoot.countDown();
         assertTrue(start.get(15, TimeUnit.SECONDS));
         assertEquals(record(OWN_PID, port), pidLines(manager));
       } finally {
@@ -713,7 +711,7 @@ class DaemonManagerTest {
       // What failed on Windows: another start had the record open when this one replaced it,
       // and this start stopped the server it had just launched and reported failure
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var files = new BusyFiles(0, n -> n <= 2);
       var manager = managerOn(files, launcher);
       try {
@@ -730,7 +728,7 @@ class DaemonManagerTest {
     void recordsUnderTheLock() throws Exception {
       // Starts read the record under the lock; replacing it outside the lock is what collided
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var files = new BusyFiles(0, n -> false);
       var manager = managerOn(files, launcher);
       try {
@@ -747,7 +745,7 @@ class DaemonManagerTest {
     void runningServerIsNotReportedFailed() throws Exception {
       // The booting record is written; every replace after it is refused
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var files = new BusyFiles(0, n -> n >= 2);
       var manager = managerOn(files, launcher);
       try {
@@ -968,7 +966,7 @@ class DaemonManagerTest {
     @DisplayName("a daemon of this version is left running; one of another version is restarted")
     void restartsADaemonOfAnotherVersion() throws Exception {
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var manager = managerWith(launcher, Duration.ofSeconds(8));
       manager.writeToken("test", "old-token");
       manager.writePidFile("test", FAKE_PID, port);
@@ -1003,7 +1001,7 @@ class DaemonManagerTest {
     void restartsAnOlderDaemonAsAProcess() throws Exception {
       // It reports no version and has no /stop endpoint; its token file never existed
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var manager = managerWith(launcher, Duration.ofSeconds(8));
       manager.writePidFile("test", FAKE_PID, port);
       try (var old = new FakeDaemon(port, FAKE_PID, null, false, "none", processes)) {
@@ -1022,7 +1020,7 @@ class DaemonManagerTest {
       for (int round = 0; round < 4; round++) {
         var runDir = Files.createDirectories(tempDir.resolve("round" + round));
         int port = freePort();
-        var launcher = new FakeLauncher(port, 120);
+        var launcher = new FakeLauncher(port, false);
         var rounds = new FakeProcesses();
         var manager = new DaemonManager(runDir, Duration.ofSeconds(8), launcher,
             DaemonManager.FILE_SYSTEM, rounds, org.triplehelix.wpilogmcp.Version.VERSION);
@@ -1056,7 +1054,7 @@ class DaemonManagerTest {
     @DisplayName("a restart keeps its claim after the old daemon exits and before the new spawn")
     void startAfterOldDaemonExitsJoinsTheRestart() throws Exception {
       int port = freePort();
-      var launcher = new FakeLauncher(port, 0);
+      var launcher = new FakeLauncher(port, false);
       var restartWaitingForExit = new CountDownLatch(1);
       var continueRestart = new CountDownLatch(1);
       var secondCheckedRecord = new CountDownLatch(1);
@@ -1196,7 +1194,7 @@ class DaemonManagerTest {
     @DisplayName("a port held by another program is reported, and nothing is started")
     void portHeldByAStranger() throws Exception {
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var manager = managerWith(launcher, Duration.ofSeconds(8));
       var other = stranger(port);
       try {
@@ -1215,7 +1213,7 @@ class DaemonManagerTest {
       var server = startServer();
       try {
         int port = server.getPort();
-        var launcher = new FakeLauncher(port, 100);
+        var launcher = new FakeLauncher(port, false);
         var manager = managerWith(launcher, Duration.ofSeconds(8));
         assertTrue(manager.spawnDaemon("test", port, null));
         assertEquals(0, launcher.launches.get());

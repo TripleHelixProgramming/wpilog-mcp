@@ -107,8 +107,17 @@ public class LogCache {
 
   /** A cache that judges heap pressure by {@code heap} (for testing). */
   LogCache(long idleMs, Heap heap) {
+    this(idleMs, heap, com.github.benmanes.caffeine.cache.Ticker.systemTicker());
+  }
+
+  LogCache(long idleMs, com.github.benmanes.caffeine.cache.Ticker ticker) {
+    this(idleMs, JVM_HEAP, ticker);
+  }
+
+  private LogCache(long idleMs, Heap heap, com.github.benmanes.caffeine.cache.Ticker ticker) {
     this.heap = heap;
     this.cache = Caffeine.newBuilder()
+        .ticker(ticker)
         .expireAfterAccess(idleMs, TimeUnit.MILLISECONDS)
         .removalListener(this::onRemoval)
         .executor(Runnable::run) // Run removal listener synchronously (same thread)

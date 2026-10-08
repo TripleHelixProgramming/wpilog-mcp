@@ -109,6 +109,10 @@ public class DaemonManager {
         throws IOException;
   }
 
+  private Runnable onJoiningStart = () -> {};
+  /** Observes the join decision before probing health; tests hold boot until that decision. */
+  void onJoiningStart(Runnable observer) { onJoiningStart = observer; }
+
   private static final Launcher PROCESS_LAUNCHER = (command, environment, logFile) -> {
     var pb = new ProcessBuilder(command);
     pb.environment().putAll(environment);
@@ -489,6 +493,7 @@ public class DaemonManager {
       }
     }
     if (!decision.claimed()) {
+      onJoiningStart.run();
       // The other start may be restarting a daemon of another version, which takes a stop
       // and a boot: wait for as long as a booting record is given.
       logger.info("Another start of '{}' is in progress; waiting for it on port {}", name, port);

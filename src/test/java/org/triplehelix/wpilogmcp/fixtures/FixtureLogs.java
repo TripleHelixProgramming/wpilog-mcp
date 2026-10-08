@@ -58,7 +58,7 @@ public final class FixtureLogs {
 
   /** Default directory for generated fixtures (under Gradle's build directory). */
   public static Path defaultDirectory() {
-    return Path.of("build", "test-fixtures").toAbsolutePath();
+    return Path.of("build", "test-fixtures", "worker-" + System.getProperty("org.gradle.test.worker", "direct")).toAbsolutePath();
   }
 
   /** Directories this JVM has generated into, and what it generated there. */

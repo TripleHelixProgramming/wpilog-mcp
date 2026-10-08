@@ -666,10 +666,8 @@ class LogDirectoryTest {
       assertEquals(0L, logDirectory.getCacheStats().get("hits"));
 
       // Modify the file (touch it to update lastModified)
-      // Need a small delay to ensure different timestamp
-      Thread.sleep(10);
       Files.setLastModifiedTime(
-          logFile, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+          logFile, java.nio.file.attribute.FileTime.fromMillis(Files.getLastModifiedTime(logFile).toMillis() + 2_000));
 
       // Second access - miss because file was modified
       logDirectory.listAvailableLogs();

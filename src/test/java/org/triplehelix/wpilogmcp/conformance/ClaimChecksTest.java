@@ -228,6 +228,9 @@ class ClaimChecksTest {
       }
       var props = tool.inputSchema().getAsJsonObject("properties");
       var declared = new TreeSet<String>(props == null ? Set.of() : props.keySet());
+      // The log base reads last_seconds only on schemas with a time scope. RelativeTimeTest
+      // independently pins that conditional schema rule, including rejection by other tools.
+      if (tool instanceof org.triplehelix.wpilogmcp.tools.LogRequiringTool && !declared.contains("last_seconds")) read.keys().remove("last_seconds");
       var undeclared = new TreeSet<>(read.keys());
       undeclared.removeAll(declared);
       var unread = new TreeSet<String>();

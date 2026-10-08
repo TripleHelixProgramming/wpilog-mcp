@@ -31,6 +31,20 @@ class ConformanceSampleTest {
     withOptions("full", null, () -> assertEquals(files, RealNtcoreReplayTest.samples(directory)));
   }
 
+  @Test void nativePolicyIsIndependentAndKeepsOnlyZeroShift() throws Exception {
+    var files = corpus();
+    withOptions("full", null, () -> {
+      System.setProperty("conformance.sample", "sample");
+      var nativeSet = ConformanceSample.configured(directory, "native-full", System.getProperty("conformance.native"), false);
+      assertEquals(files, nativeSet.paths());
+      for (var path : nativeSet.paths()) assertEquals(List.of(0L), nativeSet.shifts(path));
+    });
+    withOptions("sample", null, () -> {
+      System.setProperty("conformance.sample", "full");
+      assertTrue(RealNtcoreReplayTest.samples(directory).size() < files.size());
+    });
+  }
+
   @Test void maxLogsStillMeansTheFirstNInputsInPathOrder() throws Exception {
     var files = corpus();
     withOptions("full", "2", () -> assertEquals(files.subList(0, 2), RealNtcoreReplayTest.samples(directory)));
@@ -185,11 +199,12 @@ class ConformanceSampleTest {
   }
 
   static void withOptions(String mode, String limit, org.junit.jupiter.api.function.Executable action) throws Exception {
+    String oldNative = System.getProperty("conformance.native");
     String oldMode = System.getProperty("conformance.sample"), oldLimit = System.getProperty("conformance.maxlogs");
     try {
-      set("conformance.sample", mode); set("conformance.maxlogs", limit);
+      set("conformance.sample", mode); set("conformance.native", mode); set("conformance.maxlogs", limit);
       try { action.execute(); } catch (Exception | Error e) { throw e; } catch (Throwable e) { throw new AssertionError(e); }
-    } finally { set("conformance.sample", oldMode); set("conformance.maxlogs", oldLimit); }
+    } finally { set("conformance.native", oldNative); set("conformance.sample", oldMode); set("conformance.maxlogs", oldLimit); }
   }
 
   private static void set(String key, String value) {

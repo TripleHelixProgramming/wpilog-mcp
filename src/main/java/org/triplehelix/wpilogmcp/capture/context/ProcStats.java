@@ -30,14 +30,7 @@ public final class ProcStats {
   }
   public static Snapshot parse(String text) throws IOException {
     try {
-      var sections = new LinkedHashMap<String, List<String>>(); String section = null;
-      for (String line : text.split("\\R")) {
-        if (line.startsWith("WPILOG_STATS_1:")) {
-          section = line.substring("WPILOG_STATS_1:".length());
-          if (sections.putIfAbsent(section, new ArrayList<>()) != null) throw new IllegalArgumentException("duplicate section " + section);
-        } else if (section != null && !line.isBlank()) sections.get(section).add(line.strip());
-        else if (!line.isBlank()) throw new IllegalArgumentException("unexpected output before stats sections");
-      }
+      var sections = sections(text);
       long ticks = positive(one(sections, "ticks")), pages = positive(one(sections, "pages"));
       var values = new LinkedHashMap<String, Number>(); var notes = new ArrayList<String>();
       var load = one(sections, "load").split("\\s+");
@@ -78,22 +71,59 @@ public final class ProcStats {
         if (disk.length < 6) throw new IllegalArgumentException("df fields");
         values.put(item.getKey() + "/free_bytes", Math.multiplyExact(integer(disk[3]), 1024));
       }
-      Program program = null;
-      var processes = required(sections, "program");
-      if (processes.isEmpty()) notes.add("No process with the robot JAR name was readable");
-      else if (processes.size() != 1) notes.add("Several processes have the robot JAR name; program fields omitted");
+      var paths = sections.get("disk_paths");
+      if (paths != null && !paths.isEmpty()) {
+        var disks = sections.getOrDefault("disk", List.of());
+        if (disks.size() != paths.size() + 1 || !disks.get(0).contains("1024-blocks")) {
+          notes.add("Filesystems changed during df; this sample omits filesystem free space");
+        } else for (int i = 0; i < paths.size(); i++) {
+          var fields = disks.get(i + 1).split("\\s+");
+          if (fields.length < 6) throw new IllegalArgumentException("df fields");
+          values.put("disk/" + paths.get(i).substring(1) + "/free_bytes", Math.multiplyExact(integer(fields[3]), 1024));
+        }
+      }
+      Program program = program(required(sections, "program"));
+      if (program == null) notes.add("No unique readable process with the robot JAR name");
       else {
-        String stat = processes.get(0); int open = stat.indexOf('('), close = stat.lastIndexOf(')');
-        if (open < 1 || close <= open) throw new IllegalArgumentException("program stat command name");
-        var fields = stat.substring(close + 1).strip().split("\\s+");
-        if (fields.length < 22) throw new IllegalArgumentException("program stat fields");
-        program = new Program(positive(stat.substring(0, open).strip()), integer(fields[19]),
-            Math.addExact(integer(fields[11]), integer(fields[12])), integer(fields[21]), integer(fields[17]));
         values.put("program/pid", program.pid()); values.put("program/threads", program.threads());
         values.put("program/rss_bytes", Math.multiplyExact(program.rssPages(), pages));
       }
       return new Snapshot(values, ticks, total - idle, total, up, networks, program, notes);
     } catch (RuntimeException e) { throw new UnsupportedOutputException(e); }
+  }
+  public record Configuration(long ticks, long pages, Program program) {}
+  public static Configuration configuration(String text, Configuration before) throws IOException {
+    try {
+      var sections = sections(text);
+      return new Configuration(before == null ? positive(one(sections, "ticks")) : before.ticks(),
+          before == null ? positive(one(sections, "pages")) : before.pages(), program(required(sections, "program")));
+    } catch (RuntimeException e) { throw new UnsupportedOutputException(e); }
+  }
+  private static Map<String, List<String>> sections(String text) {
+    var sections = new LinkedHashMap<String, List<String>>(); String section = null;
+    for (String line : text.split("\\R")) {
+      if (line.startsWith("WPILOG_STATS_1:")) {
+        section = line.substring("WPILOG_STATS_1:".length());
+        if (sections.putIfAbsent(section, new ArrayList<>()) != null) throw new IllegalArgumentException("duplicate section " + section);
+      } else if (section != null && !line.isBlank()) sections.get(section).add(line.strip());
+      else if (!line.isBlank()) throw new IllegalArgumentException("unexpected output before stats sections");
+    }
+    return sections;
+  }
+  private static Program program(List<String> processes) {
+    if (processes.size() != 1) return null;
+    String stat = processes.get(0); int open = stat.indexOf('('), close = stat.lastIndexOf(')');
+    if (open < 1 || close <= open) throw new IllegalArgumentException("program stat command name");
+    var fields = stat.substring(close + 1).strip().split("\\s+");
+    if (fields.length < 22) throw new IllegalArgumentException("program stat fields");
+    return new Program(positive(stat.substring(0, open).strip()), integer(fields[19]),
+        Math.addExact(integer(fields[11]), integer(fields[12])), integer(fields[21]), integer(fields[17]));
+  }
+  static Snapshot withoutProgram(Snapshot sample) {
+    var values = new LinkedHashMap<>(sample.gauges()); values.keySet().removeIf(k -> k.startsWith("program/"));
+    var notes = new ArrayList<>(sample.notes()); notes.add("Robot process changed; locating its JAR again");
+    return new Snapshot(values, sample.ticksPerSecond(), sample.busyTicks(), sample.totalTicks(),
+        sample.uptime(), sample.networks(), null, notes);
   }
   public static Sample between(Snapshot previous, Snapshot current) {
     var values = new LinkedHashMap<>(current.gauges()); var notes = new ArrayList<>(current.notes());

@@ -404,10 +404,7 @@ class DiskCacheTest {
       Path wpilog = createWpilog("async.wpilog", "async test data content".getBytes());
       ParsedLog log = createSimpleLog(wpilog.toString(), 50);
 
-      cache.saveAsync(log, wpilog);
-
-      // Wait for async write to complete
-      Thread.sleep(500);
+      cache.saveAsync(log, wpilog).get(5, TimeUnit.SECONDS);
 
       var loaded = cache.load(wpilog);
       assertTrue(loaded.isPresent(), "Async save should eventually produce loadable cache");
@@ -418,17 +415,25 @@ class DiskCacheTest {
     void asyncSaveReturnsBeforeWrite() throws Exception {
       Path wpilog = createWpilog("noblock.wpilog", "non-blocking test data".getBytes());
       ParsedLog log = createSimpleLog(wpilog.toString(), 5000);
-
-      cache.saveAsync(log, wpilog);
-
-      // The method returned — the file may or may not exist yet.
-      // The real test is that it eventually appears.
-      // Give it time to complete on the background thread.
-      for (int i = 0; i < 50; i++) {
-        if (cache.load(wpilog).isPresent()) return; // success
-        Thread.sleep(100);
-      }
-      fail("Async save did not complete within 5 seconds");
+      var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+      var directory = new CacheDirectory(); directory.setOverride(cacheDir.toString());
+      cache.shutdown();
+      cache = new DiskCache(directory, "0.5.0-test") {
+        @Override public void save(ParsedLog value, Path path) throws IOException {
+          entered.countDown();
+          try { if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Save was not released"); }
+          catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+          super.save(value, path);
+        }
+      };
+      var written = cache.saveAsync(log, wpilog);
+      try {
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        assertFalse(written.isDone(), "Submission returns while the write is held");
+        assertTrue(cache.load(wpilog).isEmpty());
+      } finally { release.countDown(); }
+      written.get(5, TimeUnit.SECONDS);
+      assertTrue(cache.load(wpilog).isPresent());
     }
   }
 
@@ -627,7 +632,6 @@ class DiskCacheTest {
       cache.save(log, wpilog);
 
       // Touch the file (changes mtime but not content)
-      Thread.sleep(50); // Ensure mtime changes
       Files.setLastModifiedTime(wpilog,
           FileTime.from(Instant.now().plusSeconds(100)));
 

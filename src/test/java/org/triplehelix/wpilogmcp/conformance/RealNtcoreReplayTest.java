@@ -16,30 +16,32 @@ import org.junit.jupiter.api.Test;
 
 /** Shared sample or full zero-shift coverage, without copying expected telemetry into code. */
 @Tag("shop-harness")
+@org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "conformance.native", matches = "sample|full")
 class RealNtcoreReplayTest {
-  @Test void sampleEveryLoggerKindThroughNtcoreAndPuller() throws Exception {
+  @Test void sampleEveryLoggerKindThroughNtcore() throws Exception {
     String directory = System.getProperty("conformance.logdir");
     Assumptions.assumeTrue(directory != null && !directory.isBlank(), "Native real-log replay skipped; set -PconformanceLogDir=/path/to/logs");
     var root = Path.of(directory).toRealPath();
     var report = Files.createDirectories(Path.of("build/reports/replay")).resolve("ntcore-" + root.getFileName() + ".jsonl");
     try (var out = Files.newBufferedWriter(report)) {
-      var selected = ConformanceSample.configured(root, "ntcore");
-      for (var path : selected.paths()) for (long shift : selected.shifts(path)) {
+      var selected = ConformanceSample.configured(root, "ntcore", System.getProperty("conformance.native", "sample"), false);
+      for (var path : selected.paths()) {
+        long shift = 0; // Transport fidelity; the Java replay alone exercises clock placement.
         long started = System.nanoTime(); Map<String, Object> result;
-        try (var source = new ReplaySource(path)) { result = NtcoreReplayTest.replay(source, shift, true); }
+        try (var source = new ReplaySource(path)) { result = NtcoreReplayTest.replay(source, shift, false); }
         catch (Exception | AssertionError failure) {
           out.write(new Gson().toJson(Map.of("path", path.toString(), "shift_us", shift, "failure", failure.getClass().getSimpleName()))); out.newLine(); out.flush();
           throw new AssertionError(path.toString());
         }
         result.put("wall_time_sec", (System.nanoTime() - started) / 1e9);
         out.write(new Gson().toJson(result)); out.newLine(); out.flush();
-        checkResult(path, shift, result);
+        assertTrue(((Map<?, ?>) result.get("mismatches")).isEmpty(), path.toString());
       }
     }
   }
 
   static List<Path> samples(Path root) throws Exception {
-    return ConformanceSample.configured(root, "native-selection").paths();
+    return ConformanceSample.configured(root, "native-selection", System.getProperty("conformance.native", "sample"), false).paths();
   }
 
   static void checkResult(Path path, long shift, Map<String, Object> result) {

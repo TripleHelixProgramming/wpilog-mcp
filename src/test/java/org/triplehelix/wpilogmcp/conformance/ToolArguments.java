@@ -185,7 +185,7 @@ final class ToolArguments {
           args.addProperty("name2", "/Missing/B");
           variants.add(new Variant("missing", args));
         }
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "compare_poses" -> {
         // reference_entry is required: the second pose entry, else the first against itself
@@ -200,7 +200,7 @@ final class ToolArguments {
         var reference = args.deepCopy();
         reference.addProperty("frame", "reference");
         variants.add(new Variant("reference-frame", reference));
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "pose_corrections" -> {
         // The default threshold, and one low enough that fixtures produce corrections
@@ -239,7 +239,7 @@ final class ToolArguments {
           explicit.addProperty("measurement_entry", "/Elevator/PositionMeters");
         }
         if (explicit.size() > base.size()) variants.add(new Variant("explicit-roles", explicit));
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "analyze_cycles" -> {
         // cycle_start_state is optional in the schema but needed in the default mode: use the
@@ -272,6 +272,11 @@ final class ToolArguments {
       var limited = variants.get(0).args().deepCopy();
       limited.addProperty("limit", 2);
       variants.add(new Variant(variants.get(0).label() + "-limit2", limited));
+    }
+    if (props != null && props.has("last_seconds") && !variants.isEmpty()) {
+      var recent = variants.get(0).args().deepCopy(); recent.remove("start_time"); recent.remove("end_time");
+      recent.addProperty("last_seconds", 2);
+      variants.add(new Variant(variants.get(0).label() + "-recent", recent));
     }
     return variants;
   }

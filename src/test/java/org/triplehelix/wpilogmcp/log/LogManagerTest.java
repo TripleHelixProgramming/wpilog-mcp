@@ -358,7 +358,7 @@ class LogManagerTest {
         // DataLogIterator skips (hasNext needs 16 bytes); the scan must still read it
         log.flush();
       }
-      Thread.sleep(100);
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 
@@ -383,7 +383,7 @@ class LogManagerTest {
         entry.append(200, 2000000);  // 2 seconds: short final record, still read
         log.flush();
       }
-      Thread.sleep(100);
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 
@@ -403,7 +403,7 @@ class LogManagerTest {
         entry.append("World", 2000000);  // 2 seconds: short final record, still read
         log.flush();
       }
-      Thread.sleep(100);
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 
@@ -424,7 +424,7 @@ class LogManagerTest {
         entry.append(true, 3000000);   // 3 seconds: short final record, still read
         log.flush();
       }
-      Thread.sleep(100);
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 
@@ -451,7 +451,7 @@ class LogManagerTest {
         boolEntry.append(true, 1000000);
         log.flush();
       }
-      Thread.sleep(50); // Allow file system to sync
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 
@@ -473,7 +473,7 @@ class LogManagerTest {
         entry.append(3.0, 10000000); // 10 seconds: short final record, still read
         log.flush();
       }
-      Thread.sleep(100);
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 
@@ -508,7 +508,7 @@ class LogManagerTest {
         strEntry.append("", 99_000_003L);
         log.flush();
       }
-      Thread.sleep(100);
+
 
       // Decode via LazyParsedLog (random access using DataLogAccess)
       var lazyLog = logManager.loadLog(logFile.toString());
@@ -567,7 +567,7 @@ class LogManagerTest {
         entry.append(1.0, 1000000);  // 1 second in microseconds
         log.flush();
       }
-      Thread.sleep(50); // Allow file system to sync
+
 
       logManager.loadLog(logFile.toString());
 
@@ -583,7 +583,7 @@ class LogManagerTest {
       try (var log = new DataLogWriter(logFile.toString())) {
         // Create log but don't add any entries
       }
-      Thread.sleep(50); // Allow file system to sync
+
 
       var parsedLog = logManager.loadLog(logFile.toString());
 

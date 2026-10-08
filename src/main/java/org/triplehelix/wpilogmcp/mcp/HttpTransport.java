@@ -116,7 +116,8 @@ public class HttpTransport {
           : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getAllowedDirectories()),
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getAllowedDirectories());
   /** When the MCP endpoint was last asked for anything, or a session last removed. */
-  private volatile long lastMcpActivityNanos = System.nanoTime();
+  private java.util.function.LongSupplier idleClock = System::nanoTime;
+  private volatile long lastMcpActivityNanos = idleClock.getAsLong();
 
   public HttpTransport(ToolRegistry toolRegistry, int port) {
     this(toolRegistry, port, "127.0.0.1", null, null);
@@ -159,6 +160,11 @@ public class HttpTransport {
    * {@code idle} after its last client went, and one started and never used exits {@code idle}
    * after it started. Call before {@link #start()}.
    */
+  void idleClock(java.util.function.LongSupplier clock) {
+    idleClock = clock; lastMcpActivityNanos = clock.getAsLong();
+  }
+  boolean stopping() { return stopped.get(); }
+
   public void setIdleExit(Duration idle, Runnable onIdle) {
     this.idleExit = idle;
     this.onIdle = onIdle;
@@ -206,7 +212,7 @@ public class HttpTransport {
     scheduler.scheduleAtFixedRate(
         () -> expireSessions(SESSION_IDLE_TIMEOUT),
         CLEANUP_INTERVAL_MINUTES, CLEANUP_INTERVAL_MINUTES, TimeUnit.MINUTES);
-    lastMcpActivityNanos = System.nanoTime();
+    lastMcpActivityNanos = idleClock.getAsLong();
     var idle = idleExit;
     if (idle != null && onIdle != null) {
       // Checked often enough that the exit comes within a quarter of the idle time after it is
@@ -226,14 +232,14 @@ public class HttpTransport {
   }
 
   private void noteMcpActivity() {
-    lastMcpActivityNanos = System.nanoTime();
+    lastMcpActivityNanos = idleClock.getAsLong();
   }
 
   /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
-  private void exitIfIdle() {
+  void exitIfIdle() {
     var idle = idleExit;
     if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active() || mirrorEndpoint.active()) return;
-    long idleFor = System.nanoTime() - lastMcpActivityNanos;
+    long idleFor = idleClock.getAsLong() - lastMcpActivityNanos;
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
     logger.info("No session and no request for {}: exiting", idle);

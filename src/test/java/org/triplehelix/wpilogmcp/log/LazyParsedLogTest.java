@@ -93,7 +93,7 @@ class LazyParsedLogTest {
       dblEntry.append(0.0, 99_000_000L);
       log.flush();
     }
-    Thread.sleep(50);
+
     return logFile;
   }
 
@@ -167,7 +167,7 @@ class LazyParsedLogTest {
       try (var log = new DataLogWriter(logFile.toString())) {
         log.flush();
       }
-      Thread.sleep(50);
+
 
       try (var lazy = openLazy(logFile)) {
         assertEquals(0, lazy.entryCount());

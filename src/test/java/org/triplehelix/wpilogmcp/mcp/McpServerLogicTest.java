@@ -221,11 +221,6 @@ class McpServerLogicTest {
       @Override public String description() { return "A slow tool"; }
       @Override public JsonObject inputSchema() { return new JsonObject(); }
       @Override public com.google.gson.JsonElement execute(JsonObject args) {
-        try {
-          Thread.sleep(50); // Simulate slow operation
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
         var result = new JsonObject();
         result.addProperty("success", true);
         return result;

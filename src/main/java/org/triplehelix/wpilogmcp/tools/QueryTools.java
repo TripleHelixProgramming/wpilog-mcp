@@ -370,10 +370,18 @@ public final class QueryTools {
       var intervalsArray = new JsonArray();
       intervals.stream().limit(limit).forEach(intervalsArray::add);
 
+      // Zero transitions is a finding only when samples were evaluated: say how many
+      int samplesEvaluated = 0;
+      for (var c : conditions) {
+        for (var segment : scope.split(c.signal().values())) samplesEvaluated += segment.size();
+      }
       var description = n == 1 ? conditions.get(0).describe()
           : String.join(all ? " AND " : " OR ",
               conditions.stream().map(c -> "(" + c.describe() + ")").toList());
-      var builder = success();
+      var builder = intervals.isEmpty() && samplesEvaluated == 0
+          ? ResponseBuilder.noMatch("The condition did not hold in the requested time window")
+              .lookedFor(List.of(description)).hint("Check the resolved window and the entry's held value; widen the window to search earlier records")
+          : success();
       if (n == 1) builder.addProperty("name", conditions.get(0).signal().label());
       builder.addProperty("condition", description);
       if (n > 1) {
@@ -388,11 +396,6 @@ public final class QueryTools {
           .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
           .addProperty("total_true_sec", totalTrue)
           .addProperty("window_sec", knownDuration);
-      // Zero transitions is a finding only when samples were evaluated: say how many
-      int samplesEvaluated = 0;
-      for (var c : conditions) {
-        for (var segment : scope.split(c.signal().values())) samplesEvaluated += segment.size();
-      }
       builder.addProperty("samples_evaluated", samplesEvaluated);
       for (int k = 0; k < n; k++) {
         builder.addInputSignal(n == 1 ? "entry" : "condition" + k, conditions.get(k).signal());

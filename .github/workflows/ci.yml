@@ -7,7 +7,36 @@ on:
     branches: [main]
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      extension: ${{ steps.paths.outputs.extension }}
+      harness: ${{ steps.paths.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        shell: python
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          import os, subprocess
+          base = os.environ.get('BEFORE', '')
+          if not base or set(base) == {'0'}:
+              files = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
+          else:
+              files = subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD'], text=True).splitlines()
+          extension = any(p.startswith('vscode-extension/') for p in files)
+          harness = any(p.startswith(('harness/', 'src/main/java/org/triplehelix/wpilogmcp/capture/',
+              'src/main/java/org/triplehelix/wpilogmcp/nt4/', 'src/main/java/org/triplehelix/wpilogmcp/sync/',
+              'src/test/java/org/triplehelix/wpilogmcp/conformance/', 'src/test/java/org/triplehelix/wpilogmcp/harness/'))
+              or p == 'build.gradle' for p in files)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'extension={str(extension).lower()}\nharness={str(harness).lower()}\n')
+
   build:
+    needs: changes
     strategy:
       # Let every OS finish, so one OS failing does not cancel (and hide) another's result
       fail-fast: false
@@ -28,16 +57,20 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       # license checks that every Java file carries the license header
-      - name: Build and test
-        run: ./gradlew test shadowJar license
+      - name: Build and test (Linux, with coverage)
+        if: matrix.os == 'ubuntu-latest'
+        run: ./gradlew build license -Pcoverage
+      - name: Build and test (Windows)
+        if: matrix.os == 'windows-latest'
+        run: ./gradlew build license
 
       - name: Check filename refusals without a locale
         if: matrix.os == 'ubuntu-latest'
-        run: env -u LANG -u LC_ALL ./gradlew --no-daemon filenameLocaleTest
+        run: env -u LANG -u LC_ALL ./gradlew filenameLocaleTest
 
       # The console names a failing test but not its assertion message; the report has both
       - name: Upload test report
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-report-${{ matrix.os }}
@@ -46,19 +79,30 @@ jobs:
             build/test-results/test
             build/reports/tests/filenameLocaleTest
             build/test-results/filenameLocaleTest
+            build/reports/jacoco
           retention-days: 14
 
       - name: Set up Node.js
+        if: needs.changes.outputs.extension == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       # npm test compiles the extension, then runs its tests
       - name: Build and test VS Code extension
+        if: needs.changes.outputs.extension == 'true'
         working-directory: vscode-extension
         run: |
           npm ci
           npm test
+
+      - name: Upload Arrow samples
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: arrow-samples
+          path: build/arrow-samples
+          retention-days: 14
 
       - name: Upload shadow JAR
         if: matrix.os == 'ubuntu-latest'
@@ -88,21 +132,14 @@ jobs:
   # the specification, which could share a misreading with the writer; pyarrow cannot. The Java
   # test leaves its streams and CSVs under build/arrow-samples, and the script compares them.
   arrow-crosscheck:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/download-artifact@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Produce the sample streams
-        run: ./gradlew test --tests '*DataEndpointTest*'
+          name: arrow-samples
+          path: build/arrow-samples
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -115,7 +152,8 @@ jobs:
           python ci/check_arrow.py build/arrow-samples
 
   shop-harness:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server'
+    needs: [build, changes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server' && needs.changes.outputs.harness == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -132,10 +170,14 @@ jobs:
             caches
             notifications
             permwrapper/dists
-      - name: Run ordinary tests and preserve socket assertions
-        run: ./gradlew test
       - name: Run the headless shop harness
         run: harness/run
+      - name: Collect the ordinary build XML
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: test-report-ubuntu-latest
+          path: build/ordinary-test-report
       - name: Upload harness evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -144,12 +186,14 @@ jobs:
           path: |
             build/reports/tests/shopHarness
             build/test-results/shopHarness
-            build/test-results/test
+            build/ordinary-test-report
             build/shop-harness
             build/reports/replay
           retention-days: 14
 
   editor-smoke:
+    needs: changes
+    if: needs.changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

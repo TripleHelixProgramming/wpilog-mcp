@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 /** Two real ntcore processes share one reconnecting capture client and one store. */
 @Tag("shop-harness")
+@org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "conformance.native", matches = "sample|full")
 class NtcoreReplayPairTest {
   @Test void rebootSeparatesSessionsAndPullMatches(@TempDir Path directory) throws Exception {
     try (var first = new ReplaySource(ReplayPullTest.fixture(directory.resolve("first"), ReplaySource.Kind.ADVANTAGEKIT, 0));
@@ -19,5 +20,7 @@ class NtcoreReplayPairTest {
     }
   }
 
+  // Java covers sampled real boot pairs; native already proves reset/reconnect on a generated pair.
+  @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "conformance.native", matches = "full")
   @Test void realBootsStaySeparate() throws Exception { RealReplayPairTest.run(true); }
 }

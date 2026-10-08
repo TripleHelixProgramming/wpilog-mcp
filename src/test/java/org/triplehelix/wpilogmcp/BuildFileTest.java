@@ -25,6 +25,12 @@ import org.junit.jupiter.api.Test;
  * Java file without the license header could reach main.
  */
 class BuildFileTest {
+  @Test void concurrentWorkersNeverReplaceEachOthersMappedFixtures() {
+    var directory = org.triplehelix.wpilogmcp.fixtures.FixtureLogs.defaultDirectory();
+    assertEquals("worker-" + System.getProperty("org.gradle.test.worker", "direct"), directory.getFileName().toString());
+    assertEquals(Path.of("build", "test-fixtures").toAbsolutePath(), directory.getParent());
+  }
+
 
   @Test
   void installDelegatesToThePackagedJarWithForce() throws IOException {

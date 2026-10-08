@@ -138,6 +138,12 @@ public final class LiveCapture implements LogStore.Observer {
     }
     return path;
   }
+  /** Current identity lookup from the published manifests, without sorting the inventory. */
+  public String sessionId(Path file) {
+    Path directory = resolve(file).getParent();
+    for (var held : catalog.sessions().values()) if (resolve(held.directory()).equals(directory)) return held.session().id();
+    return null;
+  }
   public List<SessionView> sessions() {
     var known = catalog;
     // ISO strings with and without fractional seconds do not sort chronologically. Parse

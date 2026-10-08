@@ -499,3 +499,8 @@ Explorer verification: milestone 11 now drives real VS Code in CI at the oldest 
 version and current stable for activation, the shared server, fixture Logs listing, editor
 opening and pit command arguments. Rendered plots, interactive credential/organizer/mirror
 flows and agent discovery remain the manual/future automated coverage in DEVELOPMENT.md.
+
+Round 12 adds the assistant's relative `last_seconds` scope and discoverable
+`pit://session/current` resource; the open flag distinguishes a current capture from its
+recorded siblings. Replay/verification cost now follows DEVELOPMENT's policy: Java owns clock
+placement, native owns transport fidelity, and only release preparation runs the whole corpus.

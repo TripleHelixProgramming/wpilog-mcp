@@ -34,7 +34,8 @@ class ContextProviderStateTest {
     var manager = LogManager.getInstance(); var saved = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
     try (var rio = new FakeRoboRio(temp.resolve("remote"), "STATS-STATE", "")) {
       var calls = new AtomicInteger(); var files = new AtomicInteger();
-      rio.script(StatsCommand.sample(PullConfig.DISABLED.directories()), out -> {
+      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8)));
+      rio.script(StatsCommand.sample(PullConfig.DISABLED.directories(), org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.sample(0), null)), out -> {
         calls.incrementAndGet(); out.write("unsupported proc format\n".getBytes(StandardCharsets.UTF_8));
       });
       var loop = new ManualScheduler(); var worker = new ManualScheduler(); var connections = new ManualScheduler();

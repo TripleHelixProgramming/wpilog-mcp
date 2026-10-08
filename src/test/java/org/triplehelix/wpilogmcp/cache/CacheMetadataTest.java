@@ -75,7 +75,6 @@ class CacheMetadataTest {
       Files.write(file, "touch test".getBytes());
       var meta = CacheMetadata.forLog(file, "fp", 1, "0.5.0");
 
-      Thread.sleep(50);
       Files.setLastModifiedTime(file, FileTime.from(Instant.now().plusSeconds(60)));
       assertFalse(meta.isValidFor(file));
     }

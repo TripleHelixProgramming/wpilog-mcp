@@ -123,7 +123,7 @@ class ToolConformanceTest {
       var copied = mirror.mirror(config, ignored -> {}).get(30, TimeUnit.SECONDS);
       if (!copied.state().equals("synchronized")) throw new IOException(copied.toString());
     } finally { originHttp.stop(); }
-    exportDir = dir.resolveSibling("test-fixtures-export").toAbsolutePath();
+    exportDir = dir.resolve("export").toAbsolutePath();
     Files.createDirectories(exportDir);
     savedExportDir = ExportTools.getExportDirectory();
     ExportTools.setExportDirectory(exportDir.toString());
@@ -175,58 +175,45 @@ class ToolConformanceTest {
     var logManager = LogManager.getInstance();
     var calls = new ArrayList<Call>();
 
-    for (var tool : tools) {
-      if (!ToolArguments.takesPath(tool)) {
-        for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
-          calls.add(evaluate(tool, "-", variant, false));
-        }
-        continue;
+    for (var tool : tools) if (!ToolArguments.takesPath(tool)) {
+      for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
+        calls.add(evaluate(tool, "-", variant, false));
       }
-      for (var fixture : fixtures) {
-        var path = fixture.path().toString();
-        var log = logManager.getOrLoad(path);
-        // Revlog tools answer from the synchronized revlogs: let the background sync finish so
-        // every call sees the same state
-        logManager.waitForRevLogSync(path, 30_000);
-        // Harness self-check: the log the tools will see must decode (an empty decode would
-        // make every check below pass vacuously)
-        for (var name : log.entries().keySet()) {
-          if (log.sampleCount(name) > 0) {
-            assertFalse(log.values().get(name).isEmpty(),
-                "harness bug: " + fixture.id() + " entry " + name + " decodes to no values");
-            break;
-          }
-        }
-        var variants = ToolArguments.variants(tool, fixture, log, fixtures, exportDir);
-        for (var variant : variants) {
-          var call = evaluate(tool, fixture.id(), variant, log.truncated());
-          calls.add(call);
-          if (call.result() == null) continue;
-          // Revlog tools depend on the load-time sync, which the reordered view below is not
-          if (RealLogConformanceTest.REVLOG_TOOLS.contains(tool.name())) continue;
-          // Determinism: the same call with the entries iterating in other orders. Each view
-          // wraps its own LazyParsedLog because the cache closes whatever log it replaces; the
-          // path is unloaded afterwards so the next call reloads a fresh log.
-          for (long order : PermutedLogData.ORDERS) {
-            var inner = new LazyParsedLog(path, new DataLogReader(path), 256L * 1024 * 1024);
-            logManager.testPutLog(path, new PermutedLogData(inner, order));
-            try {
-              assertInstanceOf(PermutedLogData.class, logManager.getOrLoad(path));
-              var permuted = run(tool, variant.args());
-              var a = ConformanceChecks.normalize(call.result());
-              var b = ConformanceChecks.normalize(permuted);
-              if (a == null || !a.equals(b)) {
-                calls.add(new Call(tool.name(), fixture.id(), variant.label(), permuted,
-                    List.of(Check.NONDETERMINISTIC)));
-                break;
-              }
-            } finally {
-              logManager.unloadLog(path);
-              inner.close();
-            }
+    }
+    for (var fixture : fixtures) {
+      String path = fixture.path().toString();
+      var log = logManager.getOrLoad(path);
+      logManager.waitForRevLogSync(path, 30_000);
+      for (var name : log.entries().keySet()) if (log.sampleCount(name) > 0) {
+        assertFalse(log.values().get(name).isEmpty(), "harness decode: " + fixture.id() + " / " + name);
+        break;
+      }
+      record Baseline(Tool tool, ToolArguments.Variant variant, Call call) {}
+      var baseline = new ArrayList<Baseline>();
+      for (var tool : tools) if (ToolArguments.takesPath(tool)) {
+        for (var variant : ToolArguments.variants(tool, fixture, log, fixtures, exportDir)) {
+          var call = evaluate(tool, fixture.id(), variant, log.truncated()); calls.add(call);
+          if (call.result() != null && !RealLogConformanceTest.REVLOG_TOOLS.contains(tool.name())) {
+            baseline.add(new Baseline(tool, variant, call));
           }
         }
       }
+      // One disk scan per fixture. Freeze the decoded values before the manager retires its
+      // mapping; every order is a view of that same data, including schemas and decode failures.
+      var frozen = FrozenLogData.copy(log);
+      try {
+        for (long order : PermutedLogData.ORDERS) {
+          logManager.testPutLog(path, new PermutedLogData(frozen, order));
+          assertInstanceOf(PermutedLogData.class, logManager.getOrLoad(path));
+          for (var expected : baseline) {
+            var permuted = run(expected.tool(), expected.variant().args());
+            var a = ConformanceChecks.normalize(expected.call().result());
+            var b = ConformanceChecks.normalize(permuted);
+            if (a == null || !a.equals(b)) calls.add(new Call(expected.tool().name(), fixture.id(),
+                expected.variant().label(), permuted, List.of(Check.NONDETERMINISTIC)));
+          }
+        }
+      } finally { logManager.unloadLog(path); }
     }
 
     writeReport(calls);

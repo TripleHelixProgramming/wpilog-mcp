@@ -130,7 +130,9 @@ class ReplayPullTest {
   @ParameterizedTest @EnumSource(ReplaySource.Kind.class)
   void measuredShiftsPassThroughSftpAndPreserveThePlacementLimit(ReplaySource.Kind kind) throws Exception {
     try (var source = new ReplaySource(fixture(directory, kind))) {
-      for (long shift : new long[] {0, 40_000, 120_000, 200_000, -120_000, 240_000, 260_000, 6_000_000}) {
+      // Zero proves the baseline, -120 ms the sign, +240 ms acceptance just inside
+      // 250 ms, and +260 ms refusal just outside it. The full matrix is opt-in.
+      for (long shift : new long[] {0, -120_000, 240_000, 260_000}) {
         var run = Files.createDirectory(directory.resolve("shift-" + shift));
         var report = gateway(source, run, shift);
         var fidelity = (Map<?, ?>) report.get("fidelity");

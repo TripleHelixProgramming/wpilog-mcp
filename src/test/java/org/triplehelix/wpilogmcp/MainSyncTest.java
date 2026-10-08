@@ -82,16 +82,12 @@ class MainSyncTest {
     writeConfig(port); var output = temp.resolve("daemon.txt");
     var child = process(List.of("--internal-daemon", "default", "--config", config.toString()), output).start();
     try {
-      var client = java.net.http.HttpClient.newHttpClient(); long deadline = System.nanoTime() + java.time.Duration.ofSeconds(15).toNanos(); boolean ready = false;
-      while (child.isAlive() && System.nanoTime() < deadline) {
-        try {
-          ready = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/health"))
+      var client = java.net.http.HttpClient.newHttpClient();
+      org.triplehelix.wpilogmcp.harness.HarnessHttp.await("daemon health", 15, () -> {
+        assertTrue(child.isAlive(), Files.readString(output));
+        return client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/health"))
               .timeout(java.time.Duration.ofSeconds(1)).GET().build(), java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode() == 200;
-          if (ready) break;
-        } catch (java.io.IOException ignored) { }
-        Thread.sleep(20);
-      }
-      assertTrue(ready, Files.readString(output));
+      });
       var run = Files.createDirectories(temp.resolve(".wpilog-mcp/run")); Files.writeString(run.resolve("default.pid"), child.pid() + "\n" + port + "\n");
       var command = run(url()); assertTrue(command.output().contains("Sync through running daemon"), command.output());
       assertTrue(command.output().contains("job "), command.output()); assertEquals(1, result(command).getAsJsonArray("files_copied").size());

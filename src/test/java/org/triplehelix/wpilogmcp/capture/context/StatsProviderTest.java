@@ -65,7 +65,8 @@ class StatsProviderTest {
   @Test void realExecIsStampedAtSendAndNoEstimateDropsEvenIfOneArrivesBeforeTheReply() throws Exception {
     var time = new AtomicLong(10_000_000); var offset = new AtomicReference<Double>(40_000_000.0);
     try (var rio = new FakeRoboRio(temp, "SYNTHETIC-STATS", "")) {
-      String command = StatsCommand.sample(PullConfig.DISABLED.directories());
+      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8)));
+      String command = StatsCommand.sample(PullConfig.DISABLED.directories(), org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.sample(0), null));
       rio.script(command, output -> {
         time.addAndGet(150_000); offset.set(90_000_000.0);
         output.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8));
@@ -79,9 +80,67 @@ class StatsProviderTest {
         assertEquals(-50, result.kernelClock().offsetSec()); assertEquals(150, result.kernelClock().roundTripMs());
         offset.set(null); result = provider.sample(ssh);
         assertNull(result.timestampUs()); assertNull(result.kernelClock()); assertEquals(1, provider.droppedBeforeSync());
-        assertEquals(2, rio.commands.get()); assertEquals(1, rio.authentications.get());
+        assertEquals(3, rio.commands.get()); assertEquals(1, rio.authentications.get());
       }
     }
+  }
+
+  @Test void discoversOnceChecksStartTicksAndDiscoversAgainOnlyAfterRestartOrReconnect() throws Exception {
+    var phase = new java.util.concurrent.atomic.AtomicInteger();
+    var initialLookups = new java.util.concurrent.atomic.AtomicInteger();
+    var restartLookups = new java.util.concurrent.atomic.AtomicInteger();
+    var samples = new java.util.concurrent.atomic.AtomicInteger();
+    var clock = new AtomicLong();
+    var provider = new StatsProvider(new ProviderConfig.Stats(true, 2_000_000, 100_000),
+        PullConfig.DISABLED.directories(), clock::get, () -> 0.0);
+    var original = ProcStats.configuration(ProcFixture.sample(0), null);
+    String command = StatsCommand.sample(PullConfig.DISABLED.directories(), original);
+    // This is the steady command: shell reads/printf and exactly one external df, no process scan.
+    for (String forbidden : List.of("getconf", "cmdline", "robotCommand", "sed ", "grep ", "tr ", "cat ")) {
+      assertFalse(command.contains(forbidden), forbidden);
+    }
+    assertEquals(1, command.split("df -Pk", -1).length - 1);
+    assertTrue(command.contains("emit /proc/42/stat"));
+    try (var rio = new FakeRoboRio(temp, "SYNTHETIC-STATS", "")) {
+      rio.script(StatsCommand.lookup(true), out -> {
+        initialLookups.incrementAndGet(); out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8));
+      });
+      rio.script(StatsCommand.lookup(false), out -> {
+        restartLookups.incrementAndGet(); out.write(ProcFixture.sample(3).replace(" 500 99999", " 800 99999").getBytes(StandardCharsets.UTF_8));
+      });
+      rio.script(command, out -> {
+        samples.incrementAndGet(); int n = phase.get(); clock.addAndGet(2_000_000);
+        String text = ProcFixture.sample(n);
+        if (n >= 3) text = text.replace(" 500 99999", " 800 99999"); // Same pid, different process.
+        out.write(text.getBytes(StandardCharsets.UTF_8));
+      });
+      var settings = new PullConfig.Ssh("lvuser", "", null, false, rio.port());
+      try (var ssh = JschConnection.connect("127.0.0.1", settings, null)) {
+        for (int n = 0; n < 3; n++) { phase.set(n); provider.sample(ssh); }
+        assertEquals(1, initialLookups.get()); assertEquals(0, restartLookups.get()); assertEquals(3, samples.get());
+        phase.set(3);
+        assertFalse(provider.sample(ssh).sample().values().containsKey("program/pid"), "Do not report the reused pid until discovery confirms it");
+        assertEquals(0, restartLookups.get());
+        phase.set(4); assertEquals(42L, provider.sample(ssh).sample().values().get("program/pid").longValue());
+        phase.set(5); provider.sample(ssh);
+        assertEquals(1, initialLookups.get()); assertEquals(1, restartLookups.get()); assertEquals(6, samples.get());
+      }
+      phase.set(0);
+      try (var ssh = JschConnection.connect("127.0.0.1", settings, null)) { provider.sample(ssh); }
+      assertEquals(2, initialLookups.get()); assertEquals(1, restartLookups.get()); assertEquals(7, samples.get());
+      assertEquals(10, rio.commands.get());
+    }
+  }
+
+  @Test void oneDfReportsEachFilesystemAndAnUnmountDoesNotInventItsFreeSpace() throws Exception {
+    String text = ProcFixture.sample(0).replace("WPILOG_STATS_1:disk/home/lvuser", "WPILOG_STATS_1:disk_paths\n/home/lvuser\n/u\nWPILOG_STATS_1:disk")
+        .replace("WPILOG_STATS_1:program", "/dev/usb 200 180 20 90% /u\nWPILOG_STATS_1:program");
+    var values = ProcStats.parse(text).gauges();
+    assertEquals(11_264L, values.get("disk/home/lvuser/free_bytes").longValue());
+    assertEquals(20_480L, values.get("disk/u/free_bytes").longValue());
+    var missing = ProcStats.parse(text.replace("/dev/usb 200 180 20 90% /u\n", ""));
+    assertFalse(missing.gauges().keySet().stream().anyMatch(k -> k.startsWith("disk/")));
+    assertTrue(missing.notes().stream().anyMatch(n -> n.contains("Filesystems changed")));
   }
 
   @Test void budgetBacksOffToThirtySecondsAndRecoversToTheConfiguredBase() {

@@ -86,6 +86,16 @@ class AnalysisGuidanceTest {
         "Instructions are " + AnalysisGuidance.SERVER_INSTRUCTIONS.length() + " characters");
   }
 
+  @Test void completeInstructionsLocateFreshDataBeforeTheAnalysisRulesAndFitTheLimit() {
+    for (String location : List.of(ToolRegistry.LOCAL_LOCATION, ToolRegistry.PIT_LOCATION)) {
+      String text = AnalysisGuidance.forLocation(location);
+      assertTrue(text.startsWith(location + "\n" + AnalysisGuidance.FRESH_DATA_INSTRUCTIONS + "\n"));
+      assertTrue(new Gson().toJson(text).getBytes(StandardCharsets.UTF_8).length <= AnalysisGuidance.INSTRUCTIONS_BYTE_LIMIT, text);
+      for (String tool : List.of("list_sessions", "get_latest_values", "wait_for_change", "list_available_logs")) assertTrue(text.contains(tool));
+      assertTrue(text.contains("recorded past")); assertTrue(text.contains("marks open"));
+    }
+  }
+
   @Test
   @DisplayName("server instructions are plain ASCII")
   void instructionsAreAscii() {

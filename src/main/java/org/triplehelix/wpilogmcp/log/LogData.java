@@ -50,6 +50,9 @@ public interface LogData {
   /** The latest timestamp in the log (seconds). */
   double maxTimestamp();
 
+  /** Anchor for a relative scope: the call's robot time when live, otherwise the last record. */
+  default double timeScopeEnd() { return maxTimestamp(); }
+
   /** Whether the log was truncated during parsing. */
   boolean truncated();
 
