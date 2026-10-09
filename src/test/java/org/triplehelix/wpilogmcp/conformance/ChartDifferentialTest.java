@@ -20,11 +20,11 @@ class ChartDifferentialTest {
   @Test void summariesAgreeWithRawRecordsNamedByTheInputsInsideTheirWindow() throws Exception {
     var path = temp.resolve("functions.wpilog");
     try (var w = new FixtureWriter(path, "")) {
-      for (int t = 0; t <= 20; t++) { w.dbl("/Square", t, t * t); w.dbl("/Ramp", t, 3 * t - 2); }
+      for (int t = 0; t <= 6000; t++) { w.dbl("/Square", t, t * t); w.dbl("/Ramp", t, 3 * t - 2); }
     }
     var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
     try {
-      var args = JsonParser.parseString("{\"entries\":[\"/Square\",\"/Ramp\"],\"start_time\":4,\"end_time\":9,\"width\":320,\"height\":180}").getAsJsonObject(); args.addProperty("path", path.toString());
+      var args = JsonParser.parseString("{\"entries\":[\"/Square\",\"/Ramp\"],\"start_time\":4,\"end_time\":5003,\"width\":320,\"height\":180}").getAsJsonObject(); args.addProperty("path", path.toString());
       var result = new RenderChartTool().execute(args).getAsJsonObject(); assertEquals("ok", result.get("status").getAsString(), result::toString);
       var entries = result.getAsJsonObject("inputs").getAsJsonObject("entries");
       var names = new HashSet<String>(); for (var e : entries.entrySet()) if (e.getValue().isJsonPrimitive()) names.add(e.getValue().getAsString());

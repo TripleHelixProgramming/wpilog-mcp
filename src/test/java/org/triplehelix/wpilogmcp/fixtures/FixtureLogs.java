@@ -58,7 +58,25 @@ public final class FixtureLogs {
 
   /** Default directory for generated fixtures (under Gradle's build directory). */
   public static Path defaultDirectory() {
-    return Path.of("build", "test-fixtures", "worker-" + System.getProperty("org.gradle.test.worker", "direct")).toAbsolutePath();
+    return WorkerDirectory.PATH;
+  }
+
+  private static final class WorkerDirectory {
+    // Worker numbers restart with a new Gradle daemon; last run's stores are not fixtures.
+    static final Path PATH = freshDirectory(Path.of("build", "test-fixtures",
+        "worker-" + System.getProperty("org.gradle.test.worker", "direct")).toAbsolutePath());
+  }
+
+  /** A fixture root is owned by its creator. Clear it before recreating manifests and files. */
+  public static Path freshDirectory(Path root) {
+    try {
+      org.triplehelix.wpilogmcp.log.LogManager.getInstance().release(root);
+      if (Files.exists(root)) try (var paths = Files.walk(root)) {
+        for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
+      }
+      Files.createDirectories(root);
+      return root;
+    } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
   }
 
   /** Directories this JVM has generated into, and what it generated there. */

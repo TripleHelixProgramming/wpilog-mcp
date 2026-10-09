@@ -52,8 +52,10 @@ Ordinary tests never run native replay. They use half the available processors, 
 fork and at most four, with 768 MiB per fork (at most 3 GiB combined heap). The real-log opt-in
 uses one larger fork. Each task has its own disk cache; concurrent forks share its atomic cache
 claims, while tests inspecting cache contents use `@TempDir` caches. Generated corpus files live
-under `build/test-fixtures/worker-<worker>` and are written once per JVM, so Windows mappings in
-another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
+under `build/test-fixtures/worker-<worker>`, whose root is cleared before its first use in each JVM,
+and are written once per JVM. Every separately created store/export fixture root is cleared before
+creation too; reused worker numbers must not inherit another build's manifests. Windows mappings
+in another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
 uses decoded immutable views for entry-order permutations, preserving raw sample counts separately
 from successfully decoded values. Coverage instrumentation is absent from ordinary/targeted runs.
 The harness CI job needs only path classification and runs beside the builds, with its own

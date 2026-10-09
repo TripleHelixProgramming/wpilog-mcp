@@ -531,8 +531,8 @@ image reason in `skipped`. No plotting dependency or native library is installed
 - `last_seconds` (optional): Positive recent duration resolved by the shared time-scope base; cannot accompany start/end.
 - `scope` (optional): Driver Station phase scope, as `get_statistics` accepts.
 - `windows` (optional): List of `{start, end}` windows, intersected with the scope and bounds.
-- `limit` (optional): Drawing samples or buckets per series, default 1000, from 1 to 10000; summaries and histograms cover the whole window.
-- `offset` (optional): Drawing samples or buckets to skip, default 0.
+- `limit` (optional): Explicit drawing page size, default 1000 when paging, from 1 to 10000; with neither limit nor offset the drawing covers the whole window. Summaries and histograms always cover the whole window.
+- `offset` (optional): Explicit drawing samples or buckets to skip, default 0; passing this requests paging.
 - `max_points` (optional): Time-series buckets, from 1 to 10000 per scope window, retaining extremes and first/last; exact samples when they fit. Applies only to `time_series`.
 - `width` (optional): PNG width, default 960, from 160 to 4096.
 - `height` (optional): PNG height, default 540, from 120 to 4096. Width times height cannot exceed 4,000,000 pixels.
@@ -547,7 +547,7 @@ not the existence of the recorded events; a picture is not causal evidence and o
 **Specification version 1:** `version`, `kind`, `width`, `height`, `window`, `series`, `phases`,
 `phase_basis` and `open_url`. A series names its entry/field, name-stated `unit` (null when
 none is stated), and `style` (`step_after` for change-only, otherwise `line`). Time-series
-`points` are `[timestamp_sec, value]`; reduced series carry `buckets` and `bucket_rule`.
+`points` are `[timestamp_sec, value]`; reduced series carry `buckets` (including start/end) and `bucket_rule`. With more than 1000 samples and no explicit page, a time series uses one equal-duration min/max bucket per plot pixel column, over the entire window. `drawn` gives each series' mode (`all samples`, `buckets`, or `page`) and count. `max_points` chooses the bucket count explicitly.
 Nested `limits.points` or `limits.buckets` report the true total after offset when truncated.
 Separate scope windows never join across an excluded interval. Phases come only from the
 shared Driver Station resolver, with no guessed-name fallback.

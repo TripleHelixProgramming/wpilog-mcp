@@ -50,3 +50,9 @@ test("the data pane permits only bundled wasm and the local-source worker, witho
   assert.ok(policy.includes("connect-src https://extension-resource.test"));
   assert.ok(policy.includes("worker-src blob:")); assert.ok(!policy.includes(" https:;"));
 });
+
+test("a validity bitmap null is a null cell even when its storage holds a number", () => {
+  const stream = batch([1e6, 2e6, 3e6], [10, 99, 30]);
+  Object.assign(stream.batches[0].columns[1], { valid: [true, false, true] });
+  assert.deepEqual(rowsOf(stream).rows.map((row: any) => row["/fixture"]), [10, null, 30]);
+});

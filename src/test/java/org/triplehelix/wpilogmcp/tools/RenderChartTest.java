@@ -115,4 +115,57 @@ class RenderChartTest {
     assertEquals(1, page.getAsJsonArray("buckets").size(), "offset and limit page buckets as read_entry does");
     assertEquals(4, bucketPage.getAsJsonArray("summary").get(0).getAsJsonObject().get("count").getAsInt());
   }
+  @Test void defaultDrawingCoversAllFiveThousandSamplesWithPixelBuckets() throws Exception {
+    log = temp.resolve("dense.wpilog");
+    try (var w = new FixtureWriter(log, "")) {
+      for (int i = 0; i < 5000; i++) w.dbl("/Ramp", i, i);
+    }
+    var result = call("{\"name\":\"/Ramp\"}");
+    var series = spec(result).getAsJsonArray("series").get(0).getAsJsonObject();
+    assertTrue(series.has("buckets"), "A default chart must cover the whole window, not its first page");
+    var buckets = series.getAsJsonArray("buckets");
+    assertEquals(0, buckets.get(0).getAsJsonObject().get("start").getAsDouble());
+    assertEquals(4999, buckets.get(buckets.size() - 1).getAsJsonObject().get("end").getAsDouble());
+    assertEquals(5000, buckets.asList().stream().mapToInt(b -> b.getAsJsonObject().get("count").getAsInt()).sum());
+    assertEquals(960 - 76, buckets.size(), "One min/max bucket per plot pixel column");
+    assertEquals("buckets", series.getAsJsonObject("drawn").get("mode").getAsString());
+    assertEquals(buckets.size(), series.getAsJsonObject("drawn").get("count").getAsInt());
+    assertEquals(5000, result.getAsJsonArray("summary").get(0).getAsJsonObject().get("count").getAsInt());
+    assertEquals(2499.5, result.getAsJsonArray("summary").get(0).getAsJsonObject().get("mean").getAsDouble());
+  }
+  @Test void unequalScatterTimesLeaveUnpairedSamplesOnBothSides() throws Exception {
+    log = temp.resolve("unequal.wpilog");
+    try (var w = new FixtureWriter(log, "")) {
+      for (double t : new double[] {2, 3, 4}) w.dbl("/x", t, t * 2);
+      for (double t : new double[] {2, 3.5, 4}) w.dbl("/y", t, t * 3);
+    }
+    var pair = spec(call("{\"entries\":[\"/x\",\"/y\"],\"kind\":\"scatter\"}")).getAsJsonArray("pairs").get(0).getAsJsonObject();
+    assertEquals(JsonParser.parseString("[[4,6,2],[8,12,4]]"), pair.get("points"));
+    assertEquals(2, pair.get("matched").getAsInt());
+    assertEquals(1, pair.get("unpaired_x").getAsInt()); assertEquals(1, pair.get("unpaired_y").getAsInt());
+  }
+  @Test void linkRepeatsAndEncodesEveryEntry() throws Exception {
+    log = temp.resolve("names.wpilog");
+    var names = List.of("/one space", "/two\"quote", "/three&+?");
+    try (var w = new FixtureWriter(log, "")) { for (var name : names) w.dbl(name, 0, 1); }
+    var request = new JsonObject(); request.add("entries", new Gson().toJsonTree(names));
+    var link = spec(call(request.toString())).get("open_url").getAsString();
+    var encoded = Arrays.stream(java.net.URI.create(link).getRawQuery().split("&"))
+        .filter(p -> p.startsWith("entries=")).map(p -> p.substring(8)).toList();
+    assertEquals(List.of("%2Fone+space", "%2Ftwo%22quote", "%2Fthree%26%2B%3F"), encoded);
+  }
+  @Test void aFontConfigurationErrorSkipsOnlyTheImage() throws Exception {
+    var result = new RenderChartTool(s -> { throw new InternalError("Fontconfig head is null"); })
+        .execute(args("{\"name\":\"/VoltageVolts\"}")).getAsJsonObject();
+    assertEquals("partial", result.get("status").getAsString(), result::toString);
+    assertTrue(result.get("skipped").toString().contains("InternalError"));
+    assertTrue(result.has("summary")); assertTrue(result.has("inputs")); assertFalse(result.has("_content"));
+  }
+  @Test void phasesAreClippedAtBothWindowEdges() throws Exception {
+    var phases = spec(call("{\"name\":\"/VoltageVolts\",\"start_time\":3,\"end_time\":4}" )).getAsJsonArray("phases");
+    assertEquals(1, phases.size()); var phase = phases.get(0).getAsJsonObject();
+    assertEquals("enabled", phase.get("state").getAsString());
+    assertEquals(3, phase.get("start").getAsDouble()); assertEquals(4, phase.get("end").getAsDouble()); assertEquals(1, phase.get("duration").getAsDouble());
+  }
+
 }

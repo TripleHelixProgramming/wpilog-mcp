@@ -58,7 +58,7 @@ final class ChartImage {
           if (s.has("buckets")) for (var b : s.getAsJsonArray("buckets")) {
             var bucket = b.getAsJsonObject(); if (bucket.get("min").isJsonNull()) continue; double x = bucket.get("start").getAsDouble();
             line(g, transform, x, bucket.get("min").getAsDouble(), x, bucket.get("max").getAsDouble());
-            dot(g, transform, x, bucket.get("first").getAsDouble()); dot(g, transform, x, bucket.get("last").getAsDouble());
+            dot(g, transform, x, bucket.get("first").getAsDouble()); dot(g, transform, bucket.get("end").getAsDouble(), bucket.get("last").getAsDouble());
           } else drawPath(g, transform, s.getAsJsonArray("points"), s.get("style").getAsString().equals("step_after"), s.getAsJsonArray("windows"));
         }
       }
@@ -101,7 +101,7 @@ final class ChartImage {
       var s = entry.getAsJsonObject();
       if (s.has("bins")) for (var value : s.getAsJsonArray("bins")) { var bin = value.getAsJsonObject(); include(b, bin.get("low").getAsDouble(), 0); include(b, bin.get("high").getAsDouble(), bin.get("count").getAsDouble()); }
       else if (s.has("points")) for (var p : s.getAsJsonArray("points")) include(b, p.getAsJsonArray().get(0).getAsDouble(), p.getAsJsonArray().get(1).getAsDouble());
-      else for (var value : s.getAsJsonArray("buckets")) { var bin = value.getAsJsonObject(); if (!bin.get("min").isJsonNull()) { include(b, bin.get("start").getAsDouble(), bin.get("min").getAsDouble()); include(b, bin.get("start").getAsDouble(), bin.get("max").getAsDouble()); } }
+      else for (var value : s.getAsJsonArray("buckets")) { var bin = value.getAsJsonObject(); if (!bin.get("min").isJsonNull()) { include(b, bin.get("start").getAsDouble(), bin.get("min").getAsDouble()); include(b, bin.get("end").getAsDouble(), bin.get("max").getAsDouble()); } }
     }
     for (int i = 0; i < 4; i += 2) { if (!Double.isFinite(b[i])) { b[i] = 0; b[i + 1] = 1; } if (b[i] == b[i + 1]) { b[i] -= .5; b[i + 1] += .5; } }
     return b;

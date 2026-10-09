@@ -31,7 +31,8 @@ public final class RenderChartTool extends LogRequiringTool {
         + "Histogram bins are equal width, ceil(sqrt(count)) capped at 64; constant data has one unit-wide bin. "
         + "Scatter uses exact timestamp pairs only (no interpolation or extrapolation); unpaired records are counted in chart_spec. "
         + "Summaries cover all finite samples of each series in the requested window, as get_statistics does; they are sample-weighted, not time-weighted. "
-        + "limit/offset page the drawing, never its summary; max_points buckets a time series with extremes retained, and limits report omitted points. "
+        + "By default the drawing covers the whole window; dense time series use one min/max bucket per plot pixel column. "
+        + "series.drawn names all samples, buckets and their count, or an explicitly requested page. Only explicit limit/offset page the drawing, never its summary; max_points chooses the bucket count. "
         + "Histograms count the whole window. Field summaries are for x and y separately, with their schema's units; Pose3d is projected onto the floor. "
         + "An empty window returns no_match with looked_for and hint. A chart is a view, not causal evidence; one log is one sample."
         + NumericSignal.PATH_HELP + StatisticsTools.SCOPE_HELP;
@@ -45,7 +46,7 @@ public final class RenderChartTool extends LogRequiringTool {
         .addNumberProperty("end_time", "End timestamp in seconds", false, null)
         .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION, false)
         .addArrayProperty("windows", TimeScope.WINDOWS_DESCRIPTION, TimeScope.windowItemSchema(), false)
-        .addIntegerProperty("limit", "Drawing samples per series (default 1000, max 10000); summaries and histograms use the full window", false, 1000)
+        .addIntegerProperty("limit", "Request a drawing page (default page size 1000, max 10000); omitted limit/offset draws the whole window", false, null)
         .addIntegerProperty("offset", "Drawing samples to skip per series", false, 0)
         .addIntegerProperty("max_points", "Equal-time buckets for time_series, retaining min/max/first/last (max 10000)", false, null)
         .addIntegerProperty("width", "PNG width (default 960, 160..4096; width*height at most 4000000)", false, 960)
@@ -56,6 +57,7 @@ public final class RenderChartTool extends LogRequiringTool {
     int width = integer(args, "width", 960, 160, 4096), height = integer(args, "height", 540, 120, 4096);
     if ((long) width * height > MAX_PIXELS) throw new IllegalArgumentException("width * height must not exceed " + MAX_PIXELS + " pixels");
     int limit = integer(args, "limit", 1000, 1, MAX_SAMPLES), offset = integer(args, "offset", 0, 0, Integer.MAX_VALUE);
+    boolean paged = args.has("limit") || args.has("offset");
     Integer maxPoints = args.has("max_points") ? integer(args, "max_points", 1000, 1, MAX_SAMPLES) : null;
     String kind = getOptString(args, "kind", "time_series");
     if (!Set.of("time_series", "histogram", "scatter", "field").contains(kind)) throw new IllegalArgumentException("Unknown chart kind: " + kind);
@@ -86,22 +88,32 @@ public final class RenderChartTool extends LogRequiringTool {
       var item = signal.describe(); item.addProperty("name", signal.label());
       item.addProperty("unit", EntryData.unitFromName(signal.label()));
       item.addProperty("style", quality.sampling() == DataQuality.Sampling.CHANGE_ONLY ? "step_after" : "line");
-      if (kind.equals("histogram")) item.add("bins", histogram(values));
+      if (kind.equals("histogram")) { item.add("bins", histogram(values)); drawn(item, "all samples", values.size()); }
       else {
-        var page = values.stream().skip(offset).limit(limit).toList();
-        var points = new JsonArray();
-        for (var tv : page) { var point = new JsonArray(); point.add(tv.timestamp()); point.add(toDouble(tv.value())); points.add(point); }
-        ResultContract.addLimitedList(item, "points", points, Math.max(0, values.size() - offset), limit);
         // Each scope window is a separate path. Drawing never bridges an excluded disabled interval.
         item.add("windows", new Gson().toJsonTree(scope.windows()));
-        if (maxPoints != null && values.size() > maxPoints) {
+        int bucketCount = maxPoints != null ? maxPoints : width - 76; // Plot margins: 58 left, 18 right.
+        if (kind.equals("time_series") && values.size() > (maxPoints != null ? maxPoints : limit) && (maxPoints != null || !paged)) {
           var buckets = new JsonArray();
-          for (var part : parts) if (!part.isEmpty()) buckets.addAll(new Gson().toJsonTree(Buckets.of(part, null, null, maxPoints).buckets()).getAsJsonArray());
-          item.remove("points"); item.remove("limits");
+          for (var part : parts) if (!part.isEmpty()) {
+            var reduced = Buckets.of(part, null, null, bucketCount);
+            for (var bucket : reduced.buckets()) {
+              var json = new Gson().toJsonTree(bucket).getAsJsonObject();
+              json.addProperty("end", Math.min(part.get(part.size() - 1).timestamp(), bucket.start() + reduced.bucketSec()));
+              buckets.add(json);
+            }
+          }
           var bucketPage = new JsonArray();
-          buckets.asList().stream().skip(offset).limit(limit).forEach(bucketPage::add);
-          ResultContract.addLimitedList(item, "buckets", bucketPage, Math.max(0, buckets.size() - offset), limit);
+          buckets.asList().stream().skip(offset).limit(paged ? limit : Integer.MAX_VALUE).forEach(bucketPage::add);
+          ResultContract.addLimitedList(item, "buckets", bucketPage, Math.max(0, buckets.size() - offset), paged ? limit : Integer.MAX_VALUE);
+          drawn(item, paged ? "page" : "buckets", bucketPage.size());
           item.addProperty("bucket_rule", "equal duration within each scope window; extrema and first/last retained");
+        } else {
+          var page = values.stream().skip(offset).limit(paged ? limit : Integer.MAX_VALUE).toList();
+          var points = new JsonArray();
+          for (var tv : page) { var point = new JsonArray(); point.add(tv.timestamp()); point.add(toDouble(tv.value())); points.add(point); }
+          ResultContract.addLimitedList(item, "points", points, Math.max(0, values.size() - offset), paged ? limit : Integer.MAX_VALUE);
+          drawn(item, paged ? "page" : "all samples", points.size());
         }
       }
       series.add(item); builder.addInputSignal("series" + series.size(), signal);
@@ -113,7 +125,7 @@ public final class RenderChartTool extends LogRequiringTool {
     if (kind.equals("scatter") || kind.equals("field")) {
       var paths = new JsonArray();
       for (int i = 0; i < measured.size(); i += 2) {
-        var pair = pairs(measured.get(i), measured.get(i + 1), offset, limit);
+        var pair = pairs(measured.get(i), measured.get(i + 1), offset, paged ? limit : Integer.MAX_VALUE);
         pair.addProperty("x", labels.get(i)); pair.addProperty("y", labels.get(i + 1)); paths.add(pair);
       }
       if (paths.asList().stream().allMatch(p -> p.getAsJsonObject().getAsJsonArray("points").isEmpty())) {
@@ -131,15 +143,13 @@ public final class RenderChartTool extends LogRequiringTool {
     builder.addData("chart_spec", spec).addData("summary", summaries).addDataQuality(worst)
         .addDirectives(AnalysisDirectives.fromQuality(worst).addSingleMatchCaveat());
     try { builder.addImage(renderer.draw(spec)); }
-    catch (LinkageError e) { unavailable(builder, e); }
-    catch (RuntimeException e) {
-      if (!e.getClass().getName().equals("java.awt.HeadlessException")) throw e;
-      unavailable(builder, e);
-    } catch (Error e) {
-      if (!e.getClass().getName().equals("java.awt.AWTError")) throw e;
-      unavailable(builder, e);
-    } catch (java.io.IOException e) { builder.addSkipped("image", "PNG writer is unavailable: " + e.getMessage()); }
+    catch (OutOfMemoryError e) { throw e; } // The tool base owns heap exhaustion.
+    catch (Throwable e) { unavailable(builder, e); }
     return builder.build();
+  }
+  private static void drawn(JsonObject item, String mode, int count) {
+    var drawn = new JsonObject(); drawn.addProperty("mode", mode); drawn.addProperty("count", count);
+    item.add("drawn", drawn);
   }
   private static void unavailable(ResponseBuilder builder, Throwable error) {
     builder.addSkipped("image", "Headless imaging is unavailable: " + error.getClass().getSimpleName());

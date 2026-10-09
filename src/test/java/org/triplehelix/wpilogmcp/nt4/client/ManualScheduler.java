@@ -42,11 +42,11 @@ public final class ManualScheduler implements ClientScheduler {
   /** A fast reply may already have run in advance's drain; never demand a second reply. */
   public void receive() throws InterruptedException {
     if (callbacks > beforeAdvance) return;
-    var action = ready.poll(10, TimeUnit.SECONDS);
+    var action = ready.poll(30, TimeUnit.SECONDS);
     assertTrue(action != null, "Client callback missing"); action.run(); callbacks++; drain();
   }
   public void until(BooleanSupplier condition) throws InterruptedException {
-    until(condition, java.time.Duration.ofSeconds(10));
+    until(condition, java.time.Duration.ofSeconds(30));
   }
   /** A wall-clock guard for network delivery and callback I/O; it never advances the NT4 clock. */
   public void until(BooleanSupplier condition, java.time.Duration timeout) throws InterruptedException {

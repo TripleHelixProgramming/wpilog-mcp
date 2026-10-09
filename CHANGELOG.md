@@ -90,6 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `render_chart` draws the full window by default, retaining pixel-column extremes in dense time series; previously a default image silently showed only the first 1,000 samples. Explicit limit/offset still pages the drawing and summaries always cover the whole window.
+- Chart rendering errors, including missing-font `InternalError`, skip only the image with the error class; previously some toolkit failures lost the complete JSON result.
+- Conformance fixtures clear their owned directories before creation; reused Gradle worker numbers previously left unmanifested system text that broke a later build.
+
 - System pull passes reuse a connection's inventory until manifest or directory facts change, and shared syslog receipts live once in the robot's index with written-span selection. Previously each pass reparsed every session and each rotation rewrote historical manifests. Legacy receipts remain readable; the journal's first pass uses `-b` alone instead of relying on boot-UUID argument support.
 - **Service ownership:** only `--managed` marks a server as supervisor-owned. Previously an inherited `INVOCATION_ID` also marked ordinary daemons launched by CI runners or terminal shells, preventing start, adoption and stop. Printed units accept exit status 143 as a clean SIGTERM stop on JVMs without the signal handler.
 - **Service installation:** POSIX installs create readable JARs (`0644`), readable/executable launchers and traversable program directories (`0755`), repairing their modes on reinstall while preserving configuration permissions. Previously owner-only temporary-file modes survived publication and prevented the service account from reading a root-installed launcher or JAR.
@@ -123,6 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File-size refusal:** WPILOGs beyond the current 2 GB mapping limit remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed.
 
 ### Testing
+
+- Chart regressions pin unequal-time scatter pairs, every encoded link entry, clipped phases and data-view null cells. Socket-delivery test guards allow thirty seconds under load without changing protocol deadlines.
 
 - Peer system-text copying now faces an advertised-hash mismatch with same-length bytes on the peer path, checking refused placement, absent receipts and retry state. Previously a size-only verifier passed because corruption tests reached only the mirror verifier.
 - Chart checks decode PNGs, compare window summaries with an independent reader, and plant size, missing-series, scope, hold-style and guessed-phase faults. Adapter/notebook/URI plants cover replaced follow rows, omitted inputs and bypassed server admission; the two real-editor CI jobs also check Perspective row counts and an appended batch. Each smoke run owns its appendable fixture, and the runner requires all six checks; the original five-check gate incorrectly rejected the successful new data-view check. Previously these chart, grid and notebook surfaces had no coverage.

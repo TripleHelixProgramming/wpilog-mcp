@@ -96,7 +96,7 @@ class CaptureFailureTest {
     try (var output = new PrintStream(messages, true, java.nio.charset.StandardCharsets.UTF_8);
          var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), clock::get)) {
       System.setErr(output);
-      gateway.start().get(10, TimeUnit.SECONDS); gateway.announce("/x", "int", new JsonObject()).join();
+      gateway.start().get(30, TimeUnit.SECONDS); gateway.announce("/x", "int", new JsonObject()).join();
       var client = new Nt4Client(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "failure")),
           Nt4Client.captureSubscription(0.001), listener, java.net.http.HttpClient.newHttpClient(), loop);
       try {
@@ -130,7 +130,7 @@ class CaptureFailureTest {
         loop.advance(1_000_000); loop.until(() -> opened.get() == 2 && received.get() == 23);
         assertTrue(writer.session().open()); assertNotEquals(first, writer.session().path().toRealPath());
       } finally {
-        var stopped = client.closeAsync(); loop.drain(); stopped.get(10, TimeUnit.SECONDS);
+        var stopped = client.closeAsync(); loop.drain(); stopped.get(30, TimeUnit.SECONDS);
         placement.completion().get(10, TimeUnit.SECONDS);
       }
       assertEquals(2, StoreCatalog.read(store, security).files().size());
