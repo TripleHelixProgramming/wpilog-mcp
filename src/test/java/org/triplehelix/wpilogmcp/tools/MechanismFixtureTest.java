@@ -9,7 +9,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.google.gson.JsonObject;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 
 /**
  * profile_mechanism roles (review issues A5, B6): only entries passed explicitly are analyzed;
@@ -17,6 +18,9 @@ import org.triplehelix.wpilogmcp.log.LogManager;
  */
 @DisplayName("profile_mechanism roles and step response")
 class MechanismFixtureTest extends FixtureToolTestBase {
+  private MockLogAdmission logs;
+  @BeforeEach void admitMocks() { logs = new MockLogAdmission(); }
+  @AfterEach void releaseMocks() { logs.close(); }
 
   @Test
   @DisplayName("fixture elevator: candidates across subtrees by name, analyzed once passed")
@@ -60,7 +64,7 @@ class MechanismFixtureTest extends FixtureToolTestBase {
         .addNumericEntry("/Drive/ModuleFrontLeft/DriveCurrentAmps", t, new double[] {50, 50, 50, 50})
         .addNumericEntry("/Drive/ModuleFrontLeft/DrivePositionRad", t, new double[] {0, 0, 0, 0})
         .build();
-    LogManager.getInstance().testPutLog(log.path(), log);
+    logs.put(log);
     var args = new JsonObject();
     args.addProperty("path", log.path());
     args.addProperty("mechanism_name", "ModuleFrontLeft");
@@ -120,7 +124,7 @@ class MechanismFixtureTest extends FixtureToolTestBase {
         .addNumericEntry("/Arm/Goal", t, new double[] {1, 1, 1, 1, 1})
         .addNumericEntry("/Arm/Position", t, new double[] {1, 1, 1, 9, 9})
         .build();
-    LogManager.getInstance().testPutLog(log.path(), log);
+    logs.put(log);
     var args = new JsonObject();
     args.addProperty("path", log.path());
     args.addProperty("setpoint_entry", "/Arm/Goal");

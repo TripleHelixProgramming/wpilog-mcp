@@ -76,6 +76,8 @@ public class LogCache {
 
   private final Cache<String, LogData> cache;
   private final Heap heap;
+  private final java.util.concurrent.ConcurrentHashMap<String, LogData> pinned =
+      new java.util.concurrent.ConcurrentHashMap<>();
 
   /**
    * Held while unloading for heap pressure or to make room, so that checks made at the same
@@ -157,6 +159,14 @@ public class LogCache {
   /** Puts a log into the cache. */
   public void put(String path, LogData log) {
     cache.put(path, log);
+  }
+
+  /** Test-owned logs have no file to reload. Keep them until their admission scope unloads them. */
+  public void putPinned(String path, LogData log) {
+    synchronized (evictionLock) {
+      cache.put(path, log);
+      pinned.put(path, log);
+    }
   }
 
   /** Removes a log from the cache. Returns the removed log, or null. */
@@ -277,6 +287,7 @@ public class LogCache {
   private void onRemoval(String path, LogData log, RemovalCause cause) {
     if (path == null || log == null) return;
 
+    pinned.remove(path, log);
     closeIfLazy(log);
 
     if (cause != RemovalCause.REPLACED) {
@@ -306,14 +317,18 @@ public class LogCache {
     var policy = cache.policy().expireAfterAccess();
     if (policy.isEmpty()) return false;
 
-    // Caffeine's ageOf() gives the time since last access — find the oldest
-    var oldest = policy.get().oldest(1);
-    if (oldest.isEmpty()) return false;
-
-    String pathToEvict = oldest.keySet().iterator().next();
-    cache.invalidate(pathToEvict);
-    logger.info("Force-evicted log '{}' due to {}", pathToEvict, reason);
-    return true;
+    synchronized (evictionLock) {
+      // The first unpinned entry is among at most pins + 1 oldest candidates. Avoid copying
+      // the whole cache in the ordinary (no pins) case, and remove only the chosen instance.
+      for (var entry : policy.get().oldest(pinned.size() + 1).entrySet()) {
+        if (pinned.get(entry.getKey()) == entry.getValue()) continue;
+        if (cache.asMap().remove(entry.getKey(), entry.getValue())) {
+          logger.info("Force-evicted log '{}' due to {}", entry.getKey(), reason);
+          return true;
+        }
+      }
+      return false;
+    }
   }
 
   /** Retires an owned lazy or live index; in-flight uses keep their mappings until release. */

@@ -36,6 +36,31 @@ class LogCacheTest {
   }
 
   @Test
+  void pinnedFixturesSurvivePressureAndMakingRoomUntilExplicitUnload() {
+    var pressure = new LogCache.Heap() {
+      public long usedBytes() { return 1000; }
+      public long maxBytes() { return 1000; }
+      public void collect() {}
+    };
+    var cache = new LogCache(1_800_000, pressure);
+    var pinned = createMockLog("/pinned.wpilog", 1);
+    cache.putPinned(pinned.path(), pinned);
+    cache.put("/ordinary.wpilog", createMockLog("/ordinary.wpilog", 1));
+    cache.evictIfNeeded();
+    assertSame(pinned, cache.get(pinned.path()), "A fixture has no file from which to reload");
+    assertNull(cache.get("/ordinary.wpilog"), "Real file-backed logs remain evictable");
+    assertFalse(cache.makeRoomFor(Long.MAX_VALUE), "Pressure cannot be relieved by dropping a pin");
+    assertFalse(cache.evictOne());
+    assertSame(pinned, cache.remove(pinned.path()));
+    assertTrue(cache.isEmpty());
+    cache.put(pinned.path(), pinned);
+    assertTrue(cache.evictOne(), "Explicit unload releases the pin even if the path is reused");
+    cache.putPinned(pinned.path(), pinned);
+    cache.clear();
+    assertTrue(cache.isEmpty(), "Admission cleanup unloads pinned entries too");
+  }
+
+  @Test
   void testPutAndGet() {
     var log = createMockLog("/path/to/log1.wpilog", 1);
     cache.put("/path/to/log1.wpilog", log);

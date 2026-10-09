@@ -58,7 +58,8 @@ creation too; reused worker numbers must not inherit another build's manifests. 
 in another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
 uses decoded immutable views for entry-order permutations, preserving raw sample counts separately
 from successfully decoded values. Coverage instrumentation is absent from ordinary/targeted runs.
-Synthetic tool tests use `MockLogAdmission` to admit their cached paths explicitly and restore
+Synthetic tool tests use `MockLogAdmission` to admit their cached paths explicitly, pin their
+`testPutLog` entries against heap-pressure eviction until scope cleanup unloads them, and restore
 the prior configured roots. They must work while lease admission is active; relying on the
 legacy cached-path exception made Linux CI's class/fork order change the answers. A real HTTP
 transport with an empty directory lease pins this state in `ToolAdmissionTest`.

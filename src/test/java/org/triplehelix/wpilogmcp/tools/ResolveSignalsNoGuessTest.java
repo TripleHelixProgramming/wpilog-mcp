@@ -10,15 +10,17 @@ import com.google.gson.JsonObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
+import org.junit.jupiter.api.BeforeEach;
 
 /** resolve_signals on a log that follows no convention: candidates to confirm, no guesses. */
 @DisplayName("resolve_signals does not guess")
 class ResolveSignalsNoGuessTest {
+  private MockLogAdmission logs;
+  @BeforeEach void admitMocks() { logs = new MockLogAdmission(); }
 
   @AfterEach
   void unload() {
-    LogManager.getInstance().unloadAllLogs();
+    logs.close();
   }
 
   @Test
@@ -29,7 +31,7 @@ class ResolveSignalsNoGuessTest {
         .addNumericEntry("/Power/InputVoltage", new double[]{0, 1}, new double[]{12.4, 12.2})
         .addNumericEntry("/Robot/LoopTimeSec", new double[]{0, 1}, new double[]{0.02, 0.021})
         .build();
-    LogManager.getInstance().testPutLog(log.path(), log);
+    logs.put(log);
 
     var args = new JsonObject();
     args.addProperty("path", log.path());

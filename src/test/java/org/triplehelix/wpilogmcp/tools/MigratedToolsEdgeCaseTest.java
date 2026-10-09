@@ -12,7 +12,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
 
 /**
  * Comprehensive edge case tests for tools migrated to ToolBase/LogRequiringTool.
@@ -23,19 +22,18 @@ import org.triplehelix.wpilogmcp.log.LogManager;
 @DisplayName("Migrated Tools - Edge Cases")
 class MigratedToolsEdgeCaseTest {
 
-  private LogManager logManager;
+  private MockLogAdmission logs;
   private MockLogBuilder mockLogBuilder;
 
   @BeforeEach
   void setUp() {
-    logManager = LogManager.getInstance();
-    logManager.unloadAllLogs();
+    logs = new MockLogAdmission();
     mockLogBuilder = new MockLogBuilder();
   }
 
   @AfterEach
   void tearDown() {
-    logManager.unloadAllLogs();
+    logs.close();
   }
 
   @Nested
@@ -49,7 +47,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/single", new double[]{0.0}, new double[]{42.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -75,7 +73,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/pair", new double[]{0.0, 1.0}, new double[]{10.0, 20.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -110,7 +108,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/large", timestamps, values)
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -136,7 +134,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/constant", new double[]{0, 1, 2, 3, 4}, new double[]{5.0, 5.0, 5.0, 5.0, 5.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -161,7 +159,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/extreme", new double[]{0, 1, 2}, new double[]{Double.MAX_VALUE, 0.0, Double.MIN_VALUE})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -183,7 +181,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/small", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 3.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.DetectAnomaliesTool();
       var args = new JsonObject();
@@ -204,7 +202,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/increasing", new double[]{0, 1, 2, 3, 4}, new double[]{1.0, 2.0, 3.0, 4.0, 5.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.FindPeaksTool();
       var args = new JsonObject();
@@ -228,7 +226,7 @@ class MigratedToolsEdgeCaseTest {
           .addNumericEntry("/const1", new double[]{0, 1, 2}, new double[]{5.0, 5.0, 5.0})
           .addNumericEntry("/const2", new double[]{0, 1, 2}, new double[]{10.0, 10.0, 10.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.TimeCorrelateTool();
       var args = new JsonObject();
@@ -256,7 +254,7 @@ class MigratedToolsEdgeCaseTest {
       var mockLog = mockLogBuilder
           .setPath("/empty.wpilog")
           .build(); // No entries
-      logManager.testPutLog("/empty.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new QueryTools.SearchEntriesTool();
       var args = new JsonObject();
@@ -278,7 +276,7 @@ class MigratedToolsEdgeCaseTest {
           .addNumericEntry("/entry1", new double[]{0}, new double[]{1.0})
           .addNumericEntry("/entry2", new double[]{0}, new double[]{2.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new QueryTools.SearchEntriesTool();
       var args = new JsonObject();
@@ -307,7 +305,7 @@ class MigratedToolsEdgeCaseTest {
               new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
               new double[]{12.0, 11.0, 12.0, 11.0, 12.0, 11.0, 12.0, 11.0, 12.0, 11.0, 12.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new QueryTools.FindConditionTool();
       var args = new JsonObject();
@@ -336,7 +334,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addEntry("/console", "string", stringValues)
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new QueryTools.SearchStringsTool();
       var args = new JsonObject();
@@ -363,7 +361,7 @@ class MigratedToolsEdgeCaseTest {
           .addNumericEntry("/Robot/Speed", new double[]{0}, new double[]{1.0})
           .addNumericEntry("/Robot/Voltage", new double[]{0}, new double[]{12.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -402,7 +400,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/entry", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 3.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -430,7 +428,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/entry", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 3.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();
@@ -452,7 +450,7 @@ class MigratedToolsEdgeCaseTest {
           .addNumericEntry("/entry1", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 3.0})
           .addNumericEntry("/entry2", new double[]{0, 1, 2}, new double[]{4.0, 5.0, 6.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
 
       // Create multiple different tools
@@ -484,7 +482,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/entry", new double[]{0}, new double[]{1.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
 
       // Create tool using no-arg constructor (default singleton-based)
@@ -520,7 +518,7 @@ class MigratedToolsEdgeCaseTest {
           .setPath("/test.wpilog")
           .addNumericEntry("/test", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 3.0})
           .build();
-      logManager.testPutLog("/test.wpilog", mockLog);
+      logs.put(mockLog);
 
       var tool = new StatisticsTools.GetStatisticsTool();
       var args = new JsonObject();

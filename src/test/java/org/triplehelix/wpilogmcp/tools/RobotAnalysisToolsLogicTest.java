@@ -12,7 +12,6 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
@@ -484,9 +483,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           .setPath("/test/log2.wpilog")
           .addNumericEntry("/Test", new double[]{0}, new double[]{2})
           .build();
-      var manager = LogManager.getInstance();
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var tool = findTool("compare_matches");
       // No name parameter provided
@@ -513,9 +511,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           .setPath("/test/cmp_q13.wpilog")
           .addNumericEntry("/Other", new double[]{0}, new double[]{1})
           .build();
-      var manager = LogManager.getInstance();
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();
@@ -559,9 +556,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           .setPath("/test/cmp_arr2.wpilog")
           .addNumericEntry("/PowerDistribution/ChannelCurrent", new double[]{0, 1}, new double[]{3.0, 4.0})
           .build();
-      var manager = LogManager.getInstance();
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var args = new JsonObject();
       args.addProperty("path", log1.path());
@@ -1678,7 +1674,6 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     @Test
     @DisplayName("compares same entry across two loaded logs")
     void comparesSameEntryAcrossTwoLogs() throws Exception {
-      var manager = LogManager.getInstance();
 
       // Load two logs with the same entry but different values
       var log1 = new MockLogBuilder()
@@ -1695,8 +1690,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
               new double[]{11.5, 11.0, 10.5, 11.2, 10.8})
           .build();
 
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();

@@ -138,6 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Mock-log tool tests now use explicit admission scopes and pressure-pinned cache entries; previously a cache pressure sweep could unload their nonexistent files and fail unrelated tool assertions. An always-full heap plant reproduces the failures and checks scope cleanup.
+
 - JVM tests now pin the NT4 contribution to the clock bound, suppress notes for within-bound changes, and exercise a failing delivery and recovery in a new session; those cases previously lacked direct assertions.
 - Fixture disconnects now wait for peer closure and ordered removal; previously their future only acknowledged an abrupt local close, leaving reconnect checks dependent on later TCP delivery. A held close reply pins the barrier without longer deadlines.
 - The reconnect backoff test now waits for retry scheduling after the disconnect callback; under load it previously counted delays too early. Removing the reset still fails its count assertion.

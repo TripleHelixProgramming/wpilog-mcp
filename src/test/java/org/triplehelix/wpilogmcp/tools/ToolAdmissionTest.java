@@ -34,6 +34,8 @@ class ToolAdmissionTest {
     } finally {
       fixture.tearDownLogManager(); leases.remove("tool-admission-test"); http.stop();
     }
+    assertFalse(manager.testIsLogLoaded(Path.of("synthetic-admission", "data.wpilog").toAbsolutePath().toString()),
+        "The owning scope releases its pinned log");
     assertEquals(before, manager.getConfiguredDirectories(), "No synthetic root survives its owning test");
   }
 }

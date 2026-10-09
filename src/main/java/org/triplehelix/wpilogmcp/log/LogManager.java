@@ -1589,7 +1589,7 @@ public class LogManager {
     return logCache.containsKey(normalized.toString());
   }
 
-  /** Test accessor: Adds a log directly to the cache (for testing only). */
+  /** Test accessor: Pins a fixture until its admission scope explicitly unloads it. */
   public void testPutLog(String path, LogData log) {
     Path normalized = Path.of(path).toAbsolutePath().normalize();
     // Permuted/frozen fixture views still describe the same on-disk snapshot and inputs.
@@ -1597,7 +1597,7 @@ public class LogManager {
       var snapshot = FileSnapshot.of(normalized);
       if (snapshot != null) loaded.put(normalized.toString(), new Loaded(log, snapshot));
     } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
-    logCache.put(normalized.toString(), log);
+    logCache.putPinned(normalized.toString(), log);
   }
 
   /** Test accessor: Gets the security validator. */
