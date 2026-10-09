@@ -36,6 +36,12 @@ def until(description, check):
     raise AssertionError(f'{description} did not become ready: {last}')
 
 
+def grafana_sample():
+    # Dashboard provisioning can finish while Grafana restarts an updated datasource plugin.
+    return until('Grafana datasource', lambda: json.loads(get(
+        'http://127.0.0.1:3000/api/datasources/proxy/uid/pit-prometheus/api/v1/query?query=wpilog_nt_connected', True)))
+
+
 def main():
     jars = list(Path('build/libs').glob('*-all.jar'))
     assert len(jars) == 1, 'Build one shadow JAR first'
@@ -68,7 +74,7 @@ def main():
                 for variable in dashboard['templating']['list']:
                     expression = expression.replace('$' + variable['name'], 'synthetic-unpublished')
                 assert json.loads(get(query + urllib.parse.quote(expression, safe='')))['status'] == 'success'
-            proxy = json.loads(get('http://127.0.0.1:3000/api/datasources/proxy/uid/pit-prometheus/api/v1/query?query=wpilog_nt_connected', True))
+            proxy = grafana_sample()
             assert proxy['data']['result'][0]['value'][1] == '0'
             (output / 'result.json').write_text(json.dumps({'promtool': 'passed', 'scrape': 'passed', 'dashboard_panels': 12,
                 'queries': 12, 'grafana_datasource': 'passed'}, indent=2) + '\n', encoding='utf-8')

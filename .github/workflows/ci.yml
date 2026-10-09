@@ -23,7 +23,7 @@ jobs:
           BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python3 ci/changes.py
       - name: Check path filters and service assertions
-        run: python3 -m unittest ci.test_changes ci.test_check_service
+        run: python3 -m unittest ci.test_changes ci.test_check_service ci.test_check_metrics
 
   build:
     needs: changes

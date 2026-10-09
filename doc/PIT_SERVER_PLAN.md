@@ -1002,3 +1002,7 @@ Release-review keepalive failures (before the tag):
   its OS/JDK allowed the move. The import test also checks the JVM's mapped-buffer pool, so
   skipped cleaner calls fail even where rename is permitted; the restored code must both
   release every window and move the file.
+- The Linux metrics smoke exposed a separate readiness race: Grafana had provisioned its
+  dashboard, but its background updater stopped the Prometheus plugin just before the query.
+  Query readiness now uses the existing bounded readiness helper; a scripted 404 then success
+  and a permanently missing plugin pin both outcomes without a wall-clock wait.

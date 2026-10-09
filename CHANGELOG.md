@@ -126,10 +126,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Data streams:** Arrow and CSV disclose undecodable records, the explorer displays the warning, unknown enum numbers keep a null/empty label, and REV ETags include file and alignment changes. Previously partial plots looked complete, unknown enums could abort a stream, or the viewer reused stale timestamps.
 - **Server installation:** destination containment checks refuse escaped symlinks, and installer JSON checks keep JVM stderr banners separate; previously installation could escape its destination or a JVM banner could be mistaken for invalid installer output.
 - **Health checks:** `health_check` recognizes an in-memory registered TBA key; previously it could report a missing key despite a client's active registration.
-- **File-size refusal:** WPILOGs beyond the current 2 GB mapping limit remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed.
+- **File-size refusal:** WPILOGs beyond the supported mapping bound remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed. Windowed mapping raises that bound to 1 TiB.
 
 ### Testing
 
+- The metrics-stack check waits for its Grafana datasource query within the existing readiness bound; previously a plugin update just after dashboard provisioning could produce a transient 404 and fail CI.
 - Chart regressions pin unequal-time scatter pairs, every encoded link entry, clipped phases and data-view null cells. Socket-delivery test guards allow thirty seconds under load without changing protocol deadlines.
 - Small mapping windows exercise every fixture record against the independent reader, plus conformance, cold values and import moves. Windows CI proves the leaked-mapping plant fails; the opt-in `largeLogTest` exercises a generated 2.2 GB file and rollover beyond 2 GiB.
 
