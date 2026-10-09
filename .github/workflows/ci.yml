@@ -184,10 +184,17 @@ jobs:
           tags: wpilog-rio-harness:ci
           cache-from: type=gha,scope=rio-harness
           cache-to: type=gha,mode=max,scope=rio-harness
+      - name: Cache the pinned PhotonVision release
+        uses: actions/cache@v4
+        with:
+          path: build/harness-downloads
+          key: photonvision-linuxx64-${{ hashFiles('harness/photonvision/release.json') }}
+      - name: Check release download and cache verification
+        run: python3 -m unittest discover -s harness/photonvision -p 'test_*.py'
       - name: Run the headless shop harness
         env:
           HARNESS_RIO_IMAGE: wpilog-rio-harness:ci
-        run: harness/rio/run -PconformanceNative=${{ needs.changes.outputs.native }}
+        run: harness/run -PconformanceNative=${{ needs.changes.outputs.native }}
       - name: Upload harness evidence
         if: always()
         uses: actions/upload-artifact@v4

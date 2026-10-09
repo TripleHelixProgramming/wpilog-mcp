@@ -35,7 +35,16 @@ class HarnessWiringTest {
     assertEquals("changes", job.get("needs"), "The harness must run beside ordinary builds");
     assertFalse(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "actions/download-artifact@v4".equals(s.get("uses"))),
         "The build job already uploads its evidence");
-    assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/rio/run -PconformanceNative=${{ needs.changes.outputs.native }}".equals(s.get("run"))));
+    assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/run -PconformanceNative=${{ needs.changes.outputs.native }}".equals(s.get("run"))));
+    var releaseCache = steps.stream().map(s -> (Map<?, ?>) s)
+        .filter(s -> "actions/cache@v4".equals(s.get("uses"))).findFirst().orElseThrow();
+    var releaseCacheSettings = (Map<?, ?>) releaseCache.get("with");
+    assertEquals("build/harness-downloads", releaseCacheSettings.get("path"));
+    assertTrue(releaseCacheSettings.get("key").toString().contains("hashFiles('harness/photonvision/release.json')"));
+    var release = com.google.gson.JsonParser.parseString(Files.readString(Path.of("harness/photonvision/release.json"))).getAsJsonObject();
+    assertEquals(org.triplehelix.wpilogmcp.capture.context.PhotonSettings.RELEASE, release.get("version").getAsString());
+    assertTrue(release.get("sha256").getAsString().matches("[0-9a-f]{64}"));
+    assertTrue(release.get("url").getAsString().endsWith("/" + release.get("version").getAsString() + "/" + release.get("file").getAsString()));
     var builder = steps.stream().map(s -> (Map<?, ?>) s)
         .filter(s -> "docker/setup-buildx-action@v3".equals(s.get("uses"))).findFirst().orElseThrow();
     var builderSettings = assertInstanceOf(Map.class, builder.get("with"), "BuildKit must also avoid the throttled registry");

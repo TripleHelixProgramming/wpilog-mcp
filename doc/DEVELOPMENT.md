@@ -302,6 +302,9 @@ the checklist as follows; **absent** on an exercise means not measured, not a mi
 | Wi-Fi loss, load, timing, enabled/disabled gate, reboot, growth/rename and reimage | `wifi-loss-load-and-robot-timing`: run the actual server; a snapshot cannot exercise these |
 | Provider defaults, proc field semantics/permissions and sustained CPU/disk budget on roboRIO 1 and 2 | `provider-cpu-and-disk-budget`: run providers and measure; the snapshot is only initial evidence |
 | `tail -F -s`, `dmesg -w`, `journalctl -f`, reconnect and rotation | `tail-follow-options-and-rotation`: exercise live followers after inspecting utility versions |
+| PhotonVision export ZIP, SQLite member, binary UI messages and version | Proven against the pinned v2026.3.4 release JAR by the Linux harness; not a real coprocessor. |
+| PhotonVision provider state, captured file-camera settings and `analyze_vision.camera_settings` | Proven against that release with generated pixels, through the packaged pit server, manifests and metrics; no physical camera or measured calibration. |
+| Deployed PhotonVision release, network reachability, camera calibration and actual settings changes | Remains a shop check on the team's coprocessor; another release is not covered by the pin. |
 
 `JvmProviderTest` starts the test JVM's real JMX connector on one ephemeral loopback port,
 provokes collections, and checks receipt timestamps and uptime mapping against fake NT4 time.
@@ -421,18 +424,20 @@ check that the actual sshd permits an empty password, `lvuser` can read the robo
 `/proc` environment, `sha256sum` is installed, and whole-prefix hashing has acceptable CPU/disk
 cost on roboRIO 1 and 2. Wi-Fi loss, sustained load, and robot timing remain hardware checks.
 The synthetic NI-like container below adds real Linux utilities and a JRE, not evidence about
-an actual NI image. A real PhotonVision process remains future harness work.
+an actual NI image. The pinned PhotonVision release runs in the Linux harness too; deployed hardware remains a separate check.
 
 #### The container harness (step 2)
 
 On Linux with JDK 17 and Docker Engine available to your user, run:
 
 ```bash
-harness/rio/run -PconformanceNative=sample
+harness/run -PconformanceNative=sample
 ```
 
-A Linux VM with Docker works too. Step 2's runner currently requires Linux; `harness/run`
-continues to support Linux and macOS without Docker. No container, image, privileged process,
+A Linux VM with Docker works too. `harness/run` is the shared entry point;
+`harness/rio/run` delegates to it. On macOS, or Linux without a reachable Docker daemon, it
+prints that the container and real PhotonVision are skipped and still runs the MINA timeline.
+An explicit CI `HARNESS_RIO_IMAGE` requires Docker instead of silently skipping the check. No container, image, privileged process,
 or package is installed by the ordinary tests. The first container build downloads Ubuntu 22.04,
 Temurin 17 and Ubuntu's OpenSSH/coreutils packages. The official images are read from ECR
 Public (Canonical's Ubuntu and Docker Official Images' Temurin mirror), avoiding Docker Hub
@@ -474,7 +479,35 @@ the JUnit XML records each test's time. Docker cleanup runs even after an assert
 The container proves interoperability with these declared assumptions, including real shell
 command execution and JMX, not actual roboRIO authentication, permissions, module availability,
 NI utility versions, reboot semantics of the kernel, radio behavior or roboRIO CPU/disk cost.
-Those remain the shop checklist below.
+Those remain the shop checklist.
+
+#### The real PhotonVision backend
+
+On Linux x86_64 with Docker, the same runner starts the unmodified **v2026.3.4 Linux x64
+release JAR** alongside the container timeline, against the same packaged pit server.
+`harness/photonvision/release.json` pins its URL and SHA-256 (also matched against the release
+asset's published digest). The 115,072,557-byte download stays under `build/harness-downloads/`;
+CI caches it with `actions/cache`, keyed by that manifest. Fresh downloads and cache hits are
+hashed before execution. PhotonVision is GPL-3.0-or-later, runs as a separate test process and
+is bundled in neither the server JAR nor the extension.
+
+The release offers `--test-mode`. Its `WPI2026` file camera reads a JPEG at a fixed test-resource
+path: the harness writes a new blank 640 by 480 image there, never an upstream scene or a
+coprocessor export. `--disable-networking` prevents device network changes; Java runs headless.
+Only its fresh settings are configured to publish NT4 to the simulated robot. The release fixes
+HTTP at 5800 and its NT client uses 5810, so this opt-in Linux test requires those ports unused;
+ordinary tests continue to bind ephemeral ports. The backend, generated configuration and image
+are isolated under `build/shop-harness/rio-*/photonvision/` and terminated with the timeline.
+
+A separate WebSocket observer checks every received top-level key against the provider's known
+contract, binary MessagePack full state and the exact version. The HTTP export must contain a
+SQLite-header `photon.sqlite`. Both robot boots must reach `following` in `list_sessions`, the
+manifest and `wpilog_provider_state`; actual file-camera NT publications let `analyze_vision`
+read the recorded `/Daemon/PhotonVision/WPI2026/Settings`. The generated blank image exercises
+configuration and no-target traffic, not detection quality or measured camera calibration.
+Snapshots, observed message keys, export, process log and startup time stay in the test artifacts.
+Changed versions, ZIPs without the database and unknown keys (including beside valid settings)
+are refused with a session-long `stand_down` reason, not guessed or retried.
 
 #### PhotonVision provider checks and shop facts
 
@@ -487,11 +520,11 @@ requires the resumed offset on every platform: Windows CI must exercise creation
 not permit a fallback fresh scan. Plants cover ignored identity, local-fetch timestamps,
 guessed missing fields, ignored selective changes and settings attributed to another camera.
 
-At the shop, confirm **PhotonVision v2026.3.4** on the coprocessor; GET
-`http://<host>:5800/api/settings/photonvision_config.zip` with a `photon.sqlite` member; and binary
-MessagePack `settings`/`cameraSettings` on `ws://<host>:5800/websocket_data`. Confirm the exact
-camera nicknames, calibration resolutions/reprojection errors, a pipeline/exposure change
-(including a selective notification), and the stand-down reason after backend restart.
+The pinned-release route/version and file-camera checks above are retired from the shop
+checklist as software-contract questions. At the shop, confirm the deployed coprocessor runs
+**PhotonVision v2026.3.4**, is reachable from the pit computer, and records its actual camera
+nicknames, calibration resolutions/reprojection errors, a pipeline/exposure change (including
+a selective notification), and the stand-down reason after backend restart.
 The private routes may change in another release: do not silently relax the pinned shape.
 The roboRIO facts collector checks SSH/NI-image facts; it does not replace these coprocessor checks.
 

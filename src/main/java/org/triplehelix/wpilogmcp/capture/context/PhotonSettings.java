@@ -21,8 +21,20 @@ public final class PhotonSettings {
   public static final String SOCKET_PATH = "/websocket_data";
   private static final List<String> MODES = List.of("FocusCamera", "Calib3d", "DriverMode", "Reflective",
       "ColoredShape", "AprilTag", "Aruco", "ObjectDetection");
+  private static final java.util.Set<String> MESSAGE_KEYS = java.util.Set.of("settings", "cameraSettings",
+      "mutatePipelineSettings", "log", "ntConnectionInfo", "metrics", "updatePipelineResult", "networkInfo",
+      "calibrationData", "visionSourceManager");
   private PhotonSettings() {}
   public record Camera(String name, JsonObject settings) {}
+
+  /** Validate every envelope key, including keys beside a recognized full snapshot. */
+  public static void validateMessageKeys(JsonObject message) {
+    for (String key : message.keySet()) {
+      if (!MESSAGE_KEYS.contains(key)) {
+        throw bad(key, "unknown UI message");
+      }
+    }
+  }
 
   public static List<Camera> snapshot(JsonObject message) {
     var settings = object(message, "settings"); var general = object(settings, "general");

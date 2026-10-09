@@ -281,6 +281,7 @@ tasks.register('shopHarness', Test) {
     maxParallelForks = project.hasProperty('harnessRio') ? 2 : 1
     maxHeapSize = '768m'
     if (project.hasProperty('harnessRio')) systemProperty 'harness.rio', project.property('harnessRio')
+    if (project.hasProperty('harnessPhoton')) systemProperty 'harness.photon', file(project.property('harnessPhoton')).absolutePath
     systemProperty 'harness.timeline', file(project.findProperty('harnessTimeline') ?: 'harness/timelines/reboot-match.json').absolutePath
     systemProperty 'harness.robotJar', file('harness/robot/build/libs/shop-robot.jar').absolutePath
     systemProperty 'harness.natives', file('harness/robot/build/jni/release').absolutePath

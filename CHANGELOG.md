@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PhotonVision now refuses unknown message keys beside otherwise valid settings; previously those keys bypassed the stand-down check.
 - `robot-facts` now reports an absent executable when `which` returns status 1 with empty output; previously that real shell response was mislabeled as a refusal, while the scripted missing-tool reply used status 127.
 
 - JVM clock notes now report both measurements, uncertainty bounds and start identities without claiming a cause; previously they suggested a restart or skew.
@@ -140,6 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The shop harness now runs the SHA-256-pinned PhotonVision v2026.3.4 backend with a generated file camera against the packaged pit server; previously only synthetic backend replies exercised its routes and captured settings. Both runner commands now select available backends and keep the MINA timeline on macOS with explicit skip messages.
 - CI preloads the documented metrics images at their unchanged versions from public registries before running Compose; repeated Docker Hub throttling and token timeouts had stopped the smoke check before it tested the stack.
 
 - A synthetic NI-like Docker harness now runs the simulation through real OpenSSH, Linux utilities and a JMX-enabled JRE, checking provider entries, uptime bounds, pulled system text and the shipped facts collector. Previously scripted SSH replies could not prove those command/runtime integrations. The existing timeline oracle runs alongside it; actual NI image permissions and robot cost remain shop checks.

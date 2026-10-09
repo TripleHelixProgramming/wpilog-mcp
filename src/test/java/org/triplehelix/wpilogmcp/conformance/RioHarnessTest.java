@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.harness.HarnessHttp;
 import org.triplehelix.wpilogmcp.harness.RioContainer;
+import org.triplehelix.wpilogmcp.harness.PhotonBackend;
 import org.triplehelix.wpilogmcp.store.StoreJson;
 
 /** The NI-like assumptions meet a real Linux shell, OpenSSH, procfs and management agent. */
@@ -35,16 +36,19 @@ class RioHarnessTest {
     Files.setPosixFilePermissions(run, PosixFilePermissions.fromString("rwxrwxrwx"));
     Files.copy(timelinePath, run.resolve("timeline.json"));
     System.out.println("Container harness artifacts: " + run);
-    int httpPort = port(), ntPort = port(), sshPort = port(), jmxPort = port();
+    String photonJar = System.getProperty("harness.photon");
+    int httpPort = port(), ntPort = photonJar == null ? port() : 5810, sshPort = port(), jmxPort = port();
     assertEquals(4, java.util.Set.of(httpPort, ntPort, sshPort, jmxPort).size());
     var home = Files.createDirectory(run.resolve("home")); var store = run.resolve("store");
     String javaExe = ProcessHandle.current().info().command().orElseThrow();
     Process server = null, robot = null, facts = null;
-    try (var rio = new RioContainer(image, run, timeline.get("serial_number").getAsString(),
+    try (var photon = photonJar == null ? null : new PhotonBackend(run, Path.of(photonJar));
+        var rio = new RioContainer(image, run, timeline.get("serial_number").getAsString(),
         timeline.get("comments").getAsString(), sshPort, ntPort, jmxPort)) {
       var config = run.resolve("servers.yaml");
       Files.writeString(config, "servers:\n  harness:\n    transport: http\n    port: " + httpPort
           + "\n    context:\n      jvm: {port: " + jmxPort + ", period_sec: 1}"
+          + (photon == null ? "" : "\n      photonvision: [127.0.0.1:5800]")
           + "\n    capture:\n      robot: {host: 127.0.0.1, port: " + ntPort + "}\n      store: " + StoreJson.JSON.toJson(store.toString())
           + "\n      period_sec: 0.01\n      stats: {enabled: true, period_sec: 2, budget_ms: 100}"
           + "\n      tail: [{path: /var/local/natinst/log/FRC_UserProgram.log, role: program_console}]"
@@ -77,6 +81,7 @@ class RioHarnessTest {
           Files.writeString(control.resolve("providers.json"), live.toString());
           return RioExpectations.providersFollowing(live);
         });
+        if (photon != null) photon.verifyLive(http, httpPort, control);
         // Inspect while the deployed process exists; every command is the shipped collector's.
         facts = launch(List.of(javaExe, "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
             "robot-facts", "--server", "harness", "--config", config.toString(), "--out", control.resolve("facts.md").toString()),
@@ -101,6 +106,21 @@ class RioHarnessTest {
       Files.writeString(run.resolve("listing.json"), listing.toString());
       HarnessExpectations.verify(timeline, run, store, http, listing, null, false);
       RioExpectations.captures(timeline, listing, http);
+      if (photon != null) {
+        photon.check();
+        for (var row : listing.getAsJsonArray("logs")) {
+          var path = Path.of(row.getAsJsonObject().get("path").getAsString());
+          if (!path.getFileName().toString().equals("capture.wpilog")) continue;
+          var log = IndependentLog.read(path, java.util.Set.of(), java.util.Set.of(PhotonBackend.SETTINGS));
+          assertNull(log.stopped); var settings = log.series.get(PhotonBackend.SETTINGS);
+          assertNotNull(settings); assertEquals("json", settings.type); assertTrue(settings.records > 0);
+          for (var value : settings.payloads) {
+            var data = JsonParser.parseString(new String(value, java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+            assertEquals(PhotonBackend.CAMERA, data.get("camera").getAsString());
+            assertEquals("v2026.3.4", data.get("software_version").getAsString());
+          }
+        }
+      }
     } finally {
       for (var process : new Process[] {facts, robot}) if (process != null && process.isAlive()) {
         process.destroyForcibly(); process.waitFor(10, TimeUnit.SECONDS);

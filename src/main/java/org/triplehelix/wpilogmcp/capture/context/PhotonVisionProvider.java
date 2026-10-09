@@ -191,6 +191,7 @@ public final class PhotonVisionProvider implements AutoCloseable {
         try {
           var tree = new Gson().toJsonTree(MessagePack.decode(complete));
           var object = PhotonSettings.requireObject(tree, "WebSocket root");
+          PhotonSettings.validateMessageKeys(object);
           if (object.has("settings") || object.has("cameraSettings")) {
             var cameras = PhotonSettings.snapshot(object);
             if (timestamp == null) throw new IOException("Snapshot has no NT4 clock estimate");
@@ -215,8 +216,6 @@ public final class PhotonVisionProvider implements AutoCloseable {
             scheduleRefresh(owner);
             done.complete(null);
           } else {
-            for (String key : object.keySet()) if (!List.of("log", "ntConnectionInfo", "metrics", "updatePipelineResult",
-                "networkInfo", "calibrationData", "visionSourceManager").contains(key)) throw PhotonSettings.bad(key, "unknown UI message");
             done.complete(null);
           }
         } catch (Exception e) { fail(owner, explain(e)); done.complete(null); }

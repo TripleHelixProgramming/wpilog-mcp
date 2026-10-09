@@ -471,13 +471,14 @@ The shop still needs to confirm dmesg's bracketed seconds and journalctl's boot-
 Step 1 is implemented: a scripted WPILib 2026 headless robot, real SSH/SFTP from a synthetic
 roboRIO, and a packaged pit server checked over HTTP MCP. Timelines pin capture fidelity,
 identity, boots, match renames, pulling and the disabled gate. It runs separately from the ordinary
-suite; see [DEVELOPMENT.md](DEVELOPMENT.md#the-shop-harness). Step 2 now includes a synthetic
-NI-like OpenSSH/JRE container (`harness/rio/run`) with real stats/tail commands, system-file
-pulls, robot-facts and bounded JVM uptime pairing. Its declared Linux environment proves no
-permission or timing fact about the actual NI image. A real PhotonVision process remains open. The v2026.3.4 provider now captures camera settings through
-its private HTTP/WebSocket routes, with exact-camera context in `analyze_vision`; its synthetic
-backend tests do not establish compatibility with another release. Actual roboRIO permissions, installed commands, radio behavior and hash cost
-still need the shop test; desktop simulation cannot establish them.
+suite; see [DEVELOPMENT.md](DEVELOPMENT.md#the-shop-harness). Step 2 is implemented: the
+synthetic NI-like OpenSSH/JRE container exercises real stats/tail commands, system-file pulls,
+robot-facts and bounded JVM uptime pairing; the SHA-256-pinned PhotonVision v2026.3.4 Linux
+release exercises its real private HTTP/WebSocket routes, a generated file camera and captured
+settings through `analyze_vision`. One runner selects available backends and reports skips;
+macOS still runs the MINA timeline. These declared environments establish no actual NI
+permissions, coprocessor calibration, installed release, radio behavior or robot-side cost.
+Those remain the shop test, as does compatibility with another PhotonVision release.
 
 Real-log replay extends step 1: the independent reader feeds the loopback gateway on every
 platform; the separate robot can publish the same file through native ntcore. Generated fixtures

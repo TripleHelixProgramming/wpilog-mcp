@@ -2,11 +2,33 @@
 set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
-case "$(uname -s)" in
+platform="$(uname -s)"
+case "$platform" in
   Linux|Darwin) ;;
   *) echo 'The WPILib shop runner currently supports Linux and macOS; real SSH tests also run on Windows.' >&2; exit 2 ;;
 esac
 ./gradlew -p harness/robot prepareHarness
 timeline_path=harness/timelines/reboot-match.json
 if [[ "${1:-}" == *.json ]]; then timeline_path="$1"; shift; fi
-./gradlew shopHarness "-PharnessTimeline=$timeline_path" "$@"
+harness_args=("-PharnessTimeline=$timeline_path")
+if [[ "$platform" == Linux ]] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  # CI supplies its cached build; a local run builds the same isolated image.
+  rio_image="${HARNESS_RIO_IMAGE:-wpilog-rio-harness:local}"
+  if [[ -z "${HARNESS_RIO_IMAGE:-}" ]]; then
+    docker build -f harness/rio/Dockerfile -t "$rio_image" .
+  fi
+  harness_args+=("-PharnessRio=$rio_image")
+  if [[ "$(uname -m)" == x86_64 ]]; then
+    photon_jar="$(python3 harness/photonvision/download.py)"
+    harness_args+=("-PharnessPhoton=$photon_jar")
+  else
+    echo 'Skipping real PhotonVision: the pinned release harness uses Linux x86_64.' >&2
+  fi
+else
+  if [[ -n "${HARNESS_RIO_IMAGE:-}" ]]; then
+    echo 'HARNESS_RIO_IMAGE requires Linux with a reachable Docker daemon.' >&2; exit 2
+  fi
+  echo "Skipping the roboRIO container and real PhotonVision on $platform: they require Linux with Docker. The MINA timeline still runs." >&2
+fi
+echo 'Running the MINA timeline and every available harness backend.'
+./gradlew shopHarness "${harness_args[@]}" "$@"

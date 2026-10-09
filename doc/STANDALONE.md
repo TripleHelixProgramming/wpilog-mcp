@@ -376,7 +376,8 @@ refresh coalesce into one subsequent refresh carrying current state.
 Names must match the NT camera names exactly; an unrelated generic robot-code camera label is
 not inferred to mean a particular coprocessor camera.
 
-An unsupported version/shape, unavailable backend or exceeded bound logs the reason and stands
+An unsupported version/shape, unknown top-level message key (even beside a valid snapshot),
+unavailable backend or exceeded bound logs the reason and stands
 down until a new session; the last captured settings remain readable. HTTP bodies are bounded
 to 64 MiB, expanded ZIP contents to 256 MiB, WebSocket messages to 4 MiB and snapshots to 64 cameras.
 Requests/initial snapshots have a ten-second deadline; unanswered WebSocket pings have a
