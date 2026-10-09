@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-server 
 COPY --from=runtime /runtime /opt/java
 COPY harness/robot/build/libs/shop-robot.jar /home/lvuser/frcUserProgram.jar
 # The scripted robot uses no camera/OpenCV pipeline; avoid shipping those large native assets.
-COPY harness/robot/build/jni/release/libntcore*.so harness/robot/build/jni/release/libwpiHal*.so harness/robot/build/jni/release/libwpiutil*.so harness/robot/build/jni/release/libwpimath*.so /opt/wpilib/
+COPY harness/robot/build/jni/release/libntcore*.so harness/robot/build/jni/release/libwpi*.so /opt/wpilib/
+RUN LD_LIBRARY_PATH=/opt/wpilib ldd /opt/wpilib/*.so > /tmp/native-dependencies && cat /tmp/native-dependencies && ! grep -q "not found" /tmp/native-dependencies
 COPY harness/rio/sshd_config /etc/ssh/sshd_config
 COPY --chmod=755 harness/rio/entrypoint harness/rio/robotCommand /usr/local/bin/
 RUN cp /usr/local/bin/robotCommand /home/lvuser/robotCommand

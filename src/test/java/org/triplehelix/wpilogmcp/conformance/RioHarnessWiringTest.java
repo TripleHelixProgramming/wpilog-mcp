@@ -19,6 +19,9 @@ class RioHarnessWiringTest {
     assertTrue(docker.contains("passwd -d lvuser"));
     assertTrue(docker.contains("! command -v journalctl"));
     assertTrue(docker.contains("openssh-server coreutils"));
+    assertTrue(docker.contains("libwpi*.so"), "ntcore needs wpinet beside HAL/math/util");
+    assertTrue(docker.contains("ldd /opt/wpilib/*.so"));
+    assertTrue(docker.contains("! grep -q \"not found\""), "Reject missing native dependencies during the image build");
     String ssh = Files.readString(Path.of("harness/rio/sshd_config"));
     for (String policy : List.of("PermitEmptyPasswords yes", "PasswordAuthentication yes", "UsePAM no", "AllowUsers lvuser", "Subsystem sftp internal-sftp")) assertTrue(ssh.contains(policy), policy);
     String entrypoint = Files.readString(Path.of("harness/rio/entrypoint"));

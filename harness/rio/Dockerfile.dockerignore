@@ -12,6 +12,4 @@
 !harness/robot/build/jni/
 !harness/robot/build/jni/release/
 !harness/robot/build/jni/release/libntcore*.so
-!harness/robot/build/jni/release/libwpiHal*.so
-!harness/robot/build/jni/release/libwpiutil*.so
-!harness/robot/build/jni/release/libwpimath*.so
+!harness/robot/build/jni/release/libwpi*.so

@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from ci.check_metrics import grafana_sample
+from ci.check_metrics import grafana_sample, preload_images
 
 
 class MetricsReadinessTest(unittest.TestCase):
@@ -24,3 +24,25 @@ class MetricsReadinessTest(unittest.TestCase):
                 patch('ci.check_metrics.time.sleep'):
             with self.assertRaisesRegex(AssertionError, 'Grafana datasource.*404.*Plugin missing'):
                 grafana_sample()
+
+
+class MetricsImageTest(unittest.TestCase):
+    def test_published_mirrors_keep_the_compose_versions_and_tags(self):
+        with patch('ci.check_metrics.subprocess.check_output', return_value='prom/prometheus:v3.15.0\ngrafana/grafana:13.2.3\n') as config, \
+                patch('ci.check_metrics.subprocess.run') as run:
+            preload_images(['docker', 'compose', '-f', 'synthetic.yaml'])
+            config.assert_called_once_with(['docker', 'compose', '-f', 'synthetic.yaml', 'config', '--images'], text=True)
+            self.assertEqual([
+                ['docker', 'pull', 'quay.io/prometheus/prometheus:v3.15.0'],
+                ['docker', 'tag', 'quay.io/prometheus/prometheus:v3.15.0', 'prom/prometheus:v3.15.0'],
+                ['docker', 'pull', 'mirror.gcr.io/grafana/grafana:13.2.3'],
+                ['docker', 'tag', 'mirror.gcr.io/grafana/grafana:13.2.3', 'grafana/grafana:13.2.3'],
+            ], [c.args[0] for c in run.call_args_list])
+            self.assertTrue(all(c.kwargs['check'] for c in run.call_args_list))
+
+    def test_an_unrecognized_repository_is_not_silently_substituted(self):
+        with patch('ci.check_metrics.subprocess.check_output', return_value='unrecognized/server:1\n'), \
+                patch('ci.check_metrics.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'Unrecognized.*unrecognized/server:1'):
+                preload_images(['docker', 'compose'])
+            run.assert_not_called()

@@ -42,6 +42,21 @@ def grafana_sample():
         'http://127.0.0.1:3000/api/datasources/proxy/uid/pit-prometheus/api/v1/query?query=wpilog_nt_connected', True)))
 
 
+def preload_images(compose):
+    # Shared CI egress can exhaust Docker Hub's anonymous quota. Fetch the same versions
+    # from Prometheus's own registry and Google's Docker Hub cache, retaining Compose's tags.
+    images = subprocess.check_output(compose + ['config', '--images'], text=True).splitlines()
+    mirrors = {'prom/prometheus:': 'quay.io/prometheus/prometheus:',
+               'grafana/grafana:': 'mirror.gcr.io/grafana/grafana:'}
+    for image in images:
+        prefix = next((p for p in mirrors if image.startswith(p)), None)
+        if prefix is None:
+            raise ValueError('Unrecognized metrics image: ' + image)
+        source = mirrors[prefix] + image[len(prefix):]
+        subprocess.run(['docker', 'pull', source], check=True)
+        subprocess.run(['docker', 'tag', source, image], check=True)
+
+
 def main():
     jars = list(Path('build/libs').glob('*-all.jar'))
     assert len(jars) == 1, 'Build one shadow JAR first'
@@ -58,6 +73,7 @@ def main():
             exposition = until('metrics HTTP', lambda: get('http://127.0.0.1:2363/metrics'))
             (output / 'scrape.prom').write_bytes(exposition)
             subprocess.run(compose + ['config', '--quiet'], check=True)
+            preload_images(compose)
             subprocess.run(compose + ['up', '-d'], check=True)
             subprocess.run(compose + ['exec', '-T', 'prometheus', 'promtool', 'check', 'config', '/etc/prometheus/prometheus.yml'], check=True)
             subprocess.run(compose + ['exec', '-T', 'prometheus', 'promtool', 'check', 'metrics'], input=exposition, check=True)

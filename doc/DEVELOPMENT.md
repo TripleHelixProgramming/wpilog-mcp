@@ -461,6 +461,10 @@ Scripted telemetry retains explicit timeline timestamps, with every due record e
 late callback. The MINA harness still checks gateway delivery and the disabled gate's per-block
 audit; the container does not pretend OpenSSH supplies that audit.
 
+CI's existing metrics-stack smoke preloads the same documented versions from Prometheus's
+Quay registry and Google's Docker Hub cache, then retains the Compose tags; it does not change
+the tested stack when shared Docker Hub quotas are exhausted.
+
 CI builds the image with cached Docker layers, then runs both independent timeline processes
 in two Gradle workers so their two 24-second boots overlap instead of doubling the job's wait.
 Native fixture replay remains governed by the existing change filter; no real-log directory is
