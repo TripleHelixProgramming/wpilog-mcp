@@ -14,12 +14,13 @@ import org.triplehelix.wpilogmcp.config.PullConfig;
 import org.triplehelix.wpilogmcp.sync.FileTransfer;
 
 /** Read-only robot files over a consumer-owned channel of a shared SSH connection. */
-public final class SftpTransport implements RobotRemote {
+public final class SftpTransport implements RobotRemote, SystemRemote {
   record Item(String name, long size, long mtimeMillis, boolean directory, boolean regular, boolean symlink) {}
   interface Channel extends AutoCloseable {
     List<Item> list(String directory) throws IOException;
     byte[] read(String path, long offset, int count) throws IOException;
     Optional<String> exec(String command, long timeoutMs) throws IOException;
+    default org.triplehelix.wpilogmcp.ssh.SshConnection.Command follow(String command) throws IOException { throw new IOException("SSH exec streaming is unavailable"); }
     @Override void close();
   }
   private final Channel channel;
@@ -32,7 +33,7 @@ public final class SftpTransport implements RobotRemote {
 
   /** Standalone callers own their connection; the capture service instead lends a shared one. */
   public static SftpTransport connect(String address, PullConfig config, String pin) throws IOException {
-    return using(org.triplehelix.wpilogmcp.ssh.JschConnection.connect(address, config.ssh(), pin), config.directories(), address, true);
+    return using(org.triplehelix.wpilogmcp.ssh.JschConnection.connect(address, config.ssh(), pin), config.enabled() ? config.directories() : List.of(), address, true);
   }
   public static SftpTransport using(org.triplehelix.wpilogmcp.ssh.SshConnection ssh, List<String> directories,
       String address, boolean ownConnection) throws IOException {
@@ -45,6 +46,7 @@ public final class SftpTransport implements RobotRemote {
       }
       public byte[] read(String path, long offset, int count) throws IOException { return files.read(path, offset, count); }
       public Optional<String> exec(String command, long timeoutMs) throws IOException { return ssh.exec(command, timeoutMs, 4096); }
+      public org.triplehelix.wpilogmcp.ssh.SshConnection.Command follow(String command) throws IOException { return ssh.follow(command); }
       public void close() { files.close(); if (ownConnection) ssh.close(); }
     }, directories, address, ssh.fingerprint());
   }
@@ -81,6 +83,50 @@ public final class SftpTransport implements RobotRemote {
   @Override public byte[] read(String name, long offset, int count) throws IOException {
     if (offset < 0 || count < 0 || count > FileTransfer.BLOCK_BYTES) throw new IOException("Invalid SFTP block range");
     return channel.read(name, offset, count);
+  }
+  @Override public org.triplehelix.wpilogmcp.ssh.SshConnection.Command systemCommand(String command) throws IOException {
+    return channel.follow(command);
+  }
+  @Override public List<SourceFile> systemFiles(org.triplehelix.wpilogmcp.config.SystemPullConfig config) throws IOException {
+    var result = new java.util.LinkedHashMap<String, SourceFile>();
+    // A journald image collects the whole journal instead of guessing its syslog-file equivalents.
+    if (!config.journal()) for (String path : config.syslog()) systemPath(path, "syslog", result);
+    for (String path : config.ni()) systemPath(path, "program", result);
+    for (String path : config.jvmCrash()) systemPath(path, "jvm_crash", result);
+    return List.copyOf(result.values());
+  }
+  private void systemPath(String selected, String source, java.util.Map<String, SourceFile> result) throws IOException {
+    int slash = selected.lastIndexOf('/'); String parent = slash <= 0 ? "/" : selected.substring(0, slash);
+    String leaf = selected.substring(slash + 1);
+    var pending = new java.util.ArrayDeque<String>();
+    if (selected.equals("/")) pending.add("/");
+    else for (var item : channel.list(parent)) {
+      if (!safeChild(item)) continue;
+      if (!item.name().equals(leaf) && !(source.equals("syslog") && item.name().startsWith(leaf + "."))) continue;
+      String path = child(parent, item.name());
+      if (item.directory()) pending.add(path); else addSystem(item, path, source, result);
+    }
+    int visited = 0;
+    while (!pending.isEmpty()) {
+      if (++visited + result.size() > 100_000) throw new IOException("Remote system listing exceeds 100000 paths");
+      String directory = pending.removeFirst();
+      for (var item : channel.list(directory)) {
+        if (!safeChild(item)) continue;
+        String path = child(directory, item.name());
+        if (item.directory()) pending.add(path); else addSystem(item, path, source, result);
+      }
+    }
+  }
+  private static boolean safeChild(Item item) throws IOException {
+    if (item.name().equals(".") || item.name().equals("..") || item.symlink()) return false;
+    if (item.name().contains("/") || item.name().indexOf('\0') >= 0) throw new IOException("Invalid remote child name");
+    return true;
+  }
+  private static String child(String directory, String name) { return (directory.endsWith("/") ? directory : directory + "/") + name; }
+  private static void addSystem(Item item, String path, String source, java.util.Map<String, SourceFile> result) {
+    if (item.regular() && (!source.equals("jvm_crash") || item.name().matches("hs_err_pid[0-9]+\\.log"))) {
+      result.putIfAbsent(path, new SourceFile(new File(path, item.size(), item.mtimeMillis()), source));
+    }
   }
   @Override public Optional<String> prefixHash(String name, long length) throws IOException {
     if (length < 0) throw new IOException("Negative prefix length");

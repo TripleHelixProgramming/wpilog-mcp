@@ -90,6 +90,11 @@ public final class StoreRegistry implements AutoCloseable {
     security.validate(path);
   }
 
+  public java.util.Optional<SystemLogFiles.Snapshot> systemLogs(Path capture) throws IOException {
+    security.validate(capture);
+    return SystemLogFiles.read(capture, security);
+  }
+
   /** More than one transport in a process shares this watcher as well as its import queues. */
   public synchronized void startWatching() {
     if (closed) throw new IllegalStateException("Store registry is closed");

@@ -32,6 +32,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code get_types} - List all data types in the log
  *   <li>{@code find_condition} - Find when values cross thresholds
  *   <li>{@code search_strings} - Search string entries for patterns
+ *   <li>{@code search_system_logs} - Search the session's pulled system text with recorded clocks
  * </ul>
  *
  * <h2>Statistics Tools ({@link StatisticsTools})</h2>

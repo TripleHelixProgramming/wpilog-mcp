@@ -39,6 +39,7 @@ prefix's range, not an assertion that fresh values were published throughout tha
   - [get_types](#get_types)
   - [find_condition](#find_condition)
   - [search_strings](#search_strings)
+  - [search_system_logs](#search_system_logs)
 - [Statistics Tools](#statistics-tools)
   - [Field paths](#field-paths)
   - [Scopes and windows](#scopes-and-windows)
@@ -206,7 +207,8 @@ is `not_applicable` with its reason.
 `providers[]` contains `name`, `state`, `reason` (stand-down or partial-sample explanation),
 `period_sec`, `last_round_trip_ms`, `robot_cpu_sec` (whole-robot processor time between samples,
 not CPU attributed to this provider), `lines_per_sec` (accepted in the current second),
-`dropped_lines`, `dropped_before_sync`, `records`, `bytes`, and `sample_bytes` (last stats reply).
+`dropped_lines`, `dropped_before_sync`, `records`, `bytes`, `sample_bytes` (last stats reply),
+and `program_pids` (program PIDs observed in this session, used for crash-file placement).
 Unknown measurements are null. Provider records/bytes cover the session across rollover files;
 drop counters cover the provider's process lifetime. They are separate from NT4 topic counts.
 The same provider summary is retained in the manifest; old manifests return an empty list.
@@ -591,7 +593,7 @@ prefix. `/Daemon/roboRIO/` holds sampled operating-system measurements with unit
 names; entry metadata gives the SSH host and period. `/Daemon/Tail/<host>/<role>` holds
 received text. The resolver recognizes `program_console`, `kernel`, `syslog`, and `journal`
 as followed-file roles, including `program_console` in the console-text role; unknown roles
-remain ordinary string entries. `search_strings`, timeline error counts and CAN text analysis
+remain ordinary string entries. Pulled companions use `search_system_logs`; the tail is the timely copy, the pulled file the exact record. `search_strings`, timeline error counts and CAN text analysis
 read them through the same text path as `messages` and `console` in robot logs. Tail timestamps
 are receipt times, not timestamps parsed from the line; pre-session buffering is stated in
 metadata. A drop notice is recorder text, not a robot message.
@@ -751,6 +753,48 @@ List or search the text a log holds, completely and in time order across all ent
 ```
 
 ---
+
+### `search_system_logs`
+
+Search the session's pulled local text files listed in `session.json`; this tool never
+contacts the robot. The pulled file is the exact record; `/Daemon/Tail` entries searched by
+`search_strings` are the timely copy, stamped at receipt. They can contain the same text.
+
+**Parameters:**
+- `path` (required): The session's capture file
+- `source` (optional): `kernel`, `syslog`, `program`, `jvm_crash`, or `all` (default)
+- `pattern` (optional): Case-insensitive substring; omit to list every line
+- `regex` (optional): Interpret pattern as a Java regex, default `false`; invalid patterns
+  and expressions exceeding one second per line are explained errors
+- `level` (optional): `error`, `warning`, `info`, or `any` (default), using the same line
+  classifier as `search_strings`; ordinary file text does not carry an alert's `info` level
+- `start_time` / `end_time` (optional): Inclusive robot-clock bounds in seconds
+- `scope` (optional): A shared named time scope such as `all`, `enabled` or `teleop`
+- `windows` (optional): Explicit `{start, end}` windows in seconds, intersected with the scope
+- `last_seconds` (optional): Positive seconds before the open capture's current robot time,
+  or the closed file's end; cannot combine with start/end; `inputs.window` gives the bounds
+- `offset` (optional): Matching lines to skip, default 0, nonnegative
+- `limit` (optional): Lines returned, default 100, range 1–1000
+
+**Returns:** `matches[]` in file-path then line-number order, each with `file`, `source`,
+`line_number`, `text`, `level`, `original_timestamp`, `timestamp_sec`, `timestamp_basis`
+and `timestamp_reason`. `total_matches` and `limits.matches.total` count all matches before
+paging; `offset`, `limit`, `returned` and `has_more` describe the page. `inputs.files` names
+paths, committed bytes and hashes; `inputs.clock_files` and `inputs.manifest` name the clock
+and membership evidence read. No companions gives `not_applicable`; no matching lines gives
+`no_match`. No `data_quality`: logged lines are facts.
+
+`kernel` means dmesg only. Kernel seconds interpolate the two nearest recorded
+`/Daemon/roboRIO/uptime_sec` / FPGA pairs, with basis `uptime_pairing`; nothing is
+extrapolated beyond the pairing or session. `syslog` includes either files or the whole
+journal. Journal `short-unix` epochs and ISO timestamps with a year and zone map through
+recorded `systemTime` (prefer the pulled log and its recorded alignment), with basis
+`system_time`. A wall-clock pair supplies the measured offset within the session. A date
+without a year or zone is not guessed. Unmapped lines have null `timestamp_sec` and a reason;
+they remain visible even in a requested window because their membership in it is unknown.
+On a journald image a kernel message can occur as both kernel/uptime_pairing and
+syslog/system_time. Text files are read only to the manifest's committed length, including
+gzip syslog rotations; a missing, shortened or unsafe receipt gives an explained error.
 
 ## Statistics Tools
 

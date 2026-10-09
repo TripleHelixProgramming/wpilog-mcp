@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Pit server
 
+- Opt-in system-log pulling collects kernel buffers, syslog rotations or the whole journal, NI logs and JVM crash files through the disabled-only SSH pull pass. Previously only telemetry files were pulled. Content receipts and durable cursors prevent repeated copies; crash files use recorded program PIDs, and unverified NI-image candidates remain off by default.
+- `search_system_logs` searches manifested local companions with shared severity rules, paged totals, and written clocks mapped through measured kernel pairs or recorded systemTime. Previously assistants could search only captured text; unknown clocks remain null with reasons, and the exact pulled record is distinguished from timely tail entries.
 - SSH-configured captures now record adaptive roboRIO system stats and followed console/files under `/Daemon/`, sharing one host connection with pulling. Previously these operating-system measurements and live console lines were absent. Send/receipt-time mapping, bounded buffering, reported drops and provider costs appear in live tools, manifests and metrics; both providers default on for shop testing, with explicit opt-outs.
 - The read-only HTTP store door serves configured catalogs, session manifests, ranged file reads and prefix hashes. Previously stores were readable only through their filesystem. Inbox files, strays, credentials and lease-only directories remain outside the door.
 - Opt-in `capture.pull` fetches robot WPILOG and REV files over SFTP only while the connected robot is disabled and settled. Content checks protect resume and DataLogManager renames, reused names retain old generations, and verified copies join sessions by serial and near-zero correlation. Previously the server had no robot-file transport. Pulling stays off by default pending the shop test and never changes or deletes robot files.
@@ -112,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File-size refusal:** WPILOGs beyond the current 2 GB mapping limit remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed.
 
 ### Testing
+- Synthetic system-log fixtures exercise real SSH gate/pacing, rotations, cursor restart and command refusal, PID placement, committed-prefix reads and independent clock mapping. Previously these paths had no tests; the tool joins schema conformance, claims and opt-in stress calls without requiring a robot's files.
 
 - The systemd check tests launcher/JAR access as the service user before startup, reports modes on refusal, and supplies the hosted JDK through `JAVA_HOME`; previously it waited for health while the process could not start. The unmanaged plant removes only the flag. Real-child ownership and POSIX-mode regressions cover both failures, and Main/installer changes select both editor smoke jobs without unrelated capture replay.
 - A separate Linux systemd job exercises the printed service and timer, managed/version health, the stop refusal and bounded shutdown, with an unmanaged-service plant and uploaded journals. Previously no test ran the pit server under its supervisor.

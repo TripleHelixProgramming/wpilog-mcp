@@ -557,6 +557,7 @@ class HttpStressTest {
     searchArgs.addProperty("path", logPath);
     searchArgs.addProperty("pattern", "voltage");
     exerciseTool(sessionId, "search_strings", searchArgs, "query");
+    exerciseTool(sessionId, "search_system_logs", searchArgs, "query");
 
     // Statistics tools (log-requiring, with a numeric entry)
     if (numericEntry != null) {

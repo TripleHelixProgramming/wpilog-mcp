@@ -210,6 +210,10 @@ public final class LogStore implements AutoCloseable {
     return new PullStore(this, logManager, security, identity, clock);
   }
 
+  public SystemPullStore systemPulls(org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, java.time.Clock clock) {
+    return new SystemPullStore(this, security, identity, clock);
+  }
+
   public record SshHosts(java.util.Map<String, String> fingerprints) {}
   /** Non-robot followers also pin first contact; this file contains fingerprints, never credentials. */
   public CompletableFuture<Void> recordHostKey(String address, String fingerprint) {
@@ -764,7 +768,7 @@ public final class LogStore implements AutoCloseable {
           if (input.end() != null && input.end().isAfter(end)) end = input.end();
         }
         session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats());
+            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs());
         io.write(manifest, session);
       }
       catalog.placed(io, manifest, robot, session, records);

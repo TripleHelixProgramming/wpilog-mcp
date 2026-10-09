@@ -42,6 +42,7 @@ public final class QueryTools {
     registry.registerTool(new GetTypesTool());
     registry.registerTool(new FindConditionTool());
     registry.registerTool(new SearchStringsTool());
+    registry.registerTool(new SearchSystemLogsTool());
   }
 
   static class SearchEntriesTool extends LogRequiringTool {
@@ -621,7 +622,7 @@ public final class QueryTools {
      * A view of a string whose {@code charAt} checks a deadline, so a catastrophically
      * backtracking user regex fails fast instead of hanging the server.
      */
-    private static final class DeadlineCharSequence implements CharSequence {
+    static final class DeadlineCharSequence implements CharSequence {
       private final CharSequence text;
       private final long deadlineNanos;
 

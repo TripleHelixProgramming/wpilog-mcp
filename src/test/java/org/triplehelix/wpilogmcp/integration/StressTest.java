@@ -367,6 +367,9 @@ class StressTest {
       System.out.println("  search_strings: " + matches + " matches");
     });
 
+    testTool("search_system_logs", searchStrArgs, result ->
+        System.out.println("  search_system_logs: " + result.get("status").getAsString()));
+
     var numericForCondition = findNumericEntries(1);
     if (!numericForCondition.isEmpty()) {
       var condArgs = new JsonObject();

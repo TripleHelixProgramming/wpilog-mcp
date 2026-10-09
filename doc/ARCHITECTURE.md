@@ -166,7 +166,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and a bounded WebSocket adapter, used by configured capture and the loopback robot fixture |
 | `ssh` | One authenticated connection per host, pinned keys, bounded exec channels and independent SFTP/follow channels; reconnect only during NT4 presence |
-| `capture/pull` | Disabled-state gate, borrowed SFTP adapter, and transfer coordination outside the NT4 loop |
+| `capture/pull` | Disabled-state gate, borrowed SFTP/exec channels, telemetry and system-text transfer passes outside the NT4 loop |
 | `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers and published provider state |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
 
@@ -718,6 +718,31 @@ facts without joining provider workers. Tails accept 200 lines per second per fi
 pending history to 1000 lines and individual lines to 64 KiB, and record losses. Buffered
 pre-session receipt times use the next measured offset, clamped at zero with a metadata note.
 Missing sources stand down for that session; SSH loss resets channels without inventing text.
+
+## Pulled system text
+
+`capture/pull.SystemPullPass` is the second phase of the existing pull worker, using its
+shared SSH contact, disabled/connected gate and byte budget. SFTP files reuse `FileTransfer`;
+exec snapshots spool one block at a time with an external read deadline. Unchanged passes
+retain content proofs instead of hashing the same files on the robot every few seconds.
+A closed gate closes the exec channel: a full JSch input pipe otherwise blocks its shared
+network reader and prevents even another channel from opening. The next snapshot starts
+from the committed cursor; SFTP keeps its held prefix. A real-SSH regression caught this
+by opening a hash channel beside a paused ring-buffer reply.
+`store.SystemPullStore` serializes placement and atomic receipts on the store queue. Immutable
+snapshots preserve rotations; kernel/journal append lengths and cursors commit together, and
+an interrupted append is truncated to that receipt before retry. Kernel and journal clocks
+remain different even when their messages happen to agree.
+
+`SystemLogState` is an additive session-manifest field, separate from telemetry files.
+Source, remote path, pass time, size and hash explain each copy. Shared syslog files belong to
+the robot; per-session kernel and NI files move with their directory. Provider snapshots
+retain observed program PIDs so crash placement reads manifest facts, not every capture.
+`tools.SearchSystemLogsTool` reads receipts without joining the store queue or contacting SSH,
+uses the ordinary move lease and a fixed byte prefix, and names every text/clock input.
+`SystemLogClocks` interpolates measured uptime pairs and reads recorded wall clocks;
+missing evidence produces null and a reason. Severity comes from the same classifier as
+`search_strings`. The pulled file is exact text; tail entries are a timely receipt-time copy.
 
 ## Concurrency
 

@@ -92,7 +92,7 @@ public final class StoreDoor {
         manifest = new StoreManifest.Session(manifest.id(), manifest.startedAt(), manifest.endedAt(), manifest.startBasis(),
             manifest.event(), manifest.matchType(), manifest.matchNumber(), manifest.teamNumber(), manifest.files(),
             new StoreManifest.OpenCapture(open.path(), open.provenance(), Files.size(path), open.minTimestampSec(), open.maxTimestampSec()),
-            manifest.endReason(), manifest.deviceIdentity(), manifest.identityConflicts(), manifest.conflicts());
+            manifest.endReason(), manifest.deviceIdentity(), manifest.identityConflicts(), manifest.conflicts(), manifest.captureStats(), manifest.systemLogs());
       }
       sessions.add(new Session(item.robot().id(), StoreFiles.relative(selected.root(), item.path()), manifest));
     }

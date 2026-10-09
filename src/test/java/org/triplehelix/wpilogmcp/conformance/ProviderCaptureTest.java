@@ -153,6 +153,9 @@ class ProviderCaptureTest {
         var manifest = com.google.gson.JsonParser.parseString(Files.readString(capture.getParent().resolve("session.json"))).getAsJsonObject();
         var summary = manifest.getAsJsonObject("capture_stats");
         assertEquals(2, summary.getAsJsonArray("providers").size());
+        assertTrue(summary.getAsJsonArray("providers").asList().stream().anyMatch(p -> p.getAsJsonObject().get("name").getAsString().equals("roboRIO")
+            && p.getAsJsonObject().getAsJsonArray("program_pids").asList().stream().anyMatch(pid -> pid.getAsLong() == 42)),
+            "The scripted /proc pid is retained for crash-file placement without a capture rescan");
         assertEquals(102, summary.getAsJsonObject("kernel_clock").get("uptime_sec").getAsDouble());
         var independent = IndependentLog.read(capture, java.util.Set.of("/Daemon/roboRIO/cpu_busy_fraction", console));
         try (var fresh = new LazyParsedLog(capture.toString(), new edu.wpi.first.util.datalog.DataLogReader(java.nio.ByteBuffer.wrap(Files.readAllBytes(capture))), 1 << 20)) {

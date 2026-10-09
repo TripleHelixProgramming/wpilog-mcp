@@ -24,7 +24,7 @@ public record ProviderConfig(boolean robotSsh, Stats stats, List<Tail> tails) {
 
   static ProviderConfig parse(JsonObject capture, PullConfig pull, UnaryOperator<String> paths,
       UnaryOperator<String> text) throws ConfigException {
-    boolean configured = pull.enabled() || capture.has("pull") && capture.get("pull").isJsonObject()
+    boolean configured = pull.active() || capture.has("pull") && capture.get("pull").isJsonObject()
         && capture.getAsJsonObject("pull").has("ssh");
     boolean enabled = configured; long period = 2_000_000, budget = 100_000;
     if (capture.has("stats")) {

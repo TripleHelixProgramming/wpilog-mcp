@@ -138,6 +138,16 @@ deadlines, and host-key refusal before sending a password. The fake-channel test
 socket checks interoperability, while an injected channel pins schedules precisely. MINA and its
 EdDSA provider are test dependencies only.
 
+**System logs.** `SystemPullTest`, `KernelLinesTest`, `CaptureSystemPullTest` and
+`SearchSystemLogsTest` use synthetic text and paired clocks. MINA serves SFTP and scripted
+exec snapshots; tests cover block pacing, the disabled gate, rotation content reuse, journal
+cursor restart and stand-down, kernel overlap/reboot, PID placement, and writer manifest
+updates. Tool checks work out interpolation by hand, share severity cases with
+`search_strings`, pin committed-prefix/path safety and true paging totals, and check discovery.
+The conformance sweep includes a generated store session with system companions. No image
+path or robot text is a fixture; the actual NI file set remains the shop checklist in
+[STANDALONE.md](STANDALONE.md#pulled-system-logs-opt-in). The ordinary build needs no SSH host.
+
 **Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
 `LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
 mapped readers, retained old paths, key history, disagreements, and logged identity in the listing

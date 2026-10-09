@@ -103,7 +103,7 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 |----------|-------|
 | **Discovery** | `get_server_guide`, `suggest_tools` |
 | **Core** | `list_available_logs`, `list_loaded_logs`, `list_entries`, `read_entry`, `get_entry_info`, `list_struct_types`, `resolve_signals`, `health_check` |
-| **Query** | `search_entries`, `get_types`, `find_condition`, `search_strings` |
+| **Query** | `search_entries`, `get_types`, `find_condition`, `search_strings`, `search_system_logs` |
 | **Statistics** | `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries` |
 | **Robot Analysis** | `get_match_phases`, `analyze_swerve`, `power_analysis`, `can_health`, `analyze_can_bus`, `compare_matches`, `get_code_metadata`, `moi_regression` |
 | **FRC Domain** | `get_ds_timeline`, `analyze_vision`, `compare_poses`, `pose_corrections`, `profile_mechanism`, `analyze_auto`, `analyze_cycles`, `analyze_replay_drift`, `analyze_loop_timing`, `predict_battery_health`, `get_game_info` |

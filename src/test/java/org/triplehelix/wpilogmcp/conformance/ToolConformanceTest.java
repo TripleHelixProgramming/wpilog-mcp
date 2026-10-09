@@ -87,6 +87,28 @@ class ToolConformanceTest {
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(dir);
+    var systemRoot = dir.resolve("system-store");
+    var systemCapture = org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture.create(systemRoot, "synthetic", true, 42);
+    var systemStore = logManager.stores().store(systemRoot);
+    var systemPull = systemStore.systemPulls(org.triplehelix.wpilogmcp.capture.pull.FakeRobot.device(
+        org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture.SERIAL, "SHA256:fixture"),
+        org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture.WALL);
+    if (!systemPull.beginPass()) throw new IOException("Missing system fixture session");
+    systemPull.kernel(List.of("[105.0] warning fixture", "[110.0] error fixture", "unknown clock"), 120);
+    systemPull.journal(List.of("1772893358.25 host service: warning fixture"), "fixture-cursor", "fixture-boot");
+    var systemRemote = new org.triplehelix.wpilogmcp.capture.pull.FakeRobot();
+    systemRemote.files.put("/home/lvuser/hs_err_pid42.log", "synthetic crash report\n".getBytes(StandardCharsets.UTF_8));
+    systemRemote.files.put("/var/local/natinst/log/program.log", "synthetic program line\n".getBytes(StandardCharsets.UTF_8));
+    systemPull.sources(java.util.Map.of("/home/lvuser/hs_err_pid42.log", "jvm_crash", "/var/local/natinst/log/program.log", "program"));
+    var systemClock = new java.util.concurrent.atomic.AtomicLong();
+    var systemTransfer = new org.triplehelix.wpilogmcp.sync.FileTransfer(systemRemote, systemPull, systemPull.manifest(), 1_000_000, systemClock::get, () -> true);
+    for (int i = 0; i < 20; i++) {
+      var result = systemTransfer.step(); systemClock.addAndGet(Math.max(1, result.waitUs()));
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.IDLE) break;
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.REFUSED) throw new IOException(result.detail());
+    }
+    fixtures = java.util.stream.Stream.concat(fixtures.stream(), java.util.stream.Stream.of(
+        new Fixture("system-session", systemCapture, "Synthetic pulled text and paired clocks", List.of("search_system_logs")))).toList();
     var identityStore = logManager.stores().store(dir.resolve("listing-store"));
     var identityImport = identityStore.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(
         List.of(dir.resolve("identity-true.wpilog"), dir.resolve("identity-false.wpilog")), false, null), ignored -> {})

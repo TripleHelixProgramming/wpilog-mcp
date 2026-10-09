@@ -137,7 +137,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
           old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
           new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
               previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
-          old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats()));
+          old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs()));
       return path;
     });
   }
@@ -273,7 +273,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var session = new Session(old.id(), old.startedAt(), ended,
         old.startBasis(), update.event() == null ? old.event() : update.event(), update.matchType() == null ? old.matchType() : update.matchType(),
         update.matchNumber() == null ? old.matchNumber() : update.matchNumber(), update.teamNumber() == null ? old.teamNumber() : update.teamNumber(),
-        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts(), update.statistics());
+        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts(), update.statistics(), old.systemLogs());
     io.write(path, session); writes.incrementAndGet();
     // Keep the directory stable while its writer can open another rollover file or remap.
     // Creation of a resumed capture is a queue barrier, so it cannot race this close-time move.

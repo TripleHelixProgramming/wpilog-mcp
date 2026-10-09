@@ -26,6 +26,7 @@
     {"tool": "find_condition", "title": "Disabled and stationary (compound)", "args": {"path": "${review}", "conditions": {"all": [{"name": "/DriverStation/Enabled", "operator": "eq", "threshold": 0}, {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vx", "operator": "abs_lt", "threshold": 0.05}, {"name": "/RealOutputs/SwerveChassisSpeeds/Measured.vy", "operator": "abs_lt", "threshold": 0.05}]}}},
     {"tool": "search_strings", "title": "An alert, as one appearance", "args": {"path": "${review}", "pattern": "camera 3 is disconnected"}},
     {"tool": "search_strings", "title": "Errors, first page", "args": {"path": "${q10}", "level": "error", "limit": 3}},
+    {"tool": "search_system_logs", "title": "No pulled system companions on the reference server", "args": {"path": "${q10}", "source": "all", "pattern": "error", "limit": 3}},
 
     {"tool": "get_statistics", "title": "Battery while enabled", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "scope": "enabled"}},
     {"tool": "get_statistics", "title": "Heading wander while disabled (field path, angle)", "args": {"path": "${review}", "name": "/RealOutputs/Drive/Pose.rotation._derived.degrees", "start_time": 362, "end_time": 394}},

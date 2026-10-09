@@ -91,12 +91,12 @@ public final class CaptureService implements AutoCloseable {
     placement.onStatus(live::status);
     var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs), config.maxFileBytes(), outputs);
     var gate = new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, config.pull().settleUs());
-    providers = (config.providers().robotSsh() || !config.providers().tails().isEmpty() || pulls == null && config.pull().enabled())
+    providers = (config.providers().robotSsh() || !config.providers().tails().isEmpty() || pulls == null && config.pull().active())
         ? new org.triplehelix.wpilogmcp.capture.context.ContextProviders(config, writer, live, loop, store, clock) : null;
     var factory = pulls == null ? (org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory)
         (settings, admission, storage, wall, identity) -> new org.triplehelix.wpilogmcp.capture.pull.PullCoordinator(
             settings, admission, storage, wall, identity, ClientScheduler.daemon("robot-pull"), (address, options, pin) -> providers.pull(address, options, pin)) : pulls;
-    pull = config.pull().enabled() ? factory.create(config.pull(), gate, store, clock,
+    pull = config.pull().active() ? factory.create(config.pull(), gate, store, clock,
         learned -> loop.execute(() -> { if (learned.connection() == gate.connection()) writer.identity(learned.device()); })) : null;
     if (pull != null) live.attachPull(pull::progress);
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), listener(writer, gate, live, gateway, providers),

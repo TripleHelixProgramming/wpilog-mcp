@@ -76,7 +76,7 @@ public final class LiveTools {
           + "(prefix, period_sec), excluded[], imports[] (path, method, offset_sec, reason), end_reason and "
           + "counts_basis. providers[] reports name, state, reason (stand-down or partial sample), period_sec, "
           + "last_round_trip_ms, robot_cpu_sec (processor time between samples, not provider-only CPU), lines_per_sec, "
-          + "dropped_lines, dropped_before_sync, records, bytes (provider value records), and sample_bytes (last reply). "
+          + "dropped_lines, dropped_before_sync, records, bytes (provider value records), sample_bytes (last reply), and program_pids (observed program identities for crash-file placement). "
           + "Old manifests without recorder summaries return null counts, never a file scan. "
           + "Recorder counts are published every 250 ms; closed-session rates are null. limits.sessions "
           + "reports the true total when limit cuts sessions, and each session's limits.cost reports a cut "

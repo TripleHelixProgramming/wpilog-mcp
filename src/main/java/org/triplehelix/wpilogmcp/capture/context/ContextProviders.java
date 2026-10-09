@@ -60,6 +60,7 @@ public final class ContextProviders implements AutoCloseable {
   private String blockedStatsReason;
   private ProviderStatus.KernelClock kernel;
   private long records, bytes, sampleBytes, nextSample;
+  private final java.util.Set<Long> programPids = new java.util.TreeSet<>();
   private String reportedStatsState, reportedStatsReason;
 
   public ContextProviders(CaptureConfig config, CaptureWriter writer, LiveCapture live, ClientScheduler loop,
@@ -98,7 +99,7 @@ public final class ContextProviders implements AutoCloseable {
   /** Only the ordered NT4 listener calls presence/session methods. */
   public void connected(String address) {
     connected = true; episode.incrementAndGet();
-    if (config.providers().robotSsh() || config.pull().enabled()) {
+    if (config.providers().robotSsh() || config.pull().active()) {
       robot = host(address, config.pull().ssh()); robot.required(true);
     }
     for (var tail : tails) {
@@ -116,7 +117,7 @@ public final class ContextProviders implements AutoCloseable {
     var current = writer.session(); open = connected && current != null && current.open();
     if (current != session) {
       if (session != null) episode.incrementAndGet();
-      session = current; kernel = null; statsStatus = null; live.clearProviders(); records = 0; bytes = 0; sampleBytes = 0;
+      session = current; kernel = null; statsStatus = null; live.clearProviders(); records = 0; bytes = 0; sampleBytes = 0; programPids.clear();
       tails.forEach(t -> { t.records = 0; t.bytes = 0; });
     }
     tails.forEach(t -> t.provider.session(current));
@@ -126,7 +127,7 @@ public final class ContextProviders implements AutoCloseable {
     var current = robot;
     var connection = current == null || !current.address().equals(address) ? null : current.connection();
     if (connection == null) throw new IOException("Shared SSH is waiting for " + address);
-    return SftpTransport.using(connection, settings.directories(), address, false);
+    return SftpTransport.using(connection, settings.enabled() ? settings.directories() : List.of(), address, false);
   }
   private void sample() {
     if (stopped.get()) return;
@@ -192,7 +193,10 @@ public final class ContextProviders implements AutoCloseable {
         for (var value : new java.util.TreeMap<>(result.sample().values()).entrySet()) {
           String type = value.getValue() instanceof Long ? "int64" : "double";
           int written = record("/Daemon/roboRIO/" + value.getKey(), type, value.getValue(), result.timestampUs(), metadata);
-          if (written > 0) { records++; bytes += written; }
+          if (written > 0) {
+            records++; bytes += written;
+            if (value.getKey().equals("program/pid") && value.getValue() instanceof Long pid) programPids.add(pid);
+          }
         }
         kernel = result.kernelClock();
       }
@@ -230,7 +234,7 @@ public final class ContextProviders implements AutoCloseable {
       }
       snapshots.add(new ProviderStatus("roboRIO", state, reason,
           periodUs / 1_000_000.0, value == null ? null : value.lastRoundTripMs(), value == null ? null : value.robotCpuSec(), 0, 0,
-          value == null ? 0 : value.droppedBeforeSync(), records, bytes, sampleBytes));
+          value == null ? 0 : value.droppedBeforeSync(), records, bytes, sampleBytes, List.copyOf(programPids)));
     }
     for (var tail : tails) {
       var value = tail.provider.state(); var buffer = tail.provider.buffer();

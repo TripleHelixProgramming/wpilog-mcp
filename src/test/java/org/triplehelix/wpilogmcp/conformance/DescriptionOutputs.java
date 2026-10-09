@@ -35,6 +35,7 @@ final class DescriptionOutputs {
    * by the named test instead.
    */
   static final Map<String, String> VERIFIED_ELSEWHERE = Map.ofEntries(
+      Map.entry("list_sessions | program_pids", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
       Map.entry("list_sessions | last_round_trip_ms", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
       Map.entry("list_sessions | robot_cpu_sec", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
       Map.entry("list_sessions | lines_per_sec", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),

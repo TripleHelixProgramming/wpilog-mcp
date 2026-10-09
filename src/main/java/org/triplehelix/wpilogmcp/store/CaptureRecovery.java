@@ -64,7 +64,7 @@ final class CaptureRecovery {
             session.startBasis(), scan.truncated(), null));
         io.write(manifest, new Session(session.id(), session.startedAt(), ended, session.startBasis(),
             session.event(), session.matchType(), session.matchNumber(), session.teamNumber(),
-            java.util.List.copyOf(files), null, STOPPED, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null));
+            java.util.List.copyOf(files), null, STOPPED, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null, session.systemLogs()));
         LoggerFactory.getLogger(CaptureRecovery.class).info("Recovered capture {}: {}", file, STOPPED);
       }
     } catch (IOException | RuntimeException e) {
@@ -72,7 +72,7 @@ final class CaptureRecovery {
       LoggerFactory.getLogger(CaptureRecovery.class).error("Capture {}: {}", manifest, reason);
       io.write(manifest, new Session(session.id(), session.startedAt(), session.endedAt(), session.startBasis(),
           session.event(), session.matchType(), session.matchNumber(), session.teamNumber(),
-          session.files(), open, reason, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null));
+          session.files(), open, reason, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null, session.systemLogs()));
     }
   }
 }

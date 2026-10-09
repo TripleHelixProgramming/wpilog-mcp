@@ -439,13 +439,21 @@ credential flows and hardware validation remain on the manual checklist.
 The metrics milestone is complete: `/metrics` serves latest numeric topics with ages,
 recorded struct fields, capture/pull counters and JVM MBeans. A Compose setup and starter
 Grafana dashboard live in `doc/metrics`. The optional gateway now serves dashboards through
-the pit computer and reports its client count; provider startup remains later work.
+the pit computer and reports its client count.
 The capture remains the full record behind the sampled dashboard.
 
 The roboRIO stats and followed-file providers are implemented on one shared SSH connection.
 They are enabled with SSH configuration for shop testing, with cost reports and bounded tails;
 measure the defaults and NI-image command support before recommending them to teams. JVM/JFR,
-vision providers and the second-pass system-log pull remain planned in the pit plan.
+vision providers remain planned in the pit plan.
+
+System-log collection and `search_system_logs` now work on configured synthetic-tested
+sources: dmesg, syslog rotations or the whole journal, NI files and JVM crash files. The
+mechanism shares SSH, the pull gate, byte pacing and manifest placement; timestamp mapping
+requires measured pairs. Collection remains opt-in with unverified image candidates until
+the shop supplies the directory listings, command availability, permissions and program path.
+Text-companion transfer through the store door, peer sync and mirrors remains separate work;
+the current system-log search uses the collecting store's local files.
 
 ### 9.4 Shop Harness
 

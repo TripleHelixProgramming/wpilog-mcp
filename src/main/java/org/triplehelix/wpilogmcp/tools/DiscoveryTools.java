@@ -161,6 +161,12 @@ public final class DiscoveryTools {
         List.of("Find error messages", "Search console output", "Find specific warnings"),
         true, List.of("can_health", "generate_report")));
 
+    tools.add(new ToolInfo("search_system_logs", "query",
+        "Search a session's pulled system files with written clocks mapped where measured",
+        List.of("kernel", "dmesg", "syslog", "journal", "crash", "hs_err", "system log"),
+        List.of("Find kernel errors", "Search the robot's system journal", "Find JVM crash messages"),
+        true, List.of("search_strings", "list_sessions")));
+
     // === STATISTICS TOOLS ===
     tools.add(new ToolInfo("get_statistics", "statistics",
         "Compute comprehensive statistics on numeric entries",

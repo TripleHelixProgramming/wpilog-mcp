@@ -37,6 +37,8 @@ public final class PullCoordinator implements AutoCloseable {
   private final java.util.concurrent.CompletableFuture<Void> closing = new java.util.concurrent.CompletableFuture<>();
   private final AtomicReference<RobotRemote> remote = new AtomicReference<>();
   private FileTransfer transfer;
+  private volatile SystemPullPass system;
+  private boolean systemPhase;
   private long connection = -1;
   private FileTransfer.Status lastStatus;
   /** Cumulative copied payload bytes and successful verifications for this server process. */
@@ -86,6 +88,7 @@ public final class PullCoordinator implements AutoCloseable {
     if (connection != gate.connection()) { closeRemote(); transfer = null; connection = gate.connection(); }
     if (stopped.get() || !gate.open()) {
       if (transfer != null) transfer.step(); // Drop the old prefix proof when the gate closes.
+      if (system != null) system.pause();
       return report(new FileTransfer.Result(FileTransfer.Status.PAUSED, 0, null, 0, null));
     }
     if (transfer == null) {
@@ -104,9 +107,16 @@ public final class PullCoordinator implements AutoCloseable {
       var local = store.pulls(device, wall);
       transfer = new FileTransfer(contact, local, local.manifest(), config.rateBytes(), worker::nowUs,
           () -> !stopped.get() && gate.open() && episode == gate.connection());
+      if (config.system().enabled()) system = new SystemPullPass(contact, store.systemPulls(device, wall), config.system(),
+          config.rateBytes(), worker::nowUs, () -> !stopped.get() && gate.open() && episode == gate.connection());
       connection = episode;
     }
-    return report(transfer.step());
+    var result = systemPhase ? system.step() : transfer.step();
+    if (result.status() == FileTransfer.Status.IDLE && system != null) {
+      systemPhase = !systemPhase;
+      if (systemPhase) return report(new FileTransfer.Result(FileTransfer.Status.WAITING, 0, null, 0, null));
+    }
+    return report(result);
   }
   private FileTransfer.Result report(FileTransfer.Result result) {
     var status = result.status();
@@ -126,6 +136,8 @@ public final class PullCoordinator implements AutoCloseable {
     return result;
   }
   private void closeRemote() {
+    var secondPass = system; system = null; systemPhase = false;
+    if (secondPass != null) secondPass.close();
     var contact = remote.getAndSet(null);
     if (contact != null) try { contact.close(); } catch (IOException e) { LoggerFactory.getLogger(PullCoordinator.class).debug("SSH close failed: {}", e.getMessage()); }
   }

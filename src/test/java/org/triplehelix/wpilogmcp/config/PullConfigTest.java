@@ -16,6 +16,23 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 class PullConfigTest {
   @TempDir Path temp;
+  @Test void configuredSystemLogsAreAcceptedWithoutEnablingOrdinaryPulls() {
+    var config = assertDoesNotThrow(() -> PullConfig.parse(JsonParser.parseString("""
+        {system:{enabled:true,kernel:'dmesg',journal:true,syslog:['/var/log/messages.*'],
+        ni:['/custom/ni/'],jvm_crash:['/home/robot']}}
+        """), p -> p, p -> p));
+    assertFalse(config.enabled());
+    assertTrue(config.active()); assertTrue(config.system().enabled());
+    assertEquals(SystemPullConfig.Kernel.DMESG, config.system().kernel()); assertTrue(config.system().journal());
+    assertEquals(List.of("/var/log/messages.*"), config.system().syslog());
+    assertEquals(List.of("/custom/ni"), config.system().ni());
+    assertEquals(List.of("/home/robot"), config.system().jvmCrash());
+    assertFalse(PullConfig.DISABLED.system().enabled());
+    assertEquals(SystemPullConfig.Kernel.DMESG, PullConfig.DISABLED.system().kernel());
+    assertEquals(List.of("/var/log/messages"), PullConfig.DISABLED.system().syslog()); assertFalse(PullConfig.DISABLED.system().journal());
+    assertEquals(List.of("/var/local/natinst/log"), PullConfig.DISABLED.system().ni());
+    assertEquals(List.of("/home/lvuser"), PullConfig.DISABLED.system().jvmCrash());
+  }
   @Test void sshPortAllowsAnUnprivilegedHarness() {
     var config = assertDoesNotThrow(() -> PullConfig.parse(JsonParser.parseString("{ssh:{port:2222}}"), p -> p, p -> p));
     assertEquals(2222, config.ssh().port()); assertEquals(22, PullConfig.DISABLED.ssh().port());
@@ -51,6 +68,11 @@ class PullConfigTest {
   }
 
   @ParameterizedTest @CsvSource(delimiter = '|', value = {
+      "{system:[]}|capture.pull.system", "{system:{enabled:1}}|capture.pull.system.enabled",
+      "{system:{kernel:'invalid'}}|capture.pull.system.kernel", "{system:{other:true}}|capture.pull.system.other",
+      "{system:{kernel:'journal'}}|capture.pull.system.kernel", "{system:{journal:1}}|capture.pull.system.journal",
+      "{system:{syslog:'x'}}|capture.pull.system.syslog", "{system:{ni:['/var/../etc']}}|capture.pull.system.ni",
+      "{system:{jvm_crash:['relative']}}|capture.pull.system.jvm_crash",
       "[]|capture.pull", "{typo:1}|capture.pull.typo", "{enabled:1}|capture.pull.enabled",
       "{directories:'x'}|capture.pull.directories", "{directories:[4]}|capture.pull.directories",
       "{directories:['../x']}|capture.pull.directories", "{directories:['/u/../etc']}|capture.pull.directories",
