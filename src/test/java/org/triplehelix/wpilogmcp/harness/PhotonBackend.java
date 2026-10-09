@@ -84,6 +84,18 @@ public final class PhotonBackend implements AutoCloseable {
       assertTrue(database, "Actual export must hold photon.sqlite");
       Files.write(work.resolve("export.zip"), reply.body()); return true;
     });
+    // The release's NT client uses the default port. Only this fresh backend is configured.
+    int before = Files.readString(work.resolve("backend.log")).length();
+    var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:5800/api/settings/general"))
+        .timeout(Duration.ofSeconds(5)).header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(networkConfiguration())).build();
+    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, response.statusCode(), response.body());
+    // The pinned route always restarts Javalin, even with host network management disabled.
+    // Opening the audit first turns that expected setup restart into a spurious socket failure.
+    HarnessHttp.await("PhotonVision settings restart", 30, () -> {
+      check(); return restarted(Files.readString(work.resolve("backend.log")), before);
+    });
     socket = http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
         .buildAsync(URI.create("ws://127.0.0.1:5800/websocket_data"), new Audit()).get(10, TimeUnit.SECONDS);
     HarnessHttp.await("file-camera full binary settings", 30, () -> {
@@ -92,16 +104,18 @@ public final class PhotonBackend implements AutoCloseable {
     });
     assertEquals("v2026.3.4", snapshot.getAsJsonObject("settings").getAsJsonObject("general").get("version").getAsString());
     assertEquals(CAMERA, snapshot.getAsJsonArray("cameraSettings").get(0).getAsJsonObject().get("nickname").getAsString());
-    // The release's NT client uses the default port. Only this fresh backend is configured.
-    String network = """
-        {"ntServerAddress":"127.0.0.1","connectionType":"DHCP","staticIp":"","hostname":"photon-harness",
+    Files.writeString(work.resolve("startup-seconds.txt"), Double.toString((System.nanoTime() - started) / 1e9));
+  }
+  static String networkConfiguration() {
+    return """
+        {"ntServerAddress":"127.0.0.1","connectionType":0,"staticIp":"","hostname":"photon-harness",
          "runNTServer":false,"shouldManage":false,"shouldPublishProto":false,"networkManagerIface":"",
          "setStaticCommand":"","setDHCPcommand":""}
         """;
-    var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:5800/api/settings/general"))
-        .timeout(Duration.ofSeconds(5)).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(network)).build();
-    assertEquals(200, http.send(request, HttpResponse.BodyHandlers.ofString()).statusCode());
-    Files.writeString(work.resolve("startup-seconds.txt"), Double.toString((System.nanoTime() - started) / 1e9));
+  }
+  static boolean restarted(String output, int before) {
+    int stop = output.indexOf("Web server going down for restart", before);
+    return stop >= 0 && output.indexOf("Listening on http://localhost:5800/", stop) >= 0;
   }
   private HttpResponse<byte[]> get(String route) throws Exception {
     return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:5800" + route)).timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());

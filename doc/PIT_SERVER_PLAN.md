@@ -1293,6 +1293,9 @@ Release-review keepalive failures (before the tag):
   runner. It runs alongside the two container boots, not as another sequential timeline.
   An audit receiver checks the ZIP/database, version and every UI message key. Unknown keys
   beside valid settings are refused as well; previously that branch bypassed the key check.
+  The first real-process run caught the harness sending a string for the release's numeric
+  network-mode enum. Configuring its local NT destination uses that enum and waits for the
+  settings route's asynchronous web-server restart before opening the audit socket.
 - `harness/run` and the compatibility `harness/rio/run` share capability selection. macOS and
   Linux without Docker explicitly skip the container/backend while retaining the MINA
   timeline. Linux x86_64 with Docker adds both. No ordinary test needs Docker or a download.
