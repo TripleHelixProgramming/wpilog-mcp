@@ -23,7 +23,8 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 public final class SearchSystemLogsTool extends LogRequiringTool {
   @Override public String name() { return "search_system_logs"; }
   @Override public String description() {
-    return "Search the session's pulled system files from session.json, never the network. path is the session's capture. "
+    return "Search pulled system files from session.json and the robot's system/index.json, never the network. path is the session's capture. "
+        + "Shared syslog spans must overlap the session or be unknown; legacy session receipts remain readable. "
         + "source selects kernel (dmesg only), syslog (files or the whole journal), program (NI logs), jvm_crash, or all. "
         + "Returns matches with file, source, line_number, text, level, original_timestamp, timestamp_sec, timestamp_basis "
         + "(uptime_pairing or system_time), and timestamp_reason when unmapped. Kernel clocks interpolate the nearest "
@@ -33,7 +34,7 @@ public final class SearchSystemLogsTool extends LogRequiringTool {
         + "The pulled file is the exact record; a /Daemon/Tail entry is the timely copy stamped at receipt. On journald images "
         + "a kernel message may occur twice: dmesg as kernel with uptime_pairing, and the journal as syslog with system_time. "
         + "Logged lines are facts, so no statistical quality score is attached. Regex is case-insensitive and bounded to one second per line. "
-        + "No companions gives not_applicable; no matching lines gives no_match.";
+        + "No companions or files not yet copied locally gives not_applicable, naming the collecting server for missing copies; no matching lines gives no_match.";
   }
   @Override protected JsonObject toolSchema() {
     return new SchemaBuilder()
@@ -69,7 +70,12 @@ public final class SearchSystemLogsTool extends LogRequiringTool {
     var found = logManager.stores().systemLogs(Path.of(log.path()));
     if (found.isEmpty() || found.get().files().isEmpty()) return ResponseBuilder.notApplicable("No pulled system files are recorded for this session.")
         .hint("Enable capture.pull.system on the pit server and let a disabled pull pass complete; search_strings reads the timely tail entries.").build();
-    var snapshot = found.get(); var clocksRead = new JsonArray();
+    var snapshot = found.get();
+    var missing = snapshot.files().stream().filter(r -> source.equals("all") || source.equals(r.file().source()))
+        .filter(r -> !Files.isRegularFile(r.path())).toList();
+    if (!missing.isEmpty()) return ResponseBuilder.notApplicable("System text has not been copied locally; query the collecting server " + snapshot.collectingServer() + ".")
+        .hint("Synchronize these files before searching this copy: " + missing.stream().map(r -> r.path().toString()).toList()).build();
+    var clocksRead = new JsonArray();
     var clocks = clocks(log, snapshot, clocksRead); var filesRead = new JsonArray(); var matches = new JsonArray(); long total = 0;
     for (var receipt : snapshot.files().stream().sorted(java.util.Comparator.comparing(r -> r.path().toString())).toList()) {
       var file = receipt.file(); if (!source.equals("all") && !source.equals(file.source())) continue;

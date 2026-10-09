@@ -144,6 +144,12 @@ exec snapshots; tests cover block pacing, the disabled gate, rotation content re
 cursor restart and stand-down, kernel overlap/reboot, PID placement, and writer manifest
 updates. Tool checks work out interpolation by hand, share severity cases with
 `search_strings`, pin committed-prefix/path safety and true paging totals, and check discovery.
+`SystemInventoryTest` counts parses in a 300-session store over ten idle passes, then changes
+placements and the open session; its measured per-pass time is written under `build/reports/`.
+`SystemIndexTest` checks fifty sessions/five shared rotations, written-span selection, legacy
+receipts and the first journal command. `SystemTextTransferTest` checks catalog/range/hash
+reads, peer and mirror copies, corrupt-byte refusal, growing-prefix resume, missing-copy
+guidance and mirror capacity/eviction. All of these stores and text files are generated.
 The conformance sweep includes a generated store session with system companions. No image
 path or robot text is a fixture; the actual NI file set remains the shop checklist in
 [STANDALONE.md](STANDALONE.md#pulled-system-logs-opt-in). The ordinary build needs no SSH host.

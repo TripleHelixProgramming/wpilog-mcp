@@ -452,8 +452,10 @@ sources: dmesg, syslog rotations or the whole journal, NI files and JVM crash fi
 mechanism shares SSH, the pull gate, byte pacing and manifest placement; timestamp mapping
 requires measured pairs. Collection remains opt-in with unverified image candidates until
 the shop supplies the directory listings, command availability, permissions and program path.
-Text-companion transfer through the store door, peer sync and mirrors remains separate work;
-the current system-log search uses the collecting store's local files.
+System text now follows telemetry through the catalog-backed door, peer sync and mirrors,
+with committed-prefix reads and hash verification. Shared syslog receipts live once in the
+robot's index and are selected by written span; a mirror's offline search reads its own copy.
+The shop still needs to confirm dmesg's bracketed seconds and journalctl's boot-id support.
 
 ### 9.4 Shop Harness
 

@@ -71,6 +71,7 @@ public final class StoreSync {
   private final List<Stopped> stopped = new ArrayList<>();
   private final Map<String, StoreCatalog.StoredFile> held = new LinkedHashMap<>();
   private final Map<Path, StoreCatalog.SessionDirectory> sessions = new LinkedHashMap<>();
+  private final Map<String, Path> incomingSessions = new LinkedHashMap<>();
 
   StoreSync(Path root, StoreFiles io, SecurityValidator security, LogManager manager, Clock clock,
       Source source, Consumer<Progress> progress) {
@@ -104,7 +105,7 @@ public final class StoreSync {
           var remembered = new ArrayList<>(latest.peers());
           if (!remembered.contains(peer.url())) remembered.add(peer.url());
           io.write(root.resolve("store.json"), latest.withPeers(List.copyOf(remembered)));
-          var incoming = prepare(peer);
+          incomingSessions.clear(); var incoming = prepare(peer);
           var wanted = new LinkedHashMap<String, Incoming>(); var uniqueHashes = new java.util.HashSet<String>();
           for (var item : incoming) if (!held.containsKey(item.file().sha256()) && uniqueHashes.add(item.file().sha256())) wanted.put(item.path(), item);
           var local = new Local(peer, wanted);
@@ -135,6 +136,12 @@ public final class StoreSync {
               refusals.add(new Refusal(peer.url(), item.path(), "Peer file disappeared before verification; partial bytes retained"));
             }
           }
+          var textProgress = new Progress[1];
+          try {
+            new SystemPeerSync(root, io, peer, clock, copied, present, refusals).run(incomingSessions, rateBytes, p -> { textProgress[0] = p; progress.accept(p); });
+          } finally {
+            if (textProgress[0] != null) { at = textProgress[0].remotePath(); bytes = textProgress[0].bytesCopied(); }
+          }
         }
       } catch (IOException | RuntimeException e) {
         stopped.add(new Stopped(peerUrl, at, bytes, e.getMessage()));
@@ -164,7 +171,7 @@ public final class StoreSync {
       var robot = robots.get(exported.robotId()); if (robot == null) throw new IOException("Session has no peer robot manifest");
       var session = exported.manifest(); StoreFiles.component(session.id());
       if (Instant.parse(session.startedAt()).isAfter(Instant.parse(session.endedAt()))) throw new IOException("Inverted peer session window");
-      var manifest = session(peer, robot, session);
+      var manifest = session(peer, robot, session); incomingSessions.put(session.id(), manifest);
       for (var file : session.files()) {
         validate(file); String name = exported.path() + "/" + file.path();
         io.resolve(root, name); // The peer's spelling is a relative store path, never a local filename.
@@ -261,6 +268,13 @@ public final class StoreSync {
             file.matching(), file.robotFingerprint(), file.matchingReason()));
       }
       var merged = combine(current, previous, List.copyOf(records));
+      var text = new ArrayList<>(current.systemLogs().files());
+      for (var file : previous.systemLogs().files()) {
+        String path = file.location() == SystemLogState.Location.STORE ? file.path()
+            : StoreFiles.relative(target.getKey().getParent(), io.resolve(destination, file.path()));
+        text.add(new SystemLogState.File(file.location(), path, file.source(), file.format(), file.sha256(), file.sizeBytes(), file.provenance(), file.note()));
+      }
+      merged = merged.withSystemLogs(merged.systemLogs().withFiles(List.copyOf(text)));
       var pending = new Merge(StoreFiles.relative(root, old.getKey().getParent()), StoreFiles.relative(root, destination),
           StoreFiles.relative(root, target.getKey()), merged, clock.instant().toString(), false);
       var receipt = root.resolve(".sync/merges").resolve(UUID.randomUUID() + ".json");
@@ -280,7 +294,11 @@ public final class StoreSync {
     var current = io.read(manifest, Session.class);
     var records = new LinkedHashMap<String, LogFile>(); current.files().forEach(f -> records.put(f.path(), f));
     pending.session().files().forEach(f -> records.putIfAbsent(f.path(), f));
-    io.write(manifest, combine(current, pending.session(), List.copyOf(records.values())));
+    var text = new LinkedHashMap<String, SystemLogState.File>();
+    current.systemLogs().files().forEach(f -> text.put(f.location() + "/" + f.path(), f));
+    pending.session().systemLogs().files().forEach(f -> text.putIfAbsent(f.location() + "/" + f.path(), f));
+    var merged = combine(current, pending.session(), List.copyOf(records.values()));
+    io.write(manifest, merged.withSystemLogs(merged.systemLogs().withFiles(List.copyOf(text.values()))));
     var header = io.read(root.resolve("store.json"), Header.class); var moves = new ArrayList<Move>();
     for (var old : header.moves()) {
       var path = io.resolve(root, old.movedTo());
@@ -440,6 +458,7 @@ public final class StoreSync {
     try (var peers = Files.list(directory)) {
       for (var peer : peers.toList()) {
         if (peer.getFileName().toString().equals("merges")) continue;
+        SystemPeerSync.recover(root, io, peer.resolve("system"));
         var receipt = io.check(peer.resolve("placing.json"));
         if (Files.isRegularFile(receipt)) { var pending = io.read(receipt, Placement.class); if (!pending.committed()) complete(receipt, pending); }
       }
@@ -466,6 +485,7 @@ public final class StoreSync {
           }
           continue;
         }
+        result.addAll(SystemPeerSync.managed(root, io, peer.resolve("system")));
         var journal = io.check(peer.resolve("pull.json"));
         if (!Files.isRegularFile(journal)) continue;
         var progress = io.read(journal, PullManifest.class);

@@ -83,7 +83,15 @@ public final class HttpRemoteFiles implements RemoteFiles {
       if (open != null) result.add(file(session.path() + "/" + open.path(), open.sizeBytes(), session.manifest().endedAt()));
     }
     for (var unassigned : catalog.unassigned()) result.add(file(unassigned.path(), unassigned.file().sizeBytes(), unassigned.file().endedAt()));
-    return List.copyOf(result);
+    var text = new java.util.LinkedHashMap<String, File>();
+    for (var session : catalog.sessions()) for (var receipt : session.manifest().systemLogs().files()) {
+      String path = receipt.location() == org.triplehelix.wpilogmcp.store.SystemLogState.Location.STORE ? receipt.path() : session.path() + "/" + receipt.path();
+      text.put(path, file(path, receipt.sizeBytes(), receipt.provenance().importedAt()));
+    }
+    for (var robot : catalog.systemLogs()) for (var entry : robot.files()) {
+      var f = entry.file(); text.put(f.path(), file(f.path(), f.sizeBytes(), f.provenance().importedAt()));
+    }
+    result.addAll(text.values()); return List.copyOf(result);
   }
   private static File file(String path, long size, String ended) throws IOException {
     try { return new File(path, size, ended == null ? 0 : Instant.parse(ended).toEpochMilli()); }

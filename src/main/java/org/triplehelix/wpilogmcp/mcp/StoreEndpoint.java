@@ -50,11 +50,13 @@ final class StoreEndpoint {
           // distinguishes the hash operation from downloading that catalog payload.
           boolean hash = relative.endsWith("/prefix-hash") && query.containsKey("bytes");
           if (hash) relative = relative.substring(0, relative.length() - "/prefix-hash".length());
-          var path = StoreCatalog.file(store.root(), relative, store.security()).toRealPath();
+          var payload = StoreCatalog.payload(store.root(), relative, store.security());
+          var path = payload.path().toRealPath();
           store.security().validate(path);
           try (var lease = LogFileAccess.read(path);
                var file = FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-            long size = file.size();
+            long size = payload.size();
+            if (file.size() < size) throw new IOException("Store file shortened after its catalog receipt");
             if (hash) hash(exchange, file, size, one(query, "bytes"));
             else bytes(exchange, file, size);
           }

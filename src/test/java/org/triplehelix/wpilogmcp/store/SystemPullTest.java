@@ -33,6 +33,7 @@ class SystemPullTest {
   }
   @AfterEach void close() { registry.close(); }
   Session session(Path file) throws Exception { return StoreJson.JSON.fromJson(Files.readString(file.getParent().resolve("session.json")), Session.class); }
+  SystemLogIndex index() throws Exception { return StoreJson.JSON.fromJson(Files.readString(root.resolve("robots").resolve(SERIAL).resolve("system/index.json")), SystemLogIndex.class); }
   static String reply(double uptime, String boot, String text, int status) { return "WPILOG_SYSTEM_BEGIN " + uptime + " " + boot + "\n" + text + "\nWPILOG_SYSTEM_END " + status + "\n"; }
   void pass(SystemPullPass pass, AtomicLong clock) throws Exception {
     for (int n = 0; n < 80; n++) {
@@ -88,14 +89,15 @@ class SystemPullTest {
         assertEquals(FileTransfer.Status.WAITING, pass.step().status());
         enabled.set(false); clock.addAndGet(2_000_000); assertEquals(FileTransfer.Status.PAUSED, pass.step().status());
         enabled.set(true); pass(pass, clock);
-        var receipts = session(capture).systemLogs().files(); assertEquals(4, receipts.size());
-        var syslog = receipts.stream().filter(f -> f.source().equals("syslog")).findFirst().orElseThrow();
+        var receipts = session(capture).systemLogs().files(); assertEquals(3, receipts.size());
+        var syslog = index().files().get(0).file();
         assertArrayEquals(messages, Files.readAllBytes(root.resolve(syslog.path()))); assertEquals(SystemLogState.Location.STORE, syslog.location());
         assertEquals("pulled", syslog.provenance().kind()); assertEquals("/var/log/messages", syslog.provenance().originalPath());
         assertEquals(StoreFiles.hash(root.resolve(syslog.path())), syslog.sha256());
         var crashes = receipts.stream().filter(f -> f.source().equals("jvm_crash")).toList(); assertEquals(2, crashes.size());
         assertTrue(session(older).systemLogs().files().stream().anyMatch(f -> f.source().equals("jvm_crash") && f.path().endsWith("41.log")), "A crash joins its recorded pid's session, not simply the current session");
-        assertTrue(session(older).systemLogs().files().stream().anyMatch(f -> f.source().equals("syslog") && f.sha256().equals(syslog.sha256())), "The cross-boot syslog is also reachable from the older session");
+        assertTrue(session(older).systemLogs().files().stream().noneMatch(f -> f.source().equals("syslog")));
+        assertTrue(SystemLogIndex.applies(index().files().get(0), session(older)), "The older session selects the shared index by its span");
         assertNull(crashes.stream().filter(f -> f.path().endsWith("42.log")).findFirst().orElseThrow().note());
         var unknown = crashes.stream().filter(f -> f.path().endsWith("99.log")).findFirst().orElseThrow();
         assertTrue(unknown.path().contains("/unassigned/")); assertTrue(unknown.note().contains("No session"));
@@ -103,8 +105,8 @@ class SystemPullTest {
         long before = local.manifest().files().stream().mapToLong(e -> e.bytesCopied()).sum();
         pass(pass, clock);
         assertEquals(before, local.manifest().files().stream().mapToLong(e -> e.bytesCopied()).sum(), "rotation must not fetch the payload again");
-        assertEquals(4, session(capture).systemLogs().files().size());
-        assertEquals("/var/log/messages.1", session(capture).systemLogs().files().stream().filter(f -> f.source().equals("syslog")).findFirst().orElseThrow().provenance().originalPath());
+        assertEquals(3, session(capture).systemLogs().files().size());
+        assertEquals("/var/log/messages.1", index().files().get(0).file().provenance().originalPath());
         int checked = rio.commands.get(); pass(pass, clock);
         assertEquals(checked, rio.commands.get(), "An unchanged pass must not hash every file on the robot again");
       }
@@ -144,8 +146,9 @@ class SystemPullTest {
         try (var pass = new SystemPullPass(remote, restarted, settings.system(), settings.rateBytes(), clock::get, () -> true)) {
           pass(pass, clock);
           assertEquals("cursor-2", session(capture).systemLogs().journalCursor());
-          assertEquals(1, session(capture).systemLogs().files().size());
-          var receipt = session(capture).systemLogs().files().get(0);
+          assertTrue(session(capture).systemLogs().files().isEmpty());
+          assertEquals(1, index().files().size());
+          var receipt = index().files().get(0).file();
           assertEquals("syslog", receipt.source()); assertEquals("journal", receipt.format());
           assertEquals(2, Files.readAllLines(root.resolve(receipt.path())).size());
           assertEquals("1772893358.125 host service: warning fixture\n1772893359.125 host kernel: next\n", Files.readString(root.resolve(receipt.path())));

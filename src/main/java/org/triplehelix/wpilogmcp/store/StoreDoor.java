@@ -20,7 +20,20 @@ public final class StoreDoor {
   public record Description(String id, int formatVersion, String serverVersion, boolean mirror) {}
   public record Session(String robotId, String path, StoreManifest.Session manifest) {}
   public record Unassigned(String path, StoreManifest.LogFile file) {}
-  public record Sessions(List<Session> sessions, List<Unassigned> unassigned) {}
+  public record SharedSystem(String robotId, List<SystemLogIndex.Entry> files) {}
+  public record Sessions(List<Session> sessions, List<Unassigned> unassigned, List<SharedSystem> systemLogs) {
+    public Sessions { systemLogs = systemLogs == null ? List.of() : List.copyOf(systemLogs); }
+    public Sessions(List<Session> sessions, List<Unassigned> unassigned) { this(sessions, unassigned, List.of()); }
+  }
+  /** Index entries are exported once per robot; a session selects them by written span. */
+  static List<SystemLogIndex.Entry> systemFiles(Sessions catalog, Session session) {
+    var result = new java.util.LinkedHashMap<String, SystemLogIndex.Entry>();
+    session.manifest().systemLogs().files().forEach(f -> result.put(SystemLogFiles.remotePath(session.path(), f), new SystemLogIndex.Entry(f, null)));
+    for (var robot : catalog.systemLogs()) if (robot.robotId().equals(session.robotId())) {
+      for (var entry : robot.files()) if (SystemLogIndex.applies(entry, session.manifest())) result.put(entry.file().path(), entry);
+    }
+    return List.copyOf(result.values());
+  }
   public record Selected(Path root, Description description, SecurityValidator security) {}
   public record Unreadable(String path, String reason) {}
   public record Inventory(List<Selected> stores, List<Unreadable> unreadable) {}
@@ -98,6 +111,15 @@ public final class StoreDoor {
     }
     var unassigned = robot != null || event != null || cutoff != null ? List.<Unassigned>of() : catalog.files().stream()
         .filter(f -> f.session() == null).map(f -> new Unassigned(StoreFiles.relative(selected.root(), f.path()), f.file())).toList();
-    return new Sessions(List.copyOf(sessions), unassigned);
+    var shared = new ArrayList<SharedSystem>(); var io = new StoreFiles(selected.root(), selected.security());
+    boolean filtered = since != null || robot != null || event != null;
+    for (var owner : catalog.robots()) {
+      var selectedSessions = sessions.stream().filter(s -> s.robotId().equals(owner.robot().id())).toList();
+      if (filtered && selectedSessions.isEmpty()) continue;
+      var entries = SystemLogIndex.read(io, owner.path()).files().stream()
+          .filter(e -> !filtered || selectedSessions.stream().anyMatch(s -> SystemLogIndex.applies(e, s.manifest()))).toList();
+      if (!entries.isEmpty()) shared.add(new SharedSystem(owner.robot().id(), entries));
+    }
+    return new Sessions(List.copyOf(sessions), unassigned, List.copyOf(shared));
   }
 }

@@ -128,7 +128,7 @@ public final class SystemPullPass implements AutoCloseable {
   /** Wrapper status is parsed separately from log text; errors never masquerade as a log line. */
   public static String command(String source, String cursor, String boot) {
     String action = source.equals("kernel") ? "dmesg" : "journalctl -q --no-pager -o short-unix --show-cursor"
-        + (cursor == null ? " -b " + (boot == null ? "\"$boot\"" : SshConnection.quote(boot)) : " --after-cursor " + SshConnection.quote(cursor));
+        + (cursor == null ? " -b" : " --after-cursor " + SshConnection.quote(cursor));
     return "IFS=' ' read -r uptime rest < /proc/uptime; IFS= read -r boot < /proc/sys/kernel/random/boot_id; "
         + "printf '" + HEADER + "%s %s\\n' \"$uptime\" \"$boot\"; " + action
         + "; result=$?; printf '\\n" + END + "%s\\n' \"$result\"";

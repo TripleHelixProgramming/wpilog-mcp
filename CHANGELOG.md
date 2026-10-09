@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Capture and store
 
+- Pulled system text now travels through the store door, peer sync and mirrors with committed-prefix reads, hash checks and growing-file resume. Previously only telemetry files crossed that boundary; mirrored searches now use their local text, and a missing copy names the collecting server.
 - A server with a `capture` section records NetworkTables into ordinary WPILOG files and serves the open capture to every log tool. Previously tools required a file already on disk. Clock continuity distinguishes a Wi-Fi interruption from a new boot; exclusion, thinning and per-topic costs make recording policy explicit. Each tool sees a fixed prefix, with a configurable hot window and older values read from the file.
 - Manifest-backed stores organize WPILOG and REV files by robot and session, preserve names and provenance, deduplicate by SHA-256 and pair REV companions by data correlation. `wpilog-mcp import`, HTTP import jobs and a watched inbox bring existing folders or USB copies into that layout; previously filenames were the only organization. Moves leave readable aliases, and hand-copied strays remain unmanaged.
 - Unassigned logs can be assigned through the explorer or `POST /store/assign`, retaining provenance. Inbox batches carry an explicit robot choice and explained refusal receipts; previously assignment required moving files by hand.
@@ -82,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- System pull passes reuse a connection's inventory until manifest or directory facts change, and shared syslog receipts live once in the robot's index with written-span selection. Previously each pass reparsed every session and each rotation rewrote historical manifests. Legacy receipts remain readable; the journal's first pass uses `-b` alone instead of relying on boot-UUID argument support.
 - **Service ownership:** only `--managed` marks a server as supervisor-owned. Previously an inherited `INVOCATION_ID` also marked ordinary daemons launched by CI runners or terminal shells, preventing start, adoption and stop. Printed units accept exit status 143 as a clean SIGTERM stop on JVMs without the signal handler.
 - **Service installation:** POSIX installs create readable JARs (`0644`), readable/executable launchers and traversable program directories (`0755`), repairing their modes on reinstall while preserving configuration permissions. Previously owner-only temporary-file modes survived publication and prevented the service account from reading a root-installed launcher or JAR.
 - SSH stats no longer call a never-found program "changed" or scan `/proc` every sample. Missing-program discovery retries every ten samples while other stats continue; an identified process changing still triggers the next-sample lookup.
@@ -114,8 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File-size refusal:** WPILOGs beyond the current 2 GB mapping limit remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed.
 
 ### Testing
-- Synthetic system-log fixtures exercise real SSH gate/pacing, rotations, cursor restart and command refusal, PID placement, committed-prefix reads and independent clock mapping. Previously these paths had no tests; the tool joins schema conformance, claims and opt-in stress calls without requiring a robot's files.
 
+- Synthetic stores now count inventory reads across 300 sessions, check five rotations shared by fifty sessions, and exercise system-text ranges, hashes, peer/mirror copies, missing-copy guidance and growing-prefix resume. Corrupt mirrored bytes and omitted shared-file capacity are refused by regressions; previously transfer tests covered telemetry alone.
+- Synthetic system-log fixtures exercise real SSH gate/pacing, rotations, cursor restart and command refusal, PID placement, committed-prefix reads and independent clock mapping. Previously these paths had no tests; the tool joins schema conformance, claims and opt-in stress calls without requiring a robot's files.
 - The systemd check tests launcher/JAR access as the service user before startup, reports modes on refusal, and supplies the hosted JDK through `JAVA_HOME`; previously it waited for health while the process could not start. The unmanaged plant removes only the flag. Real-child ownership and POSIX-mode regressions cover both failures, and Main/installer changes select both editor smoke jobs without unrelated capture replay.
 - A separate Linux systemd job exercises the printed service and timer, managed/version health, the stop refusal and bounded shutdown, with an unmanaged-service plant and uploaded journals. Previously no test ran the pit server under its supervisor.
 - The shop harness runs beside ordinary builds again and no longer downloads their already-uploaded XML. MCP transport changes also select the extension's real-JAR checks; an unreachable before-commit runs all checks instead of failing the workflow. Native replay is selected only for its affected surfaces.

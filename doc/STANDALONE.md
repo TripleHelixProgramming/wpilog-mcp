@@ -215,7 +215,8 @@ candidates**, not claims about the NI installation; collection is off by default
 
 Paths reject `..` and control characters. Missing configured paths are empty sources.
 `journal: true` uses `journalctl -q --no-pager -o short-unix --show-cursor`, followed by
-`--after-cursor` on later passes; its first pass selects the current kernel boot. A missing
+`--after-cursor` on later passes; its first pass uses `-b` alone for the current boot, without
+requiring journalctl to accept a boot UUID. The reply header still records that UUID. A missing
 or refused journal command stands that source down for the session with a recorded reason;
 it never guesses a syslog file. Kernel collection continues independently. A missing or
 permission-denied `dmesg` likewise records its reason. Exec replies are spooled in 64 KiB
@@ -226,8 +227,12 @@ files keep their content-checked byte offset.
 A dmesg ring larger than 16 MiB is refused with a reason, not silently cut short.
 
 `session.json` records `system_logs.files` with source, remote path, pass time, byte count
-and hash, plus kernel continuity and journal cursors. Kernel and NI files live under the
-session's `robot/system/`; immutable syslog snapshots live under `robots/<serial>/system/`.
+and hash for the session's kernel, NI and crash files, plus kernel continuity and journal
+cursors. These files live under the session's `robot/system/`. Shared syslog snapshots live
+under `robots/<serial>/system/`, each recorded once in its `index.json`, with their written
+calendar span when known. Search selects spans overlapping the session or unknown spans;
+unknown session spans cannot exclude a shared file. Existing shared receipts in session
+manifests remain readable without being rewritten.
 Journal text uses UTC-day files there in a session-id directory, so two FPGA sessions in
 one kernel boot cannot accidentally share a cursor. Kernel overlap is removed using the
 last recorded line and uptime; a lower uptime waits for the new capture session. A crash
@@ -239,12 +244,18 @@ reads the timely tail copy. Kernel timestamps need recorded `uptime_sec` pairs; 
 and ISO wall timestamps need the session's `systemTime`. Without evidence the text stays
 visible with a null robot timestamp and a reason. A journald kernel message can occur twice:
 source `kernel` means dmesg only; source `syslog` includes the whole journal.
-System-text companions are local to the collecting store in this round; the telemetry-file
-door, peer sync and mirror do not yet transfer them. Query the collecting pit server for them.
+The store door includes these receipts and shared indices in `/store/sessions`; file and
+prefix-hash endpoints serve only their committed byte lengths. Peer sync carries the whole
+shared index; a mirror carries shared files selected by its sessions' spans. Both verify the
+advertised hash, keep provenance, and resume growing text through the held-prefix check.
+Shared mirror bytes count once toward its cap and remain until their last retained session
+is evicted, provided the origin still holds them. A manifest ahead of its local text returns
+`not_applicable` naming the collecting server; synchronize the copy or query that server.
 
 The shop must supply listings of `/var/local/natinst/log` and `/var/log`, presence of
-`journalctl`, `dmesg` and `df`, dmesg permissions, the console path, and the program command
-line. Those facts will settle the candidates and defaults.
+`journalctl`, `dmesg` and `df`, dmesg permissions, whether dmesg prints `[seconds]` stamps
+(needed to detect a wrapped kernel buffer), whether journalctl accepts a boot id, the console
+path, and the program command line. Those facts will settle the candidates and defaults.
 
 #### SSH stats and followed files
 
@@ -799,7 +810,7 @@ file requests read their owning manifest directly, without walking the catalog p
 |---|---|
 | `GET /store` | `id`, `format_version`, `server_version`, `mirror`; with several stores, none, or an unreadable neighbor, a `stores` array of readable descriptors and `unreadable` entries naming each failed store's `path` and `reason` |
 | `GET /store/robots` | `robots`, the robot manifests |
-| `GET /store/sessions` | `sessions`, each with `robot_id`, store-relative `path`, and its complete `manifest`; `unassigned` contains store-relative `path` and `file` records |
+| `GET /store/sessions` | `sessions`, each with `robot_id`, store-relative `path`, and its complete `manifest` (including `system_logs` receipts); `unassigned` contains store-relative `path` and `file` records; `system_logs` lists each robot's shared index entries (`file` and nullable `written_span`) once |
 | `GET /store/files/<store path>` | File bytes; a single `Range: bytes=start-end`, open-ended range, or suffix range returns 206 |
 | `GET /store/files/<store path>/prefix-hash?bytes=N` | SHA-256 of exactly the first N bytes: `sha256`, `bytes`, and current `size_bytes` |
 

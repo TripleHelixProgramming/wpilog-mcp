@@ -31,27 +31,43 @@ public final class SystemPullStore implements FileTransfer.Local {
   private final DeviceIdentity identity;
   private final Clock wall;
   private final Path robot, staging, journal;
+  private final StoreCatalog.SessionReader reader;
+  private record Stamp(long size, java.nio.file.attribute.FileTime modified, Object key) {}
+  private record Cached(Stamp stamp, Session session) {}
+  private final Map<Path, Cached> inventory = new java.util.HashMap<>();
+  private final java.util.Set<Path> seenManifests = new java.util.HashSet<>();
+  private StoreCatalog.Snapshot catalog;
+  private final Map<Path, Stamp> watched = new java.util.HashMap<>();
   private StoreCatalog.SessionDirectory current;
   private List<StoreCatalog.SessionDirectory> sessions = List.of();
   private Map<String, String> sources = Map.of();
   private final Map<String, SystemLogState.File> known = new java.util.HashMap<>();
 
   SystemPullStore(LogStore store, SecurityValidator security, DeviceIdentity identity, Clock wall) {
+    this(store, security, identity, wall, (io, path) -> io.read(path, Session.class));
+  }
+  SystemPullStore(LogStore store, SecurityValidator security, DeviceIdentity identity, Clock wall, StoreCatalog.SessionReader reader) {
+    this.reader = reader;
     this.store = store; this.security = security; this.identity = identity; this.wall = wall;
     robot = store.root().resolve("robots").resolve(StoreFiles.component(identity.serialNumber()));
     staging = robot.resolve("system/.pull"); journal = staging.resolve("pull.json");
   }
 
-  /** One manifest inventory per pass; PID matching and rotation lookup never scan capture values. */
+  /** A connection reads each manifest once. Metadata detects atomic replacements and new
+   * sessions, including another process's placement; no timer re-parses unchanged history. */
   public boolean beginPass() throws IOException {
     return store.capture(io -> {
-      sessions = StoreCatalog.readInventory(store.root(), security, (path, reason) ->
-          LoggerFactory.getLogger(SystemPullStore.class).warn("System pull skipped {}: {}", path, reason)).sessions().stream()
+      if (catalog == null || inventoryChanged()) refreshInventory(io);
+      sessions = catalog.sessions().stream()
           .filter(s -> identity.serialNumber().equals(s.robot().serialNumber()) || s.session().deviceIdentity() != null
               && identity.serialNumber().equals(s.session().deviceIdentity().serialNumber())).toList();
       var active = sessions.stream().filter(s -> s.session().openCapture() != null).toList();
       current = active.size() == 1 ? active.get(0) : null;
       known.clear();
+      for (var entry : SystemLogIndex.read(io, robot).files()) {
+        var file = entry.file();
+        if (!file.format().equals("journal")) known.put(file.sha256(), file);
+      }
       for (var session : sessions) for (var file : session.session().systemLogs().files()) {
         if (file.location() == SystemLogState.Location.STORE && !file.format().equals("journal")
             && Files.exists(SystemLogFiles.resolve(io, store.root(), session.path(), session.session(), file))) {
@@ -60,6 +76,44 @@ public final class SystemPullStore implements FileTransfer.Local {
       }
       return current != null;
     });
+  }
+  private static Stamp stamp(Path path) throws IOException {
+    var a = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+    return new Stamp(a.size(), a.lastModifiedTime(), a.fileKey());
+  }
+  private boolean inventoryChanged() throws IOException {
+    for (var entry : watched.entrySet()) {
+      try { if (!entry.getValue().equals(stamp(entry.getKey()))) return true; }
+      catch (java.nio.file.NoSuchFileException e) { return true; }
+    }
+    return false;
+  }
+  private void refreshInventory(StoreFiles io) throws IOException {
+    seenManifests.clear();
+    catalog = StoreCatalog.readInventory(store.root(), security, (path, reason) ->
+        LoggerFactory.getLogger(SystemPullStore.class).warn("System pull skipped {}: {}", path, reason), this::readSession);
+    watched.clear(); watched.put(store.root(), stamp(store.root()));
+    watched.put(store.root().resolve("store.json"), stamp(store.root().resolve("store.json")));
+    var robots = store.root().resolve("robots");
+    if (Files.isDirectory(robots)) watched.put(robots, stamp(robots));
+    for (var robot : catalog.robots()) {
+      watched.put(robot.path(), stamp(robot.path()));
+      var manifest = robot.path().resolve("robot.json"); watched.put(manifest, stamp(manifest));
+      var sessions = io.check(robot.path().resolve("sessions"));
+      if (Files.isDirectory(sessions)) try (var directories = Files.walk(sessions, 2)) {
+        for (var path : directories.filter(Files::isDirectory).toList()) watched.put(path, stamp(path));
+      }
+    }
+    // Includes a rejected manifest, so fixing it makes it eligible without a timed retry.
+    inventory.keySet().retainAll(seenManifests);
+    for (var path : seenManifests) if (Files.exists(path)) watched.put(path, stamp(path));
+  }
+  private Session readSession(StoreFiles io, Path path) throws IOException {
+    seenManifests.add(path);
+    var stamp = stamp(io.check(path));
+    var cached = inventory.get(path);
+    if (cached != null && cached.stamp().equals(stamp)) return cached.session();
+    var session = reader.read(io, path); inventory.put(path, new Cached(stamp, session)); return session;
   }
   public String sessionId() { return current == null ? null : current.session().id(); }
   public SystemLogState state() throws IOException { return store.capture(io -> session(io).systemLogs()); }
@@ -155,7 +209,9 @@ public final class SystemPullStore implements FileTransfer.Local {
       var s = session(io); var path = SystemLogFiles.resolve(io, store.root(), current.path(), s, file);
       if (!Files.isRegularFile(path) || Files.size(path) != size) return false;
       var receipt = new SystemLogState.File(file.location(), file.path(), source, file.format(), hash, size, provenance(remote), file.note());
-      record(io, manifest(io), s, receipt); return true;
+      var previous = SystemLogIndex.read(io, robot).files().stream().filter(e -> e.file().sha256().equals(hash)).findFirst();
+      SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, previous.isPresent() ? previous.get().writtenSpan() : SystemLogIndex.span(path, file.format())));
+      return true;
     });
   }
   private Provenance provenance(String remote) {
@@ -180,33 +236,12 @@ public final class SystemPullStore implements FileTransfer.Local {
     String format = basename.endsWith(".gz") ? "gzip_text" : "text";
     var receipt = new SystemLogState.File(shared ? SystemLogState.Location.STORE : SystemLogState.Location.SESSION,
         StoreFiles.relative(shared ? store.root() : destinationManifest.getParent(), to), source, format, hash, Files.size(to), provenance(remote), note);
-    record(io, destinationManifest, target, receipt);
     if (shared) {
+      SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, SystemLogIndex.span(to, format)));
       known.put(hash, receipt);
-      // A shared syslog spans boots. Inspect it once at placement, never during a listing;
-      // unknown written clocks cannot exclude another session of this same serial.
-      double first = Double.POSITIVE_INFINITY, last = Double.NEGATIVE_INFINITY;
-      try (var raw = Files.newInputStream(to);
-           var reader = new java.io.BufferedReader(new java.io.InputStreamReader(format.equals("gzip_text")
-               ? new java.util.zip.GZIPInputStream(raw) : raw, java.nio.charset.StandardCharsets.UTF_8))) {
-        String line;
-        while ((line = reader.readLine()) != null) {
-          var epoch = org.triplehelix.wpilogmcp.capture.pull.SystemLogTime.epoch(line, "text");
-          if (epoch != null) { first = Math.min(first, epoch); last = Math.max(last, epoch); }
-        }
-      } catch (IOException unreadable) { first = Double.POSITIVE_INFINITY; } // Keep the exact file; search explains unreadability.
-      for (var candidate : sessions) {
-        if (candidate.path().resolve("session.json").equals(destinationManifest)) continue;
-        var s = candidate.session();
-        boolean overlaps = !Double.isFinite(first) || s.startBasis().equals("pit_clock")
-            || java.time.Instant.parse(s.startedAt()).getEpochSecond() <= last && java.time.Instant.parse(s.endedAt()).getEpochSecond() >= first;
-        if (overlaps) {
-          var path = io.check(candidate.path().resolve("session.json"));
-          if (Files.exists(path)) record(io, path, io.read(path, Session.class), receipt);
-        }
-      }
-    }
+    } else record(io, destinationManifest, target, receipt);
   }
+
   private static boolean hasPid(Session session, String text) {
     if (session.captureStats() == null) return false;
     try { long pid = Long.parseLong(text); return session.captureStats().providers().stream().anyMatch(p -> p.programPids().contains(pid)); }
@@ -244,7 +279,12 @@ public final class SystemPullStore implements FileTransfer.Local {
     store.capture(io -> {
       var s = session(io); var old = s.systemLogs();
       if (old.journalBootId() != null && !old.journalBootId().equals(boot)) throw new IOException("Journal boot changed; waiting for the new capture session");
-      var files = old.files();
+      var index = SystemLogIndex.read(io, robot);
+      var indexed = new java.util.LinkedHashMap<String, SystemLogState.File>();
+      // Pre-index stores keep their receipt unchanged; it still owns the append prefix.
+      for (var file : old.files()) if (file.location() == SystemLogState.Location.STORE) indexed.put(file.path(), file);
+      for (var entry : index.files()) indexed.put(entry.file().path(), entry.file());
+      var files = List.copyOf(indexed.values());
       // UTC date is from the journal's own unambiguous epoch, never this laptop's date.
       var days = new java.util.LinkedHashMap<String, Path>();
       java.io.BufferedWriter output = null; String writingDay = null;
@@ -263,12 +303,14 @@ public final class SystemPullStore implements FileTransfer.Local {
         for (var day : days.entrySet()) {
           String relative = StoreFiles.relative(store.root(), robot.resolve("system/journal").resolve(StoreFiles.component(s.id())).resolve("journal-" + day.getKey() + ".txt"));
           files = appendFile(io, s.withSystemLogs(old.withFiles(files)), relative, SystemLogState.Location.STORE, "syslog", "journal", "journalctl", day.getValue(), null);
+          var receipt = files.stream().filter(f -> f.path().equals(relative)).findFirst().orElseThrow();
+          SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, SystemLogIndex.span(io.resolve(store.root(), relative), "journal")));
         }
       } finally {
         if (output != null) output.close();
         for (var path : days.values()) Files.deleteIfExists(path);
       }
-      io.write(manifest(io), s.withSystemLogs(new SystemLogState(files, old.kernelCursor(), cursor, boot, old.reasons()))); return null;
+      io.write(manifest(io), s.withSystemLogs(new SystemLogState(old.files(), old.kernelCursor(), cursor, boot, old.reasons()))); return null;
     });
   }
   private List<SystemLogState.File> appendLines(StoreFiles io, Session session, String relative, String source,

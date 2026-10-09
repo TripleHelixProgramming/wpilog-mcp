@@ -756,7 +756,10 @@ List or search the text a log holds, completely and in time order across all ent
 
 ### `search_system_logs`
 
-Search the session's pulled local text files listed in `session.json`; this tool never
+Search the session's pulled local text files listed in `session.json` and the robot's
+`system/index.json`; shared syslog spans must overlap the session's calendar span or be
+unknown, and an unknown session span cannot exclude a file. Legacy session receipts remain
+readable. This tool never
 contacts the robot. The pulled file is the exact record; `/Daemon/Tail` entries searched by
 `search_strings` are the timely copy, stamped at receipt. They can contain the same text.
 
@@ -794,7 +797,9 @@ without a year or zone is not guessed. Unmapped lines have null `timestamp_sec` 
 they remain visible even in a requested window because their membership in it is unknown.
 On a journald image a kernel message can occur as both kernel/uptime_pairing and
 syslog/system_time. Text files are read only to the manifest's committed length, including
-gzip syslog rotations; a missing, shortened or unsafe receipt gives an explained error.
+gzip syslog rotations. Text travels through peer sync and mirrors with hash verification.
+A receipt whose local copy is missing gives `not_applicable`, naming the collecting server
+and the files to synchronize. A shortened or unsafe receipt gives an explained error.
 
 ## Statistics Tools
 

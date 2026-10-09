@@ -443,6 +443,7 @@ Each leaves the project working and tested on its own.
 - **Replaying real logs**: With `conformanceLogDir`, milestone checks use a deterministic stratified sample; `conformanceSample=full` visits every file at zero shift for releases and recording/matching changes, retaining the eight-shift matrix on small logger/REV representatives. The selection report names runtime paths and strata under `build/reports/conformance-sample/`; no machine path enters the repository. A real log is both the input and the expected output, so the harness replays one through the pit server and compares. A replayer reads a `.wpilog` with the differential reader, announces each entry as an NT4 topic under the convention its logger used (DataLogManager's `NT:` prefix inverted, AdvantageKit's layout, struct schemas published as the protocol's schema topics before any value), and publishes the values at the file's own spacing, with the replay clock starting at the source's own time (zero shift by default), optional known shifts, and a configurable speed; it runs two ways, through the gateway's server core as an in-process fixture on every platform, and through ntcore by the harness robot's replay mode, which publishes from the file with explicit timestamps and drives the Driver Station state from the file's own entries. The checks are relational, so no value from a robot log enters the repository: the capture equals the source for every replayed entry, record for record, timestamps shifted by exactly the known shift; entry types and metadata survive; the capture's cost accounting sums to the replayed bytes; the same log placed on the emulated roboRIO is pulled and matched near zero, with additional small known shifts proving the offset is measured. The capture machine's calendar clock is injected from the file's recorded epoch or DataLogManager filename so the overlap filter still applies; without either, only pull placement is skipped with a message. A several-second shift must remain retrievable outside the replayed session with an explained refusal; two logs replayed back to back with a clock reset make two sessions and two matches, never crossed. The suite skips with a message when no log directory is given and names a failing log by path only. Beyond the checks, replay is how a team's own logs become the harness's data: real shapes (struct arrays, long holds, 1 kHz beside 50 Hz, a season's sizes), real conventions through the capture path, and the Driver Station's real sequence of states for the gate and the phases.
 
 - **System-log pull and search:** synthetic text over MINA checks overlapping dmesg passes, boot separation, content-recognized syslog rotations, journal cursor persistence and missing-command stand-down, PID placement, shared gate/pacing and unchanged-pass command counts. A fixture session joins the schema conformance sweep; hand-computed kernel interpolation, recorded wall time, unmapped lines, severity, true totals and safe committed prefixes check `search_system_logs`.
+- **System text in stores:** a counting reader checks 300 sessions over ten idle passes and invalidation on placement/session changes; fifty sessions share five indexed rotations. HTTP range/hash tests, peer sync, mirror search and growing-prefix resume use synthetic text. Missing copies name the collector; corrupt bytes cannot publish, and shared mirror bytes count once and outlive any one session using them.
 
 ### 17. Open questions
 
@@ -943,10 +944,42 @@ Release-review keepalive failures (before the tag):
   Unmapped lines remain visible under a time filter with null and a reason. Paging is stable by
   path then line number; totals count the complete filtered set. The guide distinguishes the
   exact pulled record from the timely tail. Reference responses remain maintainer-generated.
-  System text is queried on the collecting store; extending telemetry-file door/sync/mirror
-  transfers to these separate text receipts remains follow-up work.
+  Round 15 extends door/sync/mirror transfers to these separate text receipts, described below.
 - The shop must return /var/local/natinst/log and /var/log listings; journalctl/dmesg/df
-  availability, whether dmesg needs root, the console path, and the robot program command line.
+  availability, whether dmesg needs root and prints `[seconds]` stamps (needed for the kernel
+  cursor's wrap detection), whether journalctl accepts a boot id, the console path, and the
+  robot program command line.
   These are unverified defaults, with system collection and journal both off. No native replay,
   real-log replay or npm run is warranted for this round's capture/pull/tool changes; the
   generated shop harness runs once with conformanceNative=none, and Windows is CI's check.
+
+#### Round 15: system text follows the store
+
+- Each SSH connection retains a parsed session inventory and catalog snapshot. Manifest and
+  directory metadata detect replacements, session changes and placements; no timer reparses
+  the store. A 300-session counting-reader test pins one parse per unchanged manifest over ten
+  idle passes and checks invalidation after placement and a new open session.
+- Shared syslog/journal receipts are additive `robots/<serial>/system/index.json` entries,
+  with written epoch spans when known. Search includes overlaps and unknown spans, including
+  unknown session spans. Per-session receipts remain for kernel, NI and crash files. Older
+  shared session receipts are honored without rewriting them; the index supplies a newer
+  committed prefix of the same path. Store format remains 1.
+- The first journal command uses `-b` alone, journalctl's current boot. The reply still carries
+  the boot UUID for the continuity check; it need not be accepted as a journalctl argument.
+  Both command availability and boot-id support remain shop facts to collect.
+- `/store/sessions` carries session receipts and a robot-wide `system_logs` index list. An
+  unfiltered peer sync copies the entire index, including rotations older than its sessions;
+  filtered listings and mirrors select overlaps or unknown spans. System-file ranges and
+  prefix hashes stop at the receipt's committed length. Text uses the transfer engine's
+  content checks and verifies against the advertised SHA-256 and size, without invoking a
+  WPILOG reader. Peer copies retain provenance plus the source store/URL/time; a placement
+  journal recovers interrupted publication, and session IDs keep growing text at one receiving
+  path across event renames. Local fragment consolidation carries its text receipts into the
+  joined manifest as well as the telemetry. Interrupted jobs name the held file and byte offset.
+  Mirroring keeps the origin's receipts, counts
+  shared bytes once, and evicts them only when no retained session uses them and the origin
+  still holds them. Missing local copies return `not_applicable` naming the collecting server.
+- Synthetic stores check shared receipt counts, legacy compatibility, ranged/hash reads,
+  two HTTP stores, mirror search, growing-prefix resume, hash corruption and retention. The
+  round runs targeted checks, one locale-unset build and one generated harness with
+  `conformanceNative=none`; it needs no native replay, real-log sample or extension test run.

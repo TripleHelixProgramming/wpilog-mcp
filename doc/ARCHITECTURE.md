@@ -733,16 +733,33 @@ by opening a hash channel beside a paused ring-buffer reply.
 snapshots preserve rotations; kernel/journal append lengths and cursors commit together, and
 an interrupted append is truncated to that receipt before retry. Kernel and journal clocks
 remain different even when their messages happen to agree.
+Its connection owns a parsed inventory and catalog snapshot. File/directory metadata detects
+manifest replacements, placements and session changes; an idle pass neither parses history
+again nor uses a timer to decide that it is stale. A changed manifest alone is reparsed.
 
 `SystemLogState` is an additive session-manifest field, separate from telemetry files.
 Source, remote path, pass time, size and hash explain each copy. Shared syslog files belong to
-the robot; per-session kernel and NI files move with their directory. Provider snapshots
+the robot: `SystemLogIndex` records them once in `robots/<serial>/system/index.json`, with
+written calendar spans, instead of updating every historical session. Search selects overlaps
+or unknown spans, while honoring legacy per-session shared receipts. The index supplies the
+newer committed prefix when both describe the same path. Per-session kernel and NI files move
+with their directory. Provider snapshots
 retain observed program PIDs so crash placement reads manifest facts, not every capture.
 `tools.SearchSystemLogsTool` reads receipts without joining the store queue or contacting SSH,
 uses the ordinary move lease and a fixed byte prefix, and names every text/clock input.
 `SystemLogClocks` interpolates measured uptime pairs and reads recorded wall clocks;
 missing evidence produces null and a reason. Severity comes from the same classifier as
 `search_strings`. The pulled file is exact text; tail entries are a timely receipt-time copy.
+
+The catalog-backed door exports session receipts and the shared index, with the same range,
+prefix-hash and path admission as telemetry. `SystemPeerSync` uses `FileTransfer` for held-prefix
+proof and pacing; text verifies by the receipt's hash and size instead of a telemetry decoder.
+A durable placement receipt recovers a copy interrupted before manifest publication. Mirror
+sync uses the same checks and keeps origin receipts, counts shared bytes once toward capacity,
+and releases them only after their last retained session and proof the origin still has them.
+Consolidation carries each fragment's text receipts alongside its telemetry under the owned
+`merged/<id>/robot/system/` structure; old capture paths still find their original manifest.
+Search never fetches missing companions: it reports `not_applicable` with the collecting server.
 
 ## Concurrency
 

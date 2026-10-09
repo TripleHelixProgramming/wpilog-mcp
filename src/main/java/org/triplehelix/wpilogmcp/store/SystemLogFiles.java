@@ -16,32 +16,53 @@ import org.triplehelix.wpilogmcp.store.StoreManifest.Session;
 public final class SystemLogFiles {
   private SystemLogFiles() {}
   public record Receipt(Path path, SystemLogState.File file) {}
-  public record Snapshot(Path manifest, Session session, List<Receipt> files, List<Path> clocks) {}
+  public record Snapshot(Path manifest, Session session, List<Receipt> files, List<Path> clocks, String collectingServer) {}
 
   static Path resolve(StoreFiles io, Path root, Path directory, Session session, SystemLogState.File file) throws IOException {
-    if (file == null || file.location() == null || file.provenance() == null || file.sizeBytes() < 0
-        || file.source() == null || file.format() == null
-        || !List.of("kernel", "syslog", "program", "jvm_crash").contains(file.source())
-        || !List.of("text", "gzip_text", "dmesg", "journal").contains(file.format())
-        || file.sha256() == null || !file.sha256().matches("[0-9a-f]{64}")) throw new IOException("Invalid system file receipt in " + directory.resolve("session.json"));
+    validate(file);
     Path path;
     if (file.location() == SystemLogState.Location.SESSION) {
       path = io.resolve(directory, file.path());
-      if (!path.startsWith(directory.resolve("robot/system"))) throw new IOException("System file is outside session robot/system: " + file.path());
+      // A consolidated fragment keeps its directory and old manifest under merged/<id>/.
+      // Permit only that repeated structure followed by robot/system, never other controls.
+      var relative = directory.relativize(path); int first = 0;
+      while (relative.getNameCount() > first + 2 && relative.getName(first).toString().equals("merged")) first += 2;
+      if (relative.getNameCount() <= first + 2 || !relative.getName(first).toString().equals("robot")
+          || !relative.getName(first + 1).toString().equals("system")) throw new IOException("System file is outside session robot/system: " + file.path());
     } else {
       path = io.resolve(root, file.path());
       String serial = session.deviceIdentity() == null ? null : session.deviceIdentity().serialNumber();
       if (serial == null) {
-        var relative = root.relativize(directory);
-        if (relative.getNameCount() >= 2 && relative.getName(0).toString().equals("robots")) {
-          serial = io.read(root.resolve(relative.subpath(0, 2)).resolve("robot.json"), StoreManifest.Robot.class).serialNumber();
-        }
+        var robot = robotDirectory(root, directory);
+        if (robot != null) serial = io.read(robot.resolve("robot.json"), StoreManifest.Robot.class).serialNumber();
       }
-      if (serial == null || !path.startsWith(root.resolve("robots").resolve(StoreFiles.component(serial)).resolve("system"))) {
-        throw new IOException("Shared system file is outside this robot's system directory: " + file.path());
-      }
+      if (serial == null) throw new IOException("Shared system file has no robot identity");
+      path = shared(io, root, root.resolve("robots").resolve(StoreFiles.component(serial)), file);
     }
     return io.check(path);
+  }
+  static void validate(SystemLogState.File file) throws IOException {
+    if (file == null || file.location() == null || file.provenance() == null || file.sizeBytes() < 0
+        || file.source() == null || file.format() == null
+        || !List.of("kernel", "syslog", "program", "jvm_crash").contains(file.source())
+        || !List.of("text", "gzip_text", "dmesg", "journal").contains(file.format())
+        || file.sha256() == null || !file.sha256().matches("[0-9a-f]{64}")) throw new IOException("Invalid system file receipt");
+  }
+  static Path shared(StoreFiles io, Path root, Path robot, SystemLogState.File file) throws IOException {
+    validate(file); var path = io.resolve(root, file.path()); var system = robot.resolve("system");
+    if (file.location() != SystemLogState.Location.STORE || !path.startsWith(system)
+        || path.equals(SystemLogIndex.path(robot)) || path.startsWith(system.resolve(".pull"))) {
+      throw new IOException("Shared system file is outside this robot's published system directory: " + file.path());
+    }
+    return path;
+  }
+  static String remotePath(String sessionPath, SystemLogState.File file) {
+    return file.location() == SystemLogState.Location.STORE ? file.path() : sessionPath + "/" + file.path();
+  }
+
+  static Path robotDirectory(Path root, Path directory) {
+    var relative = root.relativize(directory);
+    return relative.getNameCount() >= 2 && relative.getName(0).toString().equals("robots") ? root.resolve(relative.subpath(0, 2)) : null;
   }
 
   static Optional<Snapshot> read(Path capture, SecurityValidator security) throws IOException {
@@ -65,6 +86,19 @@ public final class SystemLogFiles {
     try {
       for (var file : session.systemLogs().files()) receipts.add(new Receipt(resolve(io, root.get(), directory, session, file), file));
     } catch (IOException e) { throw new IOException("Invalid system file receipt in " + manifest + ": " + e.getMessage(), e); }
-    return Optional.of(new Snapshot(manifest, session, List.copyOf(receipts), List.copyOf(clocks)));
+    var robot = robotDirectory(root.get(), directory);
+    if (robot != null) for (var entry : SystemLogIndex.read(io, robot).files()) if (SystemLogIndex.applies(entry, session)) {
+      var path = resolve(io, root.get(), directory, session, entry.file());
+      receipts.removeIf(r -> r.path().equals(path));
+      receipts.add(new Receipt(path, entry.file()));
+    }
+    var header = io.read(root.get().resolve("store.json"), StoreManifest.Header.class);
+    String collector = header.origin() == null ? null : header.origin().url();
+    if (collector == null) for (var receipt : receipts) {
+      var copies = receipt.file().provenance().copiedFrom();
+      if (!copies.isEmpty()) { collector = copies.get(copies.size() - 1).url(); break; }
+    }
+    if (collector == null) collector = "store " + header.id();
+    return Optional.of(new Snapshot(manifest, session, List.copyOf(receipts), List.copyOf(clocks), collector));
   }
 }

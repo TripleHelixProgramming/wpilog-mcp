@@ -134,17 +134,26 @@ public final class StoreCatalog {
     return read(directory, security, false, skipped);
   }
 
+  @FunctionalInterface interface SessionReader { Session read(StoreFiles io, Path path) throws IOException; }
+  static Snapshot readInventory(Path directory, SecurityValidator security,
+      java.util.function.BiConsumer<Path, String> skipped, SessionReader reader) throws IOException {
+    return read(directory, security, false, skipped, reader);
+  }
   private static Snapshot read(Path directory, SecurityValidator security, boolean strays,
       java.util.function.BiConsumer<Path, String> skipped) throws IOException {
+    return read(directory, security, strays, skipped, (io, path) -> io.read(path, Session.class));
+  }
+  private static Snapshot read(Path directory, SecurityValidator security, boolean strays,
+      java.util.function.BiConsumer<Path, String> skipped, SessionReader reader) throws IOException {
     try {
-      return readValidated(directory, security, strays, skipped);
+      return readValidated(directory, security, strays, skipped, reader);
     } catch (RuntimeException e) {
       throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e);
     }
   }
 
   private static Snapshot readValidated(Path directory, SecurityValidator security, boolean strays,
-      java.util.function.BiConsumer<Path, String> skipped) throws IOException {
+      java.util.function.BiConsumer<Path, String> skipped, SessionReader reader) throws IOException {
     var root = directory.toRealPath();
     var io = new StoreFiles(root, security);
     var headerPath = root.resolve("store.json");
@@ -177,6 +186,11 @@ public final class StoreCatalog {
         }
         managed.add(robotPath);
         robots.add(new RobotDirectory(robotDir, robot));
+        var systemIndex = io.check(SystemLogIndex.path(robotDir));
+        if (Files.exists(systemIndex)) {
+          managed.add(systemIndex);
+          for (var entry : SystemLogIndex.read(io, robotDir).files()) managed.add(SystemLogFiles.shared(io, root, robotDir, entry.file()));
+        }
         var pullPath = io.check(robotDir.resolve("pull.json"));
         if (Files.exists(pullPath)) {
           var pull = io.read(pullPath, org.triplehelix.wpilogmcp.sync.PullManifest.class);
@@ -198,11 +212,11 @@ public final class StoreCatalog {
             var manifest = sessionDir.resolve("session.json");
             if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) continue;
             try {
-              var inventory = sessionInventory(io, sessionDir, robot);
+              var inventory = sessionInventory(io, root, sessionDir, robot, reader);
               for (var path : inventory.managed()) {
                 if (managed.contains(path)) throw new IOException("File listed twice: " + path);
               }
-              managed.addAll(inventory.managed()); files.addAll(inventory.files());
+              managed.addAll(inventory.managed()); managed.addAll(inventory.shared()); files.addAll(inventory.files());
               openCaptures.addAll(inventory.openCaptures()); sessionDirectories.add(inventory.session());
             } catch (IOException | RuntimeException invalid) {
               if (skipped == null) throw invalid;
@@ -248,11 +262,23 @@ public final class StoreCatalog {
   }
 
   /** Resolve one catalog member without walking the catalog for every transfer block. */
-  public static Path file(Path directory, String relative, SecurityValidator security) throws IOException {
+  public record Payload(Path path, long size) {}
+  public static Payload payload(Path directory, String relative, SecurityValidator security) throws IOException {
     var root = directory.toRealPath(); var io = new StoreFiles(root, security);
     var path = io.resolve(root, relative);
     var parts = root.relativize(path);
     Path parent; Session session = null; LogFile file = null;
+    if (parts.getNameCount() >= 4 && parts.getName(0).toString().equals("robots") && parts.getName(2).toString().equals("system")) {
+      var robot = root.resolve(parts.subpath(0, 2));
+      var identity = io.read(robot.resolve("robot.json"), Robot.class);
+      if (!parts.getName(1).toString().equals(identity.id())) throw new IOException("Invalid robot manifest");
+      for (var entry : SystemLogIndex.read(io, robot).files()) if (SystemLogFiles.shared(io, root, robot, entry.file()).equals(path)) return textPayload(path, entry.file());
+      // Compatibility for stores written before the robot-wide index existed.
+      for (var owner : readManaged(root, security).sessions()) if (owner.robot().id().equals(identity.id())) {
+        for (var text : owner.session().systemLogs().files()) if (SystemLogFiles.resolve(io, root, owner.path(), owner.session(), text).equals(path)) return textPayload(path, text);
+      }
+      throw new IOException("File is not in the store catalog");
+    }
     if (parts.getNameCount() >= 6 && parts.getName(0).toString().equals("robots")
         && parts.getName(2).toString().equals("sessions")) {
       var robotDir = root.resolve(parts.subpath(0, 2));
@@ -262,6 +288,7 @@ public final class StoreCatalog {
       session = io.read(parent.resolve("session.json"), Session.class);
       validate(session, parent);
       for (var candidate : session.files()) if (io.resolve(parent, candidate.path()).equals(path)) file = candidate;
+      for (var text : session.systemLogs().files()) if (SystemLogFiles.resolve(io, root, parent, session, text).equals(path)) return textPayload(path, text);
     } else if (parts.getNameCount() >= 3 && parts.getName(0).toString().equals("unassigned")) {
       parent = root.resolve(parts.subpath(0, 2));
       var candidate = io.read(parent.resolve("import.json"), LogFile.class);
@@ -272,21 +299,27 @@ public final class StoreCatalog {
     if (path.equals(parent.resolve("session.json")) || path.equals(parent.resolve("import.json"))) {
       throw new IOException("Not a store log path");
     }
-    if (file != null) { validate(file, path); return path; }
+    if (file != null) { validate(file, path); return new Payload(path, file.sizeBytes()); }
     if (session != null && session.openCapture() != null
         && io.resolve(parent, session.openCapture().path()).equals(path)
-        && "captured".equals(session.openCapture().provenance().kind()) && Files.isRegularFile(path)) return path;
+        && "captured".equals(session.openCapture().provenance().kind()) && Files.isRegularFile(path)) return new Payload(path, Files.size(path));
     throw new IOException("File is not in the store catalog");
   }
 
+  private static Payload textPayload(Path path, SystemLogState.File file) throws IOException {
+    if (!Files.isRegularFile(path) || Files.size(path) < file.sizeBytes()) throw new IOException("System file has not been copied locally: " + path);
+    return new Payload(path, file.sizeBytes());
+  }
+
   private record SessionInventory(SessionDirectory session, List<StoredFile> files,
-      List<StoredFile> openCaptures, java.util.Set<Path> managed) {}
-  private static SessionInventory sessionInventory(StoreFiles io, Path sessionDir, Robot robot) throws IOException {
+      List<StoredFile> openCaptures, java.util.Set<Path> managed, java.util.Set<Path> shared) {}
+  private static SessionInventory sessionInventory(StoreFiles io, Path root, Path sessionDir, Robot robot, SessionReader reader) throws IOException {
     var manifest = sessionDir.resolve("session.json");
     var managed = new HashSet<Path>();
+    var shared = new HashSet<Path>();
     var files = new ArrayList<StoredFile>();
     var openCaptures = new ArrayList<StoredFile>();
-    var session = io.read(manifest, Session.class);
+    var session = reader.read(io, manifest);
     validate(session, manifest);
     managed.add(manifest);
     mergedMetadata(io, sessionDir, managed);
@@ -314,7 +347,13 @@ public final class StoreCatalog {
       if (!managed.add(path)) throw new IOException("File listed twice: " + path);
       files.add(new StoredFile(path, manifest, robot, session, file));
     }
-    return new SessionInventory(new SessionDirectory(sessionDir, robot, session), files, openCaptures, managed);
+    for (var text : session.systemLogs().files()) {
+      var path = SystemLogFiles.resolve(io, root, sessionDir, session, text);
+      // Shared receipts written before the robot index remain valid in more than one session.
+      if (text.location() == SystemLogState.Location.SESSION) managed.add(path);
+      else shared.add(path);
+    }
+    return new SessionInventory(new SessionDirectory(sessionDir, robot, session), files, openCaptures, managed, shared);
   }
 
   private static List<Path> children(Path path) throws IOException {
