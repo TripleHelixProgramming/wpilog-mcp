@@ -133,6 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Synthetic tool tests explicitly admit their mock log directories and restore the prior roots afterwards. Previously they depended on the cached-path exception, so a worker retaining lease admission could reject the same mock inputs under a different fork/class order.
 - Incremental scans are checked against fresh scans and independent records, with changed-prefix, partial-tail, late-entry and stale-cache plants. Scripted SSH image reports check read-only commands, absent/refused evidence, hash sizes and credential redaction; no robot files or text are fixtures.
 - The metrics-stack check waits for its Grafana datasource query within the existing readiness bound; previously a plugin update just after dashboard provisioning could produce a transient 404 and fail CI.
 - Chart regressions pin unequal-time scatter pairs, every encoded link entry, clipped phases and data-view null cells. Socket-delivery test guards allow thirty seconds under load without changing protocol deadlines.

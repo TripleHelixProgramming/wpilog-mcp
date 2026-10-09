@@ -58,6 +58,10 @@ creation too; reused worker numbers must not inherit another build's manifests. 
 in another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
 uses decoded immutable views for entry-order permutations, preserving raw sample counts separately
 from successfully decoded values. Coverage instrumentation is absent from ordinary/targeted runs.
+Synthetic tool tests use `MockLogAdmission` to admit their cached paths explicitly and restore
+the prior configured roots. They must work while lease admission is active; relying on the
+legacy cached-path exception made Linux CI's class/fork order change the answers. A real HTTP
+transport with an empty directory lease pins this state in `ToolAdmissionTest`.
 The harness CI job needs only path classification and runs beside the builds, with its own
 evidence. Ordinary build jobs upload their own XML; no duplicate download or test run is needed.
 Native selection follows the affected surfaces above. The Arrow cross-check consumes the
