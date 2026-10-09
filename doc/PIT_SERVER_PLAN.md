@@ -256,9 +256,76 @@ Each sample is timestamped in the robot's clock as the pit server's time of send
 The robot program is a JVM, and the JVM's own state explains a class of mystery no robot log records: a loop overrun that is a garbage collection pause, a slow first cycle that is class loading, a heap climbing across a match. The JVM reports all of it through two mechanisms the JDK carries, which the pit server consumes without a dependency:
 
 - **JMX** (`java.lang:type=Memory`, `GarbageCollector`, `Threading`, `ClassLoading`, `OperatingSystem`), polled at a period (default 1 s): heap used and committed, collections and their total time per collector, thread count, loaded classes, the process's CPU time. Sampled, like the system stats, and marked so.
-- **Flight Recorder (JFR)**, streamed over the same JMX connection with `jdk.management.jfr`'s `RemoteRecordingStream` (JDK 16 and later): the JVM's own events, timestamped by the JVM, which make the record exact where polling only suggests. The default set is small and chosen for what a robot team can act on: `jdk.GarbageCollection` (each pause with its duration), `jdk.GCPhasePause`, `jdk.SafepointBegin`, `jdk.ThreadStart` and `jdk.ThreadEnd`, `jdk.ExecutionSample` at a low rate (every 20 ms) for a profile of where the program spends its time, `jdk.ObjectAllocationSample`, and `jdk.SocketRead` and `jdk.FileWrite` above a duration threshold. Each becomes entries under `/Daemon/JVM/<event>/...` with the event's fields; an execution sample becomes a string entry of the top frame and a JSON entry of the stack, from which a profiling tool later builds the usual summary (time by method, by thread). JFR is designed to cost a percent or two; the pit server measures it on a real roboRIO before the default set is settled, and the set is configured.
+- **Flight Recorder (JFR)**, streamed over the same JMX connection with `jdk.management.jfr`'s `RemoteRecordingStream` (JDK 16 and later): the JVM's own events, timestamped by the JVM, which make the record exact where polling only suggests. The default set is small and chosen for what a robot team can act on: `jdk.GarbageCollection` (each collection with its duration; pause events are separate), `jdk.GCPhasePause`, `jdk.SafepointBegin`, `jdk.ThreadStart` and `jdk.ThreadEnd`, `jdk.ExecutionSample` at a low rate (every 20 ms) for a profile of where the program spends its time, `jdk.ObjectAllocationSample`, and `jdk.SocketRead` and `jdk.FileWrite` above a duration threshold. Each becomes entries under `/Daemon/JVM/<event>/...` with the event's fields; an execution sample becomes a string entry of the top frame and a JSON entry of the stack, from which a profiling tool later builds the usual summary (time by method, by thread). JFR is designed to cost a percent or two; the pit server measures it on a real roboRIO before the default set is settled, and the set is configured.
 
 Two things are not the pit server's to do. **It does not instrument the robot program** (decision 12). JMX remote is off in a JVM unless its launch asks for it, and the launch is the team's: the robot project's `build.gradle` adds the arguments to the deployed program (`jvmArgs` on the deploy artifact in GradleRIO), and the standalone guide gives them (`-Dcom.sun.management.jmxremote.port=<port>`, the RMI port set to the same so one port serves, `java.rmi.server.hostname` set to the robot's address on the team's network, authentication and SSL off, which is the trust model of decision 7 and belongs on the private network only). The provider is on only when a robot's configuration names the port, and a robot that does not answer there is reported in `list_sessions`, not worked around. **It does not map clocks by guessing.** JMX samples are readings of now, stamped at receipt using the NT4 FPGA-time estimate. Every sample records JVM uptime and FPGA minus uptime, with the complete JMX poll plus NT4 round-trip bound and one millisecond of uptime quantization. Remeasure each period; a change beyond both adjacent bounds writes a note without retiming earlier samples. Runtime start time is read once per connection as JVM identity metadata, never as a clock. The earlier plan's claim that start time plus uptime tracks wall-clock corrections was wrong: OpenJDK caches start time and measures uptime monotonically. This provider does not detect the Driver Station setting the wall clock. Existing SSH stats pair kernel uptime with FPGA time, while a pulled log's `systemTime` supplies corrected wall-clock evidence; the later Flight Recorder half must establish its event clock explicitly. Every JMX entry says `"clock":"measured"` and names receipt mapped through NT4 as its timestamp basis.
+
+**Flight Recorder clock, source review before implementation.** This design is pinned to
+OpenJDK **17.0.16+8**, not a claim about the uninspected roboRIO runtime.
+`RecordedEvent.getStartTime()` converts the event's start ticks to an `Instant` with the
+current chunk's converter: `epoch_ns = chunk_start_epoch_ns + (event_ticks - chunk_start_ticks)
+/ ticks_per_ns`. The chunk header supplies all three clock parameters; event duration is a
+tick difference converted on that same scale. Neither JVM `Runtime.StartTime` nor uptime
+participates in this conversion. See [RecordedEvent](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.jfr/share/classes/jdk/jfr/consumer/RecordedEvent.java),
+[TimeConverter](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.jfr/share/classes/jdk/jfr/internal/consumer/TimeConverter.java)
+and [ChunkHeader](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.jfr/share/classes/jdk/jfr/internal/consumer/ChunkHeader.java).
+
+HotSpot pairs system UTC with ticks when it starts the next chunk. An ordinary flush updates
+the header's duration, not its start anchor, so a wall-clock step inside a chunk does not
+retime that chunk's events. At the next chunk a forward step can produce an epoch gap.
+A backward step is subtler: `JfrChunk::nanos_now()` clamps UTC to strictly increasing values
+(`last + 1 ns` until UTC catches up). Thus chunk starts do not jump backward with the OS
+clock, but their advance can be far less than elapsed ticks, and converted event times can
+overlap or regress across chunks. Treat either as a changed mapping; never assume one epoch
+offset for the recording or claim that JFR always reports current OS wall time.
+See [JfrChunk](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/hotspot/share/jfr/recorder/repository/jfrChunk.cpp)
+and [JfrChunkWriter](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/hotspot/share/jfr/recorder/repository/jfrChunkWriter.cpp).
+
+`RemoteRecordingStream` downloads the JFR bytes and parses them with `EventDirectoryStream`;
+it delivers these converted `RecordedEvent` instants, without correcting a step onto the
+pit clock, providing a clock-change callback, or guaranteeing global monotonic event time.
+Ordered mode sorts a delivered batch by event time, not all past and future chunks together.
+Its `onFlush` callback follows parsing/dispatch; it is not a remote timestamp. The download
+thread can also wait one second after an empty read, and network, disk and callback backlog
+add delay. **The configured flush interval is not a latency bound** and flush receipt cannot
+prove an event-to-FPGA pairing within a round trip. See [RemoteRecordingStream](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.management.jfr/share/classes/jdk/management/jfr/RemoteRecordingStream.java),
+[DownLoadThread](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.management.jfr/share/classes/jdk/management/jfr/DownLoadThread.java)
+and [EventDirectoryStream](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.jfr/share/classes/jdk/jfr/internal/consumer/EventDirectoryStream.java).
+
+The measurement plan uses **a fresh recording start through `FlightRecorderMXBean` on the
+existing JMX connection**, not an arbitrary read of an old recording's start time. Create an
+owned, uniquely named disk recording, bracket its `startRecording(id)` and the subsequent
+`getRecordings()` read with local monotonic times and NT4 estimates, and select that exact id.
+The server creates/rotates a chunk during this start; `RecordingInfo.startTime` is that
+chunk-start epoch, rounded to milliseconds, not the time the attribute was read. Pair it to
+FPGA time at receipt with an uncertainty of the whole bracket plus the NT4 round trip and
+1 ms quantization. It measures the **JFR epoch anchor**, including any UTC clamp, rather than
+an independent OS-wall-clock reading. Re-reading the same start time later creates no new
+anchor. See [PlatformRecorder.start](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.jfr/share/classes/jdk/jfr/internal/PlatformRecorder.java)
+and [RecordingInfo](https://github.com/openjdk/jdk17u/blob/jdk-17.0.16%2B8/src/jdk.management.jfr/share/classes/jdk/management/jfr/RecordingInfo.java).
+
+Before stream code is admitted, test that bracket and its forced-rotation cost on the target
+JDK. Retain downloaded chunk headers and a mapping per chunk: their tick origins/frequencies
+let a measured tick-to-FPGA anchor carry across epoch changes without applying today's epoch
+offset to yesterday's events. A valid anchor must be tied to the chunk created in its bracket;
+another recording rotating it concurrently must be detected, not silently assigned. Test
+synthetic forward and backward chunk anchors, delayed downloads, concurrent rotations and a
+new NT4 session. Keep original event instants and durations; never retroactively retime
+written entries. If a chunk cannot be tied to a bounded mapping, report it as unmapped and
+stand the stream down rather than stamp its events with receipt time. The public event API
+alone does not expose a chunk identity; access to the downloaded headers and this association
+remain implementation work, gated on the shop's `jdk.jfr`/`jdk.management.jfr` module facts.
+No stream or probe-recording code is added in this round.
+
+Planned stream metadata: `source: jfr`, host, event type, JDK version, recording id,
+`jvm_start_time_ms` (identity), settings identifier, and `sampled` according to the event
+kind (execution/allocation sampling is not every occurrence). The timestamp basis is
+`jfr_ticks_mapped_to_fpga`, with `clock: measured`, mapping id and its bound; a mapping entry
+retains chunk start epoch/ticks, tick frequency, FPGA receipt and bracket duration. Each event
+retains its original JFR epoch timestamp, tick timestamp, duration and receive time so delay
+and conversion remain auditable. A change note reports old/new measurements and bounds,
+never an inferred cause. Stream lag and dropped/unmapped counts are separate costs from the
+JMX polling payload and round trip.
 
 A JFR recording to a file on the robot (`-XX:StartFlightRecording` with a file under the log directory) is the counterpart of the robot's own log: it survives the pit server's absence, costs the network nothing during the run, and is pulled by the puller like any other log once `.jfr` is in its patterns. Reading it is `jdk.jfr.consumer.RecordingFile`, in the JDK, and importing it makes the same entries the stream would have, with the file's own timestamps and the `systemTime` mapping. That import is a later milestone, after the stream has shown which events matter.
 
@@ -1146,3 +1213,17 @@ Release-review keepalive failures (before the tag):
   for an unproven TCP-delivery event. Client protocol, timers and timeouts are unchanged.
   This closes the demonstrated fixture ordering gap; the historical missing callback's
   exact cause remains unproven by that XML and is not labeled a client-state bug.
+- JMX `ClockNote` is measurements only: previous/current offsets and round-trip bounds,
+  change, both JVM start identities and a reason explicitly declining to determine the cause.
+  The comparison resets for a new NT4 session. A within-bound change is not a note. The bound
+  test reads the first sample before another poll can replace its published round trip.
+- Delivery failure deliberately stands down for the session, including a resume; the sink
+  may have written partially and blindly retrying risks duplicate context. The next session
+  polls again. Connection/poll failures retain their existing bounded backoff.
+- §8.3 now pins the JFR design to OpenJDK 17.0.16+8 source. Chunk epochs can change; backward
+  UTC is clamped, and flush receipt has no hard latency bound. A fresh recording start,
+  bracketed over the existing JMX connection, is a candidate bounded anchor; reading an old
+  start time is not. Chunk association, cost and stepped-clock behavior must be verified
+  before streaming, after the shop module probe. This round adds no stream code or robot
+  instrumentation. Shop preparation explicitly checks team launch flags, port reachability
+  and `list_sessions` reporting `jvm` as `sampling`.

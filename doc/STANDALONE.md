@@ -437,7 +437,12 @@ Samples are stamped at receipt through the NT4 robot-time estimate, before eithe
 queue. `uptime_sec`, `clock/offset_sec` (robot time minus JVM uptime) and
 `clock/round_trip_bound_sec` are recorded each poll. The bound includes the complete JMX poll,
 the NT4 round trip and one millisecond of uptime quantization. A mapping change beyond both
-adjacent samples' bounds writes `ClockNote`; earlier records keep their timestamps. With no NT4
+adjacent samples' bounds writes `ClockNote`; earlier records keep their timestamps. The note
+records `previous_offset_sec`, `current_offset_sec`, `change_sec`,
+`previous_round_trip_bound_sec`, `current_round_trip_bound_sec`, and both
+`previous_jvm_start_time_ms` and `current_jvm_start_time_ms`. It states that the mapping moved
+beyond the sum of the bounds, not why: it does not diagnose a restart, skew, or a wall-clock
+correction. A new session resets the comparison. With no NT4
 estimate a sample is counted and dropped. Start time is never a clock: `startTime + uptime`
 stays anchored to the wall clock at JVM startup and does not track the Driver Station's later
 correction. The provider does not try to detect that correction. The existing SSH stats pairing is kernel uptime to FPGA time, not wall time. A pulled log's
@@ -448,7 +453,8 @@ A refused connection reports the launch flags and retries after 1 second, doubli
 NT4 disconnection stands the provider down. One daemon I/O worker owns JMX and a separate
 five-second watchdog reports a stalled call. If RMI will not return, no replacement call/thread
 is started until it does; capture and shutdown never join it. Samples cannot cross sessions,
-including a reply queued before a reboot. `list_sessions`, the manifest and metrics expose
+including a reply queued before a reboot. A failed sample delivery stands down for the session,
+including an NT4 resume, with its reason; the next session admits polling again. `list_sessions`, the manifest and metrics expose
 state/reason, period, round trip and sample cost. `sample_bytes` counts encoded value payloads
 (eight bytes per numeric value plus UTF-8 JSON), excluding RMI and WPILOG framing; provider
 `bytes` counts recorded WPILOG bytes. `get_latest_values` marks these entries `source: jmx`.

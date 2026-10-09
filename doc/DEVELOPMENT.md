@@ -290,6 +290,9 @@ the checklist as follows; **absent** on an exercise means not measured, not a mi
 | Journal exists, selects the current boot and accepts a boot UUID | `journal-boot`, `journal-uuid`, `boot-id` |
 | dmesg permission and `[seconds]` stamps for cursor wrap detection | `dmesg`, `dmesg-seconds-stamps` |
 | Deployed JRE remote management and Flight Recorder modules | `jre-modules`, `module:jdk.management.agent`, `module:jdk.jfr`, `module:jdk.management.jfr`; `java --list-modules` through `/proc/<pid>/exe`, never a PATH-based guess |
+| JMX launch enabled by the team | Inspect the robot's `build.gradle` GradleRIO `jvmArgs`: same registry/RMI port, reachable hostname, authentication/SSL choice as documented in STANDALONE; the pit server must not add flags. |
+| JMX port reachable from the pit computer | Exercise the configured port from the pit network; a successful SSH or NT4 connection does not prove JMX reachability. |
+| JVM provider actually sampling | With an open capture, `list_sessions.providers[]` has `name: jvm`, `state: sampling`; inspect its round trip, sample bytes and recorded `/Daemon/JVM/` entries. |
 | Console path and deployed JAR's actual command line | `console`, `console-ni`, `program` |
 | `/proc/<pid>/environ` readability by the selected account | `proc-environ-readable`; contents are never printed |
 | Empty-password access / actual authentication method, host-key fingerprint | `ssh-authentication` and report header |
@@ -301,6 +304,9 @@ the checklist as follows; **absent** on an exercise means not measured, not a mi
 
 `JvmProviderTest` starts the test JVM's real JMX connector on one ephemeral loopback port,
 provokes collections, and checks receipt timestamps and uptime mapping against fake NT4 time.
+The first sample's bound is checked before the next poll; an uptime-tracking clock, a small
+within-bound change and a six-second move pin when a measurement-only note is emitted.
+A failed sink stands down across a resume and recovers only in the next session.
 Injected scheduling checks backoff and the external deadline; `JvmDeliveryTest` checks a reply
 queued across a boot. `JvmCaptureTest` checks capture/live-tool/manifest/metrics agreement and
 differential reads. The generated `jvm_context` fixture adds independently known counters to

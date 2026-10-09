@@ -219,8 +219,14 @@ and JSON payloads, excluding transport/framing bytes. `/Daemon/JVM/` holds sampl
 cumulative collector counts/time, threads, classes, process CPU and uptime pairing. Runtime
 start time is identity; sample timestamps are NT4 receipt time with `clock: measured` metadata.
 `clock/offset_sec` is FPGA minus uptime, `clock/round_trip_bound_sec` bounds that pairing,
-and `ClockNote` records a mapping change beyond adjacent bounds. These are samples, not exact
-collection-pause events; the Flight Recorder half is not yet implemented.
+and `ClockNote` records a mapping change beyond the sum of adjacent bounds. Its fields are
+`previous_offset_sec`, `current_offset_sec`, `change_sec`, `previous_round_trip_bound_sec`,
+`current_round_trip_bound_sec`, `previous_jvm_start_time_ms`, `current_jvm_start_time_ms`
+and `reason`. These measurements do not determine the cause of the change: the note diagnoses
+neither a restart, skew nor a wall-clock correction; a new session resets the comparison.
+A failed sample delivery stands down for the session (including a resume) with its reason;
+polling resumes in the next session. These are samples, not exact collection-pause events;
+the Flight Recorder half is not yet implemented.
 
 ### `get_latest_values`
 

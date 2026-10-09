@@ -59,6 +59,8 @@ public final class JvmProvider implements AutoCloseable {
   private long retryUs = 1_000_000;
   private Object accountedSession;
   private Double previousOffset, previousBound;
+  private long previousStartTimeMs;
+  private String deliveryFailure;
   private final AtomicLong records = new AtomicLong(), bytes = new AtomicLong(), dropped = new AtomicLong();
   private volatile String state = "offline", reason = "No open NT4 session";
   private volatile Double roundTripMs;
@@ -101,8 +103,9 @@ public final class JvmProvider implements AutoCloseable {
     if (closed || target == null) return;
     if (accountedSession != target.session) {
       accountedSession = target.session; records.set(0); bytes.set(0); dropped.set(0);
-      previousOffset = null; previousBound = null; sampleBytes = 0; roundTripMs = null;
+      previousOffset = null; previousBound = null; deliveryFailure = null; sampleBytes = 0; roundTripMs = null;
     }
+    if (deliveryFailure != null) { state("stand_down", deliveryFailure); return; }
     retryUs = 1_000_000; attempt = new Attempt(target); poll(attempt);
   }
   private void poll(Attempt a) {
@@ -169,9 +172,12 @@ public final class JvmProvider implements AutoCloseable {
     double offset = sample.values().get("clock/offset_sec").doubleValue(), bound = sample.values().get("clock/round_trip_bound_sec").doubleValue();
     JsonObject note = null;
     if (previousOffset != null && Math.abs(offset - previousOffset) > bound + previousBound) {
-      note = new JsonObject(); note.addProperty("previous_offset_sec", previousOffset); note.addProperty("offset_sec", offset);
-      note.addProperty("change_sec", offset - previousOffset); note.addProperty("round_trip_bound_sec", bound + previousBound);
-      note.addProperty("reason", "JVM uptime to FPGA mapping changed beyond the two sample bounds; JVM restart or clock skew, not a wall-clock correction");
+      note = new JsonObject(); note.addProperty("previous_offset_sec", previousOffset); note.addProperty("current_offset_sec", offset);
+      note.addProperty("change_sec", offset - previousOffset); note.addProperty("previous_round_trip_bound_sec", previousBound);
+      note.addProperty("current_round_trip_bound_sec", bound);
+      note.addProperty("previous_jvm_start_time_ms", previousStartTimeMs);
+      note.addProperty("current_jvm_start_time_ms", sample.metadata().get("jvm_start_time_ms").getAsLong());
+      note.addProperty("reason", "JVM uptime to FPGA mapping moved beyond the sum of the bounds; the provider does not determine the cause");
     }
     var delivered = new Sample(sample.timestampUs(), sample.values(), sample.runtime(), note, sample.metadata());
     sampleBytes = JvmSample.payloadBytes(sample.values(), sample.runtime(), note);
@@ -179,8 +185,12 @@ public final class JvmProvider implements AutoCloseable {
     sink.write(a.target.session, delivered).whenComplete((ignored, failure) -> submit(() -> {
       busy = false;
       if (!current(a)) { replace(); return; }
-      if (failure != null) { state("stand_down", "JMX sample delivery failed: " + failure.getClass().getSimpleName()); return; }
-      previousOffset = offset; previousBound = bound; a.runtimeWritten = true;
+      if (failure != null) {
+        deliveryFailure = "JMX sample delivery failed: " + failure.getClass().getSimpleName() + "; standing down for this session";
+        state("stand_down", deliveryFailure); return;
+      }
+      previousOffset = offset; previousBound = bound;
+      previousStartTimeMs = sample.metadata().get("jvm_start_time_ms").getAsLong(); a.runtimeWritten = true;
       state("sampling", null); activity.run(); schedule(a);
     }));
   }

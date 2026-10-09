@@ -791,6 +791,11 @@ Station correction, and this provider does not detect it. SSH stats pair kernel 
 with FPGA time; corrected wall-clock evidence comes from pulled-log `systemTime`. The separate
 `robot-facts` clock probe also samples uptime beside `date` for the shop. Flight Recorder's future
 mapping must use its actual event clock; its streaming half awaits the runtime module probe.
+`ClockNote` carries both offsets, both bounds and both JVM start identities without diagnosing
+the cause. A sink failure latches stand-down for that session, including a reconnect/resume;
+a new session resets it. This avoids retrying a delivery whose partial write is unknown.
+[PIT_SERVER_PLAN.md §8.3](PIT_SERVER_PLAN.md#83-the-robot-programs-jvm) records the JDK 17
+chunk-clock evidence and the measurement still required before JFR streaming.
 
 `ContextProviders` writes these results through the same context hook and live index as the
 other providers. Published provider snapshots carry state, period, round trip and cost without

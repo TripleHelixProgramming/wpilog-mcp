@@ -45,7 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `analyze_vision` now reports recorded `camera_settings` for each exact camera identity and requested window, or says none was captured; previously detections had no captured calibration or pipeline context.
 - `render_chart` returns a bounded PNG and versioned chart specification with full-window measurements and inputs, for time series, histograms, scatter and field poses. Previously an assistant could return numbers but no chart; held signals use steps, phases come from the resolver, and a missing headless toolkit leaves an explained JSON result.
-
 - Time-scoped tools accept `last_seconds`, reporting the resolved window for each call; agents previously needed absolute robot timestamps to ask about recent data. Present-tense discovery, startup guidance and the `pit://session/current` resource expose the current capture and its identity, gateway and providers.
 - `read_entry` accepts `max_points` and numeric field paths, returning exact samples when they fit or time buckets with count, minimum, maximum, mean, first and last values. Previously callers had to page through every sample to see a long entry's shape; buckets preserve single-sample spikes and explain when nonnumeric entries cannot be reduced.
 - `GET /data/entries` streams entries and struct fields as Arrow or CSV, with optional buckets, input metadata, ETags, a size cap and notice of changes during a stream. Previously whole-entry export required a separate CSV file per entry. The endpoint shares MCP's path and Origin checks, and `get_server_guide` advertises it on HTTP servers.
@@ -63,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Open in Notebook** saves three reproducible cells beside the log or in the workspace and opens VS Code's notebook editor. Previously notebooks required hand-written endpoint requests; the generated file preserves the entries, window and server inputs, with no bundled Python.
 - Assistant chart links now open the selected entries, window and pane through a server-validated URI handler. Previously chart results could not open an explorer selection; invalid numbers and refused paths remain explained errors.
 - **Ask about this selection** sends an explicit path, entries and window with the first tool to VS Code chat, falling back to the clipboard. Previously that context had to be copied by hand.
-
 - WPILog Explorer adds Logs and Entries trees and a read-only WPILOG editor showing the time range, entries, field paths, sample counts and truncation warnings. Previously the extension registered assistant tools but displayed no logs itself. Its HTTP session reconnects after server restarts; the webview uses the extension's client and reports server refusals.
 - Explorer plots share a cursor and a timeline with logged match phases and Driver Station events. Zoom, pan, visible-window statistics and change-only steps use the server's data; large windows show min/max bands until exact samples fit. Previously viewing and navigating signals required another application.
 - Explorer's console filters text by pattern, level and visible window, collapses repeats, shows alert lifetimes and moves the shared cursor when a line is selected. Previously these events were available only through tool calls.
@@ -98,13 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- JVM clock notes now report both measurements, uncertainty bounds and start identities without claiming a cause; previously they suggested a restart or skew.
+- A failed sample delivery remains stood down across a resume of the same session, instead of retrying a possibly partial write.
 - PhotonVision full-state refreshes now coalesce notifications and start at most once per backend per second; previously every selective change could open another socket and fetch a full snapshot.
 - Growing files on Windows now resume with creation time as the identity fallback plus saved byte anchors; a null file key previously forced every growth to scan afresh. Growth retirement no longer issues a duplicate reload notification.
 - The standalone guide again caps `capture.pull.rate_bytes` at the parser's 2,147,483,647 bytes/second; the windowed-mapping change had incorrectly copied the 1 TiB file-size bound into that row. Capture-table range claims now exercise the configuration parser at their boundaries.
 - `render_chart` draws the full window by default, retaining pixel-column extremes in dense time series; previously a default image silently showed only the first 1,000 samples. Explicit limit/offset still pages the drawing and summaries always cover the whole window.
 - Chart rendering errors, including missing-font `InternalError`, skip only the image with the error class; previously some toolkit failures lost the complete JSON result.
 - Conformance fixtures clear their owned directories before creation; reused Gradle worker numbers previously left unmanifested system text that broke a later build.
-
 - System pull passes reuse a connection's inventory until manifest or directory facts change, and shared syslog receipts live once in the robot's index with written-span selection. Previously each pass reparsed every session and each rotation rewrote historical manifests. Legacy receipts remain readable; the journal's first pass uses `-b` alone instead of relying on boot-UUID argument support.
 - **Service ownership:** only `--managed` marks a server as supervisor-owned. Previously an inherited `INVOCATION_ID` also marked ordinary daemons launched by CI runners or terminal shells, preventing start, adoption and stop. Printed units accept exit status 143 as a clean SIGTERM stop on JVMs without the signal handler.
 - **Service installation:** POSIX installs create readable JARs (`0644`), readable/executable launchers and traversable program directories (`0755`), repairing their modes on reinstall while preserving configuration permissions. Previously owner-only temporary-file modes survived publication and prevented the service account from reading a root-installed launcher or JAR.
@@ -139,8 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- JVM tests now pin the NT4 contribution to the clock bound, suppress notes for within-bound changes, and exercise a failing delivery and recovery in a new session; those cases previously lacked direct assertions.
 - Fixture disconnects now wait for peer closure and ordered removal; previously their future only acknowledged an abrupt local close, leaving reconnect checks dependent on later TCP delivery. A held close reply pins the barrier without longer deadlines.
-
 - The reconnect backoff test now waits for retry scheduling after the disconnect callback; under load it previously counted delays too early. Removing the reset still fails its count assertion.
 - In-process JMX/GC tests and synthetic JVM fixtures check receipt clocks, cumulative counters, jump notes, refusal backoff, session admission and live/manifest/metrics/differential agreement. Runtime module probes are checked against complete and sparse synthetic SSH images; previously these paths were untested.
 - Windows resume assertions now require the resumed offset on every platform. Synthetic PhotonVision HTTP/WebSocket tests pin version, route shapes, clock mapping, change delivery, stand-down, metrics and exact-camera tool context, with planted faults; previously these provider paths had no coverage.
@@ -149,10 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The metrics-stack check waits for its Grafana datasource query within the existing readiness bound; previously a plugin update just after dashboard provisioning could produce a transient 404 and fail CI.
 - Chart regressions pin unequal-time scatter pairs, every encoded link entry, clipped phases and data-view null cells. Socket-delivery test guards allow thirty seconds under load without changing protocol deadlines.
 - Small mapping windows exercise every fixture record against the independent reader, plus conformance, cold values and import moves. Windows CI proves the leaked-mapping plant fails; the opt-in `largeLogTest` exercises a generated 2.2 GB file and rollover beyond 2 GiB.
-
 - Peer system-text copying now faces an advertised-hash mismatch with same-length bytes on the peer path, checking refused placement, absent receipts and retry state. Previously a size-only verifier passed because corruption tests reached only the mirror verifier.
 - Chart checks decode PNGs, compare window summaries with an independent reader, and plant size, missing-series, scope, hold-style and guessed-phase faults. Adapter/notebook/URI plants cover replaced follow rows, omitted inputs and bypassed server admission; the two real-editor CI jobs also check Perspective row counts and an appended batch. Each smoke run owns its appendable fixture, and the runner requires all six checks; the original five-check gate incorrectly rejected the successful new data-view check. Previously these chart, grid and notebook surfaces had no coverage.
-
 - Synthetic stores now count inventory reads across 300 sessions, check five rotations shared by fifty sessions, and exercise system-text ranges, hashes, peer/mirror copies, missing-copy guidance and growing-prefix resume. Corrupt mirrored bytes and omitted shared-file capacity are refused by regressions; previously transfer tests covered telemetry alone.
 - Synthetic system-log fixtures exercise real SSH gate/pacing, rotations, cursor restart and command refusal, PID placement, committed-prefix reads and independent clock mapping. Previously these paths had no tests; the tool joins schema conformance, claims and opt-in stress calls without requiring a robot's files.
 - The systemd check tests launcher/JAR access as the service user before startup, reports modes on refusal, and supplies the hosted JDK through `JAVA_HOME`; previously it waited for health while the process could not start. The unmanaged plant removes only the flag. Real-child ownership and POSIX-mode regressions cover both failures, and Main/installer changes select both editor smoke jobs without unrelated capture replay.
@@ -172,6 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The JFR plan now distinguishes chunk clock anchors from flush delivery time and specifies the measurement needed before streaming; the shop checklist explicitly checks team-owned JMX launch flags, reachability and sampling state.
 - Guides describe the shared server, session leases, user-scope registration, safe legacy migration, capture/store/live layers and their concurrency and network rules. Previously the architecture overview and setup instructions still described private per-project servers. Detailed configuration, testing and remaining manual checks stay in their owning guides.
 - `doc/PIT_SERVER_PLAN.md` and `doc/EXPLORER_PLAN.md` record the implemented pit and viewer layers, their decisions and the work still proposed, linked from `doc/IDEAS.md`. These workflows previously had no team-facing overview or shared development specification.
 
