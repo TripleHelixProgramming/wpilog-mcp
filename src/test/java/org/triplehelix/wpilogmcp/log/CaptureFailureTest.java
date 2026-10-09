@@ -121,11 +121,11 @@ class CaptureFailureTest {
         assertTrue(log.contains("Capture recording stopped until a new robot clock: planted disk full"), log);
         assertFalse(log.contains("NT4 connection stopped"), log);
         // A Wi-Fi reconnect on the same robot clock must not reopen the failed output.
-        clock.set(11_000_000); gateway.dropClients().join(); loop.until(() -> !client.isConnected());
+        clock.set(11_000_000); gateway.dropClients().join(); loop.drain(); assertFalse(client.isConnected());
         loop.advance(1_000_000); loop.until(() -> connected.get() == 2 && received.get() == 22);
         assertEquals(List.of("10000000:0", "11000000:1000000"), syncs);
         assertEquals(1, opened.get(), syncs.toString()); assertFalse(writer.session().open());
-        clock.set(100_000); gateway.dropClients().join(); loop.until(() -> !client.isConnected());
+        clock.set(100_000); gateway.dropClients().join(); loop.drain(); assertFalse(client.isConnected());
         gateway.value("/x", 100_000, 2, 43L).join();
         loop.advance(1_000_000); loop.until(() -> opened.get() == 2 && received.get() == 23);
         assertTrue(writer.session().open()); assertNotEquals(first, writer.session().path().toRealPath());

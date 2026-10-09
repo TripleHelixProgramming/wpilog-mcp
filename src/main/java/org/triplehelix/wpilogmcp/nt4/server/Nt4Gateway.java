@@ -55,6 +55,7 @@ public final class Nt4Gateway implements AutoCloseable {
   private final ClientScheduler loop;
   private final Map<String, Peer> peers = new HashMap<>();
   private final Map<WebSocket, String> connections = new HashMap<>();
+  private final Map<WebSocket, CompletableFuture<Void>> closing = new HashMap<>();
   // Only pong receipt crosses threads; the rest of each peer's state remains loop-owned.
   private final Map<WebSocket, Keepalive> keepalives = new java.util.concurrent.ConcurrentHashMap<>();
   private final CompletableFuture<Void> listening = new CompletableFuture<>();
@@ -197,10 +198,25 @@ public final class Nt4Gateway implements AutoCloseable {
       for (String id : List.copyOf(peers.keySet())) drop(id, "NT4 robot clock changed; reconnect to synchronize");
     });
   }
+  /**
+   * Fixture disconnect barrier: peers have received the close and their sockets have closed.
+   * An abrupt closeConnection only proves local close initiation, not peer delivery. Sending
+   * the close frame ourselves keeps the socket until the reply/EOF; the library's close()
+   * instead closes a server socket as soon as its output queue drains, before the reply.
+   */
   public CompletableFuture<Void> dropClients() {
+    var pending = new ArrayList<CompletableFuture<Void>>();
     return enqueue(() -> {
-      for (var peer : peers.values()) peer.socket.closeConnection(1001, "fixture disconnect");
-    });
+      for (var peer : peers.values()) {
+        var previous = closing.get(peer.socket);
+        if (previous != null) { pending.add(previous); continue; }
+        var done = new CompletableFuture<Void>();
+        closing.put(peer.socket, done); pending.add(done);
+        var frame = new org.java_websocket.framing.CloseFrame();
+        frame.setCode(1001); frame.setReason("fixture disconnect");
+        peer.socket.sendFrame(frame);
+      }
+    }).thenCompose(ignored -> CompletableFuture.allOf(pending.toArray(CompletableFuture[]::new)));
   }
 
   private long nowUs() { return loop.nowUs(); }
@@ -357,6 +373,8 @@ public final class Nt4Gateway implements AutoCloseable {
         var id = connections.remove(socket);
         keepalives.remove(socket);
         if (id != null) { peers.remove(id); core.disconnect(id); clientCount = peers.size(); }
+        var done = closing.remove(socket);
+        if (done != null) done.complete(null);
       });
     }
     @Override public void onMessage(WebSocket socket, String text) {

@@ -139,6 +139,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Fixture disconnects now wait for peer closure and ordered removal; previously their future only acknowledged an abrupt local close, leaving reconnect checks dependent on later TCP delivery. A held close reply pins the barrier without longer deadlines.
+
 - The reconnect backoff test now waits for retry scheduling after the disconnect callback; under load it previously counted delays too early. Removing the reset still fails its count assertion.
 - In-process JMX/GC tests and synthetic JVM fixtures check receipt clocks, cumulative counters, jump notes, refusal backoff, session admission and live/manifest/metrics/differential agreement. Runtime module probes are checked against complete and sparse synthetic SSH images; previously these paths were untested.
 - Windows resume assertions now require the resumed offset on every platform. Synthetic PhotonVision HTTP/WebSocket tests pin version, route shapes, clock mapping, change delivery, stand-down, metrics and exact-camera tool context, with planted faults; previously these provider paths had no coverage.

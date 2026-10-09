@@ -32,13 +32,13 @@ class ReplayCaptureTest {
         assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () -> {
           var failure = assertThrows(AssertionError.class, () -> capture.receivedThrough(1));
           assertTrue(failure.getMessage().contains("Replay capture disconnected"), failure::getMessage);
-          assertTrue(failure.getMessage().contains("NT4 peer closed (1006)"), failure::getMessage);
+          assertTrue(failure.getMessage().contains("NT4 peer closed (1001)"), failure::getMessage);
         });
         if (loop instanceof ManualScheduler scheduler) {
           scheduler.advance(1_000_000); scheduler.until(capture::connected);
           // A reconnect while the replayer was occupied must not conceal the interruption.
           var failure = assertThrows(AssertionError.class, () -> capture.receivedThrough(0));
-          assertTrue(failure.getMessage().contains("NT4 peer closed (1006)"), failure::getMessage);
+          assertTrue(failure.getMessage().contains("NT4 peer closed (1001)"), failure::getMessage);
         }
       }
     }
@@ -53,7 +53,9 @@ class ReplayCaptureTest {
       try (var capture = new ReplayCapture(RobotAddress.uri("127.0.0.1", gateway.port(), "readiness"),
           directory.resolve("unused.wpilog"), directory.resolve("capture"), Clock.systemUTC(), null, 1L << 20, loop)) {
         capture.ready(2); assertEquals(2, capture.announcements.get());
-        gateway.dropClients().get(10, TimeUnit.SECONDS); loop.until(() -> !capture.connected());
+        gateway.dropClients().get(10, TimeUnit.SECONDS);
+        // Peer delivery is complete; only the already-enqueued client action remains.
+        loop.drain(); assertFalse(capture.connected());
         assertEquals(0, capture.announcements.get(), "A disconnected generation cannot satisfy a new subscription");
         loop.advance(1_000_000);
         capture.ready(2); assertEquals(2, capture.announcements.get()); assertEquals(0, capture.received.get());

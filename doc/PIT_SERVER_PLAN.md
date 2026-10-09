@@ -1125,3 +1125,24 @@ Release-review keepalive failures (before the tag):
   `jdk.management.agent`, `jdk.jfr`, `jdk.management.jfr` found/absent/refused. Actual image
   modules, launch compatibility, network reachability and polling cost remain shop facts;
   the Flight Recorder half is intentionally still open.
+
+### Round 21 choices: close barriers and JVM clock evidence
+
+- Linux run `37979048713` on `154797d`, artifact `test-report-ubuntu-latest`, records
+  `ReplayCaptureTest.reconnectBeforeReplayWaitsForTheNewSubscriptionsAnnouncements`
+  failing after 30.096 s: `Client callback missing`, through `ManualScheduler.until`
+  at ReplayCaptureTest line 56. Stdout is empty. Stderr records the `readiness` peer
+  connecting, then teardown 30 seconds later; it records no client close/error callback.
+  The saved evidence therefore does **not** establish which JDK callback ran, or that
+  dispatch rejected it. A local trace of the unchanged code receives `onClose(1006)`,
+  dispatches with `current == this`, and `failed` clears the connected state.
+- The fixture's `dropClients` future formerly acknowledged only local `closeConnection`
+  calls. That is not a peer-delivery barrier. A deterministic peer withholding its close
+  reply proves the old future completes before that reply. The fixture now sends a 1001
+  close frame and completes after the peer's reply/EOF and ordered socket removal. It
+  sends the frame directly because Java-WebSocket 1.6.0's `close()` closes server sockets
+  when output drains, before a reply. ReplayCaptureTest, CaptureFailureTest and ClientTest
+  drain the already-enqueued client disconnect after this barrier, rather than waiting
+  for an unproven TCP-delivery event. Client protocol, timers and timeouts are unchanged.
+  This closes the demonstrated fixture ordering gap; the historical missing callback's
+  exact cause remains unproven by that XML and is not labeled a client-state bug.
