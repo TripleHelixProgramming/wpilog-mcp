@@ -1274,3 +1274,5 @@ Release-review keepalive failures (before the tag):
   and the Docker Official Images Temurin mirror on ECR Public; both tags were verified before
   switching. Build caches remain scoped to this harness. The clock oracle's file regression
   also pins the independent reader's recorded length, not the spare array capacity.
+  The BuildKit bootstrap uses the same upstream image tag through Google's public mirror;
+  otherwise that earlier setup step still depends on Docker Hub's token endpoint.

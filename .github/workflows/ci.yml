@@ -173,6 +173,8 @@ jobs:
       - name: Build the simulation robot once
         run: ./gradlew -p harness/robot prepareHarness
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
       - name: Build the synthetic roboRIO image
         uses: docker/build-push-action@v6
         with:

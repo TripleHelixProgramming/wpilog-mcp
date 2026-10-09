@@ -36,6 +36,10 @@ class HarnessWiringTest {
     assertFalse(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "actions/download-artifact@v4".equals(s.get("uses"))),
         "The build job already uploads its evidence");
     assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/rio/run -PconformanceNative=${{ needs.changes.outputs.native }}".equals(s.get("run"))));
+    var builder = steps.stream().map(s -> (Map<?, ?>) s)
+        .filter(s -> "docker/setup-buildx-action@v3".equals(s.get("uses"))).findFirst().orElseThrow();
+    var builderSettings = assertInstanceOf(Map.class, builder.get("with"), "BuildKit must also avoid the throttled registry");
+    assertEquals("image=mirror.gcr.io/moby/buildkit:buildx-stable-1", builderSettings.get("driver-opts"));
     var image = steps.stream().map(s -> (Map<?, ?>) s)
         .filter(s -> "docker/build-push-action@v6".equals(s.get("uses"))).findFirst().orElseThrow();
     var imageSettings = (Map<?, ?>) image.get("with");
