@@ -12,28 +12,18 @@ jobs:
     outputs:
       extension: ${{ steps.paths.outputs.extension }}
       harness: ${{ steps.paths.outputs.harness }}
+      service: ${{ steps.paths.outputs.service }}
+      native: ${{ steps.paths.outputs.native }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: paths
-        shell: python
         env:
           BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          import os, subprocess
-          base = os.environ.get('BEFORE', '')
-          if not base or set(base) == {'0'}:
-              files = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
-          else:
-              files = subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD'], text=True).splitlines()
-          extension = any(p.startswith('vscode-extension/') for p in files)
-          harness = any(p.startswith(('harness/', 'src/main/java/org/triplehelix/wpilogmcp/capture/',
-              'src/main/java/org/triplehelix/wpilogmcp/nt4/', 'src/main/java/org/triplehelix/wpilogmcp/sync/',
-              'src/test/java/org/triplehelix/wpilogmcp/conformance/', 'src/test/java/org/triplehelix/wpilogmcp/harness/'))
-              or p == 'build.gradle' for p in files)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'extension={str(extension).lower()}\nharness={str(harness).lower()}\n')
+        run: python3 ci/changes.py
+      - name: Check path filters and service assertions
+        run: python3 -m unittest ci.test_changes ci.test_check_service
 
   build:
     needs: changes
@@ -152,7 +142,7 @@ jobs:
           python ci/check_arrow.py build/arrow-samples
 
   shop-harness:
-    needs: [build, changes]
+    needs: changes
     if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server' && needs.changes.outputs.harness == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -171,13 +161,7 @@ jobs:
             notifications
             permwrapper/dists
       - name: Run the headless shop harness
-        run: harness/run
-      - name: Collect the ordinary build XML
-        if: always()
-        uses: actions/download-artifact@v4
-        with:
-          name: test-report-ubuntu-latest
-          path: build/ordinary-test-report
+        run: harness/run -PconformanceNative=${{ needs.changes.outputs.native }}
       - name: Upload harness evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -186,9 +170,43 @@ jobs:
           path: |
             build/reports/tests/shopHarness
             build/test-results/shopHarness
-            build/ordinary-test-report
             build/shop-harness
             build/reports/replay
+          retention-days: 14
+
+  systemd:
+    needs: changes
+    if: needs.changes.outputs.service == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the service JAR
+        run: ./gradlew shadowJar
+      - name: Run the printed units under systemd
+        run: sudo --preserve-env=GITHUB_ACTIONS,PATH,JAVA_HOME python3 ci/check_service.py build/libs/wpilog-mcp-*-all.jar
+      - name: Prove the check rejects an unmanaged service
+        run: |
+          if sudo --preserve-env=GITHUB_ACTIONS,PATH,JAVA_HOME python3 ci/check_service.py build/libs/wpilog-mcp-*-all.jar --plant-unmanaged; then
+            echo 'Unmanaged service plant escaped'; exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('build/reports/systemd/unmanaged-plant.json').read_text())
+          assert 'Expected managed: true' in result.get('reason', ''), result
+          PY
+      - name: Upload the service journal and assertions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systemd
+          path: build/reports/systemd
           retention-days: 14
 
   editor-smoke:

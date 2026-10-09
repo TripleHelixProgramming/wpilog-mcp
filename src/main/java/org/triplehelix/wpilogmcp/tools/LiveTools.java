@@ -24,7 +24,7 @@ public final class LiveTools {
   private LiveTools() {}
   public static void registerAll(ToolRegistry registry, LiveCapture live) {
     registry.setCurrentSession(() -> org.triplehelix.wpilogmcp.mcp.CurrentSessionResource.read(live));
-    registry.registerTool(new ListSessions(live));
+    registry.registerTool(new ListSessions(live, registry::isManaged));
     registry.registerTool(new GetLatestValues(live));
     registry.registerTool(new WaitForChange(live));
   }
@@ -63,7 +63,9 @@ public final class LiveTools {
   }
 
   static final class ListSessions extends LiveTool {
-    ListSessions(LiveCapture live) { super(live); }
+    private final java.util.function.BooleanSupplier managed;
+    ListSessions(LiveCapture live) { this(live, () -> false); }
+    ListSessions(LiveCapture live, java.util.function.BooleanSupplier managed) { super(live); this.managed = managed; }
     @Override public String name() { return "list_sessions"; }
     @Override public String description() {
       return "List current and recent store sessions, newest first, without scanning logs. Returns sessions[] "
@@ -80,7 +82,7 @@ public final class LiveTools {
           + "reports the true total when limit cuts sessions, and each session's limits.cost reports a cut "
           + "topic list. gateway reports state (disabled, waiting, listening, stopped), port, cause "
           + "(while waiting), and since (UTC time of that state). inputs.session names the current or last capture. "
-          + "Capture-disabled use is not_applicable.";
+          + "managed says a supervisor owns this server. Capture-disabled use is not_applicable.";
     }
     @Override public JsonObject inputSchema() {
       return new SchemaBuilder().addIntegerProperty("limit", "Newest sessions to return, 1 to 100 (default 20)", false, 20).build();
@@ -88,11 +90,11 @@ public final class LiveTools {
     @Override ResponseBuilder read(JsonObject arguments, CaptureStore.Status current) {
       int limit = getOptWhole(arguments, "limit", 20);
       if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be an integer from 1 to 100");
-      if (live == null) return inactive(current).addData("gateway", org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED.json());
+      if (live == null) return inactive(current).addProperty("managed", managed.getAsBoolean()).addData("gateway", org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED.json());
       var sessions = live.sessions(); var rows = new JsonArray();
       for (var session : sessions.stream().limit(limit).toList()) rows.add(row(session, current));
       return (sessions.isEmpty() ? ResponseBuilder.notApplicable("No capture or imported session has been recorded") : ResponseBuilder.success())
-          .addLimitedList("sessions", rows, sessions.size(), limit).addData("gateway", live.gateway().json());
+          .addLimitedList("sessions", rows, sessions.size(), limit).addProperty("managed", managed.getAsBoolean()).addData("gateway", live.gateway().json());
     }
     private JsonObject row(LiveCapture.SessionView view, CaptureStore.Status current) {
       var session = view.session(); var row = new JsonObject();

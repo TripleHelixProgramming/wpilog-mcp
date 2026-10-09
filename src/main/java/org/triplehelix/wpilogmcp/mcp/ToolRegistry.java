@@ -22,6 +22,9 @@ public class ToolRegistry {
   private static final Logger logger = LoggerFactory.getLogger(ToolRegistry.class);
 
   private final Map<String, Tool> tools = new ConcurrentHashMap<>();
+  private volatile boolean managed;
+  public void setManaged(boolean value) { managed = value; }
+  public boolean isManaged() { return managed; }
   private volatile String serverInstructions;
   private volatile java.util.function.Supplier<JsonObject> currentSession = () -> CurrentSessionResource.read(null);
   public void setCurrentSession(java.util.function.Supplier<JsonObject> value) { currentSession = value; }

@@ -864,3 +864,37 @@ Release-review keepalive failures (before the tag):
 - `pit://session/current` is a read-only JSON resource, always discoverable, with an explained
   `not_applicable` when capture is absent/closed. It uses published snapshots. Prompts stay
   empty and resource subscriptions are not offered. No new assistant write surface is added.
+
+
+### Round 13 choices: running the pit server as a service
+
+- Public `run <name> [--config <file>] [--managed]` reuses internal foreground startup,
+  logging to stderr without a PID file. Configuration/bind failures return nonzero; clean
+  transport stops return zero. Public run uses the JDK signal dispatcher for INT/TERM to
+  request exit zero after shutdown hooks drain; Windows forced termination cannot be caught.
+  Internal spawning retains its private flag and token.
+- Supervisor ownership is a process fact from `INVOCATION_ID` or `--managed`, published in
+  health and `list_sessions` even without capture. The daemon manager refuses adoption,
+  replacement and stopping; `stop` probes the configured port as well as its optional PID
+  record and explains which systemctl command to use. `--config` also selects stop's port.
+- The current plan had no concrete unit text. `service-unit` therefore prints three named
+  files for review: the service, an unprivileged HTTP probe, and its 30-second monotonic timer.
+  The layout is `/opt/wpilog-mcp`, root-owned configuration/environment under `/etc/wpilog-mcp`,
+  and a `wpilog-mcp` system account with `StateDirectory=wpilog-mcp`. Stop has 90 seconds and
+  mixed kill mode; restart is always with five seconds between failures and no start limit.
+  The probe reports in the journal, without independently restarting a healthy-but-busy JVM.
+  Filesystem/privilege hardening preserves JIT, and no MemoryMax duplicates heap policy.
+  [systemd's execution rules](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml),
+  [service lifetime](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml) and
+  [monotonic timers](https://github.com/systemd/systemd/blob/main/man/systemd.timer.xml) own the
+  directive semantics. The guide explains installation and a private network without NTP:
+  calendar placement uses the pit clock; robot time cannot repair its calendar date.
+- Absent-program discovery is one scan at connection start, then one every ten samples.
+  Only a known PID/start-time change requests the next-sample rescan. The missing-program
+  state remains visible and its unchanged reason is logged once. Unit constants remain
+  cached per connection, and each sample still invokes one df as agreed in round 12.
+- CI harness work depends only on path classification; ordinary builds keep their own XML.
+  MCP changes also select real-JAR extension checks. Unknown before history runs everything.
+  Real systemd CI verifies the printed service and timer, managed/version health, refusal of
+  daemon-manager stop, and a bounded systemctl stop; an unmanaged service is a required plant.
+  No native replay or real-log replay is needed for this round's service/provider changes.

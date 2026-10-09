@@ -587,6 +587,20 @@ Values are decoded the first time a tool asks for an entry, all of that entry's 
 
 Structs are decoded from the schemas the log records, using WPILib's schema parser. That covers any struct, including nested structs, enums, bit-fields, and a team's or a vendor's own types. For a struct whose schema the log does not record, WPILib's geometry and kinematics schemas are used, and a few types from common team templates are decoded with an assumed layout and marked as assumed. Each struct type's decoding plan is compiled on first use and cached. [TOOLS.md](TOOLS.md#data-types) shows what decoded values look like.
 
+## Foreground and supervisor ownership
+
+`run <name>` shares the internal daemon's configuration/startup path but never claims a PID
+file or daemonizes. `INVOCATION_ID` or `--managed` publishes supervisor ownership through the
+registry to health and live tools. The daemon manager probes this fact before adoption,
+replacement or stop, including a configured port with no PID record. A stale PID claim grants
+no authority over a managed server. Only the internal daemon accepts its spawn's stop token.
+
+`config.ServiceUnit` prints templates from `resources/service/`; it installs nothing. A system
+account owns the state directory, systemd owns restarts and bounded signal shutdown, and the
+separate unprivileged health timer reports failures. The templates preserve JIT and leave JVM
+heap sizing to the existing launcher rather than imposing a second memory limit. STANDALONE.md
+owns installation, hardening exceptions and the calendar-clock caveat.
+
 ## Memory Management
 
 The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` by default; a background server inherits it from the JVM that starts it. The extension sets that variable from its `wpilog-mcp.maxHeap` setting in the launcher’s environment when it starts or restarts the daemon (and runs the installer with the same heap), so the size never appears in a process list; a daemon another client started keeps its own heap until it is restarted.
@@ -680,7 +694,9 @@ queue, while provider readers never wait for it.
 
 `ProcStats` parses explicit Linux ticks, pages and KiB; no unit comes from the pit computer.
 Busy CPU excludes idle/iowait and does not count guest time twice. Rates need two monotonic
-kernel samples, and program CPU needs the same PID and start tick. `StatsProvider` captures
+kernel samples, and program CPU needs the same PID and start tick. Missing-program discovery
+retries every ten samples; only a previously known process changing requests an immediate
+next-sample lookup. The persistent reason is logged on state change, not on each sample. `StatsProvider` captures
 the NT4 offset and monotonic send time before exec; an estimate arriving with the reply cannot
 retroactively timestamp the request. Round-trip cost adapts the period from its base up to
 30 seconds and back down. The kernel/FPGA pairing and provider costs are additive manifest

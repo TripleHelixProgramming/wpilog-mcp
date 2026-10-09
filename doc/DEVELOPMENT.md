@@ -41,7 +41,7 @@ never run `./gradlew clean` inside a round.
 |---|---|
 | Each item while editing | Targeted `./gradlew test --tests '*RelevantTest'`; plant the bug and see that check fail. |
 | End of a round, after the last change | One `env -u LANG -u LC_ALL ./gradlew build`. CI supplies Windows; report without waiting for it to start. |
-| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also gates Node/editor checks by these paths. |
+| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also runs Node/editor checks for changes to `mcp/`, since its real-JAR tests exercise leases. |
 | Capture, pull, NT4 or harness code changed | One `harness/run` after those changes; use `-PconformanceNative=none` if none of the native-triggering surfaces below changed. |
 | NT4 client, gateway, capture writer, replayer or harness changed | Native replay with `-PconformanceNative=sample`, in that same harness run; zero shift only. |
 | Writer output, replayer output or matching changed | Stratified Java real-log sample with `-PconformanceLogDir=/path/to/logs`. A harness pacing-only change does not trigger it. |
@@ -56,8 +56,11 @@ under `build/test-fixtures/worker-<worker>` and are written once per JVM, so Win
 another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
 uses decoded immutable views for entry-order permutations, preserving raw sample counts separately
 from successfully decoded values. Coverage instrumentation is absent from ordinary/targeted runs.
-The harness CI job downloads the ordinary job's XML evidence instead of rerunning its suite;
-the Arrow cross-check similarly consumes that build's streams.
+The harness CI job needs only path classification and runs beside the builds, with its own
+evidence. Ordinary build jobs upload their own XML; no duplicate download or test run is needed.
+Native selection follows the affected surfaces above. The Arrow cross-check consumes the
+ordinary build's streams. An unreachable before-commit runs every job rather than failing
+classification or skipping checks.
 
 ## Testing
 
@@ -72,6 +75,25 @@ This runs every test that needs nothing outside the repository. Three rules appl
 - When you change a check, plant the bug it is meant to catch and see the check fail.
 
 The tests run on Windows in CI too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
+
+### The systemd service check
+
+`MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,
+health and live tools; `DaemonManagerTest` uses fake health endpoints to prove managed servers
+are never adopted, stopped or replaced. `ServiceUnitTest` checks the printed unit's hardening,
+escaping and write-free behavior. `StatsProviderTest` counts real MINA exec commands with no
+program: 31 samples require four discoveries, without repeated changed-process notices.
+
+The independent Linux `systemd` CI job is filtered to Main, configuration, installers, service
+templates and the check itself. It builds only the shadow JAR, creates the service account,
+installs the printed units, starts the service and timer, checks managed/version health and the
+`stop` refusal, runs the probe, and stops through systemd within 90 seconds. It repeats with
+both managed signals removed and requires that the same verifier reject the plant. Journals,
+printed units and assertion results are uploaded even on failure. `ci/check_service.py` refuses
+to install on a developer machine; it requires root and a disposable GitHub Actions runner.
+The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter
+fallbacks and the verifier's refusal predicates without systemd. macOS and Windows do not run
+systemd locally; their ordinary Java tests still cover the foreground command and ownership.
 
 ### What `./gradlew test` covers
 

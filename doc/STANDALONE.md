@@ -245,9 +245,11 @@ clock tick and page sizes. `/Daemon/roboRIO/` entries carry explicit units, `sou
 samples sent before an NT4 estimate are counted and dropped. CPU and network interval rates
 need two samples; a missing or ambiguous deployed JAR omits program fields with a reason.
 The JAR path comes from the quoted `-jar` argument in `/home/lvuser/robotCommand`, then exact
-arguments in `/proc/*/cmdline`. This lookup and `getconf` run once per SSH connection. Each
-sample checks the cached PID's start ticks; a missing/reused PID triggers one new lookup on the
-next sample. Tick/page constants remain cached until SSH reconnects. Steady samples read fixed
+arguments in `/proc/*/cmdline`. The first lookup and `getconf` run once per SSH connection.
+If no unique robot program is found, that reason is logged once and discovery retries only
+every tenth sample; other stats continue. Each sample checks a known PID's start ticks;
+only a previously identified PID/start-time mismatch reports a changed process and requests
+discovery on the next sample. Tick/page constants remain cached until SSH reconnects. Steady samples read fixed
 `/proc` files with shell builtins and run one `df` for all selected filesystems. A custom launcher
 that does not expose the JAR path is reported.
 Exec replies are bounded to 64 KiB and 30 seconds; sample waits never occupy the NT4 loop.
@@ -424,11 +426,88 @@ The server reads the first configuration file it finds:
 
 A JSON file uses the same keys as the YAML one. This project-first order applies to `start` and the bare launcher. `connect` joins a shared server: its server configuration comes only from `--config` or the home `servers.yaml` / `servers.json`, never a project file. Separately, it reads only top-level `logdir` and `team` from the working directory's `.wpilog-mcp.yaml` as a temporary directory lease. A `servers` section there is ignored, with a line in the server log. Project JSON does not supply leases.
 
-After `start <name>`, the server reads only `--config` and `-debug` from the command line and ignores other flags. `stop <name>` uses that name’s PID record; it does not load configuration. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
+After `start <name>`, the server reads only `--config` and `-debug` from the command line and ignores other flags. `stop <name> [--config <path>]` uses that name’s PID record and checks the configured HTTP port for a managed service; a removed configuration does not prevent stopping a recorded daemon. Of the environment variables in [Command-Line Flags](#command-line-flags), it reads only these:
 - `TBA_API_KEY`, when the file sets no `tba_key`
 - `WPILOG_DISK_CACHE_DIR`, when the file sets no `diskcachedir`
 - `WPILOG_DEBUG`
 - `WPILOG_HTTP_BIND`, `WPILOG_HTTP_PATH`, and `WPILOG_HTTP_ALLOWED_ORIGINS`, for an `http` server (see [HTTP Transport](#http-transport))
+
+### Running as a service
+
+`wpilog-mcp run <name> [--config <file>] [--managed]` runs the named configuration in the
+foreground. Logs go to stderr; it writes no PID file and spawns no background server. A clean
+transport stop returns 0; a bad configuration or failed HTTP bind returns nonzero with the
+reason. Ctrl-C or SIGTERM requests exit 0 after the shutdown hooks finish. Windows' forced
+process termination cannot be caught; a stdio EOF is a clean stop there.
+
+`INVOCATION_ID` set by systemd, or the explicit `--managed` flag, makes both `GET /health` and
+`list_sessions` report `managed: true`. `start` will neither adopt that process nor replace it
+with a newer JAR. `stop` refuses it and prints the `sudo systemctl stop wpilog-mcp-<name>.service`
+command. Use `--config` when the service's configuration is not in your normal search path.
+
+`wpilog-mcp service-unit <name> [--config <file>]` prints three files separated by
+`# file: <name>` comments: `wpilog-mcp-<name>.service`, its `-health.service` probe and
+`-health.timer`. It validates an HTTP configuration with no idle exit, prints to stdout, and
+never writes under `/etc`. Names use ASCII letters, digits, underscores and hyphens.
+
+On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bin/curl`:
+
+1. Create the account and install the downloaded JAR outside a user's home:
+
+   ```bash
+   sudo useradd --system --user-group --home-dir /var/lib/wpilog-mcp --shell /usr/sbin/nologin wpilog-mcp
+   sudo java -jar wpilog-mcp.jar install --install-dir /opt/wpilog-mcp
+   sudo install -d -m 0755 /etc/wpilog-mcp
+   ```
+
+2. Write `/etc/wpilog-mcp/servers.yaml`, using a named `pit` configuration with
+   `transport: http`, `idle_exit_minutes: 0`, and absolute paths for its logs, capture store
+   and mirrors under `/var/lib/wpilog-mcp/`. Keep the configuration readable by the service
+   account. Put secrets in `/etc/wpilog-mcp/environment`, mode `0600`, owned by root:
+
+   ```ini
+   TBA_API_KEY=your-key
+   # Optional JVM heap; the unit has no MemoryMax:
+   WPILOG_MAX_HEAP=4g
+   ```
+
+   That file uses systemd environment-file syntax, not shell `export`. Refer to other secrets
+   with `${NAME}` in YAML. The unit sets `LANG=C.UTF-8 LC_ALL=C.UTF-8`; install that locale or
+   replace both with an available UTF-8 locale (see [Uploading logs](#uploading-logs)).
+
+3. Print and review the units, then copy each section to its named file under
+   `/etc/systemd/system/`:
+
+   ```bash
+   /opt/wpilog-mcp/bin/wpilog-mcp service-unit pit --config /etc/wpilog-mcp/servers.yaml > pit-units.txt
+   # Copy the three sections from pit-units.txt to their named files, with sudo.
+   sudo systemd-analyze verify /etc/systemd/system/wpilog-mcp-pit*.service /etc/systemd/system/wpilog-mcp-pit-health.timer
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now wpilog-mcp-pit.service wpilog-mcp-pit-health.timer
+   curl --fail http://127.0.0.1:2363/health
+   sudo journalctl -u wpilog-mcp-pit.service -u wpilog-mcp-pit-health.service -f
+   ```
+
+The unit's `StateDirectory=wpilog-mcp` creates and owns `/var/lib/wpilog-mcp`. Its hardening
+makes the rest of the filesystem read-only and hides home directories, so put writable data
+there; explicitly amend `ReadWritePaths` if you choose another location. It retains JVM JIT
+support (no `MemoryDenyWriteExecute`) and sets no `MemoryMax`. `TimeoutStopSec=90s` and
+`KillMode=mixed` let the main JVM drain before systemd ends remaining processes. `Restart=always`
+with a five-second delay and no start-rate limit retries failures indefinitely; an explicit
+`systemctl stop` stays stopped. Use `systemctl restart` after installing an update.
+
+The unprivileged health timer probes every 30 seconds with a five-second HTTP deadline and
+records failures in the journal. It reports; it does not restart a process merely because a
+probe failed. Stopping the main service stops its timer too; start both again when resuming.
+The probe uses the configured port on `127.0.0.1`; if you bind only to a particular network
+address with `WPILOG_HTTP_BIND`, update the probe URL to that address as well. The service keeps
+the existing [HTTP network policy](#http-transport).
+
+On a private robot network without NTP, check the pit computer's calendar clock before
+recording. Session directory dates, manifest calendar times and the puller's overlap filter
+use that clock. Robot-clock record timestamps and monotonic timers do not repair a wrong
+calendar date. The unit orders after `time-sync.target` but does not require an Internet time
+source before starting capture; use a maintained RTC or a local time source when offline.
 
 ### Importing Logs
 
@@ -569,7 +648,7 @@ For browser-based or multi-client access, start the `http` server from `servers.
 wpilog-mcp start http
 ```
 
-The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version and process ID.
+The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, process ID, `managed` ownership and gateway state.
 
 Running `start http` while it is up reports the running server rather than starting another. If the running server is another version, because you upgraded since it started, `start` stops it and starts the new version in its place, so an upgrade never leaves an old server serving. If something that is not wpilog-mcp holds the port, `start` says so and starts nothing; choose another port.
 

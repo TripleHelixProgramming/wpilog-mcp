@@ -26,6 +26,9 @@ public final class StatsProvider {
   private ProcStats.Configuration known;
   private String command;
   private boolean locateProgram = true;
+  /** Discovery scans /proc; an absent program warrants one attempt per ten cheap samples. */
+  private static final int ABSENT_PROGRAM_RETRY_SAMPLES = 10;
+  private int samplesSinceLookup;
   private ProcStats.Snapshot previous;
   private long droppedBeforeSync;
   public StatsProvider(ProviderConfig.Stats config, List<String> directories, LongSupplier clock, Supplier<Double> offset) {
@@ -42,7 +45,7 @@ public final class StatsProvider {
     if (locateProgram) {
       String discovery = connection.exec(StatsCommand.lookup(known == null), COMMAND_DEADLINE_MS, MAX_REPLY_BYTES)
           .orElseThrow(() -> new IOException("SSH exec is unavailable for stats discovery"));
-      known = ProcStats.configuration(discovery, known); locateProgram = false;
+      known = ProcStats.configuration(discovery, known); locateProgram = false; samplesSinceLookup = 0;
       command = StatsCommand.sample(directories, known);
     }
     long usedPeriod = period.periodUs();
@@ -53,7 +56,10 @@ public final class StatsProvider {
     long rtt = clock.getAsLong() - sent; period.measured(rtt);
     var current = ProcStats.parse(text);
     var expected = known.program(); var observed = current.program();
-    if (expected == null || observed == null || expected.pid() != observed.pid() || expected.startTicks() != observed.startTicks()) {
+    samplesSinceLookup++;
+    if (expected == null) {
+      locateProgram = samplesSinceLookup >= ABSENT_PROGRAM_RETRY_SAMPLES;
+    } else if (observed == null || expected.pid() != observed.pid() || expected.startTicks() != observed.startTicks()) {
       // Never label a reused pid as the robot. Its next sample performs exactly one new lookup;
       // clock ticks/page size stay valid for the lifetime of this SSH connection.
       current = ProcStats.withoutProgram(current); locateProgram = true;

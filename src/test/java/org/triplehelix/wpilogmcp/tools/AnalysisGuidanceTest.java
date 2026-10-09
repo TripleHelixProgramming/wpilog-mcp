@@ -71,6 +71,13 @@ class AnalysisGuidanceTest {
 
   private static final Pattern SNAKE_CASE = Pattern.compile("\\b[a-z]+(?:_[a-z0-9]+)+\\b");
 
+  @Test void instructionsKeepTheFourConcreteCautions() {
+    for (String phrase : List.of("whole-log numbers mix in disabled time and boot", "absent data is not absent problems",
+        "even when the user names a cause", "one log is one sample")) {
+      assertTrue(AnalysisGuidance.SERVER_INSTRUCTIONS.contains(phrase), phrase);
+    }
+  }
+
   @Test
   @DisplayName("server instructions fit within Claude Code's 2 KB truncation limit")
   void instructionsFitWithinClientLimit() {

@@ -252,7 +252,9 @@ public class DaemonManager {
    * server, with the version it reports (null for a server from before the version was
    * reported, which is to say an older one).
    */
-  public record RunningDaemon(long pid, int port, String version) {}
+  public record RunningDaemon(long pid, int port, String version, boolean managed) {
+    public RunningDaemon(long pid, int port, String version) { this(pid, port, version, false); }
+  }
 
   /** Who answers on a port. */
   enum Holder {
@@ -265,7 +267,8 @@ public class DaemonManager {
   }
 
   /** What a probe of a port found: who holds it, and for this server its version and PID. */
-  record PortProbe(Holder holder, String version, Long pid) {
+  record PortProbe(Holder holder, String version, Long pid, boolean managed) {
+    PortProbe(Holder holder, String version, Long pid) { this(holder, version, pid, false); }
     static final PortProbe NOBODY = new PortProbe(Holder.NOBODY, null, null);
     static final PortProbe STRANGER = new PortProbe(Holder.STRANGER, null, null);
   }
@@ -415,8 +418,8 @@ public class DaemonManager {
       // Process is alive — verify it's actually our server via health check
       var probe = probe(port);
       if (probe.holder() == Holder.THIS_SERVER) {
-        if (booting || stopping) settleRecord(name, pid, port); // it answers: a plain record
-        return Optional.of(new RunningDaemon(pid, port, probe.version()));
+        if (!probe.managed() && (booting || stopping)) settleRecord(name, pid, port); // it answers: a plain record
+        return Optional.of(new RunningDaemon(pid, port, probe.version(), probe.managed()));
       }
 
       if (booting && !olderThanBootingGrace(pidFile)) {
@@ -468,6 +471,7 @@ public class DaemonManager {
       decision = locked(name, () -> {
         try (var refresh = InstallGuard.acquire(runDir, runDir.resolve(".install-refresh.guard"))) {
           var running = findRunning(name);
+          if (running.isPresent() && running.get().managed()) return new Decision(running, false);
           if (running.isPresent() && !ownVersion.equals(running.get().version())) {
             writePidFile(name, ProcessHandle.current().pid(), port, STARTING_MARKER);
             return new Decision(running, true);
@@ -481,6 +485,7 @@ public class DaemonManager {
     }
     if (decision.running().isPresent()) {
       var running = decision.running().get();
+      if (running.managed()) return refuseManaged(name, "restart");
       if (ownVersion.equals(running.version())) {
         return reportRunning(name, port, running);
       }
@@ -523,6 +528,7 @@ public class DaemonManager {
       return false;
     }
     if (probe.holder() == Holder.THIS_SERVER) {
+      if (probe.managed()) { releaseRecord(name); return refuseManaged(name, "restart"); }
       if (ownVersion.equals(probe.version()) && probe.pid() != null) {
         try {
           recordDaemon(name, probe.pid(), port, null);
@@ -618,6 +624,11 @@ public class DaemonManager {
    * @return true when no daemon of this name runs afterwards
    */
   public boolean stopDaemon(String name) {
+    return stopDaemon(name, null);
+  }
+
+  /** A managed service has no PID record. Probe the configured port before declaring it absent. */
+  public boolean stopDaemon(String name, Integer port) {
     Optional<RunningDaemon> running;
     try {
       running = locked(name, () -> findRunning(name));
@@ -625,17 +636,25 @@ public class DaemonManager {
       logger.error("Failed to read the PID file for '{}': {}", name, e.getCause().getMessage());
       return false;
     }
+    if (running.isEmpty() && port != null && probe(port).managed()) return refuseManaged(name, "stop");
     if (running.isEmpty()) {
       logger.info("Server '{}' is not running", name);
       deleteToken(name);
       return true;
     }
     var daemon = running.get();
+    if (daemon.managed()) return refuseManaged(name, "stop");
     if (endDaemon(name, daemon, false)) {
       logger.info("Server '{}' stopped (PID {})", name, daemon.pid());
       return true;
     }
     logger.error("Server '{}' (PID {}) did not stop", name, daemon.pid());
+    return false;
+  }
+
+  private boolean refuseManaged(String name, String action) {
+    logger.error("Server '{}' is managed; wpilog-mcp will not adopt, stop or replace it. Use: sudo systemctl {} wpilog-mcp-{}.service",
+        name, action, name);
     return false;
   }
 
@@ -650,6 +669,7 @@ public class DaemonManager {
    * The lock is not held while waiting.
    */
   private boolean endDaemon(String name, RunningDaemon daemon, boolean restarting) {
+    if (daemon.managed() || probe(daemon.port()).managed()) return refuseManaged(name, restarting ? "restart" : "stop");
     try {
       locked(name, () -> {
         if (!restarting) {
@@ -907,7 +927,7 @@ public class DaemonManager {
         return false;
       }
       var probe = probe(port);
-      if (probe.holder() == Holder.THIS_SERVER && ownVersion.equals(probe.version())) {
+      if (probe.holder() == Holder.THIS_SERVER && !probe.managed() && ownVersion.equals(probe.version())) {
         return true;
       }
       if (System.nanoTime() >= deadline) {
@@ -1030,7 +1050,8 @@ public class DaemonManager {
         }
         Long pid = health.has("pid") && health.get("pid").isJsonPrimitive()
             ? health.get("pid").getAsLong() : null;
-        return new PortProbe(Holder.THIS_SERVER, stringOrNull(health, "version"), pid);
+        return new PortProbe(Holder.THIS_SERVER, stringOrNull(health, "version"), pid,
+            health.has("managed") && health.get("managed").isJsonPrimitive() && health.get("managed").getAsBoolean());
       } finally {
         conn.disconnect();
       }

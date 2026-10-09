@@ -1,0 +1,39 @@
+[Unit]
+Description=WPILog pit server (@NAME@)
+Wants=network-online.target
+After=network-online.target time-sync.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=wpilog-mcp
+Group=wpilog-mcp
+StateDirectory=wpilog-mcp
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/wpilog-mcp
+Environment=LANG=C.UTF-8 LC_ALL=C.UTF-8
+EnvironmentFile=-/etc/wpilog-mcp/environment
+ExecStart=/opt/wpilog-mcp/bin/wpilog-mcp run @NAME@ --config @CONFIG@ --managed
+TimeoutStopSec=90s
+KillMode=mixed
+Restart=always
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

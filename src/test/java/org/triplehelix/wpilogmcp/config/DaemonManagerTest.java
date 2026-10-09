@@ -852,6 +852,7 @@ class DaemonManagerTest {
     final List<String> tokensPresented = new CopyOnWriteArrayList<>();
     /** Whether an accepted stop request ends the process, as it does in a real daemon. */
     volatile boolean exitsOnStop = true;
+    volatile boolean managed;
 
     FakeDaemon(int port, long pid, String version, boolean hasStop, String token,
         FakeProcesses processes) throws IOException {
@@ -862,7 +863,7 @@ class DaemonManagerTest {
       processes.onEnd = () -> server.stop(0);
       server.createContext("/health", exchange -> {
         var body = "{\"status\":\"ok\",\"sessions\":0,\"pid\":" + pid
-            + (version == null ? "" : ",\"version\":\"" + version + "\"") + "}";
+            + (version == null ? "" : ",\"version\":\"" + version + "\"") + ",\"managed\":" + managed + "}";
         reply(exchange, 200, body);
       });
       server.createContext("/stop", exchange -> {
@@ -930,6 +931,25 @@ class DaemonManagerTest {
     private final DaemonManager.Launcher noLauncher = (command, environment, logFile) -> {
       throw new IOException("no server is launched in this test");
     };
+
+    @Test void managedServersAreNeverAdoptedStoppedOrReplaced() throws Exception {
+      int port = freePort(); var launcher = new FakeLauncher(port, false);
+      var manager = managerWith(launcher, Duration.ofMillis(300));
+      for (String version : List.of(Version.VERSION, "0.1.0")) {
+        try (var daemon = new FakeDaemon(port, FAKE_PID, version, true, "tok", processes)) {
+          daemon.managed = true;
+          assertFalse(manager.spawnDaemon("pit", port, null), "A managed server is not a start-owned daemon");
+          assertFalse(Files.exists(manager.pidFilePath("pit")), "Do not adopt a managed server");
+          assertFalse(manager.stopDaemon("pit", port), "A managed service has no PID file");
+          manager.writePidFile("pit", FAKE_PID, port); // Even a stale claim grants no authority.
+          assertFalse(manager.stopDaemon("pit"), "Use systemctl, never the stop token or a signal");
+          assertFalse(manager.spawnDaemon("pit", port, null), "A newer JAR must not replace a managed server");
+          assertEquals(0, daemon.stopRequests.get()); assertTrue(processes.destroyed.isEmpty());
+          assertEquals(0, launcher.launches.get());
+          Files.deleteIfExists(manager.pidFilePath("pit"));
+        }
+      }
+    }
 
     @Test
     @DisplayName("the probe tells who holds a port: nobody, this server, or a stranger")

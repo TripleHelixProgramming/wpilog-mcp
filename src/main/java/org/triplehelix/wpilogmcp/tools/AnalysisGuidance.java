@@ -60,14 +60,14 @@ public final class AnalysisGuidance {
     return location + "\n" + FRESH_DATA_INSTRUCTIONS + "\n" + SERVER_INSTRUCTIONS;
   }
   public static final String SERVER_INSTRUCTIONS = """
-      wpilog-mcp analyzes FRC logs. Answer the question asked first, then the evidence.
-      1. Never name an entry not listed or quote a number not returned by a tool. no_match means not found: say what was searched; ask for the team's naming. A read_entry page is not the whole log.
-      2. An entry's name does not prove what it measures. Check robot source code (mechanism, units, measured or commanded), or state the mapping as an assumption.
-      3. Use tools for statistics, rates, durations and correlations, never mental math. Struct/array fields: Entry.field, Entry[i]. Otherwise export_csv. Call get_match_phases before time reasoning.
+      wpilog-mcp: Answer the question asked first, then evidence.
+      1. Never name an entry or number without tool evidence. no_match means not found; absent data is not absent problems. Say what was searched; ask for naming. A read_entry page is not the whole log.
+      2. An entry's name does not prove what it measures. Check robot source code for mechanism, units, measured or commanded; else state the assumption.
+      3. Tools compute statistics, rates, durations and correlations, never mental math. Struct/array fields: Entry.field, Entry[i]; otherwise export_csv. Call get_match_phases before time reasoning.
       4. Verify premises (get_ds_timeline, find_condition). BROWNOUT_START/END are voltage crossings; only RIO_BROWNOUT_START means logged output cutoff.
-      5. Three tiers: a logged event is fact; a statistic is inference, bounded by confidence_level and data_quality.reasons; a cause outside telemetry is a hypothesis to check physically. Quality bounds statistics, not events.
-      6. For why questions, answer yes/no/cannot tell, then test a rival: phase/state, logging/timing artifact, or simultaneous load.
-      7. Scope statistics by phase/state (scope); cite entry, window, n, statistic. Generalize only across matches (compare_matches).
+      5. Three tiers: logged events are facts; statistics are inferences bounded by confidence_level and data_quality.reasons; causes outside telemetry are hypotheses to check physically. Quality bounds statistics, not events.
+      6. For why questions, answer yes/no/cannot tell, then test a rival even when the user names a cause: phase/state, logging/timing artifact, simultaneous load.
+      7. Scope statistics by phase/state (scope): whole-log numbers mix in disabled time and boot. Cite entry, window, n, statistic; one log is one sample. Generalize across matches (compare_matches).
       8. An early end is "log ends", not "match ended". REV timing depends on sync_status. Scores only from TBA (get_tba_match_data).
       9. End diagnoses with ranked findings, confidence and a next check. get_server_guide has the full method.""";
 

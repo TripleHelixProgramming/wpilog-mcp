@@ -1,0 +1,12 @@
+[Unit]
+Description=WPILog periodic health check (@NAME@)
+PartOf=wpilog-mcp-@NAME@.service
+
+[Timer]
+OnActiveSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=wpilog-mcp-@NAME@-health.service
+
+[Install]
+WantedBy=timers.target

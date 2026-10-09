@@ -132,6 +132,36 @@ class StatsProviderTest {
     }
   }
 
+  @Test void anAbsentProgramIsNotAChangedProcessAndIsLookedForOnlyEveryTenSamples() throws Exception {
+    var lookups = new java.util.concurrent.atomic.AtomicInteger();
+    var clock = new AtomicLong();
+    String missing = ProcFixture.sample(0).replaceAll("(?m)^42 \\(.*\\n", "");
+    var known = ProcStats.configuration(missing, null);
+    String command = StatsCommand.sample(PullConfig.DISABLED.directories(), known);
+    var provider = new StatsProvider(new ProviderConfig.Stats(true, 2_000_000, 100_000),
+        PullConfig.DISABLED.directories(), clock::get, () -> 0.0);
+    try (var rio = new FakeRoboRio(temp, "SYNTHETIC-STATS", "")) {
+      for (boolean units : List.of(true, false)) rio.script(StatsCommand.lookup(units), out -> {
+        lookups.incrementAndGet(); out.write(missing.getBytes(StandardCharsets.UTF_8));
+      });
+      var samples = new java.util.concurrent.atomic.AtomicInteger();
+      rio.script(command, out -> out.write(ProcFixture.sample(samples.getAndIncrement()).replaceAll("(?m)^42 \\(.*\\n", "").getBytes(StandardCharsets.UTF_8)));
+      try (var ssh = JschConnection.connect("127.0.0.1", new PullConfig.Ssh("lvuser", "", null, false, rio.port()), null)) {
+        var checks = new java.util.ArrayList<org.junit.jupiter.api.function.Executable>();
+        for (int n = 0; n < 31; n++) {
+          var result = provider.sample(ssh); clock.addAndGet(2_000_000);
+          int count = lookups.get(), expected = 1 + n / 10;
+          checks.add(() -> assertEquals(expected, count, "discovery count"));
+          checks.add(() -> assertEquals(List.of("No unique readable process with the robot JAR name"), result.sample().notes()));
+          assertFalse(result.sample().values().containsKey("program/pid"));
+        }
+        int commands = rio.commands.get();
+        checks.add(() -> assertEquals(35, commands, "31 samples and four lookups"));
+        assertAll(checks);
+      }
+    }
+  }
+
   @Test void oneDfReportsEachFilesystemAndAnUnmountDoesNotInventItsFreeSpace() throws Exception {
     String text = ProcFixture.sample(0).replace("WPILOG_STATS_1:disk/home/lvuser", "WPILOG_STATS_1:disk_paths\n/home/lvuser\n/u\nWPILOG_STATS_1:disk")
         .replace("WPILOG_STATS_1:program", "/dev/usb 200 180 20 90% /u\nWPILOG_STATS_1:program");

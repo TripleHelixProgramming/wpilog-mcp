@@ -64,6 +64,7 @@ public class HttpTransport {
   private static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(20);
 
   private final Gson gson;
+  private final ToolRegistry toolRegistry;
   private final McpMessageHandler handler;
   private final SessionManager sessionManager;
   private final ClientLeases leases = ClientLeases.getInstance();
@@ -125,6 +126,7 @@ public class HttpTransport {
 
   public HttpTransport(ToolRegistry toolRegistry, int port, String bindAddress,
       java.util.Set<String> allowedOriginHosts, String mcpPath) {
+    this.toolRegistry = toolRegistry;
     this.gson = new GsonBuilder().serializeNulls().create();
     this.sessionManager = new SessionManager(leases::remove);
     this.registration = new RegistrationEndpoint(sessionManager, leases);
@@ -735,6 +737,7 @@ public class HttpTransport {
     }
     var health = new JsonObject();
     health.addProperty("status", "ok");
+    health.addProperty("managed", toolRegistry.isManaged());
     health.addProperty("sessions", sessionManager.size());
     // A start compares the version with its own JAR's, and records the process ID of a server
     // it finds on the port without a PID file

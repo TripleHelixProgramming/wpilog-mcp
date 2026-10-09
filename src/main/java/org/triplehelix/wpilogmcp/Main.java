@@ -75,7 +75,12 @@ public class Main {
     static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   }
 
+  private static boolean managed;
+  private static boolean publicRun;
+
   public static void main(String[] args) {
+    publicRun = args.length > 0 && args[0].equals("run");
+    managed = System.getenv("INVOCATION_ID") != null || Arrays.asList(args).contains("--managed");
     // Decide the log level before any logger exists (see logger()). A configuration file's
     // debug setting is applied where the file is loaded, still before the first log line.
     if (debugRequested(args, System.getenv("WPILOG_DEBUG"))) {
@@ -84,9 +89,17 @@ public class Main {
       System.setProperty(LOG_LEVEL_PROPERTY, "info");
     }
 
-    // Check for "--internal-daemon" flag (used by DaemonManager for HTTP daemon re-exec)
+    // Public foreground ownership and the daemon manager share startup, not PID/token ownership.
+    if (args.length > 0 && "run".equals(args[0])) {
+      handleForeground(args);
+      return;
+    }
+    if (args.length > 0 && "service-unit".equals(args[0])) {
+      System.exit(org.triplehelix.wpilogmcp.config.ServiceUnit.run(args, System.out, System.err));
+      return;
+    }
     if (args.length >= 2 && "--internal-daemon".equals(args[0])) {
-      handleInternalDaemon(args);
+      handleForeground(args);
       return;
     }
 
@@ -96,7 +109,18 @@ public class Main {
       return;
     }
     if (args.length >= 2 && "stop".equals(args[0])) {
-      System.exit(runStop(args[1]));
+      try {
+        var options = foregroundOptions(args);
+        int status;
+        if (options.config() == null) status = runStop(args[1]);
+        else {
+          var config = loadConfig(args[1], options.config());
+          status = new DaemonManager().stopDaemon(args[1], config.isHttp() ? config.effectivePort() : null) ? 0 : 1;
+        }
+        System.exit(status);
+      } catch (IllegalArgumentException | ConfigException e) {
+        logger().error("{}", e.getMessage()); System.exit(1);
+      }
       return;
     }
     if (args.length >= 2 && "connect".equals(args[0])) {
@@ -192,32 +216,42 @@ public class Main {
     }
   }
 
-  /**
-   * Internal entry point for the daemon child process.
-   * Invoked with: {@code --internal-daemon <name> [--config <path>]}
-   */
-  private static void handleInternalDaemon(String[] args) {
-    var configName = args[1];
-    Path configPath = null;
+  /** Named foreground commands reject unknown options rather than silently ignoring mistakes. */
+  private record ForegroundOptions(Path config) {}
 
+  private static ForegroundOptions foregroundOptions(String[] args) {
+    if (args.length < 2 || args[1].startsWith("-"))
+      throw new IllegalArgumentException("Usage: wpilog-mcp " + args[0] + " <name> [--config <file>] [--managed]");
+    Path config = null;
     for (int i = 2; i < args.length; i++) {
-      if ("--config".equals(args[i]) && i + 1 < args.length) {
-        configPath = Path.of(args[++i]);
+      switch (args[i]) {
+        case "--config" -> {
+          if (++i >= args.length) throw new IllegalArgumentException("--config requires a file");
+          config = Path.of(args[i]);
+        }
+        case "--managed", "-debug" -> { }
+        default -> throw new IllegalArgumentException("Unknown " + args[0] + " option: " + args[i]);
       }
     }
+    return new ForegroundOptions(config);
+  }
 
+  /** Foreground ownership belongs to the caller or supervisor, never to the PID-file manager. */
+  private static void handleForeground(String[] args) {
     try {
+      var configPath = foregroundOptions(args).config();
+      var configName = args[1];
       var config = loadConfig(configName, configPath);
-      logger().info("Starting wpilog-mcp daemon (config: {})...", configName);
+      logger().info("Starting wpilog-mcp foreground server (config: {})...", configName);
       applyConfig(config);
       var daemonBind = System.getenv("WPILOG_HTTP_BIND");
       var daemonPath = System.getenv("WPILOG_HTTP_PATH");
       var daemonOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
       // The stop token comes from the start that spawned this daemon, in the environment
-      var stopToken = System.getenv(DaemonManager.STOP_TOKEN_ENV);
+      var stopToken = "--internal-daemon".equals(args[0]) && !managed ? System.getenv(DaemonManager.STOP_TOKEN_ENV) : null;
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
           daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture(), config.mirror(), config.metrics());
-    } catch (ConfigException e) {
+    } catch (ConfigException | IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
     }
@@ -229,7 +263,14 @@ public class Main {
    * @return The exit code
    */
   static int runStop(String configName) {
-    return new DaemonManager().stopDaemon(configName) ? 0 : 1;
+    Integer port = null;
+    try {
+      var config = new ConfigLoader().loadDetailed(configName, null).config();
+      if (config.isHttp()) port = config.effectivePort();
+    } catch (ConfigException e) {
+      // A daemon can still be stopped by its PID record after its configuration was removed.
+    }
+    return new DaemonManager().stopDaemon(configName, port) ? 0 : 1;
   }
 
   static int runImport(String[] args) {
@@ -483,6 +524,7 @@ public class Main {
     // Parse command line arguments (override env vars)
     for (int i = 0; i < args.length; i++) {
       var arg = args[i];
+      if (arg.equals("--managed")) continue;
       if (arg.equals("-help") || arg.equals("-h")) {
         printUsage();
         System.exit(0);
@@ -692,7 +734,9 @@ public class Main {
 
     // Create tool registry and register all tools
     var toolRegistry = new ToolRegistry();
+    toolRegistry.setManaged(managed);
     WpilogTools.registerAll(toolRegistry);
+    org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, null);
     toolRegistry.setServerLocation(captureConfig == null ? ToolRegistry.LOCAL_LOCATION : ToolRegistry.PIT_LOCATION);
     toolRegistry.setServerInstructions(org.triplehelix.wpilogmcp.tools.AnalysisGuidance.forLocation(toolRegistry.getServerLocation()));
     logger().debug("Registered all MCP tools");
@@ -732,6 +776,7 @@ public class Main {
         if (capture != null) capture.close();
         logManager.shutdown();
       }, "shutdown-hook"));
+      if (publicRun) cleanSignalExit();
       try {
         httpTransport.start();
         if (mirrorConfig != null) httpTransport.configureMirror(mirrorConfig);
@@ -755,6 +800,7 @@ public class Main {
         logger().debug("Stdio shutdown: shutting down LogManager");
         finalLogManager.shutdown();
       }, "stdio-shutdown-hook"));
+      if (publicRun) cleanSignalExit();
       var server = new McpServer(toolRegistry);
       try {
         server.run();
@@ -765,12 +811,31 @@ public class Main {
     }
   }
 
+  /**
+   * The JDK normally exits 128+signal even after successful shutdown hooks. Public run promises
+   * zero for a clean supervisor stop. The JDK signal dispatcher requests an ordinary exit;
+   * all registered hooks still drain HTTP, recording and logs before that exit completes.
+   * Windows process termination is not a catchable signal; EOF remains its clean stdio stop.
+   */
+  @SuppressWarnings("removal")
+  private static void cleanSignalExit() {
+    for (String name : List.of("INT", "TERM")) {
+      try {
+        sun.misc.Signal.handle(new sun.misc.Signal(name), signal -> System.exit(0));
+      } catch (IllegalArgumentException e) {
+        logger().debug("Signal {} is unavailable on this JVM", name);
+      }
+    }
+  }
+
   // ==================== Usage ====================
 
   private static void printUsage() {
     logger().info("Usage: wpilog-mcp [options]");
     logger().info("       wpilog-mcp start <config-name> [--config <path>]");
-    logger().info("       wpilog-mcp stop <config-name>");
+    logger().info("       wpilog-mcp run <config-name> [--config <path>] [--managed]");
+    logger().info("       wpilog-mcp service-unit <config-name> [--config <path>]");
+    logger().info("       wpilog-mcp stop <config-name> [--config <path>]");
     logger().info("       wpilog-mcp connect <config-name> [--config <path>] [--logdir <dir>]... [--team <n>]");
     logger().info("       wpilog-mcp connect --url <url> [--logdir <dir>]... [--team <n>]");
     logger().info("       {}", ImportCommand.USAGE);
@@ -779,6 +844,9 @@ public class Main {
     logger().info("");
     logger().info("Commands:");
     logger().info("  start <name>        Start a named server from servers.yaml");
+    logger().info("  run <name>          Run a named server in the foreground, logging to stderr");
+    logger().info("  service-unit <name> Print systemd service and health timer units; install nothing");
+    logger().info("  --managed          Mark this foreground process as owned by a supervisor");
     logger().info("  stop <name>         Stop a named http server started in the background");
     logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
     logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");

@@ -1,0 +1,18 @@
+[Unit]
+Description=WPILog health probe (@NAME@)
+After=wpilog-mcp-@NAME@.service
+Requisite=wpilog-mcp-@NAME@.service
+
+[Service]
+Type=oneshot
+User=wpilog-mcp
+Group=wpilog-mcp
+ExecStart=/usr/bin/curl --fail --silent --show-error --max-time 5 http://127.0.0.1:@PORT@/health
+TimeoutStartSec=10s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
