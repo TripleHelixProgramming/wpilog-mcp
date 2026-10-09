@@ -5,6 +5,8 @@
 package org.triplehelix.wpilogmcp.store;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.lang.management.BufferPoolMXBean;
+import java.lang.management.ManagementFactory;
 import java.nio.file.*;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -21,11 +23,20 @@ class WindowedImportTest {
     try (var small = MappedLogBytes.withWindowBytes(4096)) {
       var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
       try (var registry = new StoreRegistry(manager.testGetSecurityValidator(), manager)) {
+        var mapped = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class).stream()
+            .filter(pool -> pool.getName().equals("mapped")).findFirst().orElseThrow();
+        long before = mapped.getCount();
         var loaded = manager.getOrLoad(source.toString()); assertTrue(loaded.sampleCount(loaded.entries().keySet().iterator().next()) >= 0);
+        assertTrue(mapped.getCount() >= before + (Files.size(source) + 4095) / 4096,
+            "The JVM must observe every injected mapping before the move");
         var outcome = registry.store(temp.resolve("store")).importPaths(new LogStore.Request(List.of(source), true, "synthetic"), progress -> {
           assertEquals(4096, MappedLogBytes.windowBytes(), "The store's inspection uses the injected window too");
         }).get(30, TimeUnit.SECONDS).files().get(0);
         assertNotEquals("refused", outcome.status(), outcome::toString);
+        // Some Windows/JDK combinations permit rename with retained mappings. Observe the
+        // JVM's actual unmapping too: clearing our references is not deterministic release.
+        assertTrue(mapped.getCount() <= before,
+            () -> "Mapped windows retained at import completion: before=" + before + ", after=" + mapped.getCount());
         assertFalse(Files.exists(source)); assertEquals(-1, Files.mismatch(fixture.path(), outcome.path()));
       } finally { manager.release(temp); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
     }

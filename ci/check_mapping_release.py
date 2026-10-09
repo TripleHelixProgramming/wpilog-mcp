@@ -1,4 +1,4 @@
-"""Windows must reject an import if even one owned window was not cleaned before rename."""
+"""The import must release actual mappings, even where the OS permits a mapped-file rename."""
 from pathlib import Path
 import os
 import subprocess
@@ -20,7 +20,8 @@ try:
     assert result.returncode != 0 and xml.exists(), "Unreleased-window plant survived (or produced no test evidence)"
     (report / xml.name).write_bytes(xml.read_bytes())
     failures = ET.parse(xml).findall(".//failure")
-    assert any("refused" in f.get("message", "") for f in failures), "Expected the import rename refusal, not another failure"
-    print("Unreleased-window plant caught by the real import rename on Windows")
+    assert any("refused" in f.get("message", "") or "Mapped windows retained at import completion" in f.get("message", "")
+               for f in failures), "Expected retained mappings or an import rename refusal, not another failure"
+    print("Unreleased-window plant caught on the real import path")
 finally:
     source.write_text(original)

@@ -998,4 +998,7 @@ Release-review keepalive failures (before the tag):
   The ordinary sparse-address check reads beyond 2 GiB without allocating a giant fixture.
   `largeLogTest` separately writes 2.2 GB of synthetic records and exercises actual import and
   rollover beyond 2 GiB. Windows CI plants an unreleased window on the peer-independent import
-  path, retaining it against GC, and requires the rename to be refused.
+  path, retaining it against GC. A rename alone did not catch this on the Windows runner:
+  its OS/JDK allowed the move. The import test also checks the JVM's mapped-buffer pool, so
+  skipped cleaner calls fail even where rename is permitted; the restored code must both
+  release every window and move the file.

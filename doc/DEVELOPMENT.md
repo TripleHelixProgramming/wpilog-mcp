@@ -558,7 +558,9 @@ long random-access offsets in a sparse file and cold live reads beyond 2 GiB. Th
 pass compares every record's timestamp and payload with the independent reader; one fixture runs
 through the schema-driven conformance sweep and one through a real move import at that window
 size. Windows CI runs a deliberately leaked-window mutation before its ordinary build and
-requires the import rename to fail; the restored source then runs in the full build.
+requires the import check to fail. It observes the JVM's actual mapped-buffer count as well
+as the move: a Windows/JDK combination that permits renaming a mapped file must still catch
+the leak. The restored source then runs in the full build.
 
 `./gradlew largeLogTest` is opt-in, beside the stress tasks. It writes a 2.2 GB synthetic fixture,
 reads its last entry, imports it, and records enough capture data to roll a file past 2 GiB.
