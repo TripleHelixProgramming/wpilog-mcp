@@ -52,6 +52,17 @@ final class RioExpectations {
     }
     assertTrue(lower <= upper, "A single monotonic uptime/FPGA offset must fit every sample's stated uncertainty: " + lower + " > " + upper);
   }
+  static void pairing(IndependentLog log) {
+    var up = log.series.get("/Daemon/JVM/uptime_sec"); var offset = log.series.get("/Daemon/JVM/clock/offset_sec");
+    var bound = log.series.get("/Daemon/JVM/clock/round_trip_bound_sec");
+    assertEquals(up.n, offset.n); assertEquals(up.n, bound.n);
+    // The independent reader grows arrays geometrically; capacity is not a record count.
+    double[] times = java.util.Arrays.copyOf(up.times, up.n);
+    assertArrayEquals(times, java.util.Arrays.copyOf(offset.times, offset.n));
+    assertArrayEquals(times, java.util.Arrays.copyOf(bound.times, bound.n));
+    pairing(times, java.util.Arrays.copyOf(up.values, up.n), java.util.Arrays.copyOf(offset.values, offset.n),
+        java.util.Arrays.copyOf(bound.values, bound.n));
+  }
   static void captures(JsonObject timeline, JsonObject listing, HarnessHttp http) throws Exception {
     var numeric = Set.of("/Daemon/JVM/uptime_sec", "/Daemon/JVM/clock/offset_sec", "/Daemon/JVM/clock/round_trip_bound_sec",
         "/Daemon/roboRIO/program/pid", "/Daemon/roboRIO/uptime_sec");
@@ -67,10 +78,7 @@ final class RioExpectations {
       var log = IndependentLog.read(path, numeric, Set.of(console));
       assertNull(log.stopped);
       for (String name : numeric) assertTrue(log.series.containsKey(name) && log.series.get(name).n > 0, name);
-      var up = log.series.get("/Daemon/JVM/uptime_sec"); var offset = log.series.get("/Daemon/JVM/clock/offset_sec");
-      var bound = log.series.get("/Daemon/JVM/clock/round_trip_bound_sec");
-      assertArrayEquals(up.times, offset.times); assertArrayEquals(up.times, bound.times);
-      pairing(up.times, up.values, offset.values, bound.values);
+      pairing(log);
       var tail = log.series.get(console); assertNotNull(tail, "Timely console entry");
       var lines = tail.payloads.stream().map(p -> new String(p, StandardCharsets.UTF_8)).toList();
       // The startup line may precede tail -n 0. Every later scripted state must be followed.

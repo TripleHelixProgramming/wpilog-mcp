@@ -1268,3 +1268,9 @@ Release-review keepalive failures (before the tag):
   output for an absent executable, not the scripted 127. The SSH fixture now uses that reply;
   its absent-tool assertion failed before the classifier correction. Permission/deadline
   refusals still take precedence.
+
+- The first CI image build hit Docker Hub's anonymous 429 limit before executing a layer.
+  The Dockerfile uses [Canonical's public Ubuntu registry](https://ubuntu.com/docs/oci-registries/oci-how-to/getting-started/)
+  and the Docker Official Images Temurin mirror on ECR Public; both tags were verified before
+  switching. Build caches remain scoped to this harness. The clock oracle's file regression
+  also pins the independent reader's recorded length, not the spare array capacity.

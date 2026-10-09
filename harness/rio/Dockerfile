@@ -1,11 +1,10 @@
-# syntax=docker/dockerfile:1
 # Synthetic Linux environment, not an NI image or any file taken from a robot.
-FROM eclipse-temurin:17-jdk-jammy AS runtime
+FROM public.ecr.aws/docker/library/eclipse-temurin:17-jdk-jammy AS runtime
 # Exercise both module conclusions: management is present; JFR intentionally is not.
 RUN jlink --add-modules java.base,java.desktop,java.logging,java.management,java.management.rmi,java.naming,java.net.http,jdk.management,jdk.management.agent \
     --strip-debug --no-header-files --no-man-pages --output /runtime
 
-FROM ubuntu:22.04
+FROM public.ecr.aws/ubuntu/ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-server coreutils procps util-linux libstdc++6 zlib1g libfreetype6 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/ssh/ssh_host_* \

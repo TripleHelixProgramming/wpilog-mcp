@@ -434,7 +434,9 @@ harness/rio/run -PconformanceNative=sample
 A Linux VM with Docker works too. Step 2's runner currently requires Linux; `harness/run`
 continues to support Linux and macOS without Docker. No container, image, privileged process,
 or package is installed by the ordinary tests. The first container build downloads Ubuntu 22.04,
-Temurin 17 and Ubuntu's OpenSSH/coreutils packages. It reuses the robot JAR and desktop JNI
+Temurin 17 and Ubuntu's OpenSSH/coreutils packages. The official images are read from ECR
+Public (Canonical's Ubuntu and Docker Official Images' Temurin mirror), avoiding Docker Hub
+anonymous-pull limits on shared CI addresses. It reuses the robot JAR and desktop JNI
 libraries built once by GradleRIO, and uses no file from an NI image. The Dockerfile's allowlist
 excludes the store, logs, credentials and repository history from the build context. The image
 is local; nothing is pushed to a registry. Its runtime host key is generated per container.
