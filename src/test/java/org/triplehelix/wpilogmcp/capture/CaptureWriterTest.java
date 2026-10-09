@@ -159,7 +159,7 @@ class CaptureWriterTest {
       assertTrue(reader.isValid());
       var names = new java.util.LinkedHashMap<Integer, String>(); var finishes = new ArrayList<Integer>();
       // Use record boundaries: the wpiutil iterator omits a short last finish record.
-      int pos = edu.wpi.first.util.datalog.DataLogAccess.firstRecordOffset(path);
+      long pos = edu.wpi.first.util.datalog.DataLogAccess.firstRecordOffset(path);
       while (pos < Files.size(path)) {
         var record = edu.wpi.first.util.datalog.DataLogAccess.getRecord(reader, pos);
         pos = edu.wpi.first.util.datalog.DataLogAccess.recordEnd(reader, pos);

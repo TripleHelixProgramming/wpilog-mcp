@@ -38,9 +38,9 @@ public final class FixtureReplayer {
   public FixtureReplayer(Path file) throws IOException {
     var entries = new HashMap<Integer, Topic>();
     var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file)));
-    int offset = DataLogAccess.firstRecordOffset(file);
+    long offset = DataLogAccess.firstRecordOffset(file);
     while (offset < DataLogAccess.size(reader)) {
-      int next = DataLogAccess.recordEnd(reader, offset);
+      long next = DataLogAccess.recordEnd(reader, offset);
       if (next < 0) break; // Fixture with an incomplete final record.
       var record = DataLogAccess.getRecord(reader, offset);
       offset = next;

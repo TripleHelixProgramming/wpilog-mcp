@@ -42,15 +42,25 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
  */
 public final class LiveLog implements LogData, AutoCloseable {
   private static final int CHUNK = 1024;
-  private static final class Record {
+  private static class Record {
     final long sequence, timestampUs;
     final int offset, end;
     volatile Object hot;
     Record(long sequence, long timestampUs, WpilogOutput.Written written, Object hot) {
       this.sequence = sequence; this.timestampUs = timestampUs;
-      this.offset = Math.toIntExact(written.offset()); this.end = Math.toIntExact(written.offset() + written.size());
+      this.offset = (int) written.offset(); this.end = (int) (written.offset() + written.size());
       this.hot = hot;
     }
+    long offset() { return offset; }
+    long end() { return end; }
+  }
+  private static final class WideRecord extends Record {
+    final long wideOffset, wideEnd;
+    WideRecord(long sequence, long timestampUs, WpilogOutput.Written written, Object hot) {
+      super(sequence, timestampUs, written, hot); wideOffset = written.offset(); wideEnd = wideOffset + written.size();
+    }
+    @Override long offset() { return wideOffset; }
+    @Override long end() { return wideEnd; }
   }
   private static final class Series {
     final EntryInfo info;
@@ -75,10 +85,10 @@ public final class LiveLog implements LogData, AutoCloseable {
     }
   }
   private record State(Map<String, Series> entries, Map<String, EntryInfo> infos, long sequence, double min, double max,
-      int jumps, int firstJump, boolean open) {}
+      int jumps, long firstJump, boolean open) {}
   private static final class Mapping {
     final ScopedLogReader reader;
-    final int size;
+    final long size;
     final AtomicInteger references = new AtomicInteger(1);
     Mapping(Path path) throws IOException {
       reader = new ScopedLogReader(path); size = DataLogAccess.size(reader.reader());
@@ -144,11 +154,13 @@ public final class LiveLog implements LogData, AutoCloseable {
     double time = frame.timestampUs() / 1_000_000.0;
     if (before.sequence() > 0 && time > before.max() + LogScan.MAX_FORWARD_JUMP_SEC) {
       state = new State(before.entries(), before.infos(), before.sequence(), before.min(), before.max(), before.jumps() + 1,
-          before.firstJump() < 0 ? Math.toIntExact(written.offset()) : before.firstJump(), true);
+          before.firstJump() < 0 ? written.offset() : before.firstJump(), true);
       return;
     }
     long sequence = before.sequence() + 1;
-    var record = new Record(sequence, frame.timestampUs(), written, frame.value());
+    var record = written.offset() + written.size() <= Integer.MAX_VALUE
+        ? new Record(sequence, frame.timestampUs(), written, frame.value())
+        : new WideRecord(sequence, frame.timestampUs(), written, frame.value());
     series.append(record); hot.add(record);
     double min = sequence == 1 ? time : Math.min(before.min(), time);
     double max = sequence == 1 ? time : Math.max(before.max(), time);
@@ -165,12 +177,12 @@ public final class LiveLog implements LogData, AutoCloseable {
   /** One mapping can cover the entire expired batch, even for a zero-length hot window. */
   public void expire() throws IOException {
     while (!hot.isEmpty() && hot.peek().timestampUs <= coldBefore) {
-      var cold = hot.peek(); ensureMapped(cold.end);
+      var cold = hot.peek(); ensureMapped(cold.end());
       cold.hot = null; hot.remove();
     }
   }
 
-  private void ensureMapped(int end) throws IOException {
+  private void ensureMapped(long end) throws IOException {
     var current = mapping.get();
     if (current != null && current.size >= end) return;
     var next = new Mapping(path); mappings.incrementAndGet();
@@ -320,7 +332,7 @@ public final class LiveLog implements LogData, AutoCloseable {
       var held = mapping.get();
       if (held == null) throw new IllegalStateException("Live log mapping is retired: " + path);
       if (!held.retain()) continue;
-      try { mappedReads.incrementAndGet(); return EntryDecoder.decodeValue(DataLogAccess.getRecord(held.reader.reader(), record.offset), type, schemas); }
+      try { mappedReads.incrementAndGet(); return EntryDecoder.decodeValue(DataLogAccess.getRecord(held.reader.reader(), record.offset()), type, schemas); }
       finally { held.release(); }
     }
   }

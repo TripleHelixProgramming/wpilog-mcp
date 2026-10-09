@@ -46,6 +46,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Prove the mapping release check on Windows
+        if: matrix.os == 'windows-latest'
+        run: python ci/check_mapping_release.py
+      - name: Upload mapping release plant
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapping-release-plant
+          path: build/reports/mapping-release-plant
+
       # license checks that every Java file carries the license header
       - name: Build and test (Linux, with coverage)
         if: matrix.os == 'ubuntu-latest'

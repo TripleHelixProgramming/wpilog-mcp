@@ -55,7 +55,7 @@ import org.slf4j.LoggerFactory;
  * @param truncationMessage What was not read, and why, or null
  * @since 0.9.0
  */
-public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offsets,
+public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets> offsets,
     double minTimestamp, double maxTimestamp, int dataRecords, boolean truncated,
     boolean damaged, String truncationMessage) {
 
@@ -85,15 +85,19 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
    * @throws IOException if the header cannot be read
    */
   public static LogScan of(DataLogReader reader, Path path) throws IOException {
+    return of(LogReader.of(reader), path);
+  }
+
+  public static LogScan of(LogReader reader, Path path) throws IOException {
     var entriesById = new HashMap<Integer, EntryInfo>();
     var ignoredIds = new HashSet<Integer>(); // declared, deliberately not indexed
     var entriesByName = new LinkedHashMap<String, EntryInfo>();
-    var offsets = new HashMap<String, IntList>();
+    var offsets = new HashMap<String, RecordOffsets>();
     double minTs = Double.MAX_VALUE;
     double maxTs = Double.NEGATIVE_INFINITY;
     int dataRecords = 0;
     int jumps = 0;
-    int firstJump = -1;
+    long firstJump = -1;
     String damage = null;
     // The ordinary end of a robot's log: power went off inside the last record
     boolean cutInsideRecord = false;
@@ -101,15 +105,15 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
 
     // Walk records by their own bounds (DataLogAccess.recordEnd), not WPILib's iterator, whose
     // hasNext() skips a final record shorter than 16 bytes
-    int pos = DataLogAccess.firstRecordOffset(path);
-    int size = DataLogAccess.size(reader);
+    long pos = DataLogAccess.firstRecordOffset(path);
+    long size = DataLogAccess.size(reader);
     if (pos < 12 || pos > size) {
       damage = "the header's extra-header length runs past the end of the file";
       pos = size; // nothing to read
     }
     try {
       while (pos < size) {
-        int next = DataLogAccess.recordEnd(reader, pos);
+        long next = DataLogAccess.recordEnd(reader, pos);
         if (next < 0) {
           damage = "the file ends inside a record at byte " + pos;
           cutInsideRecord = true;
@@ -126,7 +130,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
             if (existing == null) {
               entriesByName.put(start.name, info);
               entriesById.put(start.entry, info);
-              offsets.put(start.name, new IntList());
+              offsets.put(start.name, new RecordOffsets());
             } else if (existing.type().equals(start.type)) {
               // The same name started again (after a Finish, or by another writer): one entry,
               // keeping the first declaration and all records
@@ -228,7 +232,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, IntList> offse
         dataRecords, message != null, damaged, message);
   }
 
-  static String jumpMessage(int jumps, int firstJump) {
+  static String jumpMessage(int jumps, long firstJump) {
     return jumps + " record" + (jumps == 1 ? " whose timestamp jumps" : "s whose timestamps jump")
         + " more than a day past the rest of the log " + (jumps == 1 ? "was" : "were")
         + " ignored (the first at byte " + firstJump + ").";

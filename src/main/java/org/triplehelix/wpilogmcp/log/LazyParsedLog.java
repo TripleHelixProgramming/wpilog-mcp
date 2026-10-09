@@ -36,8 +36,8 @@ import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
  * Lazily-loaded wpilog data backed by a memory-mapped file and Caffeine cache.
  *
  * <p>Built from a single scan of the file. The scan records entry metadata and byte offsets
- * for each data record (4 bytes per record — compact). Values are decoded on demand via
- * random access to the memory-mapped ByteBuffer when tools access specific entries.
+ * for each data record (4 bytes per ordinary record; 8 when a wide address requires it). Values are decoded on demand via
+ * random access to the windowed byte source when tools access specific entries.
  *
  * <p>Decoded values are cached in a Caffeine weight-based LRU cache. If an entry is evicted
  * under memory pressure, re-decoding uses the stored byte offsets for direct access — no
@@ -60,10 +60,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final boolean damaged;
   private final String truncationMessage;
 
-  // Per-entry byte offsets into the memory-mapped file (compact: 4 bytes per record)
-  private final Map<String, int[]> recordOffsets;
+  // Long addresses, retaining int-backed storage for ordinary files.
+  private final Map<String, RecordOffsets> recordOffsets;
 
-  private final DataLogReader reader;
+  private final LogReader reader;
   private final StructSchemas structSchemas;
   private final Map<String, DecodeProblem> decodeProblems = new ConcurrentHashMap<>();
   /** Entries decoded at least once, whose decode problems (if any) are therefore known. */
@@ -142,6 +142,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    */
   public LazyParsedLog(String path, DataLogReader reader, long maxCacheWeightBytes)
       throws IOException {
+    this(path, LogReader.of(reader), maxCacheWeightBytes);
+  }
+
+  public LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes) throws IOException {
     if (!reader.isValid()) {
       throw LogFileException.invalid(Path.of(path));
     }
@@ -166,35 +170,35 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     this.damaged = scan.damaged();
     this.truncationMessage = scan.truncationMessage();
 
-    // Compact offset lists to int[] arrays
+    // Compact the arrays, retaining four-byte storage for ordinary files
     this.recordOffsets = new HashMap<>();
     for (var entry : offsetLists.entrySet()) {
-      recordOffsets.put(entry.getKey(), entry.getValue().toArray());
+      recordOffsets.put(entry.getKey(), entry.getValue().compact());
     }
 
     // Spot-check: validate a few random offsets to ensure entry IDs match.
     // Pick up to 3 records (first, middle, last) from a non-empty entry.
     for (var offsetEntry : recordOffsets.entrySet()) {
-      int[] offsets = offsetEntry.getValue();
-      if (offsets.length == 0) continue;
+      var offsets = offsetEntry.getValue();
+      if (offsets.size() == 0) continue;
       var expectedInfo = entriesByName.get(offsetEntry.getKey());
       if (expectedInfo == null) continue;
 
-      int[] sampleIndices = offsets.length == 1
+      int[] sampleIndices = offsets.size() == 1
           ? new int[]{0}
-          : offsets.length == 2
-              ? new int[]{0, offsets.length - 1}
-              : new int[]{0, offsets.length / 2, offsets.length - 1};
+          : offsets.size() == 2
+              ? new int[]{0, offsets.size() - 1}
+              : new int[]{0, offsets.size() / 2, offsets.size() - 1};
       for (int idx : sampleIndices) {
         try {
-          var record = DataLogAccess.getRecord(reader, offsets[idx]);
+          var record = DataLogAccess.getRecord(reader, offsets.get(idx));
           if (record.getEntry() != expectedInfo.id()) {
             logger.warn("Offset validation mismatch for '{}': expected entry ID {} but found {} at offset {}",
-                offsetEntry.getKey(), expectedInfo.id(), record.getEntry(), offsets[idx]);
+                offsetEntry.getKey(), expectedInfo.id(), record.getEntry(), offsets.get(idx));
           }
         } catch (Exception e) {
           logger.warn("Offset validation failed for '{}' at offset {}: {}",
-              offsetEntry.getKey(), offsets[idx], e.getMessage());
+              offsetEntry.getKey(), offsets.get(idx), e.getMessage());
         }
       }
       break; // Only spot-check one entry to keep startup fast
@@ -202,10 +206,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
     // Struct schemas: the first record of each /.schema/struct: entry
     this.structSchemas = StructSchemas.fromLog(entries, name -> {
-      int[] offsets = recordOffsets.get(name);
-      if (offsets == null || offsets.length == 0) return null;
+      var offsets = recordOffsets.get(name);
+      if (offsets == null || offsets.size() == 0) return null;
       try {
-        return DataLogAccess.getRecord(reader, offsets[0]).getString();
+        return DataLogAccess.getRecord(reader, offsets.get(0)).getString();
       } catch (RuntimeException e) {
         logger.warn("Unreadable struct schema entry '{}': {}", name, e.getMessage());
         return null;
@@ -213,7 +217,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     });
 
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
-    long offsetMemoryKb = (long) totalDataRecords * 4 / 1024;
+    long offsetMemoryKb = recordOffsets.values().stream().mapToLong(RecordOffsets::storageBytes).sum() / 1024;
     logger.info("Scanned {}: {} entries, {} records, {} KB offsets in {}ms",
         Path.of(path).getFileName(), entries.size(),
         totalDataRecords, offsetMemoryKb, elapsedMs);
@@ -264,8 +268,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   @Override
   public int sampleCount(String entryName) {
-    int[] offsets = recordOffsets.get(entryName);
-    return offsets != null ? offsets.length : 0;
+    var offsets = recordOffsets.get(entryName);
+    return offsets != null ? offsets.size() : 0;
   }
 
   @Override
@@ -323,20 +327,21 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     var info = entries.get(entryName);
     if (info == null) return null;
 
-    int[] offsets = recordOffsets.get(entryName);
-    if (offsets == null || offsets.length == 0) {
+    var offsets = recordOffsets.get(entryName);
+    if (offsets == null || offsets.size() == 0) {
       decodedOnce.add(entryName);
       return List.of();
     }
 
     var type = info.type();
-    var values = new ArrayList<TimestampedValue>(offsets.length);
+    var values = new ArrayList<TimestampedValue>(offsets.size());
 
     long startTime = System.nanoTime();
     int failed = 0;
     String firstFailure = null;
 
-    for (int offset : offsets) {
+    for (int index = 0; index < offsets.size(); index++) {
+      long offset = offsets.get(index);
       DataLogRecord record = null;
       try {
         record = DataLogAccess.getRecord(reader, offset);
@@ -353,8 +358,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       }
     }
     if (failed > 0) {
-      decodeProblems.put(entryName, new DecodeProblem(firstFailure, failed, offsets.length));
-      logger.debug("{}: {} of {} records not decoded: {}", entryName, failed, offsets.length,
+      decodeProblems.put(entryName, new DecodeProblem(firstFailure, failed, offsets.size()));
+      logger.debug("{}: {} of {} records not decoded: {}", entryName, failed, offsets.size(),
           firstFailure);
     }
     decodedOnce.add(entryName);

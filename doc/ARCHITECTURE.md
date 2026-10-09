@@ -406,8 +406,8 @@ The manager pins active captures outside its evictable cache and supplies a fres
 without file-change checks or after-call discard. At close the same index enters the ordinary cache;
 eviction releases its mappings after in-flight uses. A later load uses `LazyParsedLog`. The writer
 keeps the last session's index available for clock-continuous resumption and remaps it if evicted.
-The mapped-file size limit remains the existing reader's 2 GB limit. No other-process incremental
-rescan is implemented here.
+Cold reads use the same long-addressed windows as finished logs, including records past 2 GiB.
+No other-process incremental rescan is implemented here.
 
 ## Life of a Tool Call
 
@@ -563,7 +563,7 @@ Reading before placement lets an import pair files still beside one another. Cop
 
 An import reads the catalog once and updates its in-memory facts after each successful manifest write, rather than walking the store for every file. Before correlating a REV file, it nominates the stated robot's sessions near the REV file's recorded wall clock, else its filename time. The window extends two hours on either side of the REV range; a filename estimate gets another fourteen hours because its zone is not recorded. With no REV clock it considers all of that robot's wpilogs. These estimates never establish a match or widen a session: the signal data decides, and the wpilog supplies the session's time range.
 
-Import, listing, and shared lazy readers own their mappings through the same deterministic close mechanism. They cannot rely on GC to permit renames on Windows. The manager's `acquire` returns a use that tools, streams, and background synchronization hold until they finish reading; eviction stops caching and unmaps after the last use closes. An import reserves its source paths against new reads, then calls `release` to evict them and wait up to three seconds for existing readers. A call that still holds a file gets an explained refusal; after it finishes the import can be retried without restarting. The reservation lasts through the rename, including robot-directory promotion, and no I/O or waiting runs under the file-access monitor.
+Import, listing, and shared lazy readers own every window through `ScopedLogReader`. It invokes the cleaner on all windows before releasing the read lease, including failed constructions; a failed cleanup leaves the lease held so an import cannot race a live mapping. They cannot rely on GC to permit renames on Windows. The manager's `acquire` returns a use that tools, streams, and background synchronization hold until they finish reading; eviction stops caching and unmaps after the last use closes. An import reserves its source paths against new reads, then calls `release` to evict them and wait up to three seconds for existing readers. A call that still holds a file gets an explained refusal; after it finishes the import can be retried without restarting. The reservation lasts through the rename, including robot-directory promotion, and no I/O or waiting runs under the file-access monitor.
 
 ### Path security
 
@@ -571,11 +571,11 @@ A path given to a tool is checked before the file is opened: its real path, with
 
 ### Loading
 
-The log manager returns a log already in memory, or loads it. Loading takes a lock for that path, so two calls for the same log load it once, while different logs load in parallel. A file over 2 GB is refused, because WPILib's reader maps a file into a single buffer.
+The log manager returns a log already in memory, or loads it. Loading takes a lock for that path, so two calls for the same log load it once, while different logs load in parallel. `MappedLogBytes` owns read-only windows of at most 1 GiB, addressed with long offsets, up to a stated 1 TiB file limit. `LogReader` frames each record from that byte source and gives it to WPILib's unchanged `DataLogReader` at offset zero. A record contained in one window is a buffer view; only a straddling record is copied. The window size is injectable for tests.
 
 A loaded log follows its file. The manager keeps the file's size, modification time, and identity (the inode, where the file system has one) as they were just before the log was read, and compares them with the file on every call: a file that changed is loaded again, and a file that is gone is an error. The comparison is made again after each call, and a result read across a change is discarded with an error that says what changed, because the result may hold old data (a file renamed into place keeps serving its old bytes through the mapping) or mix old and new (a file overwritten in place has its old record offsets applied to new bytes). A change the attributes do not show can still make a read of the mapping fault, which the JVM reports as an `InternalError`; the tool base turns that into the same explained error and unloads the log, where before it escaped every catch and ended a stdio server. Each session is told once, on its next result from the log, that the log was reloaded, since results it holds from earlier calls came from the old file; a session that first used the log after the change is not told, having nothing stale. The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when the candidates or their files changed, keeping an offset set by hand for a file that did not. These rules came from logs copied off a robot while it was still writing them, and copied again once they had grown.
 
-Loading does not decode the log. WPILib's reader maps the file into memory outside the Java heap, and a single pass over it records each entry (name, type, and metadata, in the order the robot program declared them) and, for each data record, only its byte offset: 4 bytes per record. Records are read one by one through WPILib's record-level access, because WPILib's own iterator silently skips a final record shorter than 16 bytes. If the scan fails in a way the rules below do not cover, an older parser is tried, which decodes the whole log into memory at once.
+Loading does not decode the log. Mapped windows live outside the Java heap, and a single pass records each entry (name, type, and metadata, in announcement order) and each data record's long byte address. `RecordOffsets` keeps an int array until that entry first exceeds the signed-int range, then promotes that array to longs. Ordinary files therefore still need four offset bytes per record: widening the API must not double every team's index. The live index likewise keeps narrow record slots until it needs a wide slot. Records are read one by one through WPILib's record-level access, because WPILib's own iterator silently skips a final record shorter than 16 bytes. If the scan fails in a way the rules below do not cover, an older parser is tried, which decodes the whole log into memory at once.
 
 The scan is built for logs that were not closed cleanly:
 
@@ -624,7 +624,7 @@ The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` 
 A loaded log costs:
 
 - The mapped file, outside the Java heap. The operating system pages it in as it is read and can drop those pages again at any time.
-- 4 bytes per record for the offsets, plus the entry table.
+- 4 bytes per record for offsets in an ordinary file; 8 for an entry whose addresses extend past 2 GiB, plus the entry table. Arrays are compacted after scanning; offsets are never individually boxed. A crossing record temporarily costs its record size on the heap.
 - Decoded values, up to the log's budget. Each entry in a log's value cache is weighed by an estimate of its decoded size. The budget is 60% of the maximum heap divided by the number of logs already in memory when the log is loaded, and at least 128 MB. When it is full, the cache drops the entries used least recently and least often, and they are decoded again when asked for.
 
 Loaded logs are kept in a cache:
@@ -824,7 +824,7 @@ ordinary Node tests and packaged extension code do not load its Electron runner.
 
 ## Known Limits
 
-- A file over 2 GB is not loaded.
+- A WPILOG file over 1 TiB is not loaded; single records still have the upstream decoder's int-sized buffer bound.
 - On Windows, a mapped file cannot be moved or replaced. Managed imports reserve file access and release mappings after the last reader before moving a source; an external copy cannot bypass an active reader.
 - Compressed logs are not read ([IDEAS.md](IDEAS.md), "Compressed Log Files").
 - Protobuf entries are not decoded. A record of 100 bytes or less is returned as hex, and a longer one only as its size.

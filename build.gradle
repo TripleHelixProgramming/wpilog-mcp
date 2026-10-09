@@ -232,7 +232,7 @@ shadowJar {
 }
 
 tasks.named('test') {
-    useJUnitPlatform { excludeTags 'shop-harness' }
+    useJUnitPlatform { excludeTags 'shop-harness', 'large-log' }
     // Read by ExtensionVersionTest: a changed version must rerun the tests
     inputs.files('vscode-extension/package.json', 'vscode-extension/package-lock.json')
         .withPropertyName('extensionManifests')
@@ -257,6 +257,18 @@ tasks.register('filenameLocaleTest', Test) {
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
     environment 'WPILOG_DISK_CACHE_DIR', "$buildDir/filename-locale-cache"
     doFirst { delete "$buildDir/filename-locale-cache" }
+}
+
+// Deliberately opt-in: writes a 2.2 GB synthetic fixture and a capture of comparable size.
+tasks.register('largeLogTest', Test) {
+    dependsOn testClasses
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'large-log' }
+    maxParallelForks = 1
+    maxHeapSize = '768m'
+    environment 'WPILOG_DISK_CACHE_DIR', file("$buildDir/large-log-disk-cache").absolutePath
+    doFirst { delete file("$buildDir/large-log-disk-cache") }
 }
 
 tasks.register('shopHarness', Test) {

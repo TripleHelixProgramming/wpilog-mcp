@@ -358,7 +358,7 @@ the latter two values are hashes of exact sorted fingerprints, persisted by impo
 the manifest. Listing never scans a file for candidate evidence. Plain files and older store
 manifests without fingerprints have no candidates. Each kind must match exactly one
 known serial; conflicting hints are omitted. This never assigns the file. Unassigned REV rows can
-carry the same candidates. With `capture.pull` enabled, partial transfers stay out of the log listing; verified copies appear under their session with device identity unless the file logs its own serial. A logged/device disagreement is kept in the session manifest and server log. Moved paths remain usable by tools after the seven-day listing notice. A file beyond the current 2 GB mapping limit remains in `logs` with `read_error`, the same refusal reason loading and import report.
+carry the same candidates. With `capture.pull` enabled, partial transfers stay out of the log listing; verified copies appear under their session with device identity unless the file logs its own serial. A logged/device disagreement is kept in the session manifest and server log. Moved paths remain usable by tools after the seven-day listing notice. Windowed mapping supports WPILOG files through 1 TiB. A file beyond that bound remains in `logs` with an explained `read_error`.
 
 Store listings additionally return:
 

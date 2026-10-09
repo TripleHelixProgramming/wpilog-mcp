@@ -180,7 +180,7 @@ servers:
 | `capture.period_sec` | Subscription period in seconds, default `0.01`; every change is requested |
 | `capture.exclude` | List of topic prefixes to omit, default `[]` |
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
-| `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `2147483647`. Rollover stays in the same session |
+| `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `1099511627776` (1 TiB). Rollover stays in the same session |
 | `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry follows completion of the 250 ms asynchronous flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
 | `capture.gateway` | Optional read-only NT4 gateway; omitted means disabled; `{}` enables its default port |
 | `capture.gateway.port` | Integer `0`–`65535`, default `5810` within the gateway block; `0` disables it. Binds to the same address as HTTP, on this separate port |
@@ -188,7 +188,7 @@ servers:
 | `capture.pull.enabled` | Opt in to SFTP pulling, default `false` until the shop test passes |
 | `capture.pull.directories` | Absolute remote directories, recursively scanned for `.wpilog` and `.revlog`; defaults `/home/lvuser/logs`, `/u/logs`, `/U/logs`. Missing USB directories are normal; links are skipped |
 | `capture.pull.settle_sec` | Start after the connected robot has been disabled for `5` seconds by default; nonnegative seconds |
-| `capture.pull.rate_bytes` | Read cap in bytes/second, default `1000000` (1 MB/s); positive integer through `2147483647` |
+| `capture.pull.rate_bytes` | Read cap in bytes/second, default `1000000` (1 MB/s); positive integer through `1099511627776` |
 | `capture.pull.ssh` | Optional SSH connection and authentication block |
 | `capture.pull.ssh.port` | Integer port, default `22`, range `1`–`65535`; the shop harness uses an unprivileged loopback port |
 | `capture.pull.ssh.user` | Account, default `lvuser`; supports `${NAME}` |
@@ -987,7 +987,7 @@ Get the store id from `GET /store`; it may be omitted when exactly one configure
 exists. Optional `stated_robot` names a robot where the file has no logged serial. Only
 configured writable stores accept uploads; neither a mirror nor a leased directory becomes
 a network upload target. The filename is one portable path component. Files above the
-reader's 2 GB limit are refused before reception. Receipt uses bounded buffers into a hidden,
+1 TiB (1,099,511,627,776-byte) file limit are refused before reception. Receipt uses bounded buffers into a hidden,
 locked inbox transfer, outside the store queue; the inbox watcher cannot adopt half a file.
 The declared size and hash must agree before the existing importer inspects or places it.
 A disconnect removes the temporary bytes, and crash leftovers follow inbox recovery.

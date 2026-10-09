@@ -207,7 +207,7 @@ public final class CoreTools {
         if (log.matchNumber() != null) logObj.addProperty("match_number", log.matchNumber());
         if (log.teamNumber() != null) logObj.addProperty("team_number", log.teamNumber());
         logObj.addProperty("size_bytes", log.fileSize());
-        if (log.fileSize() > Integer.MAX_VALUE) logObj.addProperty("read_error",
+        if (log.fileSize() > org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES) logObj.addProperty("read_error",
             org.triplehelix.wpilogmcp.log.LogFileException.tooLarge(Path.of(log.path()), log.fileSize()).getMessage());
         logObj.addProperty("last_modified", log.lastModified());
         if (log.stored() != null) {

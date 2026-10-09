@@ -22,9 +22,9 @@ public class LogFileException extends IOException {
     super(message);
   }
 
-  /** One explanation shared by loading, import, and directory listing until windowed mapping. */
+  /** One explanation shared by loading, import, and directory listing at the file-size bound. */
   public static LogFileException tooLarge(Path path, long size) {
-    return new LogFileException("WPILOG file exceeds 2 GB limit for memory-mapped access: "
+    return new LogFileException("WPILOG file exceeds the 1 TiB mapping limit: "
         + path + " (" + (size / (1024 * 1024)) + " MB)");
   }
 

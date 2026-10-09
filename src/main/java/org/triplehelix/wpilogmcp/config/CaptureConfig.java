@@ -80,7 +80,7 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
       if (block.has("thin")) for (var e : object(block.get("thin"), "capture.thin").entrySet()) {
         thin.put(e.getKey(), micros(e.getValue(), "capture.thin." + e.getKey(), false));
       }
-      long max = block.has("max_file_bytes") ? integer(block.get("max_file_bytes"), "capture.max_file_bytes", 256, Integer.MAX_VALUE)
+      long max = block.has("max_file_bytes") ? longInteger(block.get("max_file_bytes"), "capture.max_file_bytes", 256, org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES)
           : org.triplehelix.wpilogmcp.capture.CaptureWriter.DEFAULT_MAX_FILE_BYTES;
       int gatewayPort = 0;
       if (block.has("gateway")) {
@@ -118,6 +118,11 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
     double n = value.getAsDouble();
     if (!Double.isFinite(n)) throw bad(key, "must be finite");
     return n;
+  }
+  private static long longInteger(JsonElement value, String key, long min, long max) throws ConfigException {
+    double n = number(value, key);
+    if (n != Math.rint(n) || n < min || n > max) throw bad(key, "must be an integer from " + min + " through " + max);
+    return (long) n;
   }
   private static int integer(JsonElement value, String key, int min, int max) throws ConfigException {
     double n = number(value, key);

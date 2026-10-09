@@ -821,13 +821,13 @@ class LazyParsedLogTest {
       // within the keepBytes range, and far enough from the start that we preserve
       // entry metadata and some data.
       int targetPos = -1;
-      int scanPos = startPos;
+      long scanPos = startPos;
       try {
         while (scanPos + 16 <= fullBytes.length) {
-          int nextPos = edu.wpi.first.util.datalog.DataLogAccess.getNextRecord(reader, scanPos);
+          long nextPos = edu.wpi.first.util.datalog.DataLogAccess.getNextRecord(reader, scanPos);
           // Pick a record near keepBytes (within the last 25% of the kept portion)
           if (scanPos > keepBytes * 0.75 && scanPos < keepBytes) {
-            targetPos = scanPos;
+            targetPos = Math.toIntExact(scanPos);
             break;
           }
           scanPos = nextPos;

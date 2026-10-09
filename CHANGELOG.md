@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Windowed WPILOG mapping reads, imports, uploads and captures files through 1 TiB; the old single buffer refused files above 2 GiB. Ordinary-file indexes retain four-byte offsets, and all windows are released before Windows renames.
+
 #### Capture and store
 
 - Pulled system text now travels through the store door, peer sync and mirrors with committed-prefix reads, hash checks and growing-file resume. Previously only telemetry files crossed that boundary; mirrored searches now use their local text, and a missing copy names the collecting server.
@@ -129,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Testing
 
 - Chart regressions pin unequal-time scatter pairs, every encoded link entry, clipped phases and data-view null cells. Socket-delivery test guards allow thirty seconds under load without changing protocol deadlines.
+- Small mapping windows exercise every fixture record against the independent reader, plus conformance, cold values and import moves. Windows CI proves the leaked-mapping plant fails; the opt-in `largeLogTest` exercises a generated 2.2 GB file and rollover beyond 2 GiB.
 
 - Peer system-text copying now faces an advertised-hash mismatch with same-length bytes on the peer path, checking refused placement, absent receipts and retry state. Previously a size-only verifier passed because corruption tests reached only the mirror verifier.
 - Chart checks decode PNGs, compare window summaries with an independent reader, and plant size, missing-series, scope, hold-style and guessed-phase faults. Adapter/notebook/URI plants cover replaced follow rows, omitted inputs and bypassed server admission; the two real-editor CI jobs also check Perspective row counts and an appended batch. Each smoke run owns its appendable fixture, and the runner requires all six checks; the original five-check gate incorrectly rejected the successful new data-view check. Previously these chart, grid and notebook surfaces had no coverage.

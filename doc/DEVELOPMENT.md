@@ -551,6 +551,23 @@ tests now keep a live mapping beside the writer too. These run in the normal Lin
 suite. A sparse WPILOG beyond the mapping limit is refused by import without moving or placing
 its bytes; loading and the plain-directory listing give the same reason. The shop stress test with a real robot remains a manual check owned by the user.
 
+### Windowed mapping
+
+`WindowedMappingTest` exercises exact boundary endings, crossing headers and truncated tails,
+long random-access offsets in a sparse file and cold live reads beyond 2 GiB. The 4 KiB fixture
+pass compares every record's timestamp and payload with the independent reader; one fixture runs
+through the schema-driven conformance sweep and one through a real move import at that window
+size. Windows CI runs a deliberately leaked-window mutation before its ordinary build and
+requires the import rename to fail; the restored source then runs in the full build.
+
+`./gradlew largeLogTest` is opt-in, beside the stress tasks. It writes a 2.2 GB synthetic fixture,
+reads its last entry, imports it, and records enough capture data to roll a file past 2 GiB.
+Allow about 5 GB of temporary disk space; nothing comes from a robot. It is excluded from
+`test` and `shopHarness`. `IndexMemoryTest` reports the largest generated fixture's compact
+index bytes under `build/reports/round17/`; ordinary files must retain four bytes per offset.
+The report separates exact array payloads from per-entry container overhead (the latter stated
+for HotSpot with compressed references and eight-byte object alignment).
+
 ### The disk cache in tests
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.

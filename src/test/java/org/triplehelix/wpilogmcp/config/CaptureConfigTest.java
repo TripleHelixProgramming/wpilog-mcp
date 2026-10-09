@@ -40,6 +40,11 @@ class CaptureConfigTest {
     assertTrue(all.effectiveLogdirs().contains(directory.resolve("store").toString()));
   }
 
+  @Test void rolloverBoundAcceptsLongOffsetsThroughOneTiB() throws Exception {
+    var config = load("    capture:\n      robot: {usb: true}\n      store: ${CAPTURE_STORE}\n      max_file_bytes: 1099511627776\n");
+    assertEquals(1L << 40, config.capture().maxFileBytes());
+  }
+
   @Test void captureIsOptionalAndACompleteBlockCanBeInheritedOrReplaced() throws Exception {
     assertNull(load("").capture()); assertTrue(load("").effectiveLogdirs().isEmpty());
     var file = directory.resolve("inherit.yaml");
@@ -60,7 +65,7 @@ class CaptureConfigTest {
       "{robot:{host:'x'},store:'x',period_sec:0}|capture.period_sec",
       "{robot:{host:'x'},store:'x',hot_window_sec:-1}|capture.hot_window_sec",
       "{robot:{host:'x'},store:'x',max_file_bytes:255}|capture.max_file_bytes",
-      "{robot:{host:'x'},store:'x',max_file_bytes:2147483648}|capture.max_file_bytes",
+      "{robot:{host:'x'},store:'x',max_file_bytes:1099511627777}|capture.max_file_bytes",
       "{robot:{host:'x'},store:'x',max_file_bytes:4096.5}|capture.max_file_bytes",
       "{robot:{host:'x'},store:'x',max_file_bytes:'4096'}|capture.max_file_bytes",
       "{robot:{host:'x'},store:'x',exclude:1}|capture.exclude",
@@ -85,7 +90,7 @@ class CaptureConfigTest {
   @Test void standaloneDocumentsEveryAcceptedCaptureKey() throws Exception {
     String guide = Files.readString(Path.of("doc/STANDALONE.md"));
     assertTrue(guide.contains("default `1073741824` bytes (1 GiB)"));
-    assertTrue(guide.contains("integer from `256` through `2147483647`"));
+    assertTrue(guide.contains("integer from `256` through `1099511627776`"));
     assertTrue(guide.contains("at most four remaps per second"));
     for (var key : CaptureConfig.KEYS) assertTrue(guide.contains("`capture." + key + "`"), key);
     for (var key : CaptureConfig.ROBOT_KEYS) assertTrue(guide.contains("`capture.robot." + key + "`"), key);

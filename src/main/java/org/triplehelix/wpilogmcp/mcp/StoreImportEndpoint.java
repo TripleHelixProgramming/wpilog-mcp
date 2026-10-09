@@ -107,7 +107,7 @@ final class StoreImportEndpoint {
       String size = exchange.getRequestHeaders().getFirst("Content-Length");
       if (size == null) { refuse(exchange, 411, "Content-Length is required", "Send one file with its exact size"); return; }
       long length = Long.parseLong(size);
-      if (length > StoreUpload.MAX_BYTES) { refuse(exchange, 413, "Upload exceeds the 2 GB reader limit", "Windowed mapping is a later milestone"); return; }
+      if (length > StoreUpload.MAX_BYTES) { refuse(exchange, 413, "Upload exceeds the 1 TiB file limit", "Split files larger than 1099511627776 bytes before uploading"); return; }
       StoreUpload.validate(name, length, hash);
       String robot = StoreEndpoint.one(query, "stated_robot");
       new LogStore.Request(java.util.List.of(), false, robot); // Validate a stated identity before receiving bytes.

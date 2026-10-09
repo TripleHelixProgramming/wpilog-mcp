@@ -504,9 +504,8 @@ public class LogManager {
             fileSizeBytes / (1024 * 1024));
       }
 
-      // DataLogReader maps the whole file into one int-indexed ByteBuffer, so a file over 2 GB
-      // cannot be read: say so here, before the reader fails and the eager fallback rethrows.
-      if (fileSizeBytes > Integer.MAX_VALUE) {
+      // Bound the number of owned mapping windows before either reader is opened.
+      if (fileSizeBytes > MappedLogBytes.MAX_FILE_BYTES) {
         throw LogFileException.tooLarge(filePath, fileSizeBytes);
       }
 

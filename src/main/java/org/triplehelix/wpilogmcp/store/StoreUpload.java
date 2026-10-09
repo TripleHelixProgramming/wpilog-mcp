@@ -22,7 +22,7 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
  * Reception uses bounded buffers outside the store queue. Only the verified importer places it.
  */
 public final class StoreUpload implements AutoCloseable {
-  public static final long MAX_BYTES = Integer.MAX_VALUE;
+  public static final long MAX_BYTES = org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES;
   private final StoreFiles io;
   private final Path root, directory, marker, path;
   private final FileChannel channel;
@@ -36,7 +36,7 @@ public final class StoreUpload implements AutoCloseable {
   Path root() { return root; }
   public static void validate(String name, long length, String hash) {
     StoreFiles.component(name);
-    if (length < 0 || length > MAX_BYTES) throw new IllegalArgumentException("Upload exceeds the 2 GB reader limit or has no length");
+    if (length < 0 || length > MAX_BYTES) throw new IllegalArgumentException("Upload exceeds the 1 TiB file limit or has no length");
     if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("X-WPILOG-SHA256 must be a lowercase SHA-256 hash");
   }
   static StoreUpload receive(Path root, SecurityValidator security, String name, long length,

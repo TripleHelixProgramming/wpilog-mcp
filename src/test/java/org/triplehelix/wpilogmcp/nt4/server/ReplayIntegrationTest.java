@@ -50,9 +50,9 @@ class ReplayIntegrationTest {
     var entries = new HashMap<Integer, String[]>();
     // This oracle reads the WPILOG's raw payloads, independently of the replay/type conversion.
     var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(path)));
-    int offset = DataLogAccess.firstRecordOffset(path);
+    long offset = DataLogAccess.firstRecordOffset(path);
     while (offset < DataLogAccess.size(reader)) {
-      int next = DataLogAccess.recordEnd(reader, offset);
+      long next = DataLogAccess.recordEnd(reader, offset);
       if (next < 0) {
         assertTrue(path.getFileName().toString().contains("truncated"), "Unexpected fixture damage");
         break;

@@ -510,11 +510,11 @@ public class LogDirectory {
         int recordCount = 0;
         // Walk records by their own bounds, as the log scan does: WPILib's iterator skips a
         // short final record
-        int pos = DataLogAccess.firstRecordOffset(path);
-        int size = DataLogAccess.size(reader);
+        long pos = DataLogAccess.firstRecordOffset(path);
+        long size = DataLogAccess.size(reader);
         while (pos >= 12 && pos < size) {
           if (recordCount++ >= LogManager.MAX_METADATA_RECORDS) break;
-          int next = DataLogAccess.recordEnd(reader, pos);
+          long next = DataLogAccess.recordEnd(reader, pos);
           if (next < 0) break; // the file ends inside this record
           var record = DataLogAccess.getRecord(reader, pos);
           pos = next;

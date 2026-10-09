@@ -4,7 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.revlog;
 
-import edu.wpi.first.util.datalog.DataLogReader;
+import org.triplehelix.wpilogmcp.log.LogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -123,7 +123,7 @@ public class RevLogParser {
     }
   }
 
-  private ParsedRevLog parseWpilog(Path path, DataLogReader reader) {
+  private ParsedRevLog parseWpilog(Path path, LogReader reader) {
     String pathStr = path.toString();
 
     // Extract timestamp from filename

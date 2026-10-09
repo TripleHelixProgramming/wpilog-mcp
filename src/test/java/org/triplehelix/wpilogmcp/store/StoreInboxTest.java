@@ -123,9 +123,17 @@ class StoreInboxTest {
       assertEquals(1, StoreCatalog.readManaged(root, manager.testGetSecurityValidator()).files().size());
       assertThrows(java.io.IOException.class, () -> store.receiveUpload("broken.wpilog", bytes.length + 1, sha, new java.io.ByteArrayInputStream(bytes)));
       assertThrows(java.io.IOException.class, () -> store.receiveUpload("long.wpilog", bytes.length - 1, sha, new java.io.ByteArrayInputStream(bytes)));
-      assertThrows(IllegalArgumentException.class, () -> store.receiveUpload("huge.wpilog", 1L + Integer.MAX_VALUE, sha, input));
+      assertThrows(IllegalArgumentException.class, () -> store.receiveUpload("huge.wpilog", 1L + org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES, sha, input));
       try (var files = Files.walk(root.resolve("inbox"))) { assertEquals(0, files.filter(Files::isRegularFile).count()); }
     } finally { release.countDown(); executor.shutdownNow(); }
+  }
+
+  @Test void anUploadAboveTwoGiBReachesStreamingLengthValidation() throws Exception {
+    String hash = "0".repeat(64);
+    var error = assertThrows(java.io.IOException.class, () -> store.receiveUpload("long.wpilog", 1L << 31,
+        hash, new java.io.ByteArrayInputStream(new byte[0])));
+    assertEquals("Upload ended before its declared Content-Length", error.getMessage());
+    try (var files = Files.walk(root.resolve("inbox"))) { assertEquals(0, files.filter(Files::isRegularFile).count()); }
   }
 
   @Test void captureEnabledWithAnAbsentRobotStillImportsItsInbox() throws Exception {

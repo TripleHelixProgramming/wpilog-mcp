@@ -407,9 +407,11 @@ A daemon in the shop and the pit that subscribes once to the robot's NetworkTabl
 The store's HTTP door and laptop-to-laptop peer sync now exist (milestone 6, first half): catalog reads, Range and prefix hashes, content-checked resume, overlapping same-serial session union, provenance, human conflicts and remembered peers. Both daemon jobs and the offline command own the local store lock. The second half now adds the local server’s scoped mirror, pins/cap, growing capture prefixes, recorded alignment, offline age and id-based moves; the extension registers the pit server, follows remote logs, selects mirrored copies offline, and offers mirror and remembered peer-sync controls. Real VS Code verification remains the manual checklist in DEVELOPMENT.md.
 
 ### 9.2 Windowed WPILOG Mapping
-Priority: High. Complexity: High. Planned after the gateway in [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md#15-milestones).
 
-The reader currently maps a file into one int-indexed buffer and refuses files over 2 GB. Replace that with windows under 2 GB, long offsets everywhere, and a small extra mapping or copy for a record straddling a window boundary. Tests must be able to set a small window size and cross boundaries without writing gigabyte fixtures. Capture rollover keeps each file below the limit until that milestone. Oversized imports are refused with the original untouched, and the plain-directory listing reports the same reason.
+Implemented in pit milestone 9: long file addresses, windows no larger than 1 GiB, copies only
+for crossing records, deterministic Windows cleanup, and narrow offset storage for ordinary
+files. Imports, uploads and captures support up to 1 TiB; capture rollover still defaults to
+1 GiB. Small-window tests cover the fixture corpus; `largeLogTest` is the opt-in 2.2 GB check.
 
 ### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.

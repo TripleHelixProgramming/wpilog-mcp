@@ -17,7 +17,7 @@ public final class TransferVerification {
   private TransferVerification() {}
   public static void verify(Path path, LogManager manager) throws IOException {
     manager.stores().validate(path);
-    if (Files.size(path) > Integer.MAX_VALUE) throw new IOException("Transferred log exceeds the current 2 GB reader limit");
+    if (Files.size(path) > org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES) throw org.triplehelix.wpilogmcp.log.LogFileException.tooLarge(path, Files.size(path));
     byte[] header;
     try (var input = Files.newInputStream(path)) { header = input.readNBytes(6); }
     if (new String(header, StandardCharsets.US_ASCII).equals("WPILOG")) {

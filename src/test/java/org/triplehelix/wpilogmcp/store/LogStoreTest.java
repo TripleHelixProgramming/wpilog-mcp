@@ -225,14 +225,14 @@ class LogStoreTest {
     var small = log(temp.resolve("header.wpilog"), null, START, 1);
     byte[] bytes = Files.readAllBytes(small); Files.delete(small);
     var source = temp.resolve("large.wpilog");
-    // NTFS receives SPARSE at creation; no test allocates a two-gigabyte fixture.
+    // NTFS receives SPARSE at creation; no test allocates a terabyte fixture.
     try (var out = java.nio.channels.FileChannel.open(source, java.nio.file.StandardOpenOption.CREATE_NEW,
         java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.SPARSE)) {
-      out.write(ByteBuffer.wrap(bytes)); out.position(Integer.MAX_VALUE); out.write(ByteBuffer.wrap(new byte[]{0}));
+      out.write(ByteBuffer.wrap(bytes)); out.position(org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES); out.write(ByteBuffer.wrap(new byte[]{0}));
     }
-    long size = 1L + Integer.MAX_VALUE;
+    long size = 1L + org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES;
     var modified = Files.getLastModifiedTime(source);
-    String reason = "WPILOG file exceeds 2 GB limit for memory-mapped access: " + source + " (2048 MB)";
+    String reason = "WPILOG file exceeds the 1 TiB mapping limit: " + source + " (1048576 MB)";
     var result = registry.store(root).importPaths(new LogStore.Request(List.of(source), true, null), p -> {}).get(30, TimeUnit.SECONDS);
     assertEquals("refused", result.files().get(0).status());
     assertEquals(reason, result.files().get(0).reason());

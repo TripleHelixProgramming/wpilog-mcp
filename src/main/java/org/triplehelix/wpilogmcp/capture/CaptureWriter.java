@@ -157,7 +157,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   /** The output factory permits failures after real record writes without filling a test disk. */
   public CaptureWriter(Clock wallClock, ClientScheduler loop, CapturePolicy policy, Observer observer,
       long maxFileBytes, OutputFactory outputs) {
-    if (maxFileBytes < 256 || maxFileBytes > Integer.MAX_VALUE) throw new IllegalArgumentException("Invalid capture.max_file_bytes");
+    if (maxFileBytes < 256 || maxFileBytes > org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES) throw new IllegalArgumentException("Invalid capture.max_file_bytes");
     this.wallClock = wallClock; this.loop = loop; this.policy = policy; this.observer = observer;
     this.maxFileBytes = maxFileBytes; this.outputs = outputs;
   }

@@ -83,9 +83,9 @@ class CaptureStartTest {
             captured = Path.of(row.get("path").getAsString());
             var records = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(captured)));
             boolean found = false;
-            for (int offset = edu.wpi.first.util.datalog.DataLogAccess.firstRecordOffset(captured);
+            for (long offset = edu.wpi.first.util.datalog.DataLogAccess.firstRecordOffset(captured);
                 offset < edu.wpi.first.util.datalog.DataLogAccess.size(records);) {
-              int end = edu.wpi.first.util.datalog.DataLogAccess.recordEnd(records, offset);
+              long end = edu.wpi.first.util.datalog.DataLogAccess.recordEnd(records, offset);
               if (end < 0) break;
               var record = edu.wpi.first.util.datalog.DataLogAccess.getRecord(records, offset);
               if (!record.isControl()) found |= record.getInteger() == 42;
