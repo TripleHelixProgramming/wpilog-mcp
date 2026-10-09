@@ -174,8 +174,9 @@ These are publication facts, not statistical inferences, so they carry no data-q
 
 ### `list_sessions`
 
-Current and recent store sessions, newest first. Top-level `managed` is true when systemd
-(`INVOCATION_ID`) or `--managed` owns this server. Use `systemctl`, not the daemon
+Current and recent store sessions, newest first. Top-level `managed` is true only when the
+server was started with `--managed`; a hand-written systemd unit must pass that flag.
+An inherited `INVOCATION_ID` does not set it. Use `systemctl`, not the daemon
 manager, to stop or update it. This field is present even when capture is disabled.
 
 The top-level `gateway` reports `state` (`disabled`, `waiting`, `listening`, `stopped`), `port`,

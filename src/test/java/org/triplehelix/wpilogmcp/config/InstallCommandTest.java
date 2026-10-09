@@ -30,6 +30,35 @@ class InstallCommandTest {
   private static final boolean WINDOWS = System.getProperty("os.name").startsWith("Windows");
 
   @Test
+  void installedBinariesAreReadableByTheServiceUserAndReinstallRepairsTheirModes() throws Exception {
+    Assumptions.assumeFalse(WINDOWS, "POSIX modes do not apply on Windows");
+    var readable = java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--");
+    var executable = java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x");
+    var privateFile = java.nio.file.attribute.PosixFilePermissions.fromString("rw-------");
+    var privateDirectory = java.nio.file.attribute.PosixFilePermissions.fromString("rwx------");
+    var root = temp.resolve("install");
+    var input = source();
+    Files.setPosixFilePermissions(input, privateFile);
+    var jar = root.resolve("jars/wpilog-mcp-1.0.0.jar");
+    var launcher = root.resolve("bin/wpilog-mcp-1.0.0");
+    for (int install = 0; install < 2; install++) {
+      InstallCommand.install(input, "1.0.0", options(root, false), false, "");
+      assertAll("install " + install,
+          () -> assertEquals(readable, Files.getPosixFilePermissions(jar), "JAR must be readable by the service user"),
+          () -> assertEquals(executable, Files.getPosixFilePermissions(launcher), "launcher must be readable and executable"),
+          () -> assertEquals(executable, Files.getPosixFilePermissions(root.resolve("bin")), "bin must be traversable"),
+          () -> assertEquals(executable, Files.getPosixFilePermissions(root.resolve("jars")), "jars must be traversable"));
+      assertEquals(privateFile, Files.getPosixFilePermissions(input), "The source belongs to the caller");
+      if (install == 0) {
+        for (var file : List.of(jar, launcher, root.resolve("servers.yaml"))) Files.setPosixFilePermissions(file, privateFile);
+        for (var dir : List.of(root.resolve("bin"), root.resolve("jars"))) Files.setPosixFilePermissions(dir, privateDirectory);
+      } else {
+        assertEquals(privateFile, Files.getPosixFilePermissions(root.resolve("servers.yaml")), "Reinstall preserves private configuration");
+      }
+    }
+  }
+
+  @Test
   void extensionBootstrapRequiresAnExplicitVsix() {
     var error = assertThrows(IllegalArgumentException.class,
         () -> InstallCommand.parse(new String[] {"install", "--with-extension"}));

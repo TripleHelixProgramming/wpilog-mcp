@@ -873,15 +873,23 @@ Release-review keepalive failures (before the tag):
   transport stops return zero. Public run uses the JDK signal dispatcher for INT/TERM to
   request exit zero after shutdown hooks drain; Windows forced termination cannot be caught.
   Internal spawning retains its private flag and token.
-- Supervisor ownership is a process fact from `INVOCATION_ID` or `--managed`, published in
+- Supervisor ownership is explicit through `--managed` only, published in
   health and `list_sessions` even without capture. The daemon manager refuses adoption,
   replacement and stopping; `stop` probes the configured port as well as its optional PID
   record and explains which systemctl command to use. `--config` also selects stop's port.
+  A hand-written systemd unit must pass the flag. Reading `INVOCATION_ID` was a mistake:
+  GitHub runner jobs and terminal shells inherit it, so their ordinary daemons were wrongly
+  refused. The regression starts, adopts and stops a real child with that variable set.
 - The current plan had no concrete unit text. `service-unit` therefore prints three named
   files for review: the service, an unprivileged HTTP probe, and its 30-second monotonic timer.
   The layout is `/opt/wpilog-mcp`, root-owned configuration/environment under `/etc/wpilog-mcp`,
   and a `wpilog-mcp` system account with `StateDirectory=wpilog-mcp`. Stop has 90 seconds and
   mixed kill mode; restart is always with five seconds between failures and no start limit.
+  `SuccessExitStatus=143` accepts a clean SIGTERM exit on JVMs without the signal handler.
+  Installed program files are readable by the service account (`0644` JAR, `0755` launcher
+  and program directories); reinstall repairs the old owner-only modes while preserving
+  private configuration. CI checks access as the account before startup and writes the JDK's
+  `JAVA_HOME` to the environment file, since systemd lacks the runner shell's toolcache PATH.
   The probe reports in the journal, without independently restarting a healthy-but-busy JVM.
   Filesystem/privilege hardening preserves JIT, and no MemoryMax duplicates heap policy.
   [systemd's execution rules](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml),
@@ -894,7 +902,9 @@ Release-review keepalive failures (before the tag):
   state remains visible and its unchanged reason is logged once. Unit constants remain
   cached per connection, and each sample still invokes one df as agreed in round 12.
 - CI harness work depends only on path classification; ordinary builds keep their own XML.
-  MCP changes also select real-JAR extension checks. Unknown before history runs everything.
+  Main, configuration, installer and MCP changes also select real-JAR extension checks.
+  Filter-only changes exercise their Python assertions and the service/editors, without
+  unrelated capture replay. Unknown before history runs everything.
   Real systemd CI verifies the printed service and timer, managed/version health, refusal of
   daemon-manager stop, and a bounded systemctl stop; an unmanaged service is a required plant.
   No native replay or real-log replay is needed for this round's service/provider changes.

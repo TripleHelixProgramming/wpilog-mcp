@@ -16,6 +16,7 @@ EnvironmentFile=-/etc/wpilog-mcp/environment
 ExecStart=/opt/wpilog-mcp/bin/wpilog-mcp run @NAME@ --config @CONFIG@ --managed
 TimeoutStopSec=90s
 KillMode=mixed
+SuccessExitStatus=143
 Restart=always
 RestartSec=5s
 UMask=0027

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import stat
 import subprocess
 import time
 import urllib.error
@@ -40,6 +41,27 @@ def run(args, **kwargs):
     return subprocess.run(list(map(str, args)), check=True, text=True, **kwargs)
 
 
+def service_environment(java):
+    # systemd does not inherit the runner shell's hosted-toolcache PATH.
+    home = str(Path(java).resolve().parent.parent).replace('\\', '\\\\').replace('"', '\\"')
+    return f'LANG=C.UTF-8\nLC_ALL=C.UTF-8\nJAVA_HOME="{home}"\n'
+
+
+def check_program_access(launcher, jar):
+    facts = []
+    for path, checks in ((launcher, ('r', 'x')), (jar, ('r',))):
+        mode = path.stat().st_mode
+        mode_text = f'{stat.filemode(mode)} ({stat.S_IMODE(mode):04o})'
+        for check in checks:
+            result = subprocess.run(['runuser', '-u', 'wpilog-mcp', '--', 'test', '-' + check, str(path)],
+                                    capture_output=True, text=True)
+            if result.returncode:
+                action = 'read' if check == 'r' else 'execute'
+                raise AssertionError(f'Service user wpilog-mcp cannot {action} {path}; mode {mode_text}; {result.stderr.strip()}')
+        facts.append(dict(path=str(path), mode=mode_text))
+    return facts
+
+
 def verify(jar, planted):
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.geteuid() != 0:
         raise RuntimeError('This installs a test service: run only as root on a disposable GitHub Actions runner')
@@ -64,19 +86,21 @@ def verify(jar, planted):
     config = config_dir / 'servers.yaml'
     config.write_text(f'logdir: /var/lib/wpilog-mcp/logs\nservers:\n  {name}:\n    transport: http\n    port: {port}\n')
     config.chmod(0o644)
-    (config_dir / 'environment').write_text('LANG=C.UTF-8\nLC_ALL=C.UTF-8\n')
+    (config_dir / 'environment').write_text(service_environment(java))
     (config_dir / 'environment').chmod(0o600)
     # The printer embeds the config path; the resulting files are installed without rewriting it.
     text = run([java, '-jar', jar, 'service-unit', name, '--config', config], capture_output=True).stdout
     (report / f'{label}-units.txt').write_text(text)
     units = split_units(text)
     if planted:
-        units[unit] = units[unit].replace(' --managed', '').replace('[Service]', '[Service]\nUnsetEnvironment=INVOCATION_ID')
+        units[unit] = units[unit].replace(' --managed', '')
     for filename, content in units.items():
         (Path('/etc/systemd/system') / filename).write_text(content)
     result = dict(version=version, plant=planted)
     start = time.monotonic()
     try:
+        result['program_access'] = check_program_access(Path('/opt/wpilog-mcp/bin/wpilog-mcp'),
+                                                       Path(f'/opt/wpilog-mcp/jars/wpilog-mcp-{version}.jar'))
         run(['systemd-analyze', 'verify', *[str(Path('/etc/systemd/system') / f) for f in units]])
         run(['systemctl', 'daemon-reload'])
         run(['systemctl', 'start', unit, timer])

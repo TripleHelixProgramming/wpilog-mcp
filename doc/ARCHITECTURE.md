@@ -590,8 +590,10 @@ Structs are decoded from the schemas the log records, using WPILib's schema pars
 ## Foreground and supervisor ownership
 
 `run <name>` shares the internal daemon's configuration/startup path but never claims a PID
-file or daemonizes. `INVOCATION_ID` or `--managed` publishes supervisor ownership through the
-registry to health and live tools. The daemon manager probes this fact before adoption,
+file or daemonizes. Only `--managed` publishes supervisor ownership through the registry to
+health and live tools; a hand-written unit must pass it too. The inherited `INVOCATION_ID`
+does not establish ownership: using it also marked GitHub runner jobs and terminal-launched
+daemons as managed, breaking adoption and stop. The daemon manager probes this fact before adoption,
 replacement or stop, including a configured port with no PID record. A stale PID claim grants
 no authority over a managed server. Only the internal daemon accepts its spawn's stop token.
 
@@ -600,6 +602,12 @@ account owns the state directory, systemd owns restarts and bounded signal shutd
 separate unprivileged health timer reports failures. The templates preserve JIT and leave JVM
 heap sizing to the existing launcher rather than imposing a second memory limit. STANDALONE.md
 owns installation, hardening exceptions and the calendar-clock caveat.
+
+Installed JARs are `0644`, launchers and program directories `0755` on POSIX, set before
+atomic publication and repaired on reinstall. Owner-only temporary files previously left a
+root-installed launcher unreadable to the service account. Configuration and existing parent
+directories retain their permissions. CI checks access as that account before starting the
+unit and supplies the runner's JDK through `JAVA_HOME` in its environment file.
 
 ## Memory Management
 

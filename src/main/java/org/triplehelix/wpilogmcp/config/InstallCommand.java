@@ -17,6 +17,9 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -197,7 +200,9 @@ public final class InstallCommand {
       throws IOException {
     requireVersion(version);
     var root = options.directory().toAbsolutePath().normalize();
-    Files.createDirectories(root);
+    boolean newRoot = !Files.exists(root);
+    Files.createDirectories(root, programAttributes(root, true));
+    if (newRoot) programMode(root, true);
     var layout = Layout.at(root, version, windows);
     var io = new InstallFiles(root);
     io.preflight(layout);
@@ -224,8 +229,11 @@ public final class InstallCommand {
   private static Summary writeLayout(Path source, String version, Options options, boolean windows,
       String searchPath, Layout layout, InstallFiles io) throws IOException {
     io.preflight(layout);
-    Files.createDirectories(io.check(layout.jars()));
-    var bin = Files.createDirectories(io.check(layout.bin()));
+    for (var directory : List.of(layout.jars(), layout.bin())) {
+      Files.createDirectories(io.check(directory), programAttributes(directory, true));
+      programMode(io.check(directory), true);
+    }
+    var bin = layout.bin();
     var current = io.current(layout.current());
     String before;
     try {
@@ -240,7 +248,7 @@ public final class InstallCommand {
     if (windows) {
       script = script.replace("\r\n", "\n").replace("\n", "\r\n");
     }
-    writeChanged(launcher, script, io);
+    writeChanged(launcher, script, io, !windows);
     if (!windows && !io.check(launcher).toFile().setExecutable(true, false)) {
       throw new IOException("Cannot make launcher executable: " + launcher);
     }
@@ -286,11 +294,16 @@ public final class InstallCommand {
   private static void copyChanged(Path source, Path target, InstallFiles io) throws IOException {
     io.check(target);
     if (Files.isRegularFile(target) && Files.mismatch(source, target) == -1) {
+      programMode(io.check(target), false);
       return;
     }
-    var temporary = Files.createTempFile(io.check(target.getParent()), ".install-", ".tmp");
+    var temporary = Files.createTempFile(io.check(target.getParent()), ".install-", ".tmp", programAttributes(target, false));
     try {
-      Files.copy(source, io.check(temporary), StandardCopyOption.REPLACE_EXISTING);
+      // Keep the new file's permissions instead of copying a private source JAR's mode.
+      try (var input = Files.newInputStream(source); var output = Files.newOutputStream(io.check(temporary))) {
+        input.transferTo(output);
+      }
+      programMode(io.check(temporary), false);
       Files.move(io.check(temporary), io.check(target),
           StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } finally {
@@ -298,18 +311,36 @@ public final class InstallCommand {
     }
   }
 
-  private static void writeChanged(Path target, String text, InstallFiles io) throws IOException {
+  private static void writeChanged(Path target, String text, InstallFiles io, boolean executable) throws IOException {
     io.check(target);
     if (Files.isRegularFile(target) && text.equals(Files.readString(target))) {
+      programMode(io.check(target), executable);
       return;
     }
-    var temporary = Files.createTempFile(io.check(target.getParent()), ".launcher-", ".tmp");
+    var temporary = Files.createTempFile(io.check(target.getParent()), ".launcher-", ".tmp", programAttributes(target, false));
     try {
       Files.writeString(io.check(temporary), text);
+      programMode(io.check(temporary), executable);
       Files.move(io.check(temporary), io.check(target),
           StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } finally {
       Files.deleteIfExists(io.check(temporary));
+    }
+  }
+
+  /**
+   * Program files must be readable by a separate service account, independent of umask.
+   * Configuration and existing parent directories keep their owner's permissions.
+   */
+  private static FileAttribute<?>[] programAttributes(Path path, boolean executable) {
+    return Files.getFileAttributeView(path, PosixFileAttributeView.class) == null ? new FileAttribute<?>[0]
+        : new FileAttribute<?>[] {PosixFilePermissions.asFileAttribute(
+            PosixFilePermissions.fromString(executable ? "rwxr-xr-x" : "rw-r--r--"))};
+  }
+
+  private static void programMode(Path path, boolean executable) throws IOException {
+    if (Files.getFileAttributeView(path, PosixFileAttributeView.class) != null) {
+      Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(executable ? "rwxr-xr-x" : "rw-r--r--"));
     }
   }
 

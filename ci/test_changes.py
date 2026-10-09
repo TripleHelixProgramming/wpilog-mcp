@@ -17,6 +17,17 @@ class ChangesTest(unittest.TestCase):
         self.assertTrue(flags(['src/main/java/org/triplehelix/wpilogmcp/mcp/ClientLeases.java'])['extension'])
         self.assertFalse(flags(['doc/TOOLS.md'])['extension'])
 
+    def test_daemon_and_installer_fixes_recheck_the_editors_without_replaying_capture(self):
+        for path in ('src/main/java/org/triplehelix/wpilogmcp/Main.java',
+                     'src/main/java/org/triplehelix/wpilogmcp/config/DaemonManager.java',
+                     'src/main/java/org/triplehelix/wpilogmcp/config/InstallCommand.java',
+                     'src/main/resources/install/launcher.sh', 'ci/changes.py', 'ci/test_changes.py'):
+            with self.subTest(path=path):
+                selected = flags([path])
+                self.assertTrue(selected['extension'], path)
+                self.assertFalse(selected['harness'], path)
+                self.assertFalse(selected['native'], path)
+
     def test_service_and_harness_scopes(self):
         for path in ('src/main/java/org/triplehelix/wpilogmcp/Main.java', 'src/main/java/org/triplehelix/wpilogmcp/config/ServiceUnit.java',
                      'src/main/resources/service/server.service', 'install.sh', 'install.ps1'):

@@ -440,8 +440,10 @@ transport stop returns 0; a bad configuration or failed HTTP bind returns nonzer
 reason. Ctrl-C or SIGTERM requests exit 0 after the shutdown hooks finish. Windows' forced
 process termination cannot be caught; a stdio EOF is a clean stop there.
 
-`INVOCATION_ID` set by systemd, or the explicit `--managed` flag, makes both `GET /health` and
-`list_sessions` report `managed: true`. `start` will neither adopt that process nor replace it
+Only the explicit `--managed` flag makes both `GET /health` and `list_sessions` report
+`managed: true`. A hand-written service unit must pass `--managed`, as the printed unit does.
+`INVOCATION_ID` is ignored: shells and CI jobs also inherit it from systemd.
+`start` will neither adopt a managed process nor replace it
 with a newer JAR. `stop` refuses it and prints the `sudo systemctl stop wpilog-mcp-<name>.service`
 command. Use `--config` when the service's configuration is not in your normal search path.
 
@@ -460,6 +462,12 @@ On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bi
    sudo install -d -m 0755 /etc/wpilog-mcp
    ```
 
+   Installed program files are readable by every user: the JAR is `0644`, the launcher and
+   its `bin` and `jars` directories are `0755` on POSIX. The service account must be able to
+   read files installed by root. Reinstall repairs these modes, but keeps existing configuration
+   permissions and parent-directory permissions; every parent must allow the service user to
+   traverse it. Keep secrets in the private environment file below.
+
 2. Write `/etc/wpilog-mcp/servers.yaml`, using a named `pit` configuration with
    `transport: http`, `idle_exit_minutes: 0`, and absolute paths for its logs, capture store
    and mirrors under `/var/lib/wpilog-mcp/`. Keep the configuration readable by the service
@@ -469,10 +477,14 @@ On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bi
    TBA_API_KEY=your-key
    # Optional JVM heap; the unit has no MemoryMax:
    WPILOG_MAX_HEAP=4g
+   # If java is not on root's default PATH, point to the service-readable JDK:
+   # JAVA_HOME=/opt/jdk-17
    ```
 
    That file uses systemd environment-file syntax, not shell `export`. Refer to other secrets
-   with `${NAME}` in YAML. The unit sets `LANG=C.UTF-8 LC_ALL=C.UTF-8`; install that locale or
+   with `${NAME}` in YAML. Set `JAVA_HOME` there on hosts whose JDK is available only through
+   a login shell's PATH (including CI's hosted toolcache); systemd does not inherit that PATH.
+   The unit sets `LANG=C.UTF-8 LC_ALL=C.UTF-8`; install that locale or
    replace both with an available UTF-8 locale (see [Uploading logs](#uploading-logs)).
 
 3. Print and review the units, then copy each section to its named file under
@@ -492,7 +504,9 @@ The unit's `StateDirectory=wpilog-mcp` creates and owns `/var/lib/wpilog-mcp`. I
 makes the rest of the filesystem read-only and hides home directories, so put writable data
 there; explicitly amend `ReadWritePaths` if you choose another location. It retains JVM JIT
 support (no `MemoryDenyWriteExecute`) and sets no `MemoryMax`. `TimeoutStopSec=90s` and
-`KillMode=mixed` let the main JVM drain before systemd ends remaining processes. `Restart=always`
+`KillMode=mixed` let the main JVM drain before systemd ends remaining processes.
+`SuccessExitStatus=143` also treats SIGTERM's exit code as a clean stop when a JVM lacks the
+signal handler. `Restart=always`
 with a five-second delay and no start-rate limit retries failures indefinitely; an explicit
 `systemctl stop` stays stopped. Use `systemctl restart` after installing an update.
 

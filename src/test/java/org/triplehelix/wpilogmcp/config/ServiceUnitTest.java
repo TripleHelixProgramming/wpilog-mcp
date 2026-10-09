@@ -23,7 +23,7 @@ class ServiceUnitTest {
     try (var files = Files.list(temp)) { assertEquals(List.of(config), files.toList(), "Printing must not install anything"); }
     String text = stdout.toString(java.nio.charset.StandardCharsets.UTF_8);
     for (String directive : List.of("# file: wpilog-mcp-pit.service", "User=wpilog-mcp", "Group=wpilog-mcp", "StateDirectory=wpilog-mcp",
-        "EnvironmentFile=-/etc/wpilog-mcp/environment", "Environment=LANG=C.UTF-8 LC_ALL=C.UTF-8", "TimeoutStopSec=90s", "KillMode=mixed",
+        "EnvironmentFile=-/etc/wpilog-mcp/environment", "Environment=LANG=C.UTF-8 LC_ALL=C.UTF-8", "TimeoutStopSec=90s", "KillMode=mixed", "SuccessExitStatus=143",
         "Restart=always", "StartLimitIntervalSec=0", "NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true", "PrivateTmp=true",
         "PrivateDevices=true", "ProtectKernelTunables=true", "ProtectKernelModules=true", "ProtectControlGroups=true", "RestrictSUIDSGID=true",
         "LockPersonality=true", "RestrictRealtime=true", "CapabilityBoundingSet=", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",

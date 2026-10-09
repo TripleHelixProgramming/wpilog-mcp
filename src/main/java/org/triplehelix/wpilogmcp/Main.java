@@ -80,7 +80,7 @@ public class Main {
 
   public static void main(String[] args) {
     publicRun = args.length > 0 && args[0].equals("run");
-    managed = System.getenv("INVOCATION_ID") != null || Arrays.asList(args).contains("--managed");
+    managed = Arrays.asList(args).contains("--managed");
     // Decide the log level before any logger exists (see logger()). A configuration file's
     // debug setting is applied where the file is loaded, still before the first log line.
     if (debugRequested(args, System.getenv("WPILOG_DEBUG"))) {

@@ -41,7 +41,7 @@ never run `./gradlew clean` inside a round.
 |---|---|
 | Each item while editing | Targeted `./gradlew test --tests '*RelevantTest'`; plant the bug and see that check fail. |
 | End of a round, after the last change | One `env -u LANG -u LC_ALL ./gradlew build`. CI supplies Windows; report without waiting for it to start. |
-| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also runs Node/editor checks for changes to `mcp/`, since its real-JAR tests exercise leases. |
+| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also runs Node/editor checks for changes to Main, `config/`, installers and `mcp/`, since its real-JAR tests exercise daemon ownership, installation and leases. |
 | Capture, pull, NT4 or harness code changed | One `harness/run` after those changes; use `-PconformanceNative=none` if none of the native-triggering surfaces below changed. |
 | NT4 client, gateway, capture writer, replayer or harness changed | Native replay with `-PconformanceNative=sample`, in that same harness run; zero shift only. |
 | Writer output, replayer output or matching changed | Stratified Java real-log sample with `-PconformanceLogDir=/path/to/logs`. A harness pacing-only change does not trigger it. |
@@ -79,16 +79,19 @@ The tests run on Windows in CI too. Build an expected path with the same path AP
 ### The systemd service check
 
 `MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,
-health and live tools; `DaemonManagerTest` uses fake health endpoints to prove managed servers
+health and live tools, and starts/adopts/stops a real daemon inheriting `INVOCATION_ID`;
+`InstallCommandTest` checks POSIX program modes and repair without exposing private settings.
+`DaemonManagerTest` uses fake health endpoints to prove managed servers
 are never adopted, stopped or replaced. `ServiceUnitTest` checks the printed unit's hardening,
 escaping and write-free behavior. `StatsProviderTest` counts real MINA exec commands with no
 program: 31 samples require four discoveries, without repeated changed-process notices.
 
 The independent Linux `systemd` CI job is filtered to Main, configuration, installers, service
 templates and the check itself. It builds only the shadow JAR, creates the service account,
-installs the printed units, starts the service and timer, checks managed/version health and the
+installs the printed units, checks launcher/JAR access as the service user with modes in any
+refusal, supplies the runner's JDK through `JAVA_HOME`, then starts the service and timer. It checks managed/version health and the
 `stop` refusal, runs the probe, and stops through systemd within 90 seconds. It repeats with
-both managed signals removed and requires that the same verifier reject the plant. Journals,
+only `--managed` removed and requires that the same verifier reject the plant. Journals,
 printed units and assertion results are uploaded even on failure. `ci/check_service.py` refuses
 to install on a developer machine; it requires root and a disposable GitHub Actions runner.
 The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter

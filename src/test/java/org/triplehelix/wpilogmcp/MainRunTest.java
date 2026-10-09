@@ -9,7 +9,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -52,7 +51,9 @@ class MainRunTest {
     }
     var output = run(List.of("run", "missing", "--config", config("    transport: stdio\n").toString()));
     assertNotEquals(0, output.code()); assertTrue(output.err().contains("Unknown server configuration 'missing'"), output.err());
-  }  @Test void foregroundHealthAndLiveToolsReportExplicitAndSystemdOwnership() throws Exception {
+  }
+
+  @Test void foregroundOwnershipRequiresTheFlagEvenWithAnInheritedSystemdEnvironment() throws Exception {
     for (String mode : List.of("ordinary", "flag", "environment")) {
       int port;
       try (var reserve = new java.net.ServerSocket(0)) { port = reserve.getLocalPort(); }
@@ -76,7 +77,7 @@ class MainRunTest {
           if (response.statusCode() != 200) return false;
           health.set(com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject()); return true;
         });
-        boolean expected = !mode.equals("ordinary");
+        boolean expected = mode.equals("flag");
         assertEquals(expected, health.get().get("managed").getAsBoolean());
         assertEquals(Version.VERSION, health.get().get("version").getAsString());
         assertEquals(child.pid(), health.get().get("pid").getAsLong(), "run must not spawn a daemon");
@@ -92,4 +93,57 @@ class MainRunTest {
     }
   }
 
+  @Test void inheritedSystemdEnvironmentStillLetsTheDaemonManagerStartAdoptAndStop() throws Exception {
+    int port;
+    try (var reserve = new java.net.ServerSocket(0)) { port = reserve.getLocalPort(); }
+    var path = config("    transport: http\n    port: " + port + "\n");
+    var pidFile = temp.resolve(".wpilog-mcp/run/pit.pid");
+    ProcessHandle daemon = null;
+    try {
+      var started = daemonCommand("start", path);
+      // Capture the process even when old ownership detection makes start fail, so cleanup owns it.
+      if (Files.exists(pidFile)) daemon = ProcessHandle.of(Long.parseLong(Files.readAllLines(pidFile).get(0))).orElse(null);
+      assertEquals(0, started.code(), started.err());
+      assertNotNull(daemon, "start must record its child");
+      long pid = daemon.pid();
+      var health = java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
+          java.net.URI.create("http://127.0.0.1:" + port + "/health")).timeout(java.time.Duration.ofSeconds(2)).build(),
+          java.net.http.HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, health.statusCode());
+      assertFalse(com.google.gson.JsonParser.parseString(health.body()).getAsJsonObject().get("managed").getAsBoolean(),
+          "An inherited INVOCATION_ID is not ownership");
+      Files.delete(pidFile);
+      var adopted = daemonCommand("start", path);
+      assertEquals(0, adopted.code(), adopted.err());
+      assertEquals(pid, Long.parseLong(Files.readAllLines(pidFile).get(0)), "start must adopt the same process");
+      var stopped = daemonCommand("stop", path);
+      assertEquals(0, stopped.code(), stopped.err());
+      daemon.onExit().get(10, TimeUnit.SECONDS);
+      assertFalse(Files.exists(pidFile), "stop must release its PID record");
+    } finally {
+      if (daemon != null && daemon.isAlive()) {
+        daemon.destroyForcibly();
+        daemon.onExit().get(10, TimeUnit.SECONDS);
+      }
+    }
+  }
+
+  private Output daemonCommand(String verb, Path config) throws Exception {
+    var out = temp.resolve(verb + ".stdout"); var err = temp.resolve(verb + ".stderr");
+    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+        "-jar", System.getProperty("install.testJar"), verb, "pit", "--config", config.toString())
+        .directory(temp.toFile()).redirectOutput(out.toFile()).redirectError(err.toFile());
+    for (String key : List.of("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "WPILOG_HTTP_BIND", "WPILOG_HTTP_PATH", "TBA_API_KEY")) {
+      builder.environment().remove(key);
+    }
+    // Both the CLI and the JVM it spawns inherit the synthetic supervisor's environment.
+    builder.environment().put("INVOCATION_ID", "synthetic-invocation");
+    builder.environment().put("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + temp + "\"");
+    builder.environment().put("WPILOG_MAX_HEAP", "256m");
+    var child = builder.start(); child.getOutputStream().close();
+    try {
+      assertTrue(child.waitFor(20, TimeUnit.SECONDS), "Daemon command did not finish: " + Files.readString(err));
+      return new Output(child.exitValue(), Files.readString(out), Files.readString(err));
+    } finally { child.destroyForcibly(); }
+  }
 }

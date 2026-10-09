@@ -22,16 +22,20 @@ def changed_paths(base):
 def flags(files):
     if files is None:
         return dict(extension=True, harness=True, service=True, native=True)
-    workflow = any(p in ('.github/workflows/ci.yml', 'ci/changes.py', 'ci/test_changes.py') for p in files)
+    workflow = '.github/workflows/ci.yml' in files
     selected = dict(
-        extension=any(p.startswith(('vscode-extension/', 'src/main/java/org/triplehelix/wpilogmcp/mcp/')) for p in files),
+        extension=any(p.startswith(('vscode-extension/', 'src/main/java/org/triplehelix/wpilogmcp/mcp/',
+            'src/main/java/org/triplehelix/wpilogmcp/config/', 'src/main/resources/install/'))
+            or p in ('src/main/java/org/triplehelix/wpilogmcp/Main.java', 'install.sh', 'install.ps1',
+                'ci/changes.py', 'ci/test_changes.py') for p in files),
         harness=any(p.startswith(('harness/', 'src/main/java/org/triplehelix/wpilogmcp/capture/',
             'src/main/java/org/triplehelix/wpilogmcp/nt4/', 'src/main/java/org/triplehelix/wpilogmcp/sync/',
             'src/test/java/org/triplehelix/wpilogmcp/conformance/', 'src/test/java/org/triplehelix/wpilogmcp/harness/'))
             or p == 'build.gradle' for p in files),
         service=any(p.startswith(('src/main/java/org/triplehelix/wpilogmcp/config/', 'src/main/resources/install/',
             'src/main/resources/service/', 'src/test/java/org/triplehelix/wpilogmcp/config/Service', 'ci/check_service', 'ci/test_check_service'))
-            or p in ('src/main/java/org/triplehelix/wpilogmcp/Main.java', 'install.sh', 'install.ps1', 'build.gradle') for p in files),
+            or p in ('src/main/java/org/triplehelix/wpilogmcp/Main.java', 'install.sh', 'install.ps1', 'build.gradle',
+                'ci/changes.py', 'ci/test_changes.py') for p in files),
         native=any(p.startswith(('harness/', 'src/main/java/org/triplehelix/wpilogmcp/nt4/',
             'src/test/java/org/triplehelix/wpilogmcp/harness/')) or p in (
             'src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java',

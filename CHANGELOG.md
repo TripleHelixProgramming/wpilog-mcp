@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Standalone install
 
-- `run <name>` exposes named foreground startup, and `service-unit <name>` prints a hardened systemd service and health timer for review. Previously service managers had to use an internal flag or CLI-only configuration. `INVOCATION_ID` and `--managed` report supervisor ownership in health and `list_sessions`; the daemon manager refuses to adopt, stop or replace those processes and names the systemctl command instead.
+- `run <name>` exposes named foreground startup, and `service-unit <name>` prints a hardened systemd service and health timer for review. Previously service managers had to use an internal flag or CLI-only configuration. `--managed` reports supervisor ownership in health and `list_sessions`; hand-written units must pass it too. The daemon manager refuses to adopt, stop or replace those processes and names the systemctl command instead.
 - `wpilog-mcp connect <name>` starts or joins the named HTTP daemon and bridges stdio clients into separate MCP sessions; `connect --url <url>` bridges to an existing endpoint. Previously command-only clients each started a server. Lost connections produce request-specific errors and a nonzero exit so the client can reconnect.
 - `wpilog-mcp stop <name>` requests a graceful shutdown through a loopback-only endpoint protected by the user's daemon token, waiting for active calls before falling back to process termination. Previously stopping a background server required killing its process manually.
 - `idle_exit_minutes` lets a background HTTP server exit after a configured period without sessions or requests; health probes do not keep it alive. Previously unused daemons needed an explicit stop. Automatic exit is disabled by default, and capture servers require it to stay disabled.
@@ -80,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Service ownership:** only `--managed` marks a server as supervisor-owned. Previously an inherited `INVOCATION_ID` also marked ordinary daemons launched by CI runners or terminal shells, preventing start, adoption and stop. Printed units accept exit status 143 as a clean SIGTERM stop on JVMs without the signal handler.
+- **Service installation:** POSIX installs create readable JARs (`0644`), readable/executable launchers and traversable program directories (`0755`), repairing their modes on reinstall while preserving configuration permissions. Previously owner-only temporary-file modes survived publication and prevented the service account from reading a root-installed launcher or JAR.
 - SSH stats no longer call a never-found program "changed" or scan `/proc` every sample. Missing-program discovery retries every ten samples while other stats continue; an identified process changing still triggers the next-sample lookup.
 - Server instructions again state that absent data is not absent problems, a named cause still needs a rival, whole-log statistics mix disabled time and boot, and one log is one sample. Those cautions had been shortened away when live-data guidance was added; all guidance still fits the client limit.
 - `find_condition` explains a window with neither true intervals nor newly evaluated samples as `no_match`; a recent window after a false change-only sample previously returned an empty success.
@@ -111,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The systemd check tests launcher/JAR access as the service user before startup, reports modes on refusal, and supplies the hosted JDK through `JAVA_HOME`; previously it waited for health while the process could not start. The unmanaged plant removes only the flag. Real-child ownership and POSIX-mode regressions cover both failures, and Main/installer changes select both editor smoke jobs without unrelated capture replay.
 - A separate Linux systemd job exercises the printed service and timer, managed/version health, the stop refusal and bounded shutdown, with an unmanaged-service plant and uploaded journals. Previously no test ran the pit server under its supervisor.
 - The shop harness runs beside ordinary builds again and no longer downloads their already-uploaded XML. MCP transport changes also select the extension's real-JAR checks; an unreachable before-commit runs all checks instead of failing the workflow. Native replay is selected only for its affected surfaces.
 - Ordinary tests use bounded parallel forks and private fixture paths, explicit clocks/conditions instead of sleeps, and shared conformance views instead of rescanning for each tool. Coverage is opt-in and Linux CI runs it once; harness/Arrow jobs reuse ordinary build artifacts. DEVELOPMENT records which optional checks a change warrants, replacing repeated full-suite and native shift-matrix work.
