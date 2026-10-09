@@ -91,6 +91,58 @@ class SystemTextTransferTest {
     assertEquals(0, copy.sync(url(), 0, p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS).filesCopied().size());
     try (var remote = new HttpRemoteFiles("http://127.0.0.1:" + localHttp.getPort())) { assertEquals(3, remote.list().size()); }
   }
+  @Test void peerRefusesSameLengthTextThatDisagreesWithItsManifestBeforePlacement() throws Exception {
+    var reads = new HashMap<String, Integer>();
+    StoreSync.Source corrupt = address -> {
+      var peer = StoreSync.http(address); var remote = peer.remote();
+      return new StoreSync.Peer(peer.url(), peer.description(), peer.robots(), peer.sessions(), new RemoteFiles() {
+        public List<File> list() throws java.io.IOException { return remote.list(); }
+        public byte[] read(String name, long offset, int count) throws java.io.IOException {
+          var bytes = remote.read(name, offset, count);
+          if (!name.endsWith(".wpilog") && offset == 0 && bytes.length > 0) {
+            reads.merge(name, 1, Integer::sum); bytes[0] ^= 1;
+          }
+          return bytes;
+        }
+        public Optional<String> prefixHash(String name, long length) throws java.io.IOException {
+          if (name.endsWith(".wpilog")) return remote.prefixHash(name, length);
+          // The transport consistently proves its bad bytes. The manifest is the independent evidence.
+          var bytes = remote.read(name, 0, (int) length); bytes[0] ^= 1;
+          try { return Optional.of(HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes))); }
+          catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
+        }
+        public void close() throws java.io.IOException { remote.close(); }
+      });
+    };
+    var first = copy.sync(url(), 0, p -> {}, WALL, corrupt).get(20, TimeUnit.SECONDS);
+    assertTrue(first.stopped().isEmpty(), first::toString);
+    assertEquals(2, first.refusals().size(), first::toString);
+    assertTrue(first.refusals().stream().allMatch(r -> r.reason().equals("System-text hash differs from peer manifest")), first::toString);
+    assertEquals(List.of(2, 2), reads.values().stream().sorted().toList(), "Each failed hash is fetched again once");
+    var io = new StoreFiles(copy.root(), manager.testGetSecurityValidator());
+    var catalog = StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator());
+    for (var session : catalog.sessions()) {
+      assertTrue(session.session().systemLogs().files().isEmpty());
+      assertFalse(Files.exists(session.path().resolve("robot/system/peer")));
+    }
+    assertTrue(SystemLogIndex.read(io, copy.root().resolve("robots").resolve(SERIAL)).files().isEmpty());
+    Path journal;
+    try (var paths = Files.walk(copy.root().resolve(".sync"))) {
+      var all = paths.toList();
+      assertTrue(all.stream().noneMatch(p -> p.getFileName().toString().equals("placing.json") && p.getParent().getFileName().toString().equals("system")), "Bad bytes never enter pending placement");
+      journal = all.stream().filter(p -> p.endsWith(Path.of("system", "pull.json"))).findFirst().orElseThrow();
+    }
+    var failed = io.read(journal, PullManifest.class);
+    assertEquals(2, failed.files().size());
+    assertTrue(failed.files().stream().allMatch(f -> !f.verified() && f.retries() == 1 && "System-text hash differs from peer manifest".equals(f.failure())));
+    reads.clear();
+    var next = copy.sync(url(), 0, p -> {}, WALL, corrupt).get(20, TimeUnit.SECONDS);
+    assertTrue(next.stopped().isEmpty(), next::toString); assertTrue(next.filesCopied().isEmpty(), next::toString);
+    assertTrue(reads.isEmpty(), "An unchanged refused identity retains its failure instead of fetching forever");
+    assertEquals(failed, io.read(journal, PullManifest.class));
+    assertTrue(SystemLogIndex.read(io, copy.root().resolve("robots").resolve(SERIAL)).files().isEmpty());
+    assertTrue(StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).sessions().stream().allMatch(s -> s.session().systemLogs().files().isEmpty()));
+  }
   @Test void aPeerKeepsOlderRotationsWhileAMirrorSelectsOnlySessionSpans() throws Exception {
     origin.capture(io -> {
       var robot = origin.root().resolve("robots").resolve(SERIAL); var text = robot.resolve("system/old.txt");
