@@ -136,10 +136,14 @@ class IncrementalScanTest {
     var f = fixture(); var manager = new LogManager(); manager.addAllowedDirectory(temp);
     try {
       var old = (LazyParsedLog) manager.getOrLoad(f.path().toString());
+      var original = FileSnapshot.of(f.path());
       // End the mapping before replacement so this probes identity on Windows too.
       old.close(); var replacement = temp.resolve("replacement.wpilog"); Files.write(replacement, f.bytes());
-      Files.setAttribute(replacement, "basic:creationTime", java.nio.file.attribute.FileTime.fromMillis(123456));
       Files.move(replacement, f.path(), StandardCopyOption.REPLACE_EXISTING);
+      // NTFS can tunnel the deleted destination's creation time onto the renamed file.
+      // Set the distinct identity afterwards; identical time and anchors cannot prove replacement.
+      Files.setAttribute(f.path(), "basic:creationTime", java.nio.file.attribute.FileTime.fromMillis(123456));
+      assertFalse(FileSnapshot.of(f.path()).grewFrom(original), "The replacement fixture must have a distinct identity");
       var loaded = (LazyParsedLog) manager.getOrLoad(f.path().toString());
       assertEquals(old.scan().scannedFrom(), loaded.scan().scannedFrom()); assertEquals(3, loaded.sampleCount("/x"));
     } finally { manager.shutdown(); }
