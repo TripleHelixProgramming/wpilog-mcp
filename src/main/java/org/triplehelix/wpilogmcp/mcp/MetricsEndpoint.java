@@ -84,6 +84,8 @@ public final class MetricsEndpoint {
       });
       for (var provider : live.providers()) {
         var labels = Map.of("provider", provider.name());
+        out.gauge("wpilog_provider_state", "Published provider state (1 for the named state).",
+            Map.of("provider", provider.name(), "state", provider.state()), 1);
         if (provider.lastRoundTripMs() != null) out.gauge("wpilog_provider_sample_duration_seconds", "Last completed provider sample cost.", labels, provider.lastRoundTripMs() / 1000.0);
         out.gauge("wpilog_provider_sample_bytes", "Last completed provider sample payload size.", labels, provider.sampleBytes());
         out.gauge("wpilog_provider_period_seconds", "Current provider sampling or follow interval.", labels, provider.periodSec());

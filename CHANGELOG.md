@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Capture and store
 
+- Configured `context.photonvision` hosts now supply PhotonVision v2026.3.4 camera configuration snapshots beside NT detections; calibration, pipeline and hardware context were previously absent. Backend/version/shape failures retain the last snapshot and publish a stand-down reason in live tools, manifests and metrics.
 - Pulled system text now travels through the store door, peer sync and mirrors with committed-prefix reads, hash checks and growing-file resume. Previously only telemetry files crossed that boundary; mirrored searches now use their local text, and a missing copy names the collecting server.
 - A server with a `capture` section records NetworkTables into ordinary WPILOG files and serves the open capture to every log tool. Previously tools required a file already on disk. Clock continuity distinguishes a Wi-Fi interruption from a new boot; exclusion, thinning and per-topic costs make recording policy explicit. Each tool sees a fixed prefix, with a configurable hot window and older values read from the file.
 - Manifest-backed stores organize WPILOG and REV files by robot and session, preserve names and provenance, deduplicate by SHA-256 and pair REV companions by data correlation. `wpilog-mcp import`, HTTP import jobs and a watched inbox bring existing folders or USB copies into that layout; previously filenames were the only organization. Moves leave readable aliases, and hand-copied strays remain unmanaged.
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Live tools and metrics
 
+- `analyze_vision` now reports recorded `camera_settings` for each exact camera identity and requested window, or says none was captured; previously detections had no captured calibration or pipeline context.
 - `render_chart` returns a bounded PNG and versioned chart specification with full-window measurements and inputs, for time series, histograms, scatter and field poses. Previously an assistant could return numbers but no chart; held signals use steps, phases come from the resolver, and a missing headless toolkit leaves an explained JSON result.
 
 - Time-scoped tools accept `last_seconds`, reporting the resolved window for each call; agents previously needed absolute robot timestamps to ask about recent data. Present-tense discovery, startup guidance and the `pit://session/current` resource expose the current capture and its identity, gateway and providers.
@@ -94,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Growing files on Windows now resume with creation time as the identity fallback plus saved byte anchors; a null file key previously forced every growth to scan afresh. Growth retirement no longer issues a duplicate reload notification.
 - The standalone guide again caps `capture.pull.rate_bytes` at the parser's 2,147,483,647 bytes/second; the windowed-mapping change had incorrectly copied the 1 TiB file-size bound into that row. Capture-table range claims now exercise the configuration parser at their boundaries.
 - `render_chart` draws the full window by default, retaining pixel-column extremes in dense time series; previously a default image silently showed only the first 1,000 samples. Explicit limit/offset still pages the drawing and summaries always cover the whole window.
 - Chart rendering errors, including missing-font `InternalError`, skip only the image with the error class; previously some toolkit failures lost the complete JSON result.
@@ -133,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Windows resume assertions now require the resumed offset on every platform. Synthetic PhotonVision HTTP/WebSocket tests pin version, route shapes, clock mapping, change delivery, stand-down, metrics and exact-camera tool context, with planted faults; previously these provider paths had no coverage.
 - Synthetic tool tests explicitly admit their mock log directories and restore the prior roots afterwards. Previously they depended on the cached-path exception, so a worker retaining lease admission could reject the same mock inputs under a different fork/class order.
 - Incremental scans are checked against fresh scans and independent records, with changed-prefix, partial-tail, late-entry and stale-cache plants. Scripted SSH image reports check read-only commands, absent/refused evidence, hash sizes and credential redaction; no robot files or text are fixtures.
 - The metrics-stack check waits for its Grafana datasource query within the existing readiness bound; previously a plugin update just after dashboard provisioning could produce a transient 404 and fail CI.

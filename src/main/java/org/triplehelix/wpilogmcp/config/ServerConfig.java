@@ -36,11 +36,29 @@ public record ServerConfig(
     Integer idleExitMinutes,
     CaptureConfig capture,
     MirrorConfig mirror,
-    MetricsConfig metrics
+    MetricsConfig metrics,
+    ContextConfig context
 ) {
 
   public ServerConfig {
     logdirs = logdirs == null ? null : List.copyOf(logdirs);
+  }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture, MirrorConfig mirror, MetricsConfig metrics) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, capture, mirror, metrics, null);
+  }
+
+  /** Context is configured beside capture, and resolved only after named-server defaults merge. */
+  public CaptureConfig effectiveCapture() {
+    if (capture == null || context == null) return capture;
+    var old = capture.providers();
+    return new CaptureConfig(capture.addresses(), capture.store(), capture.periodSeconds(), capture.policy(),
+        capture.hotWindowUs(), capture.maxFileBytes(), capture.pull(), capture.gatewayPort(),
+        new ProviderConfig(old.robotSsh(), old.stats(), old.tails(), context.photonvision()));
   }
 
   public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
@@ -132,7 +150,8 @@ public record ServerConfig(
         idleExitMinutes != null ? idleExitMinutes : defaults.idleExitMinutes(),
         capture != null ? capture : defaults.capture(),
         mirror != null ? mirror : defaults.mirror(),
-        metrics != null ? metrics : defaults.metrics()
+        metrics != null ? metrics : defaults.metrics(),
+        context != null ? context : defaults.context()
     );
   }
 }

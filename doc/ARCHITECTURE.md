@@ -167,7 +167,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4/server` | Pure subscription/announcement/value fan-out and a bounded WebSocket adapter, used by configured capture and the loopback robot fixture |
 | `ssh` | One authenticated connection per host, pinned keys, bounded exec channels and independent SFTP/follow channels; reconnect only during NT4 presence |
 | `capture/pull` | Disabled-state gate, borrowed SFTP/exec channels, telemetry and system-text transfer passes outside the NT4 loop; the operator's read-only `robot-facts` command and pure evidence report |
-| `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers and published provider state |
+| `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers, pinned PhotonVision configuration and published provider state |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
@@ -594,15 +594,18 @@ The old mapping retires after its last use; a result spanning growth is still di
 the existing explained error. Successful disk-backed calls report the admitted snapshot's
 `inputs.file_size_bytes`. The writer's own live log keeps its fixed-prefix behavior.
 
-Resuming requires growth and equal, non-null filesystem identities, plus unchanged bytes of
+Resuming requires growth and equal filesystem identities, plus unchanged bytes of
 the complete WPILOG header (extra header included) and the last complete record before the old
 resume point. The scan saves SHA-256 digests of those two anchors, not views of an old mapping
 that a rewrite could change. Anchor reads use a bounded buffer; their cost depends on the header
 and last record sizes. An interior rewrite preserving both anchors is not detected. This is a
 cheap append check, not a full-prefix integrity proof: hashing every indexed byte would cost the
 scan we are avoiding. Replacements, shrinkage, damaged prior scans, failed anchors and unknown
-identities all load afresh. In particular, filesystems/JDKs without a file key (including the
-Windows JDK's usual provider) conservatively rescan. The checkpoint lives in the existing bounded
+identities all load afresh. A filesystem key is the preferred identity. Where the JDK returns no
+key, including the usual Windows provider, the file's creation time is the identity instead.
+NTFS can give a recreated file the deleted file's creation time within a short window (file
+system tunneling); the saved header and last-record anchors defend against that reuse. A
+replacement preserving both creation time and anchors can still escape this cheap check. The checkpoint lives in the existing bounded
 log cache, not a second collection that grows with every path ever read.
 
 A loaded log follows its file. The manager keeps the file's size, modification time, and identity (the inode, where the file system has one) as they were just before the log was read, and compares them with the file on every call: a file that changed is loaded again, and a file that is gone is an error. The comparison is made again after each call, and a result read across a change is discarded with an error that says what changed, because the result may hold old data (a file renamed into place keeps serving its old bytes through the mapping) or mix old and new (a file overwritten in place has its old record offsets applied to new bytes). A change the attributes do not show can still make a read of the mapping fault, which the JVM reports as an `InternalError`; the tool base turns that into the same explained error and unloads the log, where before it escaped every catch and ended a stdio server. Each session is told once, on its next result from the log, that the log was reloaded, since results it holds from earlier calls came from the old file; a session that first used the log after the change is not told, having nothing stale. The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when the candidates or their files changed, keeping an offset set by hand for a file that did not. These rules came from logs copied off a robot while it was still writing them, and copied again once they had grown.
@@ -730,6 +733,35 @@ Enrichment adds a log's match result to the listing: the alliance, the scores, a
 The key is never logged or returned by a tool.
 
 Game data is one file per season, bundled in the JAR. The current season's is loaded at startup, and the others on first use. It holds match timing, scoring, field geometry, and robot limits, transcribed from that season's final game manual, which it cites.
+
+## PhotonVision context in the capture
+
+`context.photonvision` names explicit backends. The provider uses the JDK HTTP/WebSocket client
+on its own worker; no backend I/O joins the NT4 loop or the store queue. PhotonVision v2026.3.4's
+settings export is a ZIP containing SQLite. The archive is bounded, validated, hashed and
+released; its live `UIPhotonConfiguration` stream supplies structured current settings without
+adding a SQL/native dependency. The reader keeps only the requested camera facts, not network
+credentials or the whole export. Unknown versions, required-field mismatches, outages and limits
+stand down for the session, with state/reason and costs published through the existing provider
+snapshot. A new session may try again.
+
+WebSocket messages use the existing bounded MessagePack decoder. The next message is requested
+only after the preceding snapshot is written on the ordered capture loop, so copied work stays
+bounded. Per-message and archive byte limits, a camera-count bound and request deadlines give
+that backpressure a stated outcome: stand down, retain the last recorded configuration. A
+snapshot's timestamp is the robot time estimate captured at network receipt, before either
+worker queue; this backend has no timestamp of its own. Selective pipeline notifications omit
+camera identity in the pinned release. A replacement read-only socket obtains a complete
+snapshot; the old socket is closed before that handshake because the backend broadcasts full
+state to existing clients too. The provider never applies a delta to a guessed camera or sends
+a settings mutation.
+
+`analyze_vision` attaches `camera_settings` by exact camera name and records the settings entry
+in inputs. The last snapshot before a requested window is held, and changes inside it retain
+their receipt timestamps. Nothing captured after the window's end describes that window.
+Calibration errors and pipeline modes are stated configuration, not quality inferred from
+observations. Missing, differently named or unreadable settings report `none_captured` with a
+reason. The pose tools currently report robot-level comparisons, not per-camera context.
 
 ## SSH context in the capture
 

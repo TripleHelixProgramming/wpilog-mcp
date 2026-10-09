@@ -338,6 +338,54 @@ continue to use `robot.json`; pins in this store are not copied from a peer. If 
 key changes and authentication would send a password or key, verify it and remove that host's
 pin before restarting. Never place authentication secrets directly in the tail block.
 
+#### PhotonVision configuration context
+
+`context.photonvision` is a list of coprocessor hosts beside `capture`, off when absent or empty.
+It requires capture and inherits as a whole block from `defaults`; a named server can clear it
+with `context: {photonvision: []}`. Hosts support environment interpolation, default to port 5800,
+and may specify a port. URLs, credentials, paths, duplicate addresses and unknown keys are refused
+with the configuration key in the error.
+
+```yaml
+servers:
+  pit:
+    transport: http
+    capture:
+      robot: {team: 2363}
+      store: ~/wpilog-store
+    context:
+      photonvision: [photonvision.local]
+```
+
+The provider is pinned to **PhotonVision v2026.3.4**, whose UI routes are private, not a stable API.
+It requests `GET /api/settings/photonvision_config.zip` at session start and validates the ZIP's
+`photon.sqlite` member. Structured current configuration comes from binary MessagePack on
+`ws://<host>:5800/websocket_data`, including calibration matrices and reprojection errors per
+resolution, pipeline type/resolution/exposure/gain/3D/multi-tag/field layout, software version,
+device type and hardware status. The archive is fingerprinted and discarded; no SQL or native
+runtime is added. The provider sends no settings mutations. Keep this unauthenticated backend
+on the private team network.
+
+Each snapshot writes one JSON record per camera under `/Daemon/PhotonVision/<camera>/Settings`.
+The UI supplies no snapshot timestamp: receipt is mapped through the NT4 robot-clock estimate,
+with that basis and the pinned release in metadata. It never uses the HTTP fetch's local clock.
+This release omits the camera ID from selective change notifications; the provider opens a new
+read-only socket to receive complete state instead of guessing which camera changed.
+Names must match the NT camera names exactly; an unrelated generic robot-code camera label is
+not inferred to mean a particular coprocessor camera.
+
+An unsupported version/shape, unavailable backend or exceeded bound logs the reason and stands
+down until a new session; the last captured settings remain readable. HTTP bodies are bounded
+to 64 MiB, expanded ZIP contents to 256 MiB, WebSocket messages to 4 MiB and snapshots to 64 cameras.
+Requests/initial snapshots have a ten-second deadline; unanswered WebSocket pings have a
+five-second deadline, with pongs stamped on the network callback so a delayed worker cannot
+blame the backend. The worker owns network waits and decoding;
+reading the next message waits for the previous snapshot's ordered delivery. `list_sessions`
+and the manifest expose the provider's state/reason and record/byte/round-trip costs;
+`get_latest_values` marks its entries `source: photonvision`. `wpilog_provider_state` reports
+one sample labeled by provider and its current state. Presence of `/photonvision/<camera>/`
+topics without configured hosts logs one configuration suggestion per capture service.
+
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
 Unknown capture keys and invalid values name the key in the startup error. Capture requires
 `transport: http` and `idle_exit_minutes: 0` (the default). A robot that is off is normal: HTTP

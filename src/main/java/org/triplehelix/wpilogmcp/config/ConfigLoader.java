@@ -375,11 +375,13 @@ public class ConfigLoader {
         getInteger(block, "idle_exit_minutes"),
         CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings)),
         MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings))),
-        MetricsConfig.parse(block.get("metrics"))
+        MetricsConfig.parse(block.get("metrics")),
+        ContextConfig.parse(block.get("context"), text -> interpolate(text, warnings))
     );
   }
 
   private void validate(ServerConfig config) throws ConfigException {
+    if (config.context() != null && !config.context().photonvision().isEmpty() && config.capture() == null) throw new ConfigException("context.photonvision requires capture");
     if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
     if (config.mirror() != null && !config.isHttp()) throw new ConfigException("mirror requires transport: http");
     if (config.mirror() != null && config.capture() != null && config.mirror().folder().equals(config.capture().store())) {

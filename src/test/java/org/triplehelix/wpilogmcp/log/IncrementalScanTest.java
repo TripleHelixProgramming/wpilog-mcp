@@ -93,16 +93,39 @@ class IncrementalScanTest {
     assertFalse(new FileSnapshot(11, time, null).grewFrom(previous));
     assertFalse(new FileSnapshot(10, time, "file-A").grewFrom(previous));
   }
+  @Test void creationTimeProvesIdentityWhenTheFileKeyIsUnavailable() throws Exception {
+    var f = fixture(); var priorScan = scan(f.path());
+    var modified = java.nio.file.attribute.FileTime.fromMillis(3000);
+    var birth = java.nio.file.attribute.FileTime.fromMillis(1000);
+    var laterBirth = java.nio.file.attribute.FileTime.fromMillis(2000);
+    var previous = new FileSnapshot(f.half(), modified, null, birth);
+    Files.write(f.path(), f.bytes()); // Both saved anchors remain identical.
+    var grown = new FileSnapshot(f.bytes().length, modified, null, birth);
+    var replaced = new FileSnapshot(f.bytes().length, modified, null, laterBirth);
+    assertTrue(grown.grewFrom(previous));
+    assertFalse(replaced.grewFrom(previous));
+    try (var log = LazyParsedLog.open(f.path(), 1_000_000, grown.grewFrom(previous) ? priorScan : null)) {
+      assertEquals(f.half(), log.scan().scannedFrom());
+    }
+    try (var log = LazyParsedLog.open(f.path(), 1_000_000, replaced.grewFrom(previous) ? priorScan : null)) {
+      assertEquals(priorScan.scannedFrom(), log.scan().scannedFrom());
+    }
+    assertFalse(previous.sameAs(new FileSnapshot(f.half(), modified, null, laterBirth)));
+    assertTrue(previous.describeChange(new FileSnapshot(f.half(), modified, null, laterBirth)).contains("replaced"));
+  }
   @Test void managerEvictsDecodedPrefixesAndRetiresOnlyAfterUsesEnd() throws Exception {
     var f = fixture(); var manager = new LogManager(); manager.addAllowedDirectory(temp);
     try {
       try (var old = manager.acquire(f.path().toString())) {
         var first = (LazyParsedLog) old.log(); assertEquals(1, first.values().get("/x").size());
+        assertNull(manager.reloadNoticeFor("growth-reader", f.path().toString()));
         Files.write(f.path(), Arrays.copyOfRange(f.bytes(), f.half(), f.bytes().length), StandardOpenOption.APPEND);
         assertNotNull(manager.changeDuringCall(f.path().toString(), first, old.snapshot()));
+        assertNull(manager.reloadNoticeFor("growth-reader", f.path().toString()), "Retirement is not a second reload");
         try (var next = manager.acquire(f.path().toString())) {
           var second = (LazyParsedLog) next.log(); assertNotSame(first, second);
-          assertEquals(old.snapshot().fileKey() == null ? first.scan().scannedFrom() : f.half(), second.scan().scannedFrom());
+          assertEquals(f.half(), second.scan().scannedFrom());
+          assertEquals(1, manager.reloadNoticeFor("growth-reader", f.path().toString()).generation());
           assertEquals(3, second.values().get("/x").size()); assertEquals(8., second.values().get("/x").get(2).value());
           assertEquals(1, first.values().get("/x").size(), "Old use keeps its prefix and readable mapping");
         }
@@ -115,6 +138,7 @@ class IncrementalScanTest {
       var old = (LazyParsedLog) manager.getOrLoad(f.path().toString());
       // End the mapping before replacement so this probes identity on Windows too.
       old.close(); var replacement = temp.resolve("replacement.wpilog"); Files.write(replacement, f.bytes());
+      Files.setAttribute(replacement, "basic:creationTime", java.nio.file.attribute.FileTime.fromMillis(123456));
       Files.move(replacement, f.path(), StandardCopyOption.REPLACE_EXISTING);
       var loaded = (LazyParsedLog) manager.getOrLoad(f.path().toString());
       assertEquals(old.scan().scannedFrom(), loaded.scan().scannedFrom()); assertEquals(3, loaded.sampleCount("/x"));

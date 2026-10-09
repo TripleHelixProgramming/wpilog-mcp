@@ -699,7 +699,7 @@ public class LogManager {
       try { now = FileSnapshot.of(Path.of(normalizedPath)); } catch (IOException e) { now = null; }
       if (log instanceof LazyParsedLog lazy && now != null && now.grewFrom(before)
           && logCache.get(normalizedPath) == log) {
-        recordReload(normalizedPath, change); lazy.close();
+        lazy.close(); // The next load records the one reload notification.
       } else fileChanged(normalizedPath, log, change);
     }
     return change;

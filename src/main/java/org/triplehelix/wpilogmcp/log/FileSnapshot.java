@@ -15,12 +15,12 @@ import java.time.format.DateTimeFormatter;
 
 /**
  * A file as it looked at one moment: its size, modification time, and identity (the inode on
- * Unix; Windows reports none). A loaded log keeps the snapshot taken before it was read, and
+ * Unix; creation time where no key is exposed). A loaded log keeps the snapshot taken before it was read, and
  * every later call compares it with the file now, so a log copied off the robot again once it has
  * grown is reloaded rather than answered from the first copy, and a result read while the file
  * was being replaced is discarded rather than trusted.
  *
- * <p>The three fields catch the three ways a file changes under a loaded log. A file renamed
+ * <p>The attributes catch the three ways a file changes under a loaded log. A file renamed
  * into place (rsync's default) has a new identity; one overwritten in place ({@code cp} keeps the
  * inode) has a new size or time; one still being written grows between two looks. A change the
  * attributes do not show (the same bytes rewritten within the file system's time resolution)
@@ -31,9 +31,14 @@ import java.time.format.DateTimeFormatter;
  * @param size The file's size in bytes
  * @param modified Its last modification time
  * @param fileKey Its identity, or null where the file system reports none
+ * @param created Its creation time, the identity fallback when a file key is unavailable
  * @since 0.9.1
  */
-public record FileSnapshot(long size, FileTime modified, Object fileKey) {
+public record FileSnapshot(long size, FileTime modified, Object fileKey, FileTime created) {
+
+  public FileSnapshot(long size, FileTime modified, Object fileKey) {
+    this(size, modified, fileKey, null);
+  }
 
   private static final DateTimeFormatter TIME =
       DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'").withZone(ZoneOffset.UTC);
@@ -48,7 +53,7 @@ public record FileSnapshot(long size, FileTime modified, Object fileKey) {
   public static FileSnapshot of(Path path) throws IOException {
     try {
       var attrs = Files.readAttributes(path, BasicFileAttributes.class);
-      return new FileSnapshot(attrs.size(), attrs.lastModifiedTime(), attrs.fileKey());
+      return new FileSnapshot(attrs.size(), attrs.lastModifiedTime(), attrs.fileKey(), attrs.creationTime());
     } catch (NoSuchFileException e) {
       return null;
     }
@@ -56,20 +61,26 @@ public record FileSnapshot(long size, FileTime modified, Object fileKey) {
 
   /**
    * Whether the file is, as far as its attributes show, the one this snapshot was taken of. The
-   * identity is compared only when both sides have one.
+   * file keys are preferred; creation time is the fallback where a key is unavailable.
    *
    * @param now The file's snapshot now, or null when it no longer exists
    */
   public boolean sameAs(FileSnapshot now) {
     if (now == null) return false;
     if (size != now.size || !modified.equals(now.modified)) return false;
-    return fileKey == null || now.fileKey == null || fileKey.equals(now.fileKey);
+    return sameIdentity(now);
   }
 
-  /** Unknown identities are conservatively rescanned, including filesystems without file keys. */
+  private boolean sameIdentity(FileSnapshot other) {
+    if (fileKey != null && other.fileKey != null) return fileKey.equals(other.fileKey);
+    return created != null && other.created != null ? created.equals(other.created) : true;
+  }
+
+  /** Creation time nominates a Windows append; the scan must still verify both saved byte anchors. */
   public boolean grewFrom(FileSnapshot previous) {
-    return previous != null && size > previous.size && fileKey != null && previous.fileKey != null
-        && fileKey.equals(previous.fileKey);
+    return previous != null && size > previous.size
+        && (fileKey != null && previous.fileKey != null || created != null && previous.created != null)
+        && sameIdentity(previous);
   }
 
   /**
@@ -81,7 +92,7 @@ public record FileSnapshot(long size, FileTime modified, Object fileKey) {
   public String describeChange(FileSnapshot now) {
     if (now == null) return "the file no longer exists";
     var parts = new java.util.ArrayList<String>();
-    if (fileKey != null && now.fileKey != null && !fileKey.equals(now.fileKey)) {
+    if (!sameIdentity(now)) {
       parts.add("it was replaced by another file");
     }
     if (size != now.size) {

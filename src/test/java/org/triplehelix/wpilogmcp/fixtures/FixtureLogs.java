@@ -622,6 +622,12 @@ public final class FixtureLogs {
     double end = 60.0;
     var segments = List.of(new Segment(5.0, 55.0, false));
     try (var w = new FixtureWriter(path, AKIT_METADATA)) {
+      w.raw("/Daemon/PhotonVision/Camera0/Settings", "json", start,
+          org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeString("""
+              {"camera":"Camera0","software_version":"v2026.3.4","device_type":"synthetic",
+               "calibrations":[{"resolution":{"width":640,"height":480},"mean_reprojection_errors_px":[0.25,0.5]}],
+               "pipeline":{"type":"AprilTag","mode_3d":true,"multi_tag":true}}
+              """));
       akitDriverStation(w, start, end, segments, false, "");
       // Pose3d's schema (and its nested ones) come from WPILib; the custom structs are hand-written
       w.structArr("/RealOutputs/Vision/Summary/RobotPosesAccepted", POSE3D, start)

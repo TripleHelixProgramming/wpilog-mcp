@@ -91,7 +91,7 @@ public final class CaptureService implements AutoCloseable {
     placement.onStatus(live::status);
     var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs), config.maxFileBytes(), outputs);
     var gate = new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, config.pull().settleUs());
-    providers = (config.providers().robotSsh() || !config.providers().tails().isEmpty() || pulls == null && config.pull().active())
+    providers = (config.providers().robotSsh() || !config.providers().tails().isEmpty() || !config.providers().photonvision().isEmpty() || pulls == null && config.pull().active())
         ? new org.triplehelix.wpilogmcp.capture.context.ContextProviders(config, writer, live, loop, store, clock) : null;
     var factory = pulls == null ? (org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory)
         (settings, admission, storage, wall, identity) -> new org.triplehelix.wpilogmcp.capture.pull.PullCoordinator(
@@ -99,7 +99,7 @@ public final class CaptureService implements AutoCloseable {
     pull = config.pull().active() ? factory.create(config.pull(), gate, store, clock,
         learned -> loop.execute(() -> { if (learned.connection() == gate.connection()) writer.identity(learned.device()); })) : null;
     if (pull != null) live.attachPull(pull::progress);
-    client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), listener(writer, gate, live, gateway, providers),
+    client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), listener(writer, gate, live, gateway, providers, config.providers().photonvision().isEmpty()),
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
     live.attach(client);
   }
@@ -149,15 +149,15 @@ public final class CaptureService implements AutoCloseable {
 
   /** These are the same ordered values the client publishes to its latest-value table. */
   static Nt4Client.Listener listener(CaptureWriter writer, org.triplehelix.wpilogmcp.capture.pull.PullGate gate) {
-    return listener(writer, gate, null, null, null);
+    return listener(writer, gate, null, null, null, true);
   }
   private static Nt4Client.Listener listener(CaptureWriter writer, org.triplehelix.wpilogmcp.capture.pull.PullGate gate,
       LiveCapture live, org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway gateway,
-      org.triplehelix.wpilogmcp.capture.context.ContextProviders providers) {
+      org.triplehelix.wpilogmcp.capture.context.ContextProviders providers, boolean suggestPhotonVision) {
     return new Nt4Client.Listener() {
       private final java.util.Map<Integer, String> names = new java.util.HashMap<>();
       private int controlId = -1;
-      private boolean synchronizedClock;
+      private boolean synchronizedClock, photonSuggested;
       @Override public void connected(java.net.URI address, String protocol) { synchronizedClock = false; controlId = -1; names.clear(); gate.connected(address.getHost()); writer.connected(address, protocol);
         if (providers != null) providers.connected(address.getHost());
       }
@@ -176,6 +176,11 @@ public final class CaptureService implements AutoCloseable {
       }
       @Override public void announce(org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce topic) {
         names.put(topic.id(), topic.name());
+        if (suggestPhotonVision && !photonSuggested && topic.name().matches("/photonvision/[^/]+/.+")) {
+          photonSuggested = true;
+          org.slf4j.LoggerFactory.getLogger(CaptureService.class).info(
+              "PhotonVision topics are present; configure context.photonvision: [host] to capture camera settings");
+        }
         if (topic.name().equals("/FMSInfo/FMSControlData")) controlId = topic.id(); writer.announce(topic);
         if (providers != null) providers.sessionChanged();
         if (gateway != null) gateway.announce(topic.name(), topic.type(), topic.properties());

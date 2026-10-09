@@ -44,6 +44,7 @@ public final class ContextProviders implements AutoCloseable {
   private final Clock wall;
   private final SharedSsh ssh;
   private final List<Follower> tails = new ArrayList<>();
+  private final List<PhotonVisionProvider> photons = new ArrayList<>();
   private final AtomicBoolean stopped = new AtomicBoolean(), deliveryQueued = new AtomicBoolean();
   private final AtomicReference<Reading> pending = new AtomicReference<>();
   private final StatsProvider stats;
@@ -83,6 +84,25 @@ public final class ContextProviders implements AutoCloseable {
       var follower = new Follower(tail, provider); slot.set(follower); tails.add(follower);
       if (tail.host() != null) follower.host = host(tail.host(), tail.ssh());
     }
+    for (var address : config.providers().photonvision()) {
+      var owner = new AtomicReference<PhotonVisionProvider>();
+      var provider = new PhotonVisionProvider(address, live::robotNowUs, (target, timestamp, cameras, metadata) -> {
+        var done = new CompletableFuture<Void>();
+        if (stopped.get()) { done.complete(null); return done; }
+        try { loop.execute(() -> {
+          try {
+            if (!stopped.get() && writer.session() == target && open) {
+              for (var camera : cameras) owner.get().recorded(record("/Daemon/PhotonVision/" + camera.name() + "/Settings",
+                  "json", camera.settings().toString(), timestamp, metadata));
+              publish();
+            }
+            done.complete(null);
+          } catch (Exception e) { done.completeExceptionally(e); }
+        }); } catch (java.util.concurrent.RejectedExecutionException e) { done.complete(null); }
+        return done;
+      }, this::requestDrain);
+      owner.set(provider); photons.add(provider);
+    }
   }
   private SharedSsh.Host host(String address, org.triplehelix.wpilogmcp.config.PullConfig.Ssh settings) {
     var host = ssh.host(address, settings);
@@ -109,6 +129,7 @@ public final class ContextProviders implements AutoCloseable {
   }
   public void disconnected() {
     connected = false; open = false;
+    photons.forEach(p -> p.session(session, false));
     if (robot != null) robot.required(false);
     tails.forEach(t -> { if (t.host != null) t.host.required(false); });
     publish();
@@ -121,6 +142,7 @@ public final class ContextProviders implements AutoCloseable {
       tails.forEach(t -> { t.records = 0; t.bytes = 0; });
     }
     tails.forEach(t -> t.provider.session(current));
+    photons.forEach(p -> p.session(current, open));
   }
   /** A borrowed SFTP channel never closes the shared connection. Pull still applies its own gate. */
   public SftpTransport pull(String address, org.triplehelix.wpilogmcp.config.PullConfig settings, String pin) throws IOException {
@@ -244,10 +266,11 @@ public final class ContextProviders implements AutoCloseable {
           state, reason, value.state().equals("polling") ? periodUs / 1_000_000.0 : 0.25,
           value.roundTripMs(), null, buffer.linesPerSecond(loop.nowUs()), buffer.dropped(), 0, tail.records, tail.bytes, 0));
     }
+    photons.forEach(p -> snapshots.add(p.status()));
     writer.providers(snapshots, kernel); live.providers(snapshots);
   }
   public CompletableFuture<Void> closeAsync() {
-    if (stopped.compareAndSet(false, true)) { connected = false; open = false; tails.forEach(t -> t.provider.close()); worker.close(); }
+    if (stopped.compareAndSet(false, true)) { connected = false; open = false; tails.forEach(t -> t.provider.close()); photons.forEach(PhotonVisionProvider::close); worker.close(); }
     return ssh.closeAsync();
   }
   @Override public void close() { closeAsync(); }

@@ -410,7 +410,7 @@ Each leaves the project working and tested on its own.
 7. **Metrics endpoint** (§12) (done: dependency-free Prometheus text on every HTTP server, published capture/pull/time snapshots, recorded-schema field paths, bounded arrays and JVM MBeans; independent parser, fixture replay and blocked-worker checks; Compose and starter dashboard. Provider samples await their own milestones): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
 8. **Gateway** (§7) (done: optional capture startup on a separate port, ordered topic/property/value forwarding, session unannounces and new ids, robot-clock replies and reconnects when the reference changes, bounded per-client queues and published connection counts; real-socket slow-reader checks and an independent ntcore harness client checked against the timeline. Real dashboards and AdvantageScope against a robot remain the user's manual check).
 9. **Windowed WPILOG mapping** (done: long-addressed windows of at most 1 GiB; straddling-record copies; compact ordinary-file offsets; shared cold reads; deterministic release before Windows moves; 4 KiB fixture/differential, conformance and import checks, and an opt-in generated 2.2 GB load/import/capture-rollover test). Imports, uploads, listing and captures accept files through 1 TiB.
-10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings`.
+10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings` (done: explicit hosts, v2026.3.4 export validation and MessagePack UI snapshots, receipt mapped through robot time, session stand-down with published costs/state, exact-camera/window tool context and synthetic HTTP/WebSocket/conformance checks; real coprocessor routes/version remain shop checks, §17).
 11. **roboRIO system stats** (§8.2) and **followed files** (§8.4) (done: shared SSH ownership, adaptive stats with send-time clock mapping and kernel offset, bounded receipt-time tails, provider snapshots in live tools/manifests/metrics, and MINA/conformance checks; enabled by default with SSH configuration for pre-shop testing; hardware costs and NI-image commands remain shop checks, §17).
 12. **JVM provider** (§8.3): JMX polling first, then the Flight Recorder stream, each gated on what the roboRIO's JRE turns out to carry (§17).
 13. **Session manifests and import matching** (§10, §11).
@@ -1016,8 +1016,9 @@ Release-review keepalive failures (before the tag):
 - The prefix rule is equal, known filesystem identity plus SHA-256 anchors of the complete
   header and the last complete record. These digests are saved before a rewrite can affect
   the old mapping. They do not detect an interior rewrite preserving both anchors. A full
-  prefix hash would reread the indexed bytes, defeating the secondary path's purpose. Unknown
-  identities (including JDK filesystems without file keys) conservatively load afresh.
+  prefix hash would reread the indexed bytes, defeating the secondary path's purpose. Where the
+  JDK exposes no file key, round 19 now uses creation time as identity;
+  the two anchors remain required, including on Windows.
   Fresh decode caches prevent stale short entries; across-growth calls still discard results.
 - `robot-facts <host>` and `robot-facts --server <name>` use one connection through the shared
   SSH implementation, its TOFU/change policy and size-scaled hash deadline. Named servers use
@@ -1038,3 +1039,52 @@ Release-review keepalive failures (before the tag):
   Provider budgets, live tail options/rotation, radio loss, sustained load and robot timing
   still require their own exercises. DEVELOPMENT.md maps the entire shop checklist to the
   report's found/absent/refused conclusions and the remaining manual work.
+
+### Round 19 choices: Windows identity and PhotonVision context
+
+- Windows uses creation time when the JDK supplies no file key; growth and both byte anchors
+  are still required. NTFS tunneling can reuse a deleted file's creation time for a replacement
+  within a short window, so anchors remain the defense. A replacement preserving that time and
+  both anchors is not proven distinct; hashing the whole prefix would lose the rescan benefit.
+  Growth retirement no longer records a duplicate reload notice; the next load records it.
+- The backend is pinned to [PhotonVision v2026.3.4](https://github.com/PhotonVision/photonvision/releases/tag/v2026.3.4).
+  [Server.java](https://github.com/PhotonVision/photonvision/blob/v2026.3.4/photon-server/src/main/java/org/photonvision/server/Server.java)
+  declares GET `/api/settings/photonvision_config.zip` and `/websocket_data`. The former is a
+  ZIP containing `photon.sqlite`, not a JSON settings response. We validate/hash/discard it and
+  use the latter's binary MessagePack `settings` plus `cameraSettings` document for current facts.
+  No PhotonVision implementation, SQLite dependency or native component is bundled.
+- [UIPhotonConfiguration](https://github.com/PhotonVision/photonvision/blob/v2026.3.4/photon-core/src/main/java/org/photonvision/common/dataflow/websocket/UIPhotonConfiguration.java)
+  pins `settings.general` version/device/hardware and `settings.atfl` field layout.
+  [UICameraConfiguration](https://github.com/PhotonVision/photonvision/blob/v2026.3.4/photon-core/src/main/java/org/photonvision/common/dataflow/websocket/UICameraConfiguration.java)
+  pins nickname/uniqueName, currentPipelineSettings/index, videoFormatList, calibrations and
+  connected/mismatch/deactivated flags. Calibration matrices and per-snapshot `meanErrors`
+  come from `UICameraCalibrationCoefficients`. Pipeline type is its Java enum ordinal, not
+  its different UI base index (AprilTag ordinal 5, base index 2). 3D and multi-tag fields are
+  required only on pipeline types that publish them; elsewhere they are null, not guessed false.
+- [VisionModule](https://github.com/PhotonVision/photonvision/blob/v2026.3.4/photon-core/src/main/java/org/photonvision/vision/processes/VisionModule.java)
+  sends selective `mutatePipelineSettings` without a camera ID. A new read-only WebSocket
+  causes a complete configuration broadcast; we close the prior connection before that
+  handshake to avoid receiving the broadcast twice, rather than assigning the delta to an
+  arbitrary camera. Other known UI telemetry messages are ignored.
+  Unsupported versions/required shapes and unknown messages stand down for the session.
+- These routes provide no configuration timestamp. `timestamp_basis` explicitly says receipt
+  mapped through NT4 server time; the estimate is captured on the network callback, not after
+  an HTTP fetch or queued write. Startup waits for an estimate. Metadata names the pinned
+  release, host and export hash. The archive is not retained, and network configuration is
+  not copied into capture entries. A disappeared backend leaves the last snapshot and reason.
+- The worker bounds export bytes (64 MiB), expansion (256 MiB), UI messages (4 MiB), cameras (64)
+  and request/initial-snapshot time (10 s). Keepalives use unanswered pings with a 5 s deadline
+  and network-thread pong receipt, so a worker delay is not charged to the backend. One message
+  at a time is delivered with backpressure
+  through the writer's context hook. Store contention cannot delay its delivery. State and
+  cost use existing manifest/live snapshots; `wpilog_provider_state` adds a labeled state gauge.
+- `context.photonvision` is beside capture, off when absent/empty, default port 5800 with an
+  optional explicit port for installations/tests. It inherits as a block and requires capture.
+  Camera names match exactly: a generic robot-code index is never mapped to a backend nickname
+  by assumption. `camera_settings` retains the last pre-window snapshot plus changes inside
+  the window. No current pose tool exposes per-camera context; their robot-level comparisons
+  remain unchanged. The catalog and response scenarios need no new calls.
+- Shop: confirm the coprocessor's release, export route/archive shape, binary WebSocket route
+  and document, camera nicknames, calibration errors/resolutions, pipeline changes and backend
+  restart behavior. The fixture proves our pinned protocol handling, not a real deployment's
+  routes or cost. The PhotonVision harness container remains step 2.

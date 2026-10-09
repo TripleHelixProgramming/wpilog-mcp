@@ -471,7 +471,9 @@ Step 1 is implemented: a scripted WPILib 2026 headless robot, real SSH/SFTP from
 roboRIO, and a packaged pit server checked over HTTP MCP. Timelines pin capture fidelity,
 identity, boots, match renames, pulling and the disabled gate. It runs separately from the ordinary
 suite; see [DEVELOPMENT.md](DEVELOPMENT.md#the-shop-harness). Step 2 is an NI-image container
-and PhotonVision. Actual roboRIO permissions, installed commands, radio behavior and hash cost
+and a real PhotonVision process. The v2026.3.4 provider now captures camera settings through
+its private HTTP/WebSocket routes, with exact-camera context in `analyze_vision`; its synthetic
+backend tests do not establish compatibility with another release. Actual roboRIO permissions, installed commands, radio behavior and hash cost
 still need the shop test; desktop simulation cannot establish them.
 
 Real-log replay extends step 1: the independent reader feeds the loopback gateway on every

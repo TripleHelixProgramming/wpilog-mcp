@@ -254,7 +254,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = "--internal-daemon".equals(args[0]) && !managed ? System.getenv(DaemonManager.STOP_TOKEN_ENV) : null;
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null), config.capture(), config.mirror(), config.metrics());
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.mirror(), config.metrics());
     } catch (ConfigException | IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);

@@ -408,6 +408,25 @@ check that the actual sshd permits an empty password, `lvuser` can read the robo
 cost on roboRIO 1 and 2. Wi-Fi loss, sustained load, and robot timing remain hardware checks.
 An NI-image container and PhotonVision belong to harness step 2.
 
+#### PhotonVision provider checks and shop facts
+
+`PhotonVisionProviderTest` uses a synthetic backend serving HTTP export and WebSocket messages
+on one loopback port, with no downloaded configuration. `PhotonCaptureTest` checks both cameras'
+records, timestamps, live tools, metrics and manifest while store work is blocked; the ordinary
+vision fixture carries settings for exactly one camera, and the conformance/differential sweep
+reads it. `ContextConfigTest` pins explicit hosts and inherited configuration. `IncrementalScanTest`
+requires the resumed offset on every platform: Windows CI must exercise creation-time identity,
+not permit a fallback fresh scan. Plants cover ignored identity, local-fetch timestamps,
+guessed missing fields, ignored selective changes and settings attributed to another camera.
+
+At the shop, confirm **PhotonVision v2026.3.4** on the coprocessor; GET
+`http://<host>:5800/api/settings/photonvision_config.zip` with a `photon.sqlite` member; and binary
+MessagePack `settings`/`cameraSettings` on `ws://<host>:5800/websocket_data`. Confirm the exact
+camera nicknames, calibration resolutions/reprojection errors, a pipeline/exposure change
+(including a selective notification), and the stand-down reason after backend restart.
+The private routes may change in another release: do not silently relax the pinned shape.
+The roboRIO facts collector checks SSH/NI-image facts; it does not replace these coprocessor checks.
+
 #### Replaying a directory of logs
 
 The ordinary suite's `LogReplayTest` uses every generated fixture, including schemas, empty

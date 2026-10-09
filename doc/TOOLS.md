@@ -208,7 +208,7 @@ is `not_applicable` with its reason.
 `providers[]` contains `name`, `state`, `reason` (stand-down or partial-sample explanation),
 `period_sec`, `last_round_trip_ms`, `robot_cpu_sec` (whole-robot processor time between samples,
 not CPU attributed to this provider), `lines_per_sec` (accepted in the current second),
-`dropped_lines`, `dropped_before_sync`, `records`, `bytes`, `sample_bytes` (last stats reply),
+`dropped_lines`, `dropped_before_sync`, `records`, `bytes`, `sample_bytes` (last provider payload),
 and `program_pids` (program PIDs observed in this session, used for crash-file placement).
 Unknown measurements are null. Provider records/bytes cover the session across rollover files;
 drop counters cover the provider's process lifetime. They are separate from NT4 topic counts.
@@ -222,7 +222,7 @@ Read the latest values by NT4 topic name, its `NT:` capture name, or a `/Daemon/
 
 - `entries` (required): Array of 1 to 2000 nonempty names; repeated names are returned once.
 
-**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`, `source`) and `missing[]`. `source` is `nt4`, `ssh`, or `tail`.
+**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`, `source`) and `missing[]`. `source` is `nt4`, `ssh`, `tail`, or `photonvision`.
 The timestamp is the robot's clock. Age is robot now minus that timestamp, using measured NT4
 time sync, independent of the laptop's calendar clock; before sync it is null. A future
 publisher timestamp can have a negative age. Type is the announce's authoritative NT4 string.
@@ -1686,6 +1686,20 @@ Analyze vision data: pose observation streams, target streams, pose sets, has-ta
 - `start_time`, `end_time` (optional): Time window
 - `jump_threshold` (optional): Distance threshold for pose jump detection in meters (default: 0.5)
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
+
+**camera_settings:** an object keyed by exact camera name for the analyzed observations, targets,
+pose sets, acquisitions and scalar vision pose estimates. Each value carries recorded configuration from `/Daemon/PhotonVision/<camera>/Settings`, matched by exact
+camera name, or `status: none_captured` with a `reason`. Captured context has `status: captured`,
+`camera`, `entry`, `basis` and `snapshots[]` (`timestamp_sec`, `settings`). Settings contain
+`calibrations` (resolution, intrinsics, distortion and `mean_reprojection_errors_px` per calibration
+snapshot), `pipeline` (type, index, name, resolution, raw exposure, auto exposure, gain, 3D,
+multi-tag and field layout), software version, device type and hardware status. It is stated
+context, never an inference or a judgment of detection quality. Raw exposure has the backend's
+units; none are invented. Inapplicable mode fields are null with their basis. The last snapshot
+before the window and updates within it are included; snapshots after its end are excluded.
+The `inputs.entries` block names each settings entry read. A robot-code label such as `Camera0`
+is not guessed to mean a differently named PhotonVision camera. Without an exact settings entry,
+none was captured for that identity.
 
 **observation_streams:** one stream per camera. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `latency_candidates` (numeric entries beside the stream whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`; they are listed, not analyzed, because the name does not say what the entry times or in which units: `get_statistics` reads one once the robot code has settled what it times and in which units), and `residual_vs_robot_pose` (`median_m`, `p95_m`, `max_m` of the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp). The robot pose may itself include vision corrections.
 

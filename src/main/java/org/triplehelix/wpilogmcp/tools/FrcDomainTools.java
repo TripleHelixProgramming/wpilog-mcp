@@ -467,6 +467,8 @@ public final class FrcDomainTools {
           + "with how often they are non-empty and poses per record. "
           + "target_acquisition: has-target entries with acquisition rate and flicker: "
           + "Limelight's <table>/tv and PhotonVision's photonvision/<camera>/hasTarget. "
+          + "camera_settings is keyed by camera name and contains recorded calibration errors and pipeline mode snapshots "
+          + "matched by exact camera name over the window, or none_captured with a reason; this is stated context, not inference. "
           + "pose_jumps: steps larger than jump_threshold in the robot pose and in a vision "
           + "pose estimate (the only scalar pose under a vision path, or those passed); a jump "
           + "within 0.5 s of the robot being enabled has "
@@ -671,6 +673,15 @@ public final class FrcDomainTools {
             + "entries" + (visionPrefix != null ? " under " + visionPrefix : "")
             + "; only pose jumps were checked.");
       }
+
+      // One context per camera, even when the log carries flags, observations and poses for it.
+      // Include scalar pose estimates whether or not the requested window contains a jump.
+      var cameraSettings = new java.util.TreeMap<String, JsonObject>();
+      java.util.stream.Stream.of(targetEntries, streams, targetStreams, poseSets,
+          vision.analyzed(SignalResolver.VisionKind.POSE_ESTIMATE)).flatMap(List::stream).sorted()
+          .forEach(name -> cameraSettings.computeIfAbsent(CameraSettings.cameraOf(name),
+              ignored -> CameraSettings.forEntry(log, name, startTime, endTime, builder)));
+      builder.addData("camera_settings", GSON.toJsonTree(cameraSettings));
 
       var enables = MatchTimeline.of(log).enabledSegments().stream()
           .map(MatchTimeline.Segment::start).toList();
