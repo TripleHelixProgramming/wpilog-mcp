@@ -1170,7 +1170,9 @@ class RevLogToolsTest extends ToolTestBase {
       // Set up: load multiple logs, then evict one manually
 
       var wpilog1 = createMockWpilog();
-      logManager.testPutLog(wpilog1.path(), wpilog1);
+      // This check owns an evictable insertion: testPutLog pins synthetic tool inputs.
+      String path = java.nio.file.Path.of(wpilog1.path()).toAbsolutePath().normalize().toString();
+      logManager.testGetLogCache().put(path, wpilog1);
 
       // Simulate in-progress sync for wpilog1
       var future = new java.util.concurrent.CompletableFuture<Void>();
@@ -1179,7 +1181,7 @@ class RevLogToolsTest extends ToolTestBase {
       assertTrue(logManager.isRevLogSyncInProgress(wpilog1.path()));
 
       // Force LRU eviction (heap-pressure-based eviction won't trigger in tests)
-      logManager.testGetLogCache().evictOne();
+      assertTrue(logManager.testGetLogCache().evictOne(), "An ordinary cache entry must be evictable");
 
       // The eviction callback should have cancelled the sync for wpilog1
       assertTrue(future.isCancelled() || future.isDone(),
