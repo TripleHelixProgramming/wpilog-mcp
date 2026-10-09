@@ -10,9 +10,20 @@
   const plot = typeof Plot === "function" ? new Plot(host, document.getElementById("plot")) : null;
   const consolePane = plot && typeof ConsolePane === "function" ? new ConsolePane(host, plot, document.getElementById("console")) : null;
   const fieldView = plot && typeof FieldView === "function" ? new FieldView(host, plot, document.getElementById("field")) : null;
+  const chartPane = new ChartPane(host, document.getElementById("chart-section"));
   const revPane = plot && typeof RevPane === "function" ? new RevPane(host, plot, document.getElementById("rev")) : null;
   /** How many of an array's elements "plot all" plots: a pane can hold that many. */
   const ELEMENTS_PLOTTED = 16;
+  let dataPane;
+  const dataReady = new Promise(resolve => {
+    const ready = () => { dataPane = new window.DataPane(host, document.getElementById("data-section")); resolve(dataPane); };
+    if (window.DataPane) ready(); else window.addEventListener("data-pane-ready", ready, { once: true });
+  });
+  document.getElementById("show-data").addEventListener("click", () => {
+    const names = plot.panes.flatMap(p => p.series.map(s => s.name));
+    if (selected && !names.includes(selected)) names.push(selected);
+    if (names.length) void dataReady.then(p => p.show(names, plot.view.start, plot.view.end)).catch(() => {});
+  });
 
   /** An array's length from get_entry_info's representative samples: the longest of them. */
   function arrayLength(info) {
@@ -68,6 +79,16 @@
 
   let entries = [];
   let selected = null;
+  let paneKind = "time_series";
+  document.addEventListener("pointerdown", event => { paneKind = event.target.closest("[data-pane-kind]")?.dataset.paneKind ?? paneKind; });
+  function selection(kind) {
+    kind = kind || paneKind;
+    const names = kind === "data" ? [...(dataPane?.names ?? [])] : kind === "field" ? (fieldView.entry ? [fieldView.entry] : [])
+      : kind === "histogram" || kind === "scatter" ? [...(chartPane.selection?.entries ?? [])] : plot.panes.flatMap(p => p.series.map(s => s.name));
+    if (!names.length && selected) names.push(selected);
+    return { path: plot.log?.path, entries: [...new Set(names)], start: plot.view.start, end: plot.view.end,
+      kind, selected: kind === "time_series" && Boolean(plot.selected) };
+  }
 
   function show(el, visible) {
     el.classList.toggle("hidden", !visible);
@@ -244,6 +265,19 @@
   window.addEventListener("message", (event) => {
     const message = event.data;
     switch (message.type) {
+      case "getSelection":
+        host.post({ type: "selection", requestId: message.requestId, selection: selection(message.kind) });
+        break;
+      case "applySelection": {
+        const s = message.selection; paneKind = s.kind;
+        if (Number.isFinite(s.start) || Number.isFinite(s.end)) plot.setView(s.start ?? plot.log.start, s.end ?? plot.log.end);
+        if (s.kind === "data") void dataReady.then(p => p.show(s.entries, plot.view.start, plot.view.end)).catch(() => {});
+        else if (s.kind === "console") document.getElementById("console-section").scrollIntoView();
+        else if (s.kind === "field") { fieldView.requestedEntry = s.entries[0]; fieldView.show(s.entries[0]); document.getElementById("field-section").scrollIntoView(); }
+        else if (s.kind === "histogram" || s.kind === "scatter") chartPane.show({ ...s, start: plot.view.start, end: plot.view.end });
+        else for (const name of s.entries) plot.addSeries(name);
+        break;
+      }
       case "loading":
         els.title.textContent = message.name;
         els.path.textContent = message.path;
@@ -266,6 +300,7 @@
           entries = message.listing.entries || entries; drawRows();
           els.end.textContent = seconds(range.end); els.duration.textContent = seconds(range.duration);
           plot.follow(range.end, entries);
+          if (dataPane?.names.length) void dataPane.show(dataPane.names, dataPane.start, range.end, true).catch(() => {});
           if (consolePane) consolePane.follow();
         }
         break;
@@ -283,10 +318,15 @@
       case "plotEntry":
         if (plot) plot.addSeries(message.name);
         break;
+      case "dataView":
+        void dataReady.then(p => p.show(message.names, message.startTime, message.endTime, message.append)).catch(() => {});
+        break;
       case "data":
+        if (dataPane?.receive(message)) break;
         if (plot) plot.onData(message);
         break;
       case "dataError":
+        if (dataPane?.receive(message)) break;
         if (plot) plot.onDataError(message);
         break;
       case "timeline":
@@ -300,6 +340,9 @@
         break;
       case "field":
         if (fieldView) fieldView.onField(message);
+        break;
+      case "chart":
+        chartPane.receive(message.result);
         break;
       case "rev":
         if (revPane) revPane.onResult(message);

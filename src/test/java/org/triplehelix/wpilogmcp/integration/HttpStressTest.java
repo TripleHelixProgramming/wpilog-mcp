@@ -558,6 +558,18 @@ class HttpStressTest {
     searchArgs.addProperty("pattern", "voltage");
     exerciseTool(sessionId, "search_strings", searchArgs, "query");
     exerciseTool(sessionId, "search_system_logs", searchArgs, "query");
+    var chartEntries = entries.getAsJsonArray("entries").asList().stream().map(com.google.gson.JsonElement::getAsJsonObject).toList();
+    var chartNames = chartEntries.stream().filter(e -> java.util.Set.of("double", "float", "int64").contains(e.get("type").getAsString()))
+        .map(e -> e.get("name").getAsString()).sorted().limit(2).toList();
+    var chartPose = chartEntries.stream().filter(e -> java.util.Set.of("struct:Pose2d", "struct:Pose3d").contains(e.get("type").getAsString()))
+        .map(e -> e.get("name").getAsString()).sorted().findFirst().orElse("/Missing/Pose");
+    for (String kind : java.util.List.of("time_series", "histogram", "scatter", "field")) {
+      var chart = new JsonObject(); chart.addProperty("path", logPath); chart.addProperty("kind", kind);
+      if (kind.equals("scatter")) { var names = new com.google.gson.JsonArray(); chartNames.forEach(names::add); chart.add("entries", names); }
+      else chart.addProperty("name", kind.equals("field") ? chartPose : chartNames.stream().findFirst().orElse("/Missing/Numeric"));
+      exerciseTool(sessionId, "render_chart", chart, "chart");
+    }
+
 
     // Statistics tools (log-requiring, with a numeric entry)
     if (numericEntry != null) {

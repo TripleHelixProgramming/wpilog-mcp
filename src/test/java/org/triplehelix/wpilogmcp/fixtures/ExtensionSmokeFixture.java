@@ -12,6 +12,14 @@ public final class ExtensionSmokeFixture {
 
   public static void main(String[] args) throws Exception {
     if (args.length != 1) throw new IllegalArgumentException("Expected the output fixture path");
-    ImportFixture.write(Path.of(args[0]), 7);
+    var path = Path.of(args[0]);
+    ImportFixture.write(path, 7);
+    var later = path.resolveSibling("append-record.tmp");
+    try (var writer = new WpilogWriter(later, "")) {
+      writer.append(2, 2_000_000, WpilogWriter.encodeDouble(9));
+    }
+    var bytes = java.nio.file.Files.readAllBytes(later);
+    java.nio.file.Files.write(path.resolveSibling("append.bin"), java.util.Arrays.copyOfRange(bytes, 12, bytes.length));
+    java.nio.file.Files.delete(later);
   }
 }

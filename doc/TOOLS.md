@@ -31,6 +31,7 @@ prefix's range, not an assertion that fresh values were published throughout tha
   - [list_entries](#list_entries)
   - [get_entry_info](#get_entry_info)
   - [read_entry](#read_entry)
+  - [render_chart](#render_chart)
   - [list_struct_types](#list_struct_types)
   - [resolve_signals](#resolve_signals)
   - [health_check](#health_check)
@@ -512,6 +513,67 @@ Read an entry's values in time order, one page at a time, optionally within a ti
   ]
 }
 ```
+
+### `render_chart`
+Draw a PNG beside a reproducible chart specification and full-window measurements. Use `name`
+for one entry or numeric field path, or `entries` for several. Images are MCP `image` content;
+the adjacent `text` block is the ordinary JSON result, with the same status and inputs contract.
+A runtime without headless imaging returns the measurements with `status: partial` and an
+image reason in `skipped`. No plotting dependency or native library is installed by the server.
+
+**Parameters:**
+- `path` (required): Log file, including an open capture.
+- `name` (optional): One entry or numeric field path; mutually exclusive with `entries`.
+- `entries` (optional): One to sixteen entry names or numeric field paths in drawing order. Pass this or `name`.
+- `kind` (optional): `time_series` (default), `histogram`, `scatter` (exactly two numeric series), or `field` (Pose2d/Pose3d entries).
+- `start_time` (optional): Inclusive robot-clock start in seconds.
+- `end_time` (optional): Inclusive robot-clock end in seconds.
+- `last_seconds` (optional): Positive recent duration resolved by the shared time-scope base; cannot accompany start/end.
+- `scope` (optional): Driver Station phase scope, as `get_statistics` accepts.
+- `windows` (optional): List of `{start, end}` windows, intersected with the scope and bounds.
+- `limit` (optional): Drawing samples or buckets per series, default 1000, from 1 to 10000; summaries and histograms cover the whole window.
+- `offset` (optional): Drawing samples or buckets to skip, default 0.
+- `max_points` (optional): Time-series buckets, from 1 to 10000 per scope window, retaining extremes and first/last; exact samples when they fit. Applies only to `time_series`.
+- `width` (optional): PNG width, default 960, from 160 to 4096.
+- `height` (optional): PNG height, default 540, from 120 to 4096. Width times height cannot exceed 4,000,000 pixels.
+
+**Returns:** `chart_spec`, `summary`, `inputs`, `data_quality`, and `server_analysis_directives`,
+plus PNG content. Each summary names its series and gives `count`, `min`, `max`, `mean`,
+`window`, `non_finite_count` and `data_quality`. These are the finite, sample-weighted window
+statistics used by `get_statistics`, regardless of the drawing page. Empty windows return
+`no_match` with `looked_for` and `hint`. The quality of sparse measurements bounds statistics,
+not the existence of the recorded events; a picture is not causal evidence and one log is one sample.
+
+**Specification version 1:** `version`, `kind`, `width`, `height`, `window`, `series`, `phases`,
+`phase_basis` and `open_url`. A series names its entry/field, name-stated `unit` (null when
+none is stated), and `style` (`step_after` for change-only, otherwise `line`). Time-series
+`points` are `[timestamp_sec, value]`; reduced series carry `buckets` and `bucket_rule`.
+Nested `limits.points` or `limits.buckets` report the true total after offset when truncated.
+Separate scope windows never join across an excluded interval. Phases come only from the
+shared Driver Station resolver, with no guessed-name fallback.
+
+Histograms carry `bins` (`low`, `high`, `count`) and `histogram_rule`: equal-width
+`ceil(sqrt(n))` bins capped at 64; `[low, high)` except the last includes the maximum;
+constant data gets one unit-wide bin. Scatter `pairs` contain x/y names, `[x, y, timestamp_sec]`
+points, `matched`, `unpaired_x`, `unpaired_y` and page limits. `alignment_rule` states exact
+timestamp, one-to-one record-order pairing, without interpolation or extrapolation.
+Field plots use those pairs for each pose's x/y and include `field_geometry` and `field_source`
+from bundled season geometry, as the explorer does; Pose3d projects onto the floor.
+
+`open_url` opens the selected entries and pane through the extension's server-validated URI
+handler. Its start/end enclose the chosen windows; the JSON retains the individual windows.
+The editor uses uPlot for numerical panes and its existing field view, with no Vega runtime.
+The own-specification-versus-Vega-Lite question remains open in the explorer plan. Its mapping is:
+
+| Version 1 field | Vega-Lite equivalent |
+| --- | --- |
+| Time-series points and series name | Long-form data with quantitative x=time/y=value and color=series |
+| `step_after` | Line mark with `interpolate: "step-after"` |
+| Bins already counted by the server | Bar mark with x=low, x2=high, y=count; no client binning |
+| Scatter pairs | Point mark with quantitative x/y; no client alignment |
+| Driver Station phases | Background rect layer with x=start/x2=end and mode color |
+| Pose pairs and field geometry | Layered x/y path and field outline with equal spatial scales |
+| Width/height | View dimensions; inputs, summary and open_url remain evidence outside the visual encoding |
 
 ### `list_struct_types`
 List struct types and how they decode. Struct values are decoded from each log's own schemas (`/.schema/struct:<Name>` entries, also `NT:/.schema/struct:<Name>`), so any struct a log records a schema for decodes: WPILib's, a vendor's, or a team's own, with nested structs, fixed-size arrays, enums, and bit-fields. With a path, returns `no_match` when the log declares no struct types.

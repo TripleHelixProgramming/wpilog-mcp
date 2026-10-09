@@ -59,9 +59,16 @@ The editor shows the time range, entries, sample counts, and any truncation note
 - **Timeline:** Driver Station mode segments and events come from the log. Drag a region to select a time window.
 - **Console:** filter text by pattern, level, and window. Repeats collapse with their count; clicking a line moves the shared cursor.
 - **Field:** the logged pose is drawn on the season's field outline, colored by time. The server's signal resolver selects a documented convention or asks you to choose among candidates.
+- **Data:** select or plot entries, then choose **Data view of selected entries**. Perspective receives the same exact Arrow samples as the plots, with struct fields as columns. Its built-in controls supply filtering, sorting, grouping, pivots, quick charts and CSV export. Follow appends batches without replacing previous rows. Narrow the window if the exact-data request exceeds the endpoint cap.
 - **REV:** signals appear by bus and device with their synchronization method, confidence, and offset. They plot on the wpilog's clock; a bus that could not be synchronized is explained and not plotted.
 
-The extension host calls the same tools as the assistant and fetches samples through the [data endpoint](../doc/STANDALONE.md#the-data-endpoint). The webview draws those results and opens no network connection. Pit-server views are described below; notebooks and assistant chart links remain [planned work](../doc/EXPLORER_PLAN.md).
+The extension host calls the same tools as the assistant and fetches samples through the [data endpoint](../doc/STANDALONE.md#the-data-endpoint). The webview fetches only bundled extension resources for its static Perspective engine, viewer, datagrid and charts, including WebAssembly and a local-source worker. Log requests stay in the extension host; no remote scripts, fonts or data are admitted by its content security policy.
+
+**WPILog Explorer: Open in Notebook**, in the editor title and context menu, writes an nbformat 4 notebook beside a writable local log, otherwise in the workspace. It contains three cells: Arrow requests into data frames (with a Polars alternative in a comment), plotting, and the path/entries/window with the server's inputs. Each selected entry has its own stream to preserve its type. VS Code opens its notebook editor; install Python, pyarrow, pandas and matplotlib in your chosen kernel. Nothing Python is bundled, and kernel selection and missing-kernel messages belong to VS Code.
+
+`render_chart` returns time-series, histogram, scatter or field PNGs and an `open_url` such as `vscode://TripleHelixProgramming.wpilog-analyzer/open?path=…&entries=…&start=…&end=…&kind=…`. Repeated `entries` select several series. The handler uses the Logs route to validate the path on the local server, then the configured pit server if the local one refuses it, applies the entries/window/pane, and refuses bad numbers. A link grants no directory access and executes no code.
+
+**WPILog Explorer: Ask about this selection**, in the editor title and context menu, sends the path, selected entries, window and pane kind to VS Code chat. It names `get_statistics` first for a plot selection, `search_strings` for console text, or `render_chart` for a pane. If chat cannot be opened, the prompt is copied to the clipboard with a notice. Prefilling other assistants remains an open question; paste is the portable route.
 
 ## Organizing Your Logs
 

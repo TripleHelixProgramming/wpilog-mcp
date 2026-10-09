@@ -113,6 +113,20 @@ final class ToolArguments {
         return List.of(new Variant("latest-or-timeout", args));
       }
 
+      case "render_chart" -> {
+        String numeric = pick(log, Kind.NUMERIC).orElse("/Missing/Entry");
+        for (String kind : List.of("time_series", "histogram", "scatter", "field")) {
+          var args = base.deepCopy(); args.addProperty("kind", kind); args.addProperty("width", 320); args.addProperty("height", 180);
+          if (kind.equals("scatter")) {
+            var names = new com.google.gson.JsonArray(); names.add(numeric);
+            names.add(pick(log, Kind.NUMERIC, n -> !n.equals(numeric), 0).orElse("/Missing/Other")); args.add("entries", names);
+          } else args.addProperty("name", kind.equals("field")
+              ? log.entries().values().stream().filter(e -> e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d")).map(EntryInfo::name).sorted().findFirst().orElse("/Missing/Pose") : numeric);
+          variants.add(new Variant(kind, args));
+        }
+        return withLimitVariant(tool, variants);
+      }
+
       case "get_entry_info", "read_entry", "get_statistics", "detect_anomalies", "find_peaks",
           "rate_of_change", "find_condition", "export_csv" -> {
         for (var kind : Kind.values()) {

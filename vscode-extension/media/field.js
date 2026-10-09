@@ -56,6 +56,7 @@
 
     /** A new log: ask the host for the pose role and the field. */
     reset() {
+      this.requestedEntry = null;
       this.pose = null;
       this.entry = null;
       this.series = null;
@@ -81,7 +82,7 @@
       none.value = "";
       this.select.append(none);
       const candidates = this.pose && Array.isArray(this.pose.candidates) ? this.pose.candidates : [];
-      const chosen = this.pose && this.pose.entry ? this.pose.entry : null;
+      const chosen = this.requestedEntry || (this.pose && this.pose.entry ? this.pose.entry : null);
       for (const c of chosen && !candidates.includes(chosen) ? [chosen, ...candidates] : candidates) {
         const option = el("option", null, c);
         option.value = c;

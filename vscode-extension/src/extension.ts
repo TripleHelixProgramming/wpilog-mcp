@@ -34,6 +34,7 @@ const LEGACY_RETIRED = "wpilog-mcp.retiredOwnedDaemon";
 export interface ExtensionApi {
   ready: Promise<void>;
   logs: Pick<LogsProvider, "getChildren">;
+  smokeData?: (names: string[], start: number, end: number, append?: boolean) => Promise<number>;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionApi {
@@ -604,7 +605,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     void command(() => registerPitClaude(false))();
   })();
   outputChannel.appendLine("WPILog Analyzer extension activated.");
-  return { ready, logs: { getChildren: explorer.logs.getChildren.bind(explorer.logs) } };
+  return { ready, logs: { getChildren: explorer.logs.getChildren.bind(explorer.logs) },
+    ...(context.extensionMode === vscode.ExtensionMode.Test ? { smokeData: explorer.editor.inspectData.bind(explorer.editor) } : {}) };
 }
 
 /**

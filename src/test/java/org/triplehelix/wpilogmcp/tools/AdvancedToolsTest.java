@@ -62,11 +62,11 @@ class AdvancedToolsTest extends ToolTestBase {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Core(9) + Query(5) + Statistics(7) + RobotAnalysis(7) + FrcDomain(9) + Pose(2) + Export(2) + TBA(2) + RevLog(5) + Discovery(2) = 50 total
-      // Core tools: list_available_logs, list_entries, get_entry_info, read_entry,
+      // Core(10) + Query(5) + Statistics(7) + RobotAnalysis(7) + FrcDomain(9) + Pose(2) + Export(2) + TBA(2) + RevLog(5) + Discovery(2) = 51 total
+      // Core tools: list_available_logs, list_entries, get_entry_info, read_entry, render_chart,
       //   list_loaded_logs, list_struct_types, health_check, get_game_info
       // (load_log, set_active_log, unload_log, unload_all_logs removed in path-per-call refactor)
-      assertEquals(50, tools.size());
+      assertEquals(51, tools.size());
     }
   }
 

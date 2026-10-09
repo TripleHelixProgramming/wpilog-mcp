@@ -1,9 +1,8 @@
 /**
- * The explorer editor's page: the HTML shell the webview starts from, with a Content Security
- * Policy that allows the extension's own style and script and nothing else, and no network at
- * all (EXPLORER_PLAN.md decision 2: the extension host is the client; the webview only draws).
- * Pure, so the policy can be tested: a page that could fetch would have a hole the policy must
- * not have.
+ * The extension host alone talks to the log server. The webview may load bundled code,
+ * styles and WebAssembly through VS Code's resource origin; it cannot fetch a remote URL.
+ * Perspective creates shadow-root styles and a blob worker sourced from a bundled asset.
+ * These are the narrow additions to the plot pane's nonce policy (EXPLORER_PLAN.md §5).
  */
 
 /** What the page needs from the webview: its CSP source and the URIs of its assets. */
@@ -15,16 +14,18 @@ export interface PageAssets {
   plot?: { styleUri: string; scriptUris: string[] };
   /** A random value per page, so only this page's script may run. */
   nonce: string;
+  data?: { scriptUri: string; styleUri: string };
 }
 
-/** The policy: the webview's own sources for styles and fonts, this page's script, no connect. */
+/** Only extension resources, with WebAssembly enabled when the data pane is bundled. */
 export function contentSecurityPolicy(assets: PageAssets): string {
   return [
     "default-src 'none'",
-    `style-src ${assets.cspSource}`,
+    `style-src ${assets.cspSource}${assets.data ? " 'unsafe-inline'" : ""}`,
     `font-src ${assets.cspSource}`,
     `img-src ${assets.cspSource} data:`,
-    `script-src 'nonce-${assets.nonce}'`,
+    `script-src 'nonce-${assets.nonce}'${assets.data ? ` ${assets.cspSource} 'wasm-unsafe-eval'` : ""}`,
+    ...(assets.data ? [`connect-src ${assets.cspSource}`, "worker-src blob:"] : []),
   ].join("; ");
 }
 
@@ -37,6 +38,7 @@ export function explorerPage(assets: PageAssets): string {
   <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy(assets)}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : ""}  <link rel="stylesheet" href="${assets.styleUri}">
+${assets.data ? `  <link rel="stylesheet" href="${assets.data.styleUri}">` : ""}
   <title>WPILog Explorer</title>
 </head>
 <body>
@@ -54,8 +56,11 @@ ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : "
   </section>
   <div id="warning" class="warning hidden"></div>
   <div id="error" class="error hidden"></div>
-  <section id="plot" class="hidden"></section>
-  <details id="field-section" class="hidden" open>
+  <div class="toolbar"><button id="show-data" type="button">Data view of selected entries</button></div>
+  <details id="data-section" data-pane-kind="data" data-vscode-context='{"webviewSection":"data"}' class="hidden" open><summary>Data</summary><div class="data-status muted"></div><perspective-viewer theme="Pro Light"></perspective-viewer></details>
+  <section id="plot" data-pane-kind="time_series" data-vscode-context='{"webviewSection":"time_series"}' class="hidden"></section>
+  <details id="chart-section" class="hidden" open><summary>Chart</summary><div class="chart-status muted"></div><div class="chart-view"></div></details>
+  <details id="field-section" data-pane-kind="field" data-vscode-context='{"webviewSection":"field"}' class="hidden" open>
     <summary>Field</summary>
     <div id="field"></div>
   </details>
@@ -63,7 +68,7 @@ ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : "
     <summary>REV logs</summary>
     <div id="rev"></div>
   </details>
-  <details id="console-section" class="hidden" open>
+  <details id="console-section" data-pane-kind="console" data-vscode-context='{"webviewSection":"console"}' class="hidden" open>
     <summary>Console</summary>
     <div id="console"></div>
   </details>
@@ -83,6 +88,7 @@ ${assets.plot ? `  <link rel="stylesheet" href="${assets.plot.styleUri}">\n` : "
       <div id="details-body"></div>
     </aside>
   </main>
+${assets.data ? `  <script type="module" nonce="${assets.nonce}" src="${assets.data.scriptUri}"></script>` : ""}
 ${(assets.plot?.scriptUris ?? []).map((uri) => `  <script nonce="${assets.nonce}" src="${uri}"></script>\n`).join("")}  <script nonce="${assets.nonce}" src="${assets.scriptUri}"></script>
 </body>
 </html>

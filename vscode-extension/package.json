@@ -36,7 +36,8 @@
     "wpilog"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onUri"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -158,7 +159,7 @@
       },
       {
         "command": "wpilog-mcp.uploadToPitServer",
-        "title": "Upload Logs to Pit Server…",
+        "title": "Upload Logs to Pit Server\u2026",
         "category": "WPILog Analyzer"
       },
       {
@@ -173,19 +174,19 @@
       },
       {
         "command": "wpilog-mcp.explorer.organizeLogs",
-        "title": "Organize Logs…",
+        "title": "Organize Logs\u2026",
         "category": "WPILog Explorer",
         "icon": "$(folder-library)"
       },
       {
         "command": "wpilog-mcp.explorer.importLogs",
-        "title": "Import…",
+        "title": "Import\u2026",
         "category": "WPILog Explorer",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "wpilog-mcp.explorer.assignRobot",
-        "title": "Assign to Robot…",
+        "title": "Assign to Robot\u2026",
         "category": "WPILog Explorer",
         "icon": "$(circuit-board)"
       },
@@ -254,6 +255,18 @@
         "title": "Reload Log",
         "category": "WPILog Explorer",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.openInNotebook",
+        "title": "Open in Notebook",
+        "category": "WPILog Explorer",
+        "icon": "$(notebook)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.askAboutSelection",
+        "title": "Ask about This Selection",
+        "category": "WPILog Explorer",
+        "icon": "$(comment-discussion)"
       }
     ],
     "menus": {
@@ -346,6 +359,16 @@
           "command": "wpilog-mcp.explorer.refreshLog",
           "when": "activeCustomEditorId == wpilog-mcp.explorer",
           "group": "navigation"
+        },
+        {
+          "command": "wpilog-mcp.explorer.openInNotebook",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer",
+          "group": "navigation@5"
+        },
+        {
+          "command": "wpilog-mcp.explorer.askAboutSelection",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer",
+          "group": "navigation@6"
         }
       ],
       "commandPalette": [
@@ -393,6 +416,13 @@
           "command": "wpilog-mcp.explorer.refreshLog",
           "when": "activeCustomEditorId == wpilog-mcp.explorer"
         }
+      ],
+      "webview/context": [
+        {
+          "command": "wpilog-mcp.explorer.askAboutSelection",
+          "when": "webviewId == 'wpilog-mcp.explorer'",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": [
@@ -438,13 +468,13 @@
             "type": "boolean",
             "default": true,
             "order": 130,
-            "markdownDescription": "Register the shared server’s bridge with Claude Code once at user scope. [Register with Claude Code](command:wpilog-mcp.registerWithClaudeCode) repeats this on demand. Projects with their own log directories are offered a `.wpilog-mcp.yaml` for terminal sessions. The extension never writes a project `.mcp.json` entry."
+            "markdownDescription": "Register the shared server\u2019s bridge with Claude Code once at user scope. [Register with Claude Code](command:wpilog-mcp.registerWithClaudeCode) repeats this on demand. Projects with their own log directories are offered a `.wpilog-mcp.yaml` for terminal sessions. The extension never writes a project `.mcp.json` entry."
           },
           "wpilog-mcp.javaPath": {
             "type": "string",
             "default": "",
             "order": 140,
-            "markdownDescription": "Java executable used to run the bundled installer. Leave blank to auto-detect the WPILib JDK. The installed launcher chooses the daemon’s Java. [Install Standalone Server](command:wpilog-mcp.installStandaloneServer) installs or updates it on demand."
+            "markdownDescription": "Java executable used to run the bundled installer. Leave blank to auto-detect the WPILib JDK. The installed launcher chooses the daemon\u2019s Java. [Install Standalone Server](command:wpilog-mcp.installStandaloneServer) installs or updates it on demand."
           },
           "wpilog-mcp.wpiLibYear": {
             "type": "string",
@@ -473,7 +503,7 @@
           "wpilog-mcp.mirror.folder": {
             "type": "string",
             "default": "",
-            "markdownDescription": "Absolute path for the mirror, or empty for a mirror under this extension’s storage. Only synchronization writes here. [Open Mirror Folder](command:wpilog-mcp.openMirrorFolder).",
+            "markdownDescription": "Absolute path for the mirror, or empty for a mirror under this extension\u2019s storage. Only synchronization writes here. [Open Mirror Folder](command:wpilog-mcp.openMirrorFolder).",
             "order": 70
           },
           "wpilog-mcp.mirror.days": {

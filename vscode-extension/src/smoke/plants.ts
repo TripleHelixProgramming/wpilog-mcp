@@ -17,8 +17,10 @@ const plants = [
     checks: 2, reason: /actual Logs provider lists/ },
   { name: "editor", file: "explorer.js", before: 'vscode.commands.executeCommand("vscode.openWith",',
     after: 'Promise.resolve("vscode.openWith",', checks: 3, reason: /custom editor/ },
+  { name: "data-append", file: "../media/dataView.js", before: "if (rows.length) await this.table.update(rows);",
+    after: "if (rows.length) await this.table.replace(rows);", checks: 4, reason: /1 !== 3/ },
   { name: "pit-secret", file: "claudeRegistration.js", before: '"connect", "--url", url];',
-    after: '"connect", "--url", url, "password=synthetic-smoke-secret"];', checks: 4, reason: /only a user-scope URL bridge/ },
+    after: '"connect", "--url", url, "password=synthetic-smoke-secret"];', checks: 5, reason: /only a user-scope URL bridge/ },
 ];
 const results: object[] = [];
 for (const plant of plants) {

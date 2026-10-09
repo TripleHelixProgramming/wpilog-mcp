@@ -192,6 +192,15 @@ dashboard interoperability and native Windows execution still require their resp
 
 The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
 
+`RenderChartTest` checks requested PNG dimensions, full-window summaries against independent
+fixture arithmetic and `get_statistics`, histogram bins, step holds, resolver-only phases,
+exact scatter alignment, field geometry, pagination and unavailable imaging. `ChartDifferentialTest`
+recomputes summaries from the independent reader using the entries/windows reported in inputs.
+The schema-driven conformance variants cover every kind and decode every returned PNG. Node
+checks cover the pure data-table adapter, notebook cells, URI admission and selection prompts;
+CI's editor smoke also checks actual Perspective rows before and after append. Tool-only
+conformance edits do not select the robot harness; replay/capture conformance edits still do.
+
 **Differential check.** The conformance sweep shows that the tools keep their contract, not that a number is right. This check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader, and compares what the two read: the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows. It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives: the loop-time statistics of `analyze_loop_timing`, the roboRIO brownouts in `power_analysis` and `get_ds_timeline`, the per-bus figures of `analyze_can_bus`, the module speeds of `analyze_swerve`, and the mode of each enabled segment in `get_match_phases`. No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
 
 **Claim checks.** The documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it. TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added; it may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
@@ -580,16 +589,16 @@ cached in `.vscode-test`, without using the installed editor. `npm test` is unch
 The smoke generates its log with the pure-Java fixture writer, seeds a standalone install
 in a temporary home under `build/extension-smoke`, and lets the extension start its server.
 It checks activation, the shared daemon's health/version, the actual Logs provider's leased
-fixture listing, the custom editor tab, and the real pit command's user-scope arguments.
+fixture listing, the custom editor tab, Perspective's actual row count (two fixture records, then three after an appended record), and the real pit command's user-scope arguments.
 A test `claude` executable records argv without registering anything. The runner stops its
 own daemon, retains logs/results under `build/extension-smoke`, and never changes the user's
 install or account. Test code, downloaded editors and dependencies are excluded from the VSIX.
-CI then runs `test:smoke:plants`: five faults in disposable compiled output remove activation,
-startup, listing or editor opening, or add a synthetic secret argument. Each must fail at its
+CI then runs `test:smoke:plants`: six faults in disposable compiled output remove activation,
+startup, listing or editor opening, replace an appended table batch, or add a synthetic secret argument. Each must fail at its
 own assertion after the earlier checks passed; a timeout or unrelated crash is not accepted.
 The script restores every compiled file and runs only in Linux CI.
 
-This retires the real-editor caveat for those five surfaces. It does not inspect rendered
+This retires the real-editor caveat for those six surfaces. It does not inspect rendered
 plots, exercise credential dialogs, contact the Claude service, or prove agent discovery.
 The older milestones were checked without a real editor; these interactions still need the
 oldest supported and current versions by hand:
@@ -606,6 +615,8 @@ oldest supported and current versions by hand:
 9. Configure mirror scope/cap/events/serials, then pin/unpin, Sync Now and Open Mirror Folder. Observe remaining counts, synchronized state, offline age and a verification refusal. Confirm a leased mirror remains readable and the health endpoint answers during sync.
 10. Open a pit log with a remote Windows path and one with spaces/Unicode. Follow plotted series and console across new values, duplicate timestamps, pause, hidden editor, and disconnect. Open the exact mirrored copy offline and verify the copy label. Rename a session at the origin and confirm the listing follows it.
 11. Sync from another laptop twice: destination choice, host:port entry, remembered quick pick, progress and copied/present/conflict/refusal output. Mirrors must not appear as destinations or organizer offers.
+
+12. Exercise Perspective filters, grouping/pivots, quick charts, CSV export and live follow. Open a notebook beside a writable log and with workspace fallback; run it with a chosen Python kernel. Open chart links (including refused paths and histogram/scatter/field panes), use Ask about this selection in each pane, and check both chat and clipboard routes. These interactive flows remain manual.
 
 Native Windows launchers/CLI integration and the interactive installer should also be checked on Windows; Node tests of Windows path/argument rules do not replace that. Installer tests use temporary homes and fake releases/CLIs, never the user's install.
 

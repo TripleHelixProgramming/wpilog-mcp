@@ -159,3 +159,7 @@ details > summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
 .rev-device-head { font-family: var(--vscode-editor-font-family); margin: 2px 0; }
 .rev-signal { display: flex; align-items: center; gap: 8px; padding: 1px 0 1px 12px; }
 .rev-count { margin-left: auto; }
+
+/* The data grid and its built-in configuration UI own this pane. */
+perspective-viewer { display: block; height: 480px; width: 100%; }
+#data-section { margin: 12px 0; }

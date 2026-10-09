@@ -413,6 +413,14 @@ rescan is implemented here.
 
 Each step is explained in the sections that follow.
 
+`render_chart` uses the same signal resolver, windows, sampling classification and field paths
+as the numeric tools. Its versioned specification owns every drawing choice; `ChartImage`
+only renders that evidence with headless JDK imaging, and the explorer uses uPlot and its field
+view. Full-window statistics stay independent of drawing pagination. `ResponseBuilder`
+attaches MCP content once: the tool base enforces the JSON contract and log inputs before the
+transport places image blocks beside that JSON. Missing imaging support skips the image with
+a reason, preserving the measurements.
+
 1. A client sends a `tools/call` request over stdio or HTTP. The transport hands it to the protocol handler, which finds the tool by name.
 2. The tool runs inside a wrapper that every tool shares, which turns an exception or an out-of-memory condition into an explained result.
 3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against permanent directories and live session leases. A log already in memory is returned at once, once a look at the file's attributes shows it is still the file the log was read from; a file that changed is loaded again. Otherwise the file is mapped into memory and scanned once.

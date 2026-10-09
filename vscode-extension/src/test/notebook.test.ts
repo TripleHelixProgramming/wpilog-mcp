@@ -1,0 +1,21 @@
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import { notebook } from "../explorer/notebook";
+test("notebook requests the exact selection and carries the server inputs in its third cell", () => {
+  const inputs = { path: "/logs/a b.wpilog", entries: [{ name: '/Quote"here' }], window: { start: 2, end: 4 } };
+  const result = notebook({ path: inputs.path, entries: ["/A B", '/Quote"here'], start: 2, end: 4, kind: "time_series", inputs }, "http://127.0.0.1:41234/mcp") as any;
+  assert.equal(result.nbformat, 4); assert.equal(result.cells.length, 3);
+  const source = result.cells[0].source as string;
+  const requests = JSON.parse(/^requests = (.*)$/m.exec(source)![1]);
+  assert.deepEqual(requests.map((r: string[]) => r[0]), ["/A B", '/Quote"here']);
+  const url = new URL(requests[0][1]);
+  assert.equal(new URL(requests[1][1]).searchParams.get("names"), '/Quote"here');
+  assert.equal(url.pathname, "/data/entries"); assert.equal(url.searchParams.get("path"), inputs.path);
+  assert.equal(url.searchParams.get("names"), "/A B"); assert.equal(url.searchParams.get("format"), "arrow");
+  assert.equal(url.searchParams.get("start_time"), "2"); assert.equal(url.searchParams.get("end_time"), "4");
+  assert.match(source, /ipc.open_stream/); assert.match(source, /# import polars/);
+  assert.match(source, /table\.column\(column\)\.cast\(pa\.int64\(\)\)/, "robot-clock timestamps must not become pandas calendar dates");
+  assert.equal(result.cells[2].cell_type, "markdown");
+  assert.ok(result.cells[2].source.includes(JSON.stringify(inputs, null, 2)), "the evidence cannot disappear when the notebook leaves VS Code");
+  assert.ok(result.cells[2].source.includes('"/Quote\\"here"')); assert.ok(result.cells[2].source.includes("2 to 4"));
+});

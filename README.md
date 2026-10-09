@@ -95,6 +95,13 @@ A language model tends to find an explanation that fits the data, whether or not
 - **Match results from The Blue Alliance**, with a free API key: the team's alliance, the scores, and the match times for each qualification or playoff log. See [TBA Tools](doc/TOOLS.md#tba-tools); the [extension](vscode-extension/README.md#the-blue-alliance-api-key) and [standalone](doc/STANDALONE.md#configuration) pages say where the key goes.
 - **Game rules** for recent seasons, transcribed from each season's final game manual: scoring, match timing, field geometry, and robot limits. See [`get_game_info`](doc/TOOLS.md#get_game_info).
 
+The explorer's **Data view** uses the selected samples for filtering, pivots, quick charts
+and CSV export, and appends new batches while following a session. **Open in Notebook**
+saves a three-cell Python notebook with the request and its evidence. Assistants can return
+`render_chart` images with an **Open in Explorer** link; **Ask about this selection** sends
+the path, entries and window to VS Code chat, with a clipboard fallback. See the
+[extension guide](vscode-extension/README.md#exploring-logs).
+
 ## Tools
 
 Every tool that reads a log takes a `path` parameter. The server loads a log the first time a tool names it; it unloads a log that sits idle, or any log when memory runs short. The tools, in the categories `get_server_guide` uses:
@@ -102,7 +109,7 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 | Category | Tools |
 |----------|-------|
 | **Discovery** | `get_server_guide`, `suggest_tools` |
-| **Core** | `list_available_logs`, `list_loaded_logs`, `list_entries`, `read_entry`, `get_entry_info`, `list_struct_types`, `resolve_signals`, `health_check` |
+| **Core** | `list_available_logs`, `list_loaded_logs`, `list_entries`, `read_entry`, `render_chart`, `get_entry_info`, `list_struct_types`, `resolve_signals`, `health_check` |
 | **Query** | `search_entries`, `get_types`, `find_condition`, `search_strings`, `search_system_logs` |
 | **Statistics** | `get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries` |
 | **Robot Analysis** | `get_match_phases`, `analyze_swerve`, `power_analysis`, `can_health`, `analyze_can_bus`, `compare_matches`, `get_code_metadata`, `moi_regression` |

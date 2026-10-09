@@ -30,7 +30,9 @@ def flags(files):
                 'ci/changes.py', 'ci/test_changes.py') for p in files),
         harness=any(p.startswith(('harness/', 'src/main/java/org/triplehelix/wpilogmcp/capture/',
             'src/main/java/org/triplehelix/wpilogmcp/nt4/', 'src/main/java/org/triplehelix/wpilogmcp/sync/',
-            'src/test/java/org/triplehelix/wpilogmcp/conformance/', 'src/test/java/org/triplehelix/wpilogmcp/harness/'))
+            'src/test/java/org/triplehelix/wpilogmcp/harness/'))
+            or (p.startswith('src/test/java/org/triplehelix/wpilogmcp/conformance/')
+                and any(word in p for word in ('Replay', 'Replayer', 'Harness', 'Capture', 'Provider', 'IndependentLog', 'ConformanceSample')))
             or p == 'build.gradle' for p in files),
         service=any(p.startswith(('src/main/java/org/triplehelix/wpilogmcp/config/', 'src/main/resources/install/',
             'src/main/resources/service/', 'src/test/java/org/triplehelix/wpilogmcp/config/Service', 'ci/check_service', 'ci/test_check_service'))

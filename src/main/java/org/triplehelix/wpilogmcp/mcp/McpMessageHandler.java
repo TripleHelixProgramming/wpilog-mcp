@@ -336,12 +336,7 @@ public class McpMessageHandler {
 
   private JsonObject wrapToolResult(JsonElement toolResult, boolean isError) {
     var result = new JsonObject();
-    var content = new JsonArray();
-    var textContent = new JsonObject();
-    textContent.addProperty("type", "text");
-    textContent.addProperty("text", gson.toJson(toolResult));
-    content.add(textContent);
-    result.add("content", content);
+    result.add("content", org.triplehelix.wpilogmcp.tools.ResponseBuilder.contentBlocks(toolResult));
     if (isError) {
       result.addProperty("isError", true);
     }

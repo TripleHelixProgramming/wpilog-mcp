@@ -306,6 +306,18 @@ class StressTest {
       System.out.println("  health_check: " + status);
     });
 
+    var chartLog = LogManager.getInstance().getOrLoad(logPath);
+    var chartNames = chartLog.entries().values().stream().filter(e -> java.util.Set.of("double", "float", "int64").contains(e.type()))
+        .map(e -> e.name()).sorted().limit(2).toList();
+    var chartPose = chartLog.entries().values().stream().filter(e -> java.util.Set.of("struct:Pose2d", "struct:Pose3d").contains(e.type()))
+        .map(e -> e.name()).sorted().findFirst().orElse("/Missing/Pose");
+    for (String kind : List.of("time_series", "histogram", "scatter", "field")) {
+      var chart = new JsonObject(); chart.addProperty("path", logPath); chart.addProperty("kind", kind);
+      if (kind.equals("scatter")) { var names = new com.google.gson.JsonArray(); chartNames.forEach(names::add); chart.add("entries", names); }
+      else chart.addProperty("name", kind.equals("field") ? chartPose : chartNames.stream().findFirst().orElse("/Missing/Numeric"));
+      testTool("render_chart", chart, result -> System.out.println("  render_chart " + kind + ": " + result.get("status")));
+    }
+
     // Discovery tools
     testTool("get_server_guide", new JsonObject(), result -> {
       int categories = result.has("categories") ? result.getAsJsonArray("categories").size() : 0;

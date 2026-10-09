@@ -104,6 +104,12 @@ public final class DiscoveryTools {
             "Find the numeric fields of a struct entry", "Check why an entry did not decode"),
         true, List.of("read_entry", "list_entries", "list_struct_types")));
 
+    tools.add(new ToolInfo("render_chart", "core",
+        "Draw a PNG and a reproducible chart specification over a recorded window",
+        List.of("chart", "plot", "draw", "picture", "visualize", "histogram", "scatter", "field"),
+        List.of("Plot a signal over time", "Draw the robot pose on the field", "Open a chart in the explorer"),
+        true, List.of("get_statistics", "read_entry")));
+
     tools.add(new ToolInfo("read_entry", "core",
         "Read raw values from an entry with pagination",
         List.of("read", "values", "data", "raw", "samples"),

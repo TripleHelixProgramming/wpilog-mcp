@@ -47,6 +47,7 @@ import java.util.List;
  */
 public class ResponseBuilder {
   private static final Gson GSON = new Gson();
+  private static final Gson CONTENT_GSON = new com.google.gson.GsonBuilder().serializeNulls().create();
 
   private final JsonObject response;
   private final List<String> warnings;
@@ -312,6 +313,31 @@ public class ResponseBuilder {
   public ResponseBuilder addWarning(String message) {
     warnings.add(message);
     return this;
+  }
+
+  /** Add MCP content beside the JSON after the tool base has enforced its contract. */
+  public ResponseBuilder addContent(JsonObject block) {
+    if (!block.has("type")) throw new IllegalArgumentException("Content block needs a type");
+    var blocks = response.has("_content") ? response.getAsJsonArray("_content") : new JsonArray();
+    blocks.add(block); response.add("_content", blocks); return this;
+  }
+
+  /** Attach bytes once; the tool contract still applies to the ordinary JSON beside them. */
+  public ResponseBuilder addImage(byte[] png) {
+    var block = new JsonObject(); block.addProperty("type", "image");
+    block.addProperty("mimeType", "image/png");
+    block.addProperty("data", java.util.Base64.getEncoder().encodeToString(png));
+    return addContent(block);
+  }
+
+  /** The transport moves attachments beside the text, after log inputs and status are enforced. */
+  public static JsonArray contentBlocks(JsonElement value) {
+    var json = value == null ? com.google.gson.JsonNull.INSTANCE : value.deepCopy();
+    var attachments = json.isJsonObject() ? json.getAsJsonObject().remove("_content") : null;
+    var blocks = new JsonArray(); var text = new JsonObject();
+    text.addProperty("type", "text"); text.addProperty("text", CONTENT_GSON.toJson(json)); blocks.add(text);
+    if (attachments != null) attachments.getAsJsonArray().forEach(blocks::add);
+    return blocks;
   }
 
   /**

@@ -23,6 +23,28 @@ class McpMessageHandlerTest {
     handler = new McpMessageHandler(registry);
   }
 
+  @Test void imageContentStaysBesideTheContractEnforcedJson() {
+    registry.registerTool(new org.triplehelix.wpilogmcp.tools.ToolBase() {
+      @Override public String name() { return "image_fixture"; }
+      @Override public String description() { return "Synthetic attachment and skipped evidence"; }
+      @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+      @Override protected com.google.gson.JsonElement executeInternal(JsonObject args) {
+        return org.triplehelix.wpilogmcp.tools.ResponseBuilder.success().addProperty("value", 4)
+            .addData("unknown", com.google.gson.JsonNull.INSTANCE)
+            .addImage(new byte[]{1, 2, 3}).addSkipped("fixture", "deliberately omitted").build();
+      }
+    });
+    var response = handler.handleMessage(parse("{\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"image_fixture\"}}"))
+        .response().getAsJsonObject("result");
+    var content = response.getAsJsonArray("content"); assertEquals(2, content.size());
+    var json = JsonParser.parseString(content.get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+    assertEquals("partial", json.get("status").getAsString()); assertEquals(4, json.get("value").getAsInt());
+    assertTrue(json.has("skipped")); assertFalse(json.has("_content"));
+    assertTrue(json.has("unknown") && json.get("unknown").isJsonNull(), "Content wrapping must preserve an explicitly unknown fact");
+    assertEquals("image", content.get(1).getAsJsonObject().get("type").getAsString());
+    assertEquals("AQID", content.get(1).getAsJsonObject().get("data").getAsString());
+  }
+
   @Test void resourceDiscoveryAndReadFollowTheProtocolWhilePromptsRemainEmpty() {
     var init = handler.handleMessage(parse("{\"id\":1,\"method\":\"initialize\"}")).response().getAsJsonObject("result");
     assertTrue(init.getAsJsonObject("capabilities").has("resources"));

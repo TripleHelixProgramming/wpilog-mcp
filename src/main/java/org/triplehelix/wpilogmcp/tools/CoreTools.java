@@ -46,6 +46,7 @@ public final class CoreTools {
     registry.registerTool(new ListEntriesTool());
     registry.registerTool(new GetEntryInfoTool());
     registry.registerTool(new ReadEntryTool());
+    registry.registerTool(new RenderChartTool());
     registry.registerTool(new ListLoadedLogsTool());
     registry.registerTool(new ListStructTypesTool());
     registry.registerTool(new ResolveSignalsTool());

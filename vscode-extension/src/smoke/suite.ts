@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 interface LogItem extends vscode.TreeItem { node: { kind: string; log?: { path: string } }; }
 interface Api {
   ready: Promise<void>;
+  smokeData(names: string[], start: number, end: number, append?: boolean): Promise<number>;
   logs: { getChildren(item?: LogItem): Promise<LogItem[]> };
 }
 
@@ -68,6 +69,11 @@ async function smoke(): Promise<void> {
       tab.input instanceof vscode.TabInputCustom && tab.input.viewType === "wpilog-mcp.explorer"
       && tab.input.uri.fsPath === fixture), "the custom editor, not a text editor, opened this fixture");
     record("custom editor opens the fixture");
+
+    assert.equal(await within(api.smokeData(["/Value"], 0, 1), "Perspective fixture rows"), 2);
+    fs.appendFileSync(fixture, fs.readFileSync(path.join(path.dirname(fixture), "append.bin")));
+    assert.equal(await within(api.smokeData(["/Value"], 0, 2, true), "Perspective appended rows"), 3);
+    record("data view renders two fixture samples and appends the third through its worker");
 
     const url = `${base}/mcp`;
     await vscode.workspace.getConfiguration("wpilog-mcp").update("pitServerUrl", url, vscode.ConfigurationTarget.Global);

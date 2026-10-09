@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Live tools and metrics
 
+- `render_chart` returns a bounded PNG and versioned chart specification with full-window measurements and inputs, for time series, histograms, scatter and field poses. Previously an assistant could return numbers but no chart; held signals use steps, phases come from the resolver, and a missing headless toolkit leaves an explained JSON result.
+
 - Time-scoped tools accept `last_seconds`, reporting the resolved window for each call; agents previously needed absolute robot timestamps to ask about recent data. Present-tense discovery, startup guidance and the `pit://session/current` resource expose the current capture and its identity, gateway and providers.
 - `read_entry` accepts `max_points` and numeric field paths, returning exact samples when they fit or time buckets with count, minimum, maximum, mean, first and last values. Previously callers had to page through every sample to see a long entry's shape; buckets preserve single-sample spikes and explain when nonnumeric entries cannot be reduced.
 - `GET /data/entries` streams entries and struct fields as Arrow or CSV, with optional buckets, input metadata, ETags, a size cap and notice of changes during a stream. Previously whole-entry export required a separate CSV file per entry. The endpoint shares MCP's path and Origin checks, and `get_server_guide` advertises it on HTTP servers.
@@ -50,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An optional read-only NT4 gateway lets dashboards and AdvantageScope connect to the pit computer, with robot timestamps, properties, schemas and session boundaries. Previously the gateway was only a test fixture. Subscriptions support every change or periodic latest values, and bounded queues disconnect slow readers without blocking capture. Real-robot dashboard checks remain manual.
 
 #### Extension
+
+- Explorer's Data view now exposes Perspective filtering, sorting, grouping, pivots, quick charts and CSV export on the selected Arrow samples, appending batches in follow mode. Previously samples could only be plotted. The engine, viewer and plugins are bundled static assets with their license and local-only WebAssembly/worker permissions; no runtime npm dependency is added. VSIX size: about 4.65 MB to 8.91 MB (+4.26 MB, 92%) on the same local package build.
+- **Open in Notebook** saves three reproducible cells beside the log or in the workspace and opens VS Code's notebook editor. Previously notebooks required hand-written endpoint requests; the generated file preserves the entries, window and server inputs, with no bundled Python.
+- Assistant chart links now open the selected entries, window and pane through a server-validated URI handler. Previously chart results could not open an explorer selection; invalid numbers and refused paths remain explained errors.
+- **Ask about this selection** sends an explicit path, entries and window with the first tool to VS Code chat, falling back to the clipboard. Previously that context had to be copied by hand.
 
 - WPILog Explorer adds Logs and Entries trees and a read-only WPILOG editor showing the time range, entries, field paths, sample counts and truncation warnings. Previously the extension registered assistant tools but displayed no logs itself. Its HTTP session reconnects after server restarts; the webview uses the extension's client and reports server refusals.
 - Explorer plots share a cursor and a timeline with logged match phases and Driver Station events. Zoom, pan, visible-window statistics and change-only steps use the server's data; large windows show min/max bands until exact samples fit. Previously viewing and navigating signals required another application.
@@ -116,6 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File-size refusal:** WPILOGs beyond the current 2 GB mapping limit remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed.
 
 ### Testing
+
+- Peer system-text copying now faces an advertised-hash mismatch with same-length bytes on the peer path, checking refused placement, absent receipts and retry state. Previously a size-only verifier passed because corruption tests reached only the mirror verifier.
+- Chart checks decode PNGs, compare window summaries with an independent reader, and plant size, missing-series, scope, hold-style and guessed-phase faults. Adapter/notebook/URI plants cover replaced follow rows, omitted inputs and bypassed server admission; the two real-editor CI jobs also check Perspective row counts and an appended batch. Previously these new chart, grid and notebook surfaces had no coverage.
 
 - Synthetic stores now count inventory reads across 300 sessions, check five rotations shared by fifty sessions, and exercise system-text ranges, hashes, peer/mirror copies, missing-copy guidance and growing-prefix resume. Corrupt mirrored bytes and omitted shared-file capacity are refused by regressions; previously transfer tests covered telemetry alone.
 - Synthetic system-log fixtures exercise real SSH gate/pacing, rotations, cursor restart and command refusal, PID placement, committed-prefix reads and independent clock mapping. Previously these paths had no tests; the tool joins schema conformance, claims and opt-in stress calls without requiring a robot's files.

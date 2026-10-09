@@ -1,0 +1,1 @@
+export const ResizeObserver = window.ResizeObserver

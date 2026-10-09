@@ -47,3 +47,11 @@ class ChangesTest(unittest.TestCase):
             run.return_value.stdout = b'doc/TOOLS.md\0vscode-extension/src/extension.ts\0'
             self.assertEqual(['doc/TOOLS.md', 'vscode-extension/src/extension.ts'], changed_paths('a' * 40))
             self.assertEqual(2, run.call_count)
+
+    def test_tool_and_editor_conformance_does_not_trigger_robot_replay(self):
+        for name in ('ToolArguments.java', 'ConformanceChecks.java', 'ChartDifferentialTest.java'):
+            selected = flags(['src/test/java/org/triplehelix/wpilogmcp/conformance/' + name])
+            self.assertFalse(selected['harness'], name)
+            self.assertFalse(selected['native'], name)
+        for name in ('ReplaySource.java', 'HarnessExpectations.java', 'IndependentLog.java', 'ConformanceSample.java'):
+            self.assertTrue(flags(['src/test/java/org/triplehelix/wpilogmcp/conformance/' + name])['harness'], name)

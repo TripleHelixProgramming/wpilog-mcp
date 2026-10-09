@@ -21,6 +21,8 @@ import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, i
 import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
 import { organizeSources } from "./explorer/organizeSources";
 import { mirroredCopy, originOf, pitEndpoint, pitLogTree, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
+import { Selection, parseExplorerUri, openValidated, selectionPrompt } from "./explorer/selection";
+import { notebook } from "./explorer/notebook";
 import { explorerPage } from "./explorer/webviewHtml";
 
 /** The custom editor's view type, as package.json declares it. */
@@ -101,10 +103,23 @@ export class Explorer implements vscode.Disposable {
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearLogFilter", () => this.logs.setFilter("")),
       vscode.commands.registerCommand("wpilog-mcp.explorer.filterEntries", () => this.entries.askFilter()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearEntryFilter", () => this.entries.setFilter("")),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.openLog", (logPath: string, spec?: ExplorerSpec, listed?: ListedLog) =>
-        vscode.commands.executeCommand("vscode.openWith", spec?.kind === "pit"
-          ? vscode.Uri.parse(remoteLogUri(spec.url, logPath, listed?.session)) : vscode.Uri.file(logPath), EDITOR_VIEW_TYPE)
-      ),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.openLog", (logPath: string, spec?: ExplorerSpec, listed?: ListedLog) => this.openLog(logPath, spec, listed)),
+      vscode.window.registerUriHandler({ handleUri: async uri => {
+        try {
+          const selection = parseExplorerUri(uri.toString());
+          try { await this.openLog(selection.path); }
+          catch (localError) {
+            const pit = this.pitSpec(); if (!pit) throw localError;
+            // The URL carries no server or credentials. Only the configured pit may be tried.
+            try { await this.openLog(selection.path, pit); }
+            catch (pitError) { throw new Error(`${messageOf(localError)}; pit server: ${messageOf(pitError)}`); }
+          }
+          await this.editor.applySelection(selection);
+        }
+        catch (error) { void vscode.window.showErrorMessage(messageOf(error)); }
+      } }),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.openInNotebook", () => this.editor.openNotebook()),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.askAboutSelection", (context?: { webviewSection?: string }) => this.editor.askSelection(context?.webviewSection)),
       vscode.commands.registerCommand("wpilog-mcp.explorer.revealLog", (item?: LogItem) => {
         if (item?.resourceUri?.scheme === "file") void vscode.commands.executeCommand("revealFileInOS", item.resourceUri);
       }),
@@ -125,6 +140,14 @@ export class Explorer implements vscode.Disposable {
       }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLog", () => this.editor.reloadActive())
     );
+  }
+
+  /** The Logs tree and URI handler share server admission before opening a document. */
+  async openLog(logPath: string, spec: ExplorerSpec = this.spec(), listed?: ListedLog): Promise<void> {
+    await openValidated({ path: logPath, entries: [], kind: "time_series" },
+      async file => (await this.clientFor(spec)).callTool("list_entries", { path: file, limit: 1 }),
+      async () => { await vscode.commands.executeCommand("vscode.openWith", spec.kind === "pit"
+        ? vscode.Uri.parse(remoteLogUri(spec.url, logPath, listed?.session)) : vscode.Uri.file(logPath), EDITOR_VIEW_TYPE); });
   }
 
   /** Automatic offers are serialized, including across a refresh while a picker is open. */
@@ -659,6 +682,9 @@ interface WebviewMessage {
   enabled?: boolean;
   follow?: boolean;
   offset?: number;
+  selection?: Selection;
+  rows?: number;
+  error?: string;
 }
 
 /** One editor: its panel and the log it shows. */
@@ -669,6 +695,10 @@ interface Editor {
   followTimer?: ReturnType<typeof setInterval>;
   following?: boolean;
   refreshing?: boolean;
+  loaded: Promise<void>;
+  loadedResolve: () => void;
+  requests: Map<number, (message: WebviewMessage) => void>;
+  dataResult?: (message: WebviewMessage) => void;
 }
 
 /**
@@ -680,6 +710,7 @@ interface Editor {
 export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvider<LogDocument> {
   private readonly editors = new Map<string, Editor>();
   private activeKey?: string;
+  private requestId = 0;
 
   constructor(private readonly explorer: Explorer) {}
 
@@ -698,12 +729,15 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       scriptUri: asset("explorer.js"),
       plot: {
         styleUri: asset("vendor", "uPlot.min.css"),
-        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("follow.js"), asset("plot.js"), asset("console.js"), asset("field.js"), asset("rev.js")],
+        scriptUris: [asset("vendor", "uPlot.iife.min.js"), asset("arrowStream.js"), asset("plotMath.js"), asset("follow.js"), asset("dataView.js"), asset("chartSpec.js"), asset("chartPane.js"), asset("plot.js"), asset("console.js"), asset("field.js"), asset("rev.js")],
       },
+      data: { scriptUri: asset("dataPane.mjs"), styleUri: asset("vendor", "perspective", "pro.css") },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
     const remote = readRemoteLogUri(document.uri.toString());
-    const editor: Editor = { panel, log: remote ? { path: remote.path,
+    let loadedResolve!: () => void;
+    const loaded = new Promise<void>(resolve => { loadedResolve = resolve; });
+    const editor: Editor = { panel, loaded, loadedResolve, requests: new Map(), log: remote ? { path: remote.path,
       spec: { kind: "pit", name: `pit:${remote.url}`, url: remote.url },
       source: { path: remote.path, filename: remote.path.replace(/\\/g, "/").split("/").pop()!, friendly_name: "Pit session", session: remote.session } }
       : { path: document.uri.fsPath }, ready: false };
@@ -712,7 +746,13 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       switch (message.type) {
         case "ready":
           editor.ready = true;
-          void this.load(editor);
+          void this.load(editor).finally(editor.loadedResolve);
+          break;
+        case "selection":
+          if (message.requestId !== undefined) { editor.requests.get(message.requestId)?.(message); editor.requests.delete(message.requestId); }
+          break;
+        case "dataViewState":
+          editor.dataResult?.(message); editor.dataResult = undefined;
           break;
         case "follow":
           clearInterval(editor.followTimer); editor.following = message.enabled === true;
@@ -735,6 +775,9 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
           break;
         case "field":
           void this.sendField(editor);
+          break;
+        case "chart":
+          if (message.selection) void this.sendChart(editor, message.selection);
           break;
         case "rev":
           void this.sendRev(editor);
@@ -984,6 +1027,16 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     void editor.panel.webview.postMessage({ type: "rev", result });
   }
 
+  private async sendChart(editor: Editor, selection: Selection): Promise<void> {
+    if (!editor.log.spec) return;
+    try {
+      const client = await this.explorer.clientFor(editor.log.spec);
+      const result = await client.callTool("render_chart", { path: editor.log.path, entries: selection.entries,
+        start_time: selection.start, end_time: selection.end, kind: selection.kind });
+      void editor.panel.webview.postMessage({ type: "chart", result });
+    } catch (error) { void editor.panel.webview.postMessage({ type: "chart", result: { error: messageOf(error) } }); }
+  }
+
   /** Plots an entry in the active editor: the Entries view's click. */
   plotEntry(name: string): void {
     const editor = this.editors.get(this.activeKey ?? "");
@@ -998,6 +1051,79 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     if (!editor) return;
     editor.panel.reveal(undefined, true);
     void editor.panel.webview.postMessage({ type: "selectEntry", name });
+  }
+
+  private async current(): Promise<Editor> {
+    const editor = this.editors.get(this.activeKey ?? "");
+    if (!editor) throw new Error("Open a log in WPILog Explorer first");
+    await editor.loaded; return editor;
+  }
+
+  async applySelection(selection: Selection): Promise<void> {
+    const editor = await this.current();
+    await editor.panel.webview.postMessage({ type: "applySelection", selection });
+  }
+
+  /** Real-editor tests observe the real worker's table, never a host-side row counter. */
+  async inspectData(names: string[], startTime: number, endTime: number, append = false): Promise<number> {
+    const editor = await this.current();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { editor.dataResult = undefined; reject(new Error("Data view did not answer")); }, 30_000);
+      editor.dataResult = message => { clearTimeout(timer); if (message.error) reject(new Error(message.error)); else resolve(message.rows!); };
+      void editor.panel.webview.postMessage({ type: "dataView", names, startTime, endTime, append });
+    });
+  }
+
+  private async selection(kind?: string): Promise<{ editor: Editor; selection: Selection }> {
+    const editor = await this.current(), requestId = ++this.requestId;
+    const selection = await new Promise<Selection>((resolve, reject) => {
+      const timer = setTimeout(() => { editor.requests.delete(requestId); reject(new Error("The editor did not return its selection")); }, 5000);
+      editor.requests.set(requestId, message => { clearTimeout(timer); resolve(message.selection!); });
+      void editor.panel.webview.postMessage({ type: "getSelection", requestId, kind });
+    });
+    return { editor, selection: { ...selection, path: editor.log.path } };
+  }
+
+  async openNotebook(): Promise<void> {
+    try {
+      const { editor, selection } = await this.selection();
+      if (!editor.log.spec) throw new Error("The log is not loaded");
+      const client = await this.explorer.clientFor(editor.log.spec);
+      const arrow = require("../media/arrowStream.js");
+      const inputs: Record<string, unknown> = {};
+      for (const name of selection.entries) {
+        const response = await this.explorer.data.fetch(client.endpoint, { path: selection.path, names: [name], startTime: selection.start, endTime: selection.end });
+        inputs[name] = arrow.parsedMetadata(arrow.read(response.bytes)).inputs;
+      }
+      const content = JSON.stringify(notebook({ ...selection, inputs }, client.endpoint), null, 2) + "\n";
+      const basename = path.basename(selection.path).replace(/\.wpilog$/i, "") + ".ipynb";
+      const folders = [...(editor.log.spec.kind === "pit" ? [] : [path.dirname(selection.path)]),
+        ...(vscode.workspace.workspaceFolders ?? []).filter(f => f.uri.scheme === "file").map(f => f.uri.fsPath)];
+      let destination: string | undefined;
+      for (const folder of [...new Set(folders)]) {
+        try {
+          await fs.promises.access(folder, fs.constants.W_OK);
+          for (let n = 0; n < 1000; n++) {
+            const file = path.join(folder, n === 0 ? basename : basename.replace(/\.ipynb$/, `-${n}.ipynb`));
+            try { await fs.promises.writeFile(file, content, { flag: "wx" }); destination = file; break; }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+          }
+          if (destination) break;
+        } catch { /* Try the workspace when the log's folder cannot be written. */ }
+      }
+      if (!destination) throw new Error("No writable log folder or workspace folder for the notebook");
+      const document = await vscode.workspace.openNotebookDocument(vscode.Uri.file(destination));
+      await vscode.window.showNotebookDocument(document);
+    } catch (error) { void vscode.window.showErrorMessage(messageOf(error)); }
+  }
+
+  async askSelection(kind?: string): Promise<void> {
+    try {
+      const { selection } = await this.selection(kind);
+      const query = selectionPrompt(selection);
+      try { await vscode.commands.executeCommand("workbench.action.chat.open", { query }); }
+      catch { await vscode.env.clipboard.writeText(query); void vscode.window.showInformationMessage("The selection prompt was copied to the clipboard; paste it into your assistant."); }
+    } catch (error) { void vscode.window.showErrorMessage(messageOf(error)); }
   }
 
   /** Reads the active editor's log again: the file changed, or the server was restarted. */

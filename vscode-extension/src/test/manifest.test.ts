@@ -135,6 +135,8 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.explorer.plotEntry",
     "wpilog-mcp.explorer.plotElements",
     "wpilog-mcp.explorer.refreshLog",
+    "wpilog-mcp.explorer.openInNotebook",
+    "wpilog-mcp.explorer.askAboutSelection",
   ]);
   for (const c of commands) {
     const explorer = c.command.startsWith("wpilog-mcp.explorer.");
@@ -177,7 +179,7 @@ test("every menu names a declared command, and every view-title button has an ic
     (manifest.contributes.commands as { command: string; icon?: string }[]).map((c) => [c.command, c])
   );
   const menus = manifest.contributes.menus as Record<string, { command: string; when?: string }[]>;
-  assert.deepEqual(Object.keys(menus).sort(), ["commandPalette", "editor/title", "view/item/context", "view/title"]);
+  assert.deepEqual(Object.keys(menus).sort(), ["commandPalette", "editor/title", "view/item/context", "view/title", "webview/context"]);
   for (const [menu, items] of Object.entries(menus)) {
     for (const item of items) {
       assert.ok(declared.has(item.command), `${menu}: ${item.command}`);
@@ -285,4 +287,11 @@ test("the mirror guide explains permanent admission for terminal use with VS Cod
   const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
   assert.match(readme, /With VS Code closed[\s\S]*servers\.yaml[\s\S]*--logdir/);
   assert.match(readme, /For regular offline analysis away from VS Code, use the `mirror` block/);
+});
+
+
+test("selection commands stay in the title and the webview context menu; links activate the handler", () => {
+  for (const suffix of ["openInNotebook", "askAboutSelection"]) assert.ok(manifest.contributes.menus["editor/title"].some((m: any) => m.command === "wpilog-mcp.explorer." + suffix));
+  assert.deepEqual(manifest.contributes.menus["webview/context"], [{ command: "wpilog-mcp.explorer.askAboutSelection", when: "webviewId == 'wpilog-mcp.explorer'", group: "navigation" }]);
+  assert.ok(manifest.activationEvents.includes("onUri"));
 });
