@@ -30,6 +30,10 @@ public final class RobotFacts {
       + "if [ -r \"$p/environ\" ]; then printf 'environ=readable\\n'; "
       + "elif [ -e \"$p/environ\" ]; then printf 'environ=refused\\n'; else printf 'environ=absent\\n'; fi; fi; done; fi; "
       + "if [ \"$found\" = 0 ]; then printf 'No matching robot program\\n'; exit 3; fi";
+  // /proc/<pid>/exe follows the deployed process, not the login shell's possibly different java.
+  private static final String MODULES = PROGRAM.substring(0, PROGRAM.indexOf("p=${f%/cmdline};"))
+      + "p=${f%/cmdline}; \"$p/exe\" --list-modules; exit $?; fi; done; fi; "
+      + "printf 'No matching robot runtime\\n'; exit 3";
   private static final List<Probe> FIXED = fixed();
   private static List<Probe> fixed() {
     var probes = new ArrayList<Probe>();
@@ -48,6 +52,7 @@ public final class RobotFacts {
     add(probes, "console", "ls -la /home/lvuser/FRC_UserProgram.log");
     add(probes, "console-ni", "ls -la /var/local/natinst/log/FRC_UserProgram.log");
     add(probes, "program", PROGRAM);
+    add(probes, "jre-modules", MODULES);
     add(probes, "clocks", "cat /proc/uptime; date +%s.%N");
     return List.copyOf(probes);
   }

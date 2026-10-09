@@ -211,8 +211,16 @@ not CPU attributed to this provider), `lines_per_sec` (accepted in the current s
 `dropped_lines`, `dropped_before_sync`, `records`, `bytes`, `sample_bytes` (last provider payload),
 and `program_pids` (program PIDs observed in this session, used for crash-file placement).
 Unknown measurements are null. Provider records/bytes cover the session across rollover files;
-drop counters cover the provider's process lifetime. They are separate from NT4 topic counts.
+SSH/tail drop counters cover the provider's process lifetime; JMX dropped-before-sync counts cover the session. They are separate from NT4 topic counts.
 The same provider summary is retained in the manifest; old manifests return an empty list.
+The `jvm` provider reports `offline`, `connecting`, `sampling`, `waiting_for_sync` or `stand_down`;
+its reason names missing launch flags or a stalled call. JMX `sample_bytes` counts typed numeric
+and JSON payloads, excluding transport/framing bytes. `/Daemon/JVM/` holds sampled memory,
+cumulative collector counts/time, threads, classes, process CPU and uptime pairing. Runtime
+start time is identity; sample timestamps are NT4 receipt time with `clock: measured` metadata.
+`clock/offset_sec` is FPGA minus uptime, `clock/round_trip_bound_sec` bounds that pairing,
+and `ClockNote` records a mapping change beyond adjacent bounds. These are samples, not exact
+collection-pause events; the Flight Recorder half is not yet implemented.
 
 ### `get_latest_values`
 
@@ -222,7 +230,7 @@ Read the latest values by NT4 topic name, its `NT:` capture name, or a `/Daemon/
 
 - `entries` (required): Array of 1 to 2000 nonempty names; repeated names are returned once.
 
-**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`, `source`) and `missing[]`. `source` is `nt4`, `ssh`, `tail`, or `photonvision`.
+**Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`, `source`) and `missing[]`. `source` is `nt4`, `ssh`, `tail`, `photonvision`, or `jmx`.
 The timestamp is the robot's clock. Age is robot now minus that timestamp, using measured NT4
 time sync, independent of the laptop's calendar clock; before sync it is null. A future
 publisher timestamp can have a negative age. Type is the announce's authoritative NT4 string.

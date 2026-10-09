@@ -127,8 +127,29 @@ public final class FixtureLogs {
     all.add(noDriverStation(dir));
     all.add(dualDriverStation(dir));
     all.add(revlogPair(dir));
+    all.add(jvmContext(dir));
     all.add(empty(dir));
     return List.copyOf(all);
+  }
+
+  /** Sampled JVM context has independently known cumulative counters and units. */
+  static Fixture jvmContext(Path dir) throws IOException {
+    var path = dir.resolve("2026-jvm_context.wpilog");
+    try (var w = new FixtureWriter(path, "{\"source\":\"jmx\",\"clock\":\"measured\",\"sampled\":true,\"period_sec\":1}")) {
+      for (int t = 1; t <= 10; t++) {
+        w.i64("/Daemon/JVM/heap/used_bytes", t, 1024L * t)
+            .i64("/Daemon/JVM/heap/committed_bytes", t, 16384)
+            .i64("/Daemon/JVM/gc/synthetic/count", t, t / 3)
+            .dbl("/Daemon/JVM/gc/synthetic/time_sec", t, .002 * (t / 3))
+            .i64("/Daemon/JVM/threads/live", t, 4)
+            .i64("/Daemon/JVM/classes/total", t, 100 + t)
+            .dbl("/Daemon/JVM/process/cpu_sec", t, .01 * t)
+            .dbl("/Daemon/JVM/uptime_sec", t, t + 2.)
+            .dbl("/Daemon/JVM/clock/offset_sec", t, -2.)
+            .dbl("/Daemon/JVM/clock/round_trip_bound_sec", t, .003);
+      }
+    }
+    return new Fixture("jvm_context", path, "JMX sampled counters, memory and uptime pairing", List.of());
   }
 
   // ==================== Shared pieces ====================

@@ -14,13 +14,56 @@ import org.junit.jupiter.api.Test;
 
 class PhotonVisionProviderTest {
   record Snapshot(long timestamp, List<PhotonSettings.Camera> cameras, com.google.gson.JsonObject metadata) {}
+  @Test void selectiveBurstsCoalesceUntilTheNextOneSecondRefreshBoundary() throws Exception {
+    try (var backend = new PhotonFixture()) {
+      var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
+      var snapshots = new java.util.ArrayList<Snapshot>();
+      try (var provider = new PhotonVisionProvider(backend.address(), () -> 7_000_000.0,
+          (session, timestamp, cameras, metadata) -> { snapshots.add(new Snapshot(timestamp, cameras, metadata)); return CompletableFuture.completedFuture(null); },
+          () -> {}, java.net.http.HttpClient.newHttpClient(), loop)) {
+        provider.session(new Object(), true); until(loop, () -> snapshots.size() == 1);
+        for (int n = 1; n <= 3; n++) {
+          if (n > 1) loop.advance(50_000);
+          backend.change(20 + n); long received = n;
+          until(loop, () -> refreshField(provider, "changes") == received);
+          assertEquals(1, refreshField(provider, "revision"), "Notifications inside one second cannot start a refresh");
+        }
+        loop.advance(899_999); assertEquals(1, refreshField(provider, "revision"));
+        loop.advance(1); until(loop, () -> snapshots.size() == 2);
+        assertEquals(2, backend.connections.get());
+        assertEquals(23, snapshots.get(1).cameras().get(0).settings().getAsJsonObject("pipeline").get("exposure_raw").getAsInt());
+        assertEquals(24, snapshots.get(1).cameras().get(1).settings().getAsJsonObject("pipeline").get("exposure_raw").getAsInt());
+        backend.change(24); until(loop, () -> refreshField(provider, "changes") == 4);
+        var gate = new java.util.concurrent.CountDownLatch(1); backend.fullSnapshotGate = gate;
+        try {
+          loop.advance(1_000_000); until(loop, () -> backend.connections.get() == 3);
+          backend.change(25); until(loop, () -> refreshField(provider, "changes") == 5);
+        } finally { gate.countDown(); }
+        until(loop, () -> snapshots.size() == 3);
+        loop.advance(999_999); assertEquals(3, refreshField(provider, "revision"));
+        loop.advance(1); until(loop, () -> snapshots.size() == 4);
+        assertEquals(4, backend.connections.get(), "An in-flight notification requires one refresh afterwards");
+        assertEquals(25, snapshots.get(3).cameras().get(0).settings().getAsJsonObject("pipeline").get("exposure_raw").getAsInt());
+      }
+    }
+  }
+  /** The message counter is the delivery barrier; advancing time alone cannot prove receipt. */
+  private static long refreshField(PhotonVisionProvider provider, String name) {
+    try {
+      var field = PhotonVisionProvider.class.getDeclaredField("attempt"); field.setAccessible(true);
+      var attempt = field.get(provider); var value = attempt.getClass().getDeclaredField(name); value.setAccessible(true);
+      return value.getLong(attempt);
+    } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
+  }
   @Test void snapshotsUseTheRobotReceiptClockAndSelectiveChangesRefreshWithoutGuessingACamera() throws Exception {
     try (var backend = new PhotonFixture()) {
+      var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
       var clock = new AtomicLong(7_000_000); var snapshots = new LinkedBlockingQueue<Snapshot>();
       try (var provider = new PhotonVisionProvider(backend.address(), () -> (double) clock.get(), (session, timestamp, cameras, metadata) -> {
         snapshots.add(new Snapshot(timestamp, cameras, metadata)); return CompletableFuture.completedFuture(null);
-      }, () -> {})) {
+      }, () -> {}, java.net.http.HttpClient.newHttpClient(), loop)) {
         var session = new Object(); provider.session(session, true);
+        until(loop, () -> snapshots.size() == 1);
         var first = snapshots.poll(30, TimeUnit.SECONDS); assertNotNull(first);
         assertEquals(7_000_000, first.timestamp()); assertEquals(1, backend.exports.get());
         assertEquals(List.of("front", "rear"), first.cameras().stream().map(PhotonSettings.Camera::name).toList());
@@ -32,6 +75,8 @@ class PhotonVisionProviderTest {
         assertEquals("v2026.3.4", first.metadata().get("photonvision_release").getAsString());
         backend.holdRefreshUntilOldSocketCloses = true;
         clock.set(9_000_000); backend.change(24);
+        until(loop, () -> refreshField(provider, "changes") == 1); loop.advance(1_000_000);
+        until(loop, () -> snapshots.size() == 1);
         var second = snapshots.poll(30, TimeUnit.SECONDS); assertNotNull(second, "Selective settings notification must not be ignored");
         assertEquals(9_000_000, second.timestamp());
         assertEquals(24, second.cameras().get(0).settings().getAsJsonObject("pipeline").get("exposure_raw").getAsInt());

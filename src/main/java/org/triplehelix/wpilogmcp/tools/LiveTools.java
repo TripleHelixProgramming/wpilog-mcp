@@ -160,7 +160,7 @@ public final class LiveTools {
     @Override public String description() {
       return "Read named entries from the capture client's concurrent latest-value table. Returns values[] "
           + "with name, value, timestamp_sec (robot clock), age_ms (robot now minus timestamp, null before time sync), "
-          + "source (nt4, ssh, tail or photonvision), and type (authoritative entry type), plus missing[]. Missing some is partial with skipped; "
+          + "source (nt4, ssh, tail, photonvision or jmx), and type (authoritative entry type), plus missing[]. Missing some is partial with skipped; "
           + "all missing is no_match with looked_for and hint. No open capture is not_applicable with last_session "
           + "and ended_at. inputs.session names the capture." + MEANING;
     }

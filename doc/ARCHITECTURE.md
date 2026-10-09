@@ -167,7 +167,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4/server` | Pure subscription/announcement/value fan-out and a bounded WebSocket adapter, used by configured capture and the loopback robot fixture |
 | `ssh` | One authenticated connection per host, pinned keys, bounded exec channels and independent SFTP/follow channels; reconnect only during NT4 presence |
 | `capture/pull` | Disabled-state gate, borrowed SFTP/exec channels, telemetry and system-text transfer passes outside the NT4 loop; the operator's read-only `robot-facts` command and pure evidence report |
-| `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers, pinned PhotonVision configuration and published provider state |
+| `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers, pinned PhotonVision configuration, JDK JMX sampling and published provider state |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
 
 Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small class placed in WPILib's own package, which gives the server access to WPILib's record-level reading. `src/main/resources` holds the built-in CAN database and the game data. `vscode-extension/src` holds the extension.
@@ -754,7 +754,9 @@ worker queue; this backend has no timestamp of its own. Selective pipeline notif
 camera identity in the pinned release. A replacement read-only socket obtains a complete
 snapshot; the old socket is closed before that handshake because the backend broadcasts full
 state to existing clients too. The provider never applies a delta to a guessed camera or sends
-a settings mutation.
+a settings mutation. Refresh starts are separated by at least one second per backend.
+Notifications during that interval or a refresh remain one pending refresh; completion
+checks the generation counter so a change during delivery cannot be lost.
 
 `analyze_vision` attaches `camera_settings` by exact camera name and records the settings entry
 in inputs. The last snapshot before a requested window is held, and changes inside it retain
@@ -762,6 +764,39 @@ their receipt timestamps. Nothing captured after the window's end describes that
 Calibration errors and pipeline modes are stated configuration, not quality inferred from
 observations. Missing, differently named or unreadable settings report `none_captured` with a
 reason. The pose tools currently report robot-level comparisons, not per-camera context.
+
+## JVM context in the capture
+
+`context.jvm` enables a JDK `JMXConnectorFactory` client for the connected robot address and
+explicit port. The robot team's GradleRIO launch owns the listener; no agent, native code,
+extra library or SSH command is installed. `JvmSample` reads the platform MBeans, keeping
+counts cumulative and converting milliseconds/nanoseconds to seconds. Runtime identity,
+version and arguments are read once per connection; sensitive property values are redacted.
+
+`JvmProvider` keeps one I/O operation outstanding, on one daemon worker. A separate scheduler
+judges its five-second deadline, publishes state and schedules refused connections with 1–30 s
+exponential backoff. RMI is allowed to ignore interruption: a timed-out call retains its worker
+until it actually returns, with a stand-down reason and no replacement workers. Cleanup uses
+that worker too; capture, scrapes, tools, the store queue and shutdown never join it. Session
+identity is checked at completion and again when the ordered capture loop admits delivery.
+This prevents a sample taken in one boot from appearing in the next after a backlog.
+
+Receipt captures the NT4 estimate on the I/O thread, before either queue. Every numeric sample
+includes JVM uptime, FPGA-minus-uptime offset and the JMX-poll-plus-NT4-round-trip bound (plus
+1 ms uptime quantization). Changes larger than both adjacent bounds produce a note; timestamps
+already written remain fixed. Missing NT4 synchronization drops and counts a sample. JVM start
+time is identity metadata only: OpenJDK's cached start time plus monotonic uptime does **not**
+follow later wall-clock changes. No JVM startup-anchored wall timestamp follows the Driver
+Station correction, and this provider does not detect it. SSH stats pair kernel uptime
+with FPGA time; corrected wall-clock evidence comes from pulled-log `systemTime`. The separate
+`robot-facts` clock probe also samples uptime beside `date` for the shop. Flight Recorder's future
+mapping must use its actual event clock; its streaming half awaits the runtime module probe.
+
+`ContextProviders` writes these results through the same context hook and live index as the
+other providers. Published provider snapshots carry state, period, round trip and cost without
+requiring readers to join a worker. Sample bytes mean typed value payload bytes, excluding
+RMI/WPILOG framing, since the public JMX API exposes no wire-byte counter. Record bytes are the
+writer's actual cost. No state is added to metrics or live tools.
 
 ## SSH context in the capture
 

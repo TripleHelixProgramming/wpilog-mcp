@@ -48,6 +48,8 @@ public final class ContextProviders implements AutoCloseable {
   private final AtomicBoolean stopped = new AtomicBoolean(), deliveryQueued = new AtomicBoolean();
   private final AtomicReference<Reading> pending = new AtomicReference<>();
   private final StatsProvider stats;
+  private final JvmProvider jvm;
+  private String robotAddress;
   private volatile SharedSsh.Host robot;
   private volatile boolean connected, open;
   private final java.util.concurrent.atomic.AtomicLong episode = new java.util.concurrent.atomic.AtomicLong();
@@ -84,6 +86,8 @@ public final class ContextProviders implements AutoCloseable {
       var follower = new Follower(tail, provider); slot.set(follower); tails.add(follower);
       if (tail.host() != null) follower.host = host(tail.host(), tail.ssh());
     }
+    jvm = config.providers().jvm() == null ? null : new JvmProvider(config.providers().jvm(), live::robotNowUs,
+        () -> live.timeEstimate().map(t -> (double) t.roundTripUs()).orElse(null), this::writeJvm, this::requestDrain);
     for (var address : config.providers().photonvision()) {
       var owner = new AtomicReference<PhotonVisionProvider>();
       var provider = new PhotonVisionProvider(address, live::robotNowUs, (target, timestamp, cameras, metadata) -> {
@@ -104,6 +108,24 @@ public final class ContextProviders implements AutoCloseable {
       owner.set(provider); photons.add(provider);
     }
   }
+  /** Session admission is checked again on delivery, after any intervening capture-loop backlog. */
+  java.util.concurrent.CompletionStage<Void> writeJvm(Object target, JvmProvider.Sample sample) {
+    var done = new CompletableFuture<Void>();
+    if (stopped.get()) { done.complete(null); return done; }
+    try { loop.execute(() -> {
+      try {
+        if (!stopped.get() && writer.session() == target && open) {
+          for (var value : new java.util.TreeMap<>(sample.values()).entrySet()) jvm.recorded(record("/Daemon/JVM/" + value.getKey(),
+              value.getValue() instanceof Long ? "int64" : "double", value.getValue(), sample.timestampUs(), sample.metadata()));
+          if (sample.runtime() != null) jvm.recorded(record("/Daemon/JVM/Runtime", "json", sample.runtime().toString(), sample.timestampUs(), sample.metadata()));
+          if (sample.note() != null) jvm.recorded(record("/Daemon/JVM/ClockNote", "json", sample.note().toString(), sample.timestampUs(), sample.metadata()));
+          publish();
+        }
+        done.complete(null);
+      } catch (Exception e) { done.completeExceptionally(e); }
+    }); } catch (java.util.concurrent.RejectedExecutionException e) { done.complete(null); }
+    return done;
+  }
   private SharedSsh.Host host(String address, org.triplehelix.wpilogmcp.config.PullConfig.Ssh settings) {
     var host = ssh.host(address, settings);
     host.onConnect(connection -> {
@@ -118,7 +140,7 @@ public final class ContextProviders implements AutoCloseable {
   }
   /** Only the ordered NT4 listener calls presence/session methods. */
   public void connected(String address) {
-    connected = true; episode.incrementAndGet();
+    connected = true; robotAddress = address; episode.incrementAndGet();
     if (config.providers().robotSsh() || config.pull().active()) {
       robot = host(address, config.pull().ssh()); robot.required(true);
     }
@@ -130,6 +152,7 @@ public final class ContextProviders implements AutoCloseable {
   public void disconnected() {
     connected = false; open = false;
     photons.forEach(p -> p.session(session, false));
+    if (jvm != null) jvm.session(session, false, robotAddress);
     if (robot != null) robot.required(false);
     tails.forEach(t -> { if (t.host != null) t.host.required(false); });
     publish();
@@ -143,6 +166,7 @@ public final class ContextProviders implements AutoCloseable {
     }
     tails.forEach(t -> t.provider.session(current));
     photons.forEach(p -> p.session(current, open));
+    if (jvm != null) jvm.session(current, open, robotAddress);
   }
   /** A borrowed SFTP channel never closes the shared connection. Pull still applies its own gate. */
   public SftpTransport pull(String address, org.triplehelix.wpilogmcp.config.PullConfig settings, String pin) throws IOException {
@@ -267,10 +291,11 @@ public final class ContextProviders implements AutoCloseable {
           value.roundTripMs(), null, buffer.linesPerSecond(loop.nowUs()), buffer.dropped(), 0, tail.records, tail.bytes, 0));
     }
     photons.forEach(p -> snapshots.add(p.status()));
+    if (jvm != null) snapshots.add(jvm.status());
     writer.providers(snapshots, kernel); live.providers(snapshots);
   }
   public CompletableFuture<Void> closeAsync() {
-    if (stopped.compareAndSet(false, true)) { connected = false; open = false; tails.forEach(t -> t.provider.close()); photons.forEach(PhotonVisionProvider::close); worker.close(); }
+    if (stopped.compareAndSet(false, true)) { connected = false; open = false; tails.forEach(t -> t.provider.close()); photons.forEach(PhotonVisionProvider::close); if (jvm != null) jvm.close(); worker.close(); }
     return ssh.closeAsync();
   }
   @Override public void close() { closeAsync(); }

@@ -370,7 +370,9 @@ Each snapshot writes one JSON record per camera under `/Daemon/PhotonVision/<cam
 The UI supplies no snapshot timestamp: receipt is mapped through the NT4 robot-clock estimate,
 with that basis and the pinned release in metadata. It never uses the HTTP fetch's local clock.
 This release omits the camera ID from selective change notifications; the provider opens a new
-read-only socket to receive complete state instead of guessing which camera changed.
+read-only socket to receive complete state instead of guessing which camera changed. Refreshes
+start at most once per second per backend; notifications inside that interval or during a
+refresh coalesce into one subsequent refresh carrying current state.
 Names must match the NT camera names exactly; an unrelated generic robot-code camera label is
 not inferred to mean a particular coprocessor camera.
 
@@ -385,6 +387,74 @@ and the manifest expose the provider's state/reason and record/byte/round-trip c
 `get_latest_values` marks its entries `source: photonvision`. `wpilog_provider_state` reports
 one sample labeled by provider and its current state. Presence of `/photonvision/<camera>/`
 topics without configured hosts logs one configuration suggestion per capture service.
+
+#### JVM context through JMX
+
+`context.jvm` sits beside `capture`, like `context.photonvision`. Omit it to leave JVM polling
+off; `context: {}` clears an inherited context block. It requires capture and uses the address
+that NT4 actually connected to, with no SSH requirement. The team enables JMX in its robot
+launch; the pit server never changes the robot program or its launch.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `context.jvm.port` | required when `jvm` is present | Integer 1–65535; the robot's JMX registry and RMI port. |
+| `context.jvm.period_sec` | `1` | Poll interval after the previous delivery completes, 0.001–3600 seconds. |
+
+```yaml
+context:
+  jvm: {port: 5809, period_sec: 1}
+```
+
+In the robot project's existing GradleRIO `frcJava` deploy artifact, add these launch arguments
+(adjust the example address to the robot's reachable team-network address):
+
+```groovy
+jvmArgs.addAll([
+    "-Dcom.sun.management.jmxremote.port=5809",
+    "-Dcom.sun.management.jmxremote.rmi.port=5809",
+    "-Djava.rmi.server.hostname=10.23.63.2",
+    "-Dcom.sun.management.jmxremote.authenticate=false",
+    "-Dcom.sun.management.jmxremote.ssl=false"
+])
+```
+
+The registry and RMI port are deliberately the same, so the remote connector uses one port.
+Choose an unused port; the example is separate from NT4 and the gateway. These flags disable
+authentication and encryption and expose JVM management operations: **private team network only**.
+See [WPILib's launch-argument guide](https://docs.wpilib.org/en/stable/docs/software/advanced-gradlerio/compiler-args.html)
+and [JDK remote management](https://docs.oracle.com/en/java/javase/17/management/monitoring-and-management-using-jmx-technology.html).
+The shop's `robot-facts` module probe must establish `jdk.management.agent` in the deployed JRE;
+this desktop test cannot establish the roboRIO image's module set or polling cost.
+
+The JDK connector polls memory (heap/non-heap used and committed bytes), cumulative collection
+counts and seconds by collector, live/peak/daemon threads, loaded/total classes and process CPU
+seconds. Unsupported negative counters and an absent process-CPU attribute are omitted.
+Numeric entries live under `/Daemon/JVM/`; `Runtime` records VM name/version/input arguments
+once per connection (sensitive property values are redacted). Metadata includes `source: jmx`,
+`sampled: true`, `period_sec`, `clock: measured`, the host and `jvm_start_time_ms` as identity.
+
+Samples are stamped at receipt through the NT4 robot-time estimate, before either delivery
+queue. `uptime_sec`, `clock/offset_sec` (robot time minus JVM uptime) and
+`clock/round_trip_bound_sec` are recorded each poll. The bound includes the complete JMX poll,
+the NT4 round trip and one millisecond of uptime quantization. A mapping change beyond both
+adjacent samples' bounds writes `ClockNote`; earlier records keep their timestamps. With no NT4
+estimate a sample is counted and dropped. Start time is never a clock: `startTime + uptime`
+stays anchored to the wall clock at JVM startup and does not track the Driver Station's later
+correction. The provider does not try to detect that correction. The existing SSH stats pairing is kernel uptime to FPGA time, not wall time. A pulled log's
+`systemTime` provides corrected wall-clock evidence; the separate `robot-facts` probe records
+uptime beside `date` for shop inspection. Neither is replaced by this JVM uptime mapping.
+
+A refused connection reports the launch flags and retries after 1 second, doubling to 30 seconds;
+NT4 disconnection stands the provider down. One daemon I/O worker owns JMX and a separate
+five-second watchdog reports a stalled call. If RMI will not return, no replacement call/thread
+is started until it does; capture and shutdown never join it. Samples cannot cross sessions,
+including a reply queued before a reboot. `list_sessions`, the manifest and metrics expose
+state/reason, period, round trip and sample cost. `sample_bytes` counts encoded value payloads
+(eight bytes per numeric value plus UTF-8 JSON), excluding RMI and WPILOG framing; provider
+`bytes` counts recorded WPILOG bytes. `get_latest_values` marks these entries `source: jmx`.
+`wpilog_provider_state{provider="jvm",state="..."}` is the state gauge; numeric entries also
+appear as `nt_value`. Polling is a sampled view, not an exact pause trace. Flight Recorder
+streaming remains the second half, after the shop establishes runtime modules.
 
 The whole capture block can be inherited from `defaults`; a server's block replaces it.
 Unknown capture keys and invalid values name the key in the startup error. Capture requires
@@ -502,7 +572,10 @@ Ordinary commands have a ten-second deadline with a five-second SSH connect boun
 commands remain in the report and do not stop other probes. Connection/configuration/output
 failures exit nonzero; collecting a sparse image successfully still exits zero.
 
-Evidence covers `uname`, candidate NI metadata (`/etc/os-release`,
+Evidence includes the deployed program runtime's `--list-modules` via `/proc/<pid>/exe`, with
+separate conclusions for `jdk.management.agent`, `jdk.jfr` and `jdk.management.jfr`. A missing
+program/runtime or refused command is evidence, never an assumed module. It also covers
+`uname`, candidate NI metadata (`/etc/os-release`,
 `/etc/natinst/share/ni-rt.ini`, `/etc/natinst/share/ni-imaging-info.ini`), the six log/home/USB
 directory listings, `which` for journalctl/dmesg/df/tail/sha256sum, utility versions, current-boot
 and explicit-UUID journal queries, three kernel lines and their `[seconds]` shape, `df -Pk /`,

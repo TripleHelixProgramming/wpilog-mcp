@@ -30,6 +30,7 @@ public final class PhotonFixture implements AutoCloseable {
   public volatile int exportStatus = 200;
   public volatile boolean answerPing = true;
   public volatile boolean holdRefreshUntilOldSocketCloses;
+  public volatile java.util.concurrent.CountDownLatch fullSnapshotGate;
   private final java.util.concurrent.CountDownLatch firstSocketClosed = new java.util.concurrent.CountDownLatch(1);
   public volatile byte[] export = archive();
   public PhotonFixture() throws Exception {
@@ -104,6 +105,8 @@ public final class PhotonFixture implements AutoCloseable {
           .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.US_ASCII)));
       out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII)); out.flush();
       websockets.add(socket); connections.incrementAndGet();
+      var gate = fullSnapshotGate;
+      if (gate != null && !gate.await(30, java.util.concurrent.TimeUnit.SECONDS)) throw new java.io.IOException("Snapshot gate expired");
       frame(socket, 2, MessagePack.encode(new Gson().fromJson(document, Object.class)));
       while (true) {
         int opcode = in.readUnsignedByte() & 15; int flags = in.readUnsignedByte(); int n = flags & 127;

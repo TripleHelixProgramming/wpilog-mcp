@@ -37,6 +37,7 @@ class RobotFactsTest {
         case "uname" -> "Linux synthetic-rio2 0.0-test armv7l\n";
         case "dmesg" -> "[    2.500000] synthetic kernel message\n";
         case "program" -> "pid=42\ncmdline=java -jar /home/lvuser/synthetic.jar\nenviron=readable\n";
+        case "jre-modules" -> "java.base@17.0.1\njdk.management.agent@17.0.1\njdk.jfr@17.0.1\njdk.management.jfr@17.0.1\n";
         case "df" -> "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/root 9000 2000 7000 23% /\n";
         case "clocks" -> "12.50 8.0\n1767323045.000000000\n";
         case "boot-id" -> "00000000-0000-4000-8000-000000000001\n";
@@ -44,7 +45,7 @@ class RobotFactsTest {
         default -> id.startsWith("which:") ? "/usr/bin/" + id.substring(6) + "\n" : "synthetic readable evidence\n";
       };
       if (sparse && id.equals("dmesg")) rio.reply(probe.command(), 0, "", "dmesg: read kernel buffer failed: Operation not permitted\n");
-      else if (sparse && id.equals("program")) rio.reply(probe.command(), 3, "No matching robot program\n", "");
+      else if (sparse && List.of("program", "jre-modules").contains(id)) rio.reply(probe.command(), 3, "No matching robot program\n", "");
       else if (sparse && (id.contains("journal") || id.startsWith("list:") || id.startsWith("image:") || id.startsWith("console")))
         rio.reply(probe.command(), 127, "", "synthetic: not found\n");
       else rio.reply(probe.command(), 0, stdout, "");
@@ -65,6 +66,8 @@ class RobotFactsTest {
           assertTrue(markdown.contains("2026-01-02T03:04:05Z (UTC)"));
           assertTrue(markdown.contains(connection.fingerprint()), "Host-key fingerprint is evidence, not a secret");
           assertEquals("found", conclusions.get("uname").state());
+          for (String module : List.of("jdk.management.agent", "jdk.jfr", "jdk.management.jfr"))
+            assertEquals(sparse ? "absent" : "found", conclusions.get("module:" + module).state());
           assertEquals(sparse ? "absent" : "found", conclusions.get("which:journalctl").state());
           assertEquals(sparse ? "refused" : "found", conclusions.get("dmesg-seconds-stamps").state());
           assertEquals(sparse ? "absent" : "found", conclusions.get("proc-environ-readable").state());
@@ -96,13 +99,14 @@ class RobotFactsTest {
     for (String tool : List.of("journalctl", "dmesg", "df", "tail", "sha256sum")) ordinary.add("which " + tool);
     for (var p : RobotFacts.commands()) {
       assertTrue(RobotFacts.allowed(p.command()));
-      if (!p.id().equals("program")) assertTrue(ordinary.remove(p.command()), p.id() + " left the read-only allowlist");
+      if (!List.of("program", "jre-modules").contains(p.id())) assertTrue(ordinary.remove(p.command()), p.id() + " left the read-only allowlist");
       else {
         // The one compound discovery script only inspects cmdline and tests environ readability.
         assertTrue(p.command().startsWith("jar=$(sed -n "));
         assertTrue(p.command().contains("/home/lvuser/robotCommand"));
         assertTrue(p.command().contains("for f in /proc/[0-9]*/cmdline"));
-        assertTrue(p.command().contains("[ -r \"$p/environ\" ]"));
+        if (p.id().equals("program")) assertTrue(p.command().contains("[ -r \"$p/environ\" ]"));
+        else assertTrue(p.command().contains("\"$p/exe\" --list-modules; exit $?"));
         assertFalse(p.command().matches("(?s).*\\b(?:cat|tr|head|sed) [^;]*environ.*"));
         assertFalse(p.command().matches("(?s).*\\b(?:rm|touch|mkdir|tee|dd|cp|mv|truncate|chmod|kill|sudo)\\b.*"));
         assertFalse(p.command().replace("2>/dev/null", "").contains(">"), "No writes, even a redirected empty file");
@@ -146,6 +150,18 @@ class RobotFactsTest {
     assertEquals("refused", conclusions.get("df").state());
     assertEquals("refused", conclusions.get("proc-environ-readable").state());
     assertEquals("absent", conclusions.get("which:tail").state());
+  }
+
+  @Test void runtimeModuleConclusionsRequireTheProbeAndAnExactModuleName() {
+    for (String output : List.of("", "jdk.management.agent.extra@17\njdk.management.jfr.extra@17", "jdk.jfr@17")) {
+      var observations = output.isEmpty() ? List.<RobotFacts.Observation>of() : List.of(
+          new RobotFacts.Observation(probe("jre-modules"), new JschConnection.Reply(0, output, "", false, false, 1)));
+      var report = new RobotFacts.Report("synthetic", 22, "lvuser", "none", "public", CLOCK.instant(), observations);
+      var conclusions = RobotFactsReport.conclusions(report);
+      assertEquals("absent", conclusions.get("module:jdk.management.agent").state());
+      assertEquals("absent", conclusions.get("module:jdk.management.jfr").state());
+      assertEquals(output.equals("jdk.jfr@17") ? "found" : "absent", conclusions.get("module:jdk.jfr").state());
+    }
   }
 
   @Test void inspectionKeepsExitAndStderrBoundsAndAClockDeadlineDoesNotDropTheConnection() throws Exception {

@@ -13,7 +13,7 @@ import java.util.Set;
 import java.util.function.UnaryOperator;
 
 /** Provider defaults follow explicit SSH configuration, without enabling the disabled-only puller. */
-public record ProviderConfig(boolean robotSsh, Stats stats, List<Tail> tails, List<java.net.URI> photonvision) {
+public record ProviderConfig(boolean robotSsh, Stats stats, List<Tail> tails, List<java.net.URI> photonvision, ContextConfig.Jvm jvm) {
   public static final String CONSOLE = "/home/lvuser/FRC_UserProgram.log";
   public static final Set<String> STATS_KEYS = Set.of("enabled", "period_sec", "budget_ms");
   public static final Set<String> TAIL_KEYS = Set.of("host", "user", "key", "password", "port", "path", "role", "files");
@@ -21,6 +21,9 @@ public record ProviderConfig(boolean robotSsh, Stats stats, List<Tail> tails, Li
   public ProviderConfig { tails = List.copyOf(tails); photonvision = List.copyOf(photonvision); }
   public ProviderConfig(boolean robotSsh, Stats stats, List<Tail> tails) {
     this(robotSsh, stats, tails, List.of());
+  }
+  public ProviderConfig(boolean robotSsh, Stats stats, List<Tail> tails, List<java.net.URI> photonvision) {
+    this(robotSsh, stats, tails, photonvision, null);
   }
   public record Stats(boolean enabled, long periodUs, long budgetUs) {}
   public record Tail(String host, PullConfig.Ssh ssh, String path, String role) {}

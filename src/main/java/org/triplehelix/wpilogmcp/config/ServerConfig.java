@@ -58,7 +58,7 @@ public record ServerConfig(
     var old = capture.providers();
     return new CaptureConfig(capture.addresses(), capture.store(), capture.periodSeconds(), capture.policy(),
         capture.hotWindowUs(), capture.maxFileBytes(), capture.pull(), capture.gatewayPort(),
-        new ProviderConfig(old.robotSsh(), old.stats(), old.tails(), context.photonvision()));
+        new ProviderConfig(old.robotSsh(), old.stats(), old.tails(), context.photonvision(), context.jvm()));
   }
 
   public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,

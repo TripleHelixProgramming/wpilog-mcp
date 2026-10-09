@@ -149,6 +149,10 @@ class ClientTest {
         assertEquals(List.of(1L, 2L), received);
         assertEquals(1_000_100, client.latestValues().get("/x").serverTimestampUs());
         gateway.dropClients().join(); loop.until(() -> disconnected.get() == 2);
+        // The disconnect notification precedes scheduling the retry. Under load, observing
+        // it alone is not the scheduling barrier. Accept either delay here so a missing reset
+        // still reaches, and fails, the one-second assertion below.
+        loop.until(() -> loop.delays.stream().filter(d -> d == 1_000_000 || d == 2_000_000).count() >= 2);
         assertEquals(2, loop.delays.stream().filter(d -> d == 1_000_000).count());
       }
       loop.drain();

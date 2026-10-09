@@ -381,6 +381,7 @@ public class ConfigLoader {
   }
 
   private void validate(ServerConfig config) throws ConfigException {
+    if (config.context() != null && config.context().jvm() != null && config.capture() == null) throw new ConfigException("context.jvm requires capture");
     if (config.context() != null && !config.context().photonvision().isEmpty() && config.capture() == null) throw new ConfigException("context.photonvision requires capture");
     if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
     if (config.mirror() != null && !config.isHttp()) throw new ConfigException("mirror requires transport: http");

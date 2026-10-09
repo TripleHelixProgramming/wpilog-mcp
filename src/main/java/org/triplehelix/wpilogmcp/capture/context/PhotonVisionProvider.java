@@ -33,6 +33,7 @@ import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
  * The backend has no snapshot clock: receipt is mapped through the robot's NT4 estimate.
  */
 public final class PhotonVisionProvider implements AutoCloseable {
+  static final long REFRESH_INTERVAL_US = 1_000_000;
   static final int MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
   static final int MAX_EXPORT_BYTES = 64 * 1024 * 1024;
   static final int MAX_INFLATED_BYTES = 256 * 1024 * 1024;
@@ -46,7 +47,8 @@ public final class PhotonVisionProvider implements AutoCloseable {
     volatile boolean ended;
     boolean gotSnapshot;
     boolean refreshing;
-    long sentUs, revision;
+    long sentUs, revision, changes, refreshedChanges, nextRefreshUs;
+    boolean refreshScheduled;
     String exportHash;
     Attempt(Object session) { this.session = session; }
     void close() { ended = true; if (request != null) request.cancel(true); if (socket != null) socket.abort(); }
@@ -138,6 +140,8 @@ public final class PhotonVisionProvider implements AutoCloseable {
     // onConnect broadcasts full state to every UI client. Stop accepting the old socket
     // before this handshake, or the refresh can record the same broadcast from both.
     var previous = a.socket; a.socket = null; if (previous != null) previous.abort();
+    a.refreshedChanges = a.changes;
+    a.nextRefreshUs = worker.nowUs() + REFRESH_INTERVAL_US;
     a.refreshing = true; if (a.gotSnapshot) a.sentUs = worker.nowUs(); long revision = ++a.revision;
     URI socketUri = URI.create("ws://" + address.getRawAuthority() + PhotonSettings.SOCKET_PATH);
     var listener = new Socket(a);
@@ -148,6 +152,16 @@ public final class PhotonVisionProvider implements AutoCloseable {
       else if (!current(a)) socket.abort();
     });
     worker.schedule(() -> { if (current(a) && a.revision == revision && a.refreshing) fail(a, "No complete settings snapshot within 10 seconds"); }, 10_000_000);
+  }
+  /** A burst asks for one later full state; notifications during a fetch remain pending. */
+  private void scheduleRefresh(Attempt a) {
+    if (!current(a) || a.refreshing || a.refreshScheduled || a.changes == a.refreshedChanges) return;
+    a.refreshScheduled = true;
+    worker.schedule(() -> {
+      a.refreshScheduled = false;
+      if (!current(a) || a.refreshing || a.changes == a.refreshedChanges) return;
+      connect(a);
+    }, Math.max(0, a.nextRefreshUs - worker.nowUs()));
   }
   private final class Socket implements WebSocket.Listener {
     final Attempt owner;
@@ -188,12 +202,17 @@ public final class PhotonVisionProvider implements AutoCloseable {
             metadata.addProperty("settings_export_sha256", owner.exportHash);
             state("following", null);
             sink.write(owner.session, Math.max(0, Math.round(timestamp)), cameras, metadata)
-                .whenComplete((ignored, error) -> { if (error != null) fail(owner, explain(error)); done.complete(null); });
+                .whenComplete((ignored, error) -> {
+                  if (error != null) fail(owner, explain(error));
+                  else submit(() -> scheduleRefresh(owner));
+                  done.complete(null);
+                });
           } else if (object.has("mutatePipelineSettings")) {
             PhotonSettings.requireObject(object.get("mutatePipelineSettings"), "mutatePipelineSettings");
+            owner.changes++;
             // This release's selective broadcast omits the camera ID. Opening a new read-only
             // socket requests full state; applying the delta to a guessed camera would lie.
-            if (!owner.refreshing) connect(owner);
+            scheduleRefresh(owner);
             done.complete(null);
           } else {
             for (String key : object.keySet()) if (!List.of("log", "ntConnectionInfo", "metrics", "updatePipelineResult",

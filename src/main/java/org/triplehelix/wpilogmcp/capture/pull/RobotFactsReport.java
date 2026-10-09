@@ -26,6 +26,13 @@ public final class RobotFactsReport {
         "No readable program environment observed"));
     if (process != null && process.reply().stdout().contains("environ=refused"))
       out.put("proc-environ-readable", new Conclusion("refused", "The program environment is not readable by this account"));
+    var modules = observation(report, "jre-modules");
+    for (String module : List.of("jdk.management.agent", "jdk.jfr", "jdk.management.jfr")) {
+      boolean found = modules != null && modules.reply().stdout().lines()
+          .anyMatch(line -> line.equals(module) || line.startsWith(module + "@"));
+      out.put("module:" + module, evidence(modules, found, "Listed by the deployed program's runtime",
+          "Not observed in the deployed runtime's module list"));
+    }
     var df = observation(report, "df");
     out.put("df-line-shape", evidence(df, df != null && df.reply().stdout().matches("(?s).*\\n[^\\n]+\\s+\\d+\\s+\\d+\\s+\\d+\\s+\\d+%\\s+/\\s*"),
         "df -Pk reports numeric 1 KiB block columns and the root mount", "No numeric POSIX df row observed"));
@@ -51,7 +58,7 @@ public final class RobotFactsReport {
     if (error.contains("not found") || error.contains("no such file"))
       return new Conclusion("absent", "The command or file is absent; see stderr below");
     if (r.exitStatus() != 0) {
-      boolean absent = r.exitStatus() == 127 || (r.exitStatus() == 3 && o.probe().id().equals("program")) || error.contains("no nonempty");
+      boolean absent = r.exitStatus() == 127 || (r.exitStatus() == 3 && List.of("program", "jre-modules").contains(o.probe().id())) || error.contains("no nonempty");
       return new Conclusion(absent ? "absent" : "refused", "Exit status " + r.exitStatus() + "; see command evidence below");
     }
     if (o.probe().id().startsWith("which:") && r.stdout().isBlank()) return new Conclusion("absent", "No executable path returned");

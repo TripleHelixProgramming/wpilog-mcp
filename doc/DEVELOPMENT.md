@@ -289,6 +289,7 @@ the checklist as follows; **absent** on an exercise means not measured, not a mi
 | Installed journalctl, dmesg, df, tail and sha256sum; versions | `which:*`, `journal-version`, `tail-version` |
 | Journal exists, selects the current boot and accepts a boot UUID | `journal-boot`, `journal-uuid`, `boot-id` |
 | dmesg permission and `[seconds]` stamps for cursor wrap detection | `dmesg`, `dmesg-seconds-stamps` |
+| Deployed JRE remote management and Flight Recorder modules | `jre-modules`, `module:jdk.management.agent`, `module:jdk.jfr`, `module:jdk.management.jfr`; `java --list-modules` through `/proc/<pid>/exe`, never a PATH-based guess |
 | Console path and deployed JAR's actual command line | `console`, `console-ni`, `program` |
 | `/proc/<pid>/environ` readability by the selected account | `proc-environ-readable`; contents are never printed |
 | Empty-password access / actual authentication method, host-key fingerprint | `ssh-authentication` and report header |
@@ -297,6 +298,13 @@ the checklist as follows; **absent** on an exercise means not measured, not a mi
 | Wi-Fi loss, load, timing, enabled/disabled gate, reboot, growth/rename and reimage | `wifi-loss-load-and-robot-timing`: run the actual server; a snapshot cannot exercise these |
 | Provider defaults, proc field semantics/permissions and sustained CPU/disk budget on roboRIO 1 and 2 | `provider-cpu-and-disk-budget`: run providers and measure; the snapshot is only initial evidence |
 | `tail -F -s`, `dmesg -w`, `journalctl -f`, reconnect and rotation | `tail-follow-options-and-rotation`: exercise live followers after inspecting utility versions |
+
+`JvmProviderTest` starts the test JVM's real JMX connector on one ephemeral loopback port,
+provokes collections, and checks receipt timestamps and uptime mapping against fake NT4 time.
+Injected scheduling checks backoff and the external deadline; `JvmDeliveryTest` checks a reply
+queued across a boot. `JvmCaptureTest` checks capture/live-tool/manifest/metrics agreement and
+differential reads. The generated `jvm_context` fixture adds independently known counters to
+the conformance and differential sweeps. These tests establish no roboRIO modules or budget.
 
 `RobotFactsTest` scripts NI-like and sparse replies over MINA SSHD, including stderr/status,
 bounded output, injected command deadlines, the hash ceiling, actual authentication and CLI

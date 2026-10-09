@@ -452,8 +452,9 @@ The capture remains the full record behind the sampled dashboard.
 
 The roboRIO stats and followed-file providers are implemented on one shared SSH connection.
 They are enabled with SSH configuration for shop testing, with cost reports and bounded tails;
-measure the defaults and NI-image command support before recommending them to teams. JVM/JFR,
-vision providers remain planned in the pit plan.
+measure the defaults and NI-image command support before recommending them to teams. PhotonVision configuration capture and opt-in JMX polling are implemented. JVM entries use
+NT4 receipt timestamps with monotonic uptime pairing, and `robot-facts` probes the deployed
+runtime modules. Flight Recorder streaming waits for those shop facts and measured overhead.
 
 System-log collection and `search_system_logs` now work on configured synthetic-tested
 sources: dmesg, syslog rotations or the whole journal, NI files and JVM crash files. The

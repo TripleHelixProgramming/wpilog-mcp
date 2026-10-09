@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Pit server
 
+- Explicit `context.jvm` configuration now polls the robot JVM's memory, cumulative collections, threads, classes and CPU through the JDK JMX connector. Previously capture lacked JVM context. Receipt timestamps and measured uptime pairing, bounded worker ownership/backoff, session-safe delivery and provider costs reach the live tools, manifests and metrics; robot launch flags remain the team's choice, and Flight Recorder streaming is still pending.
+- `robot-facts` now probes the deployed program's runtime module list and distinguishes missing/refused remote-management and Flight Recorder modules. Previously the shop report could not establish those prerequisites.
 - Opt-in system-log pulling collects kernel buffers, syslog rotations or the whole journal, NI logs and JVM crash files through the disabled-only SSH pull pass. Previously only telemetry files were pulled. Content receipts and durable cursors prevent repeated copies; crash files use recorded program PIDs, and unverified NI-image candidates remain off by default.
 - `search_system_logs` searches manifested local companions with shared severity rules, paged totals, and written clocks mapped through measured kernel pairs or recorded systemTime. Previously assistants could search only captured text; unknown clocks remain null with reasons, and the exact pulled record is distinguished from timely tail entries.
 - SSH-configured captures now record adaptive roboRIO system stats and followed console/files under `/Daemon/`, sharing one host connection with pulling. Previously these operating-system measurements and live console lines were absent. Send/receipt-time mapping, bounded buffering, reported drops and provider costs appear in live tools, manifests and metrics; both providers default on for shop testing, with explicit opt-outs.
@@ -96,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PhotonVision full-state refreshes now coalesce notifications and start at most once per backend per second; previously every selective change could open another socket and fetch a full snapshot.
 - Growing files on Windows now resume with creation time as the identity fallback plus saved byte anchors; a null file key previously forced every growth to scan afresh. Growth retirement no longer issues a duplicate reload notification.
 - The standalone guide again caps `capture.pull.rate_bytes` at the parser's 2,147,483,647 bytes/second; the windowed-mapping change had incorrectly copied the 1 TiB file-size bound into that row. Capture-table range claims now exercise the configuration parser at their boundaries.
 - `render_chart` draws the full window by default, retaining pixel-column extremes in dense time series; previously a default image silently showed only the first 1,000 samples. Explicit limit/offset still pages the drawing and summaries always cover the whole window.
@@ -136,6 +139,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The reconnect backoff test now waits for retry scheduling after the disconnect callback; under load it previously counted delays too early. Removing the reset still fails its count assertion.
+- In-process JMX/GC tests and synthetic JVM fixtures check receipt clocks, cumulative counters, jump notes, refusal backoff, session admission and live/manifest/metrics/differential agreement. Runtime module probes are checked against complete and sparse synthetic SSH images; previously these paths were untested.
 - Windows resume assertions now require the resumed offset on every platform. Synthetic PhotonVision HTTP/WebSocket tests pin version, route shapes, clock mapping, change delivery, stand-down, metrics and exact-camera tool context, with planted faults; previously these provider paths had no coverage.
 - Synthetic tool tests explicitly admit their mock log directories and restore the prior roots afterwards. Previously they depended on the cached-path exception, so a worker retaining lease admission could reject the same mock inputs under a different fork/class order.
 - Incremental scans are checked against fresh scans and independent records, with changed-prefix, partial-tail, late-entry and stale-cache plants. Scripted SSH image reports check read-only commands, absent/refused evidence, hash sizes and credential redaction; no robot files or text are fixtures.
