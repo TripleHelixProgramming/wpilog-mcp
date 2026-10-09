@@ -23,10 +23,10 @@ import org.triplehelix.wpilogmcp.store.StoreJson;
 /** Opt-in, external WPILib robot + packaged server; expected telemetry comes only from the script. */
 @Tag("shop-harness")
 class ShopHarnessTest {
-  private static int port() throws Exception {
+  static int port() throws Exception {
     try (var socket = new ServerSocket()) { socket.bind(new InetSocketAddress("127.0.0.1", 0)); return socket.getLocalPort(); }
   }
-  private static Process launch(List<String> command, Path directory, Path output, java.util.Map<String, String> env) throws Exception {
+  static Process launch(List<String> command, Path directory, Path output, java.util.Map<String, String> env) throws Exception {
     var builder = new ProcessBuilder(command).directory(directory.toFile()).redirectErrorStream(true).redirectOutput(output.toFile());
     for (String key : List.of("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "TBA_API_KEY", "WPILOG_DIR", "WPILOG_HTTP_BIND", "WPILOG_HTTP_PATH", "HALSIM_EXTENSIONS")) builder.environment().remove(key);
     builder.environment().putAll(env); return builder.start();

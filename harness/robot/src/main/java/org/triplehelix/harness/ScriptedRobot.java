@@ -45,6 +45,10 @@ public final class ScriptedRobot extends TimedRobot {
   private final int gatewayPort;
   private final Path gatewayOutput;
   private GatewayProbe gateway;
+  private final boolean realtime = Boolean.getBoolean("harness.realtime");
+  private long nextSampleUs;
+  private String lastConsoleState;
+
 
   public ScriptedRobot(String[] args) {
     super(0.02);
@@ -55,6 +59,7 @@ public final class ScriptedRobot extends TimedRobot {
       gatewayPort = args.length > 5 ? Integer.parseInt(args[5]) : 0;
       gatewayOutput = args.length > 6 ? Path.of(args[6]) : null;
       periodUs = timeline.get("period_us").getAsLong();
+      nextSampleUs = timeline.get("sample_start_us").getAsLong();
       if (periodUs != 20000) throw new IllegalArgumentException("TimedRobot harness period_us must be 20000");
     } catch (Exception e) { throw new IllegalArgumentException("Invalid harness arguments", e); }
   }
@@ -85,6 +90,9 @@ public final class ScriptedRobot extends TimedRobot {
       if (gatewayPort != 0) gateway = new GatewayProbe(gatewayPort, control, gatewayOutput);
       ticks = Files.newBufferedWriter(control.resolve("ticks.csv"));
       Files.writeString(control.resolve("ready"), "ready\n");
+      // JMX uptime is monotonic wall time. The container uses the HAL's continuous clock,
+      // not 20 ms stair steps whose quantization would exceed a sub-millisecond SSH/JMX RTT.
+      if (realtime) return;
       var pacer = Executors.newSingleThreadScheduledExecutor(r -> {
         var t = new Thread(r, "scripted-hal-clock"); t.setDaemon(true); return t;
       });
@@ -110,6 +118,10 @@ public final class ScriptedRobot extends TimedRobot {
     for (var phase : boot.getAsJsonArray("phases")) {
       var p = phase.getAsJsonObject(); if (timeUs >= p.get("at_us").getAsLong()) state = p.get("state").getAsString();
     }
+    if (!state.equals(lastConsoleState)) {
+      System.out.println("harness boot=" + bootNumber + " state=" + state);
+      lastConsoleState = state;
+    }
     DriverStationSim.setDsAttached(true);
     DriverStationSim.setEnabled(!state.equals("disabled")); DriverStationSim.setAutonomous(state.equals("autonomous"));
     var match = boot.getAsJsonObject("match");
@@ -123,9 +135,18 @@ public final class ScriptedRobot extends TimedRobot {
   }
 
   @Override public void robotPeriodic() {
-    long timeUs = RobotController.getFPGATime(); applyDriverStation(timeUs);
+    long nowUs = RobotController.getFPGATime();
+    if (realtime && !Files.exists(control.resolve("go"))) return;
+    applyDriverStation(nowUs);
+    if (realtime) {
+      try { ticks.write(nowUs + "," + System.currentTimeMillis() * 1000 + "\n"); ticks.flush(); }
+      catch (Exception e) { throw new IllegalStateException(e); }
+    }
     long start = timeline.get("sample_start_us").getAsLong(), end = timeline.get("sample_end_us").getAsLong();
-    if (timeUs >= start && timeUs < end) {
+    // A late callback emits every due scripted record with its specified timestamp. This
+    // leaves the real HAL/JVM clocks running while preserving the independent timeline oracle.
+    while (nextSampleUs <= nowUs && nextSampleUs < end) {
+      long timeUs = nextSampleUs; nextSampleUs += periodUs;
       long index = (timeUs - start) / periodUs; double seconds = timeUs / 1_000_000.0;
       sine.set(Math.sin(2 * Math.PI * boot.get("sine_hz").getAsDouble() * seconds), timeUs);
       long reset = 0;
@@ -141,14 +162,14 @@ public final class ScriptedRobot extends TimedRobot {
           new SwerveModuleState(-seconds, new Rotation2d(-seconds / 10))}, timeUs);
     }
     nt.flush();
-    if (!logClosed && timeUs >= end + 1_000_000) {
+    if (!logClosed && nowUs >= end + 1_000_000) {
       // stop() closes the file; DS/NT still own references to the DataLog object.
       DataLogManager.stop(); logClosed = true;
       if (gateway != null) {
         try { gateway.close(); } catch (Exception e) { throw new IllegalStateException("Gateway probe shutdown failed", e); }
       }
     }
-    if (timeUs >= boot.get("end_us").getAsLong()) {
+    if (nowUs >= boot.get("end_us").getAsLong()) {
       try { ticks.close(); Files.writeString(control.resolve("done"), "done\n"); }
       catch (Exception e) { throw new IllegalStateException(e); }
       // Model the process boundary after the log has stopped. Native NT/DS worker threads still

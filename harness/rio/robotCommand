@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+# Keep the quoted -jar path: the providers and robot-facts discover the deployed program from it.
+# Only synthetic output enters the shared artifact directory.
+umask 000
+export serialnum="$HARNESS_SERIAL" LD_LIBRARY_PATH=/opt/wpilib
+exec /opt/java/bin/java -Xmx256m -Djava.library.path=/opt/wpilib \
+  -Dharness.realtime=true -Dharness.bind=0.0.0.0 \
+  -Dcom.sun.management.jmxremote.port="$HARNESS_JMX_PORT" \
+  -Dcom.sun.management.jmxremote.rmi.port="$HARNESS_JMX_PORT" \
+  -Djava.rmi.server.hostname=127.0.0.1 \
+  -Dcom.sun.management.jmxremote.authenticate=false \
+  -Dcom.sun.management.jmxremote.ssl=false \
+  -jar "/home/lvuser/frcUserProgram.jar" /harness/timeline.json "$1" \
+  /home/lvuser/logs "/harness/boot-$1" "$HARNESS_NT_PORT" \
+  >> /var/local/natinst/log/FRC_UserProgram.log 2>&1

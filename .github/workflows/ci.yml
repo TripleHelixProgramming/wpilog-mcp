@@ -170,8 +170,22 @@ jobs:
             caches
             notifications
             permwrapper/dists
+      - name: Build the simulation robot once
+        run: ./gradlew -p harness/robot prepareHarness
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the synthetic roboRIO image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: harness/rio/Dockerfile
+          load: true
+          tags: wpilog-rio-harness:ci
+          cache-from: type=gha,scope=rio-harness
+          cache-to: type=gha,mode=max,scope=rio-harness
       - name: Run the headless shop harness
-        run: harness/run -PconformanceNative=${{ needs.changes.outputs.native }}
+        env:
+          HARNESS_RIO_IMAGE: wpilog-rio-harness:ci
+        run: harness/rio/run -PconformanceNative=${{ needs.changes.outputs.native }}
       - name: Upload harness evidence
         if: always()
         uses: actions/upload-artifact@v4

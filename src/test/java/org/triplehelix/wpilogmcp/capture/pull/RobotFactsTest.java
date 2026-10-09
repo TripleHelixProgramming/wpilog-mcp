@@ -45,6 +45,7 @@ class RobotFactsTest {
         default -> id.startsWith("which:") ? "/usr/bin/" + id.substring(6) + "\n" : "synthetic readable evidence\n";
       };
       if (sparse && id.equals("dmesg")) rio.reply(probe.command(), 0, "", "dmesg: read kernel buffer failed: Operation not permitted\n");
+      else if (sparse && id.equals("which:journalctl")) rio.reply(probe.command(), 1, "", "");
       else if (sparse && List.of("program", "jre-modules").contains(id)) rio.reply(probe.command(), 3, "No matching robot program\n", "");
       else if (sparse && (id.contains("journal") || id.startsWith("list:") || id.startsWith("image:") || id.startsWith("console")))
         rio.reply(probe.command(), 127, "", "synthetic: not found\n");

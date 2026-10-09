@@ -15,6 +15,7 @@ public final class Main {
   public static void main(String[] args) {
     if (!HAL.initialize(500, 0)) throw new IllegalStateException("Simulation HAL initialization failed");
     SimHooks.pauseTiming(); SimHooks.restartTiming();
+    if (Boolean.getBoolean("harness.realtime")) SimHooks.resumeTiming();
     if (args.length > 0 && args[0].equals("--replay")) {
       try { LogReplay.run(args); Runtime.getRuntime().halt(0); }
       catch (Throwable failure) {
@@ -29,7 +30,7 @@ public final class Main {
     }
     // RobotBase's default startServer() is a no-op once this server is starting/running. Start
     // first so construction never briefly binds the standard dashboard ports on all interfaces.
-    NetworkTableInstance.getDefault().startServer("", "127.0.0.1", 0, Integer.parseInt(args[4]));
+    NetworkTableInstance.getDefault().startServer("", System.getProperty("harness.bind", "127.0.0.1"), 0, Integer.parseInt(args[4]));
     RobotBase.startRobot(() -> new ScriptedRobot(args));
   }
 }

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo_dir"
+if [[ "$(uname -s)" != Linux ]]; then
+  echo 'The container suite needs Linux (a Linux VM with Docker also works); harness/run supports macOS without the container.' >&2
+  exit 2
+fi
+./gradlew -p harness/robot prepareHarness
+# CI builds with the same Dockerfile through build-push-action's layer cache, then passes its tag.
+rio_image="${HARNESS_RIO_IMAGE:-wpilog-rio-harness:local}"
+if [[ -z "${HARNESS_RIO_IMAGE:-}" ]]; then
+  docker build -f harness/rio/Dockerfile -t "$rio_image" .
+fi
+./gradlew shopHarness "-PharnessRio=$rio_image" "$@"

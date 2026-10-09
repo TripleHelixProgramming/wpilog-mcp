@@ -57,6 +57,10 @@ public final class RobotFactsReport {
       return new Conclusion("refused", "Permission or channel refusal; see stderr below");
     if (error.contains("not found") || error.contains("no such file"))
       return new Conclusion("absent", "The command or file is absent; see stderr below");
+    // which returns 1 with no output when the executable is absent. That is a finding,
+    // not an SSH refusal; keep actual permission/deadline errors classified above.
+    if (o.probe().id().startsWith("which:") && r.exitStatus() == 1 && r.stdout().isBlank() && r.stderr().isBlank())
+      return new Conclusion("absent", "No executable path returned");
     if (r.exitStatus() != 0) {
       boolean absent = r.exitStatus() == 127 || (r.exitStatus() == 3 && List.of("program", "jre-modules").contains(o.probe().id())) || error.contains("no nonempty");
       return new Conclusion(absent ? "absent" : "refused", "Exit status " + r.exitStatus() + "; see command evidence below");

@@ -35,7 +35,14 @@ class HarnessWiringTest {
     assertEquals("changes", job.get("needs"), "The harness must run beside ordinary builds");
     assertFalse(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "actions/download-artifact@v4".equals(s.get("uses"))),
         "The build job already uploads its evidence");
-    assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/run -PconformanceNative=${{ needs.changes.outputs.native }}".equals(s.get("run"))));
+    assertTrue(steps.stream().map(s -> (Map<?, ?>) s).anyMatch(s -> "harness/rio/run -PconformanceNative=${{ needs.changes.outputs.native }}".equals(s.get("run"))));
+    var image = steps.stream().map(s -> (Map<?, ?>) s)
+        .filter(s -> "docker/build-push-action@v6".equals(s.get("uses"))).findFirst().orElseThrow();
+    var imageSettings = (Map<?, ?>) image.get("with");
+    assertEquals("harness/rio/Dockerfile", imageSettings.get("file"));
+    assertEquals(true, imageSettings.get("load"));
+    assertTrue(imageSettings.get("cache-from").toString().contains("rio-harness"));
+    assertTrue(imageSettings.get("cache-to").toString().contains("rio-harness"));
     var evidence = steps.stream().map(s -> (Map<?, ?>) s)
         .filter(s -> "actions/upload-artifact@v4".equals(s.get("uses"))).findFirst().orElseThrow();
     assertTrue(((Map<?, ?>) evidence.get("with")).get("path").toString().contains("build/reports/replay"),

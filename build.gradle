@@ -277,6 +277,10 @@ tasks.register('shopHarness', Test) {
     classpath = sourceSets.test.runtimeClasspath
     useJUnitPlatform { includeTags 'shop-harness' }
     systemProperty 'conformance.native', nativeReplay
+    // Separate processes keep the two timeline stores and singleton managers independent.
+    maxParallelForks = project.hasProperty('harnessRio') ? 2 : 1
+    maxHeapSize = '768m'
+    if (project.hasProperty('harnessRio')) systemProperty 'harness.rio', project.property('harnessRio')
     systemProperty 'harness.timeline', file(project.findProperty('harnessTimeline') ?: 'harness/timelines/reboot-match.json').absolutePath
     systemProperty 'harness.robotJar', file('harness/robot/build/libs/shop-robot.jar').absolutePath
     systemProperty 'harness.natives', file('harness/robot/build/jni/release').absolutePath

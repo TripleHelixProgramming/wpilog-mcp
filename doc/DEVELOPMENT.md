@@ -380,9 +380,8 @@ It subscribes to every scripted topic and schema, records the received server ti
 separate observation log, and waits for gateway announcements before the runner releases the
 timeline. The same independent oracle and HTTP calls check that log, including every struct
 record, in each boot. This is native ntcore interoperability, not a real dashboard UI test.
-The CI harness job first runs the ordinary suite and retains `build/test-results/test`, including
-assertion messages, so later targeted runs cannot erase a socket failure. The local runner remains
-the opt-in harness; `./gradlew build` runs the ordinary suite separately.
+The CI build jobs retain their ordinary test XML, including assertion messages; the separate
+harness job retains its own XML and process artifacts. Neither repeats the other suite.
 
 The ordinary gateway checks are `GatewayCoreTest`, `GatewaySocketTest`,
 `GatewayBackpressureTest`, `CaptureGatewayTest`, `GatewayBindTest`, `GatewayLifecycleTest`, and
@@ -421,7 +420,55 @@ This checks the programs and wire transports, not the NI image or radio. The sho
 check that the actual sshd permits an empty password, `lvuser` can read the robot process's
 `/proc` environment, `sha256sum` is installed, and whole-prefix hashing has acceptable CPU/disk
 cost on roboRIO 1 and 2. Wi-Fi loss, sustained load, and robot timing remain hardware checks.
-An NI-image container and PhotonVision belong to harness step 2.
+The synthetic NI-like container below adds real Linux utilities and a JRE, not evidence about
+an actual NI image. A real PhotonVision process remains future harness work.
+
+#### The container harness (step 2)
+
+On Linux with JDK 17 and Docker Engine available to your user, run:
+
+```bash
+harness/rio/run -PconformanceNative=sample
+```
+
+A Linux VM with Docker works too. Step 2's runner currently requires Linux; `harness/run`
+continues to support Linux and macOS without Docker. No container, image, privileged process,
+or package is installed by the ordinary tests. The first container build downloads Ubuntu 22.04,
+Temurin 17 and Ubuntu's OpenSSH/coreutils packages. It reuses the robot JAR and desktop JNI
+libraries built once by GradleRIO, and uses no file from an NI image. The Dockerfile's allowlist
+excludes the store, logs, credentials and repository history from the build context. The image
+is local; nothing is pushed to a registry. Its runtime host key is generated per container.
+
+`harness/rio/` supplies real sshd with `lvuser`'s empty password permitted, an accessible
+`/proc`, `/home/lvuser/robotCommand`, and `/var/local/natinst/log/FRC_UserProgram.log`.
+`sha256sum` is installed; `journalctl` is absent. A jlink-built real JRE contains
+`jdk.management.agent`, deliberately omitting `jdk.jfr` and `jdk.management.jfr` so the
+facts collector must report both found and absent modules. The command uses the five documented
+JMX flags. All published SSH, NT4 and JMX ports bind to host loopback; the container is never
+privileged, and the Docker socket and host `/proc` are never mounted into it.
+
+`RioHarnessTest` runs the same two-boot timeline and packaged pit server, enabling pull, system
+logs, stats, the console tail and `context.jvm`. It reuses the independent record-by-record
+capture/pull oracle and checks device identity, DataLogManager rename and matching, provider
+states and recorded costs, console transitions in both the timely tail and pulled exact file,
+the shipped `robot-facts` command, and the JVM uptime pairing. Every sample's offset must equal
+its receipt timestamp minus JVM uptime; a single offset must fit the intersection of all reported
+uncertainty bounds. No tolerance is invented for the container. Its HAL clock runs continuously;
+the ordinary harness's 20 ms stepped clock would introduce artificial jitter into this test.
+Scripted telemetry retains explicit timeline timestamps, with every due record emitted after a
+late callback. The MINA harness still checks gateway delivery and the disabled gate's per-block
+audit; the container does not pretend OpenSSH supplies that audit.
+
+CI builds the image with cached Docker layers, then runs both independent timeline processes
+in two Gradle workers so their two 24-second boots overlap instead of doubling the job's wait.
+Native fixture replay remains governed by the existing change filter; no real-log directory is
+configured in CI. `build/shop-harness/rio-*/` retains the timeline, configuration, provider
+snapshots, collector reports, server/console/sshd logs, manifests, tool results and `timing.json`;
+the JUnit XML records each test's time. Docker cleanup runs even after an assertion fails.
+The container proves interoperability with these declared assumptions, including real shell
+command execution and JMX, not actual roboRIO authentication, permissions, module availability,
+NI utility versions, reboot semantics of the kernel, radio behavior or roboRIO CPU/disk cost.
+Those remain the shop checklist below.
 
 #### PhotonVision provider checks and shop facts
 

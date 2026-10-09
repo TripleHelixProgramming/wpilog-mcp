@@ -25,6 +25,10 @@ final class HarnessExpectations {
 
   static void verify(JsonObject timeline, Path run, Path store, HarnessHttp http, JsonObject listing,
       List<FakeRoboRio.Read> reads) throws Exception {
+    verify(timeline, run, store, http, listing, reads, true);
+  }
+  static void verify(JsonObject timeline, Path run, Path store, HarnessHttp http, JsonObject listing,
+      List<FakeRoboRio.Read> reads, boolean gateway) throws Exception {
     String serial = timeline.get("serial_number").getAsString(); var root = store.resolve("robots").resolve(serial);
     var robot = json(root.resolve("robot.json"));
     assertEquals("device", robot.get("basis").getAsString()); assertEquals(serial, robot.get("serial_number").getAsString());
@@ -76,8 +80,8 @@ final class HarnessExpectations {
       assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(pulledPath))), file.get("sha256").getAsString());
       verifyValues(timeline, boot, bootIndex, capture, http, run);
       verifyValues(timeline, boot, bootIndex, pulledPath, http, run);
-      verifyValues(timeline, boot, bootIndex, run.resolve("gateway-probes").resolve("boot-" + bootIndex + ".wpilog"), http, run);
-      verifyGate(boot, run.resolve("boot-" + bootIndex).resolve("ticks.csv"), reads);
+      if (gateway) verifyValues(timeline, boot, bootIndex, run.resolve("gateway-probes").resolve("boot-" + bootIndex + ".wpilog"), http, run);
+      if (reads != null) verifyGate(boot, run.resolve("boot-" + bootIndex).resolve("ticks.csv"), reads);
     }
     var progress = json(root.resolve("pull.json"));
     assertEquals(timeline.getAsJsonArray("boots").size(), progress.getAsJsonArray("files").size());
@@ -85,6 +89,7 @@ final class HarnessExpectations {
       var file = value.getAsJsonObject(); assertTrue(file.get("verified").getAsBoolean());
       assertEquals(file.get("size"), file.get("bytes_copied"));
     }
+    if (reads == null) return; // OpenSSH has no per-block read tap; the parallel MINA run proves the gate.
     var events = timeline.getAsJsonArray("boots").asList().stream()
         .map(b -> "_" + b.getAsJsonObject().getAsJsonObject("match").get("event").getAsString() + "_").toList();
     assertTrue(reads.stream().anyMatch(r -> r.path().endsWith(".wpilog") && events.stream().noneMatch(r.path()::contains)), "Pull began before DataLogManager's match rename");

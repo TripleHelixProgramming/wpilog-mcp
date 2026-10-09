@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+# Generate a new identity each run; never ship a host key in an image layer.
+ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+printf 'PRETTY_HOSTNAME="%s"\n' "$HARNESS_COMMENTS" > /etc/machine-info
+printf '%s harness syslog initialized\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > /var/log/messages
+touch /var/local/natinst/log/FRC_UserProgram.log
+chown lvuser:lvuser /var/local/natinst/log/FRC_UserProgram.log
+/opt/java/bin/java --list-modules > /harness/image-modules.txt
+exec /usr/sbin/sshd -D -e

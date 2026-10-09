@@ -1,0 +1,15 @@
+# Believed roboRIO authentication, deliberately reachable only on published loopback ports.
+Port 22
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication yes
+PermitEmptyPasswords yes
+KbdInteractiveAuthentication no
+UsePAM no
+PermitRootLogin no
+AllowUsers lvuser
+AllowTcpForwarding no
+X11Forwarding no
+PermitTTY no
+MaxSessions 16
+Subsystem sftp internal-sftp
+LogLevel VERBOSE
