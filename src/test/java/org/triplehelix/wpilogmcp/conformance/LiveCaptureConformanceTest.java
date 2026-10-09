@@ -70,7 +70,15 @@ class LiveCaptureConformanceTest {
         assertFalse(calls.isEmpty());
         manager.unloadLog(capture.toString());
         try (var use = manager.acquire(capture.toString())) { assertInstanceOf(LazyParsedLog.class, use.log()); }
-        for (var call : calls) assertEquals(call.live(), normalized(call.tool().execute(call.variant().args())), call.tool().name() + "/" + call.variant().label());
+        long fileBytes = Files.size(capture);
+        for (var call : calls) {
+          var result = call.tool().execute(call.variant().args());
+          if (call.tool() instanceof org.triplehelix.wpilogmcp.tools.LogRequiringTool
+              && result.isJsonObject() && result.getAsJsonObject().has("inputs")) {
+            assertEquals(fileBytes, result.getAsJsonObject().getAsJsonObject("inputs").get("file_size_bytes").getAsLong());
+          }
+          assertEquals(call.live(), normalized(result), call.tool().name() + "/" + call.variant().label());
+        }
         var report = Files.createDirectories(Path.of("build/reports/live-capture"));
         Files.write(report.resolve(f.id() + ".txt"), calls.stream().map(call -> call.tool().name() + " / " + call.variant().label()).toList());
       } finally {
@@ -85,6 +93,7 @@ class LiveCaptureConformanceTest {
     if (copy.isJsonObject() && copy.getAsJsonObject().has("inputs")) {
       copy.getAsJsonObject().getAsJsonObject("inputs").remove("session_time_range");
       copy.getAsJsonObject().getAsJsonObject("inputs").remove("session_time_ranges");
+      copy.getAsJsonObject().getAsJsonObject("inputs").remove("file_size_bytes");
     }
     return copy;
   }

@@ -167,11 +167,17 @@ class ProviderCaptureTest {
         assertEquals(List.of(), difference.findings());
         rig.manager.unloadLog(capture.toString()); ExportTools.setExportDirectory(export.toString());
         try {
+          long fileBytes = Files.size(capture);
           for (var before : values) {
             String[] parts = before.getKey().split("\n", 2);
+            var tool = rig.tools.getTool(parts[0]);
+            var result = tool.execute(com.google.gson.JsonParser.parseString(parts[1]).getAsJsonObject());
+            if (tool instanceof org.triplehelix.wpilogmcp.tools.LogRequiringTool && result.isJsonObject()
+                && result.getAsJsonObject().has("inputs")) {
+              assertEquals(fileBytes, result.getAsJsonObject().getAsJsonObject("inputs").get("file_size_bytes").getAsLong());
+            }
             assertEquals(com.google.gson.JsonParser.parseString(before.getValue().toString().replace(
-                new com.google.gson.Gson().toJson(beforeMove), new com.google.gson.Gson().toJson(capture.toString()))), normalized(rig.tools.getTool(parts[0]).execute(
-                com.google.gson.JsonParser.parseString(parts[1]).getAsJsonObject())), parts[0]);
+                new com.google.gson.Gson().toJson(beforeMove), new com.google.gson.Gson().toJson(capture.toString()))), normalized(result), parts[0]);
           }
         } finally { ExportTools.setExportDirectory(oldExport.toString()); }
       } finally { tailLines.add("STOP"); }
@@ -190,6 +196,7 @@ class ProviderCaptureTest {
     if (copy.isJsonObject() && copy.getAsJsonObject().has("inputs")) {
       copy.getAsJsonObject().getAsJsonObject("inputs").remove("session_time_range");
       copy.getAsJsonObject().getAsJsonObject("inputs").remove("session_time_ranges");
+      copy.getAsJsonObject().getAsJsonObject("inputs").remove("file_size_bytes");
     }
     return copy;
   }

@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Standalone install
 
+- `robot-facts` collects a dated Markdown report of the roboRIO's image, files, utilities, permissions, authentication and bounded hash cost over the existing SSH stack. Previously the shop checklist required manually gathering these facts; refused commands remain evidence, and secrets are redacted.
 - `run <name>` exposes named foreground startup, and `service-unit <name>` prints a hardened systemd service and health timer for review. Previously service managers had to use an internal flag or CLI-only configuration. `--managed` reports supervisor ownership in health and `list_sessions`; hand-written units must pass it too. The daemon manager refuses to adopt, stop or replace those processes and names the systemctl command instead.
 - `wpilog-mcp connect <name>` starts or joins the named HTTP daemon and bridges stdio clients into separate MCP sessions; `connect --url <url>` bridges to an existing endpoint. Previously command-only clients each started a server. Lost connections produce request-specific errors and a nonzero exit so the client can reconnect.
 - `wpilog-mcp stop <name>` requests a graceful shutdown through a loopback-only endpoint protected by the user's daemon token, waiting for active calls before falling back to process termination. Previously stopping a background server required killing its process manually.
@@ -85,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Growing WPILOGs read by another process resume a copied index after file-identity and header/last-record checks; previously every append rescanned all records. Partial final records are retried, decoded caches refresh, and successful disk-backed tool calls name the file size they read. Unknown identities or changed anchors still load afresh.
 - Harness replay allows 32,768 records per batch, bounds bytes for ntcore’s smaller publisher queue and wakes on pipe/receipt events; the former 1,024-record handshake dominated fast replay. Native replay now checks zero-shift transport fidelity, with `conformanceNative=none|sample|full`; Java keeps the placement matrix.
 - SSH stats cache PID/start time and platform constants per connection, rediscovering only after process changes. Previously every sample scanned process command lines and fetched unchanged constants; steady samples use fixed proc reads and one combined `df`.
 - `start <name>` and `connect <name>` replace a running daemon of another version and keep one of the current version. Previously an upgrade left the old JAR serving until the user stopped it; concurrent upgrade starts now share one replacement daemon instead of overwriting each other's claims.
@@ -92,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The standalone guide again caps `capture.pull.rate_bytes` at the parser's 2,147,483,647 bytes/second; the windowed-mapping change had incorrectly copied the 1 TiB file-size bound into that row. Capture-table range claims now exercise the configuration parser at their boundaries.
 - `render_chart` draws the full window by default, retaining pixel-column extremes in dense time series; previously a default image silently showed only the first 1,000 samples. Explicit limit/offset still pages the drawing and summaries always cover the whole window.
 - Chart rendering errors, including missing-font `InternalError`, skip only the image with the error class; previously some toolkit failures lost the complete JSON result.
 - Conformance fixtures clear their owned directories before creation; reused Gradle worker numbers previously left unmanifested system text that broke a later build.
@@ -130,6 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Incremental scans are checked against fresh scans and independent records, with changed-prefix, partial-tail, late-entry and stale-cache plants. Scripted SSH image reports check read-only commands, absent/refused evidence, hash sizes and credential redaction; no robot files or text are fixtures.
 - The metrics-stack check waits for its Grafana datasource query within the existing readiness bound; previously a plugin update just after dashboard provisioning could produce a transient 404 and fail CI.
 - Chart regressions pin unequal-time scatter pairs, every encoded link entry, clipped phases and data-view null cells. Socket-delivery test guards allow thirty seconds under load without changing protocol deadlines.
 - Small mapping windows exercise every fixture record against the independent reader, plus conformance, cold values and import moves. Windows CI proves the leaked-mapping plant fails; the opt-in `largeLogTest` exercises a generated 2.2 GB file and rollover beyond 2 GiB.

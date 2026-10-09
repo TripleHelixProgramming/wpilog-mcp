@@ -465,6 +465,8 @@ public class LogManager {
       }
       // Double-check cache after acquiring lock (another thread may have finished parsing,
       // or reloaded the changed file)
+      LogScan previousScan = null;
+      FileSnapshot previousSnapshot = null;
       cachedLog = logCache.get(normalizedPath);
       if (cachedLog != null) {
         var change = changeSinceLoad(normalizedPath, cachedLog);
@@ -475,6 +477,9 @@ public class LogManager {
           logCache.remove(normalizedPath, cachedLog);
         } else {
           logger.info("Reloading {}: {}", filePath.getFileName(), change);
+          if (cachedLog instanceof LazyParsedLog lazy) {
+            previousScan = lazy.scan(); previousSnapshot = snapshotOf(normalizedPath, cachedLog);
+          }
           fileChanged(normalizedPath, cachedLog, change);
         }
       }
@@ -521,7 +526,7 @@ public class LogManager {
       LogData log;
       try {
         long perLogBudgetBytes = getPerLogCacheBudgetBytes();
-        log = LazyParsedLog.open(filePath, perLogBudgetBytes);
+        log = LazyParsedLog.open(filePath, perLogBudgetBytes, snapshot.grewFrom(previousSnapshot) ? previousScan : null);
       } catch (LogFileException e) {
         // Not a log at all (empty, zeros, another format): the eager parser would only say
         // the same
@@ -688,7 +693,14 @@ public class LogManager {
     if (change != null) {
       logger.info("{} changed while a call read it: {}", Path.of(normalizedPath).getFileName(),
           change);
-      fileChanged(normalizedPath, log, change);
+      // Keep only the bounded cache's index checkpoint for an append. Retire the mapping now;
+      // the next acquire copies the index into a fresh mapping, and old uses retain their bytes.
+      FileSnapshot now;
+      try { now = FileSnapshot.of(Path.of(normalizedPath)); } catch (IOException e) { now = null; }
+      if (log instanceof LazyParsedLog lazy && now != null && now.grewFrom(before)
+          && logCache.get(normalizedPath) == log) {
+        recordReload(normalizedPath, change); lazy.close();
+      } else fileChanged(normalizedPath, log, change);
     }
     return change;
   }
@@ -729,9 +741,13 @@ public class LogManager {
    */
   public void fileChanged(String path, LogData log, String change) {
     String normalizedPath = Path.of(path).toAbsolutePath().normalize().toString();
-    reloads.compute(normalizedPath, (k, previous) -> new Reload(
-        previous == null ? 1 : previous.generation() + 1, Instant.now(), change));
+    recordReload(normalizedPath, change);
     logCache.remove(normalizedPath, log instanceof LiveLog.View view ? view.source() : log);
+  }
+
+  private void recordReload(String path, String change) {
+    reloads.compute(path, (k, previous) -> new Reload(
+        previous == null ? 1 : previous.generation() + 1, Instant.now(), change));
   }
 
   /**
@@ -1576,6 +1592,11 @@ public class LogManager {
   /** Test accessor: Adds a log directly to the cache (for testing only). */
   public void testPutLog(String path, LogData log) {
     Path normalized = Path.of(path).toAbsolutePath().normalize();
+    // Permuted/frozen fixture views still describe the same on-disk snapshot and inputs.
+    try {
+      var snapshot = FileSnapshot.of(normalized);
+      if (snapshot != null) loaded.put(normalized.toString(), new Loaded(log, snapshot));
+    } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
     logCache.put(normalized.toString(), log);
   }
 

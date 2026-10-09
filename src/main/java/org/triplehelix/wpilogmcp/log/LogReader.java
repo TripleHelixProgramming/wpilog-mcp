@@ -34,6 +34,18 @@ public final class LogReader implements Iterable<DataLogRecord> {
     for (int i = 0; i < bytes; i++) value |= (source.get(offset + i) & 255L) << (i * 8);
     return value;
   }
+  /** Hash only an anchor, in bounded chunks; never hash the entire indexed prefix. */
+  byte[] fingerprint(long start, long end) {
+    if (source == null) return null; // Legacy buffer readers do not supply resume checkpoints.
+    try {
+      var digest = java.security.MessageDigest.getInstance("SHA-256");
+      for (long pos = start; pos < end;) {
+        int count = (int) Math.min(65536, end - pos);
+        digest.update(source.view(pos, count)); pos += count;
+      }
+      return digest.digest();
+    } catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
+  }
   public long recordEnd(long offset) {
     if (legacy != null) return DataLogAccess.recordEnd(legacy, Math.toIntExact(offset));
     try {

@@ -412,6 +412,11 @@ Implemented in pit milestone 9: long file addresses, windows no larger than 1 Gi
 for crossing records, deterministic Windows cleanup, and narrow offset storage for ordinary
 files. Imports, uploads and captures support up to 1 TiB; capture rollover still defaults to
 1 GiB. Small-window tests cover the fixture corpus; `largeLogTest` is the opt-in 2.2 GB check.
+Pit milestone 14 now also resumes another process's growing file from its incomplete-tail
+boundary, copying the prior index after identity and header/last-record checks. Unknown identity
+or failed anchors load afresh; this does not replace the writer's own live index. The read-only
+`robot-facts` command now collects the NI-image shop checklist into a dated local report; radio,
+load, rotation behavior and provider budgets still require the hardware exercise.
 
 ### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.

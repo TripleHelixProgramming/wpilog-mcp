@@ -98,6 +98,10 @@ public class Main {
       System.exit(org.triplehelix.wpilogmcp.config.ServiceUnit.run(args, System.out, System.err));
       return;
     }
+    if (args.length > 0 && "robot-facts".equals(args[0])) {
+      System.exit(org.triplehelix.wpilogmcp.capture.pull.RobotFactsCommand.run(args, System.out, System.err));
+      return;
+    }
     if (args.length >= 2 && "--internal-daemon".equals(args[0])) {
       handleForeground(args);
       return;
@@ -835,6 +839,7 @@ public class Main {
     logger().info("       wpilog-mcp start <config-name> [--config <path>]");
     logger().info("       wpilog-mcp run <config-name> [--config <path>] [--managed]");
     logger().info("       wpilog-mcp service-unit <config-name> [--config <path>]");
+    logger().info("       {}", org.triplehelix.wpilogmcp.capture.pull.RobotFactsCommand.USAGE);
     logger().info("       wpilog-mcp stop <config-name> [--config <path>]");
     logger().info("       wpilog-mcp connect <config-name> [--config <path>] [--logdir <dir>]... [--team <n>]");
     logger().info("       wpilog-mcp connect --url <url> [--logdir <dir>]... [--team <n>]");
@@ -846,6 +851,7 @@ public class Main {
     logger().info("  start <name>        Start a named server from servers.yaml");
     logger().info("  run <name>          Run a named server in the foreground, logging to stderr");
     logger().info("  service-unit <name> Print systemd service and health timer units; install nothing");
+    logger().info("  robot-facts        Collect bounded, read-only SSH evidence for the shop checklist");
     logger().info("  --managed          Mark this foreground process as owned by a supervisor");
     logger().info("  stop <name>         Stop a named http server started in the background");
     logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");

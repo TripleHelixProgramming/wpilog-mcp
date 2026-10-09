@@ -36,5 +36,12 @@ public final class RecordOffsets {
     if (wide == null) narrow = Arrays.copyOf(narrow, size); else wide = Arrays.copyOf(wide, size);
     return this;
   }
+  /** A resumed index owns its arrays; an in-flight reader keeps the old prefix unchanged. */
+  public RecordOffsets copy() {
+    var copy = new RecordOffsets(); copy.size = size;
+    if (wide == null) copy.narrow = Arrays.copyOf(narrow, size);
+    else { copy.narrow = null; copy.wide = Arrays.copyOf(wide, size); }
+    return copy;
+  }
   public long storageBytes() { return wide == null ? narrow.length * 4L : wide.length * 8L; }
 }

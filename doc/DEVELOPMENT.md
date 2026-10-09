@@ -269,7 +269,36 @@ fixtures. Run it on roboRIO 1 and 2 to verify proc-environment permissions, comm
 access, the installed OpenSSH algorithms, and the available hash command. Then exercise the actual
 pit server through disabled/enabled transitions, Wi-Fi loss, reboot, log growth/rename and a reimage;
 measure CPU/network cost at the configured rate. This shop stress test remains the user's and
-unverified here. Pulling stays off by default until those checks pass. System-log pulling is later work.
+unverified here. Pulling stays off by default until those checks pass. System-log pulling is a
+separate opt-in; its candidate paths remain unverified until the shop visit.
+
+Start with `wpilog-mcp robot-facts --server pit --out rio-facts.md`, or the direct-host form in
+[STANDALONE.md](STANDALONE.md#robot-facts-for-the-shop). It uses the actual SSH authentication,
+pins and read-only probes to collect the image facts; it never reads environment contents or
+modifies the robot. Keep the resulting report outside the repository. Its conclusion keys map
+the checklist as follows; **absent** on an exercise means not measured, not a missing capability.
+
+| Shop checklist fact | Collector evidence / remaining exercise |
+|---|---|
+| NI version, image and kernel | `uname`, `image:*` (candidate metadata paths) |
+| `/var/local/natinst/log`, `/var/log`, home and robot/USB log contents | `list:*` for all six directories |
+| Installed journalctl, dmesg, df, tail and sha256sum; versions | `which:*`, `journal-version`, `tail-version` |
+| Journal exists, selects the current boot and accepts a boot UUID | `journal-boot`, `journal-uuid`, `boot-id` |
+| dmesg permission and `[seconds]` stamps for cursor wrap detection | `dmesg`, `dmesg-seconds-stamps` |
+| Console path and deployed JAR's actual command line | `console`, `console-ni`, `program` |
+| `/proc/<pid>/environ` readability by the selected account | `proc-environ-readable`; contents are never printed |
+| Empty-password access / actual authentication method, host-key fingerprint | `ssh-authentication` and report header |
+| `df -Pk` line shape, uptime beside wall clock | `df`, `df-line-shape`, `clocks` |
+| Hash utility and robot-side CPU/disk cost | `which:sha256sum`, `hash` elapsed time with its requested bytes, at most 100 MiB; CPU attribution and whole-file cost remain shop measurements |
+| Wi-Fi loss, load, timing, enabled/disabled gate, reboot, growth/rename and reimage | `wifi-loss-load-and-robot-timing`: run the actual server; a snapshot cannot exercise these |
+| Provider defaults, proc field semantics/permissions and sustained CPU/disk budget on roboRIO 1 and 2 | `provider-cpu-and-disk-budget`: run providers and measure; the snapshot is only initial evidence |
+| `tail -F -s`, `dmesg -w`, `journalctl -f`, reconnect and rotation | `tail-follow-options-and-rotation`: exercise live followers after inspecting utility versions |
+
+`RobotFactsTest` scripts NI-like and sparse replies over MINA SSHD, including stderr/status,
+bounded output, injected command deadlines, the hash ceiling, actual authentication and CLI
+redaction. An independent command allowlist and pure report/conclusion checks catch writes,
+invented utility presence, missing hash size and leaked synthetic credentials. No NI commands
+execute on the test host.
 
 The filename regression also runs as `env -u LANG -u LC_ALL ./gradlew --no-daemon filenameLocaleTest`.
 Linux CI checks explained refusals on its native non-UTF-8 encoding; macOS can remain UTF-8
@@ -537,10 +566,19 @@ write and check rollback to the completed prefix, force/create failures, and a b
 `start` command runs in an isolated home: HTTP works with the robot absent, then a loopback
 fixture robot connects and its values survive daemon shutdown. No test waits for an injected clock.
 
+`IncrementalScanTest` grows a pure-Java fixture across complete and partial record boundaries,
+checks changed anchors and identity, late declarations/metadata, cached-value invalidation,
+held mapping uses and a tool's across-growth refusal followed by the new file-size input.
+`IncrementalDifferentialTest` compares the largest generated fixture's resumed index and every
+record with a fresh scan and the independent reader. It records warmed fresh/resume scan medians
+(five alternating measurements after two warmups, the same already-mapped file) in
+`build/reports/round18/rescan-cost.txt`; mapping and filesystem cache costs are excluded equally.
+Unknown filesystem identity takes the fresh path, including on Windows providers returning no key.
+
 `LiveCaptureConformanceTest` replays every fixture through the gateway/client/writer, then runs
 the conformance suite's argument variants for every log-reading tool on the open session and on
 a fresh load of its finished file. It compares complete results, excluding only execution timing
-and the documented live-prefix range, after a properties patch on every entry, and also runs the
+and the documented live-prefix range/disk file-size input, after a properties patch on every entry, and also runs the
 independent capture-fidelity checks. Metadata updates reach new calls while an acquired view keeps
 the metadata it saw, as well as its value boundary.
 `LiveLogTest` checks fixed prefixes during a concurrent append, input ranges (including role-based

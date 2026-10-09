@@ -172,6 +172,7 @@ public abstract class LogRequiringTool extends ToolBase {
         }
         if (object.has("inputs") && object.get("inputs").isJsonObject()) {
           var inputs = object.getAsJsonObject("inputs");
+          if (before != null) inputs.addProperty("file_size_bytes", before.size());
           log.recordSessionRange(inputs);
           if (relative) {
             var window = new JsonObject();

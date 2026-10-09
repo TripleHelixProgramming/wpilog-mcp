@@ -64,6 +64,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final Map<String, RecordOffsets> recordOffsets;
 
   private final LogReader reader;
+  private final LogScan scan;
+  LogScan scan() { return scan; }
   private final StructSchemas structSchemas;
   private final Map<String, DecodeProblem> decodeProblems = new ConcurrentHashMap<>();
   /** Entries decoded at least once, whose decode problems (if any) are therefore known. */
@@ -81,9 +83,13 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    * Construction failures close it too: a failed scan must not keep a Windows file immovable.
    */
   static LazyParsedLog open(Path path, long maxCacheWeightBytes) throws IOException {
+    return open(path, maxCacheWeightBytes, null);
+  }
+
+  static LazyParsedLog open(Path path, long maxCacheWeightBytes, LogScan previous) throws IOException {
     var reader = new ScopedLogReader(path);
     try {
-      var log = new LazyParsedLog(path.toString(), reader.reader(), maxCacheWeightBytes);
+      var log = new LazyParsedLog(path.toString(), reader.reader(), maxCacheWeightBytes, previous);
       log.ownedReader = reader;
       return log;
     } catch (Throwable e) {
@@ -146,6 +152,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   }
 
   public LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes) throws IOException {
+    this(path, reader, maxCacheWeightBytes, null);
+  }
+
+  private LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes, LogScan previous) throws IOException {
     if (!reader.isValid()) {
       throw LogFileException.invalid(Path.of(path));
     }
@@ -158,7 +168,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     // a valid log (a damaged tail is not read; see LogScan)
     logger.debug("Scanning log: {}", path);
     long startTime = System.nanoTime();
-    var scan = LogScan.of(reader, Path.of(path));
+    this.scan = previous == null ? LogScan.of(reader, Path.of(path)) : LogScan.resume(previous, reader, Path.of(path));
     var entriesByName = scan.entries();
     var offsetLists = scan.offsets();
     int totalDataRecords = scan.dataRecords();

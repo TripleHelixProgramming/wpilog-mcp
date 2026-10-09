@@ -66,6 +66,12 @@ public record FileSnapshot(long size, FileTime modified, Object fileKey) {
     return fileKey == null || now.fileKey == null || fileKey.equals(now.fileKey);
   }
 
+  /** Unknown identities are conservatively rescanned, including filesystems without file keys. */
+  public boolean grewFrom(FileSnapshot previous) {
+    return previous != null && size > previous.size && fileKey != null && previous.fileKey != null
+        && fileKey.equals(previous.fileKey);
+  }
+
   /**
    * What changed between this snapshot and the file now, for a message: which of the three
    * attributes differ, with the old and new values.

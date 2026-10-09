@@ -188,7 +188,7 @@ servers:
 | `capture.pull.enabled` | Opt in to SFTP pulling, default `false` until the shop test passes |
 | `capture.pull.directories` | Absolute remote directories, recursively scanned for `.wpilog` and `.revlog`; defaults `/home/lvuser/logs`, `/u/logs`, `/U/logs`. Missing USB directories are normal; links are skipped |
 | `capture.pull.settle_sec` | Start after the connected robot has been disabled for `5` seconds by default; nonnegative seconds |
-| `capture.pull.rate_bytes` | Read cap in bytes/second, default `1000000` (1 MB/s); positive integer through `1099511627776` |
+| `capture.pull.rate_bytes` | Read cap in bytes/second, default `1000000` (1 MB/s); positive integer through `2147483647` |
 | `capture.pull.ssh` | Optional SSH connection and authentication block |
 | `capture.pull.ssh.port` | Integer port, default `22`, range `1`–`65535`; the shop harness uses an unprivileged loopback port |
 | `capture.pull.ssh.user` | Account, default `lvuser`; supports `${NAME}` |
@@ -319,8 +319,8 @@ Each tail uses `tail -n 0 -F -s 0.25`, with one string record per line at **rece
 Kernel and journal roles use `dmesg -w` and `journalctl -f` when supported, else poll the
 configured file by inode and byte offset at the current stats period. Missing/unreadable
 sources log a reason and stand down for the session. An SSH reconnect resumes following,
-but cannot recover lines written during the interruption; the later system-log pull is still
-planned. Each file admits 200 lines per one-second bucket and bounds a line to 64 KiB and
+but cannot recover lines written during the interruption; enable the separate system-log pull
+for the retained files. Each file admits 200 lines per one-second bucket and bounds a line to 64 KiB and
 pending history to 1000 lines. Excess is counted and one drop notice is recorded after a full second without another
 drop, including when a sustained burst ends in silence. Pre-session lines retain receipt time, mapped through the next session's measured offset
 and clamped at zero, with `buffered_before_session` in metadata.
@@ -427,6 +427,57 @@ Confirmed growth temporarily returns a verified file to staging; its earlier too
 when it is placed again. Reused names retain the previous copy separately. Resume checks the hash
 of exactly the held bytes; if exec is unavailable, the last 64 KiB is compared, which cannot prove
 the earlier prefix. The robot's files are never deleted or modified.
+
+#### Robot facts for the shop
+
+Before changing the candidate NI paths or provider defaults, collect the image's own evidence:
+
+```bash
+wpilog-mcp robot-facts 172.22.11.2 --out rio-facts.md
+wpilog-mcp robot-facts robot.local --user lvuser --port 22 --key /path/to/key --out rio-facts.md
+# Reuse a named server's address candidates, store pins and capture.pull.ssh block:
+wpilog-mcp robot-facts --server pit --config /path/to/servers.yaml --out rio-facts.md
+```
+
+The direct form defaults to `lvuser`, port `22`, and an empty password. There is no password
+command-line flag; for password authentication use `${NAME}` in the named server's
+`capture.pull.ssh.password`. `--server` takes its SSH settings as a block and cannot be combined
+with `--user`, `--port` or `--key`. Pulling need not be enabled and the daemon need not be running.
+The command uses one SSH connection, the puller's host-key rules, and the same store queue/lock
+for pins. Direct-host pins live in `~/.wpilog-mcp/robot-facts/ssh-hosts.json`; named servers use
+their capture store's pins. A busy store lock is an explained refusal, not permission to bypass it.
+
+The report is dated in UTC. Without `--out` it creates `robot-facts-yyyyMMddTHHmmssZ.md` in the
+current directory; it never overwrites a report. Each fixed read-only command records its exit
+status, elapsed milliseconds, up to 32 KiB each of stdout and stderr, and any timeout/truncation.
+Ordinary commands have a ten-second deadline with a five-second SSH connect bound. Refused
+commands remain in the report and do not stop other probes. Connection/configuration/output
+failures exit nonzero; collecting a sparse image successfully still exits zero.
+
+Evidence covers `uname`, candidate NI metadata (`/etc/os-release`,
+`/etc/natinst/share/ni-rt.ini`, `/etc/natinst/share/ni-imaging-info.ini`), the six log/home/USB
+directory listings, `which` for journalctl/dmesg/df/tail/sha256sum, utility versions, current-boot
+and explicit-UUID journal queries, three kernel lines and their `[seconds]` shape, `df -Pk /`,
+the program selected by its JAR in `robotCommand`, its command line, environment readability
+(never environment contents), uptime beside epoch time, and the authentication method that
+actually succeeded. Both `/home/lvuser/FRC_UserProgram.log` and the NI log-directory candidate
+are checked; neither is assumed present. The conclusions mark facts **found**, **absent**, or
+**refused**, and name the load, radio and rotation exercises this snapshot cannot perform.
+
+The largest `.wpilog` or `.revlog` in the configured pull directories supplies the hash-cost
+probe: `head -c N -- <quoted path> | sha256sum`, with N at most `104857600` bytes (100 MiB),
+using the puller's size-scaled deadline and keepalives. The report always gives the requested
+size beside the elapsed time. A growing/shrinking file can change how many bytes were available;
+this is the bounded command's cost, not a whole-file measurement. Nothing is modified on the
+robot. Known configured secrets/key paths and sensitive command-line option values are redacted
+from the report and errors; host-key fingerprints and the successful authentication method remain.
+Keep collected robot evidence outside this repository.
+
+A local server reading another process's growing WPILOG now resumes its index on verified
+append anchors and a known unchanged file identity. A partial final record is retried on growth.
+Where the filesystem cannot supply identity, it loads afresh. Calls spanning a file change still
+return the explained retry; a successful disk-backed call's `inputs.file_size_bytes` identifies
+the size it read. The pit writer's own live index remains the faster, fixed-prefix path.
 
 #### NT4 gateway for dashboards
 

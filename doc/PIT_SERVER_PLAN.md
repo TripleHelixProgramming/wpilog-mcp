@@ -190,7 +190,7 @@ The writer and the reader are one process, so an open session is a `LogData` the
 
 **The log manager serves it directly.** The capture's path maps to the `LiveLog` while the session is open: `getOrLoad` returns the instance without a file check, since the file changes constantly by design, and the after-call check that discards a result read across a change does not apply, since the call read a fixed prefix. When the session ends, the instance stays in the cache as a finished log until it is evicted; a later load of the path reads the file like any other log, and the two must agree, which a test checks by comparing the live instance's answers with a fresh load of the finished file.
 
-**Incremental rescan, the secondary path.** A process that is not the writer, such as a laptop's local server pointed at a capture on a shared folder, sees a file that grows. For it, `LogScan` gains `resume(LogScan previous, DataLogReader reader, Path path)`: it starts at the byte offset where the previous scan stopped, keeps the previous entries and offsets, and appends; a file that ends inside a record (the writer mid-flush) stops the scan there, records that position as the resume point, and does not count it as damage. The log manager reloads a file that grew with the same identity and an unchanged prefix by resuming, and anything else afresh. This is milestone 14, useful on its own and not needed by the pit server itself.
+**Incremental rescan, the secondary path.** A process that is not the writer, such as a laptop's local server pointed at a capture on a shared folder, sees a file that grows. `LogScan.resume(LogScan previous, LogReader reader, Path path)` starts at the byte offset where the previous scan stopped, copies the previous entries and offsets, and appends; a file that ends inside a record (the writer mid-flush) stops the scan there, records that position as the resume point, and does not count that partial record as damage. The log manager resumes growth with a known unchanged file identity and matching header/last-complete-record anchors, and loads anything else afresh. The anchors do not prove every interior byte unchanged; ARCHITECTURE.md records the cost and limits. This is milestone 14, useful on its own and not needed by the pit server itself.
 
 ### 7. The gateway
 
@@ -414,7 +414,7 @@ Each leaves the project working and tested on its own.
 11. **roboRIO system stats** (§8.2) and **followed files** (§8.4) (done: shared SSH ownership, adaptive stats with send-time clock mapping and kernel offset, bounded receipt-time tails, provider snapshots in live tools/manifests/metrics, and MINA/conformance checks; enabled by default with SSH configuration for pre-shop testing; hardware costs and NI-image commands remain shop checks, §17).
 12. **JVM provider** (§8.3): JMX polling first, then the Flight Recorder stream, each gated on what the roboRIO's JRE turns out to carry (§17).
 13. **Session manifests and import matching** (§10, §11).
-14. **Incremental rescan** (§6, secondary path): a growing capture read by another process.
+14. **Incremental rescan** (§6, secondary path) (done: copied compact indexes, declaration/metadata continuation, retryable partial tails, identity and byte-anchor checks, fresh decode caches and mapping retirement; across-growth calls still fail with an explained retry, and successful disk-backed calls name their admitted file size. Differential fixtures and the conformance sweep check the secondary path).
 15. **JFR file import** (§8.3) and the Grafana query endpoint (§12), each when a need shows.
 
 ### 16. Testing
@@ -1006,3 +1006,35 @@ Release-review keepalive failures (before the tag):
   dashboard, but its background updater stopped the Prometheus plugin just before the query.
   Query readiness now uses the existing bounded readiness helper; a scripted 404 then success
   and a permanently missing plugin pin both outcomes without a wall-clock wait.
+
+### Round 18 choices: another process's append and shop facts
+
+- Milestone 14 uses the long-addressed `LogReader` introduced with windowed mapping. A resume
+  copies declaration state and compact offset arrays and maps the whole file again; it never
+  mutates a prior reader's index. Incomplete final records retry from their first byte. Prior
+  damage takes a fresh scan, retaining the established timestamp-damage recovery rules.
+- The prefix rule is equal, known filesystem identity plus SHA-256 anchors of the complete
+  header and the last complete record. These digests are saved before a rewrite can affect
+  the old mapping. They do not detect an interior rewrite preserving both anchors. A full
+  prefix hash would reread the indexed bytes, defeating the secondary path's purpose. Unknown
+  identities (including JDK filesystems without file keys) conservatively load afresh.
+  Fresh decode caches prevent stale short entries; across-growth calls still discard results.
+- `robot-facts <host>` and `robot-facts --server <name>` use one connection through the shared
+  SSH implementation, its TOFU/change policy and size-scaled hash deadline. Named servers use
+  their capture store's pins; direct hosts use `~/.wpilog-mcp/robot-facts/`. No password flag is
+  accepted; named YAML can reference the environment. The only local writes are pins and a
+  new dated Markdown report. Nothing on the robot is written or deleted.
+- Image metadata and both console locations are candidate probes, not presumed NI facts.
+  Current-boot `journalctl -b` and explicit boot-UUID selection are separate probes: one does
+  not prove the other. `/proc/<pid>/environ` is tested for readability, never read. Commands
+  keep bounded stdout/stderr, status and elapsed time; a permission refusal does not abort
+  the remaining checklist. Known secrets/key paths and sensitive command-line options are
+  redacted. The report retains the actual successful authentication method and public key
+  fingerprint.
+- The largest listed WPILOG/REV file nominates a hash-cost probe of min(size, 104857600) bytes.
+  Its requested size always accompanies timing; a changing file can alter the available bytes,
+  so this does not claim a complete-file cost. Utility output/permissions, NI paths and actual
+  authentication remain unverified on hardware until this collector is run in the shop.
+  Provider budgets, live tail options/rotation, radio loss, sustained load and robot timing
+  still require their own exercises. DEVELOPMENT.md maps the entire shop checklist to the
+  report's found/absent/refused conclusions and the remaining manual work.

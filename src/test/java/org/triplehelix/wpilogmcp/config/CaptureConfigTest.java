@@ -90,10 +90,45 @@ class CaptureConfigTest {
   @Test void standaloneDocumentsEveryAcceptedCaptureKey() throws Exception {
     String guide = Files.readString(Path.of("doc/STANDALONE.md"));
     assertTrue(guide.contains("default `1073741824` bytes (1 GiB)"));
-    assertTrue(guide.contains("integer from `256` through `1099511627776`"));
+    // Read the claimed bounds, then ask the actual parser about both edges and their neighbors.
+    // A copied file-size limit must not silently become the documented transfer-rate limit.
+    var range = java.util.regex.Pattern.compile("(?:[Ii]nteger from |[Ii]nteger |range )`(\\d+)`(?: through |–)`(\\d+)`");
+    var positive = java.util.regex.Pattern.compile("[Pp]ositive (integer|seconds|milliseconds) through `(\\d+)`");
+    int checked = 0;
+    for (String row : guide.lines().filter(line -> line.startsWith("| `capture.")).toList()) {
+      String key = row.substring(3, row.indexOf('`', 3));
+      var bounds = range.matcher(row); var cap = positive.matcher(row);
+      long min, max;
+      if (bounds.find()) { min = Long.parseLong(bounds.group(1)); max = Long.parseLong(bounds.group(2)); }
+      else if (cap.find()) { min = 1; max = Long.parseLong(cap.group(2)); }
+      else continue;
+      assertDoesNotThrow(() -> parseWith(key, min), key + " documented lower bound");
+      assertDoesNotThrow(() -> parseWith(key, max), key + " documented upper bound");
+      assertThrows(ConfigException.class, () -> parseWith(key, min - 1), key + " below documented bound");
+      assertThrows(ConfigException.class, () -> parseWith(key, max + 1), key + " above documented bound");
+      checked++;
+    }
+    assertEquals(7, checked, "Every numeric range in the capture tables must be checked");
     assertTrue(guide.contains("at most four remaps per second"));
     for (var key : CaptureConfig.KEYS) assertTrue(guide.contains("`capture." + key + "`"), key);
     for (var key : CaptureConfig.ROBOT_KEYS) assertTrue(guide.contains("`capture.robot." + key + "`"), key);
     for (var key : CaptureConfig.GATEWAY_KEYS) assertTrue(guide.contains("`capture.gateway." + key + "`"), key);
+  }
+
+  private CaptureConfig parseWith(String key, long value) throws ConfigException {
+    var capture = JsonParser.parseString("{robot:{host:'x'},store:'x'}").getAsJsonObject();
+    if (key.startsWith("capture.tail[].")) {
+      var tail = JsonParser.parseString("[{host:'other',path:'/synthetic',role:'program_console'}]").getAsJsonArray();
+      tail.get(0).getAsJsonObject().addProperty(key.substring("capture.tail[].".length()), value);
+      capture.add("tail", tail);
+      return CaptureConfig.parse(capture, p -> p);
+    }
+    var target = capture; var names = key.substring("capture.".length()).split("\\.");
+    for (int i = 0; i < names.length - 1; i++) {
+      if (!target.has(names[i])) target.add(names[i], new com.google.gson.JsonObject());
+      target = target.getAsJsonObject(names[i]);
+    }
+    target.addProperty(names[names.length - 1], value);
+    return CaptureConfig.parse(capture, p -> p);
   }
 }

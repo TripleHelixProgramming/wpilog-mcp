@@ -35,7 +35,10 @@ public final class JschConnection implements SshConnection {
   private final Session session;
   private final Deadlines deadlines;
   private final String fingerprint;
-  private JschConnection(Session session, Deadlines deadlines) {
+  private final String authentication;
+  public String authentication() { return authentication; }
+  private JschConnection(Session session, Deadlines deadlines, String authentication) {
+    this.authentication = authentication;
     this.session = session; this.deadlines = deadlines;
     fingerprint = fingerprint(Base64.getDecoder().decode(session.getHostKey().getKey()));
   }
@@ -47,6 +50,15 @@ public final class JschConnection implements SshConnection {
     if (deadlines == null) deadlines = daemonDeadlines();
     Session session = null;
     try {
+      var method = new java.util.concurrent.atomic.AtomicReference<>("none");
+      // Retain only the successful method, never JSch diagnostics or authentication material.
+      jsch.setInstanceLogger(new com.jcraft.jsch.Logger() {
+        public boolean isEnabled(int level) { return level == INFO; }
+        public void log(int level, String message) {
+          var match = java.util.regex.Pattern.compile("Authentication succeeded \\((password|publickey|keyboard-interactive)\\)\\.").matcher(message);
+          if (match.matches()) method.set(match.group(1));
+        }
+      });
       if (config.key() != null) jsch.addIdentity(config.key().toString());
       jsch.setHostKeyRepository(new Pin(host, pin, config));
       session = jsch.getSession(config.user(), host, config.port());
@@ -57,7 +69,7 @@ public final class JschConnection implements SshConnection {
       session.setDaemonThread(true);
       session.setServerAliveInterval(TIMEOUT_MS); session.setServerAliveCountMax(3);
       session.connect(TIMEOUT_MS);
-      return new JschConnection(session, deadlines);
+      return new JschConnection(session, deadlines, method.get());
     } catch (JSchException | RuntimeException e) {
       if (session != null) session.disconnect();
       deadlines.close();
@@ -122,6 +134,50 @@ public final class JschConnection implements SshConnection {
       if (e instanceof IOException io) throw io;
       return Optional.empty(); // SFTP-only servers use the range comparison.
     } finally { completed.set(true); cancel.run(); if (exec != null) exec.disconnect(); }
+  }
+
+  /** One bounded diagnostic command; EOF on stdout alone is not an exit status. */
+  public record Reply(int exitStatus, String stdout, String stderr, boolean truncated,
+      boolean timedOut, long elapsedNanos) {}
+
+  public Reply inspect(String command, long timeoutMs, int maxBytes) throws IOException {
+    if (timeoutMs <= 0 || maxBytes < 1 || maxBytes > 1_048_576) throw new IllegalArgumentException("Invalid diagnostic bounds");
+    long start = System.nanoTime();
+    var done = new java.util.concurrent.CountDownLatch(1);
+    var stdout = new LimitedOutput(maxBytes, () -> {});
+    // JSch closes stderr on CHANNEL_CLOSE, after exit-status; stdout may close earlier at EOF.
+    var stderr = new LimitedOutput(maxBytes, done::countDown);
+    ChannelExec exec = null;
+    Runnable cancel = () -> {};
+    var expired = new java.util.concurrent.atomic.AtomicBoolean();
+    try {
+      exec = (ChannelExec) session.openChannel("exec"); exec.setCommand(command); exec.setInputStream(null);
+      exec.setOutputStream(stdout); exec.setErrStream(stderr);
+      var channel = exec;
+      cancel = deadlines.schedule(() -> { expired.set(true); channel.disconnect(); done.countDown(); }, timeoutMs);
+      exec.connect(TIMEOUT_MS);
+      done.await();
+      return new Reply(exec.getExitStatus(), stdout.text(), stderr.text(), stdout.truncated() || stderr.truncated(),
+          expired.get(), System.nanoTime() - start);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt(); throw new IOException("SSH inspection interrupted");
+    } catch (JSchException e) { throw new IOException("SSH inspection channel refused", e); }
+    finally { cancel.run(); if (exec != null) exec.disconnect(); }
+  }
+  private static final class LimitedOutput extends java.io.OutputStream {
+    private final int limit;
+    private final Runnable closed;
+    private final java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+    private boolean truncated;
+    LimitedOutput(int limit, Runnable closed) { this.limit = limit; this.closed = closed; }
+    @Override public synchronized void write(int value) { if (bytes.size() < limit) bytes.write(value); else truncated = true; }
+    @Override public synchronized void write(byte[] value, int offset, int length) {
+      int keep = Math.min(length, limit - bytes.size()); bytes.write(value, offset, keep);
+      if (keep < length) truncated = true;
+    }
+    synchronized String text() { return bytes.toString(StandardCharsets.UTF_8); }
+    synchronized boolean truncated() { return truncated; }
+    @Override public void close() { closed.run(); }
   }
 
   @Override public Command follow(String command) throws IOException {

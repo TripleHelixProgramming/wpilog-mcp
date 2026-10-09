@@ -30,7 +30,8 @@ import org.slf4j.LoggerFactory;
  * every timeline, duration, and time-based match built on it. So:
  * <ul>
  *   <li>A data record for an entry id that was never declared ends the scan: the rest of the file
- *       is damaged. So does a record that cannot be read at all (the file ends inside it).
+ *       is damaged. An incomplete final record stops at its first byte for a later resume;
+ *       that alone is truncation, not damage.
  *   <li>The last few records before that point whose timestamps run more than
  *       {@value #MAX_BACKWARD_NEAR_DAMAGE_SEC} s backward or ahead of the log so far belong to
  *       the damage and are dropped. (Elsewhere a backward timestamp can be real: NetworkTables
@@ -53,11 +54,14 @@ import org.slf4j.LoggerFactory;
  * @param damaged Whether more was lost than a final record cut off mid-write: garbage or
  *     unreadable records, or records set aside for their timestamps
  * @param truncationMessage What was not read, and why, or null
+ * @param resumePoint First byte not yet indexed, including an incomplete final record
+ * @param scannedFrom First byte visited by this scan, after a copied index when resumed
+ * @param continuation Opaque declaration/anchor state, or null when damage requires a fresh scan
  * @since 0.9.0
  */
 public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets> offsets,
     double minTimestamp, double maxTimestamp, int dataRecords, boolean truncated,
-    boolean damaged, String truncationMessage) {
+    boolean damaged, String truncationMessage, long resumePoint, long scannedFrom, Continuation continuation) {
 
   private static final Logger logger = LoggerFactory.getLogger(LogScan.class);
 
@@ -76,6 +80,34 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
   /** An accepted data record, with the time range before it (to undo it). */
   private record Accepted(String name, double timestamp, double minBefore, double maxBefore) {}
 
+  /** State needed by an append, including redeclared IDs and the damage rollback boundary. */
+  public static final class Continuation {
+    private final Map<Integer, EntryInfo> ids;
+    private final java.util.Set<Integer> ignored;
+    private final List<Accepted> recent;
+    private final long fileSize, headerEnd, lastRecord;
+    private final byte[] header, lastRecordHash;
+    private Continuation(Map<Integer, EntryInfo> ids, java.util.Set<Integer> ignored,
+        List<Accepted> recent, long fileSize, long headerEnd, byte[] header, long lastRecord, byte[] lastRecordHash) {
+      this.ids = ids; this.ignored = ignored; this.recent = recent; this.fileSize = fileSize;
+      this.headerEnd = headerEnd; this.header = header; this.lastRecord = lastRecord; this.lastRecordHash = lastRecordHash;
+    }
+  }
+
+  /** Only complete anchors are compared. Interior rewrites that preserve both anchors are not detected. */
+  boolean acceptsAppend(LogReader reader) {
+    var c = continuation;
+    if (damaged || c == null || c.header == null || reader.size() <= c.fileSize) return false;
+    return java.util.Arrays.equals(c.header, reader.fingerprint(0, c.headerEnd))
+        && (c.lastRecord < 0 || java.util.Arrays.equals(c.lastRecordHash,
+            reader.fingerprint(c.lastRecord, resumePoint)));
+  }
+
+  /** Remap outside this class, then copy the old index and read only records at its resume point. */
+  public static LogScan resume(LogScan previous, LogReader reader, Path path) throws IOException {
+    return previous.acceptsAppend(reader) ? scan(previous, reader, path) : of(reader, path);
+  }
+
   /**
    * Scans a log.
    *
@@ -89,6 +121,10 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
   }
 
   public static LogScan of(LogReader reader, Path path) throws IOException {
+    return scan(null, reader, path);
+  }
+
+  private static LogScan scan(LogScan previous, LogReader reader, Path path) throws IOException {
     var entriesById = new HashMap<Integer, EntryInfo>();
     var ignoredIds = new HashSet<Integer>(); // declared, deliberately not indexed
     var entriesByName = new LinkedHashMap<String, EntryInfo>();
@@ -105,7 +141,19 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
 
     // Walk records by their own bounds (DataLogAccess.recordEnd), not WPILib's iterator, whose
     // hasNext() skips a final record shorter than 16 bytes
-    long pos = DataLogAccess.firstRecordOffset(path);
+    long headerEnd = previous == null ? DataLogAccess.firstRecordOffset(path) : previous.continuation.headerEnd;
+    long pos = headerEnd;
+    long lastRecord = -1;
+    if (previous != null) {
+      entriesById.putAll(previous.continuation.ids); ignoredIds.addAll(previous.continuation.ignored);
+      entriesByName.putAll(previous.entries);
+      previous.offsets.forEach((name, values) -> offsets.put(name, values.copy()));
+      dataRecords = previous.dataRecords;
+      if (dataRecords > 0) { minTs = previous.minTimestamp; maxTs = previous.maxTimestamp; }
+      recent.addAll(previous.continuation.recent);
+      pos = previous.resumePoint; lastRecord = previous.continuation.lastRecord;
+    }
+    long scannedFrom = pos;
     long size = DataLogAccess.size(reader);
     if (pos < 12 || pos > size) {
       damage = "the header's extra-header length runs past the end of the file";
@@ -176,7 +224,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
             }
           }
         }
-        pos = next;
+        lastRecord = pos; pos = next;
       }
     } catch (RuntimeException e) {
       // WPILib's reader throws NoSuchElement, BufferUnderflow, IndexOutOfBounds, and
@@ -228,8 +276,11 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
     }
 
     boolean damaged = (damage != null && !cutInsideRecord) || rolledBack > 0 || jumps > 0;
+    var continuation = damaged ? null : new Continuation(Map.copyOf(entriesById), java.util.Set.copyOf(ignoredIds),
+        List.copyOf(recent), size, headerEnd, reader.fingerprint(0, headerEnd), lastRecord,
+        lastRecord < 0 ? null : reader.fingerprint(lastRecord, pos));
     return new LogScan(Collections.unmodifiableMap(entriesByName), offsets, min, max,
-        dataRecords, message != null, damaged, message);
+        dataRecords, message != null, damaged, message, pos, scannedFrom, continuation);
   }
 
   static String jumpMessage(int jumps, long firstJump) {

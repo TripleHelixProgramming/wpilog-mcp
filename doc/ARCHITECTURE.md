@@ -166,7 +166,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 | `nt4/client` | JDK WebSocket connection and fallback, ordered listeners, subscription, retry/keepalive timers, and concurrent latest values |
 | `nt4/server` | Pure subscription/announcement/value fan-out and a bounded WebSocket adapter, used by configured capture and the loopback robot fixture |
 | `ssh` | One authenticated connection per host, pinned keys, bounded exec channels and independent SFTP/follow channels; reconnect only during NT4 presence |
-| `capture/pull` | Disabled-state gate, borrowed SFTP/exec channels, telemetry and system-text transfer passes outside the NT4 loop |
+| `capture/pull` | Disabled-state gate, borrowed SFTP/exec channels, telemetry and system-text transfer passes outside the NT4 loop; the operator's read-only `robot-facts` command and pure evidence report |
 | `capture/context` | HAL device identity, parsed Linux stats, adaptive sample budget, bounded followed-file buffers and published provider state |
 | `capture` | Pure-Java WPILOG output and writer ownership leases, session continuity and policy/cost accounting; the live index and `LiveCapture`/`CaptureStats` publication snapshots for `tools/LiveTools` and metrics |
 
@@ -377,6 +377,17 @@ robot clock permits recording again. Record writes roll back an incomplete tail 
 failed rollback forbids appending finishes. Session `end_reason` preserves the reason without changing
 the store format version.
 
+## Robot facts
+
+`robot-facts` is an explicit operator command, separate from the continuously running providers.
+It borrows the same SSH implementation and host-key policy for one connection, opens bounded
+exec channels for a fixed read-only command list, and uses SFTP only to nominate the largest
+log for a bounded hash-cost probe. Exit status, stdout and stderr remain separate, including
+permission refusals. The pure report builder classifies evidence, not the image's assumed
+capabilities; unavailable commands do not abort the report. Known credentials and sensitive
+command-line options are redacted at its output boundary. Named configurations use their store
+pins; direct hosts use a local pin store. No remote environment contents are collected.
+
 ## Live log
 
 The capture writer already knows each declaration, complete record's offset, value, and timestamp.
@@ -407,7 +418,8 @@ without file-change checks or after-call discard. At close the same index enters
 eviction releases its mappings after in-flight uses. A later load uses `LazyParsedLog`. The writer
 keeps the last session's index available for clock-continuous resumption and remaps it if evicted.
 Cold reads use the same long-addressed windows as finished logs, including records past 2 GiB.
-No other-process incremental rescan is implemented here.
+Another process reading a growing capture uses the incremental scan described under Loading;
+it has no access to this writer-owned live index.
 
 ## Life of a Tool Call
 
@@ -573,13 +585,33 @@ A path given to a tool is checked before the file is opened: its real path, with
 
 The log manager returns a log already in memory, or loads it. Loading takes a lock for that path, so two calls for the same log load it once, while different logs load in parallel. `MappedLogBytes` owns read-only windows of at most 1 GiB, addressed with long offsets, up to a stated 1 TiB file limit. `LogReader` frames each record from that byte source and gives it to WPILib's unchanged `DataLogReader` at offset zero. A record contained in one window is a buffer view; only a straddling record is copied. The window size is injectable for tests.
 
+For another process's append, `LogScan.resume(previous, reader, path)` copies the old compact
+offset index, entry declarations (including ID aliases and metadata) and time range, then reads
+from the first unindexed byte. An incomplete final record leaves that byte as the resume point;
+an ordinary mid-flush tail is truncation, not damage. Each resume maps the whole file anew and
+gets a new decoded-value cache, so a previously decoded entry cannot stay shorter than its index.
+The old mapping retires after its last use; a result spanning growth is still discarded with
+the existing explained error. Successful disk-backed calls report the admitted snapshot's
+`inputs.file_size_bytes`. The writer's own live log keeps its fixed-prefix behavior.
+
+Resuming requires growth and equal, non-null filesystem identities, plus unchanged bytes of
+the complete WPILOG header (extra header included) and the last complete record before the old
+resume point. The scan saves SHA-256 digests of those two anchors, not views of an old mapping
+that a rewrite could change. Anchor reads use a bounded buffer; their cost depends on the header
+and last record sizes. An interior rewrite preserving both anchors is not detected. This is a
+cheap append check, not a full-prefix integrity proof: hashing every indexed byte would cost the
+scan we are avoiding. Replacements, shrinkage, damaged prior scans, failed anchors and unknown
+identities all load afresh. In particular, filesystems/JDKs without a file key (including the
+Windows JDK's usual provider) conservatively rescan. The checkpoint lives in the existing bounded
+log cache, not a second collection that grows with every path ever read.
+
 A loaded log follows its file. The manager keeps the file's size, modification time, and identity (the inode, where the file system has one) as they were just before the log was read, and compares them with the file on every call: a file that changed is loaded again, and a file that is gone is an error. The comparison is made again after each call, and a result read across a change is discarded with an error that says what changed, because the result may hold old data (a file renamed into place keeps serving its old bytes through the mapping) or mix old and new (a file overwritten in place has its old record offsets applied to new bytes). A change the attributes do not show can still make a read of the mapping fault, which the JVM reports as an `InternalError`; the tool base turns that into the same explained error and unloads the log, where before it escaped every catch and ended a stdio server. Each session is told once, on its next result from the log, that the log was reloaded, since results it holds from earlier calls came from the old file; a session that first used the log after the change is not told, having nothing stale. The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when the candidates or their files changed, keeping an offset set by hand for a file that did not. These rules came from logs copied off a robot while it was still writing them, and copied again once they had grown.
 
 Loading does not decode the log. Mapped windows live outside the Java heap, and a single pass records each entry (name, type, and metadata, in announcement order) and each data record's long byte address. `RecordOffsets` keeps an int array until that entry first exceeds the signed-int range, then promotes that array to longs. Ordinary files therefore still need four offset bytes per record: widening the API must not double every team's index. The live index likewise keeps narrow record slots until it needs a wide slot. Records are read one by one through WPILib's record-level access, because WPILib's own iterator silently skips a final record shorter than 16 bytes. If the scan fails in a way the rules below do not cover, an older parser is tried, which decodes the whole log into memory at once.
 
 The scan is built for logs that were not closed cleanly:
 
-- A record that runs past the end of the file, names an entry that was never declared, or makes WPILib's parser fail ends the scan, and the log counts as damaged. The last few records before the damage are dropped if their timestamps jump by more than 60 seconds, since a torn write can look like a valid record.
+- A record that runs past the end of the file ends the scan at its first byte, without counting that partial record as damage. An undeclared entry or a parser failure is damage. The last few records before an unreadable tail are dropped if their timestamps jump by more than 60 seconds, since a torn write can look like a valid record; dropped records also count as damage and require a fresh scan.
 - A record more than a day ahead of the latest timestamp is ignored wherever it appears.
 - Negative timestamps are kept. WPILib's DataLogManager writes records before time zero.
 - An entry declared twice with the same type is one entry with all its records. A name declared again with a different type is ignored, with a warning in the server's log.

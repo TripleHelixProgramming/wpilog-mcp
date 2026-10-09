@@ -43,6 +43,9 @@ public final class FakeRoboRio implements AutoCloseable {
   @FunctionalInterface public interface BeforeHash { void run(Hash request) throws Exception; }
   @FunctionalInterface public interface Script { void run(OutputStream output) throws Exception; }
   private final java.util.Map<String, Script> scripts = new java.util.concurrent.ConcurrentHashMap<>();
+  private record Reply(int status, String stdout, String stderr) {}
+  private final java.util.Map<String, Reply> replies = new java.util.concurrent.ConcurrentHashMap<>();
+  public void reply(String command, int status, String stdout, String stderr) { replies.put(command, new Reply(status, stdout, stderr)); }
   private final SshServer server = SshServer.setUpDefaultServer();
   private final Path root;
   private final List<Read> reads = new CopyOnWriteArrayList<>();
@@ -89,6 +92,12 @@ public final class FakeRoboRio implements AutoCloseable {
   }
 
   public int port() { return server.getPort(); }
+  /** Auth diagnostics can exercise a configured secret; ordinary fixtures still require empty. */
+  public void acceptPassword(String expected) {
+    server.setPasswordAuthenticator((user, password, session) -> {
+      authentications.incrementAndGet(); return user.equals("lvuser") && password.equals(expected);
+    });
+  }
   public Path logs() { return root.resolve("home/lvuser/logs"); }
   public List<Read> reads() { return List.copyOf(reads); }
   /** Exact provider commands may have scripted replies; this fixture still never executes a shell. */
@@ -136,8 +145,13 @@ public final class FakeRoboRio implements AutoCloseable {
       worker = new Thread(() -> {
         int status = 0;
         try {
+          var reply = replies.get(text);
           var script = scripts.get(text);
-          if (script != null) { commands.incrementAndGet(); script.run(out); }
+          if (reply != null) {
+            commands.incrementAndGet(); status = reply.status();
+            out.write(reply.stdout().getBytes(StandardCharsets.UTF_8)); out.flush();
+            err.write(reply.stderr().getBytes(StandardCharsets.UTF_8)); err.flush();
+          } else if (script != null) { commands.incrementAndGet(); script.run(out); }
           else {
             var request = parseHash(text); commands.incrementAndGet(); beforeHash.run(request);
             out.write(hash(request).getBytes(StandardCharsets.US_ASCII)); out.flush();
