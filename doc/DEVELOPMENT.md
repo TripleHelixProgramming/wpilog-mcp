@@ -465,6 +465,8 @@ the ordinary harness's 20 ms stepped clock would introduce artificial jitter int
 Scripted telemetry retains explicit timeline timestamps, with every due record emitted after a
 late callback. The MINA harness still checks gateway delivery and the disabled gate's per-block
 audit; the container does not pretend OpenSSH supplies that audit.
+The independent facts command uses the explicit loopback host and mapped SSH port, so its host
+pins belong to its own temporary facts store rather than contending with the recording store.
 
 CI's existing metrics-stack smoke preloads the same documented versions from Prometheus's
 Quay registry and Google's Docker Hub cache, then retains the Compose tags; it does not change

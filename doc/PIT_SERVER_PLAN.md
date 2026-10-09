@@ -1296,6 +1296,9 @@ Release-review keepalive failures (before the tag):
   The first real-process run caught the harness sending a string for the release's numeric
   network-mode enum. Configuring its local NT destination uses that enum and waits for the
   settings route's asynchronous web-server restart before opening the audit socket.
+  The independent `robot-facts` process uses the container's explicit host/port and its own
+  temporary pin store; the named-server form could race capture's store lock. A busy-store
+  refusal remains the production behavior rather than becoming a hidden retry in this test.
 - `harness/run` and the compatibility `harness/rio/run` share capability selection. macOS and
   Linux without Docker explicitly skip the container/backend while retaining the MINA
   timeline. Linux x86_64 with Docker adds both. No ordinary test needs Docker or a download.

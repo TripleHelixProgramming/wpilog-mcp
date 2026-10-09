@@ -83,8 +83,10 @@ class RioHarnessTest {
         });
         if (photon != null) photon.verifyLive(http, httpPort, control);
         // Inspect while the deployed process exists; every command is the shipped collector's.
+        // The explicit host keeps this independent CLI's pins in its own facts store. --server
+        // would contend with the recorder's store lock, which intentionally refuses a second owner.
         facts = launch(List.of(javaExe, "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
-            "robot-facts", "--server", "harness", "--config", config.toString(), "--out", control.resolve("facts.md").toString()),
+            "robot-facts", "127.0.0.1", "--port", Integer.toString(sshPort), "--out", control.resolve("facts.md").toString()),
             run, control.resolve("facts.log"), Map.of("WPILOG_DISK_CACHE_DIR", run.resolve("facts-cache").toString()));
         assertTrue(robot.waitFor(boot.get("end_us").getAsLong() / 1_000_000 + 30, TimeUnit.SECONDS), "Container timeline did not end");
         assertEquals(boot.get("reboot").getAsBoolean() ? 75 : 0, robot.exitValue(), rio.console());
