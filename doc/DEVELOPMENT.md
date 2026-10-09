@@ -586,7 +586,7 @@ These commands run on Linux with Xvfb installed. From macOS or Windows, use the 
 CI runs both versions in separate Linux jobs. `@vscode/test-electron` 2.5.2 is a development
 only dependency (MIT); that line supports CI's Node 20. It downloads a separate VS Code,
 cached in `.vscode-test`, without using the installed editor. `npm test` is unchanged.
-The smoke generates its log with the pure-Java fixture writer, seeds a standalone install
+The smoke generates its log once with the pure-Java fixture writer, copies it and its append record into each run's temporary folder, and seeds a standalone install
 in a temporary home under `build/extension-smoke`, and lets the extension start its server.
 It checks activation, the shared daemon's health/version, the actual Logs provider's leased
 fixture listing, the custom editor tab, Perspective's actual row count (two fixture records, then three after an appended record), and the real pit command's user-scope arguments.

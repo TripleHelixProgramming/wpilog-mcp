@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createServer } from "node:net";
+import { checkComplete, prepareFixture } from "./evidence";
 
 async function unusedPort(): Promise<number> {
   const socket = createServer();
@@ -17,9 +18,9 @@ async function unusedPort(): Promise<number> {
 async function main(): Promise<void> {
   if (process.platform !== "linux") throw new Error("The editor smoke runs on Linux under Xvfb. Use the editor-smoke CI jobs; npm test runs on every platform.");
   const extension = path.resolve(__dirname, "..", ".."), root = path.dirname(extension);
-  const fixture = path.join(root, "build", "extension-smoke", "fixture", "smoke.wpilog");
+  const sourceFixture = path.join(root, "build", "extension-smoke", "fixture", "smoke.wpilog");
   const jar = path.join(extension, "server", "wpilog-mcp-all.jar");
-  for (const file of [fixture, jar]) {
+  for (const file of [sourceFixture, jar]) {
     if (!fs.existsSync(file)) throw new Error(`Run ./gradlew bundleExtension extensionSmokeFixture first: missing ${file}`);
   }
   const version = process.env.VSCODE_VERSION ?? "stable";
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
   const report = path.join(root, "build", "extension-smoke", version, label);
   fs.mkdirSync(report, { recursive: true });
   const scratch = fs.mkdtempSync(path.join(report, "run-"));
+  const fixture = prepareFixture(sourceFixture, scratch);
   const testHome = path.join(scratch, "home"), install = path.join(testHome, ".wpilog-mcp");
   const workspace = path.join(scratch, "workspace"), userData = path.join(scratch, "user-data");
   const bin = path.join(scratch, "bin"), calls = path.join(scratch, "claude-args.json");
@@ -63,7 +65,7 @@ async function main(): Promise<void> {
       launchArgs: [workspace, "--disable-extensions", "--disable-gpu", "--skip-welcome", "--skip-release-notes",
         "--disable-workspace-trust", "--user-data-dir", userData, "--extensions-dir", path.join(scratch, "extensions")] });
     const result = JSON.parse(fs.readFileSync(path.join(scratch, "result.json"), "utf8"));
-    if (result.checks?.length !== 5 || result.status !== "ok") throw new Error("Editor exited without all five smoke checks");
+    checkComplete(result);
     fs.writeFileSync(path.join(report, "result.json"), JSON.stringify(result, null, 2) + "\n");
   } finally {
     // start uses its own PID file and the server is shared; closing the editor alone does not stop it.
