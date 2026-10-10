@@ -126,6 +126,10 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 
 **Store fixtures.** `store.LogStoreTest` writes synthetic WPILOG and REV files in temporary directories and drives the Java import queue and the real listing tool. It checks verified copies and moves, original provenance, duplicate hashes, REV correlation and ambiguity, serial promotion without merging, clock bases and overlap, unmanaged files, format refusal, queued callers, path containment, and the lifetime of readers and moved-path notices. No robot logs or external services are needed.
 
+Legacy unassigned-layout migration compares the complete file receipt before and after copying,
+normalizing only its path. Matching, its reason, the placement method, the robot fingerprint and
+provenance must all survive; a planted null matching reason proves the check.
+
 `StoreImportEndpointTest` drives the HTTP jobs and refusals on the real transport. `StoreInboxTest` checks stability, receipts, and listing states. `MainImportTest` drives child JVMs and a real daemon, including a cross-process file-lock refusal.
 
 The store checks also distinguish a new named robot with a logged serial from a later serial promotion, keep non-overlapping sessions separate, count catalog reads per batch, and observe which REV candidates reach correlation. `log.LogMappingLifetimeTest` reads fixtures through tools and the manager before moving them, holds calls and background synchronization across eviction, and checks that the final holder releases the mapping so a real rename succeeds on Windows too.

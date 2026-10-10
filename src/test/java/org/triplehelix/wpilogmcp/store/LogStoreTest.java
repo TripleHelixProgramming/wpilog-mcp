@@ -281,9 +281,15 @@ class LogStoreTest {
         START.toString(), true);
     io.write(root.resolve("store.json"), new StoreManifest.Header(1, START.toString(), "legacy",
         List.of(new StoreManifest.Move(source.toString(), StoreFiles.relative(root, legacy), Instant.now().toString()))));
-    io.write(bucket.resolve("import.json"), new StoreManifest.LogFile("old.wpilog", hash,
+    var matching = new StoreManifest.Matching("by_correlation", "a".repeat(64), 120_000,
+        .95, 0, 10, "data_alone");
+    var fingerprint = new org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint(
+        9999, "b".repeat(64), "c".repeat(64));
+    var original = new StoreManifest.LogFile("old.wpilog", hash,
         bytes.length, "wpilog", provenance, true, 10, 20, START.toString(),
-        START.plusSeconds(10).toString(), "systemTime", false, null));
+        START.plusSeconds(10).toString(), "systemTime", false, matching, fingerprint,
+        "legacy placement evidence retained", "by_time_overlap");
+    io.write(bucket.resolve("import.json"), original);
     assertEquals(legacy, catalog().files().get(0).path());
     assertEquals(legacy, Path.of(listing().getAsJsonArray("unassigned").get(0)
         .getAsJsonObject().get("path").getAsString()));
@@ -292,7 +298,15 @@ class LogStoreTest {
     var migrated = bucket.resolve("robot").resolve("old.wpilog");
     var held = catalog().files().get(0);
     assertEquals(migrated, held.path());
-    assertEquals(provenance, held.file().provenance());
+    assertEquals(original.matchingReason(), held.file().matchingReason(),
+        "Legacy migration must preserve matchingReason");
+    assertEquals(StoreFiles.relative(bucket, migrated), held.file().path());
+    // Compare the whole durable record, normalizing only the relocated path. Rebuilding an
+    // expected LogFile field by field could miss the same newly added field as the migrator.
+    var relocated = StoreJson.JSON.toJsonTree(held.file()).getAsJsonObject();
+    relocated.addProperty("path", original.path());
+    assertEquals(original, StoreJson.JSON.fromJson(relocated, StoreManifest.LogFile.class),
+        "A layout migration changes only the path, not matching, reasons, fingerprints or provenance");
     assertArrayEquals(bytes, Files.readAllBytes(migrated));
     assertFalse(Files.exists(legacy));
     assertTrue(catalog().unmanaged().isEmpty());
