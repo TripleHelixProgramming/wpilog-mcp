@@ -1068,11 +1068,11 @@ deadlines; stats exec has a 30-second bound, on its own worker. No SSH request r
 `LoopWatchdog` posts at most one probe and measures it from a separate thread, logging a stall
 of at least a second once, then recovery. It neither disconnects a peer nor changes timeouts.
 
-The failure behind this rule was the pair of Windows keepalive drops of October 8 recorded in
-the pit plan's section 17: delayed application loops judged healthy peers dead, with capture
-fsync a likely source of the delay. A loop must never charge its own backlog to a peer.
-Pong receipt and replies stay on network threads; only a sent, unanswered ping can expire.
-A check scheduled on the stalled loop cannot detect that loop's stall while it is happening.
+The failure behind this rule was the pair of Windows keepalive drops of October 8 recorded in the
+pit plan's decision record (Milestone 11 choices): delayed application loops judged healthy peers
+dead, with capture fsync a likely source of the delay. A loop must never charge its own backlog to a
+peer. Pong receipt and replies stay on network threads; only a sent, unanswered ping can expire. A
+check scheduled on the stalled loop cannot detect that loop's stall while it is happening.
 
 The design keeps shared mutable state small:
 

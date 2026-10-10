@@ -434,7 +434,7 @@ Every result carries `inputs.session` (the capture path). Descriptions say what 
 - **Throttle**: a configured rate cap (default 1 MB/s), enforced on the reading side by pacing block reads, and one transfer at a time. The roboRIO's processor is small and SSH encryption costs it; the cap protects the robot as much as the network.
 - **Verification**: after a file's size has been stable on the robot for one pass, the local copy is loaded through the normal path; a copy that loads, with its scan ending at the file's end, is marked verified in the manifest. A copy that does not is fetched again from the start, once.
 - **Deletion**: never, in this version. Freeing the robot's storage is a later, opt-in action that requires a verified copy and says what it removed.
-- **Reporting**: `list_sessions` gains `pulls[]` per robot: the last pass, files copied, bytes, and files waiting for the gate; the server log says when a pull starts, pauses, resumes, and completes.
+- **Reporting**: `list_sessions` gains `pulls[]` per robot: the last pass, files copied, bytes, and files waiting for the gate; the server log says when a pull starts, pauses, resumes, and completes. (`pulls[]` is not implemented yet. Today the `wpilog_pull_*` metrics carry the counters, `list_sessions` lists the matched files under `imports[]`, and the listing's `matching_reason` explains a refusal.)
 
 **System logs.** The roboRIO keeps logs of its own, and they answer what no robot log can. The kernel reports a CAN interface going bus-off, a USB camera enumerating and vanishing, a network link flapping, a process killed for memory, and the cause of a reset. NI's daemons log the robot program's starts and stops and its console output, and a JVM that dies leaves a fatal error file. The puller copies them under the same gate, throttle, and content-identity rules as the robot's logs, in the same pass. The configured set has these defaults, unverified until the shop inspects the NI image, and all off behind `capture.pull.system.enabled: false` (§17):
 
@@ -492,7 +492,7 @@ A session directory is named by the session's start in UTC, and the event and ma
 - **The inbox**, for the person with a USB stick and no terminal: a file placed in `inbox/` is imported as above and removed from the inbox once its copy is verified. The result is written beside it in `inbox/imported.log`, the one file in the inbox the server writes, so a refused file is explained where it was dropped.
 - **`POST /store/import`**, an HTTP upload through the same path, so the VS Code extension and the data browser (IDEAS 9.2) can send a file from a laptop to the pit server. It is a write surface on a server with no authentication (decision 7); a team that fronts the server with nginx puts the password on this path first.
 
-**A stray is reported, not adopted.** A file that appears in the store outside the inbox, placed by hand, is not indexed. `list_sessions` reports it under `unmanaged[]` with the import command, the server log says the same once, and it is never read into a session and never deleted. The security validator still admits it to a tool given its path, since it is inside a configured directory, but it belongs to no robot and no session until it is imported, and a result about it says so.
+**A stray is reported, not adopted.** A file that appears in the store outside the inbox, placed by hand, is not indexed. `list_available_logs` reports it under `unmanaged[]` with the import command, the server log says the same once, and it is never read into a session and never deleted. The security validator still admits it to a tool given its path, since it is inside a configured directory, but it belongs to no robot and no session until it is imported, and a result about it says so.
 
 For an ordinary WPILOG import, a capture or an already data-matched WPILOG anchors a candidate
 session. Calendar ranges nominate with §10's slack, and joining it requires the same strong,
@@ -1047,6 +1047,11 @@ Release-review keepalive failures (before the tag):
   which the fix intentionally removed. That test now advances to its three-second time-sync
   exchange and waits for the actual reply before reboot, retaining the existing assertion and
   deadline. It does not treat missing application-loop pong work as a dead connection.
+
+## Part III: Decision record
+
+What each milestone and round decided, and why, in the order the work was done. Section 17
+lists what remains open; the entries below record what was settled, and the evidence.
 
 ### Milestone 11 choices: SSH stats and followed files
 
