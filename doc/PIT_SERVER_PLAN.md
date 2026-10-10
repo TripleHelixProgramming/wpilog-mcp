@@ -2,6 +2,8 @@
 
 A proposal for the next large piece of wpilog-mcp: a program that runs in the shop and in the pit, listens to the robot all the time, keeps everything it hears, and answers questions about it, live and later. The first half is for anyone on the team; the second half specifies the work for the developers who will build it.
 
+**Status, October 2026.** The pit server described here is built and runs on the `pit-server` branch. Part I is the idea as it was proposed, kept as written. Part II is the specification, and under each milestone its implementation record says what was built, what was found, and what changed. Part III is the decision record. To run the pit server, see the [operations and usage manual](OPERATIONS.md); for every setting and route, the [standalone reference](STANDALONE.md).
+
 ## Part I: The Idea
 
 ### What it is
@@ -109,7 +111,11 @@ These are settled; the sections after them follow from them.
 14. **A robot is its serial number.** Every session and every pulled file is mapped to a robot by the roboRIO's serial number, read from the device or logged by the robot program, with the basis stated. Nothing else identifies a robot: not the team number, the address, the entry set, or the CAN inventory, which are evidence for a candidate at most. A file that carries no serial and came from no connection the pit server made has no robot, and the listing says so rather than guessing one.
 15. **The pit server owns its store.** Its data directory has one layout, defined and kept by the server, and every file in it was placed there by the server after reading it: recorded, pulled, or imported through a command, the drop folder, or an upload. Nothing is copied in by hand; a file that appears otherwise is reported and not indexed. One organization is what makes a season's record a directory walk rather than a search, and reading before placing is what lets the server say what each file is, since a name is not evidence (decision 14, §10).
 16. **A mirror is a store, owned by the sync.** A laptop's copy of the pit server's data has the store's layout and manifests, is written only by the synchronization, and is read by the local server as any store. So the laptop offline answers as the pit server does, from the same bytes. It is a cache with a scope and a size, not a second record: it may drop what falls out of scope, and never holds a file the pit server does not.
-17. **Laptops without a pit server sync by pulling from each other.** Two laptops in a pit coalesce their stores the way two git clones do: each pulls from the other what it lacks, over the store's read-only HTTP door (§11). Nothing pushes, so no machine writes to another and there is nothing to coordinate. The merge needs no rule for the files: they are identified by their hashes and placed by robot serial and session as any import is, so a pull converges in any order. A field a person typed (a robot's name, a comment) is taken from the peer only where the local one is empty, and a disagreement is reported, never overwritten. Discovery is an address a person types, not a protocol.
+17. **Laptops without a pit server sync by pulling from each other.** Two laptops in a pit coalesce their stores the way two git clones do: each pulls from the other what it lacks, over the store's read-only HTTP door (§11).
+    - Nothing pushes, so no machine writes to another and there is nothing to coordinate.
+    - The merge needs no rule for the files: they are identified by their hashes and placed by robot serial and session as any import is, so a pull converges in any order.
+    - A field a person typed (a robot's name, a comment) is taken from the peer only where the local one is empty, and a disagreement is reported, never overwritten.
+    - Discovery is an address a person types, not a protocol.
 
 ### 3. Architecture
 
@@ -387,9 +393,15 @@ Pulling brings the roboRIO's logs in after the fact (§10), when the robot is di
 
 The provider follows a configured list of host and file pairs in real time and writes each new line into the capture as it arrives, as a record of a string entry. A line is in the live log within about a second of being written on the robot. `search_strings`, the DS timeline's error counts, `can_health`'s reading of CAN failure text, and every other tool that reads text see it there without a pull.
 
-- **Configuration**: `capture.tail: [{path, role}]` for the robot, or `[{host, user, key: "${NAME}", files: [{path, role}]}]` for another host (password also requires an environment reference). The host is the roboRIO by default, on the puller's SSH connection. It may be any host the team can reach over SSH, a vision coprocessor among them, with its own credentials (a key by preference; a password through the configuration's environment variable interpolation, never in a project file). One SSH connection per host, shared by the puller, the system stats provider, and this one; the connection manager moves from `capture/pull` to a shared place. A follow is a long-running `tail -F` on a channel of that connection, with a short sleep interval, which is the cheapest watcher a Linux host has; `-F` follows the name across a rotation. The kernel log and the journal are followed with their own tools where the image has them (`dmesg -w`, `journalctl -f`), else polled from an offset at the system stats period.
+- **Configuration**: `capture.tail: [{path, role}]` for the robot, or `[{host, user, key: "${NAME}", files: [{path, role}]}]` for another host (password also requires an environment reference).
+  - The host is the roboRIO by default, on the puller's SSH connection. It may be any host the team can reach over SSH, a vision coprocessor among them, with its own credentials (a key by preference; a password through the configuration's environment variable interpolation, never in a project file).
+  - One SSH connection per host, shared by the puller, the system stats provider, and this one; the connection manager moves from `capture/pull` to a shared place.
+  - A follow is a long-running `tail -F` on a channel of that connection, with a short sleep interval, which is the cheapest watcher a Linux host has; `-F` follows the name across a rotation.
+  - The kernel log and the journal are followed with their own tools where the image has them (`dmesg -w`, `journalctl -f`), else polled from an offset at the system stats period.
 - **Entries**: `/Daemon/Tail/<host>/<role>`, a string entry, one record per line, with metadata `{"source":"tail","host":..,"path":..,"timestamp":"received"}`. The `role` is the configured name. Four are known to the server and documented as its convention, so the signal resolver can use them: `program_console`, `kernel`, `syslog`, and `journal`. `program_console` is the console text role, which `search_strings` and the tools that take console text then find by convention in a capture, as they find `messages` in a robot's log. Anything else is a string entry like any other.
-- **Timestamps**: a line is timestamped at receipt on the pit server, mapped to the robot's clock through the NT4 offset, and the metadata says so. The record's time is when the pit server heard the line, within the follow's latency, not when the robot wrote it. The line's own timestamp stays in its text, and `search_system_logs` on the pulled file (§10) gives the exact mapping where exactness matters. Lines received while no session is open (including lines received between NT4 connecting and its first announcement) are held in a bounded buffer (default 1000 lines). They are written at the next session's start, mapped through the offset once it is measured, clamped at zero, with a metadata note that they preceded the session.
+- **Timestamps**: a line is timestamped at receipt on the pit server, mapped to the robot's clock through the NT4 offset, and the metadata says so. The record's time is when the pit server heard the line, within the follow's latency, not when the robot wrote it.
+  - The line's own timestamp stays in its text, and `search_system_logs` on the pulled file (§10) gives the exact mapping where exactness matters.
+  - Lines received while no session is open (including lines received between NT4 connecting and its first announcement) are held in a bounded buffer (default 1000 lines). They are written at the next session's start, mapped through the offset once it is measured, clamped at zero, with a metadata note that they preceded the session.
 - **Cost**: a follow costs the robot nothing while the file is quiet. A program that prints in a tight loop is the risk, to the capture rather than the robot, so each followed file has a rate cap (default 200 lines per second). Lines beyond it are dropped and counted, and the count is written as one record when the burst ends, so the drop is in the record. Followed files appear in the session's cost accounting beside the topics.
 - **Not a replacement for pulling.** What the provider heard is the pit server's record of the file, as the capture is of the stream; the file pulled later is the robot's. Both are kept, and the manifest says which is which. The follow may miss lines across an SSH reconnection, and a pull does not.
 
@@ -427,10 +439,24 @@ Every result carries `inputs.session` (the capture path). Descriptions say what 
 
 **Pulling.** The robot writes its own logs to its storage: DataLogManager to `/home/lvuser/logs`, or to `/u/logs` when a USB drive is present; AdvantageKit to the USB drive's `/U/logs`; REVLib's status logger wherever it is configured. The puller copies those directories into the store (§11), keeping the robot's file names, which encode the time, event, and match that the listing reads. A file lands under `robots/<serial>/pulled/` while it is transferred and verified, and is moved into its session's `robot/` directory once it is matched (below). It behaves as `rsync` would, without the tool:
 
-- **Transport**: SFTP over SSH to the roboRIO, as the `lvuser` account (no password by default; a key or a password may be configured). The host key is pinned on first contact per robot and a change is reported, since a reimaged roboRIO has a new one; a change is accepted automatically only with the default empty password. With a password or private key configured it is refused before authentication, unless explicitly accepted through `capture.pull.ssh.accept_changed_host_key` or by removing the pinned fingerprint in `robot.json`. The robot's identity is its serial number (§8.5), which the reimage does not change, so a reported key change under the same serial continues the same pull manifest. The SSH client is the maintained JSch fork; its size, license and host-key policy are recorded in §17.
+- **Transport**: SFTP over SSH to the roboRIO, as the `lvuser` account (no password by default; a key or a password may be configured).
+  - The host key is pinned on first contact per robot and a change is reported, since a reimaged roboRIO has a new one; a change is accepted automatically only with the default empty password. With a password or private key configured it is refused before authentication, unless explicitly accepted through `capture.pull.ssh.accept_changed_host_key` or by removing the pinned fingerprint in `robot.json`.
+  - The robot's identity is its serial number (§8.5), which the reimage does not change, so a reported key change under the same serial continues the same pull manifest.
+  - The SSH client is the maintained JSch fork; its size, license and host-key policy are recorded in §17.
 - **The gate**: a transfer step runs only while the robot has been disabled for at least a configured settle time (default 5 s), read from the control word the robot publishes (`/FMSInfo/FMSControlData`, the enabled bit). It also requires the pit server's NT4 connection to be up, so the state is current. The moment the state is anything else, the step in progress finishes its current block and the transfer pauses; it resumes from where it stopped when the gate reopens. With no NT4 connection the puller does nothing: it will not guess that a robot it cannot hear is idle.
-- **What to copy**: list once per pass and work through that snapshot across blocks and files; refresh after ten seconds if a pass is still running, or when it completes. Compare the remote listing (name, size, modification time) against a manifest of what has been pulled (`robots/<serial>/pull.json`: remote name, size, modification time, bytes copied, verified). A file not in the manifest is new. One whose size grew is fetched from the bytes already copied, since the logs are append-only, but only once the robot has confirmed that those bytes are the ones the puller holds (below). One whose size shrank, whose modification time went backward, or whose content does not match is a different file under the same name; the local copy is kept under a disambiguated name while the new file is fetched from the start. The file the robot is writing now is copied like any other and grows across passes; the reload path handles the local copy's growth. When DataLogManager renames an open log once the Driver Station supplies the time and match, the old name disappears and a new name appears with the same content. The puller recognizes it by the same content check over the whole partial copy and renames the local copy rather than copying again.
-- **Identity is content, never a name.** A name on the robot does not identify a file. REVLib names its log by the roboRIO's clock, which reads the same default date on every boot until the Driver Station sets it, so the same `REV_<date>_<time>.revlog` name recurs boot after boot, with the same modification time. And two boots of the same code declare the same entries in the same order, so the first tens of kilobytes of two different logs can be byte-identical. A resume that trusted the name would append one boot's log to another's and produce a file that loads with timestamps running backward in the middle. So before resuming or renaming, the puller asks the robot for the hash of exactly the bytes it already holds (`head -c <N> <file> | sha256sum` over the SSH session) and compares it with the local copy; only a match resumes. That command reads the entire held prefix on the robot, costing CPU and storage bandwidth while sending only the digest. The byte throttle does not pace that local work; a large hash can take minutes. Connect stays bounded at five seconds, five-second keepalives allow three missed replies, and each command has a deadline of 30 seconds plus one second per 256 KiB, rounded up. Where command execution is unavailable, the fallback fetches the last 64 KB of the known range and compares that, where the microsecond timestamps of two boots have long since diverged.
+- **What to copy**: list once per pass and work through that snapshot across blocks and files; refresh after ten seconds if a pass is still running, or when it completes. Compare the remote listing (name, size, modification time) against a manifest of what has been pulled (`robots/<serial>/pull.json`: remote name, size, modification time, bytes copied, verified).
+  - A file not in the manifest is new.
+  - One whose size grew is fetched from the bytes already copied, since the logs are append-only, but only once the robot has confirmed that those bytes are the ones the puller holds (below).
+  - One whose size shrank, whose modification time went backward, or whose content does not match is a different file under the same name; the local copy is kept under a disambiguated name while the new file is fetched from the start.
+  - The file the robot is writing now is copied like any other and grows across passes; the reload path handles the local copy's growth.
+  - When DataLogManager renames an open log once the Driver Station supplies the time and match, the old name disappears and a new name appears with the same content. The puller recognizes it by the same content check over the whole partial copy and renames the local copy rather than copying again.
+- **Identity is content, never a name.** A name on the robot does not identify a file.
+  - REVLib names its log by the roboRIO's clock, which reads the same default date on every boot until the Driver Station sets it, so the same `REV_<date>_<time>.revlog` name recurs boot after boot, with the same modification time. And two boots of the same code declare the same entries in the same order, so the first tens of kilobytes of two different logs can be byte-identical.
+  - A resume that trusted the name would append one boot's log to another's and produce a file that loads with timestamps running backward in the middle.
+  - So before resuming or renaming, the puller asks the robot for the hash of exactly the bytes it already holds (`head -c <N> <file> | sha256sum` over the SSH session) and compares it with the local copy; only a match resumes.
+  - That command reads the entire held prefix on the robot, costing CPU and storage bandwidth while sending only the digest. The byte throttle does not pace that local work; a large hash can take minutes.
+  - Connect stays bounded at five seconds, five-second keepalives allow three missed replies, and each command has a deadline of 30 seconds plus one second per 256 KiB, rounded up.
+  - Where command execution is unavailable, the fallback fetches the last 64 KB of the known range and compares that, where the microsecond timestamps of two boots have long since diverged.
 - **Throttle**: a configured rate cap (default 1 MB/s), enforced on the reading side by pacing block reads, and one transfer at a time. The roboRIO's processor is small and SSH encryption costs it; the cap protects the robot as much as the network.
 - **Verification**: after a file's size has been stable on the robot for one pass, the local copy is loaded through the normal path; a copy that loads, with its scan ending at the file's end, is marked verified in the manifest. A copy that does not is fetched again from the start, once.
 - **Deletion**: never, in this version. Freeing the robot's storage is a later, opt-in action that requires a verified copy and says what it removed.
@@ -488,7 +514,11 @@ A session directory is named by the session's start in UTC, and the event and ma
 
 **Three doors in.** Capture (§5) and pull (§10) place their files directly. Everything else is an import:
 
-- **`wpilog-mcp import <path>...`**: files, directories, a USB stick. Each file is classified by its content (a WPILOG header, a REV log header, a JFR header; anything else is refused by name) and hashed. It is then read for what places it: a logged serial (§8.5), its time range, `systemTime` where present, and the event and match from its Driver Station entries. A session of the same robot overlapping its time range receives it, matched by data as §10 matches a pulled log; otherwise it starts a session of its own, or waits under `unassigned/` when neither robot nor time is known. The original is copied, not moved, unless `--move` is given, and the copy is verified by loading before the manifest records it. A file whose hash the store already holds is reported as present, with its path, and not copied twice.
+- **`wpilog-mcp import <path>...`**: files, directories, a USB stick. Each file is classified by its content (a WPILOG header, a REV log header, a JFR header; anything else is refused by name) and hashed.
+  - It is then read for what places it: a logged serial (§8.5), its time range, `systemTime` where present, and the event and match from its Driver Station entries.
+  - A session of the same robot overlapping its time range receives it, matched by data as §10 matches a pulled log; otherwise it starts a session of its own, or waits under `unassigned/` when neither robot nor time is known.
+  - The original is copied, not moved, unless `--move` is given, and the copy is verified by loading before the manifest records it.
+  - A file whose hash the store already holds is reported as present, with its path, and not copied twice.
 - **The inbox**, for the person with a USB stick and no terminal: a file placed in `inbox/` is imported as above and removed from the inbox once its copy is verified. The result is written beside it in `inbox/imported.log`, the one file in the inbox the server writes, so a refused file is explained where it was dropped.
 - **`POST /store/import`**, an HTTP upload through the same path, so the VS Code extension and the data browser (IDEAS 9.2) can send a file from a laptop to the pit server. It is a write surface on a server with no authentication (decision 7); a team that fronts the server with nginx puts the password on this path first.
 
@@ -550,7 +580,13 @@ Some of what the pit server knows is wanted on a wall, not in a conversation: is
 
 What it carries:
 
-- **Every numeric topic**, as one metric with the topic as a label, `nt_value{topic="/SmartDashboard/Battery Voltage"}`, so a topic keeps its exact name and a dashboard query is a label match. A boolean is 0 or 1. An array is one sample per element with an `index` label, up to a configured length (default 16, enough for the swerve module arrays and not for a vision frame). A struct is expanded by its schema into one sample per numeric field with a `field` label, through the field paths the tools use. Strings are not carried, since Prometheus has no strings. Beside each, `nt_age_seconds{topic}`: how long since the topic last changed, in the robot's clock, so a dashboard shows staleness instead of a frozen number. A topic filter in configuration (`metrics.include` prefixes) narrows this where a robot publishes thousands of topics. The default is everything numeric, which Prometheus handles comfortably at a scrape per second for a few thousand series.
+- **Every numeric topic**, as one metric with the topic as a label, `nt_value{topic="/SmartDashboard/Battery Voltage"}`, so a topic keeps its exact name and a dashboard query is a label match.
+  - A boolean is 0 or 1.
+  - An array is one sample per element with an `index` label, up to a configured length (default 16, enough for the swerve module arrays and not for a vision frame).
+  - A struct is expanded by its schema into one sample per numeric field with a `field` label, through the field paths the tools use.
+  - Strings are not carried, since Prometheus has no strings.
+  - Beside each, `nt_age_seconds{topic}`: how long since the topic last changed, in the robot's clock, so a dashboard shows staleness instead of a frozen number.
+  - A topic filter in configuration (`metrics.include` prefixes) narrows this where a robot publishes thousands of topics. The default is everything numeric, which Prometheus handles comfortably at a scrape per second for a few thousand series.
 - **The providers' entries** (§8), which are topics in the latest-value table like any other, so the roboRIO's processor, its disk, and the JVM's heap arrive with no further work.
 - **The pit server itself**, under `wpilog_...` names in Prometheus's conventions (base units, the unit in the name: `wpilog_capture_bytes_total`, `wpilog_nt_time_offset_seconds`):
   - whether the NT4 connection is up and to which address;
@@ -594,7 +630,10 @@ Each leaves the project working and tested on its own.
 3. **Log puller** (§10) and **robot identity** (§8.5) (done: logged identity and candidates, device context and serial placement, content-checked transfer with a fake remote, gated SFTP and store/session placement, and opt-in roboRIO transport coverage. Pulling defaults off; roboRIO 1/2 permissions, interoperability and shop stress remain unverified): the robot's logs arrive on their own, mapped to the robot by its serial; tested against a real roboRIO in the shop before it is on by default. The system-log second pass and `search_system_logs` are implemented in round 14 on configured, unverified candidates; collection remains off until explicitly enabled and the shop settles the defaults. The listing's reading of a logged serial comes first, since it needs no pit server.
 4. **Import** (§11) (done: the explorer already supplied the command, inbox, inspection, grouping and duplicate recognition. Generated USB batches and the capture-enabled inbox now pin those together, and the extension uploads streamed, hash-checked files through the pit server import endpoint. Automated HTTP and Node checks pass; the real VS Code picker remains manual).
 5. **Live tools** (§9), and the extension's pit server setting (§14) (done: capture-only session/latest/wait tools, cached manifest facts and persisted recorder costs. HTTP fixture replay, independent values/bytes, per-session waits and injected-clock checks. The remaining proxy credential commands use SecretStorage and local leases. Real VS Code and the shop hardware checks remain manual).
-6. **Store over HTTP, peer sync, and the mirror** (§11, §14) (first half done: catalog-only HTTP reads, growing prefixes and hashes. Peer sync through daemon jobs or the offline store lock, content-checked resume, serial/window session union with convergent ids, provenance and human conflicts, remembered peers and recovery. Generated fixtures, tool conformance and planted failures. Second half done: scoped and capped mirror with pins, growing-prefix resume, id-based moves, offline age and recorded REV alignment. Local controls. Extension registration, status/actions, pit Logs/follow/offline copy and remembered peer sync. Automated checks and planted faults pass; real VS Code remains the manual checklist): the store's read-only door, then `wpilog-mcp sync <url>` between two laptops' stores, built first because it needs no pit server and tests with two daemons on one machine. Then the mirror on the same door, with the local server's synchronization, the extension's settings, status bar, and pins. From here the laptop analyzes offline.
+6. **Store over HTTP, peer sync, and the mirror** (§11, §14): the store's read-only door, then `wpilog-mcp sync <url>` between two laptops' stores, built first because it needs no pit server and tests with two daemons on one machine. Then the mirror on the same door, with the local server's synchronization, the extension's settings, status bar, and pins. From here the laptop analyzes offline.
+   - First half done: catalog-only HTTP reads, growing prefixes and hashes. Peer sync through daemon jobs or the offline store lock, content-checked resume, serial/window session union with convergent ids, provenance and human conflicts, remembered peers and recovery. Generated fixtures, tool conformance and planted failures.
+   - Second half done: scoped and capped mirror with pins, growing-prefix resume, id-based moves, offline age and recorded REV alignment. Local controls. Extension registration, status/actions, pit Logs/follow/offline copy and remembered peer sync.
+   - Automated checks and planted faults pass; real VS Code remains the manual checklist.
 7. **Metrics endpoint** (§12) (done: dependency-free Prometheus text on every HTTP server, published capture/pull/time snapshots, recorded-schema field paths, bounded arrays and JVM MBeans; independent parser, fixture replay and blocked-worker checks; Compose and starter dashboard. Provider samples await their own milestones): the pit server's own counters and every numeric topic; the compose file and the starter dashboard in the standalone guide.
 8. **Gateway** (§7) (done: optional capture startup on a separate port, ordered topic/property/value forwarding, session unannounces and new ids, robot-clock replies and reconnects when the reference changes, bounded per-client queues and published connection counts. Real-socket slow-reader checks and an independent ntcore harness client checked against the timeline. Real dashboards and AdvantageScope against a robot remain the user's manual check).
 9. **Windowed WPILOG mapping** (done: long-addressed windows of at most 1 GiB; straddling-record copies; compact ordinary-file offsets; shared cold reads; deterministic release before Windows moves; 4 KiB fixture/differential, conformance and import checks, and an opt-in generated 2.2 GB load/import/capture-rollover test). Imports, uploads, listing and captures accept files through 1 TiB.
@@ -607,7 +646,11 @@ Each leaves the project working and tested on its own.
 
 ### 16. Testing
 
-- **Harness** (step 1): `harness/run` builds a separate WPILib 2026 GradleRIO TimedRobot and runs an opt-in JUnit suite against the packaged pit server's HTTP MCP endpoint. A timeline drives headless DriverStationSim states, delayed match data and program reboots; independent expectations check every scripted topic, timestamp and value, schemas, device identity, session placement, verified near-zero-offset pulls, DataLogManager renames and the disabled gate. A test-only Apache MINA SSHD fake roboRIO provides real Ed25519 SSH/SFTP and only the puller's exact prefix-hash command. Ordinary Linux/Windows tests use it for transport, keepalive, deadline and host-key checks too. The full runner supports Linux/macOS and has a separate Linux CI job on `pit-server`; no robot data is used. Step 2 now adds the synthetic NI-like OpenSSH/JRE container under `harness/rio/`; the pinned real PhotonVision backend now completes step 2 (§17, round 23). See DEVELOPMENT.md, "The shop harness", for the remaining hardware checklist.
+- **Harness** (step 1): `harness/run` builds a separate WPILib 2026 GradleRIO TimedRobot and runs an opt-in JUnit suite against the packaged pit server's HTTP MCP endpoint.
+  - A timeline drives headless DriverStationSim states, delayed match data and program reboots; independent expectations check every scripted topic, timestamp and value, schemas, device identity, session placement, verified near-zero-offset pulls, DataLogManager renames and the disabled gate.
+  - A test-only Apache MINA SSHD fake roboRIO provides real Ed25519 SSH/SFTP and only the puller's exact prefix-hash command. Ordinary Linux/Windows tests use it for transport, keepalive, deadline and host-key checks too.
+  - The full runner supports Linux/macOS and has a separate Linux CI job on `pit-server`; no robot data is used.
+  - Step 2 now adds the synthetic NI-like OpenSSH/JRE container under `harness/rio/`; the pinned real PhotonVision backend now completes step 2 (§17, round 23). See DEVELOPMENT.md, "The shop harness", for the remaining hardware checklist.
 - **Metrics**: independent exposition grammar parser and exact fixture-function checks; scalar/boolean/array/recorded-struct expansion, filtering and missing-schema omission; recorder counts against live tools, MBean unit conversion, and scrapes while the NT4 loop and store queue are blocked. The packaged daemon pins configuration wiring; every generated replay also compares metrics against the differential reader and WPILib DynamicStruct.
 - **Protocol**: the client and the gateway against each other in-process, over a loopback WebSocket, on every fixture log replayed as a robot would publish it. Message encoding is checked against hand-encoded frames taken from the protocol document.
 - **Capture fidelity**: every fixture is captured through the client and writer both whole and with a small rollover bound. Differential and wpiutil readers check entries, values and timestamps across all files, checking marked schema seeds separately. Every closed file stays within its bound and has a manifest hash; the live index belongs to one file. An injected partial-write failure preserves the completed prefix.
@@ -722,10 +765,26 @@ Milestone 6, first-half choices:
 
 - **Store door selection and bounds:** format 1 gains additive `mirror` and `peers` header fields. A single store answers `GET /store` directly; multiple stores return `stores` descriptors and require `?store=<id>` on reads. Only permanent configured roots publish stores; discovery may take five seconds. Sessions use `{robot_id, path, manifest}` wrappers with relative paths and include unassigned `{path, file}` records separately so imported files without identity can travel too. `since` includes sessions ending at or after the instant. File blocks resolve their owning manifest directly, without a catalog walk. Read leases protect moves; a growing file's length is pinned for each request. HTTP uses the JDK client, with bounded response bodies and a two-minute body deadline; no dependency was added.
 
-- **Replay selection:** one shared selector serves real-log conformance, differential and claims checks, gateway/live replay, native replay, pull and two-boot tests. The first-N path limit applies before sampling in both Gradle tasks. Representatives favor the native sampler's smallest ten-second log and complete calendar-bearing log per layout. They add size bins below 1 MiB, 1–64 MiB and at least 64 MiB, the largest input, REV siblings, an incomplete tail, calendar evidence present/absent, and one complete calendar-bearing reset pair of the same identity and layout. Logger strata use the replayer's exact header/prefix classification; each unrecognized `OTHER` file and each unreadable input stays selected as its own stratum. Directory names do not define logger strata. Input path order breaks ties; outcomes never select inputs. Missing strata are reported. Full runs cover every file at zero shift, with the signed/boundary/large-shift matrix on the smallest qualifying logger representatives and a REV companion in both modes. Files selected only for size, tail, calendar-absence or reset-pair coverage run at zero shift; this avoids eight repeated transfers of a boundary-size file while retaining the same offset-rule coverage. Run full before a release tag and after NT4 client, writer, replayer or matching changes (REV interpretation changes also bump the sync-cache format). Inspection retains only facts after closing each independent reader; no robot values or local paths are committed.
-- **Replay clocks and placement:** the default shift is zero. Additional small known shifts (40, 120, 200 ms and a negative case) check measured offsets; the 250 ms automatic-placement limit is retained. Large shifts belong in correlator tests and a refusal run per logger kind, never a test-only bypass of the placement rule. The writer and store receive an injected calendar `Clock`: `systemTime` first, AdvantageKit's `/SystemStats/EpochTimeMicros` for its recorded epoch, else a dated `FRC_yyyyMMdd_HHmmss` name interpreted as UTC with that assumption recorded. A file with none is still replayed; its placement check reports unavailable calendar evidence. The existing overlap filter remains enabled. In the local set, DataLogManager and other layouts used `systemTime` when present and the dated filename otherwise; AdvantageKit used `EpochTimeMicros`. Each kind also has an explicit unavailable-clock outcome rather than borrowing the host date.
+- **Replay selection:** one shared selector serves real-log conformance, differential and claims checks, gateway/live replay, native replay, pull and two-boot tests. The first-N path limit applies before sampling in both Gradle tasks.
+  - Representatives favor the native sampler's smallest ten-second log and complete calendar-bearing log per layout. They add size bins below 1 MiB, 1–64 MiB and at least 64 MiB, the largest input, REV siblings, an incomplete tail, calendar evidence present/absent, and one complete calendar-bearing reset pair of the same identity and layout.
+  - Logger strata use the replayer's exact header/prefix classification; each unrecognized `OTHER` file and each unreadable input stays selected as its own stratum. Directory names do not define logger strata.
+  - Input path order breaks ties; outcomes never select inputs. Missing strata are reported.
+  - Full runs cover every file at zero shift, with the signed/boundary/large-shift matrix on the smallest qualifying logger representatives and a REV companion in both modes. Files selected only for size, tail, calendar-absence or reset-pair coverage run at zero shift; this avoids eight repeated transfers of a boundary-size file while retaining the same offset-rule coverage.
+  - Run full before a release tag and after NT4 client, writer, replayer or matching changes (REV interpretation changes also bump the sync-cache format).
+  - Inspection retains only facts after closing each independent reader; no robot values or local paths are committed.
+- **Replay clocks and placement:** the default shift is zero. Additional small known shifts (40, 120, 200 ms and a negative case) check measured offsets; the 250 ms automatic-placement limit is retained.
+  - Large shifts belong in correlator tests and a refusal run per logger kind, never a test-only bypass of the placement rule.
+  - The writer and store receive an injected calendar `Clock`: `systemTime` first, AdvantageKit's `/SystemStats/EpochTimeMicros` for its recorded epoch, else a dated `FRC_yyyyMMdd_HHmmss` name interpreted as UTC with that assumption recorded. A file with none is still replayed; its placement check reports unavailable calendar evidence.
+  - The existing overlap filter remains enabled.
+  - In the local set, DataLogManager and other layouts used `systemTime` when present and the dated filename otherwise; AdvantageKit used `EpochTimeMicros`. Each kind also has an explicit unavailable-clock outcome rather than borrowing the host date.
 - **Metadata on replay:** NT4 has properties, not a WPILOG metadata field. Replay carries the source string unchanged in the custom `wpilog_metadata` property, and capture preserves all properties under `nt4_properties`, beside its own provenance. Patches become Set Metadata records; acknowledgements cover metadata as well as values, including a final patch with no later value.
-- **Replay declarations and bad input:** NT4 text controls have no timestamps, so original Start/Finish/Set Metadata timestamps cannot be transported; value timestamps are compared exactly. Repeated declarations of the same name and type share one topic and preserve metadata changes. The current replayer refuses a name redeclared with another type; preserving those declaration lifetimes is not implemented. That is a replayer limitation, not a claim that NT4 cannot change a topic's type after it is unpublished. Invalid UTF-8 strings, malformed typed payloads, and bytes after an incomplete record cannot be made into lossless NT4 values. Replay reports an incomplete tail and compares its readable prefix; the original incomplete file still fails the puller's clean-EOF verification after one retry. Empty or zero-filled files bearing a WPILOG suffix are rejected, never counted as successful replays. One external source also contains a string record with invalid UTF-8, confirmed independently with WPILib's raw record and a strict decoder. The file is explicitly reported as not losslessly replayable, with the invalid-record count; it is not counted as a successful capture and its bytes are never replaced or silently dropped. Native replay checks text before announcing.
+- **Replay declarations and bad input:** NT4 text controls have no timestamps, so original Start/Finish/Set Metadata timestamps cannot be transported; value timestamps are compared exactly.
+  - Repeated declarations of the same name and type share one topic and preserve metadata changes. The current replayer refuses a name redeclared with another type; preserving those declaration lifetimes is not implemented. That is a replayer limitation, not a claim that NT4 cannot change a topic's type after it is unpublished.
+  - Invalid UTF-8 strings, malformed typed payloads, and bytes after an incomplete record cannot be made into lossless NT4 values.
+  - Replay reports an incomplete tail and compares its readable prefix; the original incomplete file still fails the puller's clean-EOF verification after one retry.
+  - Empty or zero-filled files bearing a WPILOG suffix are rejected, never counted as successful replays.
+  - One external source also contains a string record with invalid UTF-8, confirmed independently with WPILib's raw record and a strict decoder. The file is explicitly reported as not losslessly replayable, with the invalid-record count; it is not counted as a successful capture and its bytes are never replaced or silently dropped.
+  - Native replay checks text before announcing.
 - **Colliding replay names:** a file can contain both `NT:/x` and `/x`; inverting the recording prefix maps both to one NT4 topic. All entries in such a collision receive unique `/__wpilog_replay__/<ordinal>` names, with underscores added to the namespace if it already occurs. The `wpilog_entry_name` property always retains the exact original name. Unique names keep the logger convention. Reports count escaped entries; distinct streams are never silently combined. This is a replay convention, not a new robot logging convention.
 - **Replay Driver Station state:** both the `DS:` DataLogManager entries and AdvantageKit's `/DriverStation/` entries drive simulation, as do the FMS control bits. WPILib's native packet notification unconditionally sets DS attachment true; replay restores the recorded attachment field afterwards. An independently computed state-transition digest checks every update, including event and match fields. Numeric match fields use their declared integer, float or double type; reading double bits as an integer had produced the wrong simulated match. Native two-boot checks allow real ping replies between injected 200 ms heartbeat ticks, so advancing the test clock does not manufacture an NT4 4.1 timeout.
 - **Replay across rollover:** capture fidelity is checked across all files. The REV offset invariant compares the whole source with a test-only `LogData` view of the complete captured record set; joining bytes into one file would needlessly duplicate a boundary-size source. Per-file HTTP results remain separate, with their own input windows. Comparing each small part to the whole source had reported different alignments as mismatches even when every record agreed; a generated rollover fixture pins the number of records compared.
@@ -750,7 +809,12 @@ Milestone 3 decisions:
 - **SSH transport:** [maintained JSch 2.28.7](https://github.com/mwiede/jsch/releases/tag/jsch-2.28.7), 714,740 bytes for its JAR, no mandatory runtime dependencies. It serves exec and SFTP together, with JDK 17 Ed25519 and RSA SHA-2 support. Main code and JZlib use BSD-3-Clause; bundled jBCrypt uses ISC. Notices ship in the JAR. The fat JAR retains `Multi-Release: true` for the JDK-specific providers. Production imports are confined to `ssh/JschConnection` (moved from the pull adapter in milestone 11).
 - **Host keys:** First contact trusts the fingerprint. A changed key is reported before authentication and may continue automatically only when authentication sends no secret (the default empty password). A configured password or key requires `capture.pull.ssh.accept_changed_host_key: true` or removal of the pinned fingerprint in `robot.json`; otherwise the connection is refused before authentication. The subsequent device serial decides continuity. This is trust on the team's network, not a cryptographic proof that a changed key is the old device. Password or unencrypted private-key authentication is configurable; default `lvuser` and empty password. Hardware interoperability remains an opt-in shop test.
 - **Pull scheduling:** pulling defaults off. NT4 connection plus the enabled bit of `/FMSInfo/FMSControlData` clear continuously for five seconds opens the gate; unknown/invalid state closes it. A separate daemon owns SSH and the synchronous local-store interface; the NT4 listener only publishes state and receives queued identity. One 64 KiB block per step, default 1,000,000 bytes/s, 250 ms paused polling, three-second idle/error retry. One recursive listing per pass, with a ten-second refresh for a long pass, prevents per-block SFTP listings. Shutdown includes asynchronous SSH close within the capture's existing deadline. Configured paths are recursive, missing USB directories are allowed, links skipped; only WPILOG and REV are pulled in this pass.
-- **Session matching and placement:** a strong unique correlation must be within 250 ms of zero, allowing several publication cycles but refusing a seconds-scale clock shift. Known serials must agree before correlation. Manifest time overlap nominates candidates before any load, using import's two-hour slack or sixteen hours for filename clocks without a zone. Unknown clocks (including an unset REV 1970 filename) retain candidates; strong data evidence is still required. WPILOG names normalize `NT:` and a leading slash and nominate unique scalar numeric entries; REV uses its existing signal matcher. Captures anchor their session; already matched files do not chain offsets. Without a capture, an unmatched WPILOG can anchor a session. A missing logged serial on either side records `data_alone`; otherwise `serial_and_data`. No match creates its own session with the imported clock evidence or modification-time basis. An active capture has no final hash yet.
+- **Session matching and placement:** a strong unique correlation must be within 250 ms of zero, allowing several publication cycles but refusing a seconds-scale clock shift. Known serials must agree before correlation.
+  - Manifest time overlap nominates candidates before any load, using import's two-hour slack or sixteen hours for filename clocks without a zone. Unknown clocks (including an unset REV 1970 filename) retain candidates; strong data evidence is still required.
+  - WPILOG names normalize `NT:` and a leading slash and nominate unique scalar numeric entries; REV uses its existing signal matcher.
+  - Captures anchor their session; already matched files do not chain offsets. Without a capture, an unmatched WPILOG can anchor a session.
+  - A missing logged serial on either side records `data_alone`; otherwise `serial_and_data`.
+  - No match creates its own session with the imported clock evidence or modification-time basis. An active capture has no final hash yet.
 - **Placement records:** Each pulled file records the source device serial additively for transfer ownership, even if its own logged serial places it under another robot. Store format stays 1. Growth removes the obsolete session hash and returns the file to staging, retaining path aliases. Invalid Windows basenames get a portable generated name; provenance retains the exact remote name. Changed size/mtime invalidates a partial prefix proof, and each new contact rechecks completed files even if size and mtime repeat.
 
 - **Transfer steps:** 64 KiB blocks, one caller at a time, an injected monotonic clock, and pacing of comparison reads as well as data. A pause discards the prefix proof before resuming. The fallback checks the known range's tail and cannot prove its earlier bytes; exec uses the whole held-prefix SHA-256. Pull manifest format 1 preserves retired generations and a single verification retry. Stable size/mtime for a listing pass precedes clean-EOF verification through the ordinary readers; strict native REV verification accompanies sync cache format 6. No remote deletion API exists.
@@ -839,21 +903,32 @@ Milestone 5 choices:
   is not UTF-8; services must set a UTF-8 locale before JVM startup. A dedicated Linux
   CI run unsets LANG and LC_ALL and preserves its own XML beside the normal test results.
 
-- Live tools are registered only on capture servers. The catalog filters by that registry;
-  both server locations keep their existing initialize/guide explanation. Tools read published
-  recorder snapshots and cached manifests, never store files. Capture counts persist additively
-  as `capture_stats` in format 1; older manifests and crash-recovered sessions have unknown
-  counts. Recovery clears the last queued summary because it can predate durable records. Counts include value
-  record headers, omit context/control records and copied schema seeds, span rollover files and refresh every 250 ms.
-  Rates use the full preceding minute even at startup, and are null after close. Cost ties sort
-  by topic name. Imports can join a session that still holds only an open capture.
-- Latest values retain the authoritative type in the same immutable publication as the payload and timestamp; the announcement table can advance independently during a query. A deterministic snapshot regression pins that redeclaration race. Multiple entries remain independent latest publications, not a simultaneous sample. Latest values accept NT4 names and their `NT:` aliases. Binary/struct values stay raw signed
-  byte arrays; ordinary tools decode structs. Ages use robot time, can be negative for future
-  publisher timestamps, and are null without sync. Waits mean the next publication, including
-  an unchanged value, and are installed atomically per topic per MCP session. Timeouts are
-  `ok`/`changed:false`; unannounce, disconnect and session end cancel them with a reason.
-  Registration rechecks the topic under the wait lock, and shutdown closes admission before
-  stopping the client clock, so neither ordering can strand a waiter.
+- Live tools are registered only on capture servers. (Changed later by the service work: every
+  server now registers them, they answer `not_applicable` without capture, and `list_sessions`
+  still reports `managed` and the gateway state.) The catalog filters by that registry; both
+  server locations keep their existing initialize/guide explanation.
+  - Tools read published recorder snapshots and cached manifests, never store files.
+  - Capture counts persist additively as `capture_stats` in format 1; older manifests and
+    crash-recovered sessions have unknown counts. Recovery clears the last queued summary
+    because it can predate durable records. Counts include value record headers, omit
+    context/control records and copied schema seeds, span rollover files and refresh every
+    250 ms.
+  - Rates use the full preceding minute even at startup, and are null after close. Cost ties
+    sort by topic name.
+  - Imports can join a session that still holds only an open capture.
+- Latest values retain the authoritative type in the same immutable publication as the payload
+  and timestamp; the announcement table can advance independently during a query. A
+  deterministic snapshot regression pins that redeclaration race.
+  - Multiple entries remain independent latest publications, not a simultaneous sample. Latest
+    values accept NT4 names and their `NT:` aliases. Binary/struct values stay raw signed byte
+    arrays; ordinary tools decode structs.
+  - Ages use robot time, can be negative for future publisher timestamps, and are null without
+    sync.
+  - Waits mean the next publication, including an unchanged value, and are installed atomically
+    per topic per MCP session. Timeouts are `ok`/`changed:false`; unannounce, disconnect and
+    session end cancel them with a reason.
+  - Registration rechecks the topic under the wait lock, and shutdown closes admission before
+    stopping the client clock, so neither ordering can strand a waiter.
 - Proxy Basic credentials are origin-scoped SecretStorage values, entered/cleared through
   commands and leased to the local server in memory. The mirror HTTP client never redirects
   with them. Claude's URL bridge goes through loopback `/pit-mcp` for exactly the registered
@@ -1026,16 +1101,18 @@ Release-review keepalive failures (before the tag):
   generated DataLogManager and other-layout fixtures with `Replay capture stalled`. Its XML
   twice says the fixture gateway dropped client `replay` with `NT4 pong timeout`. Replay now
   reports the disconnect before waiting for missing records or attempting pull placement.
-- Both failures have the same liveness defect: heartbeats judged time since a pong processed
-  on the application loop, even when that loop had sent no ping during a stall. The review's
-  controlled probes reproduced healthy disconnections after 1.3 seconds; injected-clock tests
-  now pin 1.5 seconds on both sides, network pong receipt/replies, and the exact one-second
-  deadline of an unanswered ping. The 200 ms interval and one-second limit are unchanged.
-  Periodic `channel.force` also ran on the client loop; slow Windows disk force is a plausible
-  trigger, not a disk-latency measurement present in the saved XML. It now runs on a writer-owned
-  daemon with one pending force, completion-time observation and loop-owned observer callbacks.
-  Close/rollover await that force. Record writes stay on the loop; no evidence yet requires
-  moving those writes. No protocol deadline was widened.
+- Both failures have the same liveness defect: heartbeats judged time since a pong processed on
+  the application loop, even when that loop had sent no ping during a stall.
+  - The review's controlled probes reproduced healthy disconnections after 1.3 seconds;
+    injected-clock tests now pin 1.5 seconds on both sides, network pong receipt/replies, and
+    the exact one-second deadline of an unanswered ping. The 200 ms interval and one-second
+    limit are unchanged.
+  - Periodic `channel.force` also ran on the client loop; slow Windows disk force is a
+    plausible trigger, not a disk-latency measurement present in the saved XML. It now runs on
+    a writer-owned daemon with one pending force, completion-time observation and loop-owned
+    observer callbacks. Close/rollover await that force.
+  - Record writes stay on the loop; no evidence yet requires moving those writes. No protocol
+    deadline was widened.
 - JDK WebSocket receive demand is renewed on its network callback, since waiting for a listener
   also withholds automatic pong replies and incoming pong delivery. Copied work has a 32 MiB
   bound (at least 64 bytes charged per callback); exceeding it records a receive-queue reason.
@@ -1070,22 +1147,29 @@ lists what remains open; the entries below record what was settled, and the evid
   [GradleRIO 2026.2.1](https://github.com/wpilibsuite/GradleRIO/blob/v2026.2.1/src/main/java/edu/wpi/first/gradlerio/deploy/roborio/FRCJavaArtifact.java),
   then matches exact `/proc` arguments. Missing/ambiguous processes omit program fields;
   unsupported custom launch commands are reported, never guessed.
-- The command supplies the device's tick/page units; `df -Pk` and meminfo KiB become bytes.
-  CPU excludes idle/iowait and counts guest time once, per the
+- The command supplies the device's tick/page units; `df -Pk` and meminfo KiB become bytes. CPU
+  excludes idle/iowait and counts guest time once, per the
   [Linux proc specification](https://www.kernel.org/doc/html/latest/filesystems/proc.html).
-  Program CPU uses PID plus start ticks; interval rates need a valid previous kernel sample.
-  Stats replies are bounded to 64 KiB and 30 s. The send-time offset is captured before exec;
-  missing estimates increment a dropped count. Unsupported stats output stands down for the session, including a clock-continuous resume, and is tried again on a new session. A slow round trip doubles the period to 30 s;
-  a fitting one halves toward the configured base. Whole-robot CPU seconds are not a claim of
-  CPU spent on the provider. `capture_stats.kernel_clock` keeps the uptime/FPGA pairing.
-- Tails use `-n 0 -F -s 0.25`; kernel/journal prefer native follow, otherwise poll the configured
-  path by inode and byte offset at the stats period. A source miss stands down until a new
-  session; SSH loss resumes automatically, with possible missed lines explicitly left to later
-  system-log pulling. Rate buckets are one second, capped at 200 accepted lines per file;
-  history is 1000 lines and an individual line 64 KiB. Drops produce one notice after a full second without another drop, even
-  when a burst spans several rate buckets or ends in silence. Buffered receipt times are mapped at session start and clamped at
-  zero with a metadata note. Provider record/byte costs are per session; drop counters are
-  process-lifetime facts. `capture_stats.providers` is additive, so no store format bump.
+  - Program CPU uses PID plus start ticks; interval rates need a valid previous kernel sample.
+  - Stats replies are bounded to 64 KiB and 30 s. The send-time offset is captured before exec;
+    missing estimates increment a dropped count.
+  - Unsupported stats output stands down for the session, including a clock-continuous resume,
+    and is tried again on a new session.
+  - A slow round trip doubles the period to 30 s; a fitting one halves toward the configured
+    base.
+  - Whole-robot CPU seconds are not a claim of CPU spent on the provider.
+    `capture_stats.kernel_clock` keeps the uptime/FPGA pairing.
+- Tails use `-n 0 -F -s 0.25`; kernel/journal prefer native follow, otherwise poll the
+  configured path by inode and byte offset at the stats period.
+  - A source miss stands down until a new session; SSH loss resumes automatically, with
+    possible missed lines explicitly left to later system-log pulling.
+  - Rate buckets are one second, capped at 200 accepted lines per file; history is 1000 lines
+    and an individual line 64 KiB. Drops produce one notice after a full second without another
+    drop, even when a burst spans several rate buckets or ends in silence.
+  - Buffered receipt times are mapped at session start and clamped at zero with a metadata
+    note.
+  - Provider record/byte costs are per session; drop counters are process-lifetime facts.
+    `capture_stats.providers` is additive, so no store format bump.
 - Recorded `sampled: true` metadata keeps adaptive provider series periodic in numeric quality and data-endpoint views, rather than inferring change-only logging from changing values.
 - Providers share the live index and ordinary tools, with source-labelled latest values and
   numeric metrics. The context path does not republish provider entries through the NT4 gateway.
@@ -1184,14 +1268,15 @@ lists what remains open; the entries below record what was settled, and the evid
   stand down that source for the session with the reason, without guessing a fallback file.
   Kernel messages may appear twice with different clock bases; source kernel means dmesg only.
 - System pulling is independently opt-in and uses the existing SSH connection, pull worker,
-  disabled settle gate and 64 KiB byte budget. Streaming commands have a 30-second per-block
-  deadline, driven outside the worker; dmesg's in-memory comparison refuses rings over 16 MiB
-  with a reason. Journal output is spooled/grouped on disk, not held as an unbounded reply.
-  Unchanged file metadata retains its content proof within a connection; new names/growth
-  still require content checks. No robot file is written or deleted.
-  Closing the gate releases a streaming exec channel, then retries from its committed
-  cursor; SFTP retains its byte offset. The real-SSH test exposed why: a paused full input
-  pipe blocked JSch's shared network reader and even a separate channel could not open.
+  disabled settle gate and 64 KiB byte budget.
+  - Streaming commands have a 30-second per-block deadline, driven outside the worker; dmesg's
+    in-memory comparison refuses rings over 16 MiB with a reason. Journal output is
+    spooled/grouped on disk, not held as an unbounded reply.
+  - Unchanged file metadata retains its content proof within a connection; new names/growth
+    still require content checks. No robot file is written or deleted.
+  - Closing the gate releases a streaming exec channel, then retries from its committed cursor;
+    SFTP retains its byte offset. The real-SSH test exposed why: a paused full input pipe
+    blocked JSch's shared network reader and even a separate channel could not open.
 - Session manifests gain additive `system_logs` receipts/cursors/reasons; the store format
   stays 1. Syslog snapshots live under the robot's system directory. Journal day files live
   there in a session-id directory, separating FPGA sessions even within one kernel boot.
