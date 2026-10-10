@@ -1697,7 +1697,11 @@ DriverStation entries are recognized under both the `/DriverStation/...` (Advant
 
 **Error and warning text** (string entries such as `/RealOutputs/Console` or WPILib `messages`, alerts, and json strings): a sample is an ERROR when any of its lines contains "error", "exception", or "fault" ("default" does not count). Otherwise it is a WARNING when any line contains "warning", "overrun", or "watchdog". Errors win regardless of line order, and the first matching line of the winning kind is the message. `search_strings` uses the same rule for its `level` filter, so the two agree (a test enforces it).
 - `text_event_counts`: `{error, warning, total, by_source: {<entry>: {error, warning}}}`, exact counts within the time window over string samples, alerts (once per appearance, at their entry's level), and json string values. Never capped, and always present
-- `text_event_summary`: one entry per distinct message, where "distinct" is judged after normalizing numbers to `#` and collapsing whitespace, so `Loop time of 0.023s overrun` and `... 0.031s ...` are one group. Each entry is `{type, message, example, count, variants, variants_capped?, first_timestamp, last_timestamp, sources[]}`: `message` is the normalized pattern, `example` the first actual text (when it differs), and `variants` how many different raw texts the group covers (`CAN timeout on device #` with `variants: 2` hides two devices). Variants are judged on the full line, while `message` and `example` are cut at 200 characters for display; `variants_capped: true` marks a group that exceeded 10,000 distinct texts. Sorted by count. At most 200 groups are shown; `text_event_groups_total` is the true number, and a warning says when the summary was cut. Absent when the log has no error or warning text
+- `text_event_summary`: one entry per distinct message, where "distinct" is judged after normalizing numbers to `#` and collapsing whitespace, so `Loop time of 0.023s overrun` and `... 0.031s ...` are one group.
+  - Each entry is `{type, message, example, count, variants, variants_capped?, first_timestamp, last_timestamp, sources[]}`: `message` is the normalized pattern, `example` the first actual text (when it differs), and `variants` how many different raw texts the group covers (`CAN timeout on device #` with `variants: 2` hides two devices).
+  - Variants are judged on the full line, while `message` and `example` are cut at 200 characters for display; `variants_capped: true` marks a group that exceeded 10,000 distinct texts.
+  - Sorted by count. At most 200 groups are shown; `text_event_groups_total` is the true number, and a warning says when the summary was cut.
+  - Absent when the log has no error or warning text
 - Individual messages are not placed on the timeline. Use `search_strings` (optionally `level=error`, a regex, a time window) to list them completely with paging totals
 
 **Example Response:**
@@ -2931,7 +2935,17 @@ When a log records no schema for a struct type, WPILib's own schema is used for 
 
 Besides the guidance in each tool's description, the server gives the agent general reasoning guidance in two places:
 
-- **MCP `instructions`**: returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a short, ordered checklist, kept under 2 KB because Claude Code truncates longer instructions: answer the question asked first; never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems; an entry's name does not prove what it measures, so read the robot source code that logs it (which mechanism, which units, measured or commanded) or call the mapping an assumption; never compute statistics by hand (when no tool can read the data, `export_csv` it and compute outside) and call `get_match_phases` before reasoning about time; verify the premise before explaining an event; use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis to check physically); test a user-proposed cause against a rival; scope statistics to the phase and enabled state; one log is one sample; and notes on truncated logs, revlog sync, and TBA-sourced scores.
+- **MCP `instructions`**: returned in the `initialize` response. Clients such as Claude Code, VS Code Copilot, and Gemini CLI place it in the model's system prompt (Claude Desktop currently does not). It is a short, ordered checklist, kept under 2 KB because Claude Code truncates longer instructions:
+  - answer the question asked first;
+  - never name an entry or quote a number that no tool returned, and treat a `no_match` result as missing data, not missing problems;
+  - an entry's name does not prove what it measures, so read the robot source code that logs it (which mechanism, which units, measured or commanded) or call the mapping an assumption;
+  - never compute statistics by hand (when no tool can read the data, `export_csv` it and compute outside) and call `get_match_phases` before reasoning about time;
+  - verify the premise before explaining an event;
+  - use three tiers of language (observed event = fact, statistic = inference bounded by `confidence_level`, cause outside the telemetry = hypothesis to check physically);
+  - test a user-proposed cause against a rival;
+  - scope statistics to the phase and enabled state;
+  - one log is one sample;
+  - and notes on truncated logs, revlog sync, and TBA-sourced scores.
 - **`get_server_guide` → `analysis_principles`**: the long form, returned as a tool result so it reaches the model in every client. Its `tools/list` entry is marked always-loaded (see `get_server_guide`).
 
 Both come from one place in the code. Tests check that every tool name they mention exists and that the instructions stay under the size limit.
