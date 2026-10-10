@@ -1,6 +1,6 @@
 # Development
 
-How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) explains how the code is organized and why it is designed the way it is; read its [design principles](ARCHITECTURE.md#design-principles) before changing a tool.
+How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) explains how the code is organized and why it is designed the way it is. Read its [design principles](ARCHITECTURE.md#design-principles) before changing a tool.
 
 ## Requirements
 
@@ -31,11 +31,14 @@ The extension's version is the project version in `build.gradle`. Every extensio
 
 ## Verification policy
 
-Checks should cost what they prove. Measure wall time before and after a speed change on the same
-machine; record the command, selection, counts, failures and timing under `build/reports/`.
-Do not rerun a passing check for reassurance. A failure which does not reproduce gets one retry;
-report both results. Keep the Gradle daemon warm, build once, use `--tests` while working, and
-never run `./gradlew clean` inside a round.
+Checks should cost what they prove:
+
+- Measure wall time before and after a speed change on the same machine. Record the command,
+  selection, counts, failures and timing under `build/reports/`.
+- Do not rerun a passing check for reassurance. A failure which does not reproduce gets one retry;
+  report both results.
+- Keep the Gradle daemon warm, build once, and use `--tests` while working. Never run
+  `./gradlew clean` inside a round.
 
 | Change or boundary | Required check |
 |---|---|
@@ -48,26 +51,31 @@ never run `./gradlew clean` inside a round.
 | Before a release tag | Full real-log directory (`-PconformanceSample=full` and `-PconformanceNative=full`), without a file limit. |
 | Coverage wanted | `./gradlew jacocoTestReport`, or add `-Pcoverage` to the build/test command. CI instruments and reports once, on Linux only. |
 
-Ordinary tests never run native replay. They use half the available processors, at least one
-fork and at most four, with 768 MiB per fork (at most 3 GiB combined heap). The real-log opt-in
-uses one larger fork. Each task has its own disk cache; concurrent forks share its atomic cache
-claims, while tests inspecting cache contents use `@TempDir` caches. Generated corpus files live
-under `build/test-fixtures/worker-<worker>`, whose root is cleared before its first use in each JVM,
-and are written once per JVM. Every separately created store/export fixture root is cleared before
-creation too; reused worker numbers must not inherit another build's manifests. Windows mappings
-in another fork cannot be overwritten. The conformance sweep loads a baseline once per fixture and
-uses decoded immutable views for entry-order permutations, preserving raw sample counts separately
-from successfully decoded values. Coverage instrumentation is absent from ordinary/targeted runs.
+Ordinary tests never run native replay. They use half the available processors, at least one fork
+and at most four, with 768 MiB per fork (at most 3 GiB combined heap). The real-log opt-in uses one
+larger fork. Coverage instrumentation is absent from ordinary and targeted runs.
+
+Each task has its own disk cache. Concurrent forks share its atomic cache claims, while tests that
+inspect cache contents use `@TempDir` caches. Generated corpus files live under
+`build/test-fixtures/worker-<worker>`, whose root is cleared before its first use in each JVM, and
+are written once per JVM. Every separately created store/export fixture root is cleared before
+creation too: reused worker numbers must not inherit another build's manifests. Windows mappings in
+another fork cannot be overwritten.
+
+The conformance sweep loads a baseline once per fixture and uses decoded immutable views for the
+entry-order permutations, keeping raw sample counts apart from successfully decoded values.
+
 Synthetic tool tests use `MockLogAdmission` to admit their cached paths explicitly, pin their
 `testPutLog` entries against heap-pressure eviction until scope cleanup unloads them, and restore
-the prior configured roots. They must work while lease admission is active; relying on the
-legacy cached-path exception made Linux CI's class/fork order change the answers. A real HTTP
-transport with an empty directory lease pins this state in `ToolAdmissionTest`.
-The harness CI job needs only path classification and runs beside the builds, with its own
+the prior configured roots. They must work while lease admission is active: relying on the legacy
+cached-path exception made Linux CI's class/fork order change the answers. A real HTTP transport
+with an empty directory lease pins this state in `ToolAdmissionTest`.
+
+In CI, the harness job needs only path classification and runs beside the builds, with its own
 evidence. Ordinary build jobs upload their own XML; no duplicate download or test run is needed.
-Native selection follows the affected surfaces above. The Arrow cross-check consumes the
-ordinary build's streams. An unreachable before-commit runs every job rather than failing
-classification or skipping checks.
+Native selection follows the affected surfaces above. The Arrow cross-check consumes the ordinary
+build's streams. An unreachable before-commit runs every job rather than failing classification or
+skipping checks.
 
 ## Testing
 
@@ -85,22 +93,27 @@ The tests run on Windows in CI too. Build an expected path with the same path AP
 
 ### The systemd service check
 
-`MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,
-health and live tools, and starts/adopts/stops a real daemon inheriting `INVOCATION_ID`;
-`InstallCommandTest` checks POSIX program modes and repair without exposing private settings.
-`DaemonManagerTest` uses fake health endpoints to prove managed servers
-are never adopted, stopped or replaced. `ServiceUnitTest` checks the printed unit's hardening,
-escaping and write-free behavior. `StatsProviderTest` counts real MINA exec commands with no
-program: 31 samples require four discoveries, without repeated changed-process notices.
+- `MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,
+  health and live tools. It also starts, adopts and stops a real daemon inheriting `INVOCATION_ID`.
+- `InstallCommandTest` checks POSIX program modes and repair without exposing private settings.
+- `DaemonManagerTest` uses fake health endpoints to prove managed servers are never adopted, stopped
+  or replaced.
+- `ServiceUnitTest` checks the printed unit's hardening, escaping and write-free behavior.
+- `StatsProviderTest` counts real MINA exec commands with no program: 31 samples require four
+  discoveries, without repeated changed-process notices.
 
 The independent Linux `systemd` CI job is filtered to Main, configuration, installers, service
-templates and the check itself. It builds only the shadow JAR, creates the service account,
-installs the printed units, checks launcher/JAR access as the service user with modes in any
-refusal, supplies the runner's JDK through `JAVA_HOME`, then starts the service and timer. It checks managed/version health and the
-`stop` refusal, runs the probe, and stops through systemd within 90 seconds. It repeats with
-only `--managed` removed and requires that the same verifier reject the plant. Journals,
-printed units and assertion results are uploaded even on failure. `ci/check_service.py` refuses
-to install on a developer machine; it requires root and a disposable GitHub Actions runner.
+templates and the check itself. The job:
+
+1. Builds only the shadow JAR, creates the service account and installs the printed units.
+2. Checks launcher/JAR access as the service user, with modes in any refusal, and supplies the
+   runner's JDK through `JAVA_HOME`.
+3. Starts the service and timer, checks managed/version health and the `stop` refusal, runs the
+   probe, and stops through systemd within 90 seconds.
+4. Repeats with only `--managed` removed and requires that the same verifier reject the plant.
+
+Journals, printed units and assertion results are uploaded even on failure. `ci/check_service.py`
+refuses to install on a developer machine: it requires root and a disposable GitHub Actions runner.
 The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter
 fallbacks and the verifier's refusal predicates without systemd. macOS and Windows do not run
 systemd locally; their ordinary Java tests still cover the foreground command and ownership.
@@ -111,7 +124,9 @@ Tests are in `src/test/java`, in the same packages as the code they test, plus a
 
 **Fixture logs.** Small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, entries that only look like vision data, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
 
-**Store fixtures.** `store.LogStoreTest` writes synthetic WPILOG and REV files in temporary directories and drives the Java import queue and the real listing tool. It checks verified copies and moves, original provenance, duplicate hashes, REV correlation and ambiguity, serial promotion without merging, clock bases and overlap, unmanaged files, format refusal, queued callers, path containment, and the lifetime of readers and moved-path notices. No robot logs or external services are needed. `StoreImportEndpointTest` drives the HTTP jobs and refusals on the real transport; `StoreInboxTest` checks stability, receipts, and listing states; `MainImportTest` drives child JVMs and a real daemon, including a cross-process file-lock refusal.
+**Store fixtures.** `store.LogStoreTest` writes synthetic WPILOG and REV files in temporary directories and drives the Java import queue and the real listing tool. It checks verified copies and moves, original provenance, duplicate hashes, REV correlation and ambiguity, serial promotion without merging, clock bases and overlap, unmanaged files, format refusal, queued callers, path containment, and the lifetime of readers and moved-path notices. No robot logs or external services are needed.
+
+`StoreImportEndpointTest` drives the HTTP jobs and refusals on the real transport. `StoreInboxTest` checks stability, receipts, and listing states. `MainImportTest` drives child JVMs and a real daemon, including a cross-process file-lock refusal.
 
 The store checks also distinguish a new named robot with a logged serial from a later serial promotion, keep non-overlapping sessions separate, count catalog reads per batch, and observe which REV candidates reach correlation. `log.LogMappingLifetimeTest` reads fixtures through tools and the manager before moving them, holds calls and background synchronization across eviction, and checks that the final holder releases the mapping so a real rename succeeds on Windows too.
 
@@ -129,14 +144,17 @@ HAL-source reads over a fake channel, command quoting, slow hash replies with an
 cancelled/expired timers, and host-key refusal before secret authentication. Tests cover explicit
 acceptance, fingerprint reset, default empty-password contacts, and disabled settling,
 block-boundary pauses, retry scheduling, and the real capture listener over numeric loopback.
+
 Store tests hold mapped reads before moves, check hidden staging and path ownership, byte-exact
 placement and hashes, verified growth/rename, serial conflicts, identical signals across serials,
-`data_alone`, and the 250 ms matching bound without chaining earlier offsets. REV and WPILOG
-use the shared correlation machinery. A store with twenty distant sessions and one overlapping
-session checks that only the overlapping capture is loaded. `SshPackagingTest` initializes Ed25519 and RSA SHA-2 from
-the actual fat JAR without optional crypto providers, and checks packaged licenses and dependency
-confinement. `PullDocumentationTest` checks accepted keys and the opt-in hardware invocation.
-Every ordinary fixture remains synthetic; Linux and Windows run these tests without a robot.
+`data_alone`, and the 250 ms matching bound without chaining earlier offsets. REV and WPILOG use the
+shared correlation machinery. A store with twenty distant sessions and one overlapping session
+checks that only the overlapping capture is loaded.
+
+`SshPackagingTest` initializes Ed25519 and RSA SHA-2 from the actual fat JAR without optional crypto
+providers, and checks packaged licenses and dependency confinement. `PullDocumentationTest` checks
+accepted keys and the opt-in hardware invocation. Every ordinary fixture remains synthetic; Linux
+and Windows run these tests without a robot.
 
 `SftpLoopbackTest` additionally runs the production JSch transport against `FakeRoboRio`, an
 Apache MINA SSHD server with a fresh Ed25519 key and a temporary SFTP root. It checks offset
@@ -146,58 +164,75 @@ socket checks interoperability, while an injected channel pins schedules precise
 EdDSA provider are test dependencies only.
 
 **System logs.** `SystemPullTest`, `KernelLinesTest`, `CaptureSystemPullTest` and
-`SearchSystemLogsTest` use synthetic text and paired clocks. MINA serves SFTP and scripted
-exec snapshots; tests cover block pacing, the disabled gate, rotation content reuse, journal
-cursor restart and stand-down, kernel overlap/reboot, PID placement, and writer manifest
-updates. Tool checks work out interpolation by hand, share severity cases with
-`search_strings`, pin committed-prefix/path safety and true paging totals, and check discovery.
+`SearchSystemLogsTest` use synthetic text and paired clocks. MINA serves SFTP and scripted exec
+snapshots; tests cover block pacing, the disabled gate, rotation content reuse, journal cursor
+restart and stand-down, kernel overlap/reboot, PID placement, and writer manifest updates. Tool
+checks work out interpolation by hand, share severity cases with `search_strings`, pin
+committed-prefix/path safety and true paging totals, and check discovery.
+
 `SystemInventoryTest` counts parses in a 300-session store over ten idle passes, then changes
 placements and the open session; its measured per-pass time is written under `build/reports/`.
 `SystemIndexTest` checks fifty sessions/five shared rotations, written-span selection, legacy
-receipts and the first journal command. `SystemTextTransferTest` checks catalog/range/hash
-reads, peer and mirror copies, corrupt-byte refusal, growing-prefix resume, missing-copy
-guidance and mirror capacity/eviction. All of these stores and text files are generated.
-The conformance sweep includes a generated store session with system companions. No image
-path or robot text is a fixture; the actual NI file set remains the shop checklist in
-[STANDALONE.md](STANDALONE.md#pulled-system-logs-opt-in). The ordinary build needs no SSH host.
+receipts and the first journal command. `SystemTextTransferTest` checks catalog/range/hash reads,
+peer and mirror copies, corrupt-byte refusal, growing-prefix resume, missing-copy guidance and
+mirror capacity/eviction.
+
+All of these stores and text files are generated. The conformance sweep includes a generated store
+session with system companions. No image path or robot text is a fixture; the actual NI file set
+remains the shop checklist in [STANDALONE.md](STANDALONE.md#pulled-system-logs-opt-in). The ordinary
+build needs no SSH host.
 
 **Robot identity.** `CaptureIdentityTest`, `RobotIdentityReaderTest`, `RobotCandidatesTest`, and
 `LogStoreTest` check the HAL source convention, context at start/resume, serial promotion with
 mapped readers, retained old paths, key history, disagreements, and logged identity in the listing
 prefix. A blocked store queue cannot delay a mid-session context, value, or flush; promotion occurs
 at close. A fixture larger than the 2000-record prefix counts mapped record bytes on each fresh
-listing, and unreadable same-size store files prove candidates come from persisted manifests. `/SystemStats/SerialNumber` is resolved with the same metadata roles as imports.
-`robot_candidates` checks use synthetic exact fingerprints, ambiguity, contradictory hints, and
-CAN inventories. No identity or value comes from a robot log.
+listing, and unreadable same-size store files prove candidates come from persisted manifests.
+`/SystemStats/SerialNumber` is resolved with the same metadata roles as imports. `robot_candidates`
+checks use synthetic exact fingerprints, ambiguity, contradictory hints, and CAN inventories. No
+identity or value comes from a robot log.
 
 **NT4 protocol and gateway.** `./gradlew test --tests '*.nt4.*'` checks the pure codec against
-hand-encoded JSON/MessagePack frames from the NT4 and MessagePack specifications, both directions
-of the type table, malformed input, and the time-sync arithmetic. The pure gateway tests drive
-explicit times for overlapping subscriptions, batching, cached values, exact/prefix matching,
-`topicsonly`, removals, and read-only acknowledgements. Real JDK WebSocket clients connect to the
-loopback gateway on numeric `127.0.0.1` and ephemeral ports. Every generated fixture is replayed in
-timestamp order; every announcement, unannouncement, timestamp, and raw payload is compared with
-the source records, including struct schema topics and intentionally malformed struct payloads.
-The replay helper also accepts a pace and an injected pacer. The client tests inject the event loop
-and clock to observe infinite 1–10 second backoff, reconnection, and time-sync/keepalive timers
-without sleeping. A separate scripted peer checks fragmentation, the 4.0 fallback, unknown IDs,
-malformed messages, and listener order. A planted server clock is checked within the measured RTT.
+hand-encoded JSON/MessagePack frames from the NT4 and MessagePack specifications, both directions of
+the type table, malformed input, and the time-sync arithmetic. The pure gateway tests drive explicit
+times for overlapping subscriptions, batching, cached values, exact/prefix matching, `topicsonly`,
+removals, and read-only acknowledgements.
+
+Real JDK WebSocket clients connect to the loopback gateway on numeric `127.0.0.1` and ephemeral
+ports. Every generated fixture is replayed in timestamp order; every announcement, unannouncement,
+timestamp, and raw payload is compared with the source records, including struct schema topics and
+intentionally malformed struct payloads. The replay helper also accepts a pace and an injected
+pacer.
+
+The client tests inject the event loop and clock to observe infinite 1–10 second backoff,
+reconnection, and time-sync/keepalive timers without sleeping. A separate scripted peer checks
+fragmentation, the 4.0 fallback, unknown IDs, malformed messages, and listener order. A planted
+server clock is checked within the measured RTT.
+
 `GatewayBindTest` leaves a plain server connection in TIME_WAIT and requires the gateway to bind
 that same port without a retry; reading the socket option after binding cannot prove reuse was
 enabled in time. An injected listener error checks that successful binding resets the next backoff
 to one second. `GatewayLifecycleTest` checks that a failed close names its cause without claiming
-the shutdown deadline expired.
-`GatewayKeepaliveTest` and `ClientKeepaliveTest` stall injected clocks by 1.5 seconds while
-network callbacks continue: healthy peers survive, an unanswered ping expires at one second,
-and ping replies do not wait for fan-out. Receive demand and its queue bound are checked separately.
+the shutdown deadline expired. `GatewayKeepaliveTest` and `ClientKeepaliveTest` stall injected
+clocks by 1.5 seconds while network callbacks continue: healthy peers survive, an unanswered ping
+expires at one second, and ping replies do not wait for fan-out. Receive demand and its queue bound
+are checked separately.
+
 These tests need no robot, native NT library, external service, or committed log. Actual ntcore and
 dashboard interoperability and native Windows execution still require their respective environments.
 
 **Tool tests.** Each tool's behavior and its edge cases (empty and single-sample entries, NaN and infinite values, duplicate timestamps, missing Driver Station data, and bad arguments), on the fixtures and on small logs that the tests build in memory.
 
-**Conformance sweep.** Every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, a note on every result computed from a log that was not read to its end, and every output the tool's description names.
+**Conformance sweep.** Every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields):
 
-The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
+- no internal error and no NaN;
+- no silent success: a success whose content is only zeros, `false`, and empty lists counts as silent;
+- `inputs` on every successful result that read a log;
+- true totals for shortened lists;
+- a note on every result computed from a log that was not read to its end;
+- every output the tool's description names.
+
+The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result. The REV log tools are exempt, because they depend on the synchronization done when the log was loaded. Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
 
 `RenderChartTest` checks requested PNG dimensions, full-window summaries against independent
 fixture arithmetic and `get_statistics`, histogram bins, step holds, resolver-only phases,
@@ -208,11 +243,23 @@ checks cover the pure data-table adapter, notebook cells, URI admission and sele
 CI's editor smoke also checks actual Perspective rows before and after append. Tool-only
 conformance edits do not select the robot harness; replay/capture conformance edits still do.
 
-**Differential check.** The conformance sweep shows that the tools keep their contract, not that a number is right. This check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader, and compares what the two read: the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows. It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives: the loop-time statistics of `analyze_loop_timing`, the roboRIO brownouts in `power_analysis` and `get_ds_timeline`, the per-bus figures of `analyze_can_bus`, the module speeds of `analyze_swerve`, and the mode of each enabled segment in `get_match_phases`. No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
+**Differential check.** The conformance sweep shows that the tools keep their contract, not that a number is right. This check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader. It compares what the two read: the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows.
 
-**Claim checks.** The documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it. TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added; it may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
+It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives:
 
-**Process and installer tests.** Fresh JVMs verify startup configuration and logging. `InstallCommandTest`, `CodeInstallerTest`, `InstallRefreshTest`, and `InstallerTest` use temporary installs, fake release downloads, and fake VS Code CLIs. They check containment and layout on both platforms’ path rules, generated launchers, version ordering, exact JAR copies, JSON isolated from JVM stderr, preserved settings, refresh guards and stopping a real daemon, release selection, prompts, one matching VSIX installation, and the legacy fallback. PowerShell checks run when PowerShell is available; native Windows execution remains CI’s job.
+- the loop-time statistics of `analyze_loop_timing`;
+- the roboRIO brownouts in `power_analysis` and `get_ds_timeline`;
+- the per-bus figures of `analyze_can_bus`;
+- the module speeds of `analyze_swerve`;
+- the mode of each enabled segment in `get_match_phases`.
+
+No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
+
+**Claim checks.** The documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it.
+
+TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added. It may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
+
+**Process and installer tests.** Fresh JVMs verify startup configuration and logging. `InstallCommandTest`, `CodeInstallerTest`, `InstallRefreshTest`, and `InstallerTest` use temporary installs, fake release downloads, and fake VS Code CLIs. They check containment and layout on both platforms’ path rules, generated launchers, version ordering, exact JAR copies, and JSON isolated from JVM stderr. They also check preserved settings, refresh guards and stopping a real daemon, release selection, prompts, one matching VSIX installation, and the legacy fallback. PowerShell checks run when PowerShell is available; native Windows execution remains CI’s job.
 
 Directory lease tests drive the real transport: session expiry/deletion/replacement, cached-read revocation, independent clients, origin/team listings, key precedence and captured logs, loopback/Origin refusals, symlinks, imports, and the actual inbox poller. A packaged bridge runs in a temporary home and project to prove home-only server configuration, project/flag leases, relative paths, URL connections, repeated initialization, and cleanup at EOF. The fake TBA service sees only synthetic keys. Mutation checks cover these boundaries; no live API or user's home is used.
 
@@ -220,7 +267,7 @@ Directory lease tests drive the real transport: session expiry/deletion/replacem
 
 **Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails. The CI workflow must run the license check, which neither `test` nor `shadowJar` includes.
 
-CI runs `./gradlew test shadowJar license` on Linux and Windows, and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
+CI runs `./gradlew build license` on Linux and Windows (Linux adds `-Pcoverage`), and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` or `pit-server` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
 ### Tests on real logs
 
@@ -236,8 +283,11 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 
 `-PconformanceLogDir` enables a deterministic stratified sample by default; use
 `-PconformanceSample=full` for every file. The same selector serves the tool sweep, differential
-check, real-log claims and every Java gateway, pull, pair and live replay. Native selection is independently controlled by `-PconformanceNative=none|sample|full` (default `sample` for `shopHarness`). Reports under
-`build/reports/conformance-sample/` name the selected paths, their strata and unavailable strata.
+check, real-log claims and every Java gateway, pull, pair and live replay. Native selection is
+independently controlled by `-PconformanceNative=none|sample|full` (default `sample` for
+`shopHarness`). Reports under `build/reports/conformance-sample/` name the selected paths, their
+strata and unavailable strata.
+
 `-PconformanceMaxLogs=N` still restricts the input to the first N paths in sorted order, before
 sampling, in both ordinary and harness tasks. A limited run may therefore lack a stratum or a
 two-boot pair; its report says so. `-PconformanceTools` limits only the tool sweep, and
@@ -270,9 +320,11 @@ An explicit host or team IP can replace the USB address. `-PpullUser=lvuser` sel
 `WPILOG_PULL_PASSWORD` or `WPILOG_PULL_KEY` supplies authentication without command-line secrets.
 The test reads device serial/comments, negotiates SFTP, lists logs, checks an offset read and a
 SHA-256 of exactly the bytes read. It changes nothing on the robot and saves no robot data as
-fixtures. Run it on roboRIO 1 and 2 to verify proc-environment permissions, comments, empty-password
-access, the installed OpenSSH algorithms, and the available hash command. Then exercise the actual
-pit server through disabled/enabled transitions, Wi-Fi loss, reboot, log growth/rename and a reimage;
+fixtures.
+
+Run it on roboRIO 1 and 2 to verify proc-environment permissions, comments, empty-password access,
+the installed OpenSSH algorithms, and the available hash command. Then exercise the actual pit
+server through disabled/enabled transitions, Wi-Fi loss, reboot, log growth/rename and a reimage;
 measure CPU/network cost at the configured rate. This shop stress test remains the user's and
 unverified here. Pulling stays off by default until those checks pass. System-log pulling is a
 separate opt-in; its candidate paths remain unverified until the shop visit.
@@ -306,15 +358,17 @@ the checklist as follows; **absent** on an exercise means not measured, not a mi
 | PhotonVision provider state, captured file-camera settings and `analyze_vision.camera_settings` | Proven against that release with generated pixels, through the packaged pit server, manifests and metrics; no physical camera or measured calibration. |
 | Deployed PhotonVision release, network reachability, camera calibration and actual settings changes | Remains a shop check on the team's coprocessor; another release is not covered by the pin. |
 
-`JvmProviderTest` starts the test JVM's real JMX connector on one ephemeral loopback port,
-provokes collections, and checks receipt timestamps and uptime mapping against fake NT4 time.
-The first sample's bound is checked before the next poll; an uptime-tracking clock, a small
-within-bound change and a six-second move pin when a measurement-only note is emitted.
-A failed sink stands down across a resume and recovers only in the next session.
-Injected scheduling checks backoff and the external deadline; `JvmDeliveryTest` checks a reply
-queued across a boot. `JvmCaptureTest` checks capture/live-tool/manifest/metrics agreement and
-differential reads. The generated `jvm_context` fixture adds independently known counters to
-the conformance and differential sweeps. These tests establish no roboRIO modules or budget.
+`JvmProviderTest` starts the test JVM's real JMX connector on one ephemeral loopback port, provokes
+collections, and checks receipt timestamps and uptime mapping against fake NT4 time. The first
+sample's bound is checked before the next poll; an uptime-tracking clock, a small within-bound
+change and a six-second move pin when a measurement-only note is emitted. A failed sink stands down
+across a resume and recovers only in the next session. Injected scheduling checks backoff and the
+external deadline.
+
+`JvmDeliveryTest` checks a reply queued across a boot. `JvmCaptureTest` checks
+capture/live-tool/manifest/metrics agreement and differential reads. The generated `jvm_context`
+fixture adds independently known counters to the conformance and differential sweeps. These tests
+establish no roboRIO modules or budget.
 
 `RobotFactsTest` scripts NI-like and sparse replies over MINA SSHD, including stderr/status,
 bounded output, injected command deadlines, the hash ceiling, actual authentication and CLI
@@ -362,62 +416,70 @@ the host's desktop JNI libraries into Gradle's cache; it downloads no roboRIO im
 GUI. The runner launches the robot JAR with those libraries, without HAL simulation extensions.
 CI has a separate Linux job on pushes to `pit-server`, sharing Gradle's download cache.
 
-Each run owns fresh ports, a home directory, a disk cache, synthetic device files, and a store
-under `build/shop-harness/`. `FakeRoboRio` serves `/home/lvuser/logs`, `/proc/42/environ`, and
+Each run owns fresh ports, a home directory, a disk cache, synthetic device files, and a store under
+`build/shop-harness/`. `FakeRoboRio` serves `/home/lvuser/logs`, `/proc/42/environ`, and
 `/etc/machine-info`; `/u/logs` and `/U/logs` are absent. Its exec channel accepts only the puller's
 quoted `head -c N -- <path> | sha256sum` command and computes that prefix in Java, without a shell.
-The packaged server starts from the shadow JAR with capture, pull and the gateway enabled. No robot is used,
-and no generated log belongs in the repository.
-The harness caps pulling at 64 KiB/s so the timeline exercises transfers on both sides of an
-enable transition; the production default remains 1 MB/s.
 
-`ShopHarnessTest` initializes an HTTP MCP session and asks the running server for its listing
-and entry values. `HarnessExpectations` derives its answers from the timeline, independently of
-the robot and capture writer; the differential reader checks every scripted record's bytes and
-timestamp too. The checks cover serial/device identity, one session per boot, scalar/raw/struct
-and struct-array topics with schemas, verified pulls matched near zero offset, DataLogManager's
-rename, event/match manifests, and SFTP reads gated by disabled state. Saved manifests, HTTP
-results, server/robot output, and the SFTP read audit explain failures. CI uploads this evidence.
-The simulated robot also owns a separate ntcore client instance connected only to the gateway.
-It subscribes to every scripted topic and schema, records the received server timestamps in a
-separate observation log, and waits for gateway announcements before the runner releases the
-timeline. The same independent oracle and HTTP calls check that log, including every struct
-record, in each boot. This is native ntcore interoperability, not a real dashboard UI test.
-The CI build jobs retain their ordinary test XML, including assertion messages; the separate
-harness job retains its own XML and process artifacts. Neither repeats the other suite.
+The packaged server starts from the shadow JAR with capture, pull and the gateway enabled. No robot
+is used, and no generated log belongs in the repository. The harness caps pulling at 64 KiB/s so the
+timeline exercises transfers on both sides of an enable transition; the production default remains 1
+MB/s.
 
-The ordinary gateway checks are `GatewayCoreTest`, `GatewaySocketTest`,
-`GatewayBackpressureTest`, `CaptureGatewayTest`, `GatewayBindTest`, `GatewayLifecycleTest`, and
-`GatewayConfigTest`; run them with `./gradlew test --tests '*Gateway*Test'`. Bind retries use an
-injected clock: a held port leaves capture and pull running, health and sessions agree on the
-waiting state, and releasing it restores downstream service. A nonloopback-interface check
-pins the service's HTTP bind choice (skipped only if no such interface exists). Other sockets
-use literal loopback addresses on Linux and Windows.
+`ShopHarnessTest` initializes an HTTP MCP session and asks the running server for its listing and
+entry values. `HarnessExpectations` derives its answers from the timeline, independently of the
+robot and capture writer; the differential reader checks every scripted record's bytes and timestamp
+too. The checks cover serial/device identity, one session per boot, scalar/raw/struct and
+struct-array topics with schemas, verified pulls matched near zero offset, DataLogManager's rename,
+event/match manifests, and SFTP reads gated by disabled state. Saved manifests, HTTP results,
+server/robot output, and the SFTP read audit explain failures. CI uploads this evidence.
 
-`SocketWriteDemandTest` plants a queued RFC 6455 frame with read-only selector interest, on
-both the gateway and the independent scripted peer. Each must deliver it once without another
-publication or a 4.1 ping. This pins the Java-WebSocket write-demand race reproduced by looping
-the socket classes beside CPU workers, rather than increasing their wall-clock guards.
-They check subscription periods/options, truthful write acknowledgements, queue bounds with a
-real unread TCP peer, robot-clock round trips and absent-clock reconnects, session boundaries,
-and forwarding/flushes during a blocked store operation. `MetricsDaemonTest` checks the port and
-connected-client counter in the packaged process and one log warning per writing client.
+The simulated robot also owns a separate ntcore client instance connected only to the gateway. It
+subscribes to every scripted topic and schema, records the received server timestamps in a separate
+observation log, and waits for gateway announcements before the runner releases the timeline. The
+same independent oracle and HTTP calls check that log, including every struct record, in each boot.
+This is native ntcore interoperability, not a real dashboard UI test.
 
-To add a timeline, copy `harness/timelines/reboot-match.json`. Times ending in `_us` use the
-robot's microsecond clock, reset on every boot. Keep `period_us: 20000`; samples cover
+The CI build jobs retain their ordinary test XML, including assertion messages; the separate harness
+job retains its own XML and process artifacts. Neither repeats the other suite.
+
+The ordinary gateway checks are `GatewayCoreTest`, `GatewaySocketTest`, `GatewayBackpressureTest`,
+`CaptureGatewayTest`, `GatewayBindTest`, `GatewayLifecycleTest`, and `GatewayConfigTest`; run them
+with `./gradlew test --tests '*Gateway*Test'`. Bind retries use an injected clock: a held port
+leaves capture and pull running, health and sessions agree on the waiting state, and releasing it
+restores downstream service. A nonloopback-interface check pins the service's HTTP bind choice
+(skipped only if no such interface exists). Other sockets use literal loopback addresses on Linux
+and Windows.
+
+These tests also check subscription periods/options, truthful write acknowledgements, queue bounds
+with a real unread TCP peer, robot-clock round trips and absent-clock reconnects, session
+boundaries, and forwarding/flushes during a blocked store operation.
+
+`SocketWriteDemandTest` plants a queued RFC 6455 frame with read-only selector interest, on both the
+gateway and the independent scripted peer. Each must deliver it once without another publication or
+a 4.1 ping. This pins the Java-WebSocket write-demand race reproduced by looping the socket classes
+beside CPU workers, rather than increasing their wall-clock guards. `MetricsDaemonTest` checks the
+port and connected-client counter in the packaged process and one log warning per writing client.
+
+To add a timeline, copy `harness/timelines/reboot-match.json`. Times ending in `_us` use the robot's
+microsecond clock, reset on every boot. Keep `period_us: 20000`; samples cover
 `[sample_start_us, sample_end_us)` on that grid, up to 10,000 samples per topic in the verifier's
-HTTP page. Each boot lists ordered phases (`disabled`,
-`teleop`, `autonomous`), match information and its delivery time, a sine frequency, counter-reset
-indices, an ending time, and whether the exit is a reboot. Use distinct match numbers to identify
-the expected sessions, and keep counter-reset indices ordered. The counter resets break the correlation ambiguity of a monotonic ramp;
-names only nominate synchronization candidates. Give DataLogManager at least five seconds after
-FMS attachment to rename, and leave disabled time for a throttled pull before the boot ends.
-The log stops one second after the last scripted sample while NT4 stays connected for the pull.
-At the end marker the process halts with code 75 for a reboot or 0 for the final boot; it skips
-native shutdown hooks whose global destructors can race desktop NT/DS threads. The runner checks
-the marker and code before starting another process.
-The HAL clock waits until capture subscribes, then advances in 20 ms steps paced in real time.
-`serialnum` is set in the robot's environment; simulation's empty HAL serial falls back to it.
+HTTP page. Each boot lists ordered phases (`disabled`, `teleop`, `autonomous`), match information
+and its delivery time, a sine frequency, counter-reset indices, an ending time, and whether the exit
+is a reboot.
+
+- Use distinct match numbers to identify the expected sessions, and keep counter-reset indices
+  ordered. The counter resets break the correlation ambiguity of a monotonic ramp; names only
+  nominate synchronization candidates.
+- Give DataLogManager at least five seconds after FMS attachment to rename, and leave disabled time
+  for a throttled pull before the boot ends.
+
+The log stops one second after the last scripted sample while NT4 stays connected for the pull. At
+the end marker the process halts with code 75 for a reboot or 0 for the final boot; it skips native
+shutdown hooks whose global destructors can race desktop NT/DS threads. The runner checks the marker
+and code before starting another process. The HAL clock waits until capture subscribes, then
+advances in 20 ms steps paced in real time. `serialnum` is set in the robot's environment;
+simulation's empty HAL serial falls back to it.
 
 This checks the programs and wire transports, not the NI image or radio. The shop day must still
 check that the actual sshd permits an empty password, `lvuser` can read the robot process's
@@ -434,17 +496,19 @@ On Linux with JDK 17 and Docker Engine available to your user, run:
 harness/run -PconformanceNative=sample
 ```
 
-A Linux VM with Docker works too. `harness/run` is the shared entry point;
-`harness/rio/run` delegates to it. On macOS, or Linux without a reachable Docker daemon, it
-prints that the container and real PhotonVision are skipped and still runs the MINA timeline.
-An explicit CI `HARNESS_RIO_IMAGE` requires Docker instead of silently skipping the check. No container, image, privileged process,
-or package is installed by the ordinary tests. The first container build downloads Ubuntu 22.04,
-Temurin 17 and Ubuntu's OpenSSH/coreutils packages. The official images are read from ECR
-Public (Canonical's Ubuntu and Docker Official Images' Temurin mirror), avoiding Docker Hub
-anonymous-pull limits on shared CI addresses. It reuses the robot JAR and desktop JNI
-libraries built once by GradleRIO, and uses no file from an NI image. The Dockerfile's allowlist
-excludes the store, logs, credentials and repository history from the build context. The image
-is local; nothing is pushed to a registry. Its runtime host key is generated per container.
+A Linux VM with Docker works too. `harness/run` is the shared entry point; `harness/rio/run`
+delegates to it. On macOS, or Linux without a reachable Docker daemon, it prints that the container
+and real PhotonVision are skipped and still runs the MINA timeline. An explicit CI
+`HARNESS_RIO_IMAGE` requires Docker instead of silently skipping the check. No container, image,
+privileged process, or package is installed by the ordinary tests.
+
+The first container build downloads Ubuntu 22.04, Temurin 17 and Ubuntu's OpenSSH/coreutils
+packages. The official images are read from ECR Public (Canonical's Ubuntu and Docker Official
+Images' Temurin mirror), avoiding Docker Hub anonymous-pull limits on shared CI addresses. It reuses
+the robot JAR and desktop JNI libraries built once by GradleRIO, and uses no file from an NI image.
+The Dockerfile's allowlist excludes the store, logs, credentials and repository history from the
+build context. The image is local; nothing is pushed to a registry. Its runtime host key is
+generated per container.
 
 `harness/rio/` supplies real sshd with `lvuser`'s empty password permitted, an accessible
 `/proc`, `/home/lvuser/robotCommand`, and `/var/local/natinst/log/FRC_UserProgram.log`.
@@ -456,32 +520,34 @@ privileged, and the Docker socket and host `/proc` are never mounted into it.
 
 `RioHarnessTest` runs the same two-boot timeline and packaged pit server, enabling pull, system
 logs, stats, the console tail and `context.jvm`. It reuses the independent record-by-record
-capture/pull oracle and checks device identity, DataLogManager rename and matching, provider
-states and recorded costs, console transitions in both the timely tail and pulled exact file,
-the shipped `robot-facts` command, and the JVM uptime pairing. Every sample's offset must equal
-its receipt timestamp minus JVM uptime; a single offset must fit the intersection of all reported
-uncertainty bounds. No tolerance is invented for the container. Its HAL clock runs continuously;
-the ordinary harness's 20 ms stepped clock would introduce artificial jitter into this test.
-Scripted telemetry retains explicit timeline timestamps, with every due record emitted after a
-late callback. The MINA harness still checks gateway delivery and the disabled gate's per-block
-audit; the container does not pretend OpenSSH supplies that audit.
-The independent facts command uses the explicit loopback host and mapped SSH port, so its host
-pins belong to its own temporary facts store rather than contending with the recording store.
+capture/pull oracle and checks device identity, DataLogManager rename and matching, provider states
+and recorded costs, console transitions in both the timely tail and pulled exact file, the shipped
+`robot-facts` command, and the JVM uptime pairing. Every sample's offset must equal its receipt
+timestamp minus JVM uptime; a single offset must fit the intersection of all reported uncertainty
+bounds. No tolerance is invented for the container.
+
+Its HAL clock runs continuously; the ordinary harness's 20 ms stepped clock would introduce
+artificial jitter into this test. Scripted telemetry retains explicit timeline timestamps, with
+every due record emitted after a late callback. The MINA harness still checks gateway delivery and
+the disabled gate's per-block audit; the container does not pretend OpenSSH supplies that audit. The
+independent facts command uses the explicit loopback host and mapped SSH port, so its host pins
+belong to its own temporary facts store rather than contending with the recording store.
 
 CI's existing metrics-stack smoke preloads the same documented versions from Prometheus's
 Quay registry and Google's Docker Hub cache, then retains the Compose tags; it does not change
 the tested stack when shared Docker Hub quotas are exhausted.
 
-CI builds the image with cached Docker layers, then runs both independent timeline processes
-in two Gradle workers so their two 24-second boots overlap instead of doubling the job's wait.
-Native fixture replay remains governed by the existing change filter; no real-log directory is
-configured in CI. `build/shop-harness/rio-*/` retains the timeline, configuration, provider
-snapshots, collector reports, server/console/sshd logs, manifests, tool results and `timing.json`;
-the JUnit XML records each test's time. Docker cleanup runs even after an assertion fails.
-The container proves interoperability with these declared assumptions, including real shell
-command execution and JMX, not actual roboRIO authentication, permissions, module availability,
-NI utility versions, reboot semantics of the kernel, radio behavior or roboRIO CPU/disk cost.
-Those remain the shop checklist.
+CI builds the image with cached Docker layers, then runs both independent timeline processes in two
+Gradle workers so their two 24-second boots overlap instead of doubling the job's wait. Native
+fixture replay remains governed by the existing change filter; no real-log directory is configured
+in CI. `build/shop-harness/rio-*/` retains the timeline, configuration, provider snapshots,
+collector reports, server/console/sshd logs, manifests, tool results and `timing.json`; the JUnit
+XML records each test's time. Docker cleanup runs even after an assertion fails.
+
+The container proves interoperability with these declared assumptions, including real shell command
+execution and JMX. It does not prove actual roboRIO authentication, permissions, module
+availability, NI utility versions, reboot semantics of the kernel, radio behavior or roboRIO
+CPU/disk cost. Those remain the shop checklist.
 
 #### The real PhotonVision backend
 
@@ -495,14 +561,15 @@ is bundled in neither the server JAR nor the extension.
 
 The release offers `--test-mode`. Its `WPI2026` file camera reads a JPEG at a fixed test-resource
 path: the harness writes a new blank 640 by 480 image there, never an upstream scene or a
-coprocessor export. `--disable-networking` prevents device network changes; Java runs headless.
-Only its fresh settings are configured to publish NT4 to the simulated robot. The release fixes
-HTTP at 5800 and its NT client uses 5810, so this opt-in Linux test requires those ports unused;
-ordinary tests continue to bind ephemeral ports. The backend, generated configuration and image
-are isolated under `build/shop-harness/rio-*/photonvision/` and terminated with the timeline.
+coprocessor export. `--disable-networking` prevents device network changes; Java runs headless. Only
+its fresh settings are configured to publish NT4 to the simulated robot. The release fixes HTTP at
+5800 and its NT client uses 5810, so this opt-in Linux test requires those ports unused; ordinary
+tests continue to bind ephemeral ports. The backend, generated configuration and image are isolated
+under `build/shop-harness/rio-*/photonvision/` and terminated with the timeline.
+
 A pin bump must re-verify `PhotonBackend.restarted()`'s two log strings,
-`Web server going down for restart` and `Listening on http://localhost:5800/`, and the fixed
-ports 5800 and 5810.
+`Web server going down for restart` and `Listening on http://localhost:5800/`, and the fixed ports
+5800 and 5810.
 
 A separate WebSocket observer checks every received top-level key against the provider's known
 contract, binary MessagePack full state and the exact version. The HTTP export must contain a
@@ -557,18 +624,21 @@ harness/run -PconformanceNative=sample -PconformanceLogDir=/path/to/logs
 ./gradlew shopHarness --tests '*RealNtcoreReplayTest' -PconformanceNative=sample -PconformanceLogDir=/path/to/logs
 ```
 
-Without the directory property the real-log tests skip with a message. CI exercises fixture
-replay in the ordinary Linux/Windows build and native fixture replay in the Linux harness job;
-CI has no real-log directory. Sampling is the milestone default. It chooses the smallest log
-spanning at least ten seconds per logger kind, or the smallest if that kind has only short logs,
-plus a complete calendar-bearing representative where available. It also covers each size class
-(below 1 MiB, 1 to below 64 MiB, and 64 MiB or larger), the largest file, a REV companion, an
-incomplete tail, calendar evidence present and absent, and one complete calendar-bearing pair
-of the same identity and layout whose robot clock resets. Representatives can cover several
-strata and are deduplicated. Logger strata use the replayer's exact classification from its
-header and recorded prefixes. Each file it cannot classify (`OTHER`) is its own stratum and
-stays selected, as does each unreadable input whose refusal needs checking. Ties use normalized
-path order; no random seed or correlation result enters selection. Inventory uses the independent reader and is shared within the test JVM;
+Without the directory property the real-log tests skip with a message. CI exercises fixture replay
+in the ordinary Linux/Windows build and native fixture replay in the Linux harness job; CI has no
+real-log directory.
+
+Sampling is the milestone default. It chooses the smallest log spanning at least ten seconds per
+logger kind, or the smallest if that kind has only short logs, plus a complete calendar-bearing
+representative where available. It also covers each size class (below 1 MiB, 1 to below 64 MiB, and
+64 MiB or larger), the largest file, a REV companion, an incomplete tail, and calendar evidence
+present and absent. It adds one complete calendar-bearing pair of the same identity and layout whose
+robot clock resets. Representatives can cover several strata and are deduplicated.
+
+Logger strata use the replayer's exact classification from its header and recorded prefixes. Each
+file it cannot classify (`OTHER`) is its own stratum and stays selected, as does each unreadable
+input whose refusal needs checking. Ties use normalized path order; no random seed or correlation
+result enters selection. Inventory uses the independent reader and is shared within the test JVM;
 readers close before replay. Reports contain paths, categories and counts, never telemetry.
 
 Use the sample when the verification policy above calls for real-log checks. Full mode is for
@@ -596,44 +666,52 @@ and refused by the normal pull verifier; the readable prefix is still replayed a
 UTF-8 cannot be transported as an unchanged NT4 string: the directory report records that refusal
 and an independently checked invalid-record count, separately from successful captures.
 
-`gateway-<directory>.jsonl`, `gateway-pull-<directory>.jsonl`, `ntcore-<directory>.jsonl` and
-the two-log `*-pair-<directory>.json` reports under `build/reports/replay/` record
-paths, logger kinds, entry/record/byte counts, escaped-name counts, mismatch categories, measured
-offsets and wall time. Capture record bytes include their actual WPILOG headers, whose widths
-can differ from the source; `accounted_bytes` and `accounted_records` include schema aliases and
-must equal the writer's per-topic totals. Rollover schema seeds are counted separately and identity
-context is outside topic accounting. Every REV file beside the source goes onto the fake roboRIO,
-including those normal filename nomination leaves out; the same bus must retain its synchronization outcome and
-its measured offset plus the replay shift. Failed inputs keep their scratch captures for diagnosis.
-For rollover, the source-wide REV comparison uses a test-only view of all captured parts, without
-creating a file above the reader's size limit. Each part's HTTP synchronization result is checked
-separately and reported: its shorter input window can legitimately produce another alignment.
-REV comparisons retain each measured result and release the decoded bus before comparing the
-next one. `retained_revlogs_peak` reports the observed count in the source/capture sync caches;
-the multi-bus fixture pins it to one. Retaining every decoded source and capture copy exhausted
-the 4 GiB replay heap on a large rolled input.
-No assertion or report copies telemetry values into source control.
+`gateway-<directory>.jsonl`, `gateway-pull-<directory>.jsonl`, `ntcore-<directory>.jsonl` and the
+two-log `*-pair-<directory>.json` reports under `build/reports/replay/` record paths, logger kinds,
+entry/record/byte counts, escaped-name counts, mismatch categories, measured offsets and wall time.
+Capture record bytes include their actual WPILOG headers, whose widths can differ from the source;
+`accounted_bytes` and `accounted_records` include schema aliases and must equal the writer's
+per-topic totals. Rollover schema seeds are counted separately and identity context is outside topic
+accounting.
 
-The robot also accepts `--replay <file> <control-directory> <nt4-port> <shift-us> [speed]`.
-Speed defaults to 1 (source pacing); 0 uses receive acknowledgements for the fastest lossless
-replay. The JUnit runner owns this handshake, including metadata acknowledgements, so TCP queue
-acceptance is never mistaken for capture completion. The native publisher allows up to
-32,768 records rather than 1,024: the largest generated-fixture window accounts for 3,460,352
-bytes under the conservative copied-work estimate, below the client's 32 MiB bound. ntcore
-also has its own **2 MiB local publisher queue**; a separate 1 MiB byte budget (including a
-conservative native message envelope) drains it before it can drop values. This bound can
-end a batch before the record limit. Both sides use blocking pipe notifications and receipt
-conditions, keeping control files as progress evidence. JDK directory watchers poll on some
-platforms; replacing the 50/100 ms application polls with those events alone slowed this Mac
-and exposed ntcore's smaller queue. Native zero-shift reports include per-file wall time.
+Every REV file beside the source goes onto the fake roboRIO, including those normal filename
+nomination leaves out; the same bus must retain its synchronization outcome and its measured offset
+plus the replay shift. Failed inputs keep their scratch captures for diagnosis. For rollover, the
+source-wide REV comparison uses a test-only view of all captured parts, without creating a file
+above the reader's size limit. Each part's HTTP synchronization result is checked separately and
+reported: its shorter input window can legitimately produce another alignment.
+
+REV comparisons retain each measured result and release the decoded bus before comparing the next
+one. `retained_revlogs_peak` reports the observed count in the source/capture sync caches; the
+multi-bus fixture pins it to one. Retaining every decoded source and capture copy exhausted the 4
+GiB replay heap on a large rolled input. No assertion or report copies telemetry values into source
+control.
+
+The robot also accepts `--replay <file> <control-directory> <nt4-port> <shift-us> [speed]`. Speed
+defaults to 1 (source pacing); 0 uses receive acknowledgements for the fastest lossless replay. The
+JUnit runner owns this handshake, including metadata acknowledgements, so TCP queue acceptance is
+never mistaken for capture completion.
+
+The native publisher allows up to 32,768 records rather than 1,024. The largest generated-fixture
+window accounts for 3,460,352 bytes under the conservative copied-work estimate, below the client's
+32 MiB bound. ntcore also has its own **2 MiB local publisher queue**; a separate 1 MiB byte budget
+(including a conservative native message envelope) drains it before it can drop values. This bound
+can end a batch before the record limit.
+
+Both sides use blocking pipe notifications and receipt conditions, keeping control files as progress
+evidence. JDK directory watchers poll on some platforms; replacing the 50/100 ms application polls
+with those events alone slowed replay on a Mac and exposed ntcore's smaller queue. Native zero-shift
+reports include per-file wall time.
+
 The native verifier fails after 30 seconds without receipt progress, including metadata receipts,
 instead of imposing a total duration on a whole file. The former five-minute deadline stopped a
 healthy large replay mid-stream; injected-clock checks pin continued progress and stalled receipts.
 The publisher's stop handshake finishes before offline auditing and SFTP verification, so a large
 transfer cannot expire that handshake after all records have already arrived.
+
 The native verifier also checks a digest of every Driver Station state transition, independently
-decoded from the source. HAL's notification forces DS attachment true; replay restores the
-recorded attachment field after notifying so a recorded disconnection remains a disconnection.
+decoded from the source. HAL's notification forces DS attachment true; replay restores the recorded
+attachment field after notifying so a recorded disconnection remains a disconnection.
 
 ### Stress tests
 
@@ -643,57 +721,76 @@ recorded attachment field after notifying so a recorded disconnection remains a 
 ./gradlew httpStressTest   # Over the HTTP transport only
 ```
 
-The stress tests also need real logs, but they are Gradle tasks of their own rather than properties on `test`. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache: it synchronizes the log with the cache off, then twice with it on, the second time from the cache, and the REV log tools must give the same answers each time. The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. When the log directory does not exist, every test is skipped.
+The stress tests also need real logs, but they are Gradle tasks of their own rather than properties on `test`. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache. It synchronizes the log with the cache off, then twice with it on, the second time from the cache; the REV log tools must give the same answers each time.
 
-They take their settings from a server named `stresstest`. It is looked for in the file given with `-Pconfigpath=/path/to/config.yaml`, or else in the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one). With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
+The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. When the log directory does not exist, every test is skipped.
+
+They take their settings from a server named `stresstest`, looked for in:
+
+1. the file given with `-Pconfigpath=/path/to/config.yaml`, or else
+2. the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one).
+
+With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
 
 ### Capture tests
 
 `./gradlew test --tests '*.capture.*' --tests '*CaptureFidelityTest'` checks WPILOG bytes against
 hand-encoded format examples, all NT4 payload families, clock continuity and reboot detection,
 exclusion/thinning metadata, flushes, and minute-bounded cost accounting with injected clocks.
+
 `CaptureFlushTest` holds a disk force behind a latch while the next listener task writes a record;
 completion publishes the injected clock time, and close/rollover wait for the outstanding force.
 Tests of cold values and manifests wait for this completion rather than assuming a timer tick
 finished the disk operation. `ReplayCaptureTest` reports a disconnect immediately with its cause,
 before a missing-record wait can obscure it as a later pull-placement failure.
-Every generated fixture is replayed through the loopback gateway and JDK client into a capture;
-the independent reader checks every entry, payload, and timestamp, and wpiutil checks the result
-too. The bounded-file pass verifies the same received frames across every rollover, with marked
-schema seeds checked separately at the rollover server time, plus every file's byte bound. Store and tool checks pin each rolled file's minimum timestamp, including `inputs.session_time_range`. This replay uses NT4 4.0 with an
-injected client clock so tiny forced files and tool calls do not turn byte fidelity into an aliveness
-timing test; the NT4 suite independently tests 4.1 keepalives. Replay allows 60 seconds of wall
-time for socket delivery and forcing the small rollover files, which exceeds the normal helper's
-ten-second deadline on Windows; that deadline never advances the injected clock or changes the
-fidelity assertions. Replay walks complete record boundaries because wpiutil's iterator can omit a short final
-record. The client separately checks that a wrong MessagePack family is counted and dropped
-without losing the next frame or disconnecting. CI runs on `pit-server` as well as `main`, including
-the Windows job.
+
+Every generated fixture is replayed through the loopback gateway and JDK client into a capture; the
+independent reader checks every entry, payload, and timestamp, and wpiutil checks the result too.
+The bounded-file pass verifies the same received frames across every rollover, with marked schema
+seeds checked separately at the rollover server time, plus every file's byte bound. Store and tool
+checks pin each rolled file's minimum timestamp, including `inputs.session_time_range`.
+
+This replay uses NT4 4.0 with an injected client clock so tiny forced files and tool calls do not
+turn byte fidelity into an aliveness timing test; the NT4 suite independently tests 4.1 keepalives.
+Replay allows 60 seconds of wall time for socket delivery and forcing the small rollover files,
+which exceeds the normal helper's ten-second deadline on Windows; that deadline never advances the
+injected clock or changes the fidelity assertions. Replay walks complete record boundaries because
+wpiutil's iterator can omit a short final record. The client separately checks that a wrong
+MessagePack family is counted and dropped without losing the next frame or disconnecting.
+
+CI runs on `pit-server` as well as `main`, including the Windows job.
 
 `CaptureConfigTest`, `CaptureStoreTest`, and `CaptureStartTest` cover configuration keys and their
-documentation, UTC placement, open/closed manifests, hashes, resumption and name collisions,
-and queued match facts preceding the close-time directory rename. A blocked store queue leaves
-values and flushes running, retains one pending update, and writes a complete final manifest.
-That queue check counts output flush calls and keeps its values hot: its deadlock guard does
-not impose a disk-force/remapping throughput requirement on Windows CI. `LiveLogTest` separately
-exercises real flushes, hot-window expiry, mapping growth and cold reads on both platforms.
-Injected clocks pin the five-second progress cadence and immediate changed facts. `CaptureShutdownTest`
-proves service shutdown waits for that manifest outside the NT4 loop. `CaptureRecoveryTest`
-plants open manifests with complete, incomplete-tail, unreadable and damaged-header fixtures;
-checks hashes, ranges, modification-time endings, preserved facts and prior files; and proves
-recovery waits on the store queue. A blocked sweep leaves the real HTTP health endpoint responsive
-and starts no NT4 work until recovery completes. It verifies same-process and cross-process ownership,
-reader mapping alongside a writer, alias and symlink guards, and cleanup after an output fails
-to open. A child JVM blocks the store queue, checks the 30 second default and injects a zero deadline into the production wait, then exits
-without draining the pending manifest; the next service start must finish it. No test sleeps to
-advance a clock. `CaptureFailureTest` injects a
-disk failure over loopback and checks the reason in the manifest/log, connection survival, a suppressed
-same-clock reconnect, and a resumed recording on a new clock. Its trace pins the server/receipt
-times at each reconnect, and a controlled WebSocket delivers stale callbacks after the next
-connection opens to check listener order without socket timing. Writer tests also plant a partial payload
-write and check rollback to the completed prefix, force/create failures, and a bound unable to hold one record. The packaged
-`start` command runs in an isolated home: HTTP works with the robot absent, then a loopback
-fixture robot connects and its values survive daemon shutdown. No test waits for an injected clock.
+documentation, UTC placement, open/closed manifests, hashes, resumption and name collisions, and
+queued match facts preceding the close-time directory rename. A blocked store queue leaves values
+and flushes running, retains one pending update, and writes a complete final manifest. That queue
+check counts output flush calls and keeps its values hot: its deadlock guard does not impose a
+disk-force/remapping throughput requirement on Windows CI. `LiveLogTest` separately exercises real
+flushes, hot-window expiry, mapping growth and cold reads on both platforms. Injected clocks pin the
+five-second progress cadence and immediate changed facts.
+
+`CaptureShutdownTest` proves service shutdown waits for that manifest outside the NT4 loop.
+`CaptureRecoveryTest` plants open manifests with complete, incomplete-tail, unreadable and
+damaged-header fixtures; checks hashes, ranges, modification-time endings, preserved facts and prior
+files; and proves recovery waits on the store queue. A blocked sweep leaves the real HTTP health
+endpoint responsive and starts no NT4 work until recovery completes. It verifies same-process and
+cross-process ownership, reader mapping alongside a writer, alias and symlink guards, and cleanup
+after an output fails to open.
+
+A child JVM blocks the store queue, checks the 30 second default and injects a zero deadline into
+the production wait, then exits without draining the pending manifest; the next service start must
+finish it. No test sleeps to advance a clock.
+
+`CaptureFailureTest` injects a disk failure over loopback and checks the reason in the manifest/log,
+connection survival, a suppressed same-clock reconnect, and a resumed recording on a new clock. Its
+trace pins the server/receipt times at each reconnect, and a controlled WebSocket delivers stale
+callbacks after the next connection opens to check listener order without socket timing. Writer
+tests also plant a partial payload write and check rollback to the completed prefix, force/create
+failures, and a bound unable to hold one record.
+
+The packaged `start` command runs in an isolated home: HTTP works with the robot absent, then a
+loopback fixture robot connects and its values survive daemon shutdown. No test waits for an
+injected clock.
 
 `IncrementalScanTest` grows a pure-Java fixture across complete and partial record boundaries,
 checks changed anchors and identity, late declarations/metadata, cached-value invalidation,
@@ -704,19 +801,23 @@ record with a fresh scan and the independent reader. It records warmed fresh/res
 `build/reports/round18/rescan-cost.txt`; mapping and filesystem cache costs are excluded equally.
 Unknown filesystem identity takes the fresh path, including on Windows providers returning no key.
 
-`LiveCaptureConformanceTest` replays every fixture through the gateway/client/writer, then runs
-the conformance suite's argument variants for every log-reading tool on the open session and on
-a fresh load of its finished file. It compares complete results, excluding only execution timing
-and the documented live-prefix range/disk file-size input, after a properties patch on every entry, and also runs the
-independent capture-fidelity checks. Metadata updates reach new calls while an acquired view keeps
-the metadata it saw, as well as its value boundary.
+`LiveCaptureConformanceTest` replays every fixture through the gateway/client/writer, then runs the
+conformance suite's argument variants for every log-reading tool on the open session and on a fresh
+load of its finished file. It compares complete results, excluding only execution timing and the
+documented live-prefix range/disk file-size input, after a properties patch on every entry, and also
+runs the independent capture-fidelity checks. Metadata updates reach new calls while an acquired
+view keeps the metadata it saw, as well as its value boundary.
+
 `LiveLogTest` checks fixed prefixes during a concurrent append, input ranges (including role-based
-inputs), array growth, all hot/cold value families and schemas, actual mapped-read counts (including
-a plant that leaves every hot object intact), four-per-second expiry with a zero hot window, mapping
-retirement with a held reader, resume after eviction, and rename after release. The store rename
-tests now keep a live mapping beside the writer too. These run in the normal Linux and Windows
-suite. A sparse WPILOG beyond the mapping limit is refused by import without moving or placing
-its bytes; loading and the plain-directory listing give the same reason. The shop stress test with a real robot remains a manual check owned by the user.
+inputs), array growth, all hot/cold value families and schemas, and actual mapped-read counts
+(including a plant that leaves every hot object intact). It also checks four-per-second expiry with
+a zero hot window, mapping retirement with a held reader, resume after eviction, and rename after
+release. The store rename tests now keep a live mapping beside the writer too. These run in the
+normal Linux and Windows suite.
+
+A sparse WPILOG beyond the mapping limit is refused by import without moving or placing its bytes;
+loading and the plain-directory listing give the same reason. The shop stress test with a real robot
+remains a manual check owned by the user.
 
 ### Windowed mapping
 
@@ -769,22 +870,28 @@ VSCODE_VERSION=1.101.0 xvfb-run -a npm run test:smoke
 VSCODE_VERSION=stable xvfb-run -a npm run test:smoke
 ```
 
-These commands run on Linux with Xvfb installed. From macOS or Windows, use the two
-`editor-smoke` CI jobs; the runner refuses to open an editor on those desktops.
-CI runs both versions in separate Linux jobs. `@vscode/test-electron` 2.5.2 is a development
-only dependency (MIT); that line supports CI's Node 20. It downloads a separate VS Code,
-cached in `.vscode-test`, without using the installed editor. `npm test` is unchanged.
-The smoke generates its log once with the pure-Java fixture writer, copies it and its append record into each run's temporary folder, and seeds a standalone install
-in a temporary home under `build/extension-smoke`, and lets the extension start its server.
-It checks activation, the shared daemon's health/version, the actual Logs provider's leased
-fixture listing, the custom editor tab, Perspective's actual row count (two fixture records, then three after an appended record), and the real pit command's user-scope arguments.
-A test `claude` executable records argv without registering anything. The runner stops its
-own daemon, retains logs/results under `build/extension-smoke`, and never changes the user's
-install or account. Test code, downloaded editors and dependencies are excluded from the VSIX.
+These commands run on Linux with Xvfb installed. From macOS or Windows, use the two `editor-smoke`
+CI jobs; the runner refuses to open an editor on those desktops. CI runs both versions in separate
+Linux jobs. `@vscode/test-electron` 2.5.2 is a development only dependency (MIT); that line supports
+CI's Node 20. It downloads a separate VS Code, cached in `.vscode-test`, without using the installed
+editor. `npm test` is unchanged.
+
+The smoke generates its log once with the pure-Java fixture writer, copies it and its append record
+into each run's temporary folder, seeds a standalone install in a temporary home under
+`build/extension-smoke`, and lets the extension start its server. It checks activation, the shared
+daemon's health/version, the actual Logs provider's leased fixture listing, the custom editor tab,
+Perspective's actual row count (two fixture records, then three after an appended record), and the
+real pit command's user-scope arguments. A test `claude` executable records argv without registering
+anything.
+
+The runner stops its own daemon, retains logs/results under `build/extension-smoke`, and never
+changes the user's install or account. Test code, downloaded editors and dependencies are excluded
+from the VSIX.
+
 CI then runs `test:smoke:plants`: six faults in disposable compiled output remove activation,
-startup, listing or editor opening, replace an appended table batch, or add a synthetic secret argument. Each must fail at its
-own assertion after the earlier checks passed; a timeout or unrelated crash is not accepted.
-The script restores every compiled file and runs only in Linux CI.
+startup, listing or editor opening, replace an appended table batch, or add a synthetic secret
+argument. Each must fail at its own assertion after the earlier checks passed; a timeout or
+unrelated crash is not accepted. The script restores every compiled file and runs only in Linux CI.
 
 This retires the real-editor caveat for those six surfaces. It does not inspect rendered
 plots, exercise credential dialogs, contact the Claude service, or prove agent discovery.
@@ -811,40 +918,45 @@ Native Windows launchers/CLI integration and the interactive installer should al
 ### The store HTTP door
 
 `StoreDoorTest` runs the actual HTTP transport against fixture-backed stores: catalog descriptors,
-filters, Range and prefix hashes, the HTTP remote, open-capture growth, and unassigned payloads.
-It checks traversal, strays, inbox and control-file refusals; lease-only stores are not published.
-One server bound to all interfaces serves the door while refusing both registration routes and
-untrusted Origins. Plants remove each boundary, leak a synthetic credential into a manifest, and
-report the coalesced size instead of the current file length. `ManualSchedulerTest` pins the native
-replay harness race where clock advancement already drained the reply a subsequent wait expected.
-Catalog payloads named `prefix-hash` are also exercised, separately from the hash operation's
-required query field. `ReplayCaptureTest` drops a socket before replay and proves that subscription
-readiness counts the current connection's announcements. Lifetime counts could overshoot forever
-after a reconnect; timeout diagnostics now include connection and topic counts, without telemetry.
+filters, Range and prefix hashes, the HTTP remote, open-capture growth, and unassigned payloads. It
+checks traversal, strays, inbox and control-file refusals; lease-only stores are not published. One
+server bound to all interfaces serves the door while refusing both registration routes and untrusted
+Origins. Plants remove each boundary, leak a synthetic credential into a manifest, and report the
+coalesced size instead of the current file length. Catalog payloads named `prefix-hash` are also
+exercised, separately from the hash operation's required query field.
 
-`StoreSyncTest` uses two stores on real in-process HTTP transports. Both transfer orders and a
-third round must converge on the same session ids and hash union. It checks overlapping fragments,
-serial separation, provenance and human conflicts, content-proved resume, peer disappearance,
-placement recovery before contacting an offline peer, hash and reader refusals, mirror refusal in
-both directions, and queued-job exclusion. An active writer must retain a peer's capture and match
-facts on its next flush. The network-bind test permits loopback job submission and refuses a
-connection through a nonloopback interface (only that interface check skips if none exists).
-With small file bounds, both writers roll over after syncing; all peer hashes and all 402
-generated value records survive, so a future local filename cannot collide with a peer capture.
-`MainSyncTest` runs child JVMs offline and against a real daemon, checking remembered peers,
-cross-process locking, exit codes and that daemon failures never fall back to an offline writer.
+`ManualSchedulerTest` pins the native replay harness race where clock advancement already drained
+the reply a subsequent wait expected. `ReplayCaptureTest` drops a socket before replay and proves
+that subscription readiness counts the current connection's announcements. Lifetime counts could
+overshoot forever after a reconnect; timeout diagnostics now include connection and topic counts,
+without telemetry.
 
-`StoreSyncConformanceTest` imports every generated fixture, syncs over HTTP, and compares every
-log tool and schema-derived argument variant on the source-store file and its copied file.
-It includes the REV companion, verifies identical bytes, and normalizes only execution time and
-the known file paths. Counts are written to `build/reports/conformance/store-sync.txt`.
-This comparison exposed directory prefixes leaking into inferred REV bus names on Windows.
-`SynchronizedLogsTest` now tests Windows drive/UNC and Unix path strings on every platform,
-including underscores in parent directories, numbered fallback buses and locale-independent names.
+`StoreSyncTest` uses two stores on real in-process HTTP transports. Both transfer orders and a third
+round must converge on the same session ids and hash union. It checks overlapping fragments, serial
+separation, provenance and human conflicts, content-proved resume, peer disappearance, placement
+recovery before contacting an offline peer, hash and reader refusals, mirror refusal in both
+directions, and queued-job exclusion. An active writer must retain a peer's capture and match facts
+on its next flush.
+
+The network-bind test permits loopback job submission and refuses a connection through a nonloopback
+interface (only that interface check skips if none exists). With small file bounds, both writers
+roll over after syncing; all peer hashes and all 402 generated value records survive, so a future
+local filename cannot collide with a peer capture. `MainSyncTest` runs child JVMs offline and
+against a real daemon, checking remembered peers, cross-process locking, exit codes and that daemon
+failures never fall back to an offline writer.
+
+`StoreSyncConformanceTest` imports every generated fixture, syncs over HTTP, and compares every log
+tool and schema-derived argument variant on the source-store file and its copied file. It includes
+the REV companion, verifies identical bytes, and normalizes only execution time and the known file
+paths. Counts are written to `build/reports/conformance/store-sync.txt`. This comparison exposed
+directory prefixes leaking into inferred REV bus names on Windows. `SynchronizedLogsTest` now tests
+Windows drive/UNC and Unix path strings on every platform, including underscores in parent
+directories, numbered fallback buses and locale-independent names.
+
 Plants change ids, overlap/serial rules, hash deduplication, provenance, conflict handling, resume
 proofs, verification, recovery, move aliases, mirror/HTTP admission and a copied log's tool answer.
-These tests need no robot, real log, external server or new dependency and run in the ordinary
-Linux and Windows builds. Run them with
+These tests need no robot, real log, external server or new dependency and run in the ordinary Linux
+and Windows builds. Run them with
 `./gradlew test --tests '*StoreSyncTest' --tests '*MainSyncTest' --tests '*StoreSyncConformanceTest'`.
 
 ### Mirrors
@@ -864,52 +976,59 @@ No robot log or robot value is needed. Linux and Windows CI run these in the ord
 
 ### The data endpoint's streams
 
-`DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`, and CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.
+`DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`. CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.
 
 ### Pit import coverage
 
-`StoreUploadEndpointTest` sends generated bytes over loopback and a nonloopback interface,
-checks placement and duplicates, rejects traversal, Origin violations, mirrors, unknown store
-ids, wrong hashes and unreadable content, and keeps server-path operations local.
-`StoreInboxTest` pauses an HTTP upload during inbox polling, checks queued cleanup behind a blocked store, ownership and size limits,
-and imports while capture is enabled with an absent robot. `MainImportTest` sends a generated
-USB directory through the actual command: two serials, two boots each, two logs per boot,
+`StoreUploadEndpointTest` sends generated bytes over loopback and a nonloopback interface, checks
+placement and duplicates, rejects traversal, Origin violations, mirrors, unknown store ids, wrong
+hashes and unreadable content, and keeps server-path operations local. `StoreInboxTest` pauses an
+HTTP upload during inbox polling, checks queued cleanup behind a blocked store, ownership and size
+limits, and imports while capture is enabled with an absent robot. `MainImportTest` sends a
+generated USB directory through the actual command: two serials, two boots each, two logs per boot,
 duplicate copies and a second import. No robot values enter these fixtures.
-The extension's `upload.test.ts` checks streamed bytes and hash, store selection, polling,
-refusal reporting and uncertain POST behavior. Manually check Upload Logs to Pit Server on
-both supported VS Code versions, including the picker, several files, a duplicate, a refusal
-and a network interruption; the editor smoke does not exercise the upload picker.
+
+The extension's `upload.test.ts` checks streamed bytes and hash, store selection, polling, refusal
+reporting and uncertain POST behavior. Manually check Upload Logs to Pit Server on both supported VS
+Code versions, including the picker, several files, a duplicate, a refusal and a network
+interruption; the editor smoke does not exercise the upload picker.
 
 ### Live tool checks
 
 `LiveToolsTest` crosses HTTP MCP with the production capture service, a loopback gateway and
-injected robot/calendar clocks. It pins ages, first-publication and per-session waits, exact
-record bytes, thinning/exclusion, costs and session limits, closed summaries, missing topics,
-bad arguments, shutdown/unannounce registration ordering, and import visibility while the store
-queue is blocked. Session ordering includes mixed whole and fractional seconds. Description
-outputs are checked against these actual results. `StoreManifestReplaceTest` injects Windows
-access denials and a pause recorder: it pins complete atomic replacement, six attempts, error
-selection, interruption, temporary cleanup and publication only after success, without sleeps. `LiveReplayTest` replays every generated fixture,
-compares current values and timestamps with the independent reader, counts WPILOG record bytes,
-and repeats calls for determinism. `LiveValueSnapshotTest` supplies snapshots on opposite sides of a topic redeclaration and pins the value's original authoritative type; the client's hand-encoded-frame test checks that the type is stored with the value. `LiveCaptureConformanceTest` continues to compare every
-ordinary log tool on the live prefix and finished file. The only silent-empty exception is
-`wait_for_change`'s specified successful `changed:false` timeout; empty analyses still fail.
+injected robot/calendar clocks. It pins ages, first-publication and per-session waits, exact record
+bytes, thinning/exclusion, costs and session limits, closed summaries, missing topics, bad
+arguments, shutdown/unannounce registration ordering, and import visibility while the store queue is
+blocked. Session ordering includes mixed whole and fractional seconds. Description outputs are
+checked against these actual results.
+
+`StoreManifestReplaceTest` injects Windows access denials and a pause recorder: it pins complete
+atomic replacement, six attempts, error selection, interruption, temporary cleanup and publication
+only after success, without sleeps. `LiveReplayTest` replays every generated fixture, compares
+current values and timestamps with the independent reader, counts WPILOG record bytes, and repeats
+calls for determinism. `LiveValueSnapshotTest` supplies snapshots on opposite sides of a topic
+redeclaration and pins the value's original authoritative type; the client's hand-encoded-frame test
+checks that the type is stored with the value.
+
+`LiveCaptureConformanceTest` continues to compare every ordinary log tool on the live prefix and
+finished file. The only silent-empty exception is `wait_for_change`'s specified successful
+`changed:false` timeout; empty analyses still fail.
 
 Run `./gradlew test --tests '*Live*Test' --tests '*ClaimChecksTest'`. The existing
 `-PconformanceLogDir=/path/to/logs` also feeds the live replay's relational checks, with path-only
-failures and reports under `build/reports/live-tools/`; no real values are written into tests
-or docs. Both stress entry points add concurrent HTTP live queries during fixture replay.
-Recovery checks plant stale summaries and require unknown counts after both successful and
-failed file recovery. The responses scenarios include all three capture-only tools; the ordinary reference server
-answers that capture is not enabled.
+failures and reports under `build/reports/live-tools/`; no real values are written into tests or
+docs. Both stress entry points add concurrent HTTP live queries during fixture replay. Recovery
+checks plant stale summaries and require unknown counts after both successful and failed file
+recovery. The responses scenarios include all three capture-only tools; the ordinary reference
+server answers that capture is not enabled.
 
 `PitCredentialTest` uses synthetic credentials and real HTTP to check lease precedence,
 removal/expiry, exact endpoint forwarding, origin-scoped store authorization, and network/Origin
 refusals. Node tests cover SecretStorage key selection, headers on MCP/data/upload/polling,
 registration and secret-free Claude arguments. The real-editor smoke checks the command without a
-proxy credential. On the oldest supported and current releases, manually exercise Set/Clear Pit Proxy Credential, a proxy login from
-agents/Logs/plots/uploads/mirror, Claude re-registration, lease expiry after closing the window,
-and offline mirror access through `servers.yaml`.
+proxy credential. On the oldest supported and current releases, manually exercise Set/Clear Pit
+Proxy Credential, a proxy login from agents/Logs/plots/uploads/mirror, Claude re-registration, lease
+expiry after closing the window, and offline mirror access through `servers.yaml`.
 
 ### SSH context provider checks
 
@@ -918,16 +1037,17 @@ and offline mirror access through `servers.yaml`.
   --tests '*ProviderCaptureTest' --tests '*ContextProviderStateTest' --tests '*ProviderConfigTest' --tests '*LoopWatchdogTest'
 ```
 
-This suite
-uses only synthetic `/proc` text and generated logs. MINA SSHD serves exact scripted commands,
-never a general shell: independent expected CPU fractions, kernel tick/page/KiB conversions,
-network rates, send-time stamping and missing-sync drops; injected period/backoff clocks;
-append, rotation, split UTF-8, missing files and SSH reconnect; line caps and bounded buffering.
-The full provider path shares one SSH authentication with device identity, records while the
-robot is enabled, and compares HTTP/live/fresh-file results through the conformance and
-differential readers. Resolver, metadata, manifest, metrics and configuration claims are checked.
-The outside-loop watchdog is tested with two independent manual clocks. These tests run in
-ordinary Linux and Windows CI, with no robot, native SSH executable or locale dependency.
+This suite uses only synthetic `/proc` text and generated logs. MINA SSHD serves exact scripted
+commands, never a general shell. The checks cover independent expected CPU fractions, kernel
+tick/page/KiB conversions, network rates, send-time stamping and missing-sync drops; injected
+period/backoff clocks; append, rotation, split UTF-8, missing files and SSH reconnect; and line caps
+and bounded buffering. The full provider path shares one SSH authentication with device identity,
+records while the robot is enabled, and compares HTTP/live/fresh-file results through the
+conformance and differential readers.
+
+Resolver, metadata, manifest, metrics and configuration claims are checked. The outside-loop
+watchdog is tested with two independent manual clocks. These tests run in ordinary Linux and Windows
+CI, with no robot, native SSH executable or locale dependency.
 
 Before a shop deployment, measure the two-second/100 ms defaults on roboRIO 1 and 2; check
 `/proc` and `df` output and permissions, the deployed JAR lookup, console file, tail options,
@@ -939,7 +1059,7 @@ real-log replay is sufficient for this provider addition; the full set runs befo
 
 A tool is more than its code: agents read its description and schema, and several tests hold them to what the code does. When you add a tool or change what one takes or returns:
 
-1. Follow the design principles. Return measurements with their sample counts, not conclusions. Find inputs through the shared signal resolver, never by a word in a name or by content alone: an entry is used when it is passed, follows a published convention, or is the only one of its type, and anything else that looks right is listed as a candidate. Say what was used, what was skipped, and what was cut short. A tool that cannot apply returns `not_applicable` or `no_match` with what it looked for, never an empty success.
+1. Follow the design principles. Return measurements with their sample counts, not conclusions. Find inputs through the shared signal resolver, never by a word in a name or by content alone. An entry is used when it is passed, follows a published convention, or is the only one of its type; anything else that looks right is listed as a candidate. Say what was used, what was skipped, and what was cut short. A tool that cannot apply returns `not_applicable` or `no_match` with what it looked for, never an empty success.
 2. Use the shared pieces. A tool that reads a log extends the log-reading base, which adds the `path` parameter and loads the log. Build the result with the shared response builder, take time ranges through the shared scope and window handling, and attach data quality where the result rests on statistics.
 3. Write the description for an agent. Name every output, and say what the numbers do and don't show. A test fails when a description names an output that no result contains.
 4. Register it and list it. Register the tool in the module with related tools, and add it to the catalog that `get_server_guide` and `suggest_tools` use.
@@ -964,11 +1084,15 @@ Before tagging, run the Java real-log replay commands above with `-PconformanceS
 
 The release workflow (`.github/workflows/release.yml`) builds the server JAR and the `.vsix` under that version and attaches both to a GitHub release. It stops if the tag and `build.gradle` disagree. A release without a suffix is also published to the Visual Studio Marketplace; see [Publishing to the Marketplace](#publishing-to-the-marketplace).
 
-A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release. For a pre-release, skip steps 2 and 3 and tag the version `build.gradle` carries. The repository's releases are immutable: a published release's files and tag cannot be changed, and a deleted release's tag name cannot be used again, so a release that went wrong gets a new version (`0.9.0-dev2` for a pre-release, the next patch version for a release), never a moved tag.
+A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release. For a pre-release, skip steps 2 and 3 and tag the version `build.gradle` carries. The repository's releases are immutable: a published release's files and tag cannot be changed, and a deleted release's tag name cannot be used again. So a release that went wrong gets a new version (`0.9.0-dev2` for a pre-release, the next patch version for a release), never a moved tag.
 
 ## Publishing to the Marketplace
 
-The extension is published under the `TripleHelixProgramming` publisher. Publishing needs a Personal Access Token from an Azure DevOps organization, created with **All accessible organizations** and the **Marketplace (Manage)** scope. The publisher's management page is [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage). The release workflow publishes every release without a suffix when the token is in the `VSCE_PAT` repository secret; when the secret is missing or the token has expired, the workflow says so, and the `.vsix` from the GitHub release can be uploaded on the management page instead. The Marketplace does not accept a version with a suffix, and never accepts a version twice, so a release that must be redone gets a new patch version. `package.json`'s `publisher` must stay the publisher's ID: VS Code identifies the extension as `TripleHelixProgramming.wpilog-analyzer`, and changing it would make the Marketplace listing a different extension.
+The extension is published under the `TripleHelixProgramming` publisher. Publishing needs a Personal Access Token from an Azure DevOps organization, created with **All accessible organizations** and the **Marketplace (Manage)** scope. The publisher's management page is [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage).
+
+The release workflow publishes every release without a suffix when the token is in the `VSCE_PAT` repository secret. When the secret is missing or the token has expired, the workflow says so, and the `.vsix` from the GitHub release can be uploaded on the management page instead. The Marketplace does not accept a version with a suffix, and never accepts a version twice, so a release that must be redone gets a new patch version.
+
+`package.json`'s `publisher` must stay the publisher's ID: VS Code identifies the extension as `TripleHelixProgramming.wpilog-analyzer`, and changing it would make the Marketplace listing a different extension.
 
 ## Contributing
 
