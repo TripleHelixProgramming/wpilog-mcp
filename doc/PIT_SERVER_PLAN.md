@@ -1386,3 +1386,10 @@ imports check in `LiveToolsTest`. No matching algorithm or manifest format chang
   offsets outside the gate, and preserve receipts through sync. Store/mirror conformance uses
   generated companions on the same boot clock. The source-selection and format-upgrade gaps
   in the round 24 audit remain open.
+- **CI test ordering:** Linux run `38013297496` observed `following` where the PhotonVision
+  missing-fields test expected `stand_down`, after only 0.047 seconds. The sink queues its
+  snapshot before its status notice; the caller can consume the snapshot and clear old
+  notices before that final notice arrives. Waiting for any notice then races the malformed
+  message. A manual scheduler now pins the stale-notice ordering, and the test waits for the
+  required state with the existing guard. The old one-event check fails deterministically;
+  neither the provider nor a timeout changed. Windows on the same commit passed.

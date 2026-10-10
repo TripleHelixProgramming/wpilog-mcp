@@ -88,19 +88,24 @@ class PhotonVisionProviderTest {
   }
   @Test void missingFieldsAndVanishedBackendsStandDownForTheSessionKeepingTheLastSnapshot() throws Exception {
     try (var backend = new PhotonFixture()) {
+      var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
       var statuses = new LinkedBlockingQueue<Boolean>(); var snapshots = new LinkedBlockingQueue<Snapshot>();
       try (var provider = new PhotonVisionProvider(backend.address(), () -> 3_000_000.0, (session, timestamp, cameras, metadata) -> {
         snapshots.add(new Snapshot(timestamp, cameras, metadata)); statuses.add(true); return CompletableFuture.completedFuture(null);
-      }, () -> statuses.add(true))) {
-        var session = new Object(); provider.session(session, true); assertNotNull(snapshots.poll(30, TimeUnit.SECONDS));
+      }, () -> statuses.add(true), java.net.http.HttpClient.newHttpClient(), loop)) {
+        var session = new Object(); provider.session(session, true);
+        until(loop, () -> !snapshots.isEmpty()); assertNotNull(snapshots.poll());
         var malformed = PhotonFixture.document(12);
         malformed.getAsJsonArray("cameraSettings").get(0).getAsJsonObject().getAsJsonObject("currentPipelineSettings").remove("cameraGain");
-        statuses.clear(); backend.push(malformed);
-        assertNotNull(statuses.poll(30, TimeUnit.SECONDS), "Every settings message is accepted or refused explicitly");
-        assertEquals("stand_down", provider.status().state());
+        statuses.clear();
+        // The sink can notify after its snapshot wakes the caller and the caller clears events.
+        // Keep that stale notice pending, with malformed-message processing still on the loop.
+        statuses.add(true); backend.push(malformed);
+        until(loop, () -> provider.status().state().equals("stand_down"));
         assertTrue(provider.status().reason().contains("cameraGain")); assertTrue(snapshots.isEmpty());
         provider.session(session, true); assertEquals(1, backend.connections.get(), "No retry storm in the failed session");
-        provider.session(new Object(), true); assertNotNull(snapshots.poll(30, TimeUnit.SECONDS));
+        provider.session(new Object(), true);
+        until(loop, () -> !snapshots.isEmpty()); assertNotNull(snapshots.poll());
         backend.close(); awaitState(provider, statuses, "stand_down");
         assertTrue(provider.status().reason().contains("WebSocket")); assertTrue(snapshots.isEmpty());
       }
