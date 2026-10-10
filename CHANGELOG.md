@@ -145,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The operations manual's tool names, CLI verbs, YAML examples, provider names and states, metrics and relative links are checked against the code and document headings; previously no test read the manual, so stale or misspelled claims could pass the build.
 - Legacy unassigned-layout migration now checks the entire file receipt apart from its changed path; previously matching reasons, placement methods and robot fingerprints could be lost without failing the migration test.
 - The PhotonVision stand-down check now pins a late snapshot notification and an abrupt backend close with no outstanding message demand, advancing its manual keepalive clock to detect the latter. Previously a stale notice could satisfy the malformed-message wait early, while a blocking wait froze the only reliable detection of a vanished backend and failed under load.
 - Generated import checks now distinguish overlapping boots, open and recorded anchors, calendar-only fallback and both sides of the REV matching boundary, with planted failures. They also pin a capture's logged serial over its stated directory, placement receipts through identity promotion, and the live listing's calendar-only method and reason; those branches previously lacked regression checks. Store and mirror conformance retain same-clock companions; the real-log replay sample checks the matching path against independently read source files.

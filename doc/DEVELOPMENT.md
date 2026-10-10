@@ -261,6 +261,11 @@ No expected value is stored, so the same checks run on any log. The server may s
 
 **Claim checks.** The documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it.
 
+`OperationsClaimTest` checks the manual's backticked tool names, CLI verbs, YAML examples,
+provider names and states, emitted metrics, and relative links to document headings. Unknown
+bare identifiers must be classified as prose or result fields so a misspelled tool cannot
+silently escape the registry check. The checks do not repeat the manual's installation walk.
+
 TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added. It may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
 
 **Process and installer tests.** Fresh JVMs verify startup configuration and logging. `InstallCommandTest`, `CodeInstallerTest`, `InstallRefreshTest`, and `InstallerTest` use temporary installs, fake release downloads, and fake VS Code CLIs. They check containment and layout on both platforms’ path rules, generated launchers, version ordering, exact JAR copies, and JSON isolated from JVM stderr. They also check preserved settings, refresh guards and stopping a real daemon, release selection, prompts, one matching VSIX installation, and the legacy fallback. PowerShell checks run when PowerShell is available; native Windows execution remains CI’s job.
