@@ -771,6 +771,16 @@ wpilog-mcp import --robot practice ~/riologs/downloads
 wpilog-mcp import --server pit /media/usb/logs
 ```
 
+For a known robot, import first nominates sessions by calendar range with the puller's clock
+slack. If a candidate has a capture or a data-matched WPILOG, joining it requires strong,
+unique correlation within 250 ms of zero; a failed or ambiguous proof starts a separate session
+with its reason. Without a nominated anchor, exact calendar overlap still groups the files and
+the manifest says `placement_method: by_time_overlap`, with no measured offset. Imported REV
+companions also need the near-zero proof; other boots remain unassigned. Previously ordinary
+WPILOG imports trusted overlap alone and REV companions could be placed with seconds of offset.
+Existing placements stay where they are, with their original evidence. A matched session keeps
+its anchor's calendar even when the imported file's own clock was unset.
+
 `import` loads the named configuration (default `default`) using the same discovery as `start`. The destination is the first configured directory that is already a store, or the first configured directory if none is yet. `--store` chooses another directory inside the configured log directories. The first import creates the store and its `inbox/`. Files and directories are accepted; content identifies WPILOG and REV logs, and unsupported files are refused with a reason. Copies are the default; `--move` moves the originals. A move of a file listed by another store is refused with that store’s path; copy it instead to preserve both catalogs. Unmanaged files in another store can still be moved. `--robot` states a robot name when the log supplies no serial number. Duplicates are reported with their stored path and left at their source. Unassigned payloads live under `unassigned/<hash prefix>/robot/`, separate from `import.json`; older entries remain readable and migrate on the next import. Control filenames are placed in a hash subdirectory, keeping their original name and bytes.
 
 When the named daemon is running, the command posts sources inside configured directories to its import endpoint and prints the job's progress and complete result. Outside sources, such as a USB stick, are copied (or moved with `--move`) into the store's inbox for the daemon to import. The command says where it placed them; their eventual results are in `inbox/imported.log`. With `--robot`, the command writes `batch.json` beside the batch files (`{"stated_robot":"practice"}`); the daemon uses that stated robot when the log has no logged identity. Names use letters, digits, dots, hyphens, and underscores, and must also be portable filenames (no Windows device names or trailing dot). A failed HTTP request is reported, without starting a second importer.

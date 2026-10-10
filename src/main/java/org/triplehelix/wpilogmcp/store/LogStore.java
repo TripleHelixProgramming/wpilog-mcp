@@ -32,6 +32,7 @@ import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
 import org.triplehelix.wpilogmcp.log.LogFileAccess;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.log.LogMetadata;
 import org.triplehelix.wpilogmcp.log.ScopedLogReader;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.revlog.RevLogParser;
@@ -61,7 +62,9 @@ public final class LogStore implements AutoCloseable {
 
   private record Candidate(Path path, String hash, Robot robot, Instant start, Instant end) {}
   private record Pair(Candidate wpilog, SyncResult sync) {}
-  private record Placement(ImportInspection input, Path destination, Matching matching) {}
+  private record Placement(ImportInspection input, Path destination, Matching matching,
+      String placementMethod, String reason) {}
+  private record ImportMatch(Path manifest, Matching matching, String reason, boolean hasAnchors) {}
 
   private static final Set<String> CONTROL_NAMES = Set.of(
       "import.json", "session.json", "robot.json", "store.json", "batch.json");
@@ -635,7 +638,7 @@ public final class LogStore implements AutoCloseable {
            var log = new LazyParsedLog(candidate.path().toString(), reader.reader(), 32L * 1024 * 1024)) {
         var sync = new LogSynchronizer().synchronize(log, rev);
         // A time-only estimate aligns clocks but cannot establish which robot wrote the file.
-        if (sync.method() == SyncMethod.CROSS_CORRELATION && sync.strongPairCount() > 0) {
+        if (sameBootCorrelation(sync)) {
           matches.putIfAbsent(candidate.hash(), new Pair(candidate, sync));
         }
       }
@@ -650,6 +653,101 @@ public final class LogStore implements AutoCloseable {
    */
   private static boolean nearRevClock(ImportInspection rev, Candidate candidate) {
     return rev.nearClock(candidate.start(), candidate.end());
+  }
+
+  private static boolean sameBootCorrelation(SyncResult sync) {
+    return sync.method() == SyncMethod.CROSS_CORRELATION && sync.strongPairCount() > 0
+        && sync.offsetMicros() >= -PullStore.MAX_MATCH_OFFSET_US
+        && sync.offsetMicros() <= PullStore.MAX_MATCH_OFFSET_US;
+  }
+
+  /** Follow recorded references only; new tolerances must not drift away from the boot clock. */
+  private static long anchorOffset(StoredFile anchor) throws IOException {
+    long offset = 0;
+    var file = anchor.file(); var visited = new HashSet<String>();
+    while (file.matching() != null) {
+      if (!visited.add(file.path())) throw new IOException("Cycle in recorded anchor alignment: " + anchor.manifestPath());
+      var evidence = StoreCatalog.recordedAlignment(new StoredFile(anchor.path(), anchor.manifestPath(),
+          anchor.robot(), anchor.session(), file));
+      if (!evidence.isSuccessful()) throw new IOException(evidence.explanation());
+      if (!"by_correlation".equals(file.matching().method())) throw new IOException("Anchor has no recorded data proof");
+      try { offset = Math.addExact(offset, file.matching().offsetMicros()); }
+      catch (ArithmeticException e) { throw new IOException("Recorded anchor offset overflows", e); }
+      if (offset < -PullStore.MAX_MATCH_OFFSET_US || offset > PullStore.MAX_MATCH_OFFSET_US) {
+        throw new IOException("Recorded anchor exceeds the " + PullStore.MAX_MATCH_OFFSET_US + " us automatic matching limit");
+      }
+      var reference = file.matching().wpilogSha256();
+      file = anchor.session().files().stream().filter(f -> Objects.equals(reference, f.sha256())).findFirst().orElse(null);
+      if (file == null) break; // A peer may have supplied the proven file without its original capture.
+    }
+    return offset;
+  }
+
+  /**
+   * Calendar overlap only nominates an anchored boot. Reusing its record requires the same
+   * strong, unique, near-zero proof as a pull; a failed proof must not fall back to the clock.
+   * The per-import catalog includes open captures and is updated after each placement.
+   */
+  private ImportMatch matchImport(StoreFiles io, ImportCatalog catalog, ImportInspection input,
+      Robot robot, Consumer<Progress> progress) throws IOException {
+    var anchors = new ArrayList<StoredFile>();
+    for (var entry : catalog.sessions.entrySet()) {
+      var manifest = entry.getKey(); var session = entry.getValue();
+      var owner = catalog.robots.get(root.relativize(manifest).getName(1).toString());
+      boolean sameRobot = owner != null && (owner.id().equals(robot.id())
+          || robot.serialNumber() != null && robot.serialNumber().equals(owner.serialNumber()));
+      if (!sameRobot || !input.nearClock(Instant.parse(session.startedAt()),
+          Instant.parse(session.endedAt()))) continue;
+      var files = new ArrayList<>(session.files());
+      if (session.openCapture() != null) {
+        var open = session.openCapture();
+        files.add(new LogFile(open.path(), null, open.sizeBytes(), "wpilog", open.provenance(), false,
+            open.minTimestampSec(), open.maxTimestampSec(), session.startedAt(), session.endedAt(),
+            session.startBasis(), false, null));
+      }
+      var captures = files.stream().filter(f -> f.kind().equals("wpilog") && f.provenance().kind().equals("captured")).toList();
+      var candidates = captures.isEmpty() ? files.stream().filter(f -> f.kind().equals("wpilog")
+          && f.matching() != null && "by_correlation".equals(f.matching().method())).toList() : captures;
+      for (var file : candidates) anchors.add(new StoredFile(io.resolve(manifest.getParent(), file.path()),
+          manifest, owner, session, file));
+    }
+    if (anchors.isEmpty()) return new ImportMatch(null, null, "no capture or data-matched anchor", false);
+    var matches = new LinkedHashMap<Path, Matching>();
+    var reasons = new TreeSet<String>();
+    var synchronizer = new LogSynchronizer();
+    try (var reader = new ScopedLogReader(input.path());
+         var imported = new LazyParsedLog(input.path().toString(), reader.reader(), 32L * 1024 * 1024)) {
+      int completed = 0;
+      for (var anchor : anchors) {
+        notify(progress, new Progress("correlating", anchor.path(), completed++, anchors.size()));
+        try (var use = logManager.acquire(anchor.path().toString())) {
+          long anchorUs = anchorOffset(anchor);
+          var metadata = LogMetadata.read(use.log());
+          if (robot.serialNumber() != null && metadata.serialNumber() != null
+              && !robot.serialNumber().equals(metadata.serialNumber())) {
+            reasons.add("known robot serials differ"); continue;
+          }
+          var sync = synchronizer.synchronize(use.log(), imported);
+          if (sync.method() != SyncMethod.CROSS_CORRELATION || sync.strongPairCount() == 0) {
+            reasons.add("no strong data correlation"); continue;
+          }
+          if (!sameBootCorrelation(sync) || sync.offsetMicros() + anchorUs < -PullStore.MAX_MATCH_OFFSET_US
+              || sync.offsetMicros() + anchorUs > PullStore.MAX_MATCH_OFFSET_US) {
+            reasons.add("measured offset exceeds the " + PullStore.MAX_MATCH_OFFSET_US + " us automatic matching limit"); continue;
+          }
+          String basis = input.metadata().serialNumber() != null && metadata.serialNumber() != null
+              ? "serial_and_data" : "data_alone";
+          matches.putIfAbsent(anchor.manifestPath(), new Matching("by_correlation", anchor.file().sha256(),
+              sync.offsetMicros(), sync.confidence(), sync.driftRateNanosPerSec(), sync.referenceTimeSec(), basis, sync));
+        } catch (IOException e) { reasons.add("unreadable anchor " + anchor.path() + ": " + e.getMessage()); }
+      }
+    }
+    if (matches.size() == 1) {
+      var match = matches.entrySet().iterator().next();
+      return new ImportMatch(match.getKey(), match.getValue(), null, true);
+    }
+    return new ImportMatch(null, null, matches.isEmpty() ? String.join("; ", reasons)
+        : "ambiguous data correlation with multiple sessions", true);
   }
 
   private void place(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, ImportInspection primary,
@@ -668,16 +766,24 @@ public final class LogStore implements AutoCloseable {
       }
       return;
     }
-    // A session with only an open capture has no finished hash in catalog.files yet.
-    // Nominate sessions from their manifests so a live boot can receive an overlapping import.
+    var decision = matchImport(io, catalog, primary, robot, progress);
+    if (decision.manifest() != null) {
+      var owner = catalog.robots.get(root.relativize(decision.manifest()).getName(1).toString());
+      placeGroup(io, catalog, inputs, decision.manifest(), owner, catalog.sessions.get(decision.manifest()),
+          pairs, move, parser, outcomes, progress, decision);
+      return;
+    }
+    // Keep the old calendar-only rule only where no nominated boot can supply data proof.
     var overlap = catalog.sessions.entrySet().stream()
+        .filter(s -> !decision.hasAnchors())
         .filter(s -> s.getKey().startsWith(root.resolve("robots").resolve(robot.id())))
         .filter(s -> !primary.end().isBefore(Instant.parse(s.getValue().startedAt()))
             && !primary.start().isAfter(Instant.parse(s.getValue().endedAt())))
         .findFirst();
     if (overlap.isPresent()) {
       var found = overlap.get();
-      placeGroup(io, catalog, inputs, found.getKey(), robot, found.getValue(), pairs, move, parser, outcomes, progress);
+      placeGroup(io, catalog, inputs, found.getKey(), robot, found.getValue(), pairs, move, parser, outcomes, progress,
+          new ImportMatch(found.getKey(), null, decision.reason(), false));
       return;
     }
     var metadata = primary.metadata();
@@ -698,12 +804,19 @@ public final class LogStore implements AutoCloseable {
     var session = new Session(UUID.randomUUID().toString(), primary.start().toString(),
         primary.end().toString(), primary.startBasis(), metadata.event(), metadata.matchType(),
         metadata.matchNumber(), metadata.teamNumber(), List.of());
-    placeGroup(io, catalog, inputs, directory.resolve("session.json"), robot, session, pairs, move, parser, outcomes, progress);
+    placeGroup(io, catalog, inputs, directory.resolve("session.json"), robot, session, pairs, move, parser, outcomes, progress,
+        decision.hasAnchors() ? decision : null);
   }
 
   private void placeGroup(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, Path manifest,
       Robot robot, Session session, Map<Path, Pair> pairs, boolean move, RevLogParser parser,
       List<Outcome> outcomes, Consumer<Progress> progress) throws IOException {
+    placeGroup(io, catalog, inputs, manifest, robot, session, pairs, move, parser, outcomes, progress, null);
+  }
+
+  private void placeGroup(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, Path manifest,
+      Robot robot, Session session, Map<Path, Pair> pairs, boolean move, RevLogParser parser,
+      List<Outcome> outcomes, Consumer<Progress> progress, ImportMatch decision) throws IOException {
     var known = catalog.files.values();
     var placements = new ArrayList<Placement>();
     for (var input : inputs) {
@@ -717,7 +830,10 @@ public final class LogStore implements AutoCloseable {
       var matching = pair == null ? null : new Matching("by_correlation", pair.wpilog().hash(),
           pair.sync().offsetMicros(), pair.sync().confidence(), pair.sync().driftRateNanosPerSec(),
           pair.sync().referenceTimeSec(), "data_alone", pair.sync());
-      placements.add(new Placement(input, destination, matching));
+      boolean wpilogDecision = decision != null && input.kind().equals("wpilog");
+      placements.add(new Placement(input, destination, wpilogDecision ? decision.matching() : matching,
+          wpilogDecision && decision.manifest() != null && decision.matching() == null ? "by_time_overlap" : null,
+          wpilogDecision ? decision.reason() : null));
     }
     if (placements.isEmpty()) return;
     var transferred = new ArrayList<Placement>();
@@ -751,7 +867,7 @@ public final class LogStore implements AutoCloseable {
             input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
             input.start() == null ? null : input.start().toString(),
             input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
-            placement.matching(), input.robotFingerprint()));
+            placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
       }
       if (session == null) io.write(manifest, records.get(0));
       else {
@@ -759,6 +875,8 @@ public final class LogStore implements AutoCloseable {
         var end = Instant.parse(session.endedAt());
         String basis = session.startBasis();
         for (var input : inputs) {
+          // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
+          if (decision != null && decision.matching() != null) continue;
           // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
           if (!input.kind().equals("wpilog")) continue;
           if (input.start() != null && input.start().isBefore(start)) {
@@ -844,7 +962,7 @@ public final class LogStore implements AutoCloseable {
         var updated = new LogFile(StoreFiles.relative(stored.manifestPath().getParent(), destination),
             file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
             file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(),
-            file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason());
+            file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason(), file.placementMethod());
         io.write(stored.manifestPath(), updated);
         rewriteMoves(io, catalog, stored.path(), destination);
         catalog.placed(io, stored.manifestPath(), null, null, List.of(updated));

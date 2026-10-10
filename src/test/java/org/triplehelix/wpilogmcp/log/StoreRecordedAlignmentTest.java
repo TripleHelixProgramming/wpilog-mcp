@@ -7,12 +7,11 @@ package org.triplehelix.wpilogmcp.log;
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
+import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.revlog.ParsedRevLog;
 import org.triplehelix.wpilogmcp.store.LogStore;
 import org.triplehelix.wpilogmcp.store.StoreCatalog;
@@ -30,8 +29,7 @@ class StoreRecordedAlignmentTest {
     var previous = manager.getAllowedDirectories(); var listed = directory.getLogDirectories();
     manager.addAllowedDirectory(temp);
     try {
-      var wpilog = FixtureLogs.generateAll(temp.resolve("fixtures")).stream()
-          .filter(f -> f.id().equals("revlog_pair")).findFirst().orElseThrow().path();
+      var wpilog = ImportFixture.sameClockRevPair(Files.createDirectory(temp.resolve("fixtures")), "pair.wpilog");
       Path rev;
       try (var paths = Files.list(wpilog.getParent())) {
         rev = paths.filter(p -> p.toString().endsWith(".revlog")).findFirst().orElseThrow();
@@ -89,8 +87,7 @@ class StoreRecordedAlignmentTest {
     });
     try {
       manager.addAllowedDirectory(temp); manager.getSyncDiskCache().setEnabled(false);
-      var fixtures = FixtureLogs.generateAll(temp.resolve("fixtures"));
-      var wpilog = fixtures.stream().filter(f -> f.id().equals("revlog_pair")).findFirst().orElseThrow().path();
+      var wpilog = ImportFixture.sameClockRevPair(Files.createDirectory(temp.resolve("fixtures")), "pair.wpilog");
       Path rev; try (var paths = Files.list(wpilog.getParent())) { rev = paths.filter(p -> p.toString().endsWith(".revlog")).findFirst().orElseThrow(); }
       var store = manager.stores().store(temp.resolve("mirror"));
       store.importPaths(new LogStore.Request(List.of(wpilog, rev), false, "fixture"), p -> {}).get();
@@ -98,7 +95,8 @@ class StoreRecordedAlignmentTest {
       var primary = catalog.files().stream().filter(f -> f.file().kind().equals("wpilog")).findFirst().orElseThrow();
       var companion = catalog.files().stream().filter(f -> f.file().kind().equals("revlog")).findFirst().orElseThrow();
       var old = companion.file(); var alignment = old.matching(); assertNotNull(alignment);
-      long recorded = alignment.offsetMicros() + 123_456;
+      // A legacy receipt stays authoritative even outside the current import admission gate.
+      long recorded = alignment.offsetMicros() + 15_300_000;
       var changed = new StoreManifest.LogFile(old.path(), old.sha256(), old.sizeBytes(), old.kind(), old.provenance(), old.verified(), old.minTimestampSec(), old.maxTimestampSec(),
           old.startedAt(), old.endedAt(), old.startBasis(), old.truncated(), new StoreManifest.Matching(alignment.method(), alignment.wpilogSha256(), recorded,
           alignment.confidence(), alignment.driftRateNanosPerSec(), alignment.referenceTimeSec(), alignment.identityBasis()), old.robotFingerprint());

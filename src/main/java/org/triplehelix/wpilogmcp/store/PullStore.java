@@ -263,7 +263,7 @@ public final class PullStore implements FileTransfer.Local {
       for (var file : old.session().files()) {
         if (!old.manifestPath().getParent().resolve(file.path()).equals(from)) records.add(file);
         else if (retain) records.add(new LogFile(StoreFiles.relative(old.manifestPath().getParent(), target), file.sha256(), file.sizeBytes(), file.kind(),
-            file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason()));
+            file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason(), file.placementMethod()));
       }
       io.write(old.manifestPath(), copy(old.session(), records, old.session().identityConflicts()));
     }

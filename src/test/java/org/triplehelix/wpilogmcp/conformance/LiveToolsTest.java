@@ -212,8 +212,14 @@ class LiveToolsTest {
         assertFalse(job.isDone(), "Queries must finish while the store is still blocked");
       } finally { release.countDown(); job.get(10, TimeUnit.SECONDS); }
       rig.manager.stores().awaitImports();
-      var imports = rig.session().getAsJsonArray("imports"); assertEquals(1, imports.size());
-      var imported = imports.get(0).getAsJsonObject(); assertEquals("by_time_overlap", imported.get("method").getAsString());
+      // This sparse capture cannot prove the imported boot; the import owns a separate session.
+      assertEquals(0, rig.session().getAsJsonArray("imports").size());
+      var captureId = rig.session().get("id");
+      var imported = rig.call("list_sessions", "{}").getAsJsonArray("sessions").asList().stream()
+          .map(v -> v.getAsJsonObject()).filter(s -> !s.get("id").equals(captureId))
+          .findFirst().orElseThrow().getAsJsonArray("imports").get(0).getAsJsonObject();
+      assertTrue(imported.get("method").isJsonNull());
+      assertTrue(imported.get("reason").getAsString().contains("no strong data correlation"));
       assertTrue(imported.get("offset_sec").isJsonNull());
       assertTrue(java.nio.file.Files.exists(Path.of(imported.get("path").getAsString())));
       assertEquals(2, rig.session().get("records").getAsLong());

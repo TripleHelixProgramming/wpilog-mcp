@@ -500,7 +500,9 @@ Only its fresh settings are configured to publish NT4 to the simulated robot. Th
 HTTP at 5800 and its NT client uses 5810, so this opt-in Linux test requires those ports unused;
 ordinary tests continue to bind ephemeral ports. The backend, generated configuration and image
 are isolated under `build/shop-harness/rio-*/photonvision/` and terminated with the timeline.
-A pin bump must re-verify `PhotonBackend.restarted()`'s two log strings, `Web server going down for restart` and `Listening on http://localhost:5800/`, and the fixed ports 5800 and 5810.
+A pin bump must re-verify `PhotonBackend.restarted()`'s two log strings,
+`Web server going down for restart` and `Listening on http://localhost:5800/`, and the fixed
+ports 5800 and 5810.
 
 A separate WebSocket observer checks every received top-level key against the provider's known
 contract, binary MessagePack full state and the exact version. The HTTP export must contain a

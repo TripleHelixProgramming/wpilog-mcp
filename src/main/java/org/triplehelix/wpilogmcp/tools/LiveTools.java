@@ -146,7 +146,8 @@ public final class LiveTools {
       for (var file : session.files()) if (!file.provenance().kind().equals("captured")) {
         var imported = new JsonObject(); imported.addProperty("path", live.resolve(view.directory().resolve(file.path())).toString());
         var matching = file.matching();
-        imported.addProperty("method", matching == null ? capture == null ? null : "by_time_overlap" : matching.method());
+        imported.addProperty("method", matching != null ? matching.method() : file.placementMethod() != null
+            ? file.placementMethod() : file.matchingReason() != null || capture == null ? null : "by_time_overlap");
         imported.addProperty("offset_sec", matching == null ? null : matching.offsetMicros() / 1_000_000.0);
         imported.addProperty("reason", file.matchingReason()); imports.add(imported);
       }

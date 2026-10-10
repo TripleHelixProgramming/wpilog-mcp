@@ -96,6 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Imports into a known robot's anchored sessions now require unique strong data correlation within 250 ms of zero; calendar overlap alone could previously select another boot. The manifest records the proof, or explicitly retains calendar-only placement when no anchor exists, and peer copies preserve it. Existing placements stay unchanged.
+- Imported REV companions now apply the puller's 250 ms same-boot gate; previously a strong correlation at a seconds-scale offset could attach another boot's file. Refused companions remain unassigned and readable.
 - PhotonVision now refuses unknown message keys beside otherwise valid settings; previously those keys bypassed the stand-down check.
 - `robot-facts` now reports an absent executable when `which` returns status 1 with empty output; previously that real shell response was mislabeled as a refusal, while the scripted missing-tool reply used status 127.
 
@@ -141,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Generated import checks now distinguish overlapping boots, open and recorded anchors, calendar-only fallback and both sides of the REV matching boundary, with planted failures. Store and mirror conformance retain same-clock companions; the real-log replay sample checks the matching path against independently read source files.
 - PhotonVision contract checks now assert the synchronous stand-down state after a repeated session call; previously the export-count assertion could pass before an erroneous retry's worker ran.
 - The shop harness now runs the SHA-256-pinned PhotonVision v2026.3.4 backend with a generated file camera against the packaged pit server; previously only synthetic backend replies exercised its routes and captured settings. Both runner commands now select available backends and keep the MINA timeline on macOS with explicit skip messages.
 - CI preloads the documented metrics images at their unchanged versions from public registries before running Compose; repeated Docker Hub throttling and token timeouts had stopped the smoke check before it tested the stack.

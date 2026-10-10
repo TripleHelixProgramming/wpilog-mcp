@@ -134,7 +134,16 @@ public final class StoreManifest {
   public record LogFile(String path, String sha256, long sizeBytes, String kind,
       Provenance provenance, boolean verified, double minTimestampSec, double maxTimestampSec,
       String startedAt, String endedAt, String startBasis, boolean truncated, Matching matching,
-      org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint robotFingerprint, String matchingReason) {
+      org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint robotFingerprint, String matchingReason,
+      String placementMethod) {
+    /** Calendar grouping has no measured offset; keep it separate from correlation evidence. */
+    public LogFile(String path, String sha256, long sizeBytes, String kind, Provenance provenance,
+        boolean verified, double minTimestampSec, double maxTimestampSec, String startedAt,
+        String endedAt, String startBasis, boolean truncated, Matching matching,
+        org.triplehelix.wpilogmcp.log.RobotCandidates.Fingerprint robotFingerprint, String matchingReason) {
+      this(path, sha256, sizeBytes, kind, provenance, verified, minTimestampSec, maxTimestampSec,
+          startedAt, endedAt, startBasis, truncated, matching, robotFingerprint, matchingReason, null);
+    }
     public LogFile(String path, String sha256, long sizeBytes, String kind, Provenance provenance,
         boolean verified, double minTimestampSec, double maxTimestampSec, String startedAt,
         String endedAt, String startBasis, boolean truncated, Matching matching,

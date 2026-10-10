@@ -265,7 +265,7 @@ public final class StoreSync {
         String path = StoreFiles.relative(target.getKey().getParent(), io.resolve(destination, file.path()));
         records.add(new LogFile(path, file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
             file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(),
-            file.matching(), file.robotFingerprint(), file.matchingReason()));
+            file.matching(), file.robotFingerprint(), file.matchingReason(), file.placementMethod()));
       }
       var merged = combine(current, previous, List.copyOf(records));
       var text = new ArrayList<>(current.systemLogs().files());
@@ -407,7 +407,7 @@ public final class StoreSync {
       var file = new LogFile(StoreFiles.relative(item.manifest().getParent(), target), original.sha256(), original.sizeBytes(), original.kind(),
           new Provenance(provenance.kind(), provenance.originalPath(), provenance.originalName(), provenance.importedAt(), provenance.moved(), provenance.sourceRobotSerial(), origins),
           true, original.minTimestampSec(), original.maxTimestampSec(), original.startedAt(), original.endedAt(), original.startBasis(), original.truncated(),
-          original.matching(), original.robotFingerprint(), original.matchingReason());
+          original.matching(), original.robotFingerprint(), original.matchingReason(), original.placementMethod());
       var pending = new Placement(entry.localName(), StoreFiles.relative(root, target), StoreFiles.relative(root, item.manifest()), file, false);
       io.write(receipt, pending); complete(receipt, pending);
       copied.add(new Copied(peer.url(), item.path(), target, original.sha256(), transferred.getOrDefault(item.path(), 0L), file.sizeBytes()));

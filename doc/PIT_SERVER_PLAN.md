@@ -422,6 +422,14 @@ A session directory is named by the session's start in UTC, and the event and ma
 
 **A stray is reported, not adopted.** A file that appears in the store outside the inbox, placed by hand, is not indexed: `list_sessions` reports it under `unmanaged[]` with the import command, the server log says the same once, and it is never read into a session and never deleted. The security validator still admits it to a tool given its path, since it is inside a configured directory, but it belongs to no robot and no session until it is imported, and a result about it says so.
 
+For an ordinary WPILOG import, a capture or an already data-matched WPILOG anchors a candidate
+session. Calendar ranges nominate with §10's slack, and joining it requires the same strong,
+unique correlation within 250 ms of zero. Without any nominated anchor, exact calendar overlap
+still groups imports, explicitly recorded as `placement_method: by_time_overlap` with no
+measured offset. A failed anchored proof creates a separate session with its reason. Imported
+REV companions require the same 250 ms gate or wait unassigned. Existing placements are never
+reclassified or moved; the additive receipt fields keep store format 1 (round 25 choices, §17).
+
 **Manifests, not a database.** `session.json` lists each file with its hash, size, kind, and provenance (`captured`; `pulled`, with the remote name; `imported`, with the source path and the time), the matching method and offset for a file matched by data, and whether it was verified. `robot.json` and `pull.json` are as §8.5 and §10 say. The listing recognizes a store by `store.json` and reads sessions from the manifests rather than from file names, so a pulled log keeps the robot's name and still lists under its session. `store.json` carries a format version: a server that finds a newer one refuses to start with a message, and an older one is migrated in place by an explicit command, never silently, in the spirit of the disk cache's version.
 
 **Removal is the server's too.** Nothing in the store is deleted by the server in this version, and nothing should be deleted by hand. A later `wpilog-mcp forget` removes a session or a file with its manifest entry and says what it removed.
@@ -480,7 +488,7 @@ Each leaves the project working and tested on its own.
 10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings` (done: explicit hosts, v2026.3.4 export validation and MessagePack UI snapshots, receipt mapped through robot time, session stand-down with published costs/state, exact-camera/window tool context and synthetic HTTP/WebSocket/conformance checks; real coprocessor routes/version remain shop checks, §17).
 11. **roboRIO system stats** (§8.2) and **followed files** (§8.4) (done: shared SSH ownership, adaptive stats with send-time clock mapping and kernel offset, bounded receipt-time tails, provider snapshots in live tools/manifests/metrics, and MINA/conformance checks; enabled by default with SSH configuration for pre-shop testing; hardware costs and NI-image commands remain shop checks, §17).
 12. **JVM provider** (§8.3) (first half done: explicit `context.jvm` port/period, JDK-only polling, receipt timestamps and uptime pairing, state/cost snapshots, bounded worker ownership/backoff and in-process connector tests). Flight Recorder streaming waits for the deployed JRE module facts (§17).
-13. **Session manifests and import matching** (§10, §11) (done: file hashes, sizes, provenance, verification and recorded alignment; robot/session manifests drive listings; pulled WPILOG/REV files join a uniquely correlated session within 250 ms of zero, with identity and calendar gates. Ordinary imports group WPILOGs by robot/time overlap and correlate REV companions. The clause-by-clause round 24 audit in §17 records the remaining import-correlation, source-selection and format-migration gaps).
+13. **Session manifests and import matching** (§10, §11) (done: file hashes, sizes, provenance, verification and recorded alignment; robot/session manifests drive listings; pulled WPILOG/REV files join a uniquely correlated session within 250 ms of zero, with identity and calendar gates. Ordinary WPILOG imports now require the same proof when a nominated session has a capture or data-matched anchor; without an anchor, calendar grouping is explicit and has no measured offset. Imported REV companions also require the 250 ms gate. Existing placements remain unchanged. The round 24 audit and round 25 choices in §17 record the remaining source-selection and format-migration gaps).
 14. **Incremental rescan** (§6, secondary path) (done: copied compact indexes, declaration/metadata continuation, retryable partial tails, identity and byte-anchor checks, fresh decode caches and mapping retirement; across-growth calls still fail with an explained retry, and successful disk-backed calls name their admitted file size. Differential fixtures and the conformance sweep check the secondary path).
 15. **JFR file import** (§8.3) and the Grafana query endpoint (§12), each when a need shows.
 
@@ -1324,13 +1332,14 @@ and §11 **Manifests, not a database** against the implementation in 0.10.0-dev1
 | Discover by `store.json`; read sessions from manifests, preserve the robot's filename; no database | `StoreCatalog`, `LogDirectory` and the listing read manifested paths and session facts. `PullStore.verified` keeps the remote basename, disambiguating collisions; provenance always keeps the exact remote name, including when a platform requires a portable local name. The on-disk record remains JSON manifests and log files. |
 | Format version, newer-version startup refusal, explicit older-version migration | `StoreCatalog.read` and `LogStore` mutations refuse unsupported versions without changing them. Capture recovery fails before NT4 starts, but the HTTP server can still run and report an unreadable store alongside readable ones. There is no global startup refusal or format-migration command; format 1 is the only supported format. |
 
-Three larger pieces remain outside this small round:
+Three larger pieces remained outside round 24; round 25 closes the first:
 
 - **Import correlation:** ordinary WPILOG imports use same-robot calendar overlap in
   `LogStore.place`, not §11's proposed data proof; `list_sessions` calls this
   `by_time_overlap` with no offset. Imported REV companions require unique strong correlation
   in `LogStore.pair`, but do not apply the puller's 250 ms same-boot gate. Unifying these
   placement rules needs a separate change and its migration/compatibility decisions.
+  **Closed in round 25** under the rules below; no existing receipt is migrated or rewritten.
 - **Source selection:** tools take one file per call. There is no session-wide virtual log
   that selects the pulled record and stitches capture samples into a truncated tail. A caller
   can select either path; the manifest does not imply that a combined record was read.
@@ -1344,3 +1353,36 @@ serials, strong/unique/near-zero evidence, placement and open-capture receipts),
 `LogStoreTest` cases (overlap grouping, REV pairing, duplicate hashes, verification, listing and
 version refusal), `CaptureStoreTest` (open/closed facts and version refusal), and the live
 imports check in `LiveToolsTest`. No matching algorithm or manifest format changes in this round.
+
+### Round 25 choices: imports prove an anchored boot
+
+- **Nomination and proof:** ordinary WPILOG imports of a known robot use the manifest calendar
+  filter before loading, with import's two-hour slack (sixteen for filename clocks). Unknown
+  clocks stay eligible. The same known serial also nominates a retained older robot directory;
+  directory spelling does not define a different robot, and neither directory is moved or
+  merged. A capture, including `open_capture`, is preferred as the anchor; in
+  its absence an already data-matched WPILOG can anchor the session. The shared synchronizer
+  must find strong correlation to exactly one session within ±250,000 µs. Another robot or a
+  distant known calendar does not nominate, and a failed or ambiguous proof creates a separate
+  session with its refusal reason, never a fallback to calendar overlap.
+- **Recorded anchors:** the new receipt records the actual anchor's hash, relative offset,
+  confidence, drift, identity basis and synchronization evidence, as a pull does. An open
+  capture has no final hash yet. Recorded anchor offsets also count against the same-boot
+  limit, so successive imports cannot accumulate 250 ms steps. Invalid or cyclic recorded
+  alignment is refused with its reason. The proven session keeps its calendar rather than
+  widening it to the imported file's uncertain or unset clock.
+- **Calendar fallback and compatibility:** when no nominated session has an anchor, the old
+  exact-overlap grouping remains. New receipts explicitly record
+  `placement_method: by_time_overlap` and why no anchor was available, with no correlation or
+  measured offset. This additive field survives peer copies. Store format stays 1, and legacy
+  receipts remain valid. Duplicate imports leave their original placement and manifest alone;
+  nothing here reclassifies or moves a file already placed.
+- **REV companions:** unique strong correlation now also needs the ±250 ms same-boot gate.
+  Otherwise the file waits unassigned. Ordinary analysis of loose REV files can still align
+  different clocks; previously recorded store matches remain authoritative. Sync cache format
+  11 follows the project's rule for changes to synchronization behavior.
+- **Evidence and remaining work:** generated tests distinguish two boots with overlapping
+  calendar evidence, retain calendar-only imports, reject ambiguous/invalid anchors and REV
+  offsets outside the gate, and preserve receipts through sync. Store/mirror conformance uses
+  generated companions on the same boot clock. The source-selection and format-upgrade gaps
+  in the round 24 audit remain open.

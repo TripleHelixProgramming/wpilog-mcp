@@ -201,7 +201,10 @@ recorder summaries have null counts with a reason, never a new scan of their fil
 recovery clears a possibly stale summary, so recovered sessions also report unknown counts.
 `thinned` lists `prefix` and `period_sec`; `excluded` lists configured prefixes.
 `imports` lists each non-capture file's `path`, `method`, `offset_sec` and `reason`:
-correlation uses its recorded offset; time-overlap placement has a null offset.
+correlation uses its recorded offset relative to the anchor named in the manifest;
+time-overlap placement has a null offset. New calendar-only imports record that method
+explicitly when no candidate session has a capture or data-matched anchor. Failed anchored
+proofs appear in a separate session with their reason; old placements are not reclassified.
 `limits.sessions` and each row's `limits.cost` report true totals when cut. An empty store
 is `not_applicable` with its reason.
 
@@ -336,7 +339,7 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 
 **Response Fields:**
 - `log_directories`: Every configured or leased directory as `{path, origin: "configured" | "leased", team}` (team may be null), permanent configuration first; a duplicate configured path keeps its configured origin.
-- `logs[].matching_reason`: For a pulled file kept in its own session, why it was not automatically matched (insufficient correlation, an offset beyond 250 ms, ambiguous sessions, or clock/identity disagreement). The file remains retrievable by `path`.
+- `logs[].matching_reason`: For a pulled or imported file kept in its own session, why it was not automatically matched (insufficient correlation, an offset beyond 250 ms, ambiguous sessions, or clock/identity disagreement). For a new calendar-only import, why no data anchor was available. The file remains retrievable by `path`.
 - `log_directory_paths`: The same directories as plain path strings for consumers needing paths. A log reached from two of them (nested directories, or one directory under two names) is listed once
 - `skipped`: Present when a directory could not be read (it does not exist, is not a directory, or could not be read: a drive not mounted, no permission). That directory's logs are missing from the list, not from the disk, and the status is `partial`
 - `tba_enrichment`: `{"available": true}` when The Blue Alliance answered for this page; `{"available": false, "reason": ...}` when the key is not configured, TBA could not be reached, or the key was rejected. In those cases no log carries a `tba` field, and that says nothing about whether TBA has data for it

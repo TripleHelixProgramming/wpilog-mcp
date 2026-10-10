@@ -538,7 +538,27 @@ buffer; `LogStore.importUpload` then uses the same inspection, grouping and mani
 as a local import. The network route selects a configured store id and one filename, never
 a server filesystem path. Server-path imports and assignment stay local to the machine.
 
-The log manager owns one `StoreRegistry`, which provides one `LogStore` object and daemon import queue for each real store path. Its `importPaths` future and progress callback are independent of HTTP and the extension. Imports classify by the WPILOG header or native REV record header (REV can also use a WPILOG container), hash the complete file, and read through the lazy decoder before placing anything. The shared signal resolver supplies the identity and Driver Station conventions. The session's start comes from the logged wall clock, else the filename convention, else modification time minus the log's duration; the manifest records that basis. A known robot's overlapping wall-clock session receives the log. REV files require a unique successful correlation through the existing synchronizer, and the manifest keeps the offset, clock drift, confidence, and matching wpilog hash. Clock alignment alone cannot identify a robot; ambiguous and unmatched REV files wait unassigned.
+The log manager owns one `StoreRegistry`, which provides one `LogStore` object and daemon import queue for each real store path. Its `importPaths` future and progress callback are independent of HTTP and the extension. Imports classify by the WPILOG header or native REV record header (REV can also use a WPILOG container), hash the complete file, and read through the lazy decoder before placing anything. The shared signal resolver supplies the identity and Driver Station conventions. A new session's start comes from the logged wall clock, else the filename convention, else modification time minus the log's duration; the manifest records that basis.
+
+For a known robot, calendar ranges nominate existing sessions before any correlation load,
+with the puller's two-hour slack (sixteen for filename clocks); unknown clocks retain candidates.
+A known serial also nominates its retained alias directories, without merging or moving them.
+A capture, including an open capture, anchors its session. Without a capture, an already
+data-matched WPILOG can anchor it. Joining an anchored session requires strong correlation to
+exactly one session and an offset within 250 ms of zero. Recorded anchor offsets also count
+against that bound, so chains cannot accumulate the allowance. The evidence names the actual
+anchor hash and measured relative offset; the anchor session keeps its calendar. A failed or
+ambiguous proof creates a separate session with the reason, never a calendar fallback.
+Only when no nominated session has an anchor does exact calendar overlap retain its former
+role. New such receipts say `placement_method: by_time_overlap` with a reason and no correlation
+or measured offset; legacy receipts remain valid without that additive field. Existing files
+are never reclassified or moved by a later import. Store format remains 1.
+
+REV companions likewise require unique strong correlation within 250 ms of zero through the
+existing synchronizer. Their manifest retains offset, drift, confidence and the matching WPILOG
+hash; ambiguous or unmatched REV files wait unassigned. This admission rule does not constrain
+ordinary analysis of loose REV logs on other clocks or rewrite existing store associations.
+Sync cache format 11 invalidates earlier cached interpretations when the new import rule ships.
 
 Peer synchronization reads the catalog door with the JDK HTTP client and uses `FileTransfer` unchanged. `StoreSync` supplies the local placement policy: verify the advertised size and SHA-256, run the import inspection, then admit the file. Network pacing defaults to unlimited and can be capped per job. Open captures have no final hash and wait until closed; the door itself still serves their growing prefixes for the mirror. Mirrors refuse peer sync in either direction.
 

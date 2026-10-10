@@ -13,6 +13,26 @@ import java.time.Instant;
 public final class ImportFixture {
   private ImportFixture() {}
 
+  /** Imports prove a shared boot clock; the general REV fixture deliberately has a 15.3 s lag. */
+  public static Path sameClockRevPair(Path directory, String name) throws Exception {
+    var wpilog = FixtureLogs.writeRevlogPair(directory, name, java.time.ZoneOffset.UTC, "systemTime");
+    try (var paths = Files.list(directory)) {
+      for (var rev : paths.filter(p -> p.toString().endsWith(".revlog")).toList()) sameClockRev(rev);
+    }
+    return wpilog;
+  }
+
+  /** Same independently defined signal as the corpus pair, recorded on its WPILOG clock. */
+  public static void sameClockRev(Path path) throws Exception {
+    try (var w = new WpilogWriter(path, "synthetic same-boot import")) {
+      int output = w.start("CAN/3/Periodic Status 0", "raw", "", 0);
+      for (int n = 0; n <= 5000; n++) {
+        double time = n * 0.01 + FixtureLogs.REVLOG_PAIR_OFFSET_SEC;
+        w.append(output, Math.round(time * 1e6), FixtureLogs.sparkStatus0(FixtureLogs.revlogPairOutput(time)));
+      }
+    }
+  }
+
   public static Path write(Path path, int tag) throws Exception {
     return write(path, tag, null, 1_767_225_600_000_000L);
   }

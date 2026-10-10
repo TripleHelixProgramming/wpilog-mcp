@@ -47,7 +47,10 @@ class StoreSyncConformanceTest {
       var a = manager.stores().store(temp.resolve("a")); var b = manager.stores().store(temp.resolve("b"));
       var paths = new ArrayList<>(fixtures.stream().map(Fixture::path).toList());
       try (var files = Files.list(temp.resolve("fixtures"))) {
-        paths.addAll(files.filter(p -> p.toString().endsWith(".revlog")).toList());
+        var companions = files.filter(p -> p.toString().endsWith(".revlog")).toList();
+        // These must be admissible same-boot companions; the general corpus tests a 15.3 s lag.
+        for (var rev : companions) org.triplehelix.wpilogmcp.fixtures.ImportFixture.sameClockRev(rev);
+        paths.addAll(companions);
       }
       var imported = a.importPaths(new LogStore.Request(paths, false, "fixture"), p -> {}).get();
       assertTrue(imported.files().stream().noneMatch(f -> f.status().equals("refused")), imported.toString());

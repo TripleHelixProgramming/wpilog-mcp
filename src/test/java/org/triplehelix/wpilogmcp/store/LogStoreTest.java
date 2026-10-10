@@ -33,6 +33,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
+import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogFileAccess;
@@ -321,7 +322,7 @@ class LogStoreTest {
         int output = w.start("CAN/3/Periodic Status 0", "raw", "", 0);
         for (int i = 0; i <= 5000; i++) {
           double t = i * 0.01;
-          w.append(output, Math.round(t * 1e6), FixtureLogs.sparkStatus0(
+          w.append(output, Math.round((t + 15.3) * 1e6), FixtureLogs.sparkStatus0(
               scale * FixtureLogs.revlogPairOutput(t + 15.3), 12, 20, 30, false));
         }
       }
@@ -343,7 +344,7 @@ class LogStoreTest {
         assertTrue(stored.file().verified());
         if (stored.file().kind().equals("revlog")) {
           assertEquals("by_correlation", stored.file().matching().method());
-          assertEquals(15_300_000, stored.file().matching().offsetMicros(), 20_000);
+          assertEquals(0, stored.file().matching().offsetMicros(), 20_000);
         }
       }
     }
@@ -419,7 +420,7 @@ class LogStoreTest {
   @Test
   void lateRevUsesExistingSession() throws Exception {
     var incoming = Files.createDirectory(temp.resolve("incoming"));
-    var wpi = FixtureLogs.writeRevlogPair(incoming, "pair.wpilog", ZoneOffset.UTC, "systemTime");
+    var wpi = ImportFixture.sameClockRevPair(incoming, "pair.wpilog");
     Path rev;
     try (var paths = Files.list(incoming)) {
       rev = paths.filter(p -> !p.equals(wpi)).findFirst().orElseThrow();
@@ -711,8 +712,8 @@ class LogStoreTest {
   void ambiguousRevPairStaysUnassigned() throws Exception {
     var a = Files.createDirectory(temp.resolve("a"));
     var b = Files.createDirectory(temp.resolve("b"));
-    var first = FixtureLogs.writeRevlogPair(a, "one.wpilog", ZoneOffset.UTC, "systemTime");
-    var second = FixtureLogs.writeRevlogPair(b, "two.wpilog", ZoneOffset.UTC, "systemTime");
+    var first = ImportFixture.sameClockRevPair(a, "one.wpilog");
+    var second = ImportFixture.sameClockRevPair(b, "two.wpilog");
     // Valid extra header bytes change content identity but cannot distinguish the signal evidence.
     byte[] bytes = Files.readAllBytes(second);
     int extraLength = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(8);
@@ -814,7 +815,7 @@ class LogStoreTest {
   @Test
   void storedRevDiscoveryExcludesOtherRobotsAndUnmanagedFiles() throws Exception {
     var incoming = Files.createDirectory(temp.resolve("incoming"));
-    var wpi = FixtureLogs.writeRevlogPair(incoming, "pair.wpilog", ZoneOffset.UTC, "systemTime");
+    var wpi = ImportFixture.sameClockRevPair(incoming, "pair.wpilog");
     run(List.of(incoming), true, "practice");
     var catalog = catalog();
     var log = catalog.files().stream().filter(f -> f.file().kind().equals("wpilog")).findFirst().orElseThrow();

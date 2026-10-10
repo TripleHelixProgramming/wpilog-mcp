@@ -82,7 +82,7 @@ public final class CoreTools {
           + "this tool first to find logs and get match results, then pass the path to other "
           + "tools. stores lists each store's path and robots; store on a log names its root. "
           + "A file beyond the reader size limit, or a REV companion with an invalid recorded alignment, carries read_error instead of disappearing. "
-          + "A pulled file kept in its own session carries matching_reason explaining why automatic placement was refused. "
+          + "A pulled or imported file kept in its own session carries matching_reason explaining why automatic placement was refused; a calendar-only import explains why no data anchor was available. "
           + "Mirrored session metadata adds origin, complete, growing, last_sync, and age_sec; offline tools read the same local bytes. "
           + "A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
           + "For store files only, robot_candidates names serial_number and evidence (kind, value) from import manifests for a unique exact fingerprint; a candidate never assigns a robot. "

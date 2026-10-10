@@ -57,7 +57,9 @@ public class SyncCacheSerializer {
   // Version 9 makes store associations use their recorded alignment, including in a mirror,
   // rather than letting a previous automatic correlation replace the manifest's evidence.
   // Version 10 rejects corrupt recorded alignment evidence as an explained failed companion.
-  public static final int CURRENT_FORMAT_VERSION = 10;
+  // Version 11 accompanies import's same-boot correlation gate (0.10.0-dev1). Existing store
+  // receipts remain authoritative; no already-placed association is rewritten.
+  public static final int CURRENT_FORMAT_VERSION = 11;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(

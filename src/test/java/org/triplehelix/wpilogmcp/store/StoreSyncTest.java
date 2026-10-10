@@ -105,6 +105,16 @@ class StoreSyncTest {
     assertEquals(before.sizeBytes(), result.filesCopied().get(0).bytes());
   }
 
+  @Test void calendarOnlyPlacementKeepsItsBasisThroughThePeerCopy() throws Exception {
+    put(b, fixture("first.wpilog", 1, "SERIAL")); put(b, fixture("overlap.wpilog", 2, "SERIAL"));
+    var source = catalog(b).files().stream().filter(f -> f.file().placementMethod() != null).findFirst().orElseThrow().file();
+    assertEquals("by_time_overlap", source.placementMethod()); assertNull(source.matching());
+    sync(a, httpB);
+    var copy = catalog(a).files().stream().filter(f -> f.file().sha256().equals(source.sha256())).findFirst().orElseThrow().file();
+    assertEquals(source.placementMethod(), copy.placementMethod()); assertNull(copy.matching());
+    assertEquals(source.matchingReason(), copy.matchingReason());
+  }
+
   @Test void aNewLocalRobotDoesNotInheritThePeersSshContacts() throws Exception {
     put(b, fixture("contact.wpilog", 3, "SERIAL"));
     var contact = new StoreManifest.Contact("robot.example", "SHA256:fixture", CLOCK.instant().toString());
