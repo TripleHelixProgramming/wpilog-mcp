@@ -654,6 +654,9 @@ class LogSynchronizerTest {
     // in each half. This test verifies the path executes without error.
     // With 20 minutes of varied data, drift estimation should engage.
     assertNotNull(result.explanation());
+    assertNotEquals(0, result.driftRateNanosPerSec(), "The varied 20-minute fixture must measure drift");
+    assertTrue(result.explanation().contains(String.format(java.util.Locale.ROOT,
+        "%.1f ms/hr", result.driftRateNanosPerSec() * 3600 / 1_000_000)), result.explanation());
   }
 
   @Test

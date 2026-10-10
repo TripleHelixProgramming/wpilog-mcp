@@ -187,36 +187,37 @@ final class PowerFacts {
     double sum = 0;
     long below = 0;
     var crossings = new ArrayList<Crossing>();
-    Double openedAt = null;
-    double openMin = Double.MAX_VALUE;
-    double lastTime = 0;
-    for (var tv : values) {
-      if (!scope.contains(tv.timestamp())) continue;
-      if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
-      double v = num.doubleValue();
-      double t = tv.timestamp();
-      n++;
-      sum += v;
-      if (v < min) {
-        min = v;
-        minTime = t;
-      }
-      max = Math.max(max, v);
-      if (v < threshold) below++;
-      if (openedAt == null && v < threshold) {
-        openedAt = t;
-        openMin = v;
-      } else if (openedAt != null) {
-        openMin = Math.min(openMin, v);
-        if (v >= threshold + HYSTERESIS) {
-          crossings.add(new Crossing(openedAt, t, openMin));
-          openedAt = null;
+    var segments = scope.split(values);
+    for (int window = 0; window < segments.size(); window++) {
+      Double openedAt = null;
+      double openMin = Double.MAX_VALUE;
+      for (var tv : segments.get(window)) {
+        if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
+        double v = num.doubleValue();
+        double t = tv.timestamp();
+        n++;
+        sum += v;
+        if (v < min) {
+          min = v;
+          minTime = t;
+        }
+        max = Math.max(max, v);
+        if (v < threshold) below++;
+        if (openedAt == null && v < threshold) {
+          openedAt = t;
+          openMin = v;
+        } else if (openedAt != null) {
+          openMin = Math.min(openMin, v);
+          if (v >= threshold + HYSTERESIS) {
+            crossings.add(new Crossing(openedAt, t, openMin));
+            openedAt = null;
+          }
         }
       }
-      lastTime = t;
+      // A held low voltage ends at this scope boundary, never at a later window's recovery.
+      if (openedAt != null) crossings.add(new Crossing(openedAt, scope.windows().get(window).end(), openMin));
     }
     if (n == 0) return Optional.empty();
-    if (openedAt != null) crossings.add(new Crossing(openedAt, lastTime, openMin));
     return Optional.of(new VoltageFacts(n, min, minTime, max, sum / n, below, crossings));
   }
 

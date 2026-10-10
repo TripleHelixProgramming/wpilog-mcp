@@ -58,6 +58,12 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  * shares one server (see {@link StdioBridge}).
  */
 public class Main {
+  static Thread startCacheCleanup(Runnable cleanup) {
+    var thread = new Thread(cleanup, "cache-cleanup");
+    thread.setDaemon(true);
+    thread.start();
+    return thread;
+  }
   private static final String VERSION = Version.VERSION;
   /** SimpleLogger's level property, read once, when the first logger in the JVM is created. */
   static final String LOG_LEVEL_PROPERTY = "org.slf4j.simpleLogger.defaultLogLevel";
@@ -726,7 +732,7 @@ public class Main {
 
     // Run disk cache cleanup in background (non-blocking)
     if (logManager.getDiskCache().isEnabled()) {
-      new Thread(() -> logManager.getDiskCache().cleanup(), "cache-cleanup").start();
+      startCacheCleanup(() -> logManager.getDiskCache().cleanup());
     }
 
     // Verify bundled game data is accessible

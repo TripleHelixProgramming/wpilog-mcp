@@ -250,7 +250,7 @@ public final class TimeScope {
     var clipped = new ArrayList<Window>();
     for (var w : base) {
       double s = start != null ? Math.max(w.start(), start) : w.start();
-      boolean clippedEnd = end != null && end <= w.end();
+      boolean clippedEnd = end != null && end < w.end();
       double e = clippedEnd ? end : w.end();
       boolean inclusive = clippedEnd || w.endInclusive();
       if (e > s || (e == s && inclusive)) clipped.add(new Window(s, e, inclusive));

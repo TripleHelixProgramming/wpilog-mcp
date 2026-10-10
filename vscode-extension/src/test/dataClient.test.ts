@@ -161,3 +161,27 @@ test("a server that cannot be reached fails with a message that says so", async 
     return true;
   });
 });
+
+for (const action of ["evict", "clear"] as const) {
+  test(`a late 304 cannot resurrect a response after ${action}`, async () => {
+    let finish!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const server = http.createServer((req, res) => {
+      if (req.headers["if-none-match"]) { finish = () => res.writeHead(304).end(); entered(); }
+      else res.writeHead(200, { ETag: '\"v1\"' }).end(Buffer.from([1, 2, 3, 4]));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+      const client = new DataClient(1, 4);
+      const a = { path: "/a", names: ["/x"] };
+      await client.fetch(url, a);
+      const pending = client.fetch(url, a); await waiting;
+      if (action === "clear") client.clear();
+      else await client.fetch(url, { ...a, path: "/b" });
+      finish(); assert.deepEqual([...(await pending).bytes], [1, 2, 3, 4]);
+      assert.equal(client.size, action === "clear" ? 0 : 1, "The retired cache entry stays retired");
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+}

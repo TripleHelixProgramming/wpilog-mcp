@@ -26,6 +26,18 @@ import org.triplehelix.wpilogmcp.log.EntryInfo;
 @DisplayName("StructSchemas")
 class StructSchemasTest {
 
+  @Test void deeplyNestedRecordedSchemaHasAnExplainedDepthLimit() {
+    var schemas = new LinkedHashMap<String, String>();
+    schemas.put("T256", "double value;");
+    for (int i = 255; i >= 0; i--) schemas.put("T" + i, "T" + (i + 1) + " child;");
+    var recorded = StructSchemas.recordedOnly(schemas, Map.of());
+    var failure = assertThrows(StructDecodeException.class,
+        () -> recorded.decode("struct:T0", new byte[8]));
+    assertTrue(failure.getMessage().contains("depth"), failure.getMessage());
+    assertThrows(StructDecodeException.class, () -> recorded.numericLeafPaths("T0"));
+    assertDoesNotThrow(() -> recorded.decode("struct:T240", new byte[8]));
+  }
+
   static ByteBuffer le(int size) {
     return ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
   }

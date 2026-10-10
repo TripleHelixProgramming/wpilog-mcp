@@ -22,6 +22,19 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 /** A denied rename must preserve the previous complete manifest; injected pacing never sleeps. */
 class StoreManifestReplaceTest {
   @TempDir Path directory;
+  @Test void oversizedReplacementIsRefusedBeforePublishingAnUnreadableManifest() throws Exception {
+    var security = new SecurityValidator(); security.addAllowedDirectory(directory);
+    var io = new StoreFiles(directory, security);
+    var path = directory.resolve("store.json");
+    io.write(path, Map.of("value", "original"));
+    var before = Files.readString(path);
+    var failure = assertThrows(IOException.class,
+        () -> io.write(path, Map.of("value", "x".repeat(4 * 1024 * 1024))));
+    assertTrue(failure.getMessage().contains("too large"));
+    assertEquals(before, Files.readString(path));
+    assertEquals("original", io.read(path, com.google.gson.JsonObject.class).get("value").getAsString());
+    noTemporaryFiles();
+  }
   final List<Long> delays = new ArrayList<>();
   final AtomicInteger attempts = new AtomicInteger(), published = new AtomicInteger();
   Path target() throws IOException {

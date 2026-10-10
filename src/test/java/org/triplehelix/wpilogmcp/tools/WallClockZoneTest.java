@@ -23,6 +23,15 @@ import org.triplehelix.wpilogmcp.log.WallClock;
 @DisplayName("WallClock filename zone")
 class WallClockZoneTest {
 
+  @Test void unrelatedOrCaseChangedClockLeavesAreNotCalendarEvidence() {
+    for (var entry : java.util.List.of("/Camera/EpochTimeMicros", "SYSTEMTIME",
+        "/SystemStats/epochtimemicros", "NT:/Camera/EpochTimeMicros")) {
+      var log = log("unnamed.wpilog", entry, 1_800_000_000_000_000L, 2);
+      assertTrue(WallClock.entry(log).isEmpty(), entry);
+      assertTrue(WallClock.first(log).isEmpty(), entry);
+    }
+  }
+
   @Test void capturedSystemTimeRetainsItsCalendarRole() {
     var original = log("FRC_20260321_162949.wpilog", "systemTime", Q10_EPOCH_MICROS, 30);
     var captured = log("capture.wpilog", "NT:systemTime", Q10_EPOCH_MICROS, 30);

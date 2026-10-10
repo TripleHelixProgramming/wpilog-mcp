@@ -1,3 +1,4 @@
+import { EntryInfo } from "./explorer/entryInfo";
 import { HttpHeaders, noHeaders } from "./pitCredential";
 /**
  * WPILog Explorer's VS Code side (EXPLORER_PLAN.md §3, §4): the client to the shared server,
@@ -560,14 +561,22 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
   readonly onDidChangeTreeData = this.changed.event;
   private active?: OpenLog;
   private filter = "";
-  private readonly infos = new Map<string, Promise<Record<string, unknown>>>();
+  private readonly infos = new EntryInfo<ExplorerSpec>(async (spec, logPath, name) => {
+    try {
+      const client = await this.explorer.clientFor(spec);
+      return await client.callTool("get_entry_info", { path: logPath, name });
+    } catch (error) {
+      if (error instanceof ToolError && error.result) return error.result;
+      return { status: "error", error: messageOf(error) };
+    }
+  });
 
   constructor(private readonly explorer: Explorer) {}
 
   /** Shows a log's entries: the one the editor just loaded, or none. */
   setActive(log: OpenLog | undefined): void {
     if (log?.path !== this.active?.path) {
-      this.infos.clear();
+
       this.filter = "";
       void vscode.commands.executeCommand("setContext", "wpilog-mcp.entryFilter", false);
     }
@@ -641,26 +650,11 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
     }
   }
 
-  /** An entry's description, fetched once per log. */
-  info(entry: ListedEntry): Promise<Record<string, unknown>> {
-    const active = this.active;
-    if (!active?.spec) return Promise.resolve({ status: "error", error: "The log is not loaded" });
-    let pending = this.infos.get(entry.name);
-    if (!pending) {
-      const spec = active.spec;
-      pending = (async () => {
-        try {
-          const client = await this.explorer.clientFor(spec);
-          return await client.callTool("get_entry_info", { path: active.path, name: entry.name });
-        } catch (error) {
-          if (error instanceof ToolError && error.result) return error.result;
-          return { status: "error", error: messageOf(error) };
-        }
-      })();
-      this.infos.set(entry.name, pending);
-    }
-    return pending;
+  /** An entry's description belongs to the editor that requested it. */
+  info(entry: ListedEntry, log = this.active): Promise<Record<string, unknown>> {
+    return this.infos.read(log, entry.name);
   }
+
 }
 
 /** A log document: the editor is read-only, so the document is only its file. */
@@ -871,7 +865,9 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
   }
 
   private async sendInfo(editor: Editor, name: string): Promise<void> {
-    const info = await this.explorer.entries.info({ name, type: "", sample_count: 0 });
+    const log = editor.log, listing = log.listing;
+    const info = await this.explorer.entries.info({ name, type: "", sample_count: 0 }, log);
+    if (editor.log !== log || log.listing !== listing) return;
     void editor.panel.webview.postMessage({ type: "entryInfo", name, info });
   }
 

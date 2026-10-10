@@ -29,6 +29,27 @@ class SyncCacheSerializerTest {
   @TempDir Path tempDir;
   private final SyncCacheSerializer serializer = new SyncCacheSerializer();
 
+  @Test void validCrcDoesNotAuthorizeUnboundedApplicationCounts() throws Exception {
+    for (boolean pairs : List.of(false, true)) {
+      var p = org.msgpack.core.MessagePack.newDefaultBufferPacker();
+      p.packInt(SyncCacheSerializer.CURRENT_FORMAT_VERSION).packString("a").packString("b").packLong(0);
+      p.packNil().packNil().packDouble(0).packDouble(1).packLong(1).packInt(0);
+      if (!pairs) {
+        p.packInt(1).packString("signal").packString("s").packString("d").packNil().packInt(Integer.MAX_VALUE);
+      } else {
+        p.packInt(0).packLong(0).packDouble(1).packString("HIGH").packString("CROSS_CORRELATION")
+            .packNil().packDouble(0).packDouble(0).packInt(Integer.MAX_VALUE);
+      }
+      byte[] data = p.toByteArray(); p.close();
+      var crc = new java.util.zip.CRC32(); crc.update(data);
+      var bytes = java.nio.ByteBuffer.allocate(data.length + 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+          .put(data).putInt((int) crc.getValue()).array();
+      var file = tempDir.resolve("huge-count.msgpack"); Files.write(file, bytes);
+      try { assertNull(serializer.read(file), "A tiny cache must be rejected before allocation"); }
+      catch (OutOfMemoryError failure) { fail("Untrusted cache count reached allocation: " + failure.getMessage()); }
+    }
+  }
+
   private ParsedRevLog createTestRevLog() {
     return new ParsedRevLog("/logs/REV_20260321_103045.revlog", "20260321_103045",
         Map.of(1, new RevLogDevice(1, "SPARK MAX", "v1.6.4")),

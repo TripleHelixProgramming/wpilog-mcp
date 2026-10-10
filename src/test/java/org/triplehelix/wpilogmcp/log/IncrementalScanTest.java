@@ -15,6 +15,25 @@ import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 
 class IncrementalScanTest {
   @TempDir Path temp;
+  @Test void sparseCompleteRecordBeforePartialTailSurvivesAndResumes() throws Exception {
+    var path = temp.resolve("sparse.wpilog");
+    try (var writer = new WpilogWriter(path, "")) {
+      int id = writer.start("/x", "double", "", 0);
+      writer.append(id, 0, WpilogWriter.encodeDouble(1));
+      writer.append(id, 120_000_000, WpilogWriter.encodeDouble(2));
+      writer.append(id, 121_000_000, WpilogWriter.encodeDouble(3));
+    }
+    byte[] bytes = Files.readAllBytes(path);
+    Files.write(path, Arrays.copyOf(bytes, bytes.length - 4));
+    var partial = scan(path);
+    assertEquals(2, partial.dataRecords(), "A torn write must not discard a complete sparse value");
+    assertFalse(partial.damaged());
+    assertEquals(120, partial.maxTimestamp());
+    Files.write(path, Arrays.copyOfRange(bytes, bytes.length - 4, bytes.length), StandardOpenOption.APPEND);
+    var completed = resume(partial, path);
+    equalScan(scan(path), completed);
+    assertEquals(partial.resumePoint(), completed.scannedFrom());
+  }
   record Fixture(Path path, byte[] bytes, int half, int last) {}
   Fixture fixture() throws Exception {
     var path = temp.resolve("source.wpilog");

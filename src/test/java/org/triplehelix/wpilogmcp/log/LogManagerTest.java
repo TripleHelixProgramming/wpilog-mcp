@@ -34,6 +34,22 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
  */
 class LogManagerTest {
 
+  @Test void interruptedSyncWaitDoesNotReportCompletion() throws Exception {
+    var manager = LogManager.getInstance();
+    var field = LogManager.class.getDeclaredField("syncInProgress"); field.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    var pending = (Map<String, java.util.concurrent.CompletableFuture<Void>>) field.get(manager);
+    var path = Path.of("pending-review.wpilog").toAbsolutePath().normalize().toString();
+    var work = new java.util.concurrent.CompletableFuture<Void>(); pending.put(path, work);
+    try {
+      Thread.currentThread().interrupt();
+      assertThrows(java.util.concurrent.CancellationException.class,
+          () -> manager.waitForRevLogSync(path, 1000));
+      assertTrue(Thread.currentThread().isInterrupted());
+      assertFalse(work.isDone());
+    } finally { Thread.interrupted(); pending.remove(path, work); }
+  }
+
   private LogManager logManager;
 
   /** Load WPILib native libraries before any tests run. */

@@ -74,7 +74,7 @@ export class DataClient {
     const kind = classifyStatus(response.status);
     if (kind.kind === "unchanged") {
       if (!known) throw new DataError("The server answered 304 to a request with no ETag", 304);
-      this.touch(key, known);
+      if (this.remembered.get(key) === known) this.touch(key, known);
       return { bytes: known.bytes, fromCache: true, etag: known.etag };
     }
     if (kind.kind === "data") {

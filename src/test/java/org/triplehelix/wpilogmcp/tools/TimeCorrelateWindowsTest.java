@@ -51,8 +51,8 @@ class TimeCorrelateWindowsTest extends ToolTestBase {
         }
       }
     }
-    // the mean product of neighbors, on the scale of the n - 1 pairs of one unbroken series
-    return (products / pairs) * (n - 1) / squares;
+    // Missing neighbors do not contribute invented products across gaps.
+    return products / squares;
   }
 
   /** 50 Hz from 0 to 40 s: a ramp and a slow sine, logged together. */
@@ -95,9 +95,9 @@ class TimeCorrelateWindowsTest extends ToolTestBase {
     }
     var lag1 = r.getAsJsonObject("lag1_autocorrelation");
     // Worked by hand for the ramp: deviations -9.04..-8.96 and 8.96..9.04 from the mean 21.04;
-    // 8 neighbor products average 81.0004; (81.0004 * 9) / 810.008 = 0.8999956. Pairing the
+    // 8 neighbor products average 81.0004; (81.0004 * 8) / 810.008 = 0.7999960. Pairing the
     // last sample of the first window with the first of the second (-8.96 * 8.96) gave 0.7009.
-    assertEquals(0.8999956, lag1.get("entry1").getAsDouble(), 1e-6, r.toString());
+    assertEquals(0.7999960, lag1.get("entry1").getAsDouble(), 1e-6, r.toString());
     assertEquals(lag1Within(ramp), lag1.get("entry1").getAsDouble(), 1e-9);
     assertEquals(lag1Within(sine), lag1.get("entry2").getAsDouble(), 1e-9);
 

@@ -234,9 +234,9 @@ public final class WallClock {
   private static int rank(String name) {
     // Capture uses DataLogManager's NT: recording prefix even for replayed systemTime.
     if (name.startsWith("NT:")) name = name.substring(3);
-    var leaf = name.substring(name.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
-    if (leaf.equals("systemtime") && !name.contains("/")) return 0;
-    if (leaf.equals("epochtimemicros")) return 1;
+    if (name.equals("systemTime")) return 0;
+    if (name.equals("/SystemStats/EpochTimeMicros")
+        || name.equals("/AdvantageKit/SystemStats/EpochTimeMicros")) return 1;
     return -1;
   }
 }

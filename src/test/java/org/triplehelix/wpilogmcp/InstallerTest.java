@@ -360,6 +360,14 @@ class InstallerTest {
     executable(home.resolve("wpilib/2026/jdk/bin/java"), FAKE_JAVA);
     String version = "1.2.3-dev1";
     String document = releaseJson(version);
+    var releaseObject = JsonParser.parseString(document).getAsJsonObject();
+    for (String name : List.of("unrelated-all.jar", "unrelated.vsix")) {
+      var asset = new com.google.gson.JsonObject();
+      asset.addProperty("name", name);
+      asset.addProperty("browser_download_url", "https://example.invalid/" + name);
+      releaseObject.getAsJsonArray("assets").add(asset);
+    }
+    document = new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create().toJson(releaseObject);
     if (compact) document = new Gson().toJson(JsonParser.parseString(document));
     var release = Files.writeString(tempDir.resolve("release.json"), document);
     var requests = tempDir.resolve("requests");

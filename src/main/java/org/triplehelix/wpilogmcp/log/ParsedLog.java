@@ -34,6 +34,13 @@ public record ParsedLog(
     StructSchemas structSchemas,
     Map<String, DecodeProblem> decodeProblems) implements LogData {
 
+  public ParsedLog {
+    var ordered = new java.util.LinkedHashMap<String, List<TimestampedValue>>();
+    values.forEach((name, samples) -> ordered.put(name,
+        samples == null ? List.of() : TimestampedValue.inTimeOrder(samples)));
+    values = java.util.Collections.unmodifiableMap(ordered);
+  }
+
   /**
    * Creates a ParsedLog whose struct schemas are read from its own schema entries.
    *

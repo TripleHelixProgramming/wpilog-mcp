@@ -589,7 +589,7 @@ Store listings use manifests without the stray walk, and a file block resolves o
 
 ### Message handling
 
-Both transports share one message handler. It answers `initialize` with the server's capabilities (tools only) and its instructions for the model, lists the tools, and dispatches tool calls. A message without an `id` is a notification and gets no reply. A malformed request gets a JSON-RPC error, with the request's `id` when it has one, and an unknown tool name gets an error that suggests tools with similar names. A tool's result travels as the text of the call's reply.
+Both transports share one message handler. It answers `initialize` with the server's capabilities (tools and the current-session resource) and its instructions for the model, lists the tools, and dispatches tool calls. A message without an `id` is a notification and gets no reply. A malformed request gets a JSON-RPC error, with the request's `id` when it has one, and an unknown tool name gets an error that suggests tools with similar names. A tool's JSON result travels as a text block; chart replies may also carry an image block.
 
 ## Tool Framework
 
@@ -1137,7 +1137,7 @@ file path and labels the copy; it never chooses by a similar basename.
 
 ### Live publication tools
 
-`tools/LiveTools` is registered only with capture. `capture/LiveCapture` publishes immutable
+`tools/LiveTools` is registered on every server and answers `not_applicable` without capture. `capture/LiveCapture` publishes immutable
 recorder status and an in-memory catalog of session and robot manifests. Store writers notify
 it on their queue; startup and completed imports refresh the manifest inventory. A tool neither
 opens a file nor joins that queue, so an import cannot delay a latest-value query or recording.
@@ -1194,3 +1194,33 @@ per connection. Its sample reads the fixed proc files and checks the start ticks
 only after the process disappears or changes. Steady samples use shell builtins plus one `df`
 for all filesystems; a changed filesystem set omits free-space values with a reason instead of
 attaching a row to the wrong path.
+
+## Review hardening for 0.10.0-dev1
+
+Raw record offsets retain file order. Decoded entry values have a stable chronological view,
+so binary-search scopes include late records without changing equal-timestamp ordering. An
+incomplete final record does not invalidate its preceding complete sparse sample. Struct decode
+plans have a maximum dependency depth of 64, including reused subplans; deeper schemas give an
+explained decode refusal instead of overflowing the thread stack.
+
+The lag-one autocorrelation estimate is the sum of within-window centered neighbor products
+divided by the centered sum of squares of all samples. Excluded gaps contribute no pair. Unlike
+rescaling by the number of surviving pairs, this estimator stays between -1 and 1 when windows
+have unequal lengths. Derivatives weight adjacent slopes by the opposite interval length, so
+uneven timestamps place the derivative at the middle sample. Voltage crossings end at each
+scope boundary; they never span a disabled interval excluded from the request.
+
+MCP HTTP bodies are limited to 4 MiB and ten seconds. A separate pool admits at most
+`min(32, max(4, processors * 2))` MCP requests with no waiting queue; overload answers 503.
+The short HTTP dispatch queue is also bounded. Slow MCP bodies and tool calls therefore do not
+occupy the threads that serve health. The gateway checks aggregate receive bytes and fragment
+counts before accepting each continuation, including an unfinished message. Its fan-out work
+admission reserves at most 32 MiB and 4,096 tasks before copying payloads. Exhaustion refuses
+work and disconnects affected views, which must reconnect; capture itself continues. A single
+reserved cleanup task coalesces overload handling.
+
+Store JSON publication uses the same 4 MiB limit as reading. An oversized update is refused
+before replacing the last readable manifest. Move aliases follow a bounded chain with cycle
+detection, so successive mirror renames keep earlier paths usable. Sync-cache counts are checked
+against the remaining serialized bytes before allocation, in addition to the version and CRC.
+The cache format is 12 to invalidate the former drift explanation's incorrect ms/hour unit.

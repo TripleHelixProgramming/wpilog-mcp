@@ -357,7 +357,7 @@ public class LogSynchronizer {
         continue;
       }
 
-      // Only report drift if it's significant (>1 ns/s = ~0.1ms per 100s)
+      // Only report drift above 1 ns/s = 0.0001 ms per 100 s.
       if (Math.abs(driftNanosPerSec) < 1.0) {
         logger.debug("Clock drift negligible ({} ns/s), ignoring", driftNanosPerSec);
         return baseResult;
@@ -365,7 +365,7 @@ public class LogSynchronizer {
 
       double refTime = (revStart + revEnd) / 2.0;
       String driftInfo = String.format(" Clock drift detected: %.1f ns/s (%.1f ms/hr).",
-          driftNanosPerSec, driftNanosPerSec * 3.6);
+          driftNanosPerSec, driftNanosPerSec * 0.0036);
 
       logger.info("Estimated clock drift: {} ns/s between revlog and wpilog",
           String.format("%.1f", driftNanosPerSec));

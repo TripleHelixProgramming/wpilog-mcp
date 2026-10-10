@@ -379,7 +379,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       logger.debug("Decoded {}: {} values in {}ms (random access)", entryName, values.size(), elapsedMs);
     }
 
-    return Collections.unmodifiableList(values);
+    return TimestampedValue.inTimeOrder(values);
   }
 
   /**

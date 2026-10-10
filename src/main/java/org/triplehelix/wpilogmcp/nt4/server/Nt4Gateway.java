@@ -73,6 +73,18 @@ public final class Nt4Gateway implements AutoCloseable {
   private volatile int clientCount;
   private final int maxQueuedFragments;
   private final java.util.function.BiConsumer<String, String> disconnected;
+  private long maxWorkBytes = 32L * 1024 * 1024;
+  private int maxWorkItems = 4096;
+  private final Object admission = new Object();
+  private long workBytes;
+  private int workItems;
+  private final java.util.concurrent.atomic.AtomicBoolean overflowPending = new java.util.concurrent.atomic.AtomicBoolean();
+  private static final String WORK_LIMIT = "NT4 gateway work queue limit; reconnect for the current view";
+  void workLimits(long bytes, int items) { maxWorkBytes = bytes; maxWorkItems = items; }
+
+  static Draft receiveDraft(List<String> protocols, int maxBytes, int maxFragments) {
+    return new BoundedReceiveDraft(protocols, maxBytes, maxFragments);
+  }
 
   public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock) {
     this(address, serverClock, List.of(Nt4Client.V41, Nt4Client.V40));
@@ -172,24 +184,30 @@ public final class Nt4Gateway implements AutoCloseable {
   public int clientCount() { return clientCount; }
 
   public CompletableFuture<Void> announce(String name, String type, JsonObject properties) {
-    var copy = properties.deepCopy();
-    return enqueue(() -> send(core.announce(name, type, copy)));
+    return enqueue(256L + name.length() * 2L + properties.toString().length() * 2L, () -> {
+      var copy = properties.deepCopy();
+      return () -> send(core.announce(name, type, copy));
+    });
   }
   public CompletableFuture<Void> value(String name, long timestampUs, int code, Object value) {
     // Freeze mutable binary payloads before crossing the event-loop boundary.
-    var frame = new ValueFrame(0, timestampUs, code, value);
-    return enqueue(() -> {
-      for (String client : core.value(name, timestampUs, code, frame.value())) {
-        drop(client, "NT4 client fell behind: pending subscription queue limit");
-      }
+    return enqueue(256L + name.length() * 2L + retainedBytes(value), () -> {
+      var frame = new ValueFrame(0, timestampUs, code, value);
+      return () -> {
+        for (String client : core.value(name, timestampUs, code, frame.value())) {
+          drop(client, "NT4 client fell behind: pending subscription queue limit");
+        }
+      };
     });
   }
   public CompletableFuture<Void> unannounce(String name) {
     return enqueue(() -> send(core.unannounce(name)));
   }
   public CompletableFuture<Void> properties(String name, JsonObject update) {
-    var copy = update.deepCopy();
-    return enqueue(() -> send(core.properties(name, copy)));
+    return enqueue(256L + name.length() * 2L + update.toString().length() * 2L, () -> {
+      var copy = update.deepCopy();
+      return () -> send(core.properties(name, copy));
+    });
   }
   public CompletableFuture<Void> endSession() { return enqueue(() -> send(core.endSession())); }
   /** ntcore 2026 retains the first time estimate on a connection. A changed clock needs a new one. */
@@ -230,15 +248,64 @@ public final class Nt4Gateway implements AutoCloseable {
   }
 
   private CompletableFuture<Void> enqueue(Runnable action) {
+    return enqueue(256, () -> action);
+  }
+
+  /** Reserve before copying: the loop can be stalled while network threads continue delivering. */
+  private CompletableFuture<Void> enqueue(long bytes, java.util.function.Supplier<Runnable> prepare) {
     var result = new CompletableFuture<Void>();
     if (closed) return CompletableFuture.failedFuture(new IllegalStateException("Gateway closed"));
+    boolean admitted;
+    synchronized (admission) {
+      admitted = bytes <= maxWorkBytes - workBytes && workItems < maxWorkItems;
+      if (admitted) { workBytes += bytes; workItems++; }
+    }
+    if (!admitted) {
+      overrun();
+      return CompletableFuture.failedFuture(new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
+    }
+    try {
+      var action = prepare.get();
+      loop.execute(() -> {
+        RuntimeException failure = null;
+        try { action.run(); }
+        catch (RuntimeException e) { failure = e; }
+        finally { releaseWork(bytes); }
+        // A completion can run another submitter synchronously; its predecessor is finished.
+        if (failure == null) result.complete(null);
+        else result.completeExceptionally(failure);
+      });
+    } catch (RuntimeException e) { releaseWork(bytes); result.completeExceptionally(e); }
+    return result;
+  }
+
+  private void releaseWork(long bytes) {
+    synchronized (admission) { workBytes -= bytes; workItems--; }
+  }
+
+  /** One reserved cleanup task, independent of the data budget. A lost value ends the view. */
+  private void overrun() {
+    if (!overflowPending.compareAndSet(false, true)) return;
+    LoggerFactory.getLogger(Nt4Gateway.class).warn(WORK_LIMIT);
     try {
       loop.execute(() -> {
-        try { action.run(); result.complete(null); }
-        catch (RuntimeException e) { result.completeExceptionally(e); }
+        try {
+          for (String id : List.copyOf(peers.keySet())) drop(id, WORK_LIMIT);
+          closing.values().forEach(done -> done.complete(null)); closing.clear();
+        } finally { overflowPending.set(false); }
       });
-    } catch (java.util.concurrent.RejectedExecutionException e) { result.completeExceptionally(e); }
-    return result;
+    } catch (java.util.concurrent.RejectedExecutionException ignored) { overflowPending.set(false); }
+  }
+
+  private static long retainedBytes(Object value) {
+    if (value instanceof byte[] bytes) return bytes.length;
+    if (value instanceof String text) return 40L + text.length() * 2L;
+    if (value instanceof List<?> list) {
+      long size = 32L + list.size() * 8L;
+      for (var item : list) size += item instanceof String text ? 40L + text.length() * 2L : 32L;
+      return size;
+    }
+    return 32;
   }
 
   private void heartbeat() {
@@ -326,8 +393,7 @@ public final class Nt4Gateway implements AutoCloseable {
       this.channel = channel;
       // The pre-bound constructor has no draft/worker overload. Configure both before start.
       decoders.subList(1, decoders.size()).clear();
-      var drafts = List.<Draft>of(new Draft_6455(List.of(),
-          new ArrayList<>(protocols.stream().map(Protocol::new).toList()), MessagePack.MAX_BYTES));
+      var drafts = List.of(receiveDraft(protocols, MessagePack.MAX_BYTES, MAX_QUEUED_FRAGMENTS));
       setWebSocketFactory(new org.java_websocket.server.DefaultWebSocketServerFactory() {
         @Override public org.java_websocket.WebSocketImpl createWebSocket(org.java_websocket.WebSocketAdapter adapter,
             List<Draft> ignored) { return super.createWebSocket(adapter, drafts); }
@@ -365,7 +431,7 @@ public final class Nt4Gateway implements AutoCloseable {
         core.connect(id);
         clientCount = peers.size();
         LoggerFactory.getLogger(Nt4Gateway.class).info("NT4 gateway client connected: {} ({})", name, socket.getProtocol().getProvidedProtocol());
-      });
+      }).exceptionally(error -> { socket.closeConnection(1008, WORK_LIMIT); return null; });
     }
     @Override public void onClose(WebSocket socket, int code, String reason, boolean remote) {
       keepalives.remove(socket);
@@ -378,7 +444,7 @@ public final class Nt4Gateway implements AutoCloseable {
       });
     }
     @Override public void onMessage(WebSocket socket, String text) {
-      enqueue(() -> {
+      enqueue(256L + text.length() * 2L, () -> () -> {
         var id = connections.get(socket);
         if (id == null) return;
         for (var message : ControlMessage.decode(text)) {
@@ -386,15 +452,21 @@ public final class Nt4Gateway implements AutoCloseable {
               && core.firstWrite(id)) LoggerFactory.getLogger(Nt4Gateway.class).warn("NT4 gateway is read-only; ignoring client {} writes", id);
           send(core.receive(id, message, nowUs()));
         }
-      }).exceptionally(error -> { socket.close(1007, "Invalid NT4 text"); return null; });
+      }).exceptionally(error -> { rejectMessage(socket, error, "Invalid NT4 text"); return null; });
     }
     @Override public void onMessage(WebSocket socket, ByteBuffer data) {
-      var bytes = new byte[data.remaining()]; data.get(bytes);
-      enqueue(() -> {
-        var id = connections.get(socket);
-        if (id == null) return;
-        for (var value : ValueFrame.decode(bytes)) send(core.receive(id, value, serverClock.getAsLong()));
-      }).exceptionally(error -> { socket.close(1007, "Invalid NT4 binary"); return null; });
+      enqueue(256L + data.remaining(), () -> {
+        var bytes = new byte[data.remaining()]; data.get(bytes);
+        return () -> {
+          var id = connections.get(socket);
+          if (id == null) return;
+          for (var value : ValueFrame.decode(bytes)) send(core.receive(id, value, serverClock.getAsLong()));
+        };
+      }).exceptionally(error -> { rejectMessage(socket, error, "Invalid NT4 binary"); return null; });
+    }
+    private void rejectMessage(WebSocket socket, Throwable error, String malformed) {
+      if (error instanceof java.util.concurrent.RejectedExecutionException) socket.closeConnection(1008, WORK_LIMIT);
+      else socket.close(1007, malformed);
     }
     @Override public void onWebsocketPong(WebSocket socket, Framedata frame) {
       var keepalive = keepalives.get(socket);

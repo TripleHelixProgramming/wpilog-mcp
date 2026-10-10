@@ -318,7 +318,7 @@ public final class LiveLog implements LogData, AutoCloseable {
         catch (StructDecodeException e) { failed++; if (reason == null) reason = e.getMessage(); }
       }
       if (failed > 0) problems.put(name, new DecodeProblem(reason, failed, length));
-      return Collections.unmodifiableList(result);
+      return TimestampedValue.inTimeOrder(result);
     }
     @Override public void close() {
       if (claim != null && closed.compareAndSet(false, true)) { try { claim.close(); } finally { releaseUse(); } }

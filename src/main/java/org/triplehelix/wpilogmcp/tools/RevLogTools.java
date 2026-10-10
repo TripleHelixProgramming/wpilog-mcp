@@ -730,7 +730,9 @@ public final class RevLogTools {
       int timeoutMs = Math.max(0, Math.min(MAX_WAIT_MS, getOptInt(arguments, "timeout_ms", 30000)));
 
       boolean wasInProgress = logManager.isRevLogSyncInProgress(log.path());
-      boolean completed = logManager.waitForRevLogSync(log.path(), timeoutMs);
+      boolean completed;
+      try { completed = logManager.waitForRevLogSync(log.path(), timeoutMs); }
+      catch (java.util.concurrent.CancellationException e) { return ResponseBuilder.error(e.getMessage()).build(); }
       var syncLogs = logManager.getSynchronizedLogs(log.path());
       if (completed && (syncLogs == null || syncLogs.revlogCount() == 0)) {
         return noRevlogs(log, false).build();

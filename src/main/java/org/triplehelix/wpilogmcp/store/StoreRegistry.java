@@ -73,11 +73,16 @@ public final class StoreRegistry implements AutoCloseable {
     var io = new StoreFiles(root.get(), security);
     var header = io.read(root.get().resolve("store.json"), StoreManifest.Header.class);
     if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
-    Path result = original;
+    var moves = new java.util.HashMap<Path, Path>();
     for (var move : header.moves()) {
-      if (Path.of(move.originalPath()).toAbsolutePath().normalize().equals(original)) {
-        result = io.resolve(root.get(), move.movedTo());
-      }
+      moves.put(Path.of(move.originalPath()).toAbsolutePath().normalize(),
+          io.resolve(root.get(), move.movedTo()));
+    }
+    Path result = original.toAbsolutePath().normalize();
+    var visited = new java.util.HashSet<Path>();
+    while (moves.containsKey(result)) {
+      if (!visited.add(result)) throw new IOException("Cyclic move aliases in " + root.get().resolve("store.json"));
+      result = moves.get(result);
     }
     return result;
   }

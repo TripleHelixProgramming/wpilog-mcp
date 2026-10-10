@@ -293,7 +293,8 @@ class LiveLogTest {
       try (var use = manager.acquire(path.toString())) {
         assertEquals(1, use.log().entryCount()); assertEquals(1, use.log().entries().get("NT:/x").id());
         assertEquals(2, use.log().sampleCount("NT:/x"));
-        assertEquals(List.of(1L, 2L), use.log().values().get("NT:/x").stream().map(TimestampedValue::value).toList());
+        assertEquals(List.of(2L, 1L), use.log().values().get("NT:/x").stream().map(TimestampedValue::value).toList(),
+            "Decoded views are chronological; the negative timestamp precedes the positive one");
         assertEquals(-1, use.log().minTimestamp()); assertEquals(1, use.log().maxTimestamp());
         assertTrue(use.log().damaged()); warning = use.log().truncationMessage();
       }

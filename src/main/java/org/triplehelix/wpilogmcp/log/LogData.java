@@ -37,7 +37,8 @@ public interface LogData {
   Map<String, EntryInfo> entries();
 
   /**
-   * Timestamped values keyed by entry name.
+   * Timestamped values keyed by entry name, in stable chronological order within each entry.
+   * Equal timestamps retain record order; raw file offsets remain in file order.
    *
    * <p>For {@link LazyParsedLog}, this returns a lazy map that decodes values on first access
    * and caches them with LRU eviction. For {@link ParsedLog}, this returns the eagerly-loaded map.

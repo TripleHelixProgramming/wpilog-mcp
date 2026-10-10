@@ -22,6 +22,40 @@ import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 
 /** The network callbacks run while the fan-out clock is stalled; no wall-clock sleeps. */
 class GatewayKeepaliveTest {
+  @Test void completingOneTaskReleasesAdmissionBeforeItsContinuationSubmitsTheNext() throws Exception {
+    try (var f = new Fixture()) {
+      f.gateway.workLimits(1024, 1);
+      var both = f.gateway.announce("/x", "double", new com.google.gson.JsonObject())
+          .thenCompose(ignored -> f.gateway.value("/x", 1, 1, 1.0));
+      f.loop.drain(); assertDoesNotThrow(both::join);
+    }
+  }
+  @Test void pausedFanOutRefusesExcessUpstreamWorkAndDisconnectsTheView() throws Exception {
+    try (var f = new Fixture()) {
+      var announced = f.gateway.announce("/x", "double", new com.google.gson.JsonObject());
+      f.loop.drain(); announced.join();
+      f.gateway.workLimits(1024, 2);
+      var first = f.gateway.value("/x", 1, 1, 1.0);
+      var second = f.gateway.value("/x", 2, 1, 2.0);
+      var excess = f.gateway.value("/x", 3, 1, 3.0);
+      assertTrue(excess.isCompletedExceptionally(), "Admission must happen before the paused loop");
+      f.loop.drain(); first.join(); second.join();
+      assertNotNull(f.peer.dropped, "An interrupted view must reconnect instead of silently losing values");
+      assertTrue(f.peer.dropped.contains("work queue"));
+      var next = f.gateway.value("/x", 4, 1, 4.0); f.loop.drain(); next.join();
+    }
+  }
+  @Test void pausedFanOutChargesPeerBytesBeforeCopyingTheNextMessage() throws Exception {
+    try (var f = new Fixture()) {
+      f.gateway.workLimits(1024, 4096);
+      var bytes = java.nio.ByteBuffer.allocate(600);
+      f.server.onMessage(f.peer, bytes.asReadOnlyBuffer());
+      f.server.onMessage(f.peer, bytes.asReadOnlyBuffer());
+      assertNotNull(f.peer.dropped, "A receive budget must be checked before the loop can drain");
+      assertTrue(f.peer.dropped.contains("work queue"));
+      f.loop.drain();
+    }
+  }
   private static final class Fixture implements AutoCloseable {
     final ManualScheduler loop = new ManualScheduler(), binds = new ManualScheduler();
     final Nt4Gateway gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 0,

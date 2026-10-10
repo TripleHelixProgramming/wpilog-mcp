@@ -392,7 +392,7 @@ public final class StatisticsTools {
     var stepArg = getOptDouble(arguments, "lag_step_sec");
     double step;
     if (stepArg != null) {
-      if (!(stepArg > 0)) throw new IllegalArgumentException("lag_step_sec must be positive");
+      if (!(stepArg > 0) || !Double.isFinite(stepArg)) throw new IllegalArgumentException("lag_step_sec must be finite and positive");
       step = stepArg;
     } else {
       var dts = new ArrayList<Double>();
@@ -403,11 +403,12 @@ public final class StatisticsTools {
       java.util.Collections.sort(dts);
       step = dts.isEmpty() ? 0.02 : dts.get(dts.size() / 2);
     }
-    int count = (int) Math.floor(maxLag / step + 1e-9);
-    if (2 * count + 1 > MAX_LAGS) {
+    double requestedCount = Math.floor(maxLag / step + 1e-9);
+    int count;
+    if (requestedCount > (MAX_LAGS - 1) / 2) {
       count = (MAX_LAGS - 1) / 2;
       step = maxLag / count;
-    }
+    } else count = (int) requestedCount;
     var lags = new double[2 * count + 1];
     for (int k = -count; k <= count; k++) lags[k + count] = k * step;
     return lags;
@@ -751,7 +752,8 @@ public final class StatisticsTools {
             .toList();
         if (data.size() < 2) continue;
         if (window == 1) {
-          // Use central differences for interior points (more accurate, O(h^2) vs O(h))
+          // Three-point derivatives use the actual intervals. The uniform-grid secant
+          // misplaces an irregular sample's derivative at its neighbors' midpoint.
           // Forward difference for first point, backward difference for last point
           for (int i = 0; i < data.size(); i++) {
             double rate;
@@ -770,9 +772,14 @@ public final class StatisticsTools {
               timestamp = data.get(i)[0];
             } else {
               // Central difference for interior points
-              double dt = data.get(i + 1)[0] - data.get(i - 1)[0];
-              if (dt <= 0) continue;
-              rate = (data.get(i + 1)[1] - data.get(i - 1)[1]) / dt;
+              double left = data.get(i)[0] - data.get(i - 1)[0];
+              double right = data.get(i + 1)[0] - data.get(i)[0];
+              if (left < 0 || right < 0 || left + right <= 0) continue;
+              // Repeated timestamps supply no interval on that side; use the other secant.
+              if (left == 0) rate = (data.get(i + 1)[1] - data.get(i)[1]) / right;
+              else if (right == 0) rate = (data.get(i)[1] - data.get(i - 1)[1]) / left;
+              else rate = (right * ((data.get(i)[1] - data.get(i - 1)[1]) / left)
+                  + left * ((data.get(i + 1)[1] - data.get(i)[1]) / right)) / (left + right);
               timestamp = data.get(i)[0];
             }
             if (!Double.isFinite(rate)) continue;
@@ -1421,8 +1428,8 @@ public final class StatisticsTools {
   /**
    * Lag-1 autocorrelation of a series given as its time windows: the mean over all values, and
    * neighbor products only from pairs inside one window. The last sample of a window and the
-   * first of the next are not neighbors in time. The mean product is put on the scale of the
-   * n - 1 pairs of an unbroken series, so one window gives the usual estimate.
+   * first of the next are not neighbors in time. Divide by all squared deviations without
+   * inventing missing pairs: rescaling sparse windows to n - 1 can exceed one.
    */
   static double lag1AutocorrelationWithin(List<? extends List<Double>> windows) {
     int n = windows.stream().mapToInt(List::size).sum();
@@ -1442,7 +1449,7 @@ public final class StatisticsTools {
         }
       }
     }
-    return den > 0 && pairs > 0 ? (num / pairs) * (n - 1) / den : 0.0;
+    return den > 0 && pairs > 0 ? Math.max(-1, Math.min(1, num / den)) : 0.0;
   }
 
   /**

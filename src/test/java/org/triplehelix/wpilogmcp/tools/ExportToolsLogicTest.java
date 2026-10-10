@@ -21,6 +21,30 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
 class ExportToolsLogicTest extends ToolTestBase {
 
+  @Test void aFailedCsvWriteCannotReportSuccess(@TempDir Path directory) throws Exception {
+    var previous = ExportTools.getExportDirectory();
+    ExportTools.setExportDirectory(directory.toString());
+    try {
+      var log = new MockLogBuilder().setPath("/test/write-failure.wpilog")
+          .addNumericEntry("/x", new double[]{0, 1}, new double[]{1, 2}).build();
+      putLogInCache(log);
+      var tool = new ExportTools.ExportCsvTool() {
+        @Override java.io.Writer openWriter(Path ignored) {
+          return new java.io.Writer() {
+            public void write(char[] chars, int start, int length) throws java.io.IOException { throw new java.io.IOException("Synthetic disk full"); }
+            public void flush() throws java.io.IOException { throw new java.io.IOException("Synthetic disk full"); }
+            public void close() {}
+          };
+        }
+      };
+      var args = new JsonObject(); args.addProperty("path", log.path()); args.addProperty("name", "/x");
+      args.addProperty("output_path", "failed.csv");
+      var result = tool.execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString(), result.toString());
+      assertTrue(result.get("error").getAsString().contains("disk full"), result.toString());
+    } finally { ExportTools.setExportDirectory(previous.toString()); }
+  }
+
   @Override
   protected void registerTools(ToolRegistry registry) {
     ExportTools.registerAll(registry);
@@ -308,7 +332,7 @@ class ExportToolsLogicTest extends ToolTestBase {
       try {
         // Create a symlink inside the export dir pointing to /tmp/outside
         var outsideDir = Files.createTempDirectory("outside");
-        var symlinkPath = exportDir.resolve("escape_link");
+        var symlinkPath = exportDir.toRealPath().resolve("escape_link");
         Files.createSymbolicLink(symlinkPath, outsideDir);
 
         var log = new MockLogBuilder()
@@ -321,7 +345,7 @@ class ExportToolsLogicTest extends ToolTestBase {
         var args = new JsonObject();
         args.addProperty("path", "/test/export_csv.wpilog");
         args.addProperty("name", "/Test/Values");
-        args.addProperty("output_path", symlinkPath.resolve("evil.csv").toString());
+        args.addProperty("output_path", symlinkPath.resolve("uncreated").resolve("evil.csv").toString());
 
         var result = tool.execute(args);
         var resultObj = result.getAsJsonObject();
@@ -329,6 +353,7 @@ class ExportToolsLogicTest extends ToolTestBase {
         assertFalse(resultObj.get("success").getAsBoolean(),
             "Should reject export through symlink that escapes export dir");
         assertTrue(resultObj.get("error").getAsString().contains("not allowed"));
+        assertFalse(Files.exists(outsideDir.resolve("uncreated")), "Refusal must precede directory creation outside the root");
       } finally {
         ExportTools.setExportDirectory(savedExportDir.toString());
       }

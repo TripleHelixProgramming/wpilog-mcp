@@ -512,8 +512,8 @@ public final class SignalResolver {
   }
 
   /**
-   * The total robot current: an explicit entry, else a leaf named TotalCurrent (AdvantageKit and
-   * WPILib power distribution), else names with total or battery current as candidates.
+   * The total robot current: an explicit entry, else a published power-distribution path;
+   * unrelated TotalCurrent leaves remain candidates, since they may describe one mechanism.
    */
   static Resolution totalCurrent(LogData log, String explicit) {
     if (explicit != null) {
@@ -523,7 +523,8 @@ public final class SignalResolver {
     var numeric = byId(log).stream()
         .filter(e -> ToolUtils.isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
         .toList();
-    var conventional = numeric.stream().filter(e -> leaf(e.name()).equals("totalcurrent"))
+    var conventional = numeric.stream().filter(e -> conventionName(e.name()).matches(
+        "/(?:RealOutputs/)?PowerDistribution/TotalCurrent|/SmartDashboard/PowerDistribution(?:\\[[0-9]+\\])?/TotalCurrent"))
         .map(EntryInfo::name).toList();
     if (!conventional.isEmpty()) {
       return ranked(Role.TOTAL_CURRENT, conventional.get(0), conventional, n -> 0,
@@ -556,8 +557,11 @@ public final class SignalResolver {
     var numeric = byId(log).stream()
         .filter(e -> ToolUtils.isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
         .toList();
-    String want = role == Role.LOOP_TIME_FULL ? "fullcyclems" : "usercodems";
-    var conventional = numeric.stream().filter(e -> leaf(e.name()).equals(want))
+    String want = role == Role.LOOP_TIME_FULL ? "FullCycleMS" : "UserCodeMS";
+    var conventional = numeric.stream().filter(e -> {
+      String name = conventionName(e.name());
+      return name.equals("/LoggedRobot/" + want) || name.equals("/RealOutputs/LoggedRobot/" + want);
+    })
         .map(EntryInfo::name).toList();
     if (!conventional.isEmpty()) {
       return ranked(role, conventional.get(0), conventional, n -> 0,
@@ -566,7 +570,7 @@ public final class SignalResolver {
     }
     var byName = numeric.stream().filter(e -> {
       var lower = e.name().toLowerCase(Locale.ROOT);
-      return lower.contains("looptime") || lower.contains("loop_time")
+      return leaf(e.name()).equals(want.toLowerCase(Locale.ROOT)) || lower.contains("looptime") || lower.contains("loop_time")
           || lower.contains("cycletime") || lower.contains("cycle_time");
     }).map(EntryInfo::name).toList();
     if (role == Role.LOOP_TIME_FULL) {
@@ -1111,29 +1115,33 @@ public final class SignalResolver {
 
   private static Resolution chassisSpeeds(LogData log, Role role) {
     boolean wantSetpoint = role == Role.CHASSIS_SPEEDS_SETPOINT;
-    var word = wantSetpoint ? "setpoint" : "measured";
     var candidates = byId(log).stream()
         .filter(e -> e.type().equals("struct:ChassisSpeeds"))
         .filter(e -> log.sampleCount(e.name()) > 0)
-        .filter(e -> SETPOINT.matcher(e.name().substring(e.name().lastIndexOf('/') + 1)).find()
-            == wantSetpoint)
-        .sorted(Comparator.comparingInt((EntryInfo e) ->
-            e.name().toLowerCase(Locale.ROOT).contains(word) ? 0 : 1).thenComparingInt(EntryInfo::id))
         .map(EntryInfo::name).toList();
-    if (candidates.isEmpty()) {
-      return new Resolution(role, List.of(), "no struct:ChassisSpeeds entry "
-          + (wantSetpoint ? "named like a setpoint" : "not named like a setpoint"), candidates,
-          false, null, Tier.NONE);
+    var known = candidates.stream().filter(n -> {
+      String path = conventionName(n);
+      String leaf = wantSetpoint ? "Setpoints" : "Measured";
+      return path.equals("/SwerveChassisSpeeds/" + leaf)
+          || path.equals("/RealOutputs/SwerveChassisSpeeds/" + leaf)
+          || (!wantSetpoint && path.equals("/DriveState/Speeds"));
+    }).toList();
+    if (!known.isEmpty()) {
+      return ranked(role, known.get(0), known, n -> 0,
+          "AdvantageKit SwerveChassisSpeeds or CTRE DriveState/Speeds", null, Tier.CONVENTION);
     }
-    boolean named = candidates.get(0).toLowerCase(Locale.ROOT).contains(word);
-    if (!named && candidates.size() > 1) {
-      return heuristic(role, candidates, "several struct:ChassisSpeeds entries");
+    if (!wantSetpoint && candidates.size() == 1) {
+      return ranked(role, candidates.get(0), candidates, n -> 0,
+          "the only struct:ChassisSpeeds entry; its role is not inferred from its name", null, Tier.TYPE);
     }
-    return ranked(role, candidates.get(0), candidates,
-        n -> n.toLowerCase(Locale.ROOT).contains(word) ? 0 : 1,
-        "struct:ChassisSpeeds, " + (named ? "named '" + word + "'" : "the only one "
-            + (wantSetpoint ? "named like a setpoint" : "not named like a setpoint")),
-        null, named ? Tier.CONVENTION : Tier.TYPE);
+    return heuristic(role, candidates, "no published chassis-speed role; confirm an entry");
+  }
+
+  /** Only transport/logger wrappers are removed; an arbitrary parent is never a convention. */
+  private static String conventionName(String name) {
+    if (name.startsWith("NT:")) name = name.substring(3);
+    if (name.startsWith("/AdvantageKit/")) name = name.substring("/AdvantageKit".length());
+    return name;
   }
 
   private static final Pattern GYRO_PATH = Pattern.compile(

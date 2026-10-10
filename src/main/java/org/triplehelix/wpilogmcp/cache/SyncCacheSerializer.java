@@ -59,7 +59,8 @@ public class SyncCacheSerializer {
   // Version 10 rejects corrupt recorded alignment evidence as an explained failed companion.
   // Version 11 accompanies import's same-boot correlation gate (0.10.0-dev1). Existing store
   // receipts remain authoritative; no already-placed association is rewritten.
-  public static final int CURRENT_FORMAT_VERSION = 11;
+  // Version 12 corrects the cached clock-drift explanation's ms/hour conversion.
+  public static final int CURRENT_FORMAT_VERSION = 12;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(
@@ -111,8 +112,8 @@ public class SyncCacheSerializer {
         String wpilogFp = unpacker.unpackString();
         String revlogFp = unpacker.unpackString();
         long createdAt = unpacker.unpackLong();
-        ParsedRevLog revlog = unpackRevLog(unpacker);
-        SyncResult syncResult = unpackSyncResult(unpacker);
+        ParsedRevLog revlog = unpackRevLog(unpacker, allBytes.length - 4);
+        SyncResult syncResult = unpackSyncResult(unpacker, allBytes.length - 4);
         return new CachedSyncEntry(revlog, syncResult, wpilogFp, revlogFp, createdAt);
       }
     } catch (Exception e) {
@@ -163,13 +164,13 @@ public class SyncCacheSerializer {
     }
   }
 
-  private ParsedRevLog unpackRevLog(MessageUnpacker u) throws IOException {
+  private ParsedRevLog unpackRevLog(MessageUnpacker u, int payloadSize) throws IOException {
     String path = unpackNullableString(u);
     String filenameTimestamp = unpackNullableString(u);
     double minTs = u.unpackDouble();
     double maxTs = u.unpackDouble();
     long recordCount = u.unpackLong();
-    int deviceCount = u.unpackInt();
+    int deviceCount = count(u, payloadSize, 4, "devices");
     // In the order written, which is the parser's (the order the REV log first shows each), so
     // a cached result lists devices and signals in the same order as a fresh one
     Map<Integer, RevLogDevice> devices = new LinkedHashMap<>();
@@ -180,14 +181,14 @@ public class SyncCacheSerializer {
       String firmware = unpackNullableString(u);
       devices.put(key, new RevLogDevice(canId, deviceType, firmware));
     }
-    int signalCount = u.unpackInt();
+    int signalCount = count(u, payloadSize, 5, "signals");
     Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (int i = 0; i < signalCount; i++) {
       String sigKey = u.unpackString();
       String name = u.unpackString();
       String deviceKey = u.unpackString();
       String unit = unpackNullableString(u);
-      int valueCount = u.unpackInt();
+      int valueCount = count(u, payloadSize, 2, "values");
       List<TimestampedValue> values = new ArrayList<>(valueCount);
       for (int j = 0; j < valueCount; j++) {
         double ts = u.unpackDouble();
@@ -217,7 +218,7 @@ public class SyncCacheSerializer {
     }
   }
 
-  private SyncResult unpackSyncResult(MessageUnpacker u) throws IOException {
+  private SyncResult unpackSyncResult(MessageUnpacker u, int payloadSize) throws IOException {
     long offsetMicros = u.unpackLong();
     double confidence = u.unpackDouble();
     ConfidenceLevel level = ConfidenceLevel.valueOf(u.unpackString());
@@ -225,7 +226,7 @@ public class SyncCacheSerializer {
     String explanation = unpackNullableString(u);
     double driftRate = u.unpackDouble();
     double refTime = u.unpackDouble();
-    int pairCount = u.unpackInt();
+    int pairCount = count(u, payloadSize, 5, "signal pairs");
     List<SignalPairResult> pairs = new ArrayList<>(pairCount);
     for (int i = 0; i < pairCount; i++) {
       pairs.add(new SignalPairResult(
@@ -238,6 +239,16 @@ public class SyncCacheSerializer {
 
   private void packNullableString(MessagePacker p, String value) throws IOException {
     if (value == null) { p.packNil(); } else { p.packString(value); }
+  }
+
+  /** Every field needs at least one byte, even when its MessagePack value is nil or zero.
+   * A CRC is not authority for an application count: check it before allocating or looping. */
+  private int count(MessageUnpacker u, int payloadSize, int fields, String label) throws IOException {
+    int count = u.unpackInt();
+    if (count < 0 || count > (payloadSize - u.getTotalReadBytes()) / fields) {
+      throw new IOException("Invalid cached " + label + " count: " + count);
+    }
+    return count;
   }
 
   private String unpackNullableString(MessageUnpacker u) throws IOException {

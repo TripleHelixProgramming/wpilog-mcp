@@ -96,6 +96,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sparse complete samples survive an incomplete final record, and decoded values are stably ordered by timestamp; previously a torn tail could discard a valid sample and an out-of-order record could disappear from scoped statistics.
+- Struct decoding refuses schemas deeper than 64 dependencies with an explained error, and synchronization-cache counts are bounded before allocation; crafted inputs previously could overflow the stack or request a VM-sized array.
+- Calendar, total-current, loop-time and chassis-speed roles require their published paths or a unique eligible type; unrelated leaves and suggestive words previously could select the wrong signal.
+- Enabled-window endpoints remain half-open and voltage crossings stop at each scope boundary; previously a disable sample or excluded gap could enter the result.
+- Correlation uses a bounded within-window autocorrelation estimate, lag search caps its size before narrowing, and derivatives account for unequal intervals; previously results could contain negative effective counts, overflow a search allocation, or report a slope at the wrong time.
+- Drift explanations convert ns/s to ms/hour correctly and cached explanations are invalidated; previously the displayed rate was 1,000 times too large. Interrupted synchronization waits report cancellation instead of completion.
+- CSV export propagates write failures and checks ancestor containment before creating directories; previously a failed write could report success or a refused path could create an outside directory.
+- Daemon PID claims are checked against health identity, and an old shutdown preserves a replacement daemon's token; previously stale ownership could stop the wrong process or remove its stop credential. Cache maintenance no longer retains a closed stdio JVM.
+- HTTP MCP requests have body-size, body-time and admission bounds, and gateway receive fragments and pending fan-out work are bounded before queuing; previously unfinished or queued input could retain unbounded resources and stalled requests could occupy health handlers.
+- Repeated mirror renames retain every prior alias, and oversized store manifests are refused before publication; previously older paths broke or the store could write JSON its reader refused.
+- Installer assets are selected by the version's exact published names, and pull requests to development run CI; previously multiple matching assets depended on JSON formatting and development pull requests had no build.
+- Explorer entry descriptions use the requesting editor and refresh with its listing; late HTTP 304 replies cannot resurrect evicted cache entries. Previously another editor's metadata or an uncharged stale response could be returned.
+
 - New installs pin the guide link in `servers.yaml` to the installed version's tag; previously it pointed at `main`, which could describe a different version. Existing user configurations are left unchanged, including during refresh.
 - Extension upgrade messages now link to the guide at the extension's release tag, including pre-releases, and the gateway guide link is pinned by release packaging; previously both could describe `main` instead of the installed version. Unversioned local builds keep the `main` fallback.
 - Named starts and connections refuse a port owned by another configuration, naming its owner and the ways out; previously `start pit` could silently adopt `http` without capture. Health now reports the configuration name, while older nameless servers retain adoption with a versioned warning.

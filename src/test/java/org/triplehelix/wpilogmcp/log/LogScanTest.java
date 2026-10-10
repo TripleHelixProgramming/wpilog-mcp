@@ -298,19 +298,19 @@ class LogScanTest {
     var jumpScan = LogScan.of(new DataLogReader(jump.toString()), jump);
     assertTrue(jumpScan.damaged(), jumpScan.truncationMessage());
 
-    // Cut off inside a record, and the record before the cut is garbage that gets rolled back
+    // A complete, well-formed sparse sample before a partial record is not evidence of damage.
     var rolled = dir.resolve("d_rolled.wpilog");
     try (var w = new WpilogWriter(rolled, "")) {
       int v = w.start("/Battery/Voltage", "double", "", 0);
       for (int i = 1; i <= 10; i++) w.append(v, i * SEC, dbl(12.0));
-      w.append(v, 5_000L * SEC, dbl(3.0)); // 83 minutes ahead: belongs to the damage
+      w.append(v, 5_000L * SEC, dbl(3.0)); // Even an 83-minute gap cannot prove corruption.
       w.append(v, 11 * SEC, dbl(12.0)); // this one is cut
     }
     var rolledBytes = java.nio.file.Files.readAllBytes(rolled);
     java.nio.file.Files.write(rolled, java.util.Arrays.copyOf(rolledBytes, rolledBytes.length - 3));
     var rolledScan = LogScan.of(new DataLogReader(rolled.toString()), rolled);
-    assertEquals(10.0, rolledScan.maxTimestamp(), 1e-9, rolledScan.truncationMessage());
-    assertTrue(rolledScan.damaged(), rolledScan.truncationMessage());
+    assertEquals(5_000.0, rolledScan.maxTimestamp(), 1e-9, rolledScan.truncationMessage());
+    assertFalse(rolledScan.damaged(), rolledScan.truncationMessage());
 
     // The lazy log reports the same
     try (var lazy = new LazyParsedLog(cut.toString(), new DataLogReader(cut.toString()),

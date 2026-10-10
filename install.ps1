@@ -120,8 +120,8 @@ $releases = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'wpilog-mcp-i
 $releaseInfo = @($releases)[0]
 $version = $releaseInfo.tag_name -replace '^v', ''
 if ($version -notmatch '^[0-9A-Za-z.-]+$') { throw "Release tag is not a version: $($releaseInfo.tag_name)" }
-$jarAsset = $releaseInfo.assets | Where-Object { $_.name -like '*-all.jar' } | Select-Object -First 1
-$vsixAsset = $releaseInfo.assets | Where-Object { $_.name -like '*.vsix' } | Select-Object -First 1
+$jarAsset = $releaseInfo.assets | Where-Object { $_.name -eq "wpilog-mcp-$version-all.jar" } | Select-Object -First 1
+$vsixAsset = $releaseInfo.assets | Where-Object { $_.name -eq "wpilog-analyzer-$version.vsix" } | Select-Object -First 1
 if (-not $jarAsset) { throw "No JAR asset found in release $version" }
 if ($extension -and -not $vsixAsset) { throw "No VSIX asset found in release $version" }
 Write-Host "Installing release $version"

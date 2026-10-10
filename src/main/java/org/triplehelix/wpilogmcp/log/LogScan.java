@@ -236,7 +236,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
     }
 
     int rolledBack = 0;
-    if (damage != null) {
+    if (damage != null && !cutInsideRecord) {
       // The last records before the damage are examined newest first; one whose time runs more
       // than MAX_BACKWARD_NEAR_DAMAGE_SEC backward or ahead of the log before it is dropped, and
       // the examination continues past it, so a garbage record does not shield an earlier one

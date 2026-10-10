@@ -48,6 +48,9 @@ import org.triplehelix.wpilogmcp.log.EntryInfo;
  */
 public final class StructSchemas {
 
+  // An untrusted acyclic chain can overflow the stack just as a cycle can.
+  private static final int MAX_DEPTH = 64;
+
   /** Where a struct's schema came from. */
   public enum Source {
     /** The log's own {@code /.schema/struct:} entry. */
@@ -163,6 +166,8 @@ public final class StructSchemas {
     schemaText.put(name, schema);
     try {
       db.add(name, schema);
+    } catch (StackOverflowError e) {
+      errors.put(name, "schema depth exceeds the supported limit for " + name);
     } catch (BadSchemaException | RuntimeException e) {
       errors.put(name, "invalid schema for " + name + " (" + e.getMessage() + "): " + schema);
     }
@@ -309,33 +314,41 @@ public final class StructSchemas {
     if (cached != null) return cached;
     var desc = db.find(name);
     if (desc == null || !desc.isValid() || errors.containsKey(name)) return null;
-    var plan = compile(desc, new HashMap<>());
+    var plan = compile(desc, new HashMap<>(), 0);
     plans.putIfAbsent(name, plan);
     return plans.get(name);
   }
 
-  private Plan compile(StructDescriptor desc, Map<String, Plan> inProgress) {
+  private Plan compile(StructDescriptor desc, Map<String, Plan> inProgress, int depth) {
+    if (depth >= MAX_DEPTH) throw new StructDecodeException("schema depth exceeds " + MAX_DEPTH
+        + " at " + desc.getName());
     var existing = inProgress.get(desc.getName());
-    if (existing != null) return existing;
+    if (existing != null) {
+      if (depth + existing.depth() > MAX_DEPTH) throw new StructDecodeException("schema depth exceeds " + MAX_DEPTH
+          + " at " + desc.getName());
+      return existing;
+    }
     var fields = new ArrayList<FieldPlan>();
     var enricher = enricherFor(desc.getName());
     var names = new ArrayList<String>();
     desc.getFields().forEach(f -> names.add(f.getName()));
     if (enricher != null) names.add(DERIVED);
-    var plan = new Plan(desc.getSize(), fields, enricher, names.toArray(String[]::new));
-    inProgress.put(desc.getName(), plan);
+    int planDepth = 1;
     for (var f : desc.getFields()) {
       Map<Long, String> labels = null;
       if (f.hasEnum()) {
         labels = new HashMap<>();
         for (var e : f.getEnumValues().entrySet()) labels.put(e.getValue(), e.getKey());
       }
-      Plan nested = f.getType() == StructFieldType.kStruct ? compile(f.getStruct(), inProgress)
+      Plan nested = f.getType() == StructFieldType.kStruct ? compile(f.getStruct(), inProgress, depth + 1)
           : null;
+      if (nested != null) planDepth = Math.max(planDepth, 1 + nested.depth());
       fields.add(new FieldPlan(f.getName(), f.getType(), f.getOffset(), f.getSize(),
           f.getArraySize(), f.isBitField(), f.getBitShift(), f.getBitWidth(), f.isInt(),
           labels, nested));
     }
+    var plan = new Plan(desc.getSize(), List.copyOf(fields), enricher, names.toArray(String[]::new), planDepth);
+    inProgress.put(desc.getName(), plan);
     return plan;
   }
 
@@ -356,7 +369,7 @@ public final class StructSchemas {
   // ==================== plans ====================
 
   /** How to decode one struct type; {@code keys} are its field names (and _derived), shared. */
-  private record Plan(int size, List<FieldPlan> fields, Enricher enricher, String[] keys) {
+  private record Plan(int size, List<FieldPlan> fields, Enricher enricher, String[] keys, int depth) {
     Map<String, Object> decode(ByteBuffer buffer, int base) {
       var values = new Object[keys.length];
       for (int i = 0; i < fields.size(); i++) values[i] = fields.get(i).read(buffer, base);

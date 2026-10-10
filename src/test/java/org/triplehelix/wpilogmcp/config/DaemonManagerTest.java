@@ -923,6 +923,66 @@ class DaemonManagerTest {
     private static final long FAKE_PID = 424242L;
     private final FakeProcesses processes = new FakeProcesses();
 
+    @Test void aStalePidCannotAuthorizeStoppingAnUnrelatedLiveProcess() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(300));
+      processes.alive.put(FAKE_PID, true);
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var current = new FakeDaemon(port, FAKE_PID + 1, Version.VERSION, true, "current", processes)) {
+        assertTrue(manager.stopDaemon("test"));
+        assertTrue(processes.destroyed.isEmpty(), "The stale record must not authorize killing another PID");
+        assertEquals(0, current.stopRequests.get());
+        assertTrue(manager.healthCheck(port));
+      }
+    }
+
+    @Test void aStopDecisionCannotOverwriteAReplacementClaimBeforeSignalling() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(300));
+      try (var daemon = new FakeDaemon(port, FAKE_PID, Version.VERSION, true, "old", processes)) {
+        manager.writePidFile("test", FAKE_PID + 1, port);
+        manager.writeToken("test", "replacement");
+        var stop = DaemonManager.class.getDeclaredMethod("endDaemon", String.class,
+            DaemonManager.RunningDaemon.class, boolean.class);
+        stop.setAccessible(true);
+        assertEquals(false, stop.invoke(manager, "test",
+            new DaemonManager.RunningDaemon(FAKE_PID, port, Version.VERSION), false));
+        assertEquals(0, daemon.stopRequests.get()); assertTrue(processes.destroyed.isEmpty());
+        assertEquals("replacement", manager.readToken("test"));
+        assertEquals(Long.toString(FAKE_PID + 1), Files.readAllLines(manager.pidFilePath("test")).get(0));
+      }
+    }
+
+    @Test void finishingAnOldStopPreservesANewDaemonsToken() throws Exception {
+      int port = freePort();
+      var reference = new java.util.concurrent.atomic.AtomicReference<DaemonManager>();
+      var published = new java.util.concurrent.atomic.AtomicBoolean();
+      var interleaving = new DaemonManager.Processes() {
+        public boolean isAlive(long pid) {
+          boolean alive = processes.isAlive(pid);
+          if (pid == FAKE_PID && !alive && published.compareAndSet(false, true)) {
+            try {
+              reference.get().writePidFile("test", FAKE_PID + 1, port);
+              reference.get().writeToken("test", "replacement");
+            } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+          }
+          return alive;
+        }
+        public boolean destroy(long pid) { return processes.destroy(pid); }
+        public boolean destroyForcibly(long pid) { return processes.destroyForcibly(pid); }
+      };
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(2), noLauncher,
+          DaemonManager.FILE_SYSTEM, interleaving, Version.VERSION);
+      reference.set(manager);
+      manager.writePidFile("test", FAKE_PID, port); manager.writeToken("test", "old");
+      try (var current = new FakeDaemon(port, FAKE_PID, Version.VERSION, true, "old", processes)) {
+        assertTrue(manager.stopDaemon("test"));
+        assertTrue(published.get());
+        assertEquals("replacement", manager.readToken("test"));
+        assertEquals(record(FAKE_PID + 1, port), pidFileLines(manager, "test"));
+      }
+    }
+
     private DaemonManager managerWith(DaemonManager.Launcher launcher, Duration timeout) {
       return new DaemonManager(tempDir, timeout, launcher, DaemonManager.FILE_SYSTEM, processes,
           org.triplehelix.wpilogmcp.Version.VERSION);

@@ -16,6 +16,26 @@ import org.junit.jupiter.api.BeforeEach;
 @DisplayName("resolve_signals does not guess")
 class ResolveSignalsNoGuessTest {
   private MockLogAdmission logs;
+
+  @Test void unrelatedParentsDoNotTurnSuggestiveLeavesIntoConventions() {
+    var log = new MockLogBuilder()
+        .addNumericEntry("/Arm/TotalCurrent", new double[]{0, 1}, new double[]{1, 2})
+        .addNumericEntry("/Camera/FullCycleMS", new double[]{0, 1}, new double[]{1, 2})
+        .addNumericEntry("/Camera/UserCodeMS", new double[]{0, 1}, new double[]{1, 2}).build();
+    assertTrue(SignalResolver.totalCurrent(log, null).entries().isEmpty());
+    assertTrue(SignalResolver.loopTime(log, SignalResolver.Role.LOOP_TIME_FULL, null).entries().isEmpty());
+    assertTrue(SignalResolver.loopTime(log, SignalResolver.Role.LOOP_TIME_USER, null).entries().isEmpty());
+  }
+
+  @Test void aMeasuredWordDoesNotSelectAmongChassisStreams() {
+    var log = new MockLogBuilder()
+        .addEntry("/Camera/Measured", "struct:ChassisSpeeds",
+            java.util.List.of(new org.triplehelix.wpilogmcp.log.TimestampedValue(0, java.util.Map.of())))
+        .addEntry("/Other/Velocity", "struct:ChassisSpeeds",
+            java.util.List.of(new org.triplehelix.wpilogmcp.log.TimestampedValue(0, java.util.Map.of())))
+        .build();
+    assertTrue(SignalResolver.resolve(log, SignalResolver.Role.CHASSIS_SPEEDS_MEASURED).entries().isEmpty());
+  }
   @BeforeEach void admitMocks() { logs = new MockLogAdmission(); }
 
   @AfterEach

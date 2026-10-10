@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.triplehelix'
-version = '0.10.0-dev1'
+version = '0.10.0-dev2'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17

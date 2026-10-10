@@ -418,6 +418,13 @@ public class DaemonManager {
       // Process is alive — verify it's actually our server via health check
       var probe = probe(port);
       if (probe.holder() == Holder.THIS_SERVER) {
+        if ((probe.pid() != null && probe.pid() != pid)
+            || (probe.name() != null && !probe.name().equals(name))) {
+          logger.warn("Discarding stale PID record for '{}': port {} belongs to '{}' (PID {})",
+              name, port, probe.name(), probe.pid());
+          deletePidFile(name);
+          return Optional.empty();
+        }
         if (!probe.managed() && (booting || stopping)) settleRecord(name, pid, port); // it answers: a plain record
         return Optional.of(new RunningDaemon(pid, port, probe.version(), probe.managed()));
       }
@@ -647,7 +654,10 @@ public class DaemonManager {
     if (running.isEmpty() && port != null && probe(port).managed()) return refuseManaged(name, "stop");
     if (running.isEmpty()) {
       logger.info("Server '{}' is not running", name);
-      deleteToken(name);
+      locked(name, () -> {
+        if (recordedPid(name) == -1) deleteToken(name);
+        return null;
+      });
       return true;
     }
     var daemon = running.get();
@@ -677,9 +687,18 @@ public class DaemonManager {
    * The lock is not held while waiting.
    */
   private boolean endDaemon(String name, RunningDaemon daemon, boolean restarting) {
-    if (daemon.managed() || probe(daemon.port()).managed()) return refuseManaged(name, restarting ? "restart" : "stop");
+    var current = probe(daemon.port());
+    if (daemon.managed() || current.managed()) return refuseManaged(name, restarting ? "restart" : "stop");
+    if (current.holder() == Holder.THIS_SERVER
+        && ((current.pid() != null && current.pid() != daemon.pid())
+            || (current.name() != null && !current.name().equals(name)))) {
+      logger.warn("Server '{}' changed ownership before stop; no process was signalled", name);
+      return false;
+    }
     try {
-      locked(name, () -> {
+      boolean owned = locked(name, () -> {
+        // Another stop/start may have replaced the claim after findRunning released its lock.
+        if (!restarting && recordedPid(name) != daemon.pid()) return false;
         if (!restarting) {
           writePidFile(name, daemon.pid(), daemon.port(), STOPPING_MARKER);
         }
@@ -691,8 +710,9 @@ public class DaemonManager {
               daemon.pid(), token == null ? " (no token file)" : "");
           processes.destroy(daemon.pid());
         }
-        return null;
+        return true;
       });
+      if (!owned) return false;
     } catch (java.io.UncheckedIOException e) {
       logger.error("Failed to mark server '{}' as stopping: {}", name, e.getCause().getMessage());
       return false;
@@ -716,8 +736,10 @@ public class DaemonManager {
       // A restart keeps its claim; a plain stop removes only the daemon it stopped.
       if (!restarting && recordedPid(name) == daemon.pid()) {
         deletePidFile(name);
+        deleteToken(name);
+      } else if (restarting) {
+        deleteToken(name);
       }
-      deleteToken(name);
       return null;
     });
     return true;

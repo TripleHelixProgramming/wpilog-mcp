@@ -135,6 +135,11 @@ class MirrorSyncTest {
     var destination = copy(moved.resolve(file.getFileName())); assertTrue(Files.exists(destination)); assertFalse(Files.exists(copy(file)));
     assertEquals(destination, manager.stores().resolveMoved(copy(file)));
     assertArrayEquals(Files.readAllBytes(moved.resolve(file.getFileName())), Files.readAllBytes(destination));
+    var movedAgain = moved.resolveSibling("000000Z_CORRECTED_Q2"); Files.move(moved, movedAgain);
+    assertEquals(0, sync().bytesCopied());
+    var finalDestination = copy(movedAgain.resolve(file.getFileName()));
+    assertEquals(finalDestination, manager.stores().resolveMoved(copy(file)));
+    assertEquals(finalDestination, manager.stores().resolveMoved(destination));
   }
 
   @Test void windowAndCapEvictOldestUnpinnedButPinsAndOriginMissingCopiesSurvive() throws Exception {

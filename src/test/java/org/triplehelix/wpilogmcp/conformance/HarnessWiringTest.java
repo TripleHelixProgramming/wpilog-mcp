@@ -32,6 +32,7 @@ class HarnessWiringTest {
     // SnakeYAML's YAML 1.1 resolver reads GitHub's unquoted "on" as Boolean.TRUE.
     var triggers = (Map<?, ?>) ci.get(Boolean.TRUE);
     assertEquals(List.of("main", "development"), ((Map<?, ?>) triggers.get("push")).get("branches"));
+    assertEquals(List.of("main", "development"), ((Map<?, ?>) triggers.get("pull_request")).get("branches"));
     var steps = (List<?>) job.get("steps");
     var commands = steps.stream().map(s -> ((Map<?, ?>) s).get("run")).toList();
     assertFalse(commands.contains("./gradlew test"), "The ordinary build already ran every ordinary check");

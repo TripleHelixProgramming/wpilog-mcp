@@ -79,6 +79,19 @@ public class HttpTransport {
   private java.util.concurrent.ExecutorService httpExecutor;
   private ScheduledExecutorService scheduler;
   private java.util.concurrent.ExecutorService sseExecutor;
+  private java.util.concurrent.ExecutorService mcpExecutor;
+  private ScheduledExecutorService bodyDeadlines;
+  private int maxRequestBytes = 4 * 1024 * 1024;
+  private int maxMcpRequests = Math.min(32, Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+  private Duration bodyTimeout = Duration.ofSeconds(10);
+  private final AtomicInteger readingBodies = new AtomicInteger();
+  void requestLimits(int bytes, int concurrent, Duration timeout) {
+    if (server != null || bytes < 1 || concurrent < 1 || timeout.isNegative() || timeout.isZero()) {
+      throw new IllegalArgumentException("Positive request limits must be set before start");
+    }
+    maxRequestBytes = bytes; maxMcpRequests = concurrent; bodyTimeout = timeout;
+  }
+  int readingBodies() { return readingBodies.get(); }
   /** Handlers running right now. An SSE stream is not one: its handler returns at once. */
   private final AtomicInteger inFlightRequests = new AtomicInteger();
   private final AtomicBoolean stopped = new AtomicBoolean();
@@ -195,13 +208,20 @@ public class HttpTransport {
     server.createContext("/store", counted(this::handleStore));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
-    httpExecutor = Executors.newFixedThreadPool(
-        Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+    httpExecutor = new ThreadPoolExecutor(4, 32, 60, TimeUnit.SECONDS,
+        new java.util.concurrent.ArrayBlockingQueue<>(256), r -> {
+          var thread = new Thread(r, "http-request"); thread.setDaemon(true); return thread;
+        });
+    mcpExecutor = new ThreadPoolExecutor(0, maxMcpRequests, 60, TimeUnit.SECONDS,
+        new SynchronousQueue<>(), r -> {
+          var thread = new Thread(r, "mcp-request"); thread.setDaemon(true); return thread;
+        });
+    bodyDeadlines = Executors.newSingleThreadScheduledExecutor(r -> {
+      var thread = new Thread(r, "mcp-body-deadline"); thread.setDaemon(true); return thread;
+    });
     server.setExecutor(httpExecutor);
     leases.transportOpened();
     leasesOpened = true;
-    server.start();
-    stores.startWatching();
 
     // Separate bounded thread pool for SSE streams — these block indefinitely and must not
     // starve the main request handler pool. Capped at 64 concurrent SSE connections.
@@ -221,6 +241,8 @@ public class HttpTransport {
     scheduler.scheduleAtFixedRate(
         () -> expireSessions(SESSION_IDLE_TIMEOUT),
         CLEANUP_INTERVAL_MINUTES, CLEANUP_INTERVAL_MINUTES, TimeUnit.MINUTES);
+    server.start();
+    stores.startWatching();
     lastMcpActivityNanos = idleClock.getAsLong();
     var idle = idleExit;
     if (idle != null && onIdle != null) {
@@ -308,6 +330,8 @@ public class HttpTransport {
     if (scheduler != null) {
       scheduler.shutdownNow();
     }
+    if (mcpExecutor != null) mcpExecutor.shutdownNow();
+    if (bodyDeadlines != null) bodyDeadlines.shutdownNow();
     sessionManager.clear();
     stores.stopWatching();
     stores.awaitImports();
@@ -355,7 +379,7 @@ public class HttpTransport {
 
       var method = exchange.getRequestMethod();
       switch (method) {
-        case "POST" -> handlePost(exchange);
+        case "POST" -> submitPost(exchange);
         case "GET" -> handleGet(exchange);
         case "DELETE" -> handleDelete(exchange);
         case "OPTIONS" -> handleOptions(exchange);
@@ -374,13 +398,31 @@ public class HttpTransport {
   private void handlePost(HttpExchange exchange) throws IOException {
     // Parse JSON-RPC from request body (single message or batch array)
     JsonElement parsed;
-    try (var reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8)) {
-      parsed = JsonParser.parseReader(reader);
+    var reading = new AtomicBoolean(true);
+    var expiry = bodyDeadlines.schedule(() -> {
+      if (reading.compareAndSet(true, false)) exchange.close();
+    }, bodyTimeout.toMillis(), TimeUnit.MILLISECONDS);
+    readingBodies.incrementAndGet();
+    try {
+      var declared = exchange.getRequestHeaders().getFirst("Content-Length");
+      if (declared != null && Long.parseLong(declared) > maxRequestBytes) {
+        sendError(exchange, 413, "MCP request body exceeds " + maxRequestBytes + " bytes"); return;
+      }
+      var bytes = exchange.getRequestBody().readNBytes(maxRequestBytes + 1);
+      if (!reading.compareAndSet(true, false)) return;
+      if (bytes.length > maxRequestBytes) {
+        sendError(exchange, 413, "MCP request body exceeds " + maxRequestBytes + " bytes"); return;
+      }
+      parsed = JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8));
     } catch (Exception e) {
       logger.warn("Failed to parse JSON-RPC request: {}", e.getMessage());
       sendJsonResponse(exchange, 400,
           JsonRpc.createErrorResponse(null, JsonRpc.PARSE_ERROR, "Parse error"), null);
       return;
+    } finally {
+      reading.set(false);
+      expiry.cancel(false);
+      readingBodies.decrementAndGet();
     }
 
     if (parsed.isJsonArray()) {
@@ -391,6 +433,24 @@ public class HttpTransport {
       sendJsonResponse(exchange, 400,
           JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST, "Expected object or array"),
           null);
+    }
+  }
+
+  /** Slow bodies and tool calls share a bounded admission pool; health never waits behind them. */
+  private void submitPost(HttpExchange exchange) throws IOException {
+    inFlightRequests.incrementAndGet();
+    try {
+      mcpExecutor.execute(() -> {
+        try { handlePost(exchange); }
+        catch (Exception e) {
+          logger.warn("MCP request failed: {}", e.toString());
+          try { sendError(exchange, 500, "Internal server error"); }
+          catch (IOException ignored) { exchange.close(); }
+        } finally { inFlightRequests.decrementAndGet(); }
+      });
+    } catch (java.util.concurrent.RejectedExecutionException e) {
+      inFlightRequests.decrementAndGet();
+      sendError(exchange, 503, "MCP request capacity is busy; try again after an active request finishes");
     }
   }
 

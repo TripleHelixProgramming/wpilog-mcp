@@ -9,7 +9,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
+import java.io.BufferedWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -193,8 +193,9 @@ public final class ExportTools {
       }
 
       int rowCount = 0;
-      try (var writer = new PrintWriter(new FileWriter(outputFilePath.toFile()))) {
-        writer.println(String.join(",", columns));
+      try (var writer = new BufferedWriter(openWriter(outputFilePath))) {
+        writer.write(String.join(",", columns));
+        writer.newLine();
         for (var row : rows) {
           var sb = new StringBuilder();
           sb.append(row.timestamp());
@@ -204,9 +205,12 @@ public final class ExportTools {
             sb.append(',');
             if (v != null) sb.append(csvEscape(String.valueOf(v)));
           }
-          writer.println(sb);
+          writer.write(sb.toString());
+          writer.newLine();
           rowCount++;
         }
+      } catch (IOException e) {
+        return errorResult("Could not write CSV export: " + e.getMessage());
       }
 
       var result = new JsonObject();
@@ -221,6 +225,10 @@ public final class ExportTools {
     }
 
     record Row(double timestamp, int index, Map<String, Object> fields) {}
+
+    java.io.Writer openWriter(Path path) throws IOException {
+      return Files.newBufferedWriter(path);
+    }
 
     /** The elements of an array value (struct array or primitive array), or null for a scalar. */
     static List<?> elementsOf(Object value) {
@@ -295,6 +303,11 @@ public final class ExportTools {
       // Only create subdirectories that stay inside the export directory
       if (!Files.exists(parent)) {
         if (!parent.normalize().startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
+        var ancestor = parent;
+        while (!Files.exists(ancestor, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          ancestor = ancestor.getParent();
+        }
+        if (!ancestor.toRealPath().startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
         Files.createDirectories(parent);
       }
       var resolved = Files.exists(candidate) ? candidate.toRealPath()

@@ -808,7 +808,9 @@ held mapping uses and a tool's across-growth refusal followed by the new file-si
 record with a fresh scan and the independent reader. It records warmed fresh/resume scan medians
 (five alternating measurements after two warmups, the same already-mapped file) in
 `build/reports/round18/rescan-cost.txt`; mapping and filesystem cache costs are excluded equally.
-Unknown filesystem identity takes the fresh path, including on Windows providers returning no key.
+Where a filesystem returns no file key, creation time identifies the file; unchanged anchors and
+growth permit resume on Windows too. A recreated file with a reused creation time relies on the
+header and last-record anchors, as the architecture guide explains.
 
 `LiveCaptureConformanceTest` replays every fixture through the gateway/client/writer, then runs the
 conformance suite's argument variants for every log-reading tool on the open session and on a fresh
@@ -910,7 +912,7 @@ oldest supported and current versions by hand:
 1. Install from a fresh home: one offer, Not now lasting until activation, installer progress/PATH notice, and successful server startup. Verify only absolute User directories/team seed a new file and no key does.
 2. Update an older launcher with its YAML preserved; keep a newer hand install. Test the on-demand install command and a development suffix.
 3. Ask Copilot for `list_available_logs`: origins/teams are visible; opening and closing project windows adds and removes their directories. Settings/key/folder changes do not restart the daemon.
-4. Use `get_match_info` with the secret-storage key and confirm no configuration, project file, command, or output contains it. Clear the key and check fallback behavior.
+4. Use `get_tba_match_data` with the secret-storage key and confirm no configuration, project file, command, or output contains it. Clear the key and check fallback behavior.
 5. Register Claude Code at user scope, including the copy-command fallback. Accept/decline the project YAML offer and gitignore choice; run the bridge in a terminal with VS Code closed.
 6. Open legacy projects: retire only recognized untracked/ignored entries, preserve other entries and tracked/custom files with a note, stop `vscode-default` once, and remove its private settings. Check a failed stop can retry next activation.
 7. Exercise the explorer: log/entry trees and origins, plotting and statistics, console cursor, field pose, REV alignment, decode warnings, and read refusals. For organizing, check once-per-activation offers, Never/on-demand override, folder and robot picks, move/copy, progress/refusal output, inbox states, assignment, and refresh. The detailed milestone 6 checklist is in [EXPLORER_PLAN.md](EXPLORER_PLAN.md#11-milestones).

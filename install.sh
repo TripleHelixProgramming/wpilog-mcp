@@ -125,11 +125,26 @@ api="https://api.github.com/repos/$REPO/releases/latest"
 if [ -n "$tag" ]; then api="https://api.github.com/repos/$REPO/releases/tags/$tag"; fi
 if [ "$pre_release" = true ]; then api="https://api.github.com/repos/$REPO/releases?per_page=1"; fi
 RELEASE_JSON=$(curl -fsSL "$api" -H "User-Agent: wpilog-mcp-installer")
-# Match each field's own value: compact JSON also has unrelated URLs on the same line.
-VERSION=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -1)
-JAR_URL=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*-all\.jar\)".*/\1/p' | head -1)
-VSIX_URL=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.vsix\)".*/\1/p' | head -1)
+# Read every occurrence, even on one line. Then choose the exact asset name the release
+# workflow publishes, not whichever unrelated *-all.jar happens to be first or last.
+release_field() {
+    printf '%s\n' "$RELEASE_JSON" | awk -v key="$1" '
+      { while (match($0, "\"" key "\"[[:space:]]*:[[:space:]]*\"[^\"]*\"")) {
+          value = substr($0, RSTART, RLENGTH)
+          $0 = substr($0, RSTART + RLENGTH)
+          sub(/^[^:]*:[[:space:]]*"/, "", value); sub(/"$/, "", value)
+          print value
+      } }'
+}
+RELEASE_TAG=$(release_field tag_name | head -1)
+VERSION=${RELEASE_TAG#v}
 case "$VERSION" in ""|*[!0-9A-Za-z.-]*) echo "ERROR: Release tag is not a version: $VERSION" >&2; exit 1 ;; esac
+release_asset() {
+    release_field browser_download_url | awk -v ending="/$1" '
+      length($0) >= length(ending) && substr($0, length($0) - length(ending) + 1) == ending { print; exit }'
+}
+JAR_URL=$(release_asset "wpilog-mcp-$VERSION-all.jar")
+VSIX_URL=$(release_asset "wpilog-analyzer-$VERSION.vsix")
 if [ -z "$JAR_URL" ]; then echo "ERROR: No JAR asset found in release $VERSION" >&2; exit 1; fi
 if [ "$extension" = yes ] && [ -z "$VSIX_URL" ]; then
     echo "ERROR: No VSIX asset found in release $VERSION" >&2; exit 1

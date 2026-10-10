@@ -1014,6 +1014,9 @@ public class LogManager {
       return true;
     } catch (TimeoutException e) {
       return false;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new java.util.concurrent.CancellationException("REV synchronization wait interrupted; synchronization is not complete");
     } catch (Exception e) {
       logger.warn("Error waiting for revlog sync: {}", e.getMessage());
       return true; // Don't block indefinitely on errors

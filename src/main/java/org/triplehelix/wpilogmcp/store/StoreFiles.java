@@ -22,6 +22,7 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
 /** All store paths pass both configured-directory and store-local containment checks. */
 final class StoreFiles {
+  static final long MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
   static final Gson JSON = new GsonBuilder().setPrettyPrinting().serializeNulls()
       .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES).create();
   private final Path root;
@@ -99,7 +100,7 @@ final class StoreFiles {
 
   <T> T read(Path path, Class<T> type) throws IOException {
     check(path);
-    if (Files.size(path) > 4 * 1024 * 1024) throw new IOException("Manifest is too large: " + path);
+    if (Files.size(path) > MAX_MANIFEST_BYTES) throw new IOException("Manifest is too large: " + path);
     try (var reader = Files.newBufferedReader(path)) {
       var value = JSON.fromJson(reader, type);
       if (value == null) throw new IOException("Empty manifest: " + path);
@@ -117,6 +118,10 @@ final class StoreFiles {
     try {
       try (var writer = Files.newBufferedWriter(temporary)) {
         JSON.toJson(value, writer);
+      }
+      if (Files.size(temporary) > MAX_MANIFEST_BYTES) {
+        throw new IOException("Manifest is too large (maximum " + MAX_MANIFEST_BYTES
+            + " bytes); previous manifest retained: " + path);
       }
       // A crash leaves the old manifest or the complete new one, never a half-written catalog.
       // A filesystem without atomic rename is refused rather than weakening that guarantee.
