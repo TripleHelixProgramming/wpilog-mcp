@@ -125,9 +125,10 @@ api="https://api.github.com/repos/$REPO/releases/latest"
 if [ -n "$tag" ]; then api="https://api.github.com/repos/$REPO/releases/tags/$tag"; fi
 if [ "$pre_release" = true ]; then api="https://api.github.com/repos/$REPO/releases?per_page=1"; fi
 RELEASE_JSON=$(curl -fsSL "$api" -H "User-Agent: wpilog-mcp-installer")
-VERSION=$(printf '%s\n' "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"v\([^" ]*\)".*/\1/')
-JAR_URL=$(printf '%s\n' "$RELEASE_JSON" | grep '"browser_download_url".*-all\.jar"' | head -1 | sed 's/.*"\(https[^" ]*\)".*/\1/')
-VSIX_URL=$(printf '%s\n' "$RELEASE_JSON" | grep '"browser_download_url".*\.vsix"' | head -1 | sed 's/.*"\(https[^" ]*\)".*/\1/')
+# Match each field's own value: compact JSON also has unrelated URLs on the same line.
+VERSION=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -1)
+JAR_URL=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*-all\.jar\)".*/\1/p' | head -1)
+VSIX_URL=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.vsix\)".*/\1/p' | head -1)
 case "$VERSION" in ""|*[!0-9A-Za-z.-]*) echo "ERROR: Release tag is not a version: $VERSION" >&2; exit 1 ;; esac
 if [ -z "$JAR_URL" ]; then echo "ERROR: No JAR asset found in release $VERSION" >&2; exit 1; fi
 if [ "$extension" = yes ] && [ -z "$VSIX_URL" ]; then

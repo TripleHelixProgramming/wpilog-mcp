@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The shell installer selects the version, JAR and extension from their own JSON fields even when a release response is one line; previously greedy URL extraction could install the source ZIP as a JAR or select a release title as the version.
 - Imports into a known robot's anchored sessions now require unique strong data correlation within 250 ms of zero; calendar overlap alone could previously select another boot. The manifest records the proof, or explicitly retains calendar-only placement when no anchor exists, and peer copies preserve it. Existing placements stay unchanged.
 - Imported REV companions now apply the puller's 250 ms same-boot gate; previously a strong correlation at a seconds-scale offset could attach another boot's file. Refused companions remain unassigned and readable.
 - PhotonVision now refuses unknown message keys beside otherwise valid settings; previously those keys bypassed the stand-down check.

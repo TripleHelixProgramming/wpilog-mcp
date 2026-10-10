@@ -255,7 +255,9 @@ class InstallerTest {
               "name": "wpilog-mcp-%1$s-all.jar",
               "browser_download_url": "%2$swpilog-mcp-%1$s-all.jar"
             }
-          ]
+          ],
+          "name": "v-unrelated-release-title",
+          "zipball_url": "https://api.github.com/repos/TripleHelixProgramming/wpilog-mcp/zipball/v%1$s"
         }
         """.formatted(version, base);
   }
@@ -319,8 +321,9 @@ class InstallerTest {
               *) url="$1"; shift ;;
           esac
       done
+      if [ -n "$FAKE_REQUESTS" ]; then printf '%s\\n' "$url" >> "$FAKE_REQUESTS"; fi
       case "$url" in
-          https://api.github.com/*)
+          https://api.github.com/*/releases*)
              if [ -n "$FAKE_API_URL" ]; then printf '%s' "$url" > "$FAKE_API_URL"; fi
              cat "$FAKE_RELEASE_JSON" ;;
           *.vsix) cp "$FAKE_VSIX" "$out"
@@ -346,6 +349,40 @@ class InstallerTest {
       fi
       for arg in "$@"; do printf '%s\\n' "$arg"; done
       """;
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  @DisabledOnOs(OS.WINDOWS)
+  void shellAssetFieldsDoNotDependOnReleaseJsonFormatting(boolean compact) throws Exception {
+    var home = Files.createDirectory(tempDir.resolve("home"));
+    var fakeBin = Files.createDirectory(tempDir.resolve("bin"));
+    executable(fakeBin.resolve("curl"), FAKE_CURL);
+    executable(home.resolve("wpilib/2026/jdk/bin/java"), FAKE_JAVA);
+    String version = "1.2.3-dev1";
+    String document = releaseJson(version);
+    if (compact) document = new Gson().toJson(JsonParser.parseString(document));
+    var release = Files.writeString(tempDir.resolve("release.json"), document);
+    var requests = tempDir.resolve("requests");
+    var env = new HashMap<>(Map.of("HOME", home.toString(), "PATH", fakeBin + ":/usr/bin:/bin",
+        "TMPDIR", tempDir.toString(), "FAKE_RELEASE_JSON", release.toString(),
+        "FAKE_JAR", Files.writeString(tempDir.resolve("jar"), "fake JAR").toString(),
+        "FAKE_VSIX", Files.writeString(tempDir.resolve("vsix"), "fake VSIX").toString(),
+        "FAKE_REQUESTS", requests.toString()));
+    for (String key : List.of("FAKE_DOWNLOAD_URL", "FAKE_DOWNLOAD_FILE", "FAKE_VSIX_URL", "FAKE_VSIX_FILE")) {
+      env.put(key, tempDir.resolve(key).toString());
+    }
+    var result = run(List.of("sh", Path.of("install.sh").toAbsolutePath().toString(),
+        "--non-interactive", "--with-extension"), env, true);
+    assertEquals(0, result.exit(), result.output());
+    var urls = Files.readAllLines(requests);
+    assertEquals(3, urls.size(), urls.toString());
+    assertAll(
+        () -> assertEquals(jarUrl(version), urls.get(1), "JAR asset URL"),
+        () -> assertEquals(jarUrl(version).replace("wpilog-mcp-", "wpilog-analyzer-")
+            .replace("-all.jar", ".vsix"), urls.get(2), "VSIX asset URL"),
+        () -> assertEquals(List.of("Installing release " + version),
+            result.stdout().lines().filter(line -> line.startsWith("Installing release ")).toList(), "tag_name version"));
+  }
 
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
