@@ -6,6 +6,10 @@ This guide is the reference: every setting, flag, environment variable and route
 
 The server is designed for and tested with Claude. Other MCP clients work too, but the depth and quality of the analysis depend on the model.
 
+The shared-server and pit features described on this branch require 0.10.0-dev1 or newer.
+The latest full release can be older. Until this version and its installer are published,
+install the `pit-server` checkout below and check `wpilog-mcp -version` before continuing.
+
 ## Requirements
 
 - JDK 17 or newer (the WPILib JDK is recommended)
@@ -17,7 +21,7 @@ The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME`, then `java` 
 
 ## Install
 
-Run the installer for your system to get the latest full release. In a terminal it prompts for log directories, a team number, and whether to install the matching VS Code extension. Existing server settings are kept, without asking you to enter them again. A piped or scripted run does not prompt and takes the defaults; `--interactive` asks anyway, and `--non-interactive` never asks.
+Run the installer for your system to get the latest full release. The installer shipped with these changes prompts in a terminal for log directories, a team number, and whether to install the matching VS Code extension. Existing server settings are kept, without asking you to enter them again. A run without a terminal does not prompt and takes the defaults; `--interactive` asks anyway, and `--non-interactive` never asks. Older published installers offer fewer options.
 
 macOS and Linux:
 ```bash
@@ -35,6 +39,10 @@ git clone https://github.com/TripleHelixProgramming/wpilog-mcp.git
 cd wpilog-mcp
 ./gradlew install
 ```
+
+For these changes before release, clone with `--branch pit-server`, or use your existing
+checkout of that branch. On a Mac using WPILib's JDK, first run
+`export JAVA_HOME="$HOME/wpilib/2026/jdk"`; Gradle does not use the launcher's JDK search.
 
 Both release installers download a temporary JAR and run its `install` verb, which owns the layout and prints the PATH hint. If the JAR rejects the verb with `Unknown option`, a basic install falls back to that release’s own tagged installer; actual installation failures are reported without falling back. Older releases cannot honor the new installer options: choose a release carrying the verb for those. The output names the path taken. The Gradle task runs the same verb with `--force`, so a development build becomes current even when its version is equal or older. To install a JAR you already have:
 
@@ -87,7 +95,7 @@ On Windows, the installer prints the folder to add to your `Path`.
 
 ## Configuration
 
-The defaults need no editing: logs in `~/riologs`, one shared `http` server on loopback port 2363, and no team assumed. Edit `~/.wpilog-mcp/servers.yaml` for permanent directories, team, port, cache, or idle policy. The installer creates it only when absent; `install --team` and `--logdir` seed a new file. VS Code’s Settings UI supplies temporary session leases and does not read or edit this YAML. Restart the daemon after editing it (`wpilog-mcp stop http`, then reconnect).
+The defaults need no editing: logs in `~/riologs`, one shared `http` server on loopback port 2363, and no team assumed. Edit `~/.wpilog-mcp/servers.yaml` for permanent directories, team, port, cache, or idle policy. The installer creates it only when absent; `install --team` and `--logdir` seed a new file. VS Code’s Settings UI supplies temporary session leases and does not read or edit this YAML. Restart the daemon after editing it (`wpilog-mcp stop http`, then reconnect). Replace example directories with your own: a missing archive produces a `partial` listing with that directory in `skipped`.
 
 ```yaml
 # Your FRC team number, for The Blue Alliance match data when a log does not record one.
@@ -148,6 +156,10 @@ The default disk cache directory is `~/Library/Application Support/wpilog-mcp/ca
 ### Pit server
 
 Add a `capture` section to a named HTTP server, then run `wpilog-mcp start pit`:
+
+Add the name under the file's existing `servers` mapping. The default HTTP port is 2363,
+also used by `http`: stop `http` first, or give `pit` a different `port` and adjust client
+URLs. Starting a second name on an occupied port does not apply its capture settings.
 
 ```yaml
 servers:
@@ -979,6 +991,11 @@ claude mcp add --scope user wpilog-analyzer -- cmd /c "%USERPROFILE%\.wpilog-mcp
 
 The [VS Code extension](../vscode-extension/README.md#using-it-with-claude-code) does this when it finds the Claude CLI, so do not register a second copy under another name. Registration stays in your Claude Code user configuration and survives server updates. Restart an existing Claude session, approve the server if asked, and check `/mcp`.
 
+`claude mcp get wpilog-analyzer` checks the registration and connection from a terminal.
+If `add` says the name already exists, inspect it with `get`; a correct entry needs no change.
+To replace an obsolete user entry, run `claude mcp remove wpilog-analyzer --scope user`, then
+the add command above. This does not remove a project's separate registration.
+
 The bridge starts `http` when needed and joins it when running, including with VS Code closed. It takes the server's settings from the home file. For a project's own directories, put top-level `logdir` and optional `team` in `.wpilog-mcp.yaml`, or use `connect http --logdir logs --team 1234`. These grant a session lease; they do not redefine the server or its port. See [Directories by lease](#directories-by-lease).
 
 A permanent TBA key can stay in `servers.yaml` or `TBA_API_KEY`; while VS Code is open its registered key takes precedence.
@@ -1368,6 +1385,12 @@ return `not_applicable`, and `list_sessions` still reports `managed` and the gat
 The first lists sessions and recorded value costs (top ten topics, records and bytes, rates over
 the last minute); the others query and wait on NT4 publications in memory. `inputs.session`
 names the capture for ordinary log tools.
+
+Before the first session in an empty capture store, `list_sessions` is also `not_applicable`,
+with `sessions: []` and reason "No capture or imported session has been recorded". There is
+no session `providers[]` yet. `/metrics` still publishes `wpilog_provider_state`: stats,
+tails and JVM are `offline` without NT4; PhotonVision initially waits for a session and a
+clock estimate. `wpilog_nt_connected` and `wpilog_capture_open` are both `0` then.
 
 Counts update when the 250 ms asynchronous flush completes; a slow disk delays that snapshot,
 not NT4 keepalives. Robot-clock timestamps and ages describe publication, not a measurement

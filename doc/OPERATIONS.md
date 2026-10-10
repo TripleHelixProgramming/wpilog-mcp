@@ -5,6 +5,10 @@ the server in the shop and the pit. The [standalone guide](STANDALONE.md) is the
 every setting, flag and route, and the [tool reference](TOOLS.md) describes every tool's
 parameters and results. This manual says which to use, in what order, and what you should see.
 
+The shared-server and pit instructions describe 0.10.0-dev1 or newer. The latest full release
+can be older than this branch. Check the version before following them; if it is not published
+yet, install the checkout as described in [6.1](#61-install).
+
 - [Part I: Using the tools](#part-i-using-the-tools): the setup check, how a question becomes
   tool calls, how to read an answer, recipes for the common questions, and the explorer.
 - [Part II: Running the server](#part-ii-running-the-server): the shared server on a laptop,
@@ -32,9 +36,11 @@ one server and one cache. A pit server is a named configuration of the same inst
 Extension: open **WPILog Explorer** in the activity bar. The **Logs** view lists your logs.
 If it is empty or shows an error, select **WPILog Analyzer** in the Output panel and read it.
 
-Terminal:
+Terminal: install first ([6.1](#61-install)). If `wpilog-mcp` is not found, add its launcher
+directory to this shell's PATH, then check it:
 
 ```bash
+export PATH="$HOME/.wpilog-mcp/bin:$PATH"
 wpilog-mcp -version
 wpilog-mcp start http
 curl http://127.0.0.1:2363/health
@@ -48,6 +54,7 @@ version, the process ID, `managed` and the gateway state. The server's log is at
 
 - Claude Code: type `/mcp`. `wpilog-analyzer` should be connected; approve it if asked.
   If it is missing, run the registration in [6.4](#64-register-your-assistant).
+  From a terminal, `claude mcp get wpilog-analyzer` also checks the registration and connection.
 - Any assistant: ask *"What logs are available?"*. The answer should list files with friendly
   names such as "VACHE Qualification 10". An assistant that answers from memory, or writes
   Python to parse the file, is not connected to the server.
@@ -116,8 +123,8 @@ result, and three fields in it decide how far to trust it.
 
 | Field | What to read from it |
 |---|---|
-| `status` | `ok`; `partial` (something was skipped, named in `skipped`); `not_applicable` (the tool does not apply to this log, with a `reason`); `no_match` (the entries it analyzes were not found, with `looked_for` and a `hint`); `error`. `no_match` means not found, never "nothing wrong" |
-| `data_quality` and `confidence_level` | How much the samples can support a statistic: `high`, `medium`, `low` or `insufficient`, with a reason for every penalty. A `low` level on a sparse change-only signal does not weaken an event the log plainly records |
+| `status` | `ok`; `partial` (something was skipped, named in `skipped`); `not_applicable` (the tool does not apply, with a `reason`); `no_match` (nothing matched the requested entries, condition or window, with `looked_for` and a `hint`); `error`. `no_match` means not found, never "nothing wrong" |
+| `data_quality` and `server_analysis_directives.confidence_level` | How much the samples can support a statistic: `high`, `medium`, `low` or `insufficient`, with penalties in `data_quality.reasons`. The confidence level is inside `server_analysis_directives`, not at the top level. A `low` level on a sparse change-only signal does not weaken an event the log plainly records |
 | `inputs` | Which entries and which time range the result was computed from. If the entry is not the one you meant, say so and name the right one |
 
 Things that are often misread:
@@ -313,8 +320,10 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
 
 #### 6.1 Install
 
-One command installs the latest release and prompts for log directories, a team number and
-whether to install the matching extension:
+One command installs the latest full release. The installer shipped with these changes offers
+log directories, a team number and the matching extension when run in a terminal. It keeps
+existing settings; without a terminal it takes the defaults. Older installers offer fewer
+options, and the latest full release may not yet carry the commands in this manual:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/main/install.sh | sh
@@ -328,6 +337,19 @@ The layout is `~/.wpilog-mcp/` with `bin/` (the `wpilog-mcp` launcher), `jars/` 
 `servers.yaml`. Add `~/.wpilog-mcp/bin` to your `PATH` to run `wpilog-mcp` in a terminal; MCP
 clients use the full path. Java 17 or newer is required; the WPILib JDK is found first.
 Details, a pre-release install and an install from a checkout: [Install](STANDALONE.md#install).
+
+Until this version and its installer are published, use the `pit-server` checkout. In its
+directory, run:
+
+```bash
+export JAVA_HOME="$HOME/wpilib/2026/jdk"
+./gradlew install
+export PATH="$HOME/.wpilog-mcp/bin:$PATH"
+wpilog-mcp -version
+```
+
+Use your own JDK path if it differs. Continue only when the printed version is 0.10.0-dev1 or
+newer; a completed download alone does not show that the installed launcher works.
 
 #### 6.2 Start, stop, status
 
@@ -343,7 +365,8 @@ so you rarely need `start` by hand. Logs: `~/.wpilog-mcp/logs/http.log`.
 
 #### 6.3 Configure the server
 
-Edit `~/.wpilog-mcp/servers.yaml`, then restart (`wpilog-mcp stop http`, and reconnect):
+Edit `~/.wpilog-mcp/servers.yaml`, then restart (`wpilog-mcp stop http`, and reconnect).
+Replace the example directories with yours; leave out the archive line unless that disk exists:
 
 ```yaml
 team: 2363
@@ -368,6 +391,11 @@ Claude Code, once per user account:
 claude mcp add --scope user wpilog-analyzer -- "$HOME/.wpilog-mcp/bin/wpilog-mcp" connect http
 ```
 
+If the command says the name already exists, check `claude mcp get wpilog-analyzer`: the
+command should be this install's launcher, with arguments `connect http`. Do not add a second
+name. If that existing registration is obsolete, remove just this user entry with
+`claude mcp remove wpilog-analyzer --scope user`, then run the add command again.
+
 Restart an open Claude Code session afterwards and check `/mcp`. The extension runs this
 command for you when it finds the Claude CLI (**WPILog Analyzer: Register with Claude Code**
 repeats it). Claude Desktop, Codex, Antigravity and other clients take the same command form or
@@ -388,8 +416,10 @@ Leases are visible to every connected client while the session lives; see
 
 #### 6.6 Upgrade, replace, uninstall
 
-Run the installer again; it keeps your configuration. A running server keeps the old version
-until the next `start` or `connect`. For a clean reinstall that preserves settings, pass
+Run the installer for the version you want again; a checkout install is `./gradlew install`
+from that checkout, while the release script selects a published release. It keeps your
+configuration. A running server keeps the old version until the next `start` or `connect`.
+For a clean reinstall that preserves settings, pass
 `--refresh`. To uninstall, stop the servers, delete `~/.wpilog-mcp`, remove the `PATH` line
 and the client registration, and delete the disk cache:
 [Upgrading](STANDALONE.md#upgrading), [Uninstalling](STANDALONE.md#uninstalling).
@@ -408,7 +438,8 @@ and the client registration, and delete the disk cache:
 
 #### 7.2 Configure
 
-Add a named server with a `capture` block to `~/.wpilog-mcp/servers.yaml`. The smallest useful
+Add `pit` under the existing `servers` mapping in `~/.wpilog-mcp/servers.yaml`; do not add a
+second `servers` key. Give it a `capture` block. The smallest useful
 configuration records the robot and serves dashboards:
 
 ```yaml
@@ -438,6 +469,17 @@ Every key, bound and default: [Pit server](STANDALONE.md#pit-server). Capture re
 
 #### 7.3 Start
 
+The examples use the same HTTP port, 2363, as the laptop's `http` server. If that server is
+running, stop it before starting `pit`:
+
+```bash
+wpilog-mcp stop http
+```
+
+One port serves one configuration. To keep both servers running, give `pit` a different
+`port` and use that port in the health checks and client URLs. Starting another name on an
+already-served port does not apply its capture settings.
+
 ```bash
 wpilog-mcp start pit
 ```
@@ -449,6 +491,9 @@ this is for the team's private network:
 WPILOG_HTTP_BIND=0.0.0.0 wpilog-mcp start pit
 ```
 
+Choose the bind before starting the server. If it is already running, stop it first; repeating
+`start` joins that process and does not change its listening address.
+
 Other ways to run it: `wpilog-mcp run pit` in the foreground, logging to the terminal; or a
 systemd service on a Linux box that stays in the shop
 ([Running as a service](STANDALONE.md#running-as-a-service)). A robot that is off is normal: the
@@ -458,20 +503,31 @@ server starts at once and the client retries until the robot answers.
 
 1. `curl http://127.0.0.1:2363/health` answers with the version and the `gateway` state:
    `listening` on its port, or `waiting` with a `cause` (usually another program on the port).
-2. Turn the robot on. Ask the assistant for `list_sessions`, or call it from any client. A
+2. Before the robot connects, an empty store gives `list_sessions` status `not_applicable`,
+   reason "No capture or imported session has been recorded", and `sessions: []`. There is
+   no session row to hold `providers[]` yet. Check the offline providers with:
+   ```bash
+   curl -fsS http://127.0.0.1:2363/metrics | grep -E '^wpilog_(nt_connected|capture_open|provider_state)'
+   ```
+   `wpilog_nt_connected` and `wpilog_capture_open` are `0`. The configured stats, console
+   tail and JVM providers report `offline`; PhotonVision initially reports `waiting` for a
+   session and an NT4 clock estimate. This is normal with the robot off. A health answer with
+   gateway `disabled` despite the example's port 5810 means you should check which configuration
+   owns the HTTP port before proceeding.
+3. Turn the robot on. Ask the assistant for `list_sessions`, or call it from any client. A
    session appears with `connected: true`, `records` and `bytes_per_sec` growing, and the
    `robot` address. `wpilog_nt_connected 1` appears at `GET /metrics`.
-3. `list_available_logs` lists the capture with `session.open: true`. Its path is the one every
+4. `list_available_logs` lists the capture with `session.open: true`. Its path is the one every
    log tool reads while it is being written.
-4. `get_latest_values` with a topic you know the robot publishes, such as
+5. `get_latest_values` with a topic you know the robot publishes, such as
    `/SystemStats/BatteryVoltage` (as `NT:/SystemStats/BatteryVoltage` in the capture): the
    value, the robot's timestamp and a small age.
-5. `providers[]` in `list_sessions`, one entry per provider by name: with `pull.ssh`
+6. Each session's `providers[]` in `list_sessions`, one entry per provider by name: with `pull.ssh`
    configured, `roboRIO` (system stats) reads `sampling` and `tail/robot/program_console`
-   reads `following`; with PhotonVision configured, `photonvision/<host>` reads `following`;
+   reads `following`; with PhotonVision configured, `photonvision/<host>:5800` reads `following`;
    with JVM configured, `jvm` reads `sampling`. A provider that reads `stand_down` carries
    the reason, and the fix is almost always in it.
-6. Reboot the robot. `list_sessions` shows a new session; the old one has `ended_at` and an
+7. Reboot the robot. `list_sessions` shows a new session; the old one has `ended_at` and an
    `end_reason`.
 
 #### 7.5 Dashboards through the gateway

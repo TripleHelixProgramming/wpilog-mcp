@@ -185,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The operations walkthrough now states its version and PATH prerequisites, the confidence field's location, archive and registration checks, the shared HTTP port, and provider states before the first session; previously following the examples could select an older release, report a missing archive, or leave the laptop server running when capture was expected.
 - A new operations and usage manual, `doc/OPERATIONS.md`, gives the precise steps to use the tools and to run the shared server, the pit server, the shop day and the stores, with what to expect at each step; previously that knowledge was spread across the reference pages. The README now maps the documents by what the reader is doing, and the standalone guide is the reference the manual links into.
 - The guides were rewritten for readability: long paragraphs were split, enumerations became lists, filler was removed, and claims were checked against the code; previously several pages carried specification prose of several hundred words per paragraph.
 - The pit plan now marks the implemented session-manifest and matching work and audits its remaining import-correlation, source-selection and format-migration gaps; previously milestone 13 had no completion note. The backend guide names the restart strings and fixed ports that a PhotonVision pin bump must re-verify.
