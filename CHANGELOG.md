@@ -190,6 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Pre-release install examples now use the installers from `development` until the full release; previously they fetched `main`'s installers, which predate `--tag` and silently installed the latest full release. The release checklist records when to return those URLs to `main`.
 - Working-branch CI, dependency submission and checkout instructions now name `development`; previously they named the retired branch. The release checklist names the temporary checkout qualifications to remove before a full release.
 - The operations walkthrough now states its version and PATH prerequisites, the confidence field's location, archive and registration checks, the shared HTTP port, and provider states before the first session; previously following the examples could select an older release, report a missing archive, or leave the laptop server running when capture was expected.
 - A new operations and usage manual, `doc/OPERATIONS.md`, gives the precise steps to use the tools and to run the shared server, the pit server, the shop day and the stores, with what to expect at each step; previously that knowledge was spread across the reference pages. The README now maps the documents by what the reader is doing, and the standalone guide is the reference the manual links into.

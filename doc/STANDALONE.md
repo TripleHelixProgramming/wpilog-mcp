@@ -57,10 +57,13 @@ The installer checks every destination against the canonical install directory b
 
 ### Trying a pre-release
 
-A tag selects an exact published release; `--pre-release` selects the newest published release, including pre-releases. Add `--with-extension` to install both halves from that release. The example works once the maintainer publishes that tag; a branch or an untagged development version is not downloadable:
+A tag selects an exact published release; `--pre-release` selects the newest published release, including pre-releases. Add `--with-extension` to install both halves from that release. The example works once the maintainer publishes that tag; a branch or an untagged development version is not downloadable.
+
+For these changes before release, use the installers from `development`: those on `main`
+predate `--tag` until this version is released, when both installer URLs below return to `main`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/main/install.sh | sh -s -- --tag v0.10.0-dev1 --with-extension
+curl -fsSL https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/development/install.sh | sh -s -- --tag v0.10.0-dev1 --with-extension
 ```
 
 In PowerShell, download the script to a temporary file, then run it with the same flags:
@@ -68,7 +71,7 @@ In PowerShell, download the script to a temporary file, then run it with the sam
 ```powershell
 $installer = Join-Path $env:TEMP 'wpilog-install.ps1'
 try {
-    Invoke-WebRequest https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/main/install.ps1 -OutFile $installer
+    Invoke-WebRequest https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/development/install.ps1 -OutFile $installer
     & $installer --tag v0.10.0-dev1 --with-extension
 } finally { Remove-Item $installer -ErrorAction SilentlyContinue }
 ```
