@@ -46,8 +46,10 @@ class PhotonContractTest {
         assertEquals("stand_down", state.state(), fault + " must be refused before following");
         assertTrue(state.reason().contains(reason), state.toString());
         assertEquals(0, delivered.get());
-        int requests = backend.exports.get(); provider.session(session, true);
-        assertEquals(requests, backend.exports.get(), "A failed backend stands down for the session");
+        // PhotonVisionProviderTest's missing-fields test already proves the failure latch.
+        // A retry sets connecting on this thread; the asynchronous export count is no barrier.
+        provider.session(session, true);
+        assertEquals("stand_down", provider.status().state(), "A failed backend stands down for the session");
       }
     }
   }

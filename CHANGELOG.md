@@ -141,6 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- PhotonVision contract checks now assert the synchronous stand-down state after a repeated session call; previously the export-count assertion could pass before an erroneous retry's worker ran.
 - The shop harness now runs the SHA-256-pinned PhotonVision v2026.3.4 backend with a generated file camera against the packaged pit server; previously only synthetic backend replies exercised its routes and captured settings. Both runner commands now select available backends and keep the MINA timeline on macOS with explicit skip messages.
 - CI preloads the documented metrics images at their unchanged versions from public registries before running Compose; repeated Docker Hub throttling and token timeouts had stopped the smoke check before it tested the stack.
 
@@ -179,6 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The pit plan now marks the implemented session-manifest and matching work and audits its remaining import-correlation, source-selection and format-migration gaps; previously milestone 13 had no completion note. The backend guide names the restart strings and fixed ports that a PhotonVision pin bump must re-verify.
 - The JFR plan now distinguishes chunk clock anchors from flush delivery time and specifies the measurement needed before streaming; the shop checklist explicitly checks team-owned JMX launch flags, reachability and sampling state.
 - Guides describe the shared server, session leases, user-scope registration, safe legacy migration, capture/store/live layers and their concurrency and network rules. Previously the architecture overview and setup instructions still described private per-project servers. Detailed configuration, testing and remaining manual checks stay in their owning guides.
 - `doc/PIT_SERVER_PLAN.md` and `doc/EXPLORER_PLAN.md` record the implemented pit and viewer layers, their decisions and the work still proposed, linked from `doc/IDEAS.md`. These workflows previously had no team-facing overview or shared development specification.

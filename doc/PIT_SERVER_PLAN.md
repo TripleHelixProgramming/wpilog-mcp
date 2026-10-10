@@ -480,7 +480,7 @@ Each leaves the project working and tested on its own.
 10. **PhotonVision provider** (§8.1) and the vision tools' `camera_settings` (done: explicit hosts, v2026.3.4 export validation and MessagePack UI snapshots, receipt mapped through robot time, session stand-down with published costs/state, exact-camera/window tool context and synthetic HTTP/WebSocket/conformance checks; real coprocessor routes/version remain shop checks, §17).
 11. **roboRIO system stats** (§8.2) and **followed files** (§8.4) (done: shared SSH ownership, adaptive stats with send-time clock mapping and kernel offset, bounded receipt-time tails, provider snapshots in live tools/manifests/metrics, and MINA/conformance checks; enabled by default with SSH configuration for pre-shop testing; hardware costs and NI-image commands remain shop checks, §17).
 12. **JVM provider** (§8.3) (first half done: explicit `context.jvm` port/period, JDK-only polling, receipt timestamps and uptime pairing, state/cost snapshots, bounded worker ownership/backoff and in-process connector tests). Flight Recorder streaming waits for the deployed JRE module facts (§17).
-13. **Session manifests and import matching** (§10, §11).
+13. **Session manifests and import matching** (§10, §11) (done: file hashes, sizes, provenance, verification and recorded alignment; robot/session manifests drive listings; pulled WPILOG/REV files join a uniquely correlated session within 250 ms of zero, with identity and calendar gates. Ordinary imports group WPILOGs by robot/time overlap and correlate REV companions. The clause-by-clause round 24 audit in §17 records the remaining import-correlation, source-selection and format-migration gaps).
 14. **Incremental rescan** (§6, secondary path) (done: copied compact indexes, declaration/metadata continuation, retryable partial tails, identity and byte-anchor checks, fresh decode caches and mapping retirement; across-growth calls still fail with an explained retry, and successful disk-backed calls name their admitted file size. Differential fixtures and the conformance sweep check the secondary path).
 15. **JFR file import** (§8.3) and the Grafana query endpoint (§12), each when a need shows.
 
@@ -1305,3 +1305,42 @@ Release-review keepalive failures (before the tag):
 - This retires the pinned-release route/shape and file-camera integration questions, not
   deployed coprocessor version/reachability, USB cameras, measured calibration, actual setting
   changes, hardware acceleration, reboot behavior or sustained load. Those remain shop facts.
+
+### Round 24 audit: session manifests and matching
+
+Milestone 13 records the implemented store and pull paths, built in earlier milestones; it does
+not mark every design intention complete. The following checks each clause of §10 **Matching**
+and §11 **Manifests, not a database** against the implementation in 0.10.0-dev1.
+
+| Specification clause | Implementation and limit |
+|---|---|
+| Compare calendar ranges before loading; two-hour slack, sixteen for unzoned filename clocks, unknown clocks retained | `PullStore.match` calls `ImportInspection.nearClock` before acquiring candidate logs. Unknown ranges and REV's unset 1970 filename retain candidates. `LogStore.nearRevClock` uses the same rule for imported REV companions. |
+| Same robot; no cross-serial match; missing serial means data alone | `PullStore.match` refuses conflicting known serials before correlation. Only two logged serials earn `serial_and_data`; otherwise the manifest says `data_alone`, even if device evidence supplied the gate. A file's logged serial wins over conflicting device evidence, which is retained in the manifest. |
+| Names nominate, data decides through REV synchronization; offset near zero | `LogSynchronizer.synchronize(LogData, LogData)` nominates unique scalar numeric names after removing recording/publication prefixes; the REV overload uses `SignalMatcher`. `PullStore.match` requires strong cross-correlation, an offset within ±250,000 µs and exactly one matching session. Captures anchor their session; matched files cannot chain offsets. An unmatched WPILOG anchors a session without a capture. |
+| Place the matched pull and record it; expose the session in both listings | `PullStore.verified` moves the file into the session's `robot/` directory and writes method, offset, confidence, identity basis and synchronization evidence. A refusal creates a separate session with its reason. `LiveTools.ListSessions` reads the published imports; `CoreTools.ListAvailableLogsTool` exposes the manifest's session and any matching refusal. |
+| Pulled record authoritative; capture stands in or fills a truncated gap | Both records are retained and independently readable. Automatic preference and gap-filling are not implemented; see the deferred work below. |
+| Every file has hash, size, kind, provenance, data-match method/offset and verification | `StoreManifest.LogFile`, `Provenance` and `Matching` carry these facts. `LogStore.placeGroup` hashes and loads the placed import before committing it; `PullStore` verifies a transfer before placement. `CaptureStore.writeSnapshot` hashes closed capture files. An active writer is deliberately represented by `open_capture` with current size/range and no final hash; closing or recovery completes it. |
+| Robot and pull manifests retain identity and transfer history | `StoreManifest.Robot` carries serial, comments, basis and address/host-key contacts; session identity/conflicts retain the device reading. `PullManifest` carries the serial and each remote name, size, mtime, bytes copied, verification, local name and retired generations. |
+| Discover by `store.json`; read sessions from manifests, preserve the robot's filename; no database | `StoreCatalog`, `LogDirectory` and the listing read manifested paths and session facts. `PullStore.verified` keeps the remote basename, disambiguating collisions; provenance always keeps the exact remote name, including when a platform requires a portable local name. The on-disk record remains JSON manifests and log files. |
+| Format version, newer-version startup refusal, explicit older-version migration | `StoreCatalog.read` and `LogStore` mutations refuse unsupported versions without changing them. Capture recovery fails before NT4 starts, but the HTTP server can still run and report an unreadable store alongside readable ones. There is no global startup refusal or format-migration command; format 1 is the only supported format. |
+
+Three larger pieces remain outside this small round:
+
+- **Import correlation:** ordinary WPILOG imports use same-robot calendar overlap in
+  `LogStore.place`, not §11's proposed data proof; `list_sessions` calls this
+  `by_time_overlap` with no offset. Imported REV companions require unique strong correlation
+  in `LogStore.pair`, but do not apply the puller's 250 ms same-boot gate. Unifying these
+  placement rules needs a separate change and its migration/compatibility decisions.
+- **Source selection:** tools take one file per call. There is no session-wide virtual log
+  that selects the pulled record and stitches capture samples into a truncated tail. A caller
+  can select either path; the manifest does not imply that a combined record was read.
+- **Format upgrades:** the plan's explicit migration command is still unbuilt, and its
+  blanket startup refusal needs reconciling with the door's deliberate per-store error
+  reporting. The legacy unassigned-directory relocation in `LogStore.migrateUnassigned`
+  is a format-1 layout repair on import, not an older-format migration.
+
+Existing targeted checks cover the implemented boundaries: `PullStoreTest` (candidate clocks,
+serials, strong/unique/near-zero evidence, placement and open-capture receipts), selected
+`LogStoreTest` cases (overlap grouping, REV pairing, duplicate hashes, verification, listing and
+version refusal), `CaptureStoreTest` (open/closed facts and version refusal), and the live
+imports check in `LiveToolsTest`. No matching algorithm or manifest format changes in this round.
