@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The shell installer selects the version and the JAR from their own JSON fields even when a release response is one line; previously greedy extraction could install the source ZIP as the JAR and take a release title as the version. `install.sh` is fetched from `main` at install time, so this reaches every new standalone install at once.
+
 ## [0.9.1] - 2026-10-04
 
 This release puts the corrected extension README on the Marketplace listing, whose Overview still said the extension was not there: the 0.9.0 package was built before the README changed, and the Marketplace shows the README inside the package. It also reorganizes the README, edits every document, and makes a loaded log follow its file.
