@@ -90,11 +90,12 @@ class PhotonVisionProviderTest {
     try (var backend = new PhotonFixture()) {
       var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
       var statuses = new LinkedBlockingQueue<Boolean>(); var snapshots = new LinkedBlockingQueue<Snapshot>();
+      var delivery = new java.util.concurrent.atomic.AtomicReference<>(CompletableFuture.<Void>completedFuture(null));
       try (var provider = new PhotonVisionProvider(backend.address(), () -> 3_000_000.0, (session, timestamp, cameras, metadata) -> {
-        snapshots.add(new Snapshot(timestamp, cameras, metadata)); statuses.add(true); return CompletableFuture.completedFuture(null);
+        snapshots.add(new Snapshot(timestamp, cameras, metadata)); statuses.add(true); return delivery.get();
       }, () -> statuses.add(true), java.net.http.HttpClient.newHttpClient(), loop)) {
         var session = new Object(); provider.session(session, true);
-        until(loop, () -> !snapshots.isEmpty()); assertNotNull(snapshots.poll());
+        until(loop, () -> !snapshots.isEmpty() && backend.pings.get() == 1); assertNotNull(snapshots.poll());
         var malformed = PhotonFixture.document(12);
         malformed.getAsJsonArray("cameraSettings").get(0).getAsJsonObject().getAsJsonObject("currentPipelineSettings").remove("cameraGain");
         statuses.clear();
@@ -104,10 +105,26 @@ class PhotonVisionProviderTest {
         until(loop, () -> provider.status().state().equals("stand_down"));
         assertTrue(provider.status().reason().contains("cameraGain")); assertTrue(snapshots.isEmpty());
         provider.session(session, true); assertEquals(1, backend.connections.get(), "No retry storm in the failed session");
+        int previousPings = backend.pings.get();
         provider.session(new Object(), true);
+        until(loop, () -> !snapshots.isEmpty() && backend.pings.get() > previousPings);
+        assertNotNull(snapshots.poll());
+        // This message follows the initial pong, proving it was consumed before shutdown.
+        // Hold its delivery so no request(1) is outstanding when the backend vanishes. The
+        // JDK can lose an abrupt close in this gap; only the keepalive is reliable.
+        delivery.set(new CompletableFuture<>()); backend.push(PhotonFixture.document(13));
         until(loop, () -> !snapshots.isEmpty()); assertNotNull(snapshots.poll());
-        backend.close(); awaitState(provider, statuses, "stand_down");
-        assertTrue(provider.status().reason().contains("WebSocket")); assertTrue(snapshots.isEmpty());
+        backend.close();
+        // A blocking status wait freezes this manual clock, including the keepalive which
+        // detects the lost close. Advance past its next ping and five-second reply deadline.
+        for (int step = 0; step < 7 && !provider.status().state().equals("stand_down"); step++) {
+          loop.advance(1_000_000); loop.drain();
+        }
+        assertEquals("stand_down", provider.status().state(), () -> provider.status().toString());
+        until(loop, () -> provider.status().reason() != null);
+        String reason = provider.status().reason();
+        assertTrue(reason.startsWith("WebSocket keepalive:") || reason.equals("WebSocket unanswered ping exceeded 5 seconds"), reason);
+        assertTrue(snapshots.isEmpty()); delivery.get().complete(null);
       }
     }
   }

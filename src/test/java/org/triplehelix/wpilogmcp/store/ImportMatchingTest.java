@@ -83,7 +83,11 @@ class ImportMatchingTest {
   }
 
   StoreCatalog.StoredFile imported(Path source) throws Exception {
-    var result = store.importPaths(new LogStore.Request(List.of(source), false, SERIAL), p -> {})
+    return imported(source, SERIAL);
+  }
+
+  StoreCatalog.StoredFile imported(Path source, String stated) throws Exception {
+    var result = store.importPaths(new LogStore.Request(List.of(source), false, stated), p -> {})
         .get(30, TimeUnit.SECONDS).files().get(0);
     assertTrue(List.of("imported", "unassigned", "present").contains(result.status()), result.toString());
     return StoreCatalog.read(root, security).files().stream().filter(f -> f.path().equals(result.path())).findFirst().orElseThrow();
@@ -128,6 +132,60 @@ class ImportMatchingTest {
     assertEquals(original, second.session().files().get(0), "a legacy receipt is not retroactively classified");
     assertEquals(first.path(), StoreCatalog.read(root, security).files().stream()
         .filter(f -> f.file().sha256().equals(original.sha256())).findFirst().orElseThrow().path());
+
+    // The live tool reads published inventory, including a calendar-only session with no
+    // capture. Its fallback for an old receipt must not hide this new explicit method.
+    var live = new org.triplehelix.wpilogmcp.capture.LiveCapture(root,
+        new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler());
+    live.inventory(StoreCatalog.readManaged(root, security));
+    var tools = new org.triplehelix.wpilogmcp.mcp.ToolRegistry();
+    org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(tools, live);
+    var result = tools.getTool("list_sessions").execute(new com.google.gson.JsonObject()).getAsJsonObject();
+    assertEquals("ok", result.get("status").getAsString());
+    var session = result.getAsJsonArray("sessions").asList().stream().map(v -> v.getAsJsonObject())
+        .filter(s -> s.get("id").getAsString().equals(second.session().id())).findFirst().orElseThrow();
+    var receipt = session.getAsJsonArray("imports").asList().stream().map(v -> v.getAsJsonObject())
+        .filter(f -> Path.of(f.get("path").getAsString()).equals(second.path())).findFirst().orElseThrow();
+    assertEquals(new com.google.gson.JsonPrimitive("by_time_overlap"), receipt.get("method"));
+    assertEquals("no capture or data-matched anchor", receipt.get("reason").getAsString());
+    assertTrue(receipt.get("offset_sec").isJsonNull(), "calendar overlap cannot invent a measured offset");
+  }
+
+  @Test void anAnchorsLoggedSerialOverridesItsStatedDirectoryWhenCheckingTheImportedRobot() throws Exception {
+    var anchor = seed("practice", "other-robot", wpilog("anchor.wpilog", "OTHER", true, 0, 0), WALL, "captured");
+    store.capture(io -> {
+      io.write(root.resolve("robots/practice/robot.json"), new Robot("practice", null, "practice", null, "stated"));
+      return null;
+    });
+    byte[] receipt = Files.readAllBytes(anchor.getParent().resolve("session.json"));
+    // Identical signals would prove zero lag. The file's own serial still forbids the join,
+    // even though learning the import's serial promotes the stated directory as usual.
+    var placed = imported(wpilog("import.wpilog", SERIAL, false, 0, 0), "practice");
+    assertNotEquals("other-robot", placed.session().id(), "a directory name cannot override the anchor's logged serial");
+    assertEquals(SERIAL, placed.robot().serialNumber()); assertNull(placed.file().matching());
+    assertTrue(placed.file().matchingReason().contains("known robot serials differ"));
+    var retained = StoreCatalog.read(root, security).files().stream()
+        .filter(f -> f.session().id().equals("other-robot")).findFirst().orElseThrow();
+    assertArrayEquals(receipt, Files.readAllBytes(retained.manifestPath()), "identity promotion never reclassifies an existing receipt");
+  }
+
+  @Test void identityPromotionKeepsTheCalendarPlacementReceiptAndItsOldPath() throws Exception {
+    var first = imported(org.triplehelix.wpilogmcp.fixtures.ImportFixture.write(temp.resolve("first.wpilog"), 1), "practice");
+    var second = imported(org.triplehelix.wpilogmcp.fixtures.ImportFixture.write(temp.resolve("second.wpilog"), 2), "practice");
+    assertEquals(first.session().id(), second.session().id());
+    assertEquals("by_time_overlap", second.file().placementMethod());
+    var promoted = imported(org.triplehelix.wpilogmcp.fixtures.ImportFixture.write(temp.resolve("identity.wpilog"), 3,
+        SERIAL, 1_767_225_600_000_000L), "practice");
+    assertEquals(first.session().id(), promoted.session().id());
+    assertTrue(promoted.path().startsWith(root.resolve("robots").resolve(SERIAL)));
+    assertFalse(Files.exists(second.path()), "the identity promotion must actually move the directory");
+    var catalog = StoreCatalog.read(root, security);
+    var moved = catalog.files().stream().filter(f -> f.file().sha256().equals(second.file().sha256())).findFirst().orElseThrow();
+    assertEquals("by_time_overlap", moved.file().placementMethod(), "a session move must retain its placement method");
+    assertEquals(second.file(), moved.file(), "a move changes paths, not provenance, reasons or placement evidence");
+    var alias = catalog.header().moves().stream().filter(m -> m.originalPath().equals(second.path().toString())).findFirst().orElseThrow();
+    assertEquals(moved.path(), root.resolve(alias.movedTo()));
+    assertEquals(second.file().sha256(), StoreFiles.hash(moved.path()));
   }
 
   @Test void anUnsetCalendarStillNominatesTheKnownRobotsAnchor() throws Exception {
