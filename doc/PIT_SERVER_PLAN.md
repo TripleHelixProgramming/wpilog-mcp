@@ -1665,3 +1665,20 @@ imports check in `LiveToolsTest`. No matching algorithm or manifest format chang
   message. A manual scheduler now pins the stale-notice ordering, and the test waits for the
   required state with the existing guard. The old one-event check fails deterministically;
   neither the provider nor a timeout changed. Windows on the same commit passed.
+- **Abrupt-close follow-up:** the same test's vanished-backend phase still blocked on a
+  status queue, leaving its manual keepalive clock frozen. The JDK WebSocket client can
+  lose an abrupt TCP close without a Close frame while no `request(n)` is outstanding;
+  later demand does not recover its close/error callback. A graceful Close frame is
+  delivered after demand resumes. PhotonVision deliberately waits for snapshot delivery
+  before requesting more work, so its keepalive is the reliable detector across that gap.
+  The regression consumes the healthy peer's initial pong, holds the next snapshot delivery,
+  closes the backend, and advances the clock through a new ping and its reply deadline.
+  Restoring the blocking wait fails under three CPU burners (`following`, not `stand_down`);
+  the corrected check requires the ping-failure or unanswered-ping reason. NT4 re-requests
+  inside the network callback, leaving a much smaller gap, and retains its ping/time-sync
+  keepalives. Neither provider behavior nor a timeout changed.
+- **Import review coverage:** a stated robot directory cannot override a capture's conflicting
+  logged serial even when its signal data correlate perfectly. A calendar-only receipt keeps
+  `placement_method` and its reason through identity promotion; `list_sessions` reports both
+  for a newly imported session without inventing an offset. Plants remove each guard or
+  field on its actual path. These checks change no placement rule or existing receipt.
