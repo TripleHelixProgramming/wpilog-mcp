@@ -14,7 +14,7 @@ import {
   serverUrl,
 } from "./projectServers";
 import {
-  STANDALONE_GUIDE_URL,
+  standaloneGuideUrl,
   StandaloneInstall,
   launcherCommand,
   launcherEnvironment,
@@ -166,7 +166,7 @@ export class ServerManager implements vscode.Disposable {
     if (olderVersion(verdict.version, extensionVersion)) {
       this.output.appendLine(
         `WARNING: the standalone server is version ${verdict.version ?? "unknown"}, older than the extension ` +
-          `(${extensionVersion}); WPILog Explorer may not work until the standalone install is upgraded (${STANDALONE_GUIDE_URL}).`
+          `(${extensionVersion}); WPILog Explorer may not work until the standalone install is upgraded (${standaloneGuideUrl(extensionVersion)}).`
       );
     }
     return this.started(spec, state, port);

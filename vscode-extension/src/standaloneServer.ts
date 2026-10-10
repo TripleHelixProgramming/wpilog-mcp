@@ -7,9 +7,11 @@ export const STANDALONE_SERVER = "http";
 /** The install directory under the home folder, as the installers and the server name it. */
 export const STANDALONE_DIR = ".wpilog-mcp";
 
-/** The standalone guide, for a message that says how to install. */
-export const STANDALONE_GUIDE_URL =
-  "https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md";
+/** Release docs must match this extension; only an unversioned local build follows main. */
+export function standaloneGuideUrl(version: unknown): string {
+  const tagged = typeof version === "string" && /^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(version);
+  return `https://github.com/TripleHelixProgramming/wpilog-mcp/blob/${tagged ? `v${version}` : "main"}/doc/STANDALONE.md`;
+}
 
 /** Where the standalone install is, and whether it is there. */
 export interface StandaloneInstall {

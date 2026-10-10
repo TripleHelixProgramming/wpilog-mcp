@@ -11,9 +11,20 @@ import {
   portInPidFile,
   standaloneStartArgs,
   standaloneStopArgs,
+  standaloneGuideUrl,
 } from "../standaloneServer";
 
 const fileSet = (...files: string[]) => (file: string) => files.includes(file);
+
+test("the standalone guide follows release tags, with main only for an unversioned local build", () => {
+  const root = "https://github.com/TripleHelixProgramming/wpilog-mcp/blob/";
+  for (const version of ["0.9.1", "0.10.0-dev1", "0.10.0-rc.1"]) {
+    assert.equal(standaloneGuideUrl(version), `${root}v${version}/doc/STANDALONE.md`, version);
+  }
+  for (const version of [undefined, "", "local"]) {
+    assert.equal(standaloneGuideUrl(version), `${root}main/doc/STANDALONE.md`, "no release version");
+  }
+});
 
 test("the install is found under the home folder, with the launcher and servers.yaml, as the installers lay it out", () => {
   const install = findStandaloneInstall("/home/me", "linux",

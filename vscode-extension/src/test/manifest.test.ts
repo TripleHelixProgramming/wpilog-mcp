@@ -15,6 +15,12 @@ const settings = Object.assign(
   ...manifest.contributes.configuration.map((section: { properties: object }) => section.properties)
 );
 
+test("the gateway guide stays relative so release packaging pins its tag", () => {
+  const guide = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
+  assert.ok(guide.includes("[NT4 gateway configuration](../doc/STANDALONE.md#nt4-gateway-for-dashboards)"));
+  assert.doesNotMatch(guide, /https:\/\/github\.com\/TripleHelixProgramming\/wpilog-mcp\/blob\/main\//);
+});
+
 test("the real editor smoke is opt-in, packaged out, and runs at both supported endpoints", () => {
   assert.equal(manifest.scripts.test, "tsc -p ./ && node out/test/runTests.js");
   assert.ok(manifest.devDependencies["@vscode/test-electron"], "Electron test runner is development only");

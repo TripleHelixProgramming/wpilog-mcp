@@ -19,7 +19,7 @@ try {
   ServerManager = (require("../serverManager") as typeof import("../serverManager")).ServerManager;
 } finally { loader._load = originalLoad; }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, version = "0.9.1") {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wpilog-manager-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const daemon = http.createServer((_req, res) => res.end(JSON.stringify({ status: "ok", sessions: 0, version: "0.9.1" })));
@@ -30,10 +30,10 @@ async function fixture(t: TestContext) {
     launcher: path.join(dir, "wpilog-mcp"), configPath: path.join(dir, "servers.yaml"), pidFile: path.join(dir, "http.pid") };
   await fs.writeFile(spec.pidFile, `1234\n${port}\n`);
   await fs.writeFile(spec.configPath, "# the user's settings\nteam: 2363\n");
-  const fake = { commands: [] as string[], prepared: 0, declined: false, stopCode: 0, startCode: 0, changes: 0,
+  const fake = { commands: [] as string[], lines: [] as string[], prepared: 0, declined: false, stopCode: 0, startCode: 0, changes: 0,
     prepare: async () => {} };
-  const manager = new ServerManager({ extension: { packageJSON: { version: "0.9.1" } } } as unknown as vscode.ExtensionContext,
-    { appendLine() {} } as unknown as vscode.OutputChannel, () => fake.changes++, async () => {
+  const manager = new ServerManager({ extension: { packageJSON: { version } } } as unknown as vscode.ExtensionContext,
+    { appendLine(line: string) { fake.lines.push(line); } } as unknown as vscode.OutputChannel, () => fake.changes++, async () => {
       fake.prepared++;
       await fake.prepare();
       return fake.declined ? undefined : spec;
@@ -47,6 +47,14 @@ async function fixture(t: TestContext) {
   };
   return { manager, spec, fake, port };
 }
+
+test("the upgrade message takes its guide tag from the extension's runtime package version", async t => {
+  const { manager, spec, fake } = await fixture(t, "0.10.0-dev1");
+  await manager.ensure(spec);
+  const warning = fake.lines.find(line => line.startsWith("WARNING:"));
+  assert.ok(warning);
+  assert.ok(warning.includes("https://github.com/TripleHelixProgramming/wpilog-mcp/blob/v0.10.0-dev1/doc/STANDALONE.md"), warning);
+});
 
 test("concurrent consumers share preparation and one standalone start, preserving its config", async t => {
   const { manager, spec, fake, port } = await fixture(t);
