@@ -1235,7 +1235,15 @@ class DaemonManagerTest {
         int port = server.getPort();
         var launcher = new FakeLauncher(port, false);
         var manager = managerWith(launcher, Duration.ofSeconds(8));
-        assertTrue(manager.spawnDaemon("test", port, null));
+        var messages = new java.io.ByteArrayOutputStream();
+        var stderr = System.err;
+        try (var output = new java.io.PrintStream(messages, true, java.nio.charset.StandardCharsets.UTF_8)) {
+          System.setErr(output);
+          assertTrue(manager.spawnDaemon("test", port, null));
+        } finally { System.setErr(stderr); }
+        String warning = messages.toString(java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(warning.contains("WARN") && warning.contains("reports no configuration name")
+            && warning.contains(Version.VERSION), warning);
         assertEquals(0, launcher.launches.get());
         assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
       } finally {

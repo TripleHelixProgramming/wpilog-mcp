@@ -80,6 +80,7 @@ class MainRunTest {
         boolean expected = mode.equals("flag");
         assertEquals(expected, health.get().get("managed").getAsBoolean());
         assertEquals(Version.VERSION, health.get().get("version").getAsString());
+        assertEquals("pit", health.get().get("name").getAsString(), "health names the running configuration");
         assertEquals(child.pid(), health.get().get("pid").getAsLong(), "run must not spawn a daemon");
         var mcp = new org.triplehelix.wpilogmcp.harness.HarnessHttp(port); mcp.initialize();
         assertEquals(expected, mcp.call("list_sessions", new com.google.gson.JsonObject()).get("managed").getAsBoolean());
@@ -129,9 +130,54 @@ class MainRunTest {
   }
 
   private Output daemonCommand(String verb, Path config) throws Exception {
+    return daemonCommand(verb, "pit", config);
+  }
+
+  @Test void startAndConnectRefuseAnotherNamedConfigurationOnTheSamePort() throws Exception {
+    int port;
+    try (var reserve = new java.net.ServerSocket(0)) { port = reserve.getLocalPort(); }
+    var path = Files.writeString(temp.resolve("servers.yaml"), """
+        diskcachedisable: true
+        servers:
+          http: {transport: http, port: %1$d}
+          pit: {transport: http, port: %1$d}
+        """.formatted(port));
+    var pidFile = temp.resolve(".wpilog-mcp/run/http.pid");
+    ProcessHandle daemon = null;
+    try {
+      var started = daemonCommand("start", "http", path);
+      if (Files.exists(pidFile)) daemon = ProcessHandle.of(Long.parseLong(Files.readAllLines(pidFile).get(0))).orElse(null);
+      assertEquals(0, started.code(), started.err());
+      assertNotNull(daemon);
+      for (String verb : List.of("start", "connect")) {
+        var refused = daemonCommand(verb, "pit", path);
+        assertEquals(1, refused.code(), "Do not adopt http as pit: " + refused.err());
+        for (String detail : List.of("Port " + port, "'http'", "PID " + daemon.pid(),
+            "wpilog-mcp stop http", "give 'pit' its own port")) {
+          assertTrue(refused.err().contains(detail), refused.err());
+        }
+        assertFalse(Files.exists(temp.resolve(".wpilog-mcp/run/pit.pid")), "Refusal releases the claim");
+        var response = java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
+            java.net.URI.create("http://127.0.0.1:" + port + "/health")).timeout(java.time.Duration.ofSeconds(2)).build(),
+            java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode(), "The first server keeps serving");
+        var health = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+        assertEquals("http", health.get("name").getAsString());
+        assertEquals(daemon.pid(), health.get("pid").getAsLong());
+      }
+    } finally {
+      if (daemon != null && daemon.isAlive()) {
+        daemonCommand("stop", "http", path);
+        if (daemon.isAlive()) daemon.destroyForcibly();
+        daemon.onExit().get(10, TimeUnit.SECONDS);
+      }
+    }
+  }
+
+  private Output daemonCommand(String verb, String name, Path config) throws Exception {
     var out = temp.resolve(verb + ".stdout"); var err = temp.resolve(verb + ".stderr");
     var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
-        "-jar", System.getProperty("install.testJar"), verb, "pit", "--config", config.toString())
+        "-jar", System.getProperty("install.testJar"), verb, name, "--config", config.toString())
         .directory(temp.toFile()).redirectOutput(out.toFile()).redirectError(err.toFile());
     for (String key : List.of("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "WPILOG_HTTP_BIND", "WPILOG_HTTP_PATH", "TBA_API_KEY")) {
       builder.environment().remove(key);

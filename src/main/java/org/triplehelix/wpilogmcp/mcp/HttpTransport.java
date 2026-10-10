@@ -73,6 +73,7 @@ public class HttpTransport {
   private final int port;
   private final String bindAddress;
   private final String mcpPath;
+  private final String configurationName;
   private final java.util.Set<String> allowedOriginHosts;
   private HttpServer server;
   private java.util.concurrent.ExecutorService httpExecutor;
@@ -126,12 +127,18 @@ public class HttpTransport {
 
   public HttpTransport(ToolRegistry toolRegistry, int port, String bindAddress,
       java.util.Set<String> allowedOriginHosts, String mcpPath) {
+    this(toolRegistry, port, bindAddress, allowedOriginHosts, mcpPath, null);
+  }
+
+  public HttpTransport(ToolRegistry toolRegistry, int port, String bindAddress,
+      java.util.Set<String> allowedOriginHosts, String mcpPath, String configurationName) {
     this.toolRegistry = toolRegistry;
     this.gson = new GsonBuilder().serializeNulls().create();
     this.sessionManager = new SessionManager(leases::remove);
     this.registration = new RegistrationEndpoint(sessionManager, leases);
     this.handler = new McpMessageHandler(toolRegistry, sessionManager);
     this.port = port;
+    this.configurationName = configurationName;
     this.bindAddress = bindAddress != null ? bindAddress : "127.0.0.1";
     this.mcpPath = mcpPath != null && !mcpPath.isEmpty() ? mcpPath : "/mcp";
     this.allowedOriginHosts = allowedOriginHosts != null
@@ -742,6 +749,7 @@ public class HttpTransport {
     // A start compares the version with its own JAR's, and records the process ID of a server
     // it finds on the port without a PID file
     health.addProperty("version", Version.VERSION);
+    health.addProperty("name", configurationName);
     health.addProperty("pid", ProcessHandle.current().pid());
     health.add("gateway", gatewayStatus.get().json());
     var bytes = gson.toJson(health).getBytes(StandardCharsets.UTF_8);

@@ -534,7 +534,7 @@ Installation opens its lock without following links, holds it across the version
 
 #### Background servers
 
-A background start reads what the server says of itself, not only that something answered. `GET /health` carries the server's version and process ID. A start that finds a server of another version stops it and starts its own version, so an upgrade never leaves an old JAR serving. One that finds something on the port that does not answer as this server reports it and starts nothing. One that finds a server of its own version answering with no PID file records it.
+A background start reads what the server says of itself, not only that something answered. `GET /health` carries the server's version, configuration name and process ID. A start that finds a recorded server of another version stops it and starts its own version, so an upgrade never leaves an old JAR serving. One that finds something on the port that does not answer as this server reports it and starts nothing. Without a PID file, adoption requires the same configuration name as well as the same version: otherwise `start pit` could join `http` without enabling capture. An older server without a name keeps the prior adoption rules with a warning naming its version.
 
 A server is stopped by a request over loopback that carries a token. The start wrote the token to a file beside the PID file, readable by the user alone, and gave it to the server in its environment, never on its command line. So a process that can read the file may stop the server, and no other. A server too old to have the endpoint is ended as a process.
 

@@ -254,7 +254,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = "--internal-daemon".equals(args[0]) && !managed ? System.getenv(DaemonManager.STOP_TOKEN_ENV) : null;
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.mirror(), config.metrics());
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.mirror(), config.metrics(), configName);
     } catch (ConfigException | IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
@@ -705,13 +705,14 @@ public class Main {
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit) {
-    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null, null);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null, null, null);
   }
 
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig,
-      org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig) {
+      org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig,
+      String configurationName) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -746,7 +747,7 @@ public class Main {
     logger().debug("Registered all MCP tools");
 
     if (httpMode) {
-      var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
+      var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath, configurationName);
       final org.triplehelix.wpilogmcp.capture.CaptureService capture;
       try {
         capture = captureConfig == null ? null

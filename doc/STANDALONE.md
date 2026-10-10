@@ -159,7 +159,8 @@ Add a `capture` section to a named HTTP server, then run `wpilog-mcp start pit`:
 
 Add the name under the file's existing `servers` mapping. The default HTTP port is 2363,
 also used by `http`: stop `http` first, or give `pit` a different `port` and adjust client
-URLs. Starting a second name on an occupied port does not apply its capture settings.
+URLs. Starting a second name on an occupied port is refused when `/health` names another
+configuration; an older server without a name can still be adopted, with a versioned warning.
 
 ```yaml
 servers:
@@ -1060,7 +1061,12 @@ For browser-based or multi-client access, start the `http` server from `servers.
 wpilog-mcp start http
 ```
 
-The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, process ID, `managed` ownership and gateway state.
+The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, configuration `name`, process ID, `managed` ownership and gateway state. `name` is null for HTTP started with the unnamed legacy flags; stdio has no health route.
+
+Without a PID record, `start` and `connect` adopt a server only when its health name matches
+the requested configuration. Another name is refused with its owner, PID, stop command and
+the option to choose a different port. A server that reports no name keeps the previous
+adoption rules, with a warning naming its version; its identity cannot be checked this way.
 
 Running `start http` while it is up reports the running server rather than starting another. If the running server is another version, because you upgraded since it started, `start` stops it and starts the new version in its place, so an upgrade never leaves an old server serving. If something that is not wpilog-mcp holds the port, `start` says so and starts nothing; choose another port.
 

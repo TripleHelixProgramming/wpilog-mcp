@@ -267,8 +267,8 @@ public class DaemonManager {
   }
 
   /** What a probe of a port found: who holds it, and for this server its version and PID. */
-  record PortProbe(Holder holder, String version, Long pid, boolean managed) {
-    PortProbe(Holder holder, String version, Long pid) { this(holder, version, pid, false); }
+  record PortProbe(Holder holder, String version, Long pid, boolean managed, String name) {
+    PortProbe(Holder holder, String version, Long pid) { this(holder, version, pid, false, null); }
     static final PortProbe NOBODY = new PortProbe(Holder.NOBODY, null, null);
     static final PortProbe STRANGER = new PortProbe(Holder.STRANGER, null, null);
   }
@@ -529,8 +529,16 @@ public class DaemonManager {
     }
     if (probe.holder() == Holder.THIS_SERVER) {
       if (probe.managed()) { releaseRecord(name); return refuseManaged(name, "restart"); }
+      if (probe.name() != null && !probe.name().equals(name)) {
+        logger.error("Port {} is served by '{}' (PID {}); stop it with `wpilog-mcp stop {}`, "
+            + "or give '{}' its own port.", port, probe.name(), probe.pid(), probe.name(), name);
+        releaseRecord(name);
+        return false;
+      }
       if (ownVersion.equals(probe.version()) && probe.pid() != null) {
         try {
+          if (probe.name() == null) logger.warn("Server on port {} (version {}) reports no configuration name; "
+              + "adopting it as '{}' for compatibility.", port, versionName(probe.version()), name);
           recordDaemon(name, probe.pid(), port, null);
           logger.info("Server '{}' was already running on port {} (PID {}) without a record; "
               + "recorded it", name, port, probe.pid());
@@ -1051,7 +1059,8 @@ public class DaemonManager {
         Long pid = health.has("pid") && health.get("pid").isJsonPrimitive()
             ? health.get("pid").getAsLong() : null;
         return new PortProbe(Holder.THIS_SERVER, stringOrNull(health, "version"), pid,
-            health.has("managed") && health.get("managed").isJsonPrimitive() && health.get("managed").getAsBoolean());
+            health.has("managed") && health.get("managed").isJsonPrimitive() && health.get("managed").getAsBoolean(),
+            stringOrNull(health, "name"));
       } finally {
         conn.disconnect();
       }

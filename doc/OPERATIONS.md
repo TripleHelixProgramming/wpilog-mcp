@@ -47,7 +47,7 @@ curl http://127.0.0.1:2363/health
 ```
 
 `start http` prints that the server is running (or already was); `/health` answers with the
-version, the process ID, `managed` and the gateway state. The server's log is at
+version, configuration `name`, process ID, `managed` and gateway state. The server's log is at
 `~/.wpilog-mcp/logs/http.log`.
 
 #### 1.3 Check that your assistant sees the tools
@@ -477,8 +477,11 @@ wpilog-mcp stop http
 ```
 
 One port serves one configuration. To keep both servers running, give `pit` a different
-`port` and use that port in the health checks and client URLs. Starting another name on an
-already-served port does not apply its capture settings.
+`port` and use that port in the health checks and client URLs. A different name on an
+already-served port is refused: "Port 2363 is served by 'http' (PID 1234); stop it with
+`wpilog-mcp stop http`, or give 'pit' its own port." The PID in the message is the running
+process. An older server that reports no name keeps the compatibility behavior: it may be
+adopted, with a warning naming its version, so check `/health` before continuing.
 
 ```bash
 wpilog-mcp start pit
