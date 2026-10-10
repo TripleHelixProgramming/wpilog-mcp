@@ -56,8 +56,9 @@ echo ""
 
 echo "Fetching latest release from GitHub..."
 RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" -H "User-Agent: wpilog-mcp-installer")
-VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
-JAR_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url".*-all\.jar"' | sed 's/.*"\(https[^"]*\)".*/\1/')
+# Match each field's own value: compact JSON also has unrelated URLs on the same line.
+VERSION=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -1)
+JAR_URL=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*-all\.jar\)".*/\1/p' | head -1)
 
 if [ -z "$JAR_URL" ]; then
     echo "ERROR: No JAR asset found in latest release" >&2

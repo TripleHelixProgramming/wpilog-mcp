@@ -15,11 +15,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import com.google.gson.Gson;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 
 /**
@@ -126,7 +130,9 @@ class InstallerTest {
               "name": "wpilog-mcp-%1$s-all.jar",
               "browser_download_url": "%2$swpilog-mcp-%1$s-all.jar"
             }
-          ]
+          ],
+          "name": "v-unrelated-release-title",
+          "zipball_url": "https://api.github.com/repos/TripleHelixProgramming/wpilog-mcp/zipball/v%1$s"
         }
         """.formatted(version, base);
   }
@@ -178,7 +184,7 @@ class InstallerTest {
           esac
       done
       case "$url" in
-          https://api.github.com/*) cat "$FAKE_RELEASE_JSON" ;;
+          https://api.github.com/*/releases*) cat "$FAKE_RELEASE_JSON" ;;
           *) printf 'jar for %s' "$url" > "$out" ;;
       esac
       """;
@@ -243,6 +249,39 @@ class InstallerTest {
     assertTrue(old.output().lines().anyMatch(jar123.toString()::equals), old.output());
     assertTrue(Files.isRegularFile(install.resolve("jars/wpilog-mcp-1.2.4.jar")));
     assertTrue(Files.readString(config).startsWith("team: 2363\n"), "servers.yaml kept");
+  }
+
+  /**
+   * GitHub may answer the release API on one line. Then a selector that greps the line holding
+   * a field and takes the last quoted value on it takes the last URL in the whole document, the
+   * source zipball, and the last "v..." string, the release title: the installer downloaded the
+   * source archive as the JAR, and Java refused it as corrupt. Each value must come from its own
+   * field, whatever the formatting.
+   */
+  @ParameterizedTest(name = "compact JSON: {0}")
+  @ValueSource(booleans = {false, true})
+  @DisabledOnOs(OS.WINDOWS)
+  @DisplayName("install.sh selects the version and the JAR from their own fields")
+  void installShSelectsFieldsWhateverTheFormatting(boolean compact) throws Exception {
+    var home = Files.createDirectories(tempDir.resolve("home"));
+    var fakeBin = Files.createDirectories(tempDir.resolve("fakebin"));
+    executable(fakeBin.resolve("curl"), FAKE_CURL);
+    executable(home.resolve("wpilib/2026/jdk/bin/java"), FAKE_JAVA);
+    var document = releaseJson("1.2.3");
+    if (compact) document = new Gson().toJson(JsonParser.parseString(document));
+    var release = Files.writeString(tempDir.resolve("release.json"), document);
+    var result = run(List.of("sh", Path.of("install.sh").toAbsolutePath().toString()),
+        Map.of("HOME", home.toString(), "PATH", fakeBin + ":/usr/bin:/bin",
+            "FAKE_RELEASE_JSON", release.toString()), true);
+    assertEquals(0, result.exit(), result.output());
+    var jar = home.resolve(".wpilog-mcp/jars/wpilog-mcp-1.2.3.jar");
+    assertAll(
+        () -> assertEquals(List.of("Latest version: 1.2.3"),
+            result.output().lines().filter(line -> line.startsWith("Latest version: ")).toList(),
+            "the version is tag_name, not the release title"),
+        () -> assertTrue(Files.isRegularFile(jar), "a JAR named by the version:\n" + result.output()),
+        () -> assertEquals("jar for " + jarUrl("1.2.3"), Files.readString(jar),
+            "the JAR is the -all.jar asset, not the source zipball"));
   }
 
   @Test
