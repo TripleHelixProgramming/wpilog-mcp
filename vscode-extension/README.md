@@ -241,6 +241,7 @@ Before uninstalling, use **Clear The Blue Alliance API Key** if you want it remo
 
 ## More Information
 
+- [Operations and usage manual](../doc/OPERATIONS.md): step by step, from the setup check to the pit server and the shop day
 - [Main README](../README.md): overview and tools
 - [Standalone guide](../doc/STANDALONE.md): configuration, installation, and other clients
 - [Tool reference](../doc/TOOLS.md): parameters and result contracts

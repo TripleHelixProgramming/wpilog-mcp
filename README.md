@@ -14,7 +14,7 @@ It reads WPILib `.wpilog` files and the REV `.revlog` files recorded beside them
 
 **Install:** [WPILog Analyzer on the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer), or the [standalone install](doc/STANDALONE.md) for clients outside VS Code
 
-**Documentation:** [VS Code extension](vscode-extension/README.md) · [Standalone install](doc/STANDALONE.md) · [Tools](doc/TOOLS.md) · [Architecture](doc/ARCHITECTURE.md) · [Development](doc/DEVELOPMENT.md) · [all documents](#documentation)
+**Documentation:** [Operations and usage manual](doc/OPERATIONS.md) · [VS Code extension](vscode-extension/README.md) · [Standalone install](doc/STANDALONE.md) · [Tools](doc/TOOLS.md) · [Architecture](doc/ARCHITECTURE.md) · [Development](doc/DEVELOPMENT.md) · [all documents](#documentation)
 
 </td>
 </tr>
@@ -63,6 +63,8 @@ A possible answer: *"Battery voltage dropped below the brownout threshold at 42.
 ## Installation
 
 wpilog-mcp is designed for Claude and tested with Claude, but any agent that speaks MCP should work: GitHub Copilot in VS Code, Gemini CLI, Cursor, and others. ChatGPT reaches MCP servers only over the network, so it needs the [HTTP transport](doc/STANDALONE.md#http-transport).
+
+The [operations and usage manual](doc/OPERATIONS.md) walks through the setup check, the first questions, and running the server in the shop and the pit.
 
 Install **[WPILog Analyzer](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer)** in VS Code, accept its server-install offer, and put your logs in `~/riologs` or set its Log Directory setting. The extension bundles the server JAR, finds Java, and starts one shared server. Copilot and other VS Code agents get its HTTP definition; Claude Code gets a user-scope bridge registration. [The extension guide](vscode-extension/README.md) covers setup and the explorer. A particular build, such as a test build of the next version, installs from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases); the extension's README says how.
 
@@ -127,20 +129,40 @@ The Live tools appear only on a server with capture enabled. They report session
 
 ## Documentation
 
+Start with the guide for what you are doing. The reference pages are linked from each.
+
+**Using it**
+
 | Document | What it covers |
 |----------|----------------|
-| [VS Code extension README](vscode-extension/README.md) | Installing and using the extension: the explorer, organizing logs, settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
-| [STANDALONE.md](doc/STANDALONE.md) | The standalone install: configuration file, command-line flags, MCP client setup, the HTTP transport, Docker, troubleshooting |
+| [Operations and usage manual](doc/OPERATIONS.md) | Step by step: the setup check, how a question becomes tool calls, reading an answer, recipes for the common questions, the explorer, the shared server, the pit server, the shop day, stores, maintenance, and what to do when something is wrong |
+| [VS Code extension README](vscode-extension/README.md) | The extension: the explorer, organizing logs, the pit server and the offline mirror, settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
+| [STANDALONE.md](doc/STANDALONE.md) | The reference for the standalone install: the configuration file and every key, command-line flags and environment variables, MCP client setup, the HTTP routes, the pit server's configuration, metrics, Docker |
 | [TOOLS.md](doc/TOOLS.md) | Every tool's parameters and results, the data types, the result fields, and how REV logs are synchronized |
 | [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) | The JSON every tool returns, captured from real logs |
-| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | The goals and design principles, and how the server reads logs, manages memory, caches results, and handles concurrent clients |
-| [DEVELOPMENT.md](doc/DEVELOPMENT.md) | Building, testing, adding a tool, releasing, and contributing |
+
+**Developing it**
+
+| Document | What it covers |
+|----------|----------------|
+| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | The goals and design principles, and how the server reads logs, records captures, manages memory, caches results, and handles concurrent clients |
+| [DEVELOPMENT.md](doc/DEVELOPMENT.md) | Building, every test suite, adding a tool, releasing, and contributing |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
-| [IDEAS.md](doc/IDEAS.md) | Planned and proposed work |
-| [PIT_SERVER_PLAN.md](doc/PIT_SERVER_PLAN.md) | The proposal for a pit server that records the robot's NetworkTables stream, serves it to dashboards and assistants, and keeps the long-term record: the idea for everyone, the specification for developers |
-| [EXPLORER_PLAN.md](doc/EXPLORER_PLAN.md) | The proposal for WPILog Explorer, a viewer in the extension that shows the logs to a person: the same server's numbers, plotted, with a path from looking to asking |
-| [ROBUSTNESS_REVIEW.md](doc/ROBUSTNESS_REVIEW.md), [ROBUSTNESS_PLAN.md](doc/ROBUSTNESS_PLAN.md) | The review of the server's accuracy on real logs and the plan that answered it, behind most of version 0.9.0 (historical) |
-| [VAALE event analysis](doc/VAALE_EVENT_ANALYSIS.md), [VACHE power analysis](doc/VACHE_POWER_ANALYSIS.md) | Two example analyses of real robot logs, made with earlier versions (March 2026, before v0.3.0, and v0.8.0). They are historical: the current server reports some of the same logs differently |
+
+**Plans and proposals**
+
+| Document | What it covers |
+|----------|----------------|
+| [PIT_SERVER_PLAN.md](doc/PIT_SERVER_PLAN.md) | The pit server: the idea for everyone, the specification for developers, and the record of the decisions made while building it |
+| [EXPLORER_PLAN.md](doc/EXPLORER_PLAN.md) | WPILog Explorer, the viewer in the extension: the same server's numbers, plotted, with a path from looking to asking |
+| [IDEAS.md](doc/IDEAS.md) | Proposed work, and the priorities among it |
+
+**Historical**
+
+| Document | What it covers |
+|----------|----------------|
+| [ROBUSTNESS_REVIEW.md](doc/ROBUSTNESS_REVIEW.md), [ROBUSTNESS_PLAN.md](doc/ROBUSTNESS_PLAN.md) | The review of the server's accuracy on real logs and the plan that answered it, behind most of version 0.9.0 |
+| [VAALE event analysis](doc/VAALE_EVENT_ANALYSIS.md), [VACHE power analysis](doc/VACHE_POWER_ANALYSIS.md) | Two example analyses of real robot logs, made with earlier versions (March 2026, before v0.3.0, and v0.8.0). The current server reports some of the same logs differently |
 
 Elsewhere: the [WPILib DataLog documentation](https://docs.wpilib.org/en/stable/docs/software/telemetry/datalog.html) and the [Model Context Protocol](https://modelcontextprotocol.io/).
 
