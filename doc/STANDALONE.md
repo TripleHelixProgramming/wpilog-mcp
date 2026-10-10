@@ -2,6 +2,8 @@
 
 The standalone install is the server used by the VS Code extension and by clients outside VS Code: Claude Code, Claude Desktop, Gemini, or any other MCP client. Most users put logs in `~/riologs` and let their client start the shared server automatically. The extension offers installation itself; the scripts below also work without VS Code.
 
+This guide is the reference: every setting, flag, environment variable and route, with its bounds and defaults, plus installation and client setup. For the steps to use the tools and to run the server in the shop and the pit, see the [operations and usage manual](OPERATIONS.md).
+
 The server is designed for and tested with Claude. Other MCP clients work too, but the depth and quality of the analysis depend on the model.
 
 ## Requirements
@@ -196,12 +198,17 @@ servers:
 | `capture.pull.ssh.key` | Unencrypted private-key path instead of password; supports `~/` and `${NAME}`. Password and key cannot both be configured |
 | `capture.pull.ssh.accept_changed_host_key` | Default `false`. Explicitly accept a changed pinned key when password or private-key authentication is configured; verify the replacement first and turn this off afterwards |
 
+The whole capture block can be inherited from `defaults`; a server's block replaces it. An
+unknown capture key or an invalid value names the key in the startup error. Capture requires
+`transport: http` and `idle_exit_minutes: 0` (the default). A robot that is off is normal: HTTP
+starts at once and the client retries indefinitely. A server without `capture` behaves as before.
+
 #### Pulled system logs (opt-in)
 
-`capture.pull.system.enabled: true` adds a system-log phase to the same SSH worker,
-disabled/connected gate and `capture.pull.rate_bytes` budget. It is independent of
-`capture.pull.enabled`, which selects WPILOG/REV pulling. These are **unverified image
-candidates**, not claims about the NI installation; collection is off by default.
+`capture.pull.system.enabled: true` adds a system-log phase to the same SSH worker, the same
+disabled-and-connected gate and the same `capture.pull.rate_bytes` budget. It is independent of
+`capture.pull.enabled`, which selects WPILOG and REV pulling. The default paths are **unverified
+image candidates**, not claims about the NI installation, so collection is off by default.
 
 | Key | Meaning |
 | --- | --- |
@@ -213,59 +220,77 @@ candidates**, not claims about the NI installation; collection is off by default
 | `capture.pull.system.ni` | Absolute files/directories, default `[/var/local/natinst/log]`; directories are walked without following links |
 | `capture.pull.system.jvm_crash` | Absolute files/directories, default `[/home/lvuser]`; only `hs_err_pid<N>.log` files |
 
-Paths reject `..` and control characters. Missing configured paths are empty sources.
-`journal: true` uses `journalctl -q --no-pager -o short-unix --show-cursor`, followed by
-`--after-cursor` on later passes; its first pass uses `-b` alone for the current boot, without
-requiring journalctl to accept a boot UUID. The reply header still records that UUID. A missing
-or refused journal command stands that source down for the session with a recorded reason;
-it never guesses a syslog file. Kernel collection continues independently. A missing or
-permission-denied `dmesg` likewise records its reason. Exec replies are spooled in 64 KiB
-blocks under the same gate and pacing as SFTP; a stalled block has a 30-second deadline.
-A closed gate releases an exec channel and retries from its last committed cursor on resume;
-leaving its output pipe full would stall other channels of the shared SSH connection. SFTP
-files keep their content-checked byte offset.
-A dmesg ring larger than 16 MiB is refused with a reason, not silently cut short.
+**How collection behaves.** Paths reject `..` and control characters. A configured path that is
+missing is an empty source, not an error.
 
-`session.json` records `system_logs.files` with source, remote path, pass time, byte count
-and hash for the session's kernel, NI and crash files, plus kernel continuity and journal
-cursors. These files live under the session's `robot/system/`. Shared syslog snapshots live
-under `robots/<serial>/system/`, each recorded once in its `index.json`, with their written
-calendar span when known. Search selects spans overlapping the session or unknown spans;
-unknown session spans cannot exclude a shared file. Existing shared receipts in session
-manifests remain readable without being rewritten.
-Journal text uses UTC-day files there in a session-id directory, so two FPGA sessions in
-one kernel boot cannot accidentally share a cursor. Kernel overlap is removed using the
-last recorded line and uptime; a lower uptime waits for the new capture session. A crash
-file joins the session whose recorded program PID matches; no unique match leaves it in
-`robot/system/unassigned/` with a note. No remote file is deleted or modified.
+`journal: true` runs `journalctl -q --no-pager -o short-unix --show-cursor`. The first pass adds
+`-b` alone, for the current boot, so journalctl need not accept a boot UUID; the reply header
+still records that UUID. Later passes add `--after-cursor`.
 
-Ask `search_system_logs` with the capture's path for the pulled record; `search_strings`
-reads the timely tail copy. Kernel timestamps need recorded `uptime_sec` pairs; journal
-and ISO wall timestamps need the session's `systemTime`. Without evidence the text stays
-visible with a null robot timestamp and a reason. A journald kernel message can occur twice:
-source `kernel` means dmesg only; source `syslog` includes the whole journal.
-The store door includes these receipts and shared indices in `/store/sessions`; file and
-prefix-hash endpoints serve only their committed byte lengths. Peer sync carries the whole
-shared index; a mirror carries shared files selected by its sessions' spans. Both verify the
-advertised hash, keep provenance, and resume growing text through the held-prefix check.
-Shared mirror bytes count once toward its cap and remain until their last retained session
-is evicted, provided the origin still holds them. A manifest ahead of its local text returns
-`not_applicable` naming the collecting server; synchronize the copy or query that server.
+A missing or refused journal command stands that source down for the session with a recorded
+reason; the server never guesses a syslog file instead. Kernel collection continues on its own.
+A missing or permission-denied `dmesg` records its reason the same way. A dmesg ring larger
+than 16 MiB is refused with a reason, not silently cut short.
 
-The shop must supply listings of `/var/local/natinst/log` and `/var/log`, presence of
-`journalctl`, `dmesg` and `df`, dmesg permissions, whether dmesg prints `[seconds]` stamps
-(needed to detect a wrapped kernel buffer), whether journalctl accepts a boot id, the console
-path, and the program command line. Those facts will settle the candidates and defaults.
+Exec replies are read in 64 KiB blocks under the same gate and pacing as SFTP, and a stalled
+block has a 30-second deadline. When the gate closes, the exec channel is released, because a
+full output pipe would stall the other channels of the shared SSH connection; the next pass
+resumes from the last committed cursor. SFTP files resume at their content-checked byte offset.
+
+**Where the files go.**
+
+- The session's kernel, NI and crash files live under its `robot/system/`. `session.json` records
+  them in `system_logs.files`: source, remote path, pass time, byte count and hash, plus kernel
+  continuity and journal cursors.
+- Shared syslog snapshots live under `robots/<serial>/system/`, each recorded once in its
+  `index.json` with its written calendar span when known. A search selects the spans that overlap
+  the session, and unknown spans; a session whose own span is unknown cannot exclude a shared
+  file. Older shared receipts in session manifests stay readable without being rewritten.
+- Journal text is kept there in UTC-day files inside a session-id directory, so two FPGA sessions
+  in one kernel boot cannot share a cursor by accident.
+- Kernel overlap is removed using the last recorded line and the uptime; a lower uptime waits for
+  the new capture session.
+- A crash file joins the session whose recorded program PID matches it. Without a unique match it
+  goes to `robot/system/unassigned/` with a note.
+- No remote file is deleted or modified.
+
+**Reading them.** `search_system_logs` with the capture's path reads the pulled record;
+`search_strings` reads the timely copy that a followed file provides (see
+[SSH stats and followed files](#ssh-stats-and-followed-files)). Kernel timestamps need recorded
+`uptime_sec` pairs; journal and ISO wall-clock timestamps need the session's `systemTime`. Without
+that evidence the text stays visible, with a null robot timestamp and a reason. A journald kernel
+message can appear twice: source `kernel` means dmesg only, and source `syslog` includes the
+whole journal.
+
+**Sharing them.** The store door includes these receipts and the shared indices in
+`/store/sessions`; the file and prefix-hash routes serve only committed byte lengths. Peer sync
+carries the whole shared index; a mirror carries the shared files that its sessions' spans
+select. Both verify the advertised hash, keep provenance, and resume growing text through the
+held-prefix check. Shared bytes in a mirror count once toward its cap and stay until their last
+retained session is evicted, provided the origin still holds them. A manifest ahead of its local
+text returns `not_applicable` naming the collecting server: synchronize the copy, or query that
+server.
+
+**What still needs the shop.** The candidate paths and defaults above are settled by facts only
+the robot can supply; [Robot facts for the shop](#robot-facts-for-the-shop) collects them:
+
+- listings of `/var/local/natinst/log` and `/var/log`;
+- whether `journalctl`, `dmesg` and `df` exist, and whether the SSH account may run dmesg;
+- whether dmesg prints `[seconds]` stamps, which detecting a wrapped kernel buffer needs;
+- whether journalctl accepts a boot id;
+- the console path and the program command line.
 
 #### SSH stats and followed files
 
-When `capture.pull.ssh` is present (even `{}`), or pulling is enabled, stats and the program
-console follow are **on by default**. Pulling remains disabled unless explicitly enabled.
-Stats and tails run while the robot is enabled too, and stop making SSH requests when NT4
-is disconnected. One connection per configured host carries independent SFTP, sample and
-follow channels; connection failures retry after 1, 2, 4, 8, 16, then 30 seconds.
-The defaults make the providers available for shop testing; revisit their measured cost on
-roboRIO 1 and 2 after the shop measurement.
+When `capture.pull.ssh` is present (even `{}`), or pulling is enabled, system stats and the
+program console follow are **on by default**. Pulling itself stays off unless `capture.pull.enabled`
+is `true`. Stats and tails run while the robot is enabled too, and stop making SSH requests
+while NT4 is disconnected.
+
+One SSH connection per configured host carries independent SFTP, sample and follow channels. A
+failed connection is retried after 1, 2, 4, 8, 16, then 30 seconds. The defaults make the
+providers available for shop testing; revisit their measured cost on roboRIO 1 and 2 after the
+shop measurement.
 
 | Key | Meaning |
 |---|---|
@@ -300,51 +325,65 @@ capture:
         - {path: /var/log/application.log, role: program_console}
 ```
 
-Stats make one bounded exec request per sample for `/proc` and `df -Pk`, with the device's
-clock tick and page sizes. `/Daemon/roboRIO/` entries carry explicit units, `source: ssh`,
-`host`, `sampled: true` and `period_sec`. The command's **send** time is mapped to FPGA time;
-samples sent before an NT4 estimate are counted and dropped. CPU and network interval rates
-need two samples; a missing or ambiguous deployed JAR omits program fields with a reason.
-The JAR path comes from the quoted `-jar` argument in `/home/lvuser/robotCommand`, then exact
-arguments in `/proc/*/cmdline`. The first lookup and `getconf` run once per SSH connection.
-If no unique robot program is found, that reason is logged once and discovery retries only
-every tenth sample; other stats continue. Each sample checks a known PID's start ticks;
-only a previously identified PID/start-time mismatch reports a changed process and requests
-discovery on the next sample. Tick/page constants remain cached until SSH reconnects. Steady samples read fixed
-`/proc` files with shell builtins and run one `df` for all selected filesystems. A custom launcher
-that does not expose the JAR path is reported.
-Exec replies are bounded to 64 KiB and 30 seconds; sample waits never occupy the NT4 loop.
+**System stats: what you see.** Each sample is one bounded exec request that reads `/proc` and
+`df -Pk`, with the device's clock tick and page size. The values are recorded as
+`/Daemon/roboRIO/` entries with explicit units and the metadata `source: ssh`, `host`,
+`sampled: true` and `period_sec`. The command's **send** time is mapped to FPGA time; a sample
+sent before an NT4 time estimate exists is counted and dropped. CPU and network rates are per
+interval and need two samples.
 
-Each tail uses `tail -n 0 -F -s 0.25`, with one string record per line at **receipt** time.
-Kernel and journal roles use `dmesg -w` and `journalctl -f` when supported, else poll the
-configured file by inode and byte offset at the current stats period. Missing/unreadable
-sources log a reason and stand down for the session. An SSH reconnect resumes following,
-but cannot recover lines written during the interruption; enable the separate system-log pull
-for the retained files. Each file admits 200 lines per one-second bucket and bounds a line to 64 KiB and
-pending history to 1000 lines. Excess is counted and one drop notice is recorded after a full second without another
-drop, including when a sustained burst ends in silence. Pre-session lines retain receipt time, mapped through the next session's measured offset
-and clamped at zero, with `buffered_before_session` in metadata.
+**Finding the robot program.** The program fields come from the deployed JAR. Its path is the
+quoted `-jar` argument in `/home/lvuser/robotCommand`, then the exact arguments in
+`/proc/*/cmdline`. A missing or ambiguous JAR omits the program fields with a reason, and a
+custom launcher that does not expose the JAR path is reported. When no unique program is found,
+the reason is logged once and discovery is retried every tenth sample while the other stats
+continue. Each sample checks the known PID's start ticks; only a mismatch against a previously
+identified PID and start time reports a changed process and asks for discovery on the next
+sample.
 
-`list_sessions` reports `providers[]` and `get_latest_values` includes these entries with
-`source: ssh` or `tail`. Provider state and costs are also in `session.json` under
-`capture_stats.providers`; `capture_stats.kernel_clock` pairs `uptime_sec`,
-`fpga_timestamp_sec`, `offset_sec` (FPGA minus uptime), and `round_trip_ms`. Processor time
-between samples measures the whole robot, not CPU attributed to the provider. Numeric values
-appear as `nt_value` metrics, with provider duration, period, processor time and drop counters.
-Unsupported stats output stands down for the session with its reason; a new session retries it. These are sampled views; the capture remains the record.
+**Cost.** The first lookup and `getconf` run once per SSH connection, and the tick and page
+constants stay cached until SSH reconnects. Steady samples read fixed `/proc` files with shell
+builtins and run one `df` for all selected filesystems. Exec replies are bounded to 64 KiB and
+30 seconds, and a sample wait never occupies the NT4 loop.
 
-Other hosts pin fingerprints locally in `ssh-hosts.json`, never credentials. Robot contacts
-continue to use `robot.json`; pins in this store are not copied from a peer. If another host's
-key changes and authentication would send a password or key, verify it and remove that host's
-pin before restarting. Never place authentication secrets directly in the tail block.
+**Followed files: what you see.** Each tail runs `tail -n 0 -F -s 0.25` and records one string
+record per line, stamped at **receipt** time. The `kernel` and `journal` roles use `dmesg -w` and
+`journalctl -f` where the image supports them; otherwise they poll the configured file by inode
+and byte offset at the current stats period. Lines received before a session starts keep their
+receipt time, mapped through the next session's measured offset and clamped at zero, with
+`buffered_before_session` in their metadata.
+
+**Bounds.** Each file admits 200 lines per one-second bucket, bounds a line to 64 KiB, and keeps
+at most 1000 pending lines. Excess lines are counted, and one drop notice is recorded after a
+full second without another drop, including when a sustained burst ends in silence.
+
+**Failure handling.** A missing or unreadable source logs a reason and stands down for the
+session. An SSH reconnect resumes following but cannot recover the lines written during the
+interruption; enable the separate system-log pull to get the retained files.
+
+**In the tools, the manifest and the metrics.** `list_sessions` reports `providers[]`, and
+`get_latest_values` includes these entries with `source: ssh` or `tail`. `session.json` records
+provider state and costs under `capture_stats.providers`; `capture_stats.kernel_clock` pairs
+`uptime_sec`, `fpga_timestamp_sec`, `offset_sec` (FPGA minus uptime) and `round_trip_ms`. The
+processor time between samples measures the whole robot, not CPU attributed to the provider.
+Numeric values appear as `nt_value` metrics, beside the provider duration, period, processor
+time and drop counters. Stats output the server cannot parse stands the provider down for the
+session with its reason; a new session retries it. These are sampled views; the capture remains
+the record.
+
+**Other hosts.** A tail on another host pins that host's fingerprint locally in `ssh-hosts.json`,
+never its credentials. Robot contacts continue to use `robot.json`, and pins in this store are
+not copied from a peer. If another host's key changes and authentication would send a password
+or key, verify the new key and remove that host's pin before restarting. Never put
+authentication secrets directly in the tail block.
 
 #### PhotonVision configuration context
 
-`context.photonvision` is a list of coprocessor hosts beside `capture`, off when absent or empty.
-It requires capture and inherits as a whole block from `defaults`; a named server can clear it
-with `context: {photonvision: []}`. Hosts support environment interpolation, default to port 5800,
-and may specify a port. URLs, credentials, paths, duplicate addresses and unknown keys are refused
-with the configuration key in the error.
+`context.photonvision` is a list of coprocessor hosts beside `capture`; it is off when absent or
+empty. It requires capture and is inherited as a whole block from `defaults`; a named server can
+clear it with `context: {photonvision: []}`. Hosts support environment interpolation, default to
+port 5800, and may give a port. URLs, credentials, paths, duplicate addresses and unknown keys are
+refused, with the configuration key in the error.
 
 ```yaml
 servers:
@@ -357,37 +396,44 @@ servers:
       photonvision: [photonvision.local]
 ```
 
-The provider is pinned to **PhotonVision v2026.3.4**, whose UI routes are private, not a stable API.
-It requests `GET /api/settings/photonvision_config.zip` at session start and validates the ZIP's
-`photon.sqlite` member. Structured current configuration comes from binary MessagePack on
-`ws://<host>:5800/websocket_data`, including calibration matrices and reprojection errors per
-resolution, pipeline type/resolution/exposure/gain/3D/multi-tag/field layout, software version,
-device type and hardware status. The archive is fingerprinted and discarded; no SQL or native
-runtime is added. The provider sends no settings mutations. Keep this unauthenticated backend
-on the private team network.
+**How it reads the coprocessor.** The provider is pinned to **PhotonVision v2026.3.4**, whose UI
+routes are private, not a stable API. At session start it requests
+`GET /api/settings/photonvision_config.zip` and validates the ZIP's `photon.sqlite` member; the
+archive is fingerprinted and discarded, so no SQL or native runtime is added. The current
+configuration comes as binary MessagePack on `ws://<host>:5800/websocket_data`: calibration
+matrices and reprojection errors per resolution; pipeline type, resolution, exposure, gain, 3D,
+multi-tag and field layout; software version, device type and hardware status. The provider
+sends no settings changes. Keep this unauthenticated backend on the private team network.
 
-Each snapshot writes one JSON record per camera under `/Daemon/PhotonVision/<camera>/Settings`.
-The UI supplies no snapshot timestamp: receipt is mapped through the NT4 robot-clock estimate,
-with that basis and the pinned release in metadata. It never uses the HTTP fetch's local clock.
-This release omits the camera ID from selective change notifications; the provider opens a new
-read-only socket to receive complete state instead of guessing which camera changed. Refreshes
-start at most once per second per backend; notifications inside that interval or during a
-refresh coalesce into one subsequent refresh carrying current state.
-Names must match the NT camera names exactly; an unrelated generic robot-code camera label is
-not inferred to mean a particular coprocessor camera.
+**What you see.** Each snapshot writes one JSON record per camera under
+`/Daemon/PhotonVision/<camera>/Settings`. The UI supplies no snapshot timestamp, so the receipt
+time is mapped through the NT4 robot-clock estimate, with that basis and the pinned release in
+the metadata; the HTTP fetch's local clock is never used. Camera names must match the NT camera
+names exactly: a generic camera label in the robot code is not taken to mean a particular
+coprocessor camera.
 
-An unsupported version/shape, unknown top-level message key (even beside a valid snapshot),
-unavailable backend or exceeded bound logs the reason and stands
-down until a new session; the last captured settings remain readable. HTTP bodies are bounded
-to 64 MiB, expanded ZIP contents to 256 MiB, WebSocket messages to 4 MiB and snapshots to 64 cameras.
-Requests/initial snapshots have a ten-second deadline; unanswered WebSocket pings have a
-five-second deadline, with pongs stamped on the network callback so a delayed worker cannot
-blame the backend. The worker owns network waits and decoding;
-reading the next message waits for the previous snapshot's ordered delivery. `list_sessions`
-and the manifest expose the provider's state/reason and record/byte/round-trip costs;
-`get_latest_values` marks its entries `source: photonvision`. `wpilog_provider_state` reports
-one sample labeled by provider and its current state. Presence of `/photonvision/<camera>/`
-topics without configured hosts logs one configuration suggestion per capture service.
+**Refreshes.** This PhotonVision release omits the camera ID from its change notifications, so
+the provider opens a new read-only socket and receives the complete state instead of guessing
+which camera changed. Refreshes start at most once per second per backend; notifications inside
+that interval, or during a refresh, coalesce into one later refresh that carries the current
+state.
+
+**Bounds.** HTTP bodies are bounded to 64 MiB, expanded ZIP contents to 256 MiB, WebSocket
+messages to 4 MiB and a snapshot to 64 cameras. A request or initial snapshot has a ten-second
+deadline. An unanswered WebSocket ping has a five-second deadline; pongs are stamped on the
+network callback, so a delayed worker cannot blame the backend.
+
+**Failure handling.** An unsupported version or shape, an unknown top-level message key (even
+beside a valid snapshot), an unavailable backend or an exceeded bound logs the reason and stands
+the provider down until a new session; the last captured settings remain readable. One worker
+owns the network waits and the decoding, and the next message is read only after the previous
+snapshot has been delivered in order.
+
+**In the tools and the metrics.** `list_sessions` and the manifest show the provider's state and
+reason and its record, byte and round-trip costs; `get_latest_values` marks its entries
+`source: photonvision`. `wpilog_provider_state` reports one sample per provider, labeled with its
+current state. `/photonvision/<camera>/` topics seen without a configured host produce one
+configuration suggestion in the log per capture service.
 
 #### JVM context through JMX
 
@@ -424,85 +470,119 @@ Choose an unused port; the example is separate from NT4 and the gateway. These f
 authentication and encryption and expose JVM management operations: **private team network only**.
 See [WPILib's launch-argument guide](https://docs.wpilib.org/en/stable/docs/software/advanced-gradlerio/compiler-args.html)
 and [JDK remote management](https://docs.oracle.com/en/java/javase/17/management/monitoring-and-management-using-jmx-technology.html).
-The shop's `robot-facts` module probe must establish `jdk.management.agent` in the deployed JRE;
-this desktop test cannot establish the roboRIO image's module set or polling cost.
 
-The JDK connector polls memory (heap/non-heap used and committed bytes), cumulative collection
-counts and seconds by collector, live/peak/daemon threads, loaded/total classes and process CPU
-seconds. Unsupported negative counters and an absent process-CPU attribute are omitted.
-Numeric entries live under `/Daemon/JVM/`; `Runtime` records VM name/version/input arguments
-once per connection (sensitive property values are redacted). Metadata includes `source: jmx`,
-`sampled: true`, `period_sec`, `clock: measured`, the host and `jvm_start_time_ms` as identity.
+**What you see.** Each poll reads memory (heap and non-heap used and committed bytes), cumulative
+collection counts and seconds by collector, live, peak and daemon threads, loaded and total
+classes, and process CPU seconds. A negative (unsupported) counter and an absent process-CPU
+attribute are omitted. The numeric entries live under `/Daemon/JVM/`; `Runtime` records the VM
+name, version and input arguments once per connection, with sensitive property values redacted.
+The metadata carries `source: jmx`, `sampled: true`, `period_sec`, `clock: measured`, the host,
+and `jvm_start_time_ms` as the JVM's identity.
 
-Samples are stamped at receipt through the NT4 robot-time estimate, before either delivery
-queue. `uptime_sec`, `clock/offset_sec` (robot time minus JVM uptime) and
-`clock/round_trip_bound_sec` are recorded each poll. The bound includes the complete JMX poll,
-the NT4 round trip and one millisecond of uptime quantization. A mapping change beyond both
-adjacent samples' bounds writes `ClockNote`; earlier records keep their timestamps. The note
-records `previous_offset_sec`, `current_offset_sec`, `change_sec`,
-`previous_round_trip_bound_sec`, `current_round_trip_bound_sec`, and both
-`previous_jvm_start_time_ms` and `current_jvm_start_time_ms`. It states that the mapping moved
-beyond the sum of the bounds, not why: it does not diagnose a restart, skew, or a wall-clock
-correction. A new session resets the comparison. With no NT4
-estimate a sample is counted and dropped. Start time is never a clock: `startTime + uptime`
-stays anchored to the wall clock at JVM startup and does not track the Driver Station's later
-correction. The provider does not try to detect that correction. The existing SSH stats pairing is kernel uptime to FPGA time, not wall time. A pulled log's
-`systemTime` provides corrected wall-clock evidence; the separate `robot-facts` probe records
-uptime beside `date` for shop inspection. Neither is replaced by this JVM uptime mapping.
+**Timestamps.** A sample is stamped at receipt through the NT4 robot-time estimate, before either
+delivery queue; with no estimate it is counted and dropped. Each poll records `uptime_sec`,
+`clock/offset_sec` (robot time minus JVM uptime) and `clock/round_trip_bound_sec`. The bound
+covers the complete JMX poll, the NT4 round trip and one millisecond of uptime quantization.
 
-A refused connection reports the launch flags and retries after 1 second, doubling to 30 seconds;
-NT4 disconnection stands the provider down. One daemon I/O worker owns JMX and a separate
-five-second watchdog reports a stalled call. If RMI will not return, no replacement call/thread
-is started until it does; capture and shutdown never join it. Samples cannot cross sessions,
-including a reply queued before a reboot. A failed sample delivery stands down for the session,
-including an NT4 resume, with its reason; the next session admits polling again. `list_sessions`, the manifest and metrics expose
-state/reason, period, round trip and sample cost. `sample_bytes` counts encoded value payloads
-(eight bytes per numeric value plus UTF-8 JSON), excluding RMI and WPILOG framing; provider
-`bytes` counts recorded WPILOG bytes. `get_latest_values` marks these entries `source: jmx`.
-`wpilog_provider_state{provider="jvm",state="..."}` is the state gauge; numeric entries also
-appear as `nt_value`. Polling is a sampled view, not an exact pause trace. Flight Recorder
-streaming remains the second half, after the shop establishes runtime modules.
+**ClockNote.** When the mapping moves by more than both adjacent samples' bounds, the provider
+writes a `ClockNote`; earlier records keep their timestamps. The note records
+`previous_offset_sec`, `current_offset_sec`, `change_sec`, `previous_round_trip_bound_sec`,
+`current_round_trip_bound_sec`, and both `previous_jvm_start_time_ms` and
+`current_jvm_start_time_ms`. It states that the mapping moved beyond the sum of the bounds, not
+why: it does not diagnose a restart, skew or a wall-clock correction. A new session resets the
+comparison.
 
-The whole capture block can be inherited from `defaults`; a server's block replaces it.
-Unknown capture keys and invalid values name the key in the startup error. Capture requires
-`transport: http` and `idle_exit_minutes: 0` (the default). A robot that is off is normal: HTTP
-starts immediately and the client retries indefinitely. A server without `capture` behaves as before.
+**What the start time is not.** The JVM start time is never a clock: `startTime + uptime` stays
+anchored to the wall clock at JVM startup and does not follow the Driver Station's later
+correction, which the provider does not try to detect. The SSH stats pair kernel uptime with
+FPGA time, not wall time. Corrected wall-clock evidence comes from a pulled log's `systemTime`,
+and the `robot-facts` probe records uptime beside `date` for the shop; this mapping replaces
+neither.
 
-Captures are ordinary `.wpilog` files under
+**Failure handling.** A refused connection reports the launch flags and retries after 1 second,
+doubling to 30 seconds; an NT4 disconnection stands the provider down. One daemon I/O worker owns
+JMX, and a separate five-second watchdog reports a stalled call. If RMI does not return, no
+replacement call or thread is started until it does; capture and shutdown never wait for it.
+Samples cannot cross sessions, including a reply queued before a reboot. A failed sample delivery
+stands the provider down for the session, including across an NT4 resume, with its reason; the
+next session admits polling again.
+
+**In the tools and the metrics.** `list_sessions`, the manifest and the metrics show the state and
+reason, the period, the round trip and the sample cost. `sample_bytes` counts the encoded value
+payloads (eight bytes per numeric value plus the UTF-8 JSON), excluding RMI and WPILOG framing;
+the provider's `bytes` counts recorded WPILOG bytes. `get_latest_values` marks these entries
+`source: jmx`. `wpilog_provider_state{provider="jvm",state="..."}` is the state gauge, and the
+numeric entries also appear as `nt_value`. Polling is a sampled view, not an exact pause trace.
+
+**What still needs the shop.** The `robot-facts` module probe must establish that the deployed
+JRE carries `jdk.management.agent`; a desktop test cannot establish the roboRIO image's module
+set or the polling cost. Flight Recorder streaming is the second half of JVM context, after the
+shop establishes the runtime's modules.
+
+#### Sessions and capture files
+
+**Where a capture lives.** A capture is an ordinary `.wpilog` file under
 `robots/address-<address>/sessions/<UTC-date>/<HHmmss>Z/capture.wpilog`. A new robot clock starts
-a new session; a continuing clock resumes after a connection loss. Event and match facts appear
-in the store listing as soon as the queued fact update runs. Imports never stall the NT4 writer:
-manifest updates coalesce into one pending task, on changed facts or at most every five seconds.
-The directory gains the event and match after close and reader release on every platform, keeping
-its path stable during rollover and remapping. While recording, the manifest marks the current
-file in `open_capture`; each closed file gets its own SHA-256 and final size. Shutdown waits at most 30 seconds for the writer and final manifest; if it cannot finish, the
-server log says the next startup sweep will recover unowned captures. Creation, including a resumed file's removal from the hashed list, is synchronous. Excluded or thinned topics are a deliberate reduction in
-capture fidelity; thinning is recorded in entry metadata.
-The bound rolls to `capture-2.wpilog`, `capture-3.wpilog`, and so on. Each file redeclares active
-entries and has its own live index; a tool still reads one file per call. Retained struct schemas
-are copied into each new file at its rollover server time with `capture_schema_seed: true` in
-that entry's metadata, so each file can decode its structs. Those seed records are not additional
-received changes, and do not extend the file's time range back to the boot-time schema. If declarations, schemas, one value and finishes cannot fit the configured
-bound, recording stops with an explained error. A write failure closes the session with
-`end_reason` in its manifest and the reason in the server log, keeps the NT4 connection, and
-suppresses recording until a new robot clock. A partial write is rolled back to its completed
-record boundary when the filesystem permits it. Topic costs are logged every five minutes.
-The service queues recovery after HTTP is listening, so a large abandoned capture cannot delay
-the daemon health endpoint. Before NT4 starts, the store queue sweeps sessions still marked `open_capture`. Files with an
-active writer are left alone. An abandoned readable WPILOG is finalized with its hash, size,
-record time range, file modification time as `ended_at`, and
-`end_reason: "server stopped while recording"`. An incomplete final record remains marked as
-truncated. Unreadable or structurally damaged files stay open with a recovery reason in the
-manifest and server log. This handles a crash, power loss, or daemon termination before shutdown
-finishes, without changing the capture's bytes.
-Every existing log tool accepts the open capture's path. Each call sees a fixed prefix, reported
-as `inputs.session_time_range`; later calls can include newer records. The hot window controls
-memory retention, not which records are available: older values are read from the file.
+a new session; a continuing clock resumes the session after a connection loss. The directory
+gains the event and match after the file is closed and its readers released, on every platform,
+so its path stays stable during rollover and remapping. Once the robot's serial number is known,
+the address directory moves under it at session close (see [Robot identity](#robot-identity)).
 
-The listing reads `/SystemStats/SerialNumber` and `/SystemStats/Comments` (also prefixed `NT:`)
-within the first 2000 records of any log, not only a store. Import inspection also finds identity
-logged later. AdvantageKit records these conventions. DataLogManager teams can
-make every robot log self-identifying by writing them once in `robotInit`:
+**The manifest.** While recording, the manifest marks the current file in `open_capture`; each
+closed file gets its own SHA-256 and final size. Event and match facts appear in the store
+listing as soon as the queued fact update runs. Imports never stall the NT4 writer: manifest
+updates coalesce into one pending task, run on changed facts or at most every five seconds.
+Creation, including a resumed file's removal from the hashed list, is synchronous.
+
+**Rollover.** At `capture.max_file_bytes` the recording rolls to `capture-2.wpilog`,
+`capture-3.wpilog`, and so on, in the same session. Each file redeclares the active entries and
+has its own live index; a tool still reads one file per call. Retained struct schemas are copied
+into each new file at its rollover server time, with `capture_schema_seed: true` in that entry's
+metadata, so each file can decode its structs. Those seed records are not additional received
+changes, and they do not extend the file's time range back to the boot-time schema. If the
+declarations, schemas, one value and the finishes cannot fit the configured bound, recording
+stops with an explained error.
+
+**Fidelity.** Excluded or thinned topics are a deliberate reduction in capture fidelity; thinning
+is recorded in the entry metadata. Topic costs are logged every five minutes.
+
+**Write failures.** A write failure closes the session with `end_reason` in its manifest and the
+reason in the server log, keeps the NT4 connection, and suppresses recording until a new robot
+clock. A partial write is rolled back to its completed record boundary when the filesystem
+permits it.
+
+**Shutdown.** Shutdown waits at most 30 seconds for the writer and the final manifest; if it
+cannot finish, the server log says that the next startup sweep will recover the unowned
+captures.
+
+**Recovery at startup.** The service queues recovery after HTTP is listening, so a large
+abandoned capture cannot delay the health endpoint, and runs it before NT4 starts: the store
+queue sweeps the sessions still marked `open_capture`, leaving files with an active writer
+alone. An abandoned readable WPILOG is finalized with its hash, size, record time range, the
+file modification time as `ended_at`, and `end_reason: "server stopped while recording"`; an
+incomplete final record stays marked as truncated. An unreadable or structurally damaged file
+stays open, with a recovery reason in the manifest and the server log. This covers a crash, a
+power loss or a daemon ended before shutdown finished, and it never changes the capture's bytes.
+
+**Reading the open capture.** Every log tool accepts the open capture's path. Each call sees a
+fixed prefix, reported as `inputs.session_time_range`; a later call can include newer records.
+The hot window controls memory retention, not which records are available: older values are
+read from the file.
+
+A local server reading a growing WPILOG that another process writes resumes its index on
+verified append anchors and a known unchanged file identity, and retries a partial final record
+on growth. Where the filesystem cannot supply an identity, it loads the file afresh. A call that
+spans a file change still returns the explained retry; a successful disk-backed call's
+`inputs.file_size_bytes` identifies the size it read. The pit writer's own live index remains
+the faster, fixed-prefix path.
+
+#### Robot identity
+
+A robot is known by its roboRIO serial number. The listing reads `/SystemStats/SerialNumber` and
+`/SystemStats/Comments` (also with the `NT:` prefix) within the first 2000 records of any log,
+not only a store's; import inspection also finds identity logged later. AdvantageKit records
+these conventions. Teams using DataLogManager can make every robot log self-identifying by
+writing them once in `robotInit`:
 
 ```java
 var log = DataLogManager.getLog();
@@ -512,46 +592,65 @@ new IntegerLogEntry(log, "/SystemStats/TeamNumber").append(RobotController.getTe
 ```
 
 The entry classes are in `edu.wpi.first.util.datalog`; `DataLogManager` and `RobotController`
-are in `edu.wpi.first.wpilibj`. A logged serial wins for its file. Device evidence learned over
-SSH is stored by serial with host-key history and copied into `/Daemon/Robot/Identity` at capture
-start and resume. Identity learned mid-session is written in place; the address directory moves
-under the serial at session close, preserving old paths without waiting on the NT4 loop. New
-sessions use the known serial immediately. The listing's `robot_candidates` apply only to store files,
-using exact fingerprints persisted by import inspection. Older manifests without fingerprints have
-no hints. Listing does not scan logs for this evidence, and candidates never assign identities.
+are in `edu.wpi.first.wpilibj`.
 
-Pulling is opt-in: set `capture.pull.enabled: true` after the [shop test](DEVELOPMENT.md#roborio-sftp-shop-test).
-The gate uses bit 0 of `/FMSInfo/FMSControlData`; enabled, unknown or disconnected state pauses the
-worker within its current 64 KiB block. Reopening the gate resumes at the held offset after a content
-check. The cap also covers fallback comparison reads. SSH errors retry; they do not stop HTTP or NT4.
-The server log reports starts, pauses, completion and failures; `list_sessions` reports matched imports. One
-recursive listing serves each transfer pass, refreshing after ten seconds during a long pass.
-Hash commands read the whole held prefix on the robot, using CPU and storage bandwidth outside
-the transfer byte cap. Their deadline is 30 seconds plus one second per 256 KiB, rounded up; SSH
-keepalives preserve the connection during a slow hash, with five-second connect timeouts.
+**How identity is applied.** A logged serial wins for its file. Device evidence learned over SSH
+is stored by serial with its host-key history, and copied into `/Daemon/Robot/Identity` at
+capture start and resume. Identity learned in the middle of a session is written in place; at
+session close the address directory moves under the serial, preserving the old paths, without
+waiting on the NT4 loop. New sessions use the known serial at once.
 
-The first SSH host key is trusted and its SHA-256 fingerprint recorded with the device serial.
-A changed key is reported. With the default empty password it can continue automatically; with
-a password or private key configured it is refused before authentication. Verify the replacement,
-then set `capture.pull.ssh.accept_changed_host_key: true` temporarily, or remove the last contact
-entry's `host_key_fingerprint` from that robot's `robot.json`. The next accepted contact records the
-new fingerprint. First contact still trusts the team's robot network. The serial read afterwards
-selects the manifest. A new serial at the same address
-starts separate transfer state. Supported host keys are Ed25519 and RSA SHA-2. Serial and comments
-come from the HAL's sources (see the plan's section 17); missing or conflicting serial evidence
-refuses the contact, rather than assigning logs from its address.
+**Candidates.** The listing's `robot_candidates` apply only to store files and use the exact
+fingerprints persisted by import inspection; older manifests without fingerprints have no hints.
+The listing does not scan logs for this evidence, and a candidate never assigns an identity.
 
-Files wait in `robots/<serial>/pulled/` until the ordinary reader reaches EOF. A verified file moves
-into a session's `robot/` directory and appears in the listing. Matching requires the same known
-serial and strong data correlation within 250 ms of zero, with one candidate session. Manifest
-time ranges filter candidates before loading them, allowing two hours of clock slack (sixteen for
-filename clocks without a zone); an unknown or unset clock cannot exclude a candidate. Names alone
-cannot match. Missing logged serials are marked `data_alone` in the manifest. No match starts its own
-session. A logged/device serial disagreement is reported, and the logged serial wins for the file.
-Confirmed growth temporarily returns a verified file to staging; its earlier tool paths still resolve
-when it is placed again. Reused names retain the previous copy separately. Resume checks the hash
-of exactly the held bytes; if exec is unavailable, the last 64 KiB is compared, which cannot prove
-the earlier prefix. The robot's files are never deleted or modified.
+#### Pulling the robot's logs
+
+Pulling is opt-in: set `capture.pull.enabled: true` after the
+[shop test](DEVELOPMENT.md#roborio-sftp-shop-test).
+
+**The gate.** The gate reads bit 0 of `/FMSInfo/FMSControlData`. An enabled, unknown or
+disconnected state pauses the worker within its current 64 KiB block; when the gate reopens, the
+transfer resumes at the held offset after a content check. The server log reports starts,
+pauses, completion and failures, and `list_sessions` reports the matched imports.
+
+**Cost and pacing.** `capture.pull.rate_bytes` caps the transfer, and the cap also covers the
+fallback comparison reads. One recursive listing serves each transfer pass, refreshed after
+ten seconds during a long pass. Hash commands read the whole held prefix on the robot, using CPU
+and storage bandwidth outside the transfer byte cap. Their deadline is 30 seconds plus one second
+per 256 KiB, rounded up; SSH keepalives preserve the connection during a slow hash, and a connect
+times out after five seconds. SSH errors are retried; they never stop HTTP or NT4.
+
+**Host keys.** The first SSH host key is trusted (first contact trusts the team's robot network)
+and its SHA-256 fingerprint is recorded with the device serial. Supported host keys are Ed25519
+and RSA SHA-2. A changed key is reported: with the default empty password the contact can
+continue automatically, but with a password or private key configured it is refused before
+authentication. Verify the replacement, then either set
+`capture.pull.ssh.accept_changed_host_key: true` temporarily or remove the last contact entry's
+`host_key_fingerprint` from that robot's `robot.json`; the next accepted contact records the new
+fingerprint.
+
+**The serial.** The serial read after the connection selects the manifest, and a new serial at
+the same address starts separate transfer state. The serial and comments come from the HAL's
+sources (see the [pit server plan](PIT_SERVER_PLAN.md#85-robot-identity), §8.5). Missing or
+conflicting serial evidence refuses the contact rather than assigning logs by address.
+
+**Where a pulled file goes.** A file waits in `robots/<serial>/pulled/` until the ordinary reader
+reads it to the end. A verified file moves into a session's `robot/` directory and appears in the
+listing. A file whose growth is confirmed returns to staging for a while; its earlier tool paths
+still resolve once it is placed again. A reused name keeps the previous copy separately.
+
+**Matching a file to a session.** A match needs the same known serial, strong data correlation
+within 250 ms of zero, and exactly one candidate session. Manifest time ranges filter the
+candidates before any is loaded, with two hours of clock slack (sixteen for filename clocks
+without a zone); an unknown or unset clock cannot exclude a candidate. Names alone never match.
+A file with no logged serial is marked `data_alone` in the manifest. A file that matches nothing
+starts its own session. A disagreement between the logged and the device serial is reported,
+and the logged serial wins for the file.
+
+**Resume.** A resumed transfer checks the hash of exactly the held bytes. If exec is unavailable,
+the last 64 KiB is compared instead, which cannot prove the earlier prefix. The robot's files are
+never deleted or modified.
 
 #### Robot facts for the shop
 
@@ -564,78 +663,92 @@ wpilog-mcp robot-facts robot.local --user lvuser --port 22 --key /path/to/key --
 wpilog-mcp robot-facts --server pit --config /path/to/servers.yaml --out rio-facts.md
 ```
 
-The direct form defaults to `lvuser`, port `22`, and an empty password. There is no password
-command-line flag; for password authentication use `${NAME}` in the named server's
+**Options.** The direct form defaults to `lvuser`, port `22` and an empty password. There is no
+password flag: for password authentication, use `${NAME}` in the named server's
 `capture.pull.ssh.password`. `--server` takes its SSH settings as a block and cannot be combined
-with `--user`, `--port` or `--key`. Pulling need not be enabled and the daemon need not be running.
-The command uses one SSH connection, the puller's host-key rules, and the same store queue/lock
-for pins. Direct-host pins live in `~/.wpilog-mcp/robot-facts/ssh-hosts.json`; named servers use
-their capture store's pins. A busy store lock is an explained refusal, not permission to bypass it.
+with `--user`, `--port` or `--key`. Pulling need not be enabled, and the daemon need not be
+running.
 
-The report is dated in UTC. Without `--out` it creates `robot-facts-yyyyMMddTHHmmssZ.md` in the
-current directory; it never overwrites a report. Each fixed read-only command records its exit
-status, elapsed milliseconds, up to 32 KiB each of stdout and stderr, and any timeout/truncation.
-Ordinary commands have a ten-second deadline with a five-second SSH connect bound. Refused
-commands remain in the report and do not stop other probes. Connection/configuration/output
-failures exit nonzero; collecting a sparse image successfully still exits zero.
+The command uses one SSH connection, the puller's host-key rules, and the same store queue and
+lock for its pins. Direct-host pins live in `~/.wpilog-mcp/robot-facts/ssh-hosts.json`; a named
+server uses its capture store's pins. A busy store lock is an explained refusal, not permission
+to bypass it.
 
-Evidence includes the deployed program runtime's `--list-modules` via `/proc/<pid>/exe`, with
-separate conclusions for `jdk.management.agent`, `jdk.jfr` and `jdk.management.jfr`. A missing
-program/runtime or refused command is evidence, never an assumed module. It also covers
-`uname`, candidate NI metadata (`/etc/os-release`,
-`/etc/natinst/share/ni-rt.ini`, `/etc/natinst/share/ni-imaging-info.ini`), the six log/home/USB
-directory listings, `which` for journalctl/dmesg/df/tail/sha256sum, utility versions, current-boot
-and explicit-UUID journal queries, three kernel lines and their `[seconds]` shape, `df -Pk /`,
-the program selected by its JAR in `robotCommand`, its command line, environment readability
-(never environment contents), uptime beside epoch time, and the authentication method that
-actually succeeded. Both `/home/lvuser/FRC_UserProgram.log` and the NI log-directory candidate
-are checked; neither is assumed present. The conclusions mark facts **found**, **absent**, or
-**refused**, and name the load, radio and rotation exercises this snapshot cannot perform.
+**The report.** The report is dated in UTC. Without `--out` it is written as
+`robot-facts-yyyyMMddTHHmmssZ.md` in the current directory, and an existing report is never
+overwritten. Each fixed read-only command records its exit status, its elapsed milliseconds, up
+to 32 KiB each of stdout and stderr, and any timeout or truncation. An ordinary command has a
+ten-second deadline, and the SSH connect a five-second bound. A refused command stays in the
+report and does not stop the other probes. A connection, configuration or output failure exits
+nonzero; a sparse image collected successfully still exits zero.
 
-The largest `.wpilog` or `.revlog` in the configured pull directories supplies the hash-cost
-probe: `head -c N -- <quoted path> | sha256sum`, with N at most `104857600` bytes (100 MiB),
-using the puller's size-scaled deadline and keepalives. The report always gives the requested
-size beside the elapsed time. A growing/shrinking file can change how many bytes were available;
-this is the bounded command's cost, not a whole-file measurement. Nothing is modified on the
-robot. Known configured secrets/key paths and sensitive command-line option values are redacted
-from the report and errors; host-key fingerprints and the successful authentication method remain.
-Keep collected robot evidence outside this repository.
+**What it collects.**
 
-A local server reading another process's growing WPILOG now resumes its index on verified
-append anchors and a known unchanged file identity. A partial final record is retried on growth.
-Where the filesystem cannot supply identity, it loads afresh. Calls spanning a file change still
-return the explained retry; a successful disk-backed call's `inputs.file_size_bytes` identifies
-the size it read. The pit writer's own live index remains the faster, fixed-prefix path.
+- The deployed program runtime's `--list-modules`, run through `/proc/<pid>/exe`, with separate
+  conclusions for `jdk.management.agent`, `jdk.jfr` and `jdk.management.jfr`. A missing program
+  or runtime, or a refused command, is evidence, never an assumed module.
+- `uname`, and the candidate NI metadata: `/etc/os-release`, `/etc/natinst/share/ni-rt.ini` and
+  `/etc/natinst/share/ni-imaging-info.ini`.
+- The six log, home and USB directory listings.
+- `which` for journalctl, dmesg, df, tail and sha256sum, and the utilities' versions.
+- A current-boot journal query and one with an explicit boot UUID.
+- Three kernel lines and whether they carry `[seconds]` stamps.
+- `df -Pk /`.
+- The program selected by its JAR in `robotCommand`, its command line, and whether its
+  environment is readable (never the environment's contents).
+- Uptime beside the epoch time, and the authentication method that succeeded.
+- Both `/home/lvuser/FRC_UserProgram.log` and the NI log-directory candidate; neither is assumed
+  present.
+
+The conclusions mark each fact **found**, **absent** or **refused**, and name the load, radio and
+rotation exercises this snapshot cannot perform.
+
+**The hash-cost probe.** The largest `.wpilog` or `.revlog` in the configured pull directories is
+hashed with `head -c N -- <quoted path> | sha256sum`, with N at most `104857600` bytes (100 MiB),
+under the puller's size-scaled deadline and keepalives. The report gives the requested size
+beside the elapsed time. A file that grows or shrinks can change how many bytes were available,
+so this is the cost of the bounded command, not a whole-file measurement. Nothing on the robot
+is modified.
+
+**Secrets.** Configured secrets, key paths and sensitive command-line option values are redacted
+from the report and from errors; host-key fingerprints and the successful authentication method
+remain. Keep collected robot evidence outside this repository.
 
 #### NT4 gateway for dashboards
 
 Enable `capture.gateway: {port: 5810}` and point a dashboard or AdvantageScope's NT4 connection
-at the pit computer's address and that port, rather than at the robot. The gateway accepts NT4.1
-and NT4.0, mirrors exact topic names, types, properties and schema topics, and forwards the robot's
-timestamps. It serves everything the NT4 client receives; capture exclusion and thinning affect
-the file, not this stream. Subscriptions choose prefixes, periods, all changes or announcements only.
-Client writes are acknowledged but ignored, with one warning per connection; dashboard controls
-cannot change the robot. A slow subscriber is disconnected with an explained server-log reason.
+at the pit computer's address and that port, rather than at the robot.
+
+**What it serves.** The gateway accepts NT4.1 and NT4.0, mirrors exact topic names, types,
+properties and schema topics, and forwards the robot's timestamps. It serves everything the NT4
+client receives; capture exclusion and thinning affect the file, not this stream. Subscriptions
+choose prefixes, periods, all changes, or announcements only. Client writes are acknowledged but
+ignored, with one warning per connection, so a dashboard control cannot change the robot. A slow
+subscriber is disconnected, with an explained reason in the server log.
 
 The gateway follows `WPILOG_HTTP_BIND`, including its default `127.0.0.1`. Bind deliberately to
 the team network for other machines to connect. This separate port has **no authentication** and
 belongs on the **private network**; an HTTP proxy login does not protect it. HTTP's Origin and
 loopback-control checks remain unchanged.
 
-A busy gateway port does not stop capture or pulling. The listener enables address reuse and
-retries forever, after 1, 2, 4, 8, 16, then 30 seconds between attempts. The server logs changes
-between waiting and listening, rather than every attempt. `GET /health` and `list_sessions`
-publish the same `gateway` object: `state` (`disabled`, `waiting`, `listening`, or `stopped`),
-`port`, `cause` while waiting, and `since` in UTC. A recovered listener serves the topics already
-received while it was waiting.
+**A busy port.** A busy gateway port does not stop capture or pulling. The listener enables
+address reuse and retries forever, after 1, 2, 4, 8, 16, then 30 seconds between attempts. The
+server logs the changes between waiting and listening, not every attempt. A recovered listener
+serves the topics already received while it was waiting.
 
-A robot disconnect unannounces its topics. Reconnection announces them with new gateway ids.
-Time-sync replies use the measured robot clock; while that estimate is absent they use the pit
-server's local monotonic clock, as an ntcore server does. The first valid estimate after each
-robot connection resets downstream connections so clients synchronize again before reading the
-new session. Dashboards and AdvantageScope against a real robot remain the user's manual check.
+**What you see.** `GET /health` and `list_sessions` publish the same `gateway` object: `state`
+(`disabled`, `waiting`, `listening`, or `stopped`), `port`, `cause` while waiting, and `since` in
+UTC. `wpilog_gateway_clients` counts the downstream clients; `wpilog_nt_connected` is the robot
+connection.
 
-`wpilog_gateway_clients` counts downstream clients; `wpilog_nt_connected` is the robot connection.
+**Reconnection and time sync.** A robot disconnect unannounces its topics; a reconnection
+announces them with new gateway ids. Time-sync replies use the measured robot clock; while that
+estimate is absent they use the pit server's local monotonic clock, as an ntcore server does.
+The first valid estimate after each robot connection resets the downstream connections, so
+clients synchronize again before reading the new session.
+
+**What still needs the shop.** Dashboards and AdvantageScope against a real robot remain the
+user's manual check.
 
 ### Several Log Directories
 
@@ -725,7 +838,7 @@ On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bi
    with `${NAME}` in YAML. Set `JAVA_HOME` there on hosts whose JDK is available only through
    a login shell's PATH (including CI's hosted toolcache); systemd does not inherit that PATH.
    The unit sets `LANG=C.UTF-8 LC_ALL=C.UTF-8`; install that locale or
-   replace both with an available UTF-8 locale (see [Uploading logs](#uploading-logs)).
+   replace both with an available UTF-8 locale (see [Uploading from a laptop](#uploading-from-a-laptop)).
 
 3. Print and review the units, then copy each section to its named file under
    `/etc/systemd/system/`:
@@ -771,25 +884,43 @@ wpilog-mcp import --robot practice ~/riologs/downloads
 wpilog-mcp import --server pit /media/usb/logs
 ```
 
-For a known robot, import first nominates sessions by calendar range with the puller's clock
-slack. If a candidate has a capture or a data-matched WPILOG, joining it requires strong,
-unique correlation within 250 ms of zero; a failed or ambiguous proof starts a separate session
-with its reason. Without a nominated anchor, exact calendar overlap still groups the files and
-the manifest says `placement_method: by_time_overlap`, with no measured offset. Imported REV
-companions also need the near-zero proof; other boots remain unassigned. Previously ordinary
-WPILOG imports trusted overlap alone and REV companions could be placed with seconds of offset.
-Existing placements stay where they are, with their original evidence. A matched session keeps
-its anchor's calendar even when the imported file's own clock was unset.
+**How an import is placed.** For a known robot, import first nominates sessions by calendar
+range, with the puller's clock slack. If a candidate holds a capture or a data-matched WPILOG,
+joining it needs strong, unique correlation within 250 ms of zero; a failed or ambiguous proof
+starts a separate session with its reason. Without such an anchor, exact calendar overlap still
+groups the files, and the manifest says `placement_method: by_time_overlap` with no measured
+offset. An imported REV companion also needs the near-zero proof; other boots remain unassigned.
+A matched session keeps its anchor's calendar even when the imported file's own clock was unset.
 
-`import` loads the named configuration (default `default`) using the same discovery as `start`. The destination is the first configured directory that is already a store, or the first configured directory if none is yet. `--store` chooses another directory inside the configured log directories. The first import creates the store and its `inbox/`. Files and directories are accepted; content identifies WPILOG and REV logs, and unsupported files are refused with a reason. Copies are the default; `--move` moves the originals. A move of a file listed by another store is refused with that store’s path; copy it instead to preserve both catalogs. Unmanaged files in another store can still be moved. `--robot` states a robot name when the log supplies no serial number. Duplicates are reported with their stored path and left at their source. Unassigned payloads live under `unassigned/<hash prefix>/robot/`, separate from `import.json`; older entries remain readable and migrate on the next import. Control filenames are placed in a hash subdirectory, keeping their original name and bytes.
+Earlier versions trusted overlap alone for ordinary WPILOG imports and could place a REV
+companion with seconds of offset. Existing placements stay where they are, with their original
+evidence.
 
-When the named daemon is running, the command posts sources inside configured directories to its import endpoint and prints the job's progress and complete result. Outside sources, such as a USB stick, are copied (or moved with `--move`) into the store's inbox for the daemon to import. The command says where it placed them; their eventual results are in `inbox/imported.log`. With `--robot`, the command writes `batch.json` beside the batch files (`{"stated_robot":"practice"}`); the daemon uses that stated robot when the log has no logged identity. Names use letters, digits, dots, hyphens, and underscores, and must also be portable filenames (no Windows device names or trailing dot). A failed HTTP request is reported, without starting a second importer.
+**Configuration and destination.** `import` loads the named configuration (default `default`) with the same discovery as `start`. The destination is the first configured directory that is already a store, or else the first configured directory; `--store` chooses another directory inside the configured log directories. The first import creates the store and its `inbox/`.
 
-When no daemon is running, the command imports in its own process, staging outside files through the inbox as needed, with `--robot` applied to that import. It holds a `FileChannel` lock on `store.lock` for each whole import, as the daemon does. If another process holds it, the import fails promptly with a retry message. Do not delete `store.lock`: the persistent file lets every process lock the same object. A symbolic-link lock file, including a dangling link, is refused before an HTTP import or assignment is accepted; lock opens never follow links. Exit codes are 0 for completed imports or accepted inbox transfers, 1 for a failure or a refused direct file, and 2 for command-line errors. An accepted inbox transfer may later be refused; check its receipt.
+**What it accepts.** Files and directories are accepted. Content identifies WPILOG and REV logs, and an unsupported file is refused with a reason. `--robot` states a robot name for logs that supply no serial number. A duplicate is reported with its stored path and left at its source.
 
-You can also drop files directly into a store's `inbox/`. The owning server polls every three seconds, importing by move after size and modification time match across two looks at least three seconds apart. A file changed while waiting in the queue returns to waiting. Only `inbox/imported.log` is written in the inbox by the server: one JSON object per line, with the time, original path, status, destination, and reason. A refused file remains there and is not retried until it changes or the server restarts. A duplicate also stays, with its existing destination explained. `list_available_logs` reports these files under `inbox`, with size and waiting/importing/refused state, rather than under `unmanaged`. Symbolic links and special files are refused. Plain directories are never turned into stores just because the watcher sees them. Stores are discovered when watching starts, whenever a listing scans, and otherwise at most once a minute; the three-second polls visit known inboxes only.
+**Copy or move.** Copying is the default; `--move` moves the originals. Moving a file that another store lists is refused with that store’s path: copy it instead, so both catalogs stay intact. Unmanaged files in another store can still be moved.
 
-A directory dropped into the inbox can carry `batch.json` with a `stated_robot` beside its files. The batch, including the sidecar, must settle before import. A malformed sidecar refuses its files with receipts; correcting it permits a retry. Loose files have no stated robot. Dot-prefixed files and directories under the inbox are neither imported nor listed. The command copies into `inbox/.transfer-<id>/`, holding a separate transfer lock, and atomically renames it to `inbox/batch-<id>/` when complete. On the next poll the server removes an abandoned transfer and records that cleanup in `imported.log`; an active transfer remains untouched. Originals are removed for `--move` only after the complete batch is published.
+**Unassigned files.** Unassigned payloads live under `unassigned/<hash prefix>/robot/`, apart from `import.json`; older entries remain readable and migrate on the next import. A file with a control filename is placed in a hash subdirectory, keeping its original name and bytes.
+
+**With the daemon running.** The command posts sources inside the configured directories to the daemon's import endpoint and prints the job's progress and its complete result. Sources outside them, such as a USB stick, are copied (or moved, with `--move`) into the store's inbox for the daemon to import; the command says where it put them, and their results land in `inbox/imported.log`. A failed HTTP request is reported, and no second importer is started.
+
+With `--robot`, the command writes `batch.json` beside the batch files (`{"stated_robot":"practice"}`), and the daemon uses that stated robot when a log has no logged identity. A robot name uses letters, digits, dots, hyphens and underscores, and must be a portable filename (no Windows device names, no trailing dot).
+
+**Without a daemon.** The command imports in its own process, staging outside files through the inbox as needed, with `--robot` applied to that import. It holds a `FileChannel` lock on `store.lock` for the whole import, as the daemon does; if another process holds the lock, the import fails promptly with a retry message. Do not delete `store.lock`: the persistent file is what lets every process lock the same object. A lock file that is a symbolic link, even a dangling one, is refused before an HTTP import or assignment is accepted, and lock opens never follow links.
+
+**Exit codes.** 0 for a completed import or an accepted inbox transfer, 1 for a failure or a refused direct file, and 2 for a command-line error. An accepted inbox transfer may still be refused later; check its receipt.
+
+**The inbox.** You can also drop files into a store's `inbox/`. The owning server polls every three seconds and imports a file by move once its size and modification time agree across two looks at least three seconds apart; a file that changes while it waits returns to waiting. Symbolic links and special files are refused.
+
+The server writes only `inbox/imported.log` in the inbox: one JSON object per line with the time, original path, status, destination and reason. A refused file stays there and is not retried until it changes or the server restarts. A duplicate stays too, with its existing destination explained. `list_available_logs` reports these files under `inbox`, with their size and a waiting, importing or refused state, rather than under `unmanaged`.
+
+A plain directory is never turned into a store because the watcher saw it. Stores are discovered when watching starts, whenever a listing scans, and otherwise at most once a minute; the three-second polls visit known inboxes only.
+
+**Batches.** A directory dropped into the inbox can carry `batch.json` with a `stated_robot` beside its files. The whole batch, sidecar included, must settle before import. A malformed sidecar refuses its files with receipts; correcting it permits a retry. Loose files have no stated robot. Dot-prefixed files and directories under the inbox are neither imported nor listed.
+
+The command copies into `inbox/.transfer-<id>/` under a separate transfer lock and renames the directory atomically to `inbox/batch-<id>/` when complete. On its next poll the server removes an abandoned transfer and records the cleanup in `imported.log`; an active transfer is left untouched. With `--move`, the originals are removed only after the complete batch is published.
 
 ### Command-Line Flags
 
@@ -920,7 +1051,7 @@ To stop the server:
 ```bash
 wpilog-mcp stop http
 ```
-It finishes the calls in progress, then exits, and `stop` returns once it has. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read, so no one else on the machine can stop it, and nothing on the network can; a server that does not answer the request within the start timeout is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
+It finishes the calls in progress, then exits, and `stop` returns once it has. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine, and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read: no one else on the machine can stop it, and nothing on the network can. A server that does not answer the request within the start timeout is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
 
 ### One Server for Every Client
 
@@ -978,16 +1109,28 @@ An `http` server also serves every sample of an entry in one request, for a scri
 GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_time=<s>][&max_points=<n>][&format=arrow|csv]
 ```
 
-`path` is the log, as `list_available_logs` lists it; `names` is one or more entries, an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it), or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`), comma separated. A REV signal streams on the wpilog's clock, as `get_revlog_data` reads it, and its entry metadata carries `rev` with the device, the signal, the bus, `sync_method`, `timestamps_aligned`, `offset_seconds`, and `sync_confidence`, so a reader knows the offset's basis; a REV log that could not be synchronized is refused with the reason, and one still synchronizing with a `503` and `Retry-After`. `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets, by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
+`path` is the log, as `list_available_logs` lists it. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
 
-- `format=arrow` (the default) is the Apache Arrow IPC streaming format, `application/vnd.apache.arrow.stream`: a `timestamp` column in the log's microseconds and a `value` column typed by the entry (a float, an integer, a boolean, text, a struct with the schema's fields, a list for an array), or, bucketed, `timestamp`, `count`, `min`, `max`, `mean` (null where no sample in the bucket is finite), `first`, and `last`. One stream has one schema, so the entries in one request must share a value type; bucketed, any numeric entries go together. Enum fields carry `value` and `label`; a number absent from the schema has a null label (CSV keeps the number at the field name and an empty `.label` cell). Each record batch is tagged with its entry in its message metadata, and the schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, original `total_records`, and, bucketed, its bucket length. An entry with decoding failures also carries `decode_problem` (`entry`, `failed_records`, `total_records`, and the first failure’s `reason`) and the same `warning` text tools return; CSV carries these fields in its `# entries:` comment. `pyarrow.ipc.open_stream` or `polars.read_ipc_stream` reads the response bytes; `read_next_batch_with_custom_metadata()` gives each batch's entry.
+A REV signal streams on the wpilog's clock, as `get_revlog_data` reads it. Its entry metadata carries `rev` with the device, the signal, the bus, `sync_method`, `timestamps_aligned`, `offset_seconds`, and `sync_confidence`, so a reader knows the offset's basis. A REV log that could not be synchronized is refused with the reason; one still synchronizing answers `503` with `Retry-After`.
+
+- `format=arrow` (the default) is the Apache Arrow IPC streaming format, `application/vnd.apache.arrow.stream`.
+  - Columns: a `timestamp` column in the log's microseconds and a `value` column typed by the entry (a float, an integer, a boolean, text, a struct with the schema's fields, a list for an array). Bucketed: `timestamp`, `count`, `min`, `max`, `mean` (null where no sample in the bucket is finite), `first`, and `last`.
+  - One stream has one schema, so the entries in one request must share a value type; bucketed, any numeric entries go together.
+  - Enum fields carry `value` and `label`; a number absent from the schema has a null label (CSV keeps the number at the field name and an empty `.label` cell).
+  - Each record batch is tagged with its entry in its message metadata. The schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, its original `total_records`, and, bucketed, its bucket length.
+  - An entry with decoding failures also carries `decode_problem` (`entry`, `failed_records`, `total_records`, and the first failure’s `reason`) and the same `warning` text tools return; CSV carries these fields in its `# entries:` comment.
+  - `pyarrow.ipc.open_stream` or `polars.read_ipc_stream` reads the response bytes; `read_next_batch_with_custom_metadata()` gives each batch's entry.
 - `format=csv` is one table per entry in the form `export_csv` writes (`timestamp_sec`, then the value's flattened columns, or the bucket columns), after `#` comment lines with the server version, `inputs`, and the entries' metadata, and a `# entry: <name>` line before each table.
 
 ```bash
 curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16-29-56_vache_q10.wpilog&names=/SystemStats/BatteryVoltage&start_time=20&end_time=40&format=csv'
 ```
 
-The endpoint reads only files inside configured or currently leased log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`, never cut. A missing entry is an error naming it, with the tools that list entries and field paths. A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`. `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
+**Access and limits.** The endpoint reads only files inside configured or currently leased log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MiB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`; it is never cut short. A missing entry is an error naming it, with the tools that list entries and field paths.
+
+**Changing files and caching.** A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`.
+
+`get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
 
 ### The Store Door
 
@@ -1003,16 +1146,20 @@ file requests read their owning manifest directly, without walking the catalog p
 | `GET /store/files/<store path>` | File bytes; a single `Range: bytes=start-end`, open-ended range, or suffix range returns 206 |
 | `GET /store/files/<store path>/prefix-hash?bytes=N` | SHA-256 of exactly the first N bytes: `sha256`, `bytes`, and current `size_bytes` |
 
-Append `?store=<id>` (or `&store=<id>`) to select a store when there are several. Session filters
-are `since` (an ISO UTC instant, including sessions whose end is at or after it), `robot` (id or
-serial), and `event` (exact event text). Filters omit unassigned files. A growing capture is
-served at its current length, including by the prefix-hash endpoint; the session response refreshes
-`open_capture.size_bytes` from the file. An out-of-bounds range or prefix returns 416. Control
-manifests are JSON responses, never arbitrary file downloads; strays, inbox files, traversal and
-paths outside catalog membership are refused. A manifested imported log keeps its original name,
-even a name such as `robot.json`, within its separate payload directory. A payload named
-`prefix-hash` is downloaded normally; the required `bytes` query field selects a prefix-hash
-operation on the preceding file path.
+**Selecting and filtering.** Append `?store=<id>` (or `&store=<id>`) to select a store when there
+are several. Session filters are `since` (an ISO UTC instant; a session whose end is at or after
+it is included), `robot` (id or serial), and `event` (exact event text). Filters omit unassigned
+files.
+
+**Growing files and ranges.** A growing capture is served at its current length, by the
+prefix-hash endpoint too, and the session response refreshes `open_capture.size_bytes` from the
+file. An out-of-bounds range or prefix returns 416.
+
+**What is refused.** Control manifests are JSON responses, never arbitrary file downloads.
+Strays, inbox files, traversal, and paths outside catalog membership are refused. A manifested
+imported log keeps its original name, even a name such as `robot.json`, within its separate
+payload directory. A payload named `prefix-hash` is downloaded normally; only the required
+`bytes` query field selects a prefix-hash operation on the preceding file path.
 
 The peer server must bind to an interface reachable by the other laptop (`WPILOG_HTTP_BIND=0.0.0.0`
 in the peer server's environment); leases and key registration remain refused on that bind.
@@ -1028,14 +1175,16 @@ one. Use `--store <dir>` to choose another destination inside the configured dir
 `?store=<id>` on the peer URL when it publishes several stores. The URL is remembered in
 `store.json`; `wpilog-mcp sync` with no URL visits every remembered peer in turn.
 
-A running daemon owns the job. Without one, the command runs under the same `store.lock` as
-import; a daemon refusal or failed request never starts a second writer. Transfers reuse the
-puller's content proofs, 64 KiB blocks and durable progress. HTTP sync defaults to unlimited
-pacing; `--rate-bytes <bytes/sec>` sets a cap (`0` means unlimited). An interrupted file resumes
-only after the peer proves the held prefix. Each completed copy must match the advertised hash
-and load through the ordinary import inspection. An already imported power-cut tail retains
-its truncation note. An open capture waits for its final hash; it is reported as a refusal for
-this sync, while the read-only door continues to serve its current bytes.
+**Who runs it.** A running daemon owns the job. Without one, the command runs under the same
+`store.lock` as import; a daemon refusal or a failed request never starts a second writer.
+
+**Transfers.** Transfers reuse the puller's content proofs, 64 KiB blocks and durable progress.
+HTTP sync defaults to unlimited pacing; `--rate-bytes <bytes/sec>` sets a cap (`0` means
+unlimited). An interrupted file resumes only after the peer proves the held prefix. Each
+completed copy must match the advertised hash and load through the ordinary import inspection.
+An already imported power-cut tail keeps its truncation note. An open capture waits for its
+final hash: it is reported as a refusal for this sync, while the read-only door continues to
+serve its current bytes.
 
 Overlapping sessions of the same serial join, using the lexicographically smallest session id
 so both transfer orders converge. Existing paths remain usable when closed session fragments
@@ -1055,15 +1204,17 @@ sync, and 2 is a command-line error. Partial bytes remain journaled; rerun the c
 resume. Before contacting any peer, the next sync completes pending file/manifest placements
 left by a process exit.
 
-The daemon API is `POST /store/sync` with optional `url`, `store` (local directory), and
-`rate_bytes` fields, for example `{"url":"http://other-laptop:2363","rate_bytes":0}`.
-An absent URL means remembered peers; an absent store requires one configured destination.
-The body is limited to 64 KiB. A `202` response gives `job_id` and `url` (also `Location`);
+**The daemon API.** `POST /store/sync` takes optional `url`, `store` (local directory) and
+`rate_bytes` fields, for example `{"url":"http://other-laptop:2363","rate_bytes":0}`. An absent
+URL means the remembered peers; an absent store requires one configured destination. The body
+is limited to 64 KiB. A `202` response gives `job_id` and `url` (also in `Location`);
 `GET /store/sync/<job>` returns `state` (`queued`, `running`, `done`, `failed`), `progress`,
-`result` and `error`. Both routes require a loopback connection and pass the Origin check,
-including on a server bound to the network. A second sync for the same store is refused with
-409; different stores have separate queues. Active jobs keep the daemon alive. The most recent
-100 jobs are retained in memory, with completed jobs evicted first; they disappear at restart.
+`result` and `error`.
+
+Both routes require a loopback connection and pass the Origin check, including on a server
+bound to the network. A second sync for the same store is refused with 409; different stores
+have separate queues. Active jobs keep the daemon alive. The most recent 100 jobs are retained
+in memory, with completed jobs evicted first; they disappear at restart.
 
 The extension's local picker uses `GET /store/sync` to list writable stores and their remembered
 peer URLs, with unreadable headers named separately. It includes stores under local session
@@ -1172,18 +1323,22 @@ X-WPILOG-SHA256: <lowercase source SHA-256>
 <one file's bytes>
 ```
 
-Get the store id from `GET /store`; it may be omitted when exactly one configured store
-exists. Optional `stated_robot` names a robot where the file has no logged serial. Only
-configured writable stores accept uploads; neither a mirror nor a leased directory becomes
-a network upload target. The filename is one portable path component. Files above the
-1 TiB (1,099,511,627,776-byte) file limit are refused before reception. Receipt uses bounded buffers into a hidden,
-locked inbox transfer, outside the store queue; the inbox watcher cannot adopt half a file.
-The declared size and hash must agree before the existing importer inspects or places it.
-A disconnect removes the temporary bytes, and crash leftovers follow inbox recovery.
-The `202` response and job polling are the same as a JSON import. Provenance records
-`upload:<filename>` and `moved: false`; the sender's private laptop path is never sent.
-Duplicates are reported as present. This adds byte transport; the command, inbox, content
-inspection, grouping and duplicate recognition were already the explorer's import pipeline.
+**Request rules.** Get the store id from `GET /store`; it may be omitted when exactly one
+configured store exists. The optional `stated_robot` query field names a robot where the file
+has no logged serial. Only configured writable stores accept uploads: neither a mirror nor a
+leased directory becomes a network upload target. The filename is one portable path component.
+A file above the 1 TiB (1,099,511,627,776-byte) file limit is refused before reception.
+
+**Receipt.** The bytes are received through bounded buffers into a hidden, locked inbox
+transfer, outside the store queue, so the inbox watcher cannot adopt half a file. The declared
+size and hash must agree before the existing importer inspects or places the file. A disconnect
+removes the temporary bytes, and crash leftovers follow inbox recovery.
+
+**Result.** The `202` response and job polling are the same as for a JSON import. Provenance
+records `upload:<filename>` and `moved: false`; the sender's private laptop path is never sent.
+A duplicate is reported as present. The route adds only byte transport: the command, inbox,
+content inspection, grouping and duplicate recognition are the explorer's existing import
+pipeline.
 
 Run the receiving server with a UTF-8 locale to accept non-ASCII upload names (see the
 service guidance above; the Docker image already sets it). An unrepresentable name is
@@ -1207,13 +1362,17 @@ location / {
 
 ### Live session tools and a proxy login
 
-A server with `capture` enabled adds `list_sessions`, `get_latest_values`, and
-`wait_for_change` to its Live tool category. The first lists sessions and recorded value costs
-(top ten topics, records and bytes, rates over the last minute); the others query and wait on
-NT4 publications in memory. `inputs.session` names the capture for ordinary log tools.
-Counts update when the 250 ms asynchronous flush completes; a slow disk delays that snapshot, not NT4 keepalives. Robot-clock timestamps and ages describe publication,
-not a measurement requested by the caller. [TOOLS.md](TOOLS.md#live-tools) defines the fields,
-missing-topic results, and the 30-second maximum wait.
+Every server registers the three Live tools, `list_sessions`, `get_latest_values` and
+`wait_for_change`. They answer for the present only on a server with `capture`; elsewhere they
+return `not_applicable`, and `list_sessions` still reports `managed` and the gateway state.
+The first lists sessions and recorded value costs (top ten topics, records and bytes, rates over
+the last minute); the others query and wait on NT4 publications in memory. `inputs.session`
+names the capture for ordinary log tools.
+
+Counts update when the 250 ms asynchronous flush completes; a slow disk delays that snapshot,
+not NT4 keepalives. Robot-clock timestamps and ages describe publication, not a measurement
+requested by the caller. [TOOLS.md](TOOLS.md#live-tools) defines the fields, missing-topic
+results, and the 30-second maximum wait.
 
 For the reverse proxy's Basic login, the extension's **Set Pit Proxy Credential** command
 keeps the credential in SecretStorage, scoped to the pit URL's HTTP origin. It sends it to
@@ -1222,25 +1381,30 @@ key. The body is `{url, authorization}`; null authorization removes that session
 Session deletion or expiry also removes it. Nothing persists it in the store, YAML, a URL
 or a process command. Use HTTPS when carrying a proxy password across the network.
 
-The local mirror and peer HTTP reader use the credential only for that origin and never
-follow a redirect. Claude's URL bridge uses local `/pit-mcp?url=<encoded-pit-MCP-URL>` so
-its registration contains no password. Forwarding requires an active lease for exactly that
-MCP endpoint; it and registration are refused on a listener bound off loopback and retain
-the Origin check. Re-register Claude after setting or clearing the credential, or changing
-the local server's port. With VS Code closed, no window leases the credential: the configured
-local mirror remains available for offline analysis, but password-protected origin access
-requires the credential's window to be open. This is a client of the team's proxy, not new
-authentication in the pit server.
+The local mirror and the peer HTTP reader use the credential only for that origin and never
+follow a redirect. Claude's URL bridge uses the local `/pit-mcp?url=<encoded-pit-MCP-URL>`
+route, so its registration contains no password. Forwarding requires an active lease for
+exactly that MCP endpoint. Forwarding and registration are refused on a listener bound off
+loopback, and both keep the Origin check. Re-register Claude after setting or clearing the
+credential, or after changing the local server's port.
 
-For "right now", use `list_sessions` then `get_latest_values` (robot timestamps and ages), or
-`wait_for_change` for the next publication. For "the last 10 seconds", pass `last_seconds: 10`
-to any tool with a time scope. It ends at the open capture's current estimated robot time,
-fixed when the call acquires its view, or at the last record of a closed log. Before time sync,
-it uses the captured prefix's end; it never invents an offset. Do not combine it with
-`start_time` or `end_time`; named scopes and explicit windows still intersect. `inputs.window`
-shows the absolute bounds (`inputs.windows` by path for `compare_matches`). The listing's `open`
-flag identifies the file being written; `inputs.session_time_range` describes the records the
-call could see, which can end before the robot's current time.
+With VS Code closed, no window leases the credential: the configured local mirror remains
+available for offline analysis, but access to a password-protected origin needs the
+credential's window to be open. This is a client of the team's proxy, not new authentication
+in the pit server.
+
+**Time scopes on a live capture.** For "right now", use `list_sessions`, then
+`get_latest_values` (robot timestamps and ages), or `wait_for_change` for the next publication.
+For "the last 10 seconds", pass `last_seconds: 10` to any tool with a time scope. That window
+ends at the open capture's current estimated robot time, fixed when the call acquires its view,
+or at the last record of a closed log. Before time sync it ends at the captured prefix's end; it
+never invents an offset. Do not combine it with `start_time` or `end_time`; named scopes and
+explicit windows still intersect.
+
+**What the result shows.** `inputs.window` shows the absolute bounds (`inputs.windows` by path
+for `compare_matches`). The listing's `open` flag identifies the file being written;
+`inputs.session_time_range` describes the records the call could see, which can end before the
+robot's current time.
 
 MCP `resources/list` advertises `pit://session/current`. Read it with `resources/read` for
 `session` (id, file, started_at, connected, identity), `gateway` and `providers`. It reads
@@ -1396,7 +1560,11 @@ git pull
 ./gradlew install
 ```
 
-Installation adds its versioned JAR and launcher, and leaves the configuration alone. It repoints `wpilog-mcp` only when the installing version is newer, or with `--force`. Version numbers compare numerically; an unsuffixed release follows a suffixed version with the same numbers, and suffixes compare their numeric and text components (`dev10` follows `dev9`). An unreadable or unmarked current launcher counts as missing. A second install with identical files leaves them alone and reports `repointed: false`; changed bytes of the same version are refreshed atomically, as needed for development builds. `./gradlew install` always passes `--force`. An `install.lock` file serializes simultaneous installers; a busy install is reported. Ordinary installation never stops or restarts a running daemon. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until the next `start` or `connect` of its name, which stops it and starts the new version, or until you `stop` it.
+Installation adds its versioned JAR and launcher, and leaves the configuration alone. It repoints `wpilog-mcp` only when the installing version is newer, or with `--force`. Version numbers compare numerically; an unsuffixed release follows a suffixed version with the same numbers, and suffixes compare their numeric and text components (`dev10` follows `dev9`). An unreadable or unmarked current launcher counts as missing.
+
+A second install with identical files leaves them alone and reports `repointed: false`; changed bytes of the same version are refreshed atomically, as development builds need. `./gradlew install` always passes `--force`. An `install.lock` file serializes simultaneous installers, and a busy install is reported.
+
+Ordinary installation never stops or restarts a running daemon. Older versions stay in `jars/` and `bin/` until you delete them. MCP clients run the new version the next time they start the server. A running HTTP server keeps the old version until the next `start` or `connect` of its name, which stops it and starts the new version, or until you `stop` it.
 
 ### Replacing an old install
 
