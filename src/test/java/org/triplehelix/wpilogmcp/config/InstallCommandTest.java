@@ -23,6 +23,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.Version;
 
 /** Scratch installs pin the ownership of files and the ordering that prevents a downgrade. */
 class InstallCommandTest {
@@ -294,6 +295,16 @@ class InstallCommandTest {
     assertEquals(json.toString(), kept.config_path());
     assertEquals("{\"team\": 5678}", Files.readString(json));
     assertFalse(Files.exists(legacy.resolve("servers.yaml")));
+  }
+
+  @Test void newConfigurationLinksToTheInstalledVersionsGuide() throws Exception {
+    var result = InstallCommand.install(source(), Version.VERSION,
+        options(temp.resolve("install"), false), WINDOWS, "");
+    var contents = Files.readString(Path.of(result.config_path()));
+    assertEquals("# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/v"
+        + Version.VERSION + "/doc/STANDALONE.md#configuration",
+        contents.lines().filter(line -> line.startsWith("# Documentation:")).findFirst().orElseThrow(),
+        "New configurations must link to the installed version's guide, not main");
   }
 
   @Test void unreadableMarkerIsOlderAndParsingRejectsBadArguments() throws Exception {

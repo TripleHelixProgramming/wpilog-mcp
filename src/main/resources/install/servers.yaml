@@ -1,5 +1,5 @@
 # wpilog-mcp server configuration
-# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
+# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/v@VERSION@/doc/STANDALONE.md#configuration
 
 # ---- Defaults ----
 # Top-level settings are inherited by all server configurations below.

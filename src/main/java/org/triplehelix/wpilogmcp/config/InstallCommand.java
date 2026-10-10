@@ -273,11 +273,7 @@ public final class InstallCommand {
     if (!Files.exists(config, LinkOption.NOFOLLOW_LINKS) && Files.exists(io.check(layout.legacyConfig()))) {
       config = io.check(layout.legacyConfig());
     } else if (!Files.exists(config, LinkOption.NOFOLLOW_LINKS)) {
-      var logdir = options.logdirs().isEmpty() ? "logdir: ~/riologs"
-          : "logdir: " + JSON.toJson(options.logdirs());
-      var contents = resource("servers.yaml")
-          .replace("@TEAM@", options.team() == null ? "# team: 1234" : "team: " + options.team())
-          .replace("@LOGDIR@", logdir);
+      var contents = initialConfiguration(options);
       try {
         Files.writeString(io.check(config), contents,
             StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
@@ -288,6 +284,21 @@ public final class InstallCommand {
     }
     return new Summary(layout.root().toString(), version, before, repointed ? version : before, repointed,
         configCreated, config.toString(), current.toString(), onPath(bin, searchPath, windows) ? null : bin.toString());
+  }
+
+  /**
+   * Seed only a new configuration, with the guide pinned to this JAR's version. A checkout
+   * carries the next version before its tag exists, so that link returns 404 until the release
+   * or pre-release is published. The version cannot distinguish a checkout from a release;
+   * substitution uses no tag lookup or main fallback.
+   */
+  private static String initialConfiguration(Options options) throws IOException {
+    var logdir = options.logdirs().isEmpty() ? "logdir: ~/riologs"
+        : "logdir: " + JSON.toJson(options.logdirs());
+    return resource("servers.yaml")
+        .replace("@VERSION@", Version.VERSION)
+        .replace("@TEAM@", options.team() == null ? "# team: 1234" : "team: " + options.team())
+        .replace("@LOGDIR@", logdir);
   }
 
   /** Replace whole files, never truncate a JAR a daemon may still have open. */

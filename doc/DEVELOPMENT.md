@@ -1088,9 +1088,12 @@ Before tagging, run the Java real-log replay commands above with `-PconformanceS
 
 Before tagging a full release, remove the temporary version and checkout qualifications in
 `README.md` (Installation), `doc/OPERATIONS.md` (opening note and 6.1 Install), and
-`doc/STANDALONE.md` (opening note and Install). Search those three files for "0.10.0-dev1",
-"Until this version" and "For these changes before release". They apply only while
-`main` is older than this branch; keep the general checkout instructions and JDK advice.
+`doc/STANDALONE.md` (opening note and Install). Search those three files case-insensitively for
+"0.10.0-dev1", "Until this version" and "For these changes before release". The qualifications
+apply only while `main` is older than this branch; keep the general checkout instructions and
+JDK advice. The `--tag v0.10.0-dev1 --with-extension` examples in `README.md` (Installation) and
+`doc/STANDALONE.md` (Install) also match the version search and stay: they show how to install a
+published pre-release, not a temporary qualification.
 
 1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; a test fails until the extension's files match.
 2. Regenerate [TOOL_RESPONSES.md](TOOL_RESPONSES.md), whose first lines carry the version (step 7 of [Changing or Adding a Tool](#changing-or-adding-a-tool)).

@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- New installs pin the guide link in `servers.yaml` to the installed version's tag; previously it pointed at `main`, which could describe a different version. Existing user configurations are left unchanged, including during refresh.
 - Extension upgrade messages now link to the guide at the extension's release tag, including pre-releases, and the gateway guide link is pinned by release packaging; previously both could describe `main` instead of the installed version. Unversioned local builds keep the `main` fallback.
 - Named starts and connections refuse a port owned by another configuration, naming its owner and the ways out; previously `start pit` could silently adopt `http` without capture. Health now reports the configuration name, while older nameless servers retain adoption with a versioned warning.
 - The shell installer selects the version, JAR and extension from their own JSON fields even when a release response is one line; previously greedy URL extraction could install the source ZIP as a JAR or select a release title as the version.
