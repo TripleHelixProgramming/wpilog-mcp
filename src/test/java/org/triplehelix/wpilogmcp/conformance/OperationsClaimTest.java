@@ -50,7 +50,7 @@ class OperationsClaimTest {
   private static final Set<String> NON_TOOLS = Set.of(("""
       brownout_threshold_basis brownout_voltage_entry bus_name bytes_per_sec camera_settings
       capture cause channel_analysis chooser_entry complete confidence_level conflicts connect
-      connected current_entry data_quality df disabled diskcachesize dmesg end_reason end_time
+      connected current_entry data_quality development df disabled diskcachesize dmesg end_reason end_time
       ended_at entries entry error event event_code field folder following gateway growing
       has_more high hint histogram host http imports inputs insufficient journalctl jvm jvm_crash
       kernel kind last_seconds last_sync limit listening log_directories looked_for low lvuser

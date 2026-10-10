@@ -8,7 +8,7 @@ The server is designed for and tested with Claude. Other MCP clients work too, b
 
 The shared-server and pit features described on this branch require 0.10.0-dev1 or newer.
 The latest full release can be older. Until this version and its installer are published,
-install the `pit-server` checkout below and check `wpilog-mcp -version` before continuing.
+install the `development` checkout below and check `wpilog-mcp -version` before continuing.
 
 ## Requirements
 
@@ -40,7 +40,7 @@ cd wpilog-mcp
 ./gradlew install
 ```
 
-For these changes before release, clone with `--branch pit-server`, or use your existing
+For these changes before release, clone with `--branch development`, or use your existing
 checkout of that branch. On a Mac using WPILib's JDK, first run
 `export JAVA_HOME="$HOME/wpilib/2026/jdk"`; Gradle does not use the launcher's JDK search.
 

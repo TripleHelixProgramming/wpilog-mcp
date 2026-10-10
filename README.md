@@ -68,7 +68,7 @@ The [operations and usage manual](doc/OPERATIONS.md) walks through the setup che
 
 The shared-server and pit features described on this branch require 0.10.0-dev1 or newer.
 The latest full release may be older; until this version and its installer are published,
-use the [checkout install](doc/STANDALONE.md#install) from `pit-server` and check
+use the [checkout install](doc/STANDALONE.md#install) from `development` and check
 `wpilog-mcp -version` before following the manual.
 
 Install **[WPILog Analyzer](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer)** in VS Code, accept its server-install offer, and put your logs in `~/riologs` or set its Log Directory setting. The extension bundles the server JAR, finds Java, and starts one shared server. Copilot and other VS Code agents get its HTTP definition; Claude Code gets a user-scope bridge registration. [The extension guide](vscode-extension/README.md) covers setup and the explorer. A particular build, such as a test build of the next version, installs from the `.vsix` file on the [releases page](https://github.com/TripleHelixProgramming/wpilog-mcp/releases); the extension's README says how.

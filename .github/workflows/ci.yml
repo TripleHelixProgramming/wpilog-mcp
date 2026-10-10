@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, pit-server]
+    branches: [main, development]
   pull_request:
     branches: [main]
 
@@ -153,7 +153,7 @@ jobs:
 
   shop-harness:
     needs: changes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server' && needs.changes.outputs.harness == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development' && needs.changes.outputs.harness == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -297,7 +297,7 @@ jobs:
           retention-days: 14
 
   robot-dependency-submission:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/pit-server'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
     permissions:
       contents: write

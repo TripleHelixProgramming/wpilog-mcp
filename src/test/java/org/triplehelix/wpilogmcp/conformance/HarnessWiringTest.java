@@ -28,7 +28,10 @@ class HarnessWiringTest {
     Map<?, ?> ci = new org.yaml.snakeyaml.Yaml().load(Files.readString(Path.of(".github", "workflows", "ci.yml")));
     var job = (Map<?, ?>) ((Map<?, ?>) ci.get("jobs")).get("shop-harness");
     assertNotNull(job); assertEquals("ubuntu-latest", job.get("runs-on"));
-    assertEquals("github.event_name == 'push' && github.ref == 'refs/heads/pit-server' && needs.changes.outputs.harness == 'true'", job.get("if"));
+    assertEquals("github.event_name == 'push' && github.ref == 'refs/heads/development' && needs.changes.outputs.harness == 'true'", job.get("if"));
+    // SnakeYAML's YAML 1.1 resolver reads GitHub's unquoted "on" as Boolean.TRUE.
+    var triggers = (Map<?, ?>) ci.get(Boolean.TRUE);
+    assertEquals(List.of("main", "development"), ((Map<?, ?>) triggers.get("push")).get("branches"));
     var steps = (List<?>) job.get("steps");
     var commands = steps.stream().map(s -> ((Map<?, ?>) s).get("run")).toList();
     assertFalse(commands.contains("./gradlew test"), "The ordinary build already ran every ordinary check");
@@ -62,10 +65,11 @@ class HarnessWiringTest {
         "The harness job retains per-log replay counts");
     assertEquals("always()", evidence.get("if"));
     var cache = steps.stream().map(s -> (Map<?, ?>) s).filter(s -> "gradle/actions/setup-gradle@v4".equals(s.get("uses"))).findFirst().orElseThrow();
-    assertEquals(false, ((Map<?, ?>) cache.get("with")).get("cache-read-only"), "pit-server must save its WPILib downloads");
+    assertEquals(false, ((Map<?, ?>) cache.get("with")).get("cache-read-only"), "development must save its WPILib downloads");
     assertTrue(((Map<?, ?>) cache.get("with")).get("gradle-home-cache-includes").toString().contains("permwrapper/dists"));
     var submission = (Map<?, ?>) ((Map<?, ?>) ci.get("jobs")).get("robot-dependency-submission");
     assertNotNull(submission, "GradleRIO's separate build must reach the dependency graph");
+    assertEquals("github.event_name == 'push' && github.ref == 'refs/heads/development'", submission.get("if"));
     assertTrue(((List<?>) submission.get("steps")).stream().map(s -> (Map<?, ?>) s)
         .anyMatch(s -> s.get("with") instanceof Map<?, ?> with && "-p harness/robot".equals(with.get("additional-arguments"))));
     String runner = Files.readString(Path.of("harness", "run"));

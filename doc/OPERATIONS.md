@@ -338,7 +338,7 @@ The layout is `~/.wpilog-mcp/` with `bin/` (the `wpilog-mcp` launcher), `jars/` 
 clients use the full path. Java 17 or newer is required; the WPILib JDK is found first.
 Details, a pre-release install and an install from a checkout: [Install](STANDALONE.md#install).
 
-Until this version and its installer are published, use the `pit-server` checkout. In its
+Until this version and its installer are published, use the `development` checkout. In its
 directory, run:
 
 ```bash

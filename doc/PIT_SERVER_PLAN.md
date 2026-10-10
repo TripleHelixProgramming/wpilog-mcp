@@ -2,7 +2,7 @@
 
 A proposal for the next large piece of wpilog-mcp: a program that runs in the shop and in the pit, listens to the robot all the time, keeps everything it hears, and answers questions about it, live and later. The first half is for anyone on the team; the second half specifies the work for the developers who will build it.
 
-**Status, October 2026.** The pit server described here is built and runs on the `pit-server` branch. Part I is the idea as it was proposed, kept as written. Part II is the specification, and under each milestone its implementation record says what was built, what was found, and what changed. Part III is the decision record. To run the pit server, see the [operations and usage manual](OPERATIONS.md); for every setting and route, the [standalone reference](STANDALONE.md).
+**Status, October 2026.** The pit server described here is built and runs on the `development` branch. Part I is the idea as it was proposed, kept as written. Part II is the specification, and under each milestone its implementation record says what was built, what was found, and what changed. Part III is the decision record. To run the pit server, see the [operations and usage manual](OPERATIONS.md); for every setting and route, the [standalone reference](STANDALONE.md).
 
 ## Part I: The Idea
 
@@ -649,7 +649,7 @@ Each leaves the project working and tested on its own.
 - **Harness** (step 1): `harness/run` builds a separate WPILib 2026 GradleRIO TimedRobot and runs an opt-in JUnit suite against the packaged pit server's HTTP MCP endpoint.
   - A timeline drives headless DriverStationSim states, delayed match data and program reboots; independent expectations check every scripted topic, timestamp and value, schemas, device identity, session placement, verified near-zero-offset pulls, DataLogManager renames and the disabled gate.
   - A test-only Apache MINA SSHD fake roboRIO provides real Ed25519 SSH/SFTP and only the puller's exact prefix-hash command. Ordinary Linux/Windows tests use it for transport, keepalive, deadline and host-key checks too.
-  - The full runner supports Linux/macOS and has a separate Linux CI job on `pit-server`; no robot data is used.
+  - The full runner supports Linux/macOS and has a separate Linux CI job on `development`; no robot data is used.
   - Step 2 now adds the synthetic NI-like OpenSSH/JRE container under `harness/rio/`; the pinned real PhotonVision backend now completes step 2 (Part III, round 23). See DEVELOPMENT.md, "The shop harness", for the remaining hardware checklist.
 - **Metrics**: independent exposition grammar parser and exact fixture-function checks; scalar/boolean/array/recorded-struct expansion, filtering and missing-schema omission; recorder counts against live tools, MBean unit conversion, and scrapes while the NT4 loop and store queue are blocked. The packaged daemon pins configuration wiring; every generated replay also compares metrics against the differential reader and WPILib DynamicStruct.
 - **Protocol**: the client and the gateway against each other in-process, over a loopback WebSocket, on every fixture log replayed as a robot would publish it. Message encoding is checked against hand-encoded frames taken from the protocol document.

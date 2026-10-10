@@ -276,7 +276,7 @@ Directory lease tests drive the real transport: session expiry/deletion/replacem
 
 **Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails. The CI workflow must run the license check, which neither `test` nor `shadowJar` includes.
 
-CI runs `./gradlew build license` on Linux and Windows (Linux adds `-Pcoverage`), and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` or `pit-server` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
+CI runs `./gradlew build license` on Linux and Windows (Linux adds `-Pcoverage`), and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` or `development` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
 ### Tests on real logs
 
@@ -423,7 +423,7 @@ JUnit task `shopHarness` (tag `shop-harness`). Neither the robot build nor the s
 `./gradlew test` or `./gradlew build`. GradleRIO 2026.2.1 resolves WPILib 2026.2.2 Java artifacts and
 the host's desktop JNI libraries into Gradle's cache; it downloads no roboRIO image or simulation
 GUI. The runner launches the robot JAR with those libraries, without HAL simulation extensions.
-CI has a separate Linux job on pushes to `pit-server`, sharing Gradle's download cache.
+CI has a separate Linux job on pushes to `development`, sharing Gradle's download cache.
 
 Each run owns fresh ports, a home directory, a disk cache, synthetic device files, and a store under
 `build/shop-harness/`. `FakeRoboRio` serves `/home/lvuser/logs`, `/proc/42/environ`, and
@@ -767,7 +767,7 @@ injected clock or changes the fidelity assertions. Replay walks complete record 
 wpiutil's iterator can omit a short final record. The client separately checks that a wrong
 MessagePack family is counted and dropped without losing the next frame or disconnecting.
 
-CI runs on `pit-server` as well as `main`, including the Windows job.
+CI runs on `development` as well as `main`, including the Windows job.
 
 `CaptureConfigTest`, `CaptureStoreTest`, and `CaptureStartTest` cover configuration keys and their
 documentation, UTC placement, open/closed manifests, hashes, resumption and name collisions, and
