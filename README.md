@@ -119,9 +119,9 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 | **TBA** | `get_tba_status`, `get_tba_match_data` |
 | **RevLog** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset`, `wait_for_sync` |
 | **Export** | `export_csv`, `generate_report` |
-| **Live (capture enabled)** | `list_sessions`, `get_latest_values`, `wait_for_change` |
+| **Live** | `list_sessions`, `get_latest_values`, `wait_for_change` |
 
-The Live tools appear only on a server with capture enabled. They report session costs and current publications without opening a log; the other tools still read the live capture by path.
+The Live tools answer for the present on a server with capture enabled, and `not_applicable` on any other. They report session costs and current publications without opening a log; the other tools still read the live capture by path.
 
 `get_server_guide` describes every tool by category, along with the analysis principles. Its description tells the agent to call it first, so that the agent reaches for a built-in tool rather than writing analysis code of its own.
 

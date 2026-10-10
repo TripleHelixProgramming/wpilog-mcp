@@ -3,18 +3,22 @@
 What each wpilog-mcp tool takes, what it does, and what it returns. Every tool that reads a log takes a required `path` (from `list_available_logs`) and loads the log on first use. [TOOL_RESPONSES.md](TOOL_RESPONSES.md) shows the JSON each tool returned on real logs.
 
 For fresh data, use `list_sessions`, `get_latest_values` and `wait_for_change`. The current
-capture is the file `list_available_logs` marks `open`. The MCP resource `pit://session/current`
-is discoverable without a tool call: it returns session identity/file/start/connection,
-gateway status and providers, or `not_applicable` with a reason when no session is open.
-It uses published snapshots and supports reads, not resource subscriptions; prompts remain empty.
+capture is the file `list_available_logs` marks `open`.
+
+The MCP resource `pit://session/current` is discoverable without a tool call. It returns
+session identity/file/start/connection, gateway status and providers, or `not_applicable`
+with a reason when no session is open. It uses published snapshots and supports reads, not
+resource subscriptions; prompts remain empty.
 
 Every tool with a time scope accepts `last_seconds`: a positive finite N, ending at the open
 capture's estimated robot time fixed for that call, or a closed log's last record. Without an
 estimate, the captured prefix's end is the anchor. It cannot be combined with `start_time` or
-`end_time`; scope/windows intersect it. `inputs.last_seconds` records N and `inputs.window`
-the resolved absolute start/end; `compare_matches` resolves independently for each log and
-reports `inputs.windows` keyed by path. `inputs.session_time_range` still reports the captured
-prefix's range, not an assertion that fresh values were published throughout that window.
+`end_time`; scope/windows intersect it.
+
+In the result, `inputs.last_seconds` records N and `inputs.window` the resolved absolute
+start/end. `compare_matches` resolves independently for each log and reports `inputs.windows`
+keyed by path. `inputs.session_time_range` still reports the captured prefix's range, not an
+assertion that fresh values were published throughout that window.
 
 ## Table of Contents
 
@@ -106,7 +110,7 @@ These two tools tell an agent which tools exist and when to use them. The descri
 An overview of every tool, grouped by category, with usage guidance and the mistakes each category is meant to prevent. Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code keeps the description loaded even when it defers other MCP tools.
 
 **Parameters:**
-- `category` (optional): Only this category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`, or `live` (capture enabled). Any other value is an error that lists the categories
+- `category` (optional): Only this category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`, or `live` (answers for the present only with capture). Any other value is an error that lists the categories
 - `include_examples` (optional): Include example uses for each tool (default: true)
 
 **Returns:**
@@ -169,8 +173,9 @@ The task said "brown out" (two words), so the keyword `brownout` did not match a
 
 ## Live Tools
 
-These three tools are registered only when capture is enabled, in the catalog's Live category.
-They open no file. Every result carries `inputs.session`, the current or last capture path
+These three tools are registered on every server, in the catalog's Live category. On a server
+without capture they answer `not_applicable` with the reason; `list_sessions` still reports
+`managed`. They open no file. Every result carries `inputs.session`, the current or last capture path
 (null before a session begins). Other tools read that path through the live log as usual.
 These are publication facts, not statistical inferences, so they carry no data-quality score.
 
@@ -193,18 +198,24 @@ published view as `GET /health`; a waiting gateway does not stop capture or pull
 while open), `robot` (`serial_number`, `comments`, `address`, `basis`), `connected`,
 `topic_count`, `records`, `bytes`, `bytes_per_sec`, `event`, `match` (`type`, `number`),
 `cost[]`, `thinned[]`, `excluded[]`, `imports[]`, `providers[]`, `end_reason` and `counts_basis`.
+
 `cost` contains the ten topics with the greatest last-minute byte rate, each with `name`,
-`records`, `bytes` and `bytes_per_sec`; ties are sorted by name. Counts cover captured value
-records across rollover files, including record headers, excluding declarations, finishes, context and copied rollover schema seeds. The writer publishes counts every 250 ms. Rates divide bytes in the last minute
-by 60 seconds, including at startup; closed-session rates are null. Older manifests without
-recorder summaries have null counts with a reason, never a new scan of their files. Crash
-recovery clears a possibly stale summary, so recovered sessions also report unknown counts.
-`thinned` lists `prefix` and `period_sec`; `excluded` lists configured prefixes.
-`imports` lists each non-capture file's `path`, `method`, `offset_sec` and `reason`:
-correlation uses its recorded offset relative to the anchor named in the manifest;
+`records`, `bytes` and `bytes_per_sec`; ties are sorted by name. `thinned` lists `prefix` and
+`period_sec`; `excluded` lists configured prefixes.
+
+Counts cover captured value records across rollover files, including record headers, excluding
+declarations, finishes, context and copied rollover schema seeds. The writer publishes counts
+every 250 ms. Rates divide bytes in the last minute by 60 seconds, including at startup;
+closed-session rates are null. Older manifests without recorder summaries have null counts
+with a reason, never a new scan of their files. Crash recovery clears a possibly stale summary,
+so recovered sessions also report unknown counts.
+
+`imports` lists each non-capture file's `path`, `method`, `offset_sec` and `reason`.
+Correlation uses its recorded offset relative to the anchor named in the manifest;
 time-overlap placement has a null offset. New calendar-only imports record that method
 explicitly when no candidate session has a capture or data-matched anchor. Failed anchored
 proofs appear in a separate session with their reason; old placements are not reclassified.
+
 `limits.sessions` and each row's `limits.cost` report true totals when cut. An empty store
 is `not_applicable` with its reason.
 
@@ -212,24 +223,31 @@ is `not_applicable` with its reason.
 `period_sec`, `last_round_trip_ms`, `robot_cpu_sec` (whole-robot processor time between samples,
 not CPU attributed to this provider), `lines_per_sec` (accepted in the current second),
 `dropped_lines`, `dropped_before_sync`, `records`, `bytes`, `sample_bytes` (last provider payload),
-and `program_pids` (program PIDs observed in this session, used for crash-file placement).
-Unknown measurements are null. Provider records/bytes cover the session across rollover files;
-SSH/tail drop counters cover the provider's process lifetime; JMX dropped-before-sync counts cover the session. They are separate from NT4 topic counts.
-The same provider summary is retained in the manifest; old manifests return an empty list.
-The `jvm` provider reports `offline`, `connecting`, `sampling`, `waiting_for_sync` or `stand_down`;
-its reason names missing launch flags or a stalled call. JMX `sample_bytes` counts typed numeric
-and JSON payloads, excluding transport/framing bytes. `/Daemon/JVM/` holds sampled memory,
-cumulative collector counts/time, threads, classes, process CPU and uptime pairing. Runtime
-start time is identity; sample timestamps are NT4 receipt time with `clock: measured` metadata.
+and `program_pids`. `program_pids` lists the program PIDs observed in this session, used for
+crash-file placement. Unknown measurements are null. The same provider summary is retained in
+the manifest; old manifests return an empty list.
+
+Provider records/bytes cover the session across rollover files; SSH/tail drop counters cover
+the provider's process lifetime; JMX dropped-before-sync counts cover the session. They are
+separate from NT4 topic counts.
+
+The `jvm` provider reports `offline`, `connecting`, `sampling`, `waiting_for_sync` or
+`stand_down`; its reason names missing launch flags or a stalled call. JMX `sample_bytes`
+counts typed numeric and JSON payloads, excluding transport/framing bytes. A failed sample
+delivery stands down for the session (including a resume) with its reason; polling resumes in
+the next session.
+
+`/Daemon/JVM/` holds sampled memory, cumulative collector counts/time, threads, classes,
+process CPU and uptime pairing. Runtime start time is identity; sample timestamps are NT4
+receipt time with `clock: measured` metadata. These are samples, not exact collection-pause
+events; the Flight Recorder half is not yet implemented.
+
 `clock/offset_sec` is FPGA minus uptime, `clock/round_trip_bound_sec` bounds that pairing,
 and `ClockNote` records a mapping change beyond the sum of adjacent bounds. Its fields are
 `previous_offset_sec`, `current_offset_sec`, `change_sec`, `previous_round_trip_bound_sec`,
 `current_round_trip_bound_sec`, `previous_jvm_start_time_ms`, `current_jvm_start_time_ms`
 and `reason`. These measurements do not determine the cause of the change: the note diagnoses
 neither a restart, skew nor a wall-clock correction; a new session resets the comparison.
-A failed sample delivery stands down for the session (including a resume) with its reason;
-polling resumes in the next session. These are samples, not exact collection-pause events;
-the Flight Recorder half is not yet implemented.
 
 ### `get_latest_values`
 
@@ -240,14 +258,19 @@ Read the latest values by NT4 topic name, its `NT:` capture name, or a `/Daemon/
 - `entries` (required): Array of 1 to 2000 nonempty names; repeated names are returned once.
 
 **Returns:** `values[]` (`name`, `value`, `timestamp_sec`, `age_ms`, `type`, `source`) and `missing[]`. `source` is `nt4`, `ssh`, `tail`, `photonvision`, or `jmx`.
+
 The timestamp is the robot's clock. Age is robot now minus that timestamp, using measured NT4
 time sync, independent of the laptop's calendar clock; before sync it is null. A future
-publisher timestamp can have a negative age. Type is the announce's authoritative NT4 string.
-Binary values, including structs, are signed-byte arrays; use the ordinary log tools to decode
-structs. Raw NaN and infinities are strings. Missing some names is `partial` with `skipped`;
-all missing is `no_match` with `looked_for` and `hint`. No open session is `not_applicable`
-with `last_session` and `ended_at`. A stale age means the topic stopped publishing, not that
-the robot stopped. These are the latest published values, not fresh measurements on demand.
+publisher timestamp can have a negative age. A stale age means the topic stopped publishing,
+not that the robot stopped. These are the latest published values, not fresh measurements on
+demand.
+
+Type is the announce's authoritative NT4 string. Binary values, including structs, are
+signed-byte arrays; use the ordinary log tools to decode structs. Raw NaN and infinities are
+strings.
+
+Missing some names is `partial` with `skipped`; all missing is `no_match` with `looked_for`
+and `hint`. No open session is `not_applicable` with `last_session` and `ended_at`.
 
 ### `wait_for_change`
 
@@ -366,16 +389,39 @@ Match type codes are `p`, `q` or `qm`, `qf`, `sf`, `f`, and `e`. A file whose na
 
 The file-name time is read as UTC (the roboRIO's default zone, and the zone DataLogManager always uses), or in the server's local zone for a `_sim` log. It orders the listing (newest first; the file's modification time when the name carries no time), and it is the time the `since` filter and TBA's `nearest_time` lookup use.
 
-For a store (a configured directory with `store.json`), `logs` comes from session manifests, including files beyond the ordinary directory scan depth. The `stores` array names each store (`path`, `robots` with the same robot fields). Each log row carries `store` (its root), `revlogs` (its correlated companions, each with `path`, `filename`, and `size_bytes`), `robot` (`id`, `name`, `serial_number`, `comments` when known, `basis`: `logged`, `device`, `stated`, or `address` (known only by its connection address)) and `session` (`id`, `path`, `started_at`, `ended_at`, `start_basis`). A captured file also carries `session.open`: its event and match come from the manifest even while Windows defers the directory rename. Two directories with the same serial describe one robot but remain separate histories. Store facts override filenames. Plain-directory logs also carry `robot` when `/SystemStats/SerialNumber` and `/SystemStats/Comments`
-(or their `NT:` forms) supply it within the first 2000 records. Import inspection can read later identity. This logged identity wins over the store's device identity.
-A store robot can also carry `contacts` (`address`, `host_key_fingerprint`, `seen_at`) documenting SSH
-key history. Store rows without a serial can carry `robot_candidates`: each has `serial_number` and
-`evidence` (`kind`, `value`). Kinds are `logged_team_number`, `entry_set`, and `rev_can_inventory`;
-the latter two values are hashes of exact sorted fingerprints, persisted by import inspection in
-the manifest. Listing never scans a file for candidate evidence. Plain files and older store
-manifests without fingerprints have no candidates. Each kind must match exactly one
-known serial; conflicting hints are omitted. This never assigns the file. Unassigned REV rows can
-carry the same candidates. With `capture.pull` enabled, partial transfers stay out of the log listing; verified copies appear under their session with device identity unless the file logs its own serial. A logged/device disagreement is kept in the session manifest and server log. Moved paths remain usable by tools after the seven-day listing notice. Windowed mapping supports WPILOG files through 1 TiB. A file beyond that bound remains in `logs` with an explained `read_error`.
+For a store (a configured directory with `store.json`), `logs` comes from session manifests,
+including files beyond the ordinary directory scan depth. The `stores` array names each store
+(`path`, `robots` with the same robot fields). Store facts override filenames.
+
+Each log row carries:
+
+- `store`: its root
+- `revlogs`: its correlated companions, each with `path`, `filename`, and `size_bytes`
+- `robot`: `id`, `name`, `serial_number`, `comments` when known, and `basis` (`logged`, `device`, `stated`, or `address` (known only by its connection address))
+- `session`: `id`, `path`, `started_at`, `ended_at`, `start_basis`. A captured file also carries `session.open`: its event and match come from the manifest even while Windows defers the directory rename
+
+Two directories with the same serial describe one robot but remain separate histories.
+
+Plain-directory logs also carry `robot` when `/SystemStats/SerialNumber` and
+`/SystemStats/Comments` (or their `NT:` forms) supply it within the first 2000 records. Import
+inspection can read later identity. This logged identity wins over the store's device identity.
+
+A store robot can also carry `contacts` (`address`, `host_key_fingerprint`, `seen_at`)
+documenting SSH key history.
+
+Store rows without a serial can carry `robot_candidates`: each has `serial_number` and
+`evidence` (`kind`, `value`). Kinds are `logged_team_number`, `entry_set`, and
+`rev_can_inventory`; the latter two values are hashes of exact sorted fingerprints, persisted by
+import inspection in the manifest. Listing never scans a file for candidate evidence. Plain
+files and older store manifests without fingerprints have no candidates. Each kind must match
+exactly one known serial; conflicting hints are omitted. This never assigns the file.
+Unassigned REV rows can carry the same candidates.
+
+With `capture.pull` enabled, partial transfers stay out of the log listing; verified copies
+appear under their session with device identity unless the file logs its own serial. A
+logged/device disagreement is kept in the session manifest and server log. Moved paths remain
+usable by tools after the seven-day listing notice. Windowed mapping supports WPILOG files
+through 1 TiB. A file beyond that bound remains in `logs` with an explained `read_error`.
 
 Store listings additionally return:
 
@@ -489,7 +535,18 @@ Read an entry's values in time order, one page at a time, optionally within a ti
 
 **Returns:** `name`, `type`, `total_in_range` (the true count), `returned_count`, `offset`, `limit`, `has_more`, `samples` (each `timestamp_sec` and `value`), and `limits.samples` (total after `offset` vs returned). An unknown entry name is an error with suggestions.
 
-**At a resolution (`max_points`):** for a numeric entry, or an entry with a [field path](#field-paths) appended as `get_statistics` takes it. When the window holds no more samples than `max_points`, the read is exact, as above, with `bucketed: false`. When it holds more, the window (`start_time` to `end_time`, or the samples' own span where a bound is not given) is divided into `max_points` buckets of equal duration, `bucket_sec` long, the last one including the window's end, and `samples` holds one object per bucket that has samples: `timestamp_sec` (the bucket's start), `count`, `min`, `max`, `mean` (over the finite samples; `null` when none is finite), `first`, and `last` (the first and last samples as logged). The extremes are kept because a spike one sample wide is what a person looks for, and a mean would hide it; `first` and `last` let a change-only entry's holds be drawn across a bucket. Buckets with no samples are left out: a gap in a change-only entry is a hold, not missing data. `bucketed: true`, `bucket_count` is how many buckets have samples, `total_in_range` stays the true sample count, and `offset`/`limit` page the buckets (`limit` defaults to `max_points`). A non-numeric entry is read exactly, with `max_points` in `skipped` and the status `partial`. The data endpoint of the HTTP transport (see [STANDALONE.md](STANDALONE.md#the-data-endpoint)) buckets by the same rule.
+**At a resolution (`max_points`):** for a numeric entry, or an entry with a [field path](#field-paths) appended as `get_statistics` takes it. When the window holds no more samples than `max_points`, the read is exact, as above, with `bucketed: false`.
+
+When it holds more, the window (`start_time` to `end_time`, or the samples' own span where a bound is not given) is divided into `max_points` buckets of equal duration, `bucket_sec` long, the last one including the window's end. `samples` then holds one object per bucket that has samples:
+
+- `timestamp_sec`: the bucket's start
+- `count`, `min`, and `max`
+- `mean`: over the finite samples; `null` when none is finite
+- `first` and `last`: the first and last samples as logged
+
+The extremes are kept because a spike one sample wide is what a person looks for, and a mean would hide it; `first` and `last` let a change-only entry's holds be drawn across a bucket. Buckets with no samples are left out: a gap in a change-only entry is a hold, not missing data.
+
+The result has `bucketed: true`, `bucket_count` (how many buckets have samples), and `total_in_range` (still the true sample count); `offset`/`limit` page the buckets (`limit` defaults to `max_points`). A non-numeric entry is read exactly, with `max_points` in `skipped` and the status `partial`. The data endpoint of the HTTP transport (see [STANDALONE.md](STANDALONE.md#the-data-endpoint)) buckets by the same rule.
 
 **Example Response (bucketed):**
 ```json
@@ -563,11 +620,16 @@ not the existence of the recorded events; a picture is not causal evidence and o
 
 **Specification version 1:** `version`, `kind`, `width`, `height`, `window`, `series`, `phases`,
 `phase_basis` and `open_url`. A series names its entry/field, name-stated `unit` (null when
-none is stated), and `style` (`step_after` for change-only, otherwise `line`). Time-series
-`points` are `[timestamp_sec, value]`; reduced series carry `buckets` (including start/end) and `bucket_rule`. With more than 1000 samples and no explicit page, a time series uses one equal-duration min/max bucket per plot pixel column, over the entire window. `drawn` gives each series' mode (`all samples`, `buckets`, or `page`) and count. `max_points` chooses the bucket count explicitly.
-Nested `limits.points` or `limits.buckets` report the true total after offset when truncated.
-Separate scope windows never join across an excluded interval. Phases come only from the
-shared Driver Station resolver, with no guessed-name fallback.
+none is stated), and `style` (`step_after` for change-only, otherwise `line`). Phases come
+only from the shared Driver Station resolver, with no guessed-name fallback.
+
+Time-series `points` are `[timestamp_sec, value]`; reduced series carry `buckets` (including
+start/end) and `bucket_rule`. With more than 1000 samples and no explicit page, a time series
+uses one equal-duration min/max bucket per plot pixel column, over the entire window.
+`max_points` chooses the bucket count explicitly. `drawn` gives each series' mode
+(`all samples`, `buckets`, or `page`) and count. Nested `limits.points` or `limits.buckets`
+report the true total after offset when truncated. Separate scope windows never join across
+an excluded interval.
 
 Histograms carry `bins` (`low`, `high`, `count`) and `histogram_rule`: equal-width
 `ceil(sqrt(n))` bins capped at 64; `[low, high)` except the last includes the maximum;
@@ -643,7 +705,13 @@ Show which entry plays each role in a log (the same choices the tools make), wit
 #### The server does not guess
 A tool uses an entry for a role only when it was passed explicitly, follows a well-known logging convention, or is the only entry of the role's type or schema. Entries that match a role by name alone are listed as candidates and not used: the role reports `match: heuristic` and `needs_confirmation`, and a tool that needs it lists the candidates in its `skipped` reason (or its `no_match` hint) with the parameter to pass.
 
-A word in a name is not evidence of what an entry holds, and neither is the shape of its data. A `currentHeight` is the present height, not an electrical current. PhotonVision's `targetYaw` is a camera reading, not a setpoint. Real logs hold two target module-state arrays beside the measured one, which no name tells apart; a planned trajectory that is a struct array of timestamps and poses, as a camera's observations are; and a gyro's struct with yaw and pitch fields, as a camera target has. What an entry holds, and in which units, is decided by the robot code that logs it, so that is where a candidate is confirmed: find where the entry is logged in the robot project's source. Without the source, the entry's type and values (`get_entry_info`, `read_entry`) or the team are the next best evidence.
+A word in a name is not evidence of what an entry holds, and neither is the shape of its data. A `currentHeight` is the present height, not an electrical current. PhotonVision's `targetYaw` is a camera reading, not a setpoint. Real logs hold:
+
+- two target module-state arrays beside the measured one, which no name tells apart;
+- a planned trajectory that is a struct array of timestamps and poses, as a camera's observations are;
+- a gyro's struct with yaw and pitch fields, as a camera target has.
+
+What an entry holds, and in which units, is decided by the robot code that logs it, so that is where a candidate is confirmed: find where the entry is logged in the robot project's source. Without the source, the entry's type and values (`get_entry_info`, `read_entry`) or the team are the next best evidence.
 
 The conventions:
 
@@ -669,15 +737,19 @@ The conventions:
 
 The capture's `/Daemon/` convention records context alongside NT4 entries without an `NT:`
 prefix. `/Daemon/roboRIO/` holds sampled operating-system measurements with units in their
-names; entry metadata gives the SSH host and period. `/Daemon/Tail/<host>/<role>` holds
-received text. The resolver recognizes `program_console`, `kernel`, `syslog`, and `journal`
-as followed-file roles, including `program_console` in the console-text role; unknown roles
-remain ordinary string entries. Pulled companions use `search_system_logs`; the tail is the timely copy, the pulled file the exact record. `search_strings`, timeline error counts and CAN text analysis
-read them through the same text path as `messages` and `console` in robot logs. Tail timestamps
-are receipt times, not timestamps parsed from the line; pre-session buffering is stated in
-metadata. A drop notice is recorder text, not a robot message.
+names; entry metadata gives the SSH host and period.
 
-**Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached` (DriverStation state: AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word), `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold` (a value, from the log's `BrownoutVoltage` or a stated default), `loop_time_full`, `loop_time_user`, `robot_pose`, `vision_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`.
+`/Daemon/Tail/<host>/<role>` holds received text. The resolver recognizes `program_console`,
+`kernel`, `syslog`, and `journal` as followed-file roles, including `program_console` in the
+console-text role; unknown roles remain ordinary string entries. `search_strings`, timeline
+error counts and CAN text analysis read them through the same text path as `messages` and
+`console` in robot logs.
+
+Tail timestamps are receipt times, not timestamps parsed from the line; pre-session buffering
+is stated in metadata. A drop notice is recorder text, not a robot message. Pulled companions
+use `search_system_logs`: the tail is the timely copy, the pulled file the exact record.
+
+**Roles:** `robot_enabled`, `autonomous`, `test_mode`, `fms_attached`, `battery_voltage`, `total_current`, `brownout_flag`, `brownout_threshold`, `loop_time_full`, `loop_time_user`, `robot_pose`, `vision_pose`, `auto_chooser`, `path_setpoint`, `path_actual`, `module_states_measured`, `module_states_setpoint`, `chassis_speeds_measured`, `chassis_speeds_setpoint`, `gyro_yaw`, `vision_pose_observations`, `vision_targets`, `can_bus`, `console_text`, `alerts`. The first four are the DriverStation state (AdvantageKit `/DriverStation/...`, WPILib `DS:...`, or the NetworkTables `FMSControlData` word). `brownout_threshold` is a value, from the log's `BrownoutVoltage` or a stated default.
 
 **Returns:** `log_path` and `roles.<role>`: `description`, `entry` (or `entries` for per-camera, per-bus, and text roles; `null` when unresolved), `value` (for `brownout_threshold`), `match` (`explicit`, `convention`, `type`, `heuristic`, or `none`), `basis` (why), `needs_confirmation` (heuristic: candidates only, not used), `candidates` (best first, up to 10, with `candidate_count` when there are more), `ambiguous` (another candidate ranked equally; the one declared first was chosen), and `used_by` (the tools that use the role and their override parameters). `unresolved` lists roles with no entry, `needs_confirmation` the ones with name-only candidates, and `warnings` name ambiguous choices.
 
@@ -868,17 +940,21 @@ and membership evidence read. No companions gives `not_applicable`; no matching 
 
 `kernel` means dmesg only. Kernel seconds interpolate the two nearest recorded
 `/Daemon/roboRIO/uptime_sec` / FPGA pairs, with basis `uptime_pairing`; nothing is
-extrapolated beyond the pairing or session. `syslog` includes either files or the whole
-journal. Journal `short-unix` epochs and ISO timestamps with a year and zone map through
-recorded `systemTime` (prefer the pulled log and its recorded alignment), with basis
-`system_time`. A wall-clock pair supplies the measured offset within the session. A date
-without a year or zone is not guessed. Unmapped lines have null `timestamp_sec` and a reason;
-they remain visible even in a requested window because their membership in it is unknown.
-On a journald image a kernel message can occur as both kernel/uptime_pairing and
-syslog/system_time. Text files are read only to the manifest's committed length, including
-gzip syslog rotations. Text travels through peer sync and mirrors with hash verification.
-A receipt whose local copy is missing gives `not_applicable`, naming the collecting server
-and the files to synchronize. A shortened or unsafe receipt gives an explained error.
+extrapolated beyond the pairing or session.
+
+`syslog` includes either files or the whole journal. Journal `short-unix` epochs and ISO
+timestamps with a year and zone map through recorded `systemTime` (prefer the pulled log and
+its recorded alignment), with basis `system_time`. A wall-clock pair supplies the measured
+offset within the session. A date without a year or zone is not guessed. On a journald image
+a kernel message can occur as both kernel/uptime_pairing and syslog/system_time.
+
+Unmapped lines have null `timestamp_sec` and a reason; they remain visible even in a requested
+window because their membership in it is unknown.
+
+Text files are read only to the manifest's committed length, including gzip syslog rotations.
+Text travels through peer sync and mirrors with hash verification. A receipt whose local copy
+is missing gives `not_applicable`, naming the collecting server and the files to synchronize.
+A shortened or unsafe receipt gives an explained error.
 
 ## Statistics Tools
 
@@ -911,7 +987,9 @@ Statistics on numeric signals. The first two subsections describe the field path
 - `scope`: `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (the i-th enabled segment of `get_match_phases`, from 0). Segments are half-open: the sample logged at a transition belongs to the new state. Any scope other than `all` on a log with no DriverStation state is an error.
 - `windows`: a list of `{start, end}` (or `[start, end]`), half-open `[start, end)`; overlapping windows merge. The `intervals` returned by `find_condition` can be passed as-is ("statistics while the battery was below 11 V").
 
-Differences, spikes, peaks, and, in the tools that measure one signal, angle unwrapping are computed within each window, never across the time between two. `time_correlate` pairs two signals, so it unwraps each angle over the whole log, which keeps both on one continuous branch; its entry says what it still measures within the windows. `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`). `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
+Differences, spikes, peaks, and, in the tools that measure one signal, angle unwrapping are computed within each window, never across the time between two. `time_correlate` pairs two signals, so it unwraps each angle over the whole log, which keeps both on one continuous branch; its entry says what it still measures within the windows. `find_condition` searches each window on its own (an interval still true at a window's end closes there with `end_reason: window_end`).
+
+`data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
 
 ### `get_statistics`
 Statistics of a numeric entry or field over the finite samples in scope, with data quality and analysis directives. A scope with no finite sample is an error that says how many values the log and the scope hold.
@@ -1099,7 +1177,9 @@ A common rule of thumb for |r|: 0.9 and up is very strong, 0.7 strong, 0.5 moder
 
 **Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, `p_value_basis`, `inputs`, `data_quality` (of the lower-quality signal), and `server_analysis_directives`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta). The lag-1 autocorrelations pair consecutive samples within a window, never the two on either side of the time between windows, and the sample rates are measured within the windows too. Warnings say when fewer than 30 samples overlap, when fewer than 30 effective samples remain, and when the two sample rates differ more than tenfold. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
 
-With `max_lag_sec`, `lag_search` gives `lags_evaluated`, `lag_step_sec`, `max_lag_sec`, `best_lag_sec`, `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, and a `note`. The best lag is the one where the correlation is strongest in either direction, and `correlation_at_best_lag` keeps its sign: two signals that move oppositely, such as battery voltage and a motor's current, have a negative correlation at every lag, and the strongest is the most negative. Among equally strong lags, the one nearest zero is reported. If the sign at the best lag differs from the sign at zero lag, the relationship reverses with the shift, as oscillating signals do half a period apart; check that before reading the lag as a delay. A best lag at the edge of the range may lie beyond it.
+With `max_lag_sec`, `lag_search` gives `lags_evaluated`, `lag_step_sec`, `max_lag_sec`, `best_lag_sec`, `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, and a `note`. The best lag is the one where the correlation is strongest in either direction, and `correlation_at_best_lag` keeps its sign. Two signals that move oppositely, such as battery voltage and a motor's current, have a negative correlation at every lag, and the strongest is the most negative. Among equally strong lags, the one nearest zero is reported.
+
+If the sign at the best lag differs from the sign at zero lag, the relationship reverses with the shift, as oscillating signals do half a period apart; check that before reading the lag as a delay. A best lag at the edge of the range may lie beyond it.
 
 **Example Response:**
 ```json
@@ -1274,7 +1354,9 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 ### `power_analysis`
 Battery voltage statistics and brownout risk, plus the peak current for every amperage entry in the log, sorted by peak magnitude. Per-channel arrays such as AdvantageKit's `/PowerDistribution/ChannelCurrent` are expanded per channel index, so every PDH/PDP channel's peak is reported in one call (the statistics tools read one channel by [field path](#field-paths), e.g. `/PowerDistribution/ChannelCurrent[3]`).
 
-**Voltage entry selection** (the `battery_voltage` role of [The server does not guess](#the-server-does-not-guess), shared with `predict_battery_health`, `get_ds_timeline`, and `generate_report`): `voltage_entry` when given. Otherwise the entry the convention names, with at least one finite sample (ties go to the entry declared first): a numeric leaf named `BatteryVoltage` (AdvantageKit `/SystemStats/BatteryVoltage`), else `Voltage` whose parent is `PowerDistribution`, `PowerDistribution[<id>]`, `PDH`, `PDP`, or `Battery` (AdvantageKit `/PowerDistribution/Voltage`, WPILib `NT:/SmartDashboard/PowerDistribution[1]/Voltage`). Any other entry named `voltage` (an input or bus voltage, say) is never used. When the log has only those, `voltage_analysis` is skipped and the reason lists them as candidates to confirm and pass as `voltage_entry`; rail, regulator, and motor-output voltages are not even candidates. `inputs.entries.voltage` records the entry used. `power_prefix` restricts the search to one subtree.
+**Voltage entry selection** (the `battery_voltage` role of [The server does not guess](#the-server-does-not-guess), shared with `predict_battery_health`, `get_ds_timeline`, and `generate_report`): `voltage_entry` when given. Otherwise the entry the convention names, with at least one finite sample (ties go to the entry declared first): a numeric leaf named `BatteryVoltage` (AdvantageKit `/SystemStats/BatteryVoltage`), else `Voltage` whose parent is `PowerDistribution`, `PowerDistribution[<id>]`, `PDH`, `PDP`, or `Battery` (AdvantageKit `/PowerDistribution/Voltage`, WPILib `NT:/SmartDashboard/PowerDistribution[1]/Voltage`).
+
+Any other entry named `voltage` (an input or bus voltage, say) is never used. When the log has only those, `voltage_analysis` is skipped and the reason lists them as candidates to confirm and pass as `voltage_entry`; rail, regulator, and motor-output voltages are not even candidates. `inputs.entries.voltage` records the entry used. `power_prefix` restricts the search to one subtree.
 
 **Current entry selection:** an entry counts as amperage when:
 - its name ends in `Amps`/`Amperes` at a token boundary (`CurrentAmps`, `StatorAmps`, `stator_amps`, but not `OdometryTimestamps` or `SlewRamps`);
@@ -1303,7 +1385,9 @@ Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are exc
 - `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
 
-**Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries. `no_match` with `scope` when it has them but there is nothing to measure in the scope: the scope holds no time (`enabled` on a log where the robot was never enabled, or a `start_time`/`end_time` outside the data), or no finite voltage or current sample falls in it and no brownout flag is logged. A logged flag holds its value, so it covers any time the scope has. `partial` with `skipped` when either the voltage or the current section cannot be produced; a skipped current section says whether the log has no amperage entries or has them without finite samples in the scope.
+**Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries. `no_match` with `scope` when it has them but there is nothing to measure in the scope. That happens when the scope holds no time (`enabled` on a log where the robot was never enabled, or a `start_time`/`end_time` outside the data), or when no finite voltage or current sample falls in it and no brownout flag is logged. A logged flag holds its value, so it covers any time the scope has.
+
+`partial` with `skipped` when either the voltage or the current section cannot be produced; a skipped current section says whether the log has no amperage entries or has them without finite samples in the scope.
 
 **Returns:**
 - `scope`: the time scope analyzed (`scope` parameter; default `enabled` when the log records enabled state, else `all`), so idle and boot time do not dilute averages or peaks
@@ -1591,7 +1675,9 @@ To bring utilization down: reduce motor controller status frame rates, move devi
 ## FRC Domain Tools
 
 ### `get_ds_timeline`
-A chronological timeline of robot events: enable/disable transitions, match phase changes, battery-voltage threshold crossings, and roboRIO brownout flag transitions (when the robot logs one). Errors and warnings in text entries are **counted and summarized, not listed**: the timeline reports exact counts and a distinct-message summary, and `search_strings` gives the complete, paged listing, so no heuristic decides which messages you see. DriverStation entries are recognized under both the `/DriverStation/...` (AdvantageKit) and `DS:...` (WPILib DataLogManager) naming conventions. Returns `not_applicable` when the log has none of the entries a timeline is built from (DriverStation state, a battery voltage entry, a roboRIO brownout flag, text entries). The result carries no `data_quality` block: its fields are observed events and exact counts, not statistics.
+A chronological timeline of robot events: enable/disable transitions, match phase changes, battery-voltage threshold crossings, and roboRIO brownout flag transitions (when the robot logs one). Errors and warnings in text entries are **counted and summarized, not listed**: the timeline reports exact counts and a distinct-message summary, and `search_strings` gives the complete, paged listing, so no heuristic decides which messages you see.
+
+DriverStation entries are recognized under both the `/DriverStation/...` (AdvantageKit) and `DS:...` (WPILib DataLogManager) naming conventions. Returns `not_applicable` when the log has none of the entries a timeline is built from (DriverStation state, a battery voltage entry, a roboRIO brownout flag, text entries). The result carries no `data_quality` block: its fields are observed events and exact counts, not statistics.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -1609,7 +1695,7 @@ A chronological timeline of robot events: enable/disable transitions, match phas
 - `power`: BROWNOUT_START and BROWNOUT_END (`basis: "voltage_threshold"`: the battery voltage crossed `brownout_threshold`, with 0.2 V exit hysteresis; includes `voltage`), and RIO_BROWNOUT_START and RIO_BROWNOUT_END (`basis: "rio_flag"`: a logged boolean brownout flag such as AdvantageKit `/SystemStats/BrownedOut` changed state, the roboRIO's own brownout state). A voltage crossing does not by itself mean the roboRIO cut outputs; when `rio_brownout_flag_logged` is false, that cannot be determined from the log.
 - `alert`: ALERT_RAISED, each message of a `string[]` alert entry (WPILib `Alert`s, e.g. `/RealOutputs/Alerts/warnings`) when it appears, with `entry`, `level` (from the entry name), `message`, and `cleared_at`/`duration_sec`, or `active_at_log_end: true`. At most 100 are listed, with a warning when there are more; `search_strings` lists every one.
 
-**Error and warning text** (string entries such as `/RealOutputs/Console` or WPILib `messages`, alerts, and json strings): a sample is an ERROR when any of its lines contains "error", "exception", or "fault" ("default" does not count); otherwise it is a WARNING when any line contains "warning", "overrun", or "watchdog". Errors win regardless of line order, and the first matching line of the winning kind is the message. `search_strings` uses the same rule for its `level` filter, so the two agree (a test enforces it).
+**Error and warning text** (string entries such as `/RealOutputs/Console` or WPILib `messages`, alerts, and json strings): a sample is an ERROR when any of its lines contains "error", "exception", or "fault" ("default" does not count). Otherwise it is a WARNING when any line contains "warning", "overrun", or "watchdog". Errors win regardless of line order, and the first matching line of the winning kind is the message. `search_strings` uses the same rule for its `level` filter, so the two agree (a test enforces it).
 - `text_event_counts`: `{error, warning, total, by_source: {<entry>: {error, warning}}}`, exact counts within the time window over string samples, alerts (once per appearance, at their entry's level), and json string values. Never capped, and always present
 - `text_event_summary`: one entry per distinct message, where "distinct" is judged after normalizing numbers to `#` and collapsing whitespace, so `Loop time of 0.023s overrun` and `... 0.031s ...` are one group. Each entry is `{type, message, example, count, variants, variants_capped?, first_timestamp, last_timestamp, sources[]}`: `message` is the normalized pattern, `example` the first actual text (when it differs), and `variants` how many different raw texts the group covers (`CAN timeout on device #` with `variants: 2` hides two devices). Variants are judged on the full line, while `message` and `example` are cut at 200 characters for display; `variants_capped: true` marks a group that exceeded 10,000 distinct texts. Sorted by count. At most 200 groups are shown; `text_event_groups_total` is the true number, and a warning says when the summary was cut. Absent when the log has no error or warning text
 - Individual messages are not placed on the timeline. Use `search_strings` (optionally `level=error`, a regex, a time window) to list them completely with paging totals
@@ -1705,20 +1791,27 @@ Analyze vision data: pose observation streams, target streams, pose sets, has-ta
 - `flicker_window` (optional): Time window for flicker detection in seconds (default: 0.5)
 
 **camera_settings:** an object keyed by exact camera name for the analyzed observations, targets,
-pose sets, acquisitions and scalar vision pose estimates. Each value carries recorded configuration from `/Daemon/PhotonVision/<camera>/Settings`, matched by exact
-camera name, or `status: none_captured` with a `reason`. Captured context has `status: captured`,
-`camera`, `entry`, `basis` and `snapshots[]` (`timestamp_sec`, `settings`). Settings contain
-`calibrations` (resolution, intrinsics, distortion and `mean_reprojection_errors_px` per calibration
-snapshot), `pipeline` (type, index, name, resolution, raw exposure, auto exposure, gain, 3D,
-multi-tag and field layout), software version, device type and hardware status. It is stated
-context, never an inference or a judgment of detection quality. Raw exposure has the backend's
-units; none are invented. Inapplicable mode fields are null with their basis. The last snapshot
-before the window and updates within it are included; snapshots after its end are excluded.
-The `inputs.entries` block names each settings entry read. A robot-code label such as `Camera0`
-is not guessed to mean a differently named PhotonVision camera. Without an exact settings entry,
-none was captured for that identity.
+pose sets, acquisitions and scalar vision pose estimates. Each value carries recorded
+configuration from `/Daemon/PhotonVision/<camera>/Settings`, matched by exact camera name, or
+`status: none_captured` with a `reason`. A robot-code label such as `Camera0` is not guessed to
+mean a differently named PhotonVision camera. Without an exact settings entry, none was captured
+for that identity. The `inputs.entries` block names each settings entry read.
 
-**observation_streams:** one stream per camera. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `latency_candidates` (numeric entries beside the stream whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`; they are listed, not analyzed, because the name does not say what the entry times or in which units: `get_statistics` reads one once the robot code has settled what it times and in which units), and `residual_vs_robot_pose` (`median_m`, `p95_m`, `max_m` of the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp). The robot pose may itself include vision corrections.
+Captured context has `status: captured`, `camera`, `entry`, `basis` and `snapshots[]`
+(`timestamp_sec`, `settings`). The last snapshot before the window and updates within it are
+included; snapshots after its end are excluded. Settings contain:
+
+- `calibrations`: resolution, intrinsics, distortion and `mean_reprojection_errors_px` per calibration snapshot
+- `pipeline`: type, index, name, resolution, raw exposure, auto exposure, gain, 3D, multi-tag and field layout
+- software version, device type and hardware status
+
+The settings are stated context, never an inference or a judgment of detection quality. Raw
+exposure has the backend's units; none are invented. Inapplicable mode fields are null with
+their basis.
+
+**observation_streams:** one stream per camera. Per stream: `entry`, `camera`, `records`, `records_with_observations`, `fraction_with_observations`, `observation_count`, `observations_per_second`, `tag_count_distribution`, `ambiguity` (`n`, `median`, `p95`, `max`), `latency` (log timestamp minus the observation's own timestamp: `median_ms`, `p95_ms`, `max_ms`), `latency_candidates`, and `residual_vs_robot_pose`. The residual is the planar distance between each observation and the robot pose linearly interpolated at the observation's timestamp (`median_m`, `p95_m`, `max_m`). The robot pose may itself include vision corrections.
+
+`latency_candidates` are numeric entries beside the stream whose name contains `latency`, e.g. `/Vision/Camera0/LatencyMs`. They are listed, not analyzed, because the name does not say what the entry times or in which units. `get_statistics` reads one once the robot code has settled what it times and in which units.
 
 **target_streams:** per stream: `camera`, `records`, `observation_count`, `yaw` and `pitch` distributions (median, p95, max; with a `_deg` suffix when they are WPILib `Rotation2d`s), `area`, `confidence`, and `object_ids` (counts per id).
 
@@ -1732,7 +1825,7 @@ none was captured for that identity.
 
 **Also returns:** `inputs.entries.robot_pose`, and `data_quality` and `server_analysis_directives` of the first observation stream (else the first target stream, else the first pose checked for jumps).
 
-**Status:** `no_match` (with `looked_for`, and with `candidates` and `needs_confirmation` when there are any) when the log has no conventional or passed vision entry and no scalar pose; `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing), or when a kind has candidates and nothing analyzed.
+**Status:** `no_match` (with `looked_for`, and with `candidates` and `needs_confirmation` when there are any) when the log has no conventional or passed vision entry and no scalar pose. `partial` when only pose jumps could be checked (for example a `vision_prefix` that matches nothing), or when a kind has candidates and nothing analyzed.
 
 Pose jumps can point to ambiguous AprilTag detections, tag misidentification, poorly tuned vision standard deviations, or exposure problems.
 
@@ -1779,7 +1872,7 @@ The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter
 
 **Returns:** `pose_entry`, `reference_entry`, `frame`, `interpolation`, `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (median, p95, and max of its size, and `mean_signed`); the two components (count, mean, std_dev, p5, p95); `largest` (the times of the five largest distances, with `limits.largest`); `inputs`; `data_quality` of the pose entry and `server_analysis_directives`. When `pose_entry` was not passed, `robot_pose` shows how it was chosen. `no_match` when no record in scope has a reference value. To measure each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
 
-**Example** (the turret's pose in the robot's frame, VACHE q10, enabled; abridged): the turret sits 0.058 m behind and 0.126 m to the right of the robot's center (p5 and p95 are equal), except around an odometry reset at the start of autonomous, where the largest distances fall:
+**Example** (the turret's pose in the robot's frame, VACHE q10, enabled; abridged). The turret sits 0.058 m behind and 0.126 m to the right of the robot's center (p5 and p95 are equal). The exception is around an odometry reset at the start of autonomous, where the largest distances fall:
 ```json
 {
   "status": "ok",
@@ -2490,9 +2583,17 @@ Synchronization has two phases:
 
 #### Phase 1: coarse alignment (seconds)
 
-The wpilog's wall-clock entry (WPILib's `systemTime` or AdvantageKit's `/SystemStats/EpochTimeMicros`) maps FPGA timestamps to UTC. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog`) in the zone of the clock that named it: the roboRIO names files in UTC unless a team changes its zone, and a desktop running simulation names them in its local zone. The server reads REV log names in the zone that the wpilog's own file name reveals when compared with its wall-clock entry (the same clock is taken to have named both), or in UTC when the wpilog's name carries no time. `sync_status` reports this as `revlog_filename_zone`. The same zone decides which REV logs belong to a wpilog.
+The wpilog's wall-clock entry (WPILib's `systemTime` or AdvantageKit's `/SystemStats/EpochTimeMicros`) maps FPGA timestamps to UTC. The revlog filename encodes its start time (e.g., `REV_20260320_143052.revlog`) in the zone of the clock that named it: the roboRIO names files in UTC unless a team changes its zone, and a desktop running simulation names them in its local zone.
 
-Only readings taken after the clock was set count. Until the Driver Station sets it, a roboRIO's clock reads 1970 or a fixed default date (2024-12-18 in real logs) that every boot shares. So the server uses the readings after the clock was set, and matches REV logs to a wpilog by time only when the wpilog's clock is known to have been set: either the log records the clock being set, or the time in the log's file name agrees with the clock (AdvantageKit and DataLogManager name a log with its time once the clock is set). A log whose clock reads one date throughout under a placeholder name such as `akit_cfb6568c35d66529.wpilog` gets no REV logs, and the revlog tools say why. REV logs are candidates when their name's time falls within 5 minutes of the log (30 minutes when only file modification times are available). A candidate that, once synchronized, neither correlates with the log nor overlaps it (recorded in the session before or after) is not attached. The estimate is only as good as the roboRIO's clock when the file was named: in a real 2026 log the REV log's name was 15 s earlier than its first frame. Without a wall-clock entry there is no estimate, and the search is centered on an offset of 0.
+The server reads REV log names in the zone that the wpilog's own file name reveals when compared with its wall-clock entry (the same clock is taken to have named both), or in UTC when the wpilog's name carries no time. `sync_status` reports this as `revlog_filename_zone`. The same zone decides which REV logs belong to a wpilog.
+
+Only readings taken after the clock was set count. Until the Driver Station sets it, a roboRIO's clock reads 1970 or a fixed default date (2024-12-18 in real logs) that every boot shares. So the server uses the readings after the clock was set, and matches REV logs to a wpilog by time only when the wpilog's clock is known to have been set.
+
+The clock is known to have been set either when the log records it being set, or when the time in the log's file name agrees with the clock (AdvantageKit and DataLogManager name a log with its time once the clock is set). A log whose clock reads one date throughout under a placeholder name such as `akit_cfb6568c35d66529.wpilog` gets no REV logs, and the revlog tools say why.
+
+REV logs are candidates when their name's time falls within 5 minutes of the log (30 minutes when only file modification times are available). A candidate that, once synchronized, neither correlates with the log nor overlaps it (recorded in the session before or after) is not attached.
+
+The estimate is only as good as the roboRIO's clock when the file was named: in a real 2026 log the REV log's name was 15 s earlier than its first frame. Without a wall-clock entry there is no estimate, and the search is centered on an offset of 0.
 
 #### Phase 2: fine alignment by cross-correlation (milliseconds)
 
@@ -2549,7 +2650,7 @@ The revlog parser guards against corrupt or truncated files:
 - Status 2: `Velocity`, `Position` (primary encoder; RPM and rotations unless a conversion factor is configured, which the unit says)
 - Status 3: `AnalogVoltage` (V), `AnalogVelocity`, `AnalogPosition`; status 4: `ExternalEncoderVelocity`, `ExternalEncoderPosition` (the alternate encoder on a SPARK MAX); status 5: `DutyCycleEncoderVelocity`, `DutyCycleEncoderPosition`; status 6: `UnadjustedDutyCycle` (0–1), `DutyCyclePeriod` (µs), `DutyCycleNoSignal`; status 7: `IAccum`; status 8: `Setpoint`, `IsAtSetpoint`, `SelectedPidSlot`; status 9: `MaxMotionPositionSetpoint`, `MaxMotionVelocitySetpoint`
 
-Device keys are `SparkMax_<CAN id>` or `SparkFlex_<CAN id>` by the model the SPARK's status 0 frames report (the `SparkModel` signal: 1 = Flex, 2 = MAX, the codes of REVLib's `SparkModel`), or `Spark_<CAN id>` when no frame carried the field (device type 2 in the CAN ID covers both models). A REV log named `REV_YYYYMMDD_HHMMSS_<bus>.revlog` is reported under that bus name; one without a suffix is `rio` (then `can1`, `can2`, ...). Firmware 25+ also sends the legacy status 0 frame once a second for old followers, with zero output and every fault set; it carries no data and is not decoded.
+Device keys are `SparkMax_<CAN id>` or `SparkFlex_<CAN id>` by the model the SPARK's status 0 frames report (the `SparkModel` signal: 1 = Flex, 2 = MAX, the codes of REVLib's `SparkModel`). When no frame carried the field, the key is `Spark_<CAN id>` (device type 2 in the CAN ID covers both models). A REV log named `REV_YYYYMMDD_HHMMSS_<bus>.revlog` is reported under that bus name; one without a suffix is `rio` (then `can1`, `can2`, ...). Firmware 25+ also sends the legacy status 0 frame once a second for old followers, with zero output and every fault set; it carries no data and is not decoded.
 
 A custom DBC file replaces the built-in signal definitions: `rev_spark.dbc` in `~/Library/Application Support/wpilog-mcp/` (macOS), `%APPDATA%\wpilog-mcp\` (Windows), or `~/.config/wpilog-mcp/` (Linux), or a file named by the `WPILOG_REV_DBC` environment variable. Keep the built-in signal names so synchronization still finds its candidate pairs.
 
