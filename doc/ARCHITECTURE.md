@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains what wpilog-mcp is for, the principles its design follows, the reasons for them, and how the code carries those principles out: how it reads logs, manages memory, caches results, synchronizes REV logs, and serves several clients at once.
+This document explains what wpilog-mcp is for, the principles its design follows, and the reasons for them. It then shows how the code carries those principles out: how it reads logs, manages memory, caches results, synchronizes REV logs, and serves several clients at once.
 
 Other documents cover what this one leaves out. [TOOLS.md](TOOLS.md) describes every tool and the fields of a result. [STANDALONE.md](STANDALONE.md) and the [extension's README](../vscode-extension/README.md) cover installation and configuration. [DEVELOPMENT.md](DEVELOPMENT.md) covers building, testing, and adding a tool.
 
@@ -8,7 +8,7 @@ The code is described here by what each part does, not by class names, which cha
 
 ## Goals
 
-wpilog-mcp exists so that an FRC team can ask an AI agent an engineering question about its robot, such as why the robot browned out in a match or whether a swerve module is slipping, and get an answer that rests on the robot's own logs. The people asking are students and mentors, often in the pit between matches with little time, and afterwards with more.
+wpilog-mcp exists so that an FRC team can ask an AI agent an engineering question about its robot, and get an answer that rests on the robot's own logs. The question may be why the robot browned out in a match, or whether a swerve module is slipping. The people asking are students and mentors, often in the pit between matches with little time, and afterwards with more.
 
 That purpose sets the goals:
 
@@ -35,7 +35,7 @@ A few tools do give a summary for a pit crew in a hurry: a battery health score,
 
 ### The server does not guess
 
-When a tool needs a particular signal, such as the battery voltage, the robot pose, or the autonomous chooser, it uses an entry only when the caller named it, when it follows a convention a logging library publishes, or when it is the only entry of the right type. An entry that merely has a suggestive name is listed as a candidate for the agent or the user to confirm, and is not used. Most choices can be overridden with a parameter; an entry named that way but missing or of the wrong type is an error, not a reason to fall back on something else.
+A tool that needs a particular signal, such as the battery voltage, the robot pose, or the autonomous chooser, uses an entry on three grounds only. The caller named it, it follows a convention a logging library publishes, or it is the only entry of the right type. An entry that merely has a suggestive name is listed as a candidate for the agent or the user to confirm, and is not used. Most choices can be overridden with a parameter; an entry named that way but missing or of the wrong type is an error, not a reason to fall back on something else.
 
 A word in a name is not evidence, and neither is the shape of the data. The swerve tool takes the measured and setpoint module states from the names the swerve libraries and templates publish, each pair from one table. The mechanism tool analyzes only the entries passed to it, and uses a mechanism's name to list candidates. The vision tool reads what the vision template and the vision libraries publish under their own names. An entry that only has the content or the name of vision data is listed as a candidate and is not decoded. In each case the result names the entries it used and how each was chosen.
 
@@ -45,7 +45,9 @@ The rule holds beyond entry names. When REV logs are synchronized, names only no
 
 A guess is right on the logs a tool was written against and wrong elsewhere, and the wrong answer looks just like a right one. Version 0.8.2 took the first entry with "voltage" in its name as the battery. On one log that was the roboRIO's 5 V rail, and the tool reported a high brownout risk with 46,242 samples below the threshold. The same version's search for CAN errors looked for "can" anywhere in a message, which also matches "scan" and "cancel". The REV log matcher of the time treated every AdvantageKit output entry as a motor's output, because each such path (`/RealOutputs/...`) contains the word "output".
 
-The tools that still judged by a name or by content after that review failed the same way on real logs. A planned autonomous trajectory is a struct array of timestamps and poses, as a camera's observations are. The vision tool reported it as a camera in 86 of Team 2363's 88 logs, with a latency of minutes, and decoding its millions of samples took one call on a 688 MB log past 3 GB of heap. In logs other teams publish, a gyro's struct has yaw and pitch fields and was reported as a camera target. The mechanism tool took a camera's `targetYaw` for a setpoint. The swerve tool, given two target arrays beside the measured states, compared the measured states with whichever was declared first.
+The tools that still judged by a name or by content after that review failed the same way on real logs. A planned autonomous trajectory is a struct array of timestamps and poses, as a camera's observations are. The vision tool reported it as a camera in 86 of Team 2363's 88 logs, with a latency of minutes, and decoding its millions of samples took one call on a 688 MB log past 3 GB of heap.
+
+In logs other teams publish, a gyro's struct has yaw and pitch fields and was reported as a camera target. The mechanism tool took a camera's `targetYaw` for a setpoint. The swerve tool, given two target arrays beside the measured states, compared the measured states with whichever was declared first.
 
 ### The log decides
 
@@ -62,7 +64,9 @@ Game rules are the one thing a log cannot supply. They are bundled with the serv
 
 ### Every result says what it is and what it used
 
-A result has a status: `ok`, `partial`, `not_applicable`, `no_match`, or `error`. An analysis that finds nothing to analyze does not return an empty success. It says that it does not apply, or that it found no match; what it looked for; and how to point the tool at the right data, because finding nothing is not evidence that nothing is wrong. An empty success is the most damaging failure for an agent, because it looks like an answer: version 0.8.2's vision tool returned `success: true` with an empty list for a window in which the robot's pose moved 60 cm while the robot sat disabled. A tool that only reads or lists, such as `read_entry` or `search_strings`, can still answer with a count of zero, which is a plain statement of what the log holds.
+A result has a status: `ok`, `partial`, `not_applicable`, `no_match`, or `error`. An analysis that finds nothing to analyze does not return an empty success. It says that it does not apply, or that it found no match; what it looked for; and how to point the tool at the right data, because finding nothing is not evidence that nothing is wrong.
+
+An empty success is the most damaging failure for an agent, because it looks like an answer. Version 0.8.2's vision tool returned `success: true` with an empty list for a window in which the robot's pose moved 60 cm while the robot sat disabled. A tool that only reads or lists, such as `read_entry` or `search_strings`, can still answer with a count of zero, which is a plain statement of what the log holds.
 
 A result also names the entries, fields, and time windows it was computed from, the sections it could not produce, and the true total of a list it cut short.
 
@@ -80,15 +84,21 @@ Results that rest on statistics carry a data quality score with a reason for eve
 
 The same lesson applies to the quality score: in version 0.8.2 nearly every result scored 0.50, "low", including a loop-time signal with 59,217 samples at 47.8 Hz.
 
-Quality bounds statistics, not observations. A logged brownout flag or an error line is a fact and needs no statistical caveat. So a tool that reports only logged events, such as the Driver Station timeline, carries no quality score, and where a result holds both events and statistics, its low-quality warning says that it applies to the statistics only. The server teaches the model three tiers: a discrete event is a fact, a mean or a correlation is an inference bounded by its confidence level, and a cause outside the telemetry, such as wiring or wear, is a hypothesis that needs a physical check.
+Quality bounds statistics, not observations. A logged brownout flag or an error line is a fact and needs no statistical caveat. So a tool that reports only logged events, such as the Driver Station timeline, carries no quality score, and where a result holds both events and statistics, its low-quality warning says that it applies to the statistics only. The server teaches the model three tiers. A discrete event is a fact. A mean or a correlation is an inference bounded by its confidence level. A cause outside the telemetry, such as wiring or wear, is a hypothesis that needs a physical check.
 
 A confidence level never claims more than its evidence shows. REV log synchronization reports high confidence only when at least two signal pairs agree to within a few milliseconds.
 
 ### The server coaches the model's reasoning
 
-Guidance reaches the model in three places: in the descriptions of the analysis tools (what their numbers do and don't show), in results that rest on statistics (the confidence level, interpretation guidance in hedged language, suggested follow-up calls, and a reminder that one match may not generalize), and in server-level rules sent when the client connects.
+Guidance reaches the model in three places:
 
-The server-level rules are concrete. They are phrased in terms of this server's outputs: confirm with `get_ds_timeline` that the event in the question happened before explaining it, and quote only numbers a tool returned. The most important rules come first, and the whole text fits the 2 KB that Claude Code keeps. Rules that cost effort, such as testing a proposed cause against a rival explanation, apply only to "why" questions, so that a lookup gets a direct answer; a pit crew has little time. One rule is about meaning: an entry's name does not prove what it measures, so the agent reads the robot's source code where the entry is logged, or calls the mapping an assumption. No rule forbids the only way around a limit: the rule against computing statistics by hand names `export_csv` as the way out when no tool can read the data.
+- the descriptions of the analysis tools, which say what their numbers do and don't show;
+- results that rest on statistics, which carry the confidence level, interpretation guidance in hedged language, suggested follow-up calls, and a reminder that one match may not generalize;
+- server-level rules sent when the client connects.
+
+The server-level rules are concrete. They are phrased in terms of this server's outputs: confirm with `get_ds_timeline` that the event in the question happened before explaining it, and quote only numbers a tool returned. The most important rules come first, and the whole text fits the 2 KB that Claude Code keeps.
+
+Rules that cost effort, such as testing a proposed cause against a rival explanation, apply only to "why" questions, so that a lookup gets a direct answer; a pit crew has little time. One rule is about meaning: an entry's name does not prove what it measures, so the agent reads the robot's source code where the entry is logged, or calls the mapping an assumption. No rule forbids the only way around a limit: the rule against computing statistics by hand names `export_csv` as the way out when no tool can read the data.
 
 Some clients drop these rules, so `get_server_guide` returns the full method as a tool result, and its description asks the agent to call it first. [TOOLS.md](TOOLS.md#server-instructions) describes both.
 
@@ -98,9 +108,11 @@ Every tool that reads a log takes the log's path. There is no "current log", so 
 
 ### Claims are checked
 
-A tool's description and the documentation promise only what the code does, and tests hold them to it: each tool's schema against the parameters its code reads, the documented parameters against the schema, and every output a description names against real results.
+A tool's description and the documentation promise only what the code does, and tests hold them to it. Each tool's schema is checked against the parameters its code reads, the documented parameters against the schema, and every output a description names against real results.
 
-A test run without failures shows that the tools keep their contract, not that their numbers are right. So the numbers are checked against sources that share no code with the server: a second log reader written from the format specification, and values computed separately with WPILib's Python reader and NumPy. That check found defects every other test had missed, among them a healthy log reported as truncated because it held records before time zero. Recomputing the reference values also showed that two of the robustness review's own reference values were wrong. The rule for every fix is a regression test that fails without it. [DEVELOPMENT.md](DEVELOPMENT.md#testing) describes the tests.
+A test run without failures shows that the tools keep their contract, not that their numbers are right. So the numbers are checked against sources that share no code with the server: a second log reader written from the format specification, and values computed separately with WPILib's Python reader and NumPy. That check found defects every other test had missed, among them a healthy log reported as truncated because it held records before time zero. Recomputing the reference values also showed that two of the robustness review's own reference values were wrong.
+
+The rule for every fix is a regression test that fails without it. [DEVELOPMENT.md](DEVELOPMENT.md#testing) describes the tests.
 
 ## Technologies
 
@@ -153,6 +165,7 @@ The server's code is under `src/main/java/org/triplehelix/wpilogmcp/`:
 |---|---|
 | (the root) | Startup: reading arguments and configuration, and wiring the parts together |
 | `mcp` | JSON-RPC, transports, sessions, loopback directory/key registration, HTTP data/store/metrics endpoints and import/sync jobs, and the tool registry |
+| `data` | The Apache Arrow IPC stream writer the data endpoint uses: Flatbuffers metadata from `arrow-format`, and each column's buffers laid out in byte arrays on the heap |
 | `tools` | The tools, grouped by subject, and what they share: the base every tool runs through, the result builder and result contract, the signal resolver, time scopes, field paths, data quality, and the guidance text |
 | `log` | Finding and loading logs: the log manager, the lazy log and its scan, the writer-built live log, and the directory listing. It also finds the REV logs that belong to a wpilog and runs their synchronization. `log/struct` decodes structs from schemas, and `log/subsystems` holds the cache of loaded logs, the record decoder, path security, and an older parser that decodes a whole log at once, kept as a fallback |
 | `store` | File manifests, content inspection, one mutation queue per store, and abandoned-capture recovery; the catalog door, peer sync and placement recovery, scoped mirror synchronization and local controls, robot identity, session placement, provenance, duplicate detection, and unmanaged files |
@@ -174,39 +187,51 @@ Three more places: `src/main/java/edu/wpi/first/util/datalog` holds one small cl
 
 ## File transfer
 
-`sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock
-and gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
-SFTP and the HTTP store door; a local interface supplies append, archive, rename, verification,
-placement, and atomic manifest writes. One caller owns a step; a concurrent call is refused.
-One remote listing serves a whole pass across files and blocks. A long-running pass refreshes after
-ten seconds; verification requires stable size and modification time across distinct listings.
+`sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock and
+gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
+SFTP and the HTTP store door. A local interface supplies append, archive, rename, verification,
+placement, and atomic manifest writes. One caller owns a step, and a concurrent call is refused. One
+remote listing serves a whole pass across files and blocks. A long-running pass refreshes its
+listing after ten seconds. Verification requires a stable size and modification time across distinct
+listings.
+
+#### Resuming a copy
 
 `pull.json` remembers each remote name, size, modification time, copied count, verification state,
 and local path, plus retired generations. Growth resumes only after a hash of exactly the held
-prefix matches. Without command execution, the fallback compares the last 64 KiB of that range;
-this is weaker evidence than a whole-prefix hash. Shrinkage, rewound time, or mismatched content
+prefix matches. Without command execution, the fallback compares the last 64 KiB of that range,
+which is weaker evidence than a whole-prefix hash. Shrinkage, rewound time, or mismatched content
 archives the old copy and starts a new file. A disappearing name and a new name with unique matching
 content can rename the held copy. Names alone never establish continuity.
 
-The gate pauses between blocks; resuming rechecks the held prefix. Read pacing includes fallback
+#### Verification
+
+The gate pauses between blocks, and resuming rechecks the held prefix. Read pacing includes fallback
 comparison bytes. After a stable listing pass, the ordinary readers must reach a clean EOF before
 placement; a recoverable truncated log is not verified. One failed verification permits one complete
-refetch. The REV parser has a strict verification entry point beside its ordinary recovery behavior;
-sync cache format 6 invalidates older reader/synchronization results. There is no remote deletion operation.
+refetch. The REV parser has a strict verification entry point beside its ordinary recovery behavior,
+and sync cache format 6 invalidates older reader/synchronization results. There is no remote
+deletion operation.
 
-`ssh.SharedSsh` owns each host connection. `capture/pull.PullCoordinator` borrows its SFTP channel and runs on a separate daemon. It reads
-the ordered capture listener's `/FMSInfo/FMSControlData` enabled bit: only a continuously disabled
-robot, settled for five seconds with NT4 still connected, permits work. Unknown state and each new
-connection close the gate. Polling, retries and pacing use a scheduler; neither SSH nor transfer
-storage runs on the NT4 loop. Shutdown includes the transport in the capture's existing deadline.
+#### The pull worker
+
+`ssh.SharedSsh` owns each host connection. `capture/pull.PullCoordinator` borrows its SFTP channel
+and runs on a separate daemon. It reads the ordered capture listener's `/FMSInfo/FMSControlData`
+enabled bit: only a continuously disabled robot, settled for five seconds (the default) with NT4
+still connected, permits work. Unknown state and each new connection close the gate. Polling,
+retries and pacing use a scheduler, and neither SSH nor transfer storage runs on the NT4 loop.
+Shutdown includes the transport in the capture's existing deadline.
+
+#### SSH
 
 The maintained JSch fork is one dependency with no required crypto provider on Java 17. Its
-versioned Ed25519 classes require the packaged JAR's `Multi-Release` manifest flag, checked by
-initializing the actual packaged providers in an isolated classloader. Host fingerprints are kept
-per serial and address. First contact is trusted. A changed key is reported before authentication:
+versioned Ed25519 classes require the packaged JAR's `Multi-Release` manifest flag, which is checked
+by initializing the packaged providers in an isolated classloader. Host fingerprints are kept per
+serial and address. First contact is trusted. A changed key is reported before authentication:
 empty-password authentication may continue, but a configured password or key requires explicit
-`capture.pull.ssh.accept_changed_host_key: true` or removal of the pinned fingerprint in `robot.json`.
-The subsequent serial reading selects the pull manifest. A changed key alone does not identify a device.
+`capture.pull.ssh.accept_changed_host_key: true` or removal of the pinned fingerprint in
+`robot.json`. The subsequent serial reading selects the pull manifest. A changed key alone does not
+identify a device.
 
 Connect and channel-open timeouts stay at five seconds. Five-second SSH keepalives (three missed
 replies allowed) keep a live connection available while a hash has no output. Each hash command has
@@ -214,70 +239,85 @@ a separate deadline: 30 seconds plus one second per 256 KiB, rounded up. Expiry 
 and a completed command cancels its timer. Hashing reads the entire held prefix on the robot and
 costs CPU and storage bandwidth; the transfer byte cap does not pace that local work.
 
+#### Placement
+
 `store.PullStore` uses the existing queue, path validation, move reservations and reader release.
 Partial files stay in `robots/<serial>/pulled/` and do not appear as logs. Verified files move into
 session `robot/` directories with hash, size and remote provenance. Confirmed growth returns a file
-to staging and removes its obsolete session hash before append. Moves keep durable tool-path aliases.
-A file's logged serial wins over the SSH device reading, with a recorded conflict; matching never
-crosses known serials. Addresses select a connection, not a robot's lifetime identity.
+to staging and removes its obsolete session hash before append. Moves keep durable tool-path
+aliases. A file's logged serial wins over the SSH device reading, with a recorded conflict, and
+matching never crosses known serials. Addresses select a connection, not a robot's lifetime
+identity.
+
+#### Session matching
 
 Before loading candidates, manifest session ranges nominate overlapping sessions, using the same
 clock slack as import: two hours, or sixteen for filename clocks without a zone. Unknown clocks,
-including REV's unset 1970 filename clock, cannot exclude a candidate.
-Names nominate shared numeric entries (including DataLogManager's `NT:` prefix and the
-`/AdvantageKit` table added by AdvantageKit's NT publisher) or REV signal
-pairs; the existing correlation machinery decides. Flat, ambiguous or weak data is insufficient.
+including REV's unset 1970 filename clock, cannot exclude a candidate. Names nominate shared numeric
+entries (including DataLogManager's `NT:` prefix and the `/AdvantageKit` table added by
+AdvantageKit's NT publisher) or REV signal pairs, and the existing correlation machinery decides.
+Flat, ambiguous or weak data is insufficient.
+
 A strong match must have an offset within 250 ms of zero and identify one session. Capture files
-anchor their session; already matched members cannot chain small offsets into a larger clock shift.
-A session without a capture may use an unmatched WPILOG as its anchor. A missing logged serial on
-either side records `data_alone`, even when device identity already limits the candidate robot.
-No unique match creates a new session, using the file's clock evidence or modification time with
-that basis. Its file manifest and listing retain `matching_reason`, distinguishing insufficient
-data, clock/serial disagreement, excessive offset, and ambiguous sessions. An open capture has
-no completed hash to invent. A new contact checks held content even
-when a reused file has identical size and mtime; a changed listing invalidates an in-progress proof.
+anchor their session, and already matched members cannot chain small offsets into a larger clock
+shift. A session without a capture may use an unmatched WPILOG as its anchor. A missing logged
+serial on either side records `data_alone`, even when device identity already limits the candidate
+robot.
+
+When no match is unique, the file gets a new session, dated by its clock evidence or its
+modification time, and the manifest records which. Its file manifest and listing retain
+`matching_reason`, distinguishing insufficient data, clock/serial disagreement, excessive offset,
+and ambiguous sessions. An open capture has no completed hash to invent. A new contact checks held
+content even when a reused file has identical size and mtime, and a changed listing invalidates an
+in-progress proof.
 
 ## NT4 foundation
 
-The NT4 layer was first exercised as an unwired fixture; the configured capture service now uses
-its client and optional gateway. The client and a loopback gateway exercise each other on every generated fixture to
-pin the delivery order the capture writer depends on. The gateway's core
-takes messages and explicit times and returns deliveries; it performs no I/O under its short state
-lock. The adapter sends those deliveries on its own daemon loop. The client has a separate daemon
-loop, so every announcement, removal, property update, and value reaches its listener in order on
-one thread. The capture service feeds the writer, live tools and gateway from that listener.
+The NT4 layer was first exercised as an unwired fixture. The configured capture service now uses its
+client and optional gateway. The client and a loopback gateway exercise each other on every
+generated fixture to pin the delivery order the capture writer depends on. The gateway's core takes
+messages and explicit times and returns deliveries, and performs no I/O under its short state lock.
+The adapter sends those deliveries on its own daemon loop. The client has a separate daemon loop, so
+every announcement, removal, property update, and value reaches its listener in order on one thread.
+The capture service feeds the writer, live tools and gateway from that listener.
 
-Both 4.1 endpoints ping every 200 ms and expire the oldest unanswered ping after one second;
-a local loop that has not sent a ping cannot blame the peer for its own stall. Pong receipt is
-stamped on the network callback, and gateway pong replies bypass fan-out while retaining the
-send-queue bound. The JDK client renews receive demand there too (automatic pong replies consume
-that demand). Copied listener work is bounded to 32 MiB, charging at least 64 bytes per callback;
-an overrun closes with an explained reason instead of growing the application queue indefinitely.
+#### Keepalive
+
+Both 4.1 endpoints ping every 200 ms and expire the oldest unanswered ping after one second. A local
+loop that has not sent a ping cannot blame the peer for its own stall. Pong receipt is stamped on
+the network callback, and gateway pong replies bypass fan-out while retaining the send-queue bound.
+The JDK client renews receive demand there too (automatic pong replies consume that demand). Copied
+listener work is bounded to 32 MiB, charging at least 64 bytes per callback. An overrun closes with
+an explained reason instead of growing the application queue indefinitely.
+
+#### The gateway
 
 The gateway has its own configured port and the HTTP bind address. Recorder policy does not filter
-its feed. A robot disconnect flushes pending values before unannouncing every upstream topic; new
-announcements allocate new gateway ids. Client publications are private acknowledgement sinks,
+its feed. A robot disconnect flushes pending values before unannouncing every upstream topic, and
+new announcements allocate new gateway ids. Client publications are private acknowledgement sinks,
 never a second route to the robot or capture. Properties acknowledgements report unchanged facts.
 
-The listener's bind lifecycle is independent of capture startup. A busy port retries with
-1-second exponential backoff capped at 30 seconds; topics remain in the gateway core while
-waiting. The adapter binds a reusable socket before handing it to Java-WebSocket, so failed
-attempts close their channel and do not emit the library's repeated fatal-startup log.
-Health and live sessions read a published state, cause and state-change time without waiting.
+The listener's bind lifecycle is independent of capture startup. A busy port retries with 1-second
+exponential backoff capped at 30 seconds, and topics remain in the gateway core while waiting. The
+adapter binds a reusable socket before handing it to Java-WebSocket, so failed attempts close their
+channel and do not emit the library's repeated fatal-startup log. Health and live sessions read a
+published state, cause and state-change time without waiting.
 
 The fan-out thread coalesces sends at the minimum requested value period per client, deduplicating
-overlapping subscriptions as NT4 permits. Period-pending values are bounded by 32 MiB and 65,536
-records per client. Java-WebSocket's nonblocking selector drains the socket queues; every text and
-binary message is fragmented near the MTU, with at most 32,768 queued fragments per client. The
-adapter checks the queue's constant-time size before each send and drops an overrun connection
+overlapping subscriptions as NT4 permits. Period-pending values are bounded by 32 MiB and
+65,536 records per client. Java-WebSocket's nonblocking selector drains the socket queues. Every
+text and binary message is fragmented near the MTU, with at most 32,768 queued fragments per client.
+The adapter checks the queue's constant-time size before each send and drops an overrun connection
 immediately, logging its reason. Neither a socket write nor a store operation runs on the NT4 loop.
 The connected count is a volatile publication for metrics, not a call into the fan-out lock.
 
-The 200 ms aliveness tick also restores lost socket write interest. Java-WebSocket 1.6.0 can
-clear `OP_WRITE` after a concurrent sender sets it, leaving an open 4.0 connection with queued
-bytes and no next message to wake it. A constant-time queue check rearms the selector; it does
-not resend bytes or add protocol pings. The independent scripted wire fixture needs the same
-RFC 6455 adapter repair. A regression plants that exact selector state on real sockets.
+The 200 ms aliveness tick also restores lost socket write interest. Java-WebSocket 1.6.0 can clear
+`OP_WRITE` after a concurrent sender sets it, leaving an open 4.0 connection with queued bytes and
+no next message to wake it. A constant-time queue check rearms the selector. It does not resend
+bytes or add protocol pings. The independent scripted wire fixture needs the same RFC 6455 adapter
+repair. A regression plants that exact selector state on real sockets.
+
+#### Time synchronization
 
 Time-sync replies apply the client's measured robot offset to its monotonic clock. Without an
 estimate they use that local clock, following ntcore's server reply. The first synchronized sample
@@ -286,107 +326,138 @@ so retaining a connection across a clock change would retain the wrong offset. T
 probe verifies its received timestamps through a separate NetworkTableInstance. A real dashboard
 or AdvantageScope session remains a manual hardware check.
 
+#### MessagePack
+
 The MessagePack subset is written from the format specification, like the Arrow data writer, and
 checked against hand-encoded bytes, including every integer width, floating-point bits, variable
 length headers, and concatenated NT4 messages. It is separate from the existing MessagePack disk
-cache library. Untrusted lengths, nesting, and message size are bounded; unsupported extension
+cache library. Untrusted lengths, nesting, and message size are bounded, and unsupported extension
 formats are rejected. The announced type string survives unchanged: a binary code chooses a decoder,
 not a schema or an interpretation. Struct schemas are ordinary binary topics.
 
-The client uses Java 17's WebSocket to avoid another client dependency. Java-WebSocket 1.6.0 supplies
-only the server framing (140,686-byte JAR, MIT, with SLF4J already present); its license is retained
-under `META-INF/licenses/`. NT4.1 is preferred, with NT4.0 negotiated on the same handshake. Only 4.1
-connections receive WebSocket pings. Initial time synchronization precedes subscription; later
-measurements run every three seconds. The clock estimate uses the newest minimum-RTT measurement
-in the last 30 seconds. Failed address sweeps retry after 1, 2, 4, 8, then 10 seconds indefinitely.
-Each sweep tries the last successful address first, then the others in configured order; until a
-connection succeeds, sweeps start with the first configured address.
+#### The client
 
-The lossless listener sees every received value, including an older timestamp. In accordance with
-WPILib's protocol, the latest table keeps the greatest timestamp (ties replace), honors `cached: false`,
-and removes values on unannounce or disconnect. The gateway keeps the same retained-value rule
-for a new subscriber, while an `all` subscription receives every publication in arrival order.
-Native ntcore interoperability is checked by the harness; real dashboard interoperability remains
-the user's manual check.
+The client uses Java 17's WebSocket to avoid another client dependency. Java-WebSocket 1.6.0
+supplies only the server framing (140,686-byte JAR, MIT, with SLF4J already present), and its
+license is retained under `META-INF/licenses/`. NT4.1 is preferred, with NT4.0 negotiated on the
+same handshake. Only 4.1 connections receive WebSocket pings.
+
+Initial time synchronization precedes subscription, and later measurements run every three seconds.
+The clock estimate uses the newest minimum-RTT measurement in the last 30 seconds. Failed address
+sweeps retry after 1, 2, 4, 8, then 10 seconds indefinitely. Each sweep tries the last successful
+address first, then the others in configured order. Until a connection succeeds, sweeps start with
+the first configured address.
+
+The lossless listener sees every received value, including an older timestamp. Following WPILib's
+protocol, the latest table keeps the greatest timestamp (ties replace), honors `cached: false`, and
+removes values on unannounce or disconnect. The gateway keeps the same retained-value rule for a new
+subscriber, while an `all` subscription receives every publication in arrival order. Native ntcore
+interoperability is checked by the harness. Real dashboard interoperability remains the user's
+manual check.
 
 ## Capture writer
 
-The capture writer is the NT4 client's listener, so announcement, value, and finish records have
-one writer and one order. Its pure-Java WPILOG output follows WPILib's file specification because
-the native DataLog writer cannot run in the Java-only install. The independent fixture writer,
-the differential reader, and wpiutil's reader check its bytes. Storage and live-index observers
-receive complete writes and their byte offsets; context providers can join this loop later.
-Announcement properties are preserved under `nt4_properties` in the entry metadata, separate
-from the recorder's `source`, `robot`, and thinning policy. Property patches merge with null meaning
-deletion and write WPILOG Set Metadata records. The writer then publishes the changed descriptor
-to the live index; calls already in progress keep their earlier metadata snapshot. A fresh file
-scan applies the same control records, and changes also seed the next rollover declaration.
-NT4 does not timestamp its text controls, so these controls use the measured
-server clock at receipt. Closed-file accounting snapshots count received data records, including
-their WPILOG headers, and exclude declarations, control changes, identity context and schema seeds.
-An optional `capture` configuration starts this listener beside the HTTP server. Missing robots
-do not delay HTTP startup; shutdown drains tool calls, closes the capture, then retires log readers.
+The capture writer is the NT4 client's listener, so announcement, value, and finish records have one
+writer and one order. Its pure-Java WPILOG output follows WPILib's file specification because the
+native DataLog writer cannot run in the Java-only install. The independent fixture writer, the
+differential reader, and wpiutil's reader check its bytes. Storage and live-index observers receive
+complete writes and their byte offsets, and context providers can join this loop later.
+
+#### Entry metadata
+
+Announcement properties are preserved under `nt4_properties` in the entry metadata, separate from
+the recorder's `source`, `robot`, and thinning policy. Property patches merge with null meaning
+deletion and write WPILOG Set Metadata records. The writer then publishes the changed descriptor to
+the live index; calls already in progress keep their earlier metadata snapshot. A fresh file scan
+applies the same control records, and changes also seed the next rollover declaration.
+
+NT4 does not timestamp its text controls, so these controls use the measured server clock at
+receipt. Closed-file accounting snapshots count received data records, including their WPILOG
+headers, and exclude declarations, control changes, identity context and schema seeds.
+
+#### Startup and the store
+
+An optional `capture` configuration starts this listener beside the HTTP server. Missing robots do
+not delay HTTP startup. Shutdown drains tool calls, closes the capture, then retires log readers.
 The capture store uses the existing store queue, path validation, move reservations, and manifests.
-Creation is synchronous. Later updates use immutable snapshots and coalesce into one pending task;
-changed facts queue immediately, ordinary progress at most every five seconds. Imports cannot
-stall the NT4 event loop. Shutdown waits at most 30 seconds for the writer and last close snapshot, including its hashes. A timeout is logged for the next startup sweep.
-An additive `open_capture` field represents a growing file without inventing a hash or weakening
-the finished-file checks. At close it becomes a normal `files` member. Event and match facts are
-queued when they change. Cosmetic renames wait for close and reader release on every platform:
-otherwise an asynchronous directory move can race a rollover open or a mapping growth. Address directories carry robot basis `address`, since an endpoint is not a stated robot identity.
+Creation is synchronous. Later updates use immutable snapshots and coalesce into one pending task:
+changed facts queue immediately, ordinary progress at most every five seconds. Imports cannot stall
+the NT4 event loop. Shutdown waits at most 30 seconds for the writer and last close snapshot,
+including its hashes. A timeout is logged for the next startup sweep.
+
+#### Open captures and renames
+
+An additive `open_capture` field represents a growing file without inventing a hash or weakening the
+finished-file checks. At close it becomes a normal `files` member. Event and match facts are queued
+when they change. Cosmetic renames wait for close and reader release on every platform: otherwise an
+asynchronous directory move can race a rollover open or a mapping growth. Address directories carry
+robot basis `address`, since an endpoint is not a stated robot identity.
+
 A device serial learned during recording is written as context in the current file. Its manifest
 update is asynchronous; promotion waits for session close and reader release, like the event rename.
 New sessions already use the known serial. A reader that prevents the move leaves the directory in
-place until a later close or contact. Store moves keep old paths usable by tools,
-with the same security and file-change checks as the destination.
+place until a later close or contact. Store moves keep old paths usable by tools, with the same
+security and file-change checks as the destination.
+
+#### Robot identity
 
 Robot identity uses the resolver's metadata roles for `/SystemStats/SerialNumber` and
-`/SystemStats/Comments`, including their `NT:` forms, wherever a log lives. Listing reads only
-the first 2000 records; import inspection can find later identity. Its own logged serial
-wins over a connection's device serial; disagreements are recorded in the manifest and server log.
+`/SystemStats/Comments`, including their `NT:` forms, wherever a log lives. Listing reads only the
+first 2000 records; import inspection can find later identity. A log's own logged serial wins over a
+connection's device serial, and disagreements are recorded in the manifest and server log.
 `capture/context` reads the HAL's sources, records the device evidence as the first JSON context
 entry at file start and again on resume, and the store remembers addresses and SSH key history by
-serial. An address or host key can change; neither replaces the serial. `robot_candidates` is only
-a hint: an exact logged team, sorted entry name/type set, or REV CAN id/type inventory must match
-one known serial. Only store files participate, from fingerprints saved by import inspection in
-the additive `robot_fingerprint` manifest field. Older manifests without it supply no hint. Listing
-never opens a log to compute candidate evidence. Contradictory unique hints are omitted. No candidate
-changes placement.
+serial. An address or host key can change; neither replaces the serial.
+
+`robot_candidates` is only a hint: an exact logged team, sorted entry name/type set, or REV CAN
+id/type inventory must match one known serial. Only store files participate, from fingerprints saved
+by import inspection in the additive `robot_fingerprint` manifest field. Older manifests without it
+supply no hint. Listing never opens a log to compute candidate evidence. Contradictory unique hints
+are omitted. No candidate changes placement.
+
+#### Recovery
 
 The service queues recovery after HTTP is listening, then starts NT4 only when the sweep completes.
-Scanning and hashing an abandoned capture cannot delay the daemon health endpoint. Each `open_capture`
-is claimed with the same persistent sidecar lease as the writer; a live writer is skipped. The
-OS lock covers other processes and the local claim avoids opening a second channel to a held
-lock. The lease is separate from the data: closing mapped readers must not release a writer's
-ownership. A dead process loses its lease. Recovery scans a readable file before hashing it,
-preserves an incomplete-tail flag and previously closed files, and uses file modification time
-for `ended_at`, with `end_reason` set to `server stopped while recording`. Failed reads leave the
-file open with a manifest/log reason. Neither successful recovery nor a failed read changes the
-capture bytes. The sidecar inode stays in place for later writers and is catalog metadata.
+Scanning and hashing an abandoned capture cannot delay the daemon health endpoint. Each
+`open_capture` is claimed with the same persistent sidecar lease as the writer, and a live writer is
+skipped. The OS lock covers other processes, and the local claim avoids opening a second channel to
+a held lock. The lease is separate from the data: closing mapped readers must not release a writer's
+ownership. A dead process loses its lease.
+
+Recovery scans a readable file before hashing it, preserves an incomplete-tail flag and previously
+closed files, and uses file modification time for `ended_at`, with `end_reason` set to
+`server stopped while recording`. Failed reads leave the file open with a manifest/log reason.
+Neither successful recovery nor a failed read changes the capture bytes. The sidecar inode stays in
+place for later writers and is catalog metadata.
+
+#### Sessions and rollover
 
 Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
-clock resumes the closed file with fresh entry ids; a reset or a discrepancy beyond five seconds
+clock resumes the closed file with fresh entry ids. A reset or a discrepancy beyond five seconds
 starts a new session. Flushes and five-minute topic cost reports run on the same injectable event
 loop. Exclusion and thinning are explicit policy, and thinned entries record their period.
-Each capture file is bounded by `capture.max_file_bytes` (default 1 GiB), including reserved finishes.
-Rollover closes every active entry and starts the next numbered file in the same session with fresh
-entry ids and a new live index. Retained schema definitions seed the new file, explicitly marked in
-entry metadata and timestamped at the rollover's server time, so a file can decode its own structs without inheriting the boot-time schema's range. Tools continue to read one file per call.
+
+Each capture file is bounded by `capture.max_file_bytes` (default 1 GiB), including reserved
+finishes. Rollover closes every active entry and starts the next numbered file in the same session
+with fresh entry ids and a new live index. Retained schema definitions seed the new file, explicitly
+marked in entry metadata and timestamped at the rollover's server time, so a file can decode its own
+structs without inheriting the boot-time schema's range. Tools continue to read one file per call.
+
 A writer IOException closes recording with its reason and keeps the client connected. Only another
-robot clock permits recording again. Record writes roll back an incomplete tail when possible;
-failed rollback forbids appending finishes. Session `end_reason` preserves the reason without changing
-the store format version.
+robot clock permits recording again. Record writes roll back an incomplete tail when possible, and
+failed rollback forbids appending finishes. Session `end_reason` preserves the reason without
+changing the store format version.
 
 ## Robot facts
 
-`robot-facts` is an explicit operator command, separate from the continuously running providers.
-It borrows the same SSH implementation and host-key policy for one connection, opens bounded
-exec channels for a fixed read-only command list, and uses SFTP only to nominate the largest
-log for a bounded hash-cost probe. Exit status, stdout and stderr remain separate, including
-permission refusals. The pure report builder classifies evidence, not the image's assumed
-capabilities; unavailable commands do not abort the report. Known credentials and sensitive
-command-line options are redacted at its output boundary. Named configurations use their store
-pins; direct hosts use a local pin store. No remote environment contents are collected.
+`robot-facts` is an explicit operator command, separate from the continuously running providers. It
+borrows the same SSH implementation and host-key policy for one connection, opens bounded exec
+channels for a fixed read-only command list, and uses SFTP only to nominate the largest log for a
+bounded hash-cost probe. Exit status, stdout and stderr remain separate, including permission
+refusals. The pure report builder classifies evidence, not the image's assumed capabilities, and
+unavailable commands do not abort the report. Known credentials and sensitive command-line options
+are redacted at its output boundary. Named configurations use their store pins, and direct hosts use
+a local pin store. No remote environment contents are collected.
 
 ## Live log
 
@@ -400,18 +471,20 @@ Each entry has a chunked append-only array and a volatile length. The writer pub
 slots, then a global boundary containing the record sequence and data time range. A call captures
 that boundary and takes each entry's length on first access, capped at the boundary. Its values,
 entry table, and schemas therefore come from one consistent prefix. `inputs.session_time_range`
-names that prefix in seconds; `compare_matches` supplies a range per live input path. Data reads
+names that prefix in seconds, and `compare_matches` supplies a range per live input path. Data reads
 take no writer lock. Short lifetime transitions and the existing file leases protect retirement.
 
 The default ten-minute hot window keeps the client's decoded values, with array/struct conversion
 when a tool requests them. Expiry follows server time sync as well as new data, so idle topics age
-out too. Each 250 ms flush tick hands disk force to the writer's daemon thread, with only one
-force outstanding. Its completion time and index/manifest notification are published back on the
-ordered listener loop; close and rollover wait before closing the channel or replacing its file.
-Record writes remain on the listener loop. Expiry follows completed flushes, at most four growth remaps per second even
-with a zero hot window. Before discarding a hot value, the writer ensures a read-only mapping covers its complete
-record. Older values use their offsets; replacing a mapping waits for its last atomic reader
-reference before unmapping it. The write channel remains open beside the mapping on Windows.
+out too. Each 250 ms flush tick hands disk force to the writer's daemon thread, with only one force
+outstanding. Its completion time and index/manifest notification are published back on the ordered
+listener loop; close and rollover wait before closing the channel or replacing its file. Record
+writes remain on the listener loop.
+
+Expiry follows completed flushes, at most four growth remaps per second even with a zero hot window.
+Before discarding a hot value, the writer first covers its complete record with a read-only mapping.
+Older values use their offsets, and replacing a mapping waits for its last atomic reader reference
+before unmapping it. The write channel remains open beside the mapping on Windows.
 
 The manager pins active captures outside its evictable cache and supplies a fresh prefix per call,
 without file-change checks or after-call discard. At close the same index enters the ordinary cache;
@@ -425,22 +498,23 @@ it has no access to this writer-owned live index.
 
 Each step is explained in the sections that follow.
 
-`render_chart` uses the same signal resolver, windows, sampling classification and field paths
-as the numeric tools. Its versioned specification owns every drawing choice; `ChartImage`
-only renders that evidence with headless JDK imaging, and the explorer uses uPlot and its field
-view. Full-window statistics stay independent of drawing pagination. `ResponseBuilder`
-attaches MCP content once: the tool base enforces the JSON contract and log inputs before the
-transport places image blocks beside that JSON. Missing imaging support skips the image with
-a reason, preserving the measurements.
-
 1. A client sends a `tools/call` request over stdio or HTTP. The transport hands it to the protocol handler, which finds the tool by name.
 2. The tool runs inside a wrapper that every tool shares, which turns an exception or an out-of-memory condition into an explained result.
 3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against permanent directories and live session leases. A log already in memory is returned at once, once a look at the file's attributes shows it is still the file the log was read from; a file that changed is loaded again. Otherwise the file is mapped into memory and scanned once.
 4. The tool finds the signals it needs through the signal resolver. A tool that takes a scope or windows turns them into time windows through the shared scope handling.
 5. It reads the values it needs. An entry's values are decoded the first time any call asks for them, and then cached.
 6. It computes its result and, in most tools, builds it with the result builder: the status, the inputs, what was skipped or shortened, and data quality where the result rests on statistics.
-7. The base that log-reading tools share looks at the file again, and discards the result with an explained error if the file changed while the tool read it. Otherwise it adds a report of any records that failed to decode, a note when the log was not read to its end, and, to a success, the entries the tool read; a session that used the log before its file changed is told once that it was reloaded. The wrapper then enforces the result contract.
+7. The base that log-reading tools share looks at the file again, and discards the result with an explained error if the file changed while the tool read it. Otherwise it adds a report of any records that failed to decode, a note when the log was not read to its end, and, to a success, the entries the tool read. A session that used the log before its file changed is told once that it was reloaded. The wrapper then enforces the result contract.
 8. The protocol handler adds the execution time and returns the result as the text of the reply.
+
+#### Charts
+
+`render_chart` uses the same signal resolver, windows, sampling classification and field paths as
+the numeric tools. Its versioned specification owns every drawing choice. `ChartImage` only renders
+that evidence with headless JDK imaging, and the explorer uses uPlot and its field view. Full-window
+statistics stay independent of drawing pagination. `ResponseBuilder` attaches MCP content once: the
+tool base enforces the JSON contract and log inputs before the transport places image blocks beside
+that JSON. Missing imaging support skips the image with a reason, preserving the measurements.
 
 ## Startup and Configuration
 
@@ -450,11 +524,27 @@ The server starts in one of three ways:
 - From command-line flags, with environment variables as their defaults and no configuration file. [STANDALONE.md](STANDALONE.md#command-line-flags) lists the flags.
 - As a background HTTP server: `start <name>` for a server whose transport is HTTP starts a second process and returns once it answers. Two starts of one server never spawn two processes, and the background process gets the same heap the launcher would give it. `stop <name>` ends it, and `connect <name>` relays a stdio client to it, starting it first when it must, so that one background server can serve every client on a machine.
 
-The `install` verb writes the standalone layout from its running JAR, with launcher and configuration templates packaged as resources. The shell installers download a JAR and delegate to it; Gradle does the same with `--force`. Versioned JARs and launchers remain available, the current launcher advances only to a newer version unless forced, and an existing YAML or legacy JSON configuration is preserved. Installation preflights the complete layout against the canonical install root through the shared security validator, and rechecks destinations when reading or writing them. The validator follows existing symlinks before normalizing parent components, matching the filesystem’s interpretation of `link/..`. Outside symlink targets are refused before any layout write; the intentional current-launcher link is allowed only to an in-root target (a missing in-root target still counts as older). Installation opens its lock without following links, holds it across the version decision and writes, and replaces complete files instead of truncating a JAR a daemon may still be reading. Ordinary updates leave daemon replacement to `start` and `connect`. Explicit `--refresh` instead stops recorded daemons, marks the install and start guards before closing their handles for Windows, renames the whole layout to a recovery backup, and copies only the settings into a fresh install. `--with-extension --vsix` delegates to one platform-aware VS Code lookup; Gradle and release scripts use it, while extension updates never do.
+#### Installing
 
-A background start reads what the server says of itself, not only that something answered. `GET /health` carries the server's version and process ID: a start that finds a server of another version stops it and starts its own version, so an upgrade never leaves an old JAR serving; one that finds something on the port that does not answer as this server reports it and starts nothing; and one that finds a server of its own version answering with no PID file records it. A server is stopped by a request over loopback that carries a token the start wrote to a file beside the PID file, readable by the user alone, and gave the server in its environment, never on its command line; so a process that can read the file may stop the server, and no other. A server too old to have the endpoint is ended as a process. While a server is being stopped its record says so, and no start takes it for running or claims the file before the port is free; a stopping record left behind by a stopper that died is taken for a running one again after a grace period.
+The `install` verb writes the standalone layout from its running JAR, with launcher and configuration templates packaged as resources. The shell installers download a JAR and delegate to it; Gradle does the same with `--force`. Versioned JARs and launchers remain available, the current launcher advances only to a newer version unless forced, and an existing YAML or legacy JSON configuration is preserved.
 
-A background start is guarded against races. Under a lock that holds across threads and processes, a start decides whether a server is running, clears a stale PID file, and claims the file. The file then records the spawned process as booting until it answers, so another start, or a status check, made in that interval waits for the process rather than mistaking its record for one left by a dead process whose ID was reused. A start reads and replaces the file only while it holds the lock, because Windows refuses to replace a file that is open in another program. A write refused because some other program has the file open (a virus scanner, someone displaying it) is retried for half a second. A server that answers is reported as started even if its record could not be updated; the next start settles the record.
+Installation preflights the complete layout against the canonical install root through the shared security validator, and rechecks destinations when reading or writing them. The validator follows existing symlinks before normalizing parent components, matching the filesystem’s interpretation of `link/..`. Outside symlink targets are refused before any layout write. The intentional current-launcher link is allowed only to an in-root target, and a missing in-root target still counts as older.
+
+Installation opens its lock without following links, holds it across the version decision and writes, and replaces complete files instead of truncating a JAR a daemon may still be reading. Ordinary updates leave daemon replacement to `start` and `connect`. Explicit `--refresh` instead stops recorded daemons, marks the install and start guards before closing their handles for Windows, renames the whole layout to a recovery backup, and copies only the settings into a fresh install. `--with-extension --vsix` delegates to one platform-aware VS Code lookup; Gradle and release scripts use it, while extension updates never do.
+
+#### Background servers
+
+A background start reads what the server says of itself, not only that something answered. `GET /health` carries the server's version and process ID. A start that finds a server of another version stops it and starts its own version, so an upgrade never leaves an old JAR serving. One that finds something on the port that does not answer as this server reports it and starts nothing. One that finds a server of its own version answering with no PID file records it.
+
+A server is stopped by a request over loopback that carries a token. The start wrote the token to a file beside the PID file, readable by the user alone, and gave it to the server in its environment, never on its command line. So a process that can read the file may stop the server, and no other. A server too old to have the endpoint is ended as a process.
+
+While a server is being stopped its record says so, and no start takes it for running or claims the file before the port is free. A stopping record left behind by a stopper that died is taken for a running one again after a grace period.
+
+A background start is guarded against races. Under a lock that holds across threads and processes, a start decides whether a server is running, clears a stale PID file, and claims the file. The file then records the spawned process as booting until it answers. Another start, or a status check, made in that interval waits for the process rather than mistaking its record for one left by a dead process whose ID was reused.
+
+A start reads and replaces the file only while it holds the lock, because Windows refuses to replace a file that is open in another program. A write refused because some other program has the file open (a virus scanner, someone displaying it) is retried for half a second. A server that answers is reported as started even if its record could not be updated; the next start settles the record.
+
+#### Settings and logging
 
 Started from a file, the server takes its log directories, team number, Blue Alliance key, transport, and cache settings from the file, so an MCP client needs no environment variables to run it. A few things have no field in the file and come from the environment: the heap size, and the HTTP bind address, path, and allowed origins.
 
@@ -478,16 +568,24 @@ The HTTP transport serves the MCP Streamable HTTP shape on one endpoint (`/mcp` 
 - `GET /health` answers as soon as the server is up, with the version and the process ID. `start` uses it to tell whether a background server is running, and which.
 - `POST /directories` replaces a session’s directory/team lease, `DELETE /directories` ends it early, and `POST /tba-key` replaces its in-memory key. These routes share the Origin gate and refuse any non-loopback bind: only a person’s client, never a tool, can grant access.
 - `POST /stop` ends the server, when it was started in the background: from this machine only, with the token the start gave it (above).
-- `GET /data/entries` serves every sample of one or more entries over a window, as an Apache Arrow IPC stream or as CSV (doc/STANDALONE.md, "The Data Endpoint"), for the extension's viewer, a script, or a dashboard, which MCP's JSON messages are the wrong shape for. It goes through the log manager's validator and the `Origin` check as the MCP endpoint does, and reads nothing it would not. The Arrow stream is written at the format level: `arrow-format` gives the Flatbuffers metadata, and the server lays out each batch's validity bitmaps, offsets, and data in byte arrays on the heap, so nothing leaves the garbage collector's care, as arrow-vector's off-heap allocator would. The tests read the streams back with a reader written from the specification, and CI reads them with pyarrow. The entries' samples are resolved, typed, classed by sampling, and flattened for CSV by the same code the tools use (`EntryData` in the tools package); the buckets are `read_entry`'s (`Buckets`).
-- `GET /store` and its robots, sessions, file and prefix-hash routes expose only the configured stores' catalogs. They do not inherit client directory leases. Listings use manifests without the stray walk, and a file block resolves only its owning manifest, so a transfer does not walk a season's catalog every 64 KiB. File reads hold a read lease, pin one length, and stream through a bounded buffer. The JDK HTTP client implements `sync.RemoteFiles` on the other end; the same prefix proofs and transfer journal serve SFTP and HTTP. SFTP requires a clean EOF; peer sync applies the ordinary import inspection so an already imported power-cut tail keeps its declared note. Mirror ownership and remembered peer URLs are additive header facts, preserved by capture, import and identity updates.
+- `GET /data/entries` serves every sample of one or more entries over a window, as an Apache Arrow IPC stream or as CSV (doc/STANDALONE.md, "The Data Endpoint"), for the extension's viewer, a script, or a dashboard, which MCP's JSON messages are the wrong shape for.
+- `GET /store` and its robots, sessions, file and prefix-hash routes expose only the configured stores' catalogs. They do not inherit client directory leases.
 
 With `idle_exit_minutes` configured, a background server exits after that interval without a session or recent MCP request, provided no HTTP import/sync job or inbox import is active. Health probes do not count as use. The default is zero, regardless of who starts the daemon; the extension does not change the file’s idle policy.
 
-The stdio bridge (`connect`) is a client of this transport in the same JAR: it posts each line from its standard input to the endpoint, writes each response as one line, relays the event stream's messages the same way, and deletes its session when its input closes, so the idle clock can run. A request it cannot deliver (the server unreachable, the session gone after a restart) gets a JSON-RPC error with the request's id, and the bridge exits non-zero, since the client's remedy is to run it again.
+The stdio bridge (`connect`) is a client of this transport in the same JAR. It posts each line from its standard input to the endpoint, writes each response as one line, and relays the event stream's messages the same way. It deletes its session when its input closes, so the idle clock can run. A request it cannot deliver (the server unreachable, the session gone after a restart) gets a JSON-RPC error with the request's id, and the bridge exits non-zero, since the client's remedy is to run it again.
 
 `initialize` creates a session, a random identifier that every later request must carry. A session tracks activity and owns any directory/key registrations; deleting or expiring it revokes both. A sweep every five minutes removes sessions that have gone an hour without use, and an open event stream counts as use.
 
 The server listens on `127.0.0.1` unless told otherwise, and rejects a request to the MCP endpoint whose `Origin` header names a host other than the local machine or an allowed one, which protects against DNS rebinding. There is no authentication: anyone who can reach the port can use the server.
+
+#### The data endpoint
+
+`GET /data/entries` goes through the log manager's validator and the `Origin` check as the MCP endpoint does, and reads nothing it would not. The Arrow stream is written at the format level: `arrow-format` gives the Flatbuffers metadata, and the server lays out each batch's validity bitmaps, offsets, and data in byte arrays on the heap. So nothing leaves the garbage collector's care, as arrow-vector's off-heap allocator would. The tests read the streams back with a reader written from the specification, and CI reads them with pyarrow. The entries' samples are resolved, typed, classed by sampling, and flattened for CSV by the same code the tools use (`EntryData` in the tools package); the buckets are `read_entry`'s (`Buckets`).
+
+#### The store door
+
+Store listings use manifests without the stray walk, and a file block resolves only its owning manifest, so a transfer does not walk a season's catalog every 64 KiB. File reads hold a read lease, pin one length, and stream through a bounded buffer. The JDK HTTP client implements `sync.RemoteFiles` on the other end, and the same prefix proofs and transfer journal serve SFTP and HTTP. SFTP requires a clean EOF; peer sync applies the ordinary import inspection so an already imported power-cut tail keeps its declared note. Mirror ownership and remembered peer URLs are additive header facts, preserved by capture, import and identity updates.
 
 ### Message handling
 
@@ -522,49 +620,67 @@ The directory listing covers every configured log directory, to a depth of 5 by 
 
 For each log, the listing reads the event, the match, and the team from the entries that carry them by convention (AdvantageKit's Driver Station and system tables, and NetworkTables' FMS table) among roughly the first 2,000 records. Robot code starts logging before the Driver Station connects, so those records usually hold no event or match yet, and the listing takes what they leave unset from the file name.
 
-It reads the two forms the logging frameworks write: WPILib's (`FRC_20260321_162956_VACHE_Q10.wpilog`) and AdvantageKit's (`akit_26-03-21_16-29-56_vache_q10.wpilog`). A match type and its number are taken together, from the records or from the name, and a name with an event and no match is listed as exactly that, an event without a match: the Driver Station reports an event name off the field too. A file someone renamed yields only the time in its name, if it still carries one: the name says what the person wrote, not what the robot recorded, so no event or match is read from it.
+It reads the two forms the logging frameworks write: WPILib's (`FRC_20260321_162956_VACHE_Q10.wpilog`) and AdvantageKit's (`akit_26-03-21_16-29-56_vache_q10.wpilog`). A match type and its number are taken together, from the records or from the name. A name with an event and no match is listed as exactly that, an event without a match: the Driver Station reports an event name off the field too. A file someone renamed yields only the time in its name, if it still carries one: the name says what the person wrote, not what the robot recorded, so no event or match is read from it.
 
 A log that records no team gets the configured team number. The listing remembers all this until the file's modification time changes. A time in a file name is read as UTC, the roboRIO's zone, except in a name ending in `_sim`, which a computer wrote in its local time.
 
 ### The log store
 
-A directory with `store.json` is a store. Its format version and creation time describe the layout; `robots/<id>/robot.json` describes a robot, and `sessions/<yyyy-MM-dd>/<HHmmss>Z[_<EVENT>_<MATCH>]/session.json` beneath that robot lists its files under `robot/`. Relative paths in manifests use `/` on every platform. Unassigned files have `unassigned/<sha256 prefix>/import.json`, with payloads beneath `robot/` as in sessions. Legacy payloads beside the import manifest remain readable and migrate on the next import under the store lock, preserving provenance and move notices. Manifests keep the store inspectable with ordinary file tools, without a database or another service to operate. Only manifested files belong to sessions: a file copied in by hand appears under `unmanaged`, even inside a session directory. A newer format is refused, and an older one requires an explicit migration.
+A directory with `store.json` is a store. Its format version and creation time describe the layout; `robots/<id>/robot.json` describes a robot, and `sessions/<yyyy-MM-dd>/<HHmmss>Z[_<EVENT>_<MATCH>]/session.json` beneath that robot lists its files under `robot/`. Relative paths in manifests use `/` on every platform. Unassigned files have `unassigned/<sha256 prefix>/import.json`, with payloads beneath `robot/` as in sessions. Legacy payloads beside the import manifest remain readable and migrate on the next import under the store lock, preserving provenance and move notices.
 
-Laptop uploads are byte streams into an HTTP-owned hidden inbox transfer. A sidecar lock
-prevents the watcher from taking a slow upload, and abandoned transfers use its existing
-recovery. Cleanup joins the same store queue, coalesced to one pending job; it never takes
-the store lock on the watcher thread and cannot race an admitted import. Reception and source-hash verification happen outside the store queue with a bounded
-buffer; `LogStore.importUpload` then uses the same inspection, grouping and manifest pipeline
-as a local import. The network route selects a configured store id and one filename, never
-a server filesystem path. Server-path imports and assignment stay local to the machine.
+Manifests keep the store inspectable with ordinary file tools, without a database or another service to operate. Only manifested files belong to sessions: a file copied in by hand appears under `unmanaged`, even inside a session directory. A newer format is refused, and an older one requires an explicit migration.
+
+#### Laptop uploads
+
+Laptop uploads are byte streams into an HTTP-owned hidden inbox transfer. A sidecar lock prevents
+the watcher from taking a slow upload, and abandoned transfers use its existing recovery. Cleanup
+joins the same store queue, coalesced to one pending job. It never takes the store lock on the
+watcher thread and cannot race an admitted import. Reception and source-hash verification happen
+outside the store queue with a bounded buffer. `LogStore.importUpload` then uses the same
+inspection, grouping and manifest pipeline as a local import. The network route selects a configured
+store id and one filename, never a server filesystem path. Server-path imports and assignment stay
+local to the machine.
+
+#### Imports
 
 The log manager owns one `StoreRegistry`, which provides one `LogStore` object and daemon import queue for each real store path. Its `importPaths` future and progress callback are independent of HTTP and the extension. Imports classify by the WPILOG header or native REV record header (REV can also use a WPILOG container), hash the complete file, and read through the lazy decoder before placing anything. The shared signal resolver supplies the identity and Driver Station conventions. A new session's start comes from the logged wall clock, else the filename convention, else modification time minus the log's duration; the manifest records that basis.
 
-For a known robot, calendar ranges nominate existing sessions before any correlation load,
-with the puller's two-hour slack (sixteen for filename clocks); unknown clocks retain candidates.
-A known serial also nominates its retained alias directories, without merging or moving them.
-A capture, including an open capture, anchors its session. Without a capture, an already
-data-matched WPILOG can anchor it. Joining an anchored session requires strong correlation to
-exactly one session and an offset within 250 ms of zero. Recorded anchor offsets also count
-against that bound, so chains cannot accumulate the allowance. The evidence names the actual
-anchor hash and measured relative offset; the anchor session keeps its calendar. A failed or
-ambiguous proof creates a separate session with the reason, never a calendar fallback.
-Only when no nominated session has an anchor does exact calendar overlap retain its former
-role. New such receipts say `placement_method: by_time_overlap` with a reason and no correlation
-or measured offset; legacy receipts remain valid without that additive field. Existing files
-are never reclassified or moved by a later import. Store format remains 1.
+#### Session placement
 
-REV companions likewise require unique strong correlation within 250 ms of zero through the
-existing synchronizer. Their manifest retains offset, drift, confidence and the matching WPILOG
-hash; ambiguous or unmatched REV files wait unassigned. This admission rule does not constrain
-ordinary analysis of loose REV logs on other clocks or rewrite existing store associations.
-Sync cache format 11 invalidates earlier cached interpretations when the new import rule ships.
+For a known robot, calendar ranges nominate existing sessions before any correlation load, with the
+puller's two-hour slack (sixteen for filename clocks); unknown clocks retain candidates. A known
+serial also nominates its retained alias directories, without merging or moving them. A capture,
+including an open capture, anchors its session. Without a capture, an already data-matched WPILOG
+can anchor it.
+
+Joining an anchored session requires strong correlation to exactly one session and an offset within
+250 ms of zero. Recorded anchor offsets also count against that bound, so chains cannot accumulate
+the allowance. The evidence names the anchor's hash and the measured relative offset, and the anchor
+session keeps its calendar. A failed or ambiguous proof creates a separate session with the reason,
+never a calendar fallback.
+
+Only when no nominated session has an anchor does exact calendar overlap retain its former role. New
+such receipts say `placement_method: by_time_overlap` with a reason and no correlation or measured
+offset; legacy receipts remain valid without that additive field. Existing files are never
+reclassified or moved by a later import. Store format remains 1.
+
+REV companions likewise require unique strong correlation within 250 ms of zero through the existing
+synchronizer. Their manifest retains offset, drift, confidence and the matching WPILOG hash;
+ambiguous or unmatched REV files wait unassigned. This admission rule does not constrain ordinary
+analysis of loose REV logs on other clocks or rewrite existing store associations. Sync cache format
+11 accompanied this import rule and invalidated the interpretations cached before it.
+
+#### Peer synchronization
 
 Peer synchronization reads the catalog door with the JDK HTTP client and uses `FileTransfer` unchanged. `StoreSync` supplies the local placement policy: verify the advertised size and SHA-256, run the import inspection, then admit the file. Network pacing defaults to unlimited and can be capped per job. Open captures have no final hash and wait until closed; the door itself still serves their growing prefixes for the mirror. Mirrors refuse peer sync in either direction.
 
-Overlapping windows with the same serial describe one boot. Taking the smallest session id makes both transfer orders converge without inventing another id. If a peer bridges multiple local fragments, closed directories move below one session's `merged/` directory, retaining their bytes and historical manifests. The catalog exposes the merged manifest once and old file paths remain aliases. Multiple still-open writers wait until closed before consolidation. A capture flush replaces only its own files and retains peer files and match facts. Peer captures go under `peer/<sha256>/`, because a currently unused `capture-N.wpilog` name still belongs to the local writer's future rollover. The original file provenance stays intact, with an append-only `copied_from` history; local nonempty robot names/comments win and disagreements go to session conflicts. None of these additive fields changes format 1.
+Overlapping windows with the same serial describe one boot. Taking the smallest session id makes both transfer orders converge without inventing another id. If a peer bridges multiple local fragments, closed directories move below one session's `merged/` directory, retaining their bytes and historical manifests. The catalog exposes the merged manifest once and old file paths remain aliases. Multiple still-open writers wait until closed before consolidation.
 
-A sync is a reader of the peer and a queued, locked writer of its own store. The loopback-only `POST /store/sync` job and the offline command share that operation; a second sync to the same store is refused. The command never bypasses a failing running daemon. `store.json` remembers peer URLs. `.sync/peer-<store-id>/pull.json` owns incomplete bytes and superseded transfer attempts without exposing them through the door. Atomic placement and session-merge receipts bridge filesystem moves and manifest replacements; the next sync finishes pending receipts before network contact, even with the peer offline. An occupied unmanifested path is kept as a stray, never adopted or overwritten. Results name copied bytes, existing hashes, conflicts, refusals and the offset of an interrupted file.
+A capture flush replaces only its own files and retains peer files and match facts. Peer captures go under `peer/<sha256>/`, because a currently unused `capture-N.wpilog` name still belongs to the local writer's future rollover. The original file provenance stays intact, with an append-only `copied_from` history. Local nonempty robot names/comments win, and disagreements go to session conflicts. None of these additive fields changes format 1.
+
+A sync is a reader of the peer and a queued, locked writer of its own store. The loopback-only `POST /store/sync` job and the offline command share that operation, and a second sync to the same store is refused. The command never bypasses a failing running daemon. `store.json` remembers peer URLs. `.sync/peer-<store-id>/pull.json` owns incomplete bytes and superseded transfer attempts without exposing them through the door. Atomic placement and session-merge receipts bridge filesystem moves and manifest replacements; the next sync finishes pending receipts before network contact, even with the peer offline. An occupied unmanifested path is kept as a stray, never adopted or overwritten. Results name copied bytes, existing hashes, conflicts, refusals and the offset of an interrupted file.
+
+#### Mirrors
 
 `MirrorSync` keeps the origin's IDs and relative session paths instead of coalescing peer
 sessions. It snapshots the origin catalog for each pass, wraps remote names with the session
@@ -583,19 +699,43 @@ and removes only manifested files. Moves reserve readers and release mappings fi
 on Windows; pending file and directory moves are journaled. A stopped origin leaves the last
 successful per-session time in the listing. No mirror read asks the origin to answer a tool.
 
-There must never be two store writers. `POST /store/import` submits to that registry and exposes an in-memory job for polling; the command finds the named daemon through its PID file and health check and posts to it. It imports in its own process only when no daemon is running, and never falls back after an HTTP failure. Every import, including an inbox import, takes a nonblocking `FileChannel` lock on `store.lock` before inspection and holds it through placement and manifests. A daemon started during an offline import therefore reports the held lock instead of writing beside it or waiting indefinitely. The lock file stays in place after release: deleting it could give two processes different inodes to lock. Shutdown stops polling and drains imports before closing shared log readers.
+#### One writer
+
+There must never be two store writers. `POST /store/import` submits to that registry and exposes an in-memory job for polling. The command finds the named daemon through its PID file and health check and posts to it. It imports in its own process only when no daemon is running, and never falls back after an HTTP failure.
+
+Every import, including an inbox import, takes a nonblocking `FileChannel` lock on `store.lock` before inspection and holds it through placement and manifests. A daemon started during an offline import therefore reports the held lock instead of writing beside it or waiting indefinitely. The lock file stays in place after release: deleting it could give two processes different inodes to lock. Shutdown stops polling and drains imports before closing shared log readers.
 
 The HTTP write surface requires configured directories for both the store and its sources, resolves symlinks with the shared security validator, and uses the MCP Origin gate. Outside sources are local copies or moves into the user's inbox; the endpoint cannot move arbitrary files on the server. Jobs retain their last progress and full result, with at most 100 jobs per transport. Completed jobs are evicted first; if all 100 are active, admission returns 503. Jobs disappear at restart.
 
 Store locks must be regular paths, never symbolic links, even to targets inside the store. The registry checks this before HTTP admission and the queued import opens `store.lock` with `NOFOLLOW_LINKS`. The shared containment validator treats dangling links as existing path components whose resolution must fail, so it cannot authorize a new outside file through a missing target.
 
-The inbox uses a daemon polling thread every three seconds over known inboxes. Store discovery walks configured directories at watcher startup and at most once a minute thereafter; listing scans also pass along the stores they discover. With no configured store it does no imports. Size and modification time must match across two looks at least three seconds apart, and are checked again after waiting in the store queue. Files move through the existing importer; successes and refusals get JSON-lines receipts in `inbox/imported.log`. Unchanged refusals are not retried until restart, and duplicate content remains in the inbox with its stored destination explained, as the importer leaves duplicate sources intact. The listing reports inbox paths, sizes, and waiting/importing/refused state separately from unmanaged files. The command stages in `inbox/.transfer-<id>/`, with an external transfer lock acquired before directory creation, then publishes `inbox/batch-<id>/` by atomic rename. Hidden entries are never walked for imports or listed. The next poll removes an unlocked abandoned transfer and writes a receipt; a slow active copy retains its lock. A batch sidecar `batch.json` carries `stated_robot`, and its stamp participates in settling and retry. A malformed sidecar refuses the batch; loose files have no stated identity.
+#### The inbox
 
-Reading before placement lets an import pair files still beside one another. Copies are loaded again and hashed before the pair's manifest is atomically replaced; failed copies remain unmanaged and failed moves are restored when possible. No existing log is overwritten or deleted. Explicit `POST /store/assign` moves manifested unassigned files into robot sessions through the same queue and lock, commits the destination manifest before removing the old import manifest, and preserves the first import's provenance and moved-path notices. Assignment cannot silently adopt an unmanaged or already assigned file. Identical content already held is reported with its path and its source is left in place. Moving a payload listed by another store is refused before inspection or placement, with that store named; copies and unmanaged sources remain allowed. Other stores’ manifests are read once per source store in a batch, so the refusal does not add a catalog walk per file. Filename collisions and payloads named `import.json`, `session.json`, `robot.json`, `store.json`, or `batch.json` use a hash subdirectory while preserving the filename; separate sessions starting within one second use a numbered suffix. Imports preserve original paths and filenames, with moved-path notices for seven days. A stated robot is renamed when a serial is learned; when that serial already has a directory, both manifests name the serial and the import reports the two directories for a later explicit merge.
+The inbox uses a daemon polling thread every three seconds over known inboxes. Store discovery walks configured directories at watcher startup and at most once a minute thereafter; listing scans also pass along the stores they discover. With no configured store it does no imports. Size and modification time must match across two looks at least three seconds apart, and are checked again after waiting in the store queue.
+
+Files move through the existing importer, and successes and refusals get JSON-lines receipts in `inbox/imported.log`. Unchanged refusals are not retried until restart. Duplicate content remains in the inbox with its stored destination explained, as the importer leaves duplicate sources intact. The listing reports inbox paths, sizes, and waiting/importing/refused state separately from unmanaged files.
+
+The command stages in `inbox/.transfer-<id>/`, with an external transfer lock acquired before directory creation, then publishes `inbox/batch-<id>/` by atomic rename. Hidden entries are never walked for imports or listed. The next poll removes an unlocked abandoned transfer and writes a receipt; a slow active copy retains its lock. A batch sidecar `batch.json` carries `stated_robot`, and its stamp participates in settling and retry. A malformed sidecar refuses the batch; loose files have no stated identity.
+
+#### Pairs and assignment
+
+Reading before placement lets an import pair files still beside one another. Copies are loaded again and hashed before the pair's manifest is atomically replaced; failed copies remain unmanaged and failed moves are restored when possible. No existing log is overwritten or deleted.
+
+Explicit `POST /store/assign` moves manifested unassigned files into robot sessions through the same queue and lock, commits the destination manifest before removing the old import manifest, and preserves the first import's provenance and moved-path notices. Assignment cannot silently adopt an unmanaged or already assigned file. Identical content already held is reported with its path and its source is left in place.
+
+Moving a payload listed by another store is refused before inspection or placement, with that store named; copies and unmanaged sources remain allowed. Other stores’ manifests are read once per source store in a batch, so the refusal does not add a catalog walk per file.
+
+Filename collisions and payloads named `import.json`, `session.json`, `robot.json`, `store.json`, or `batch.json` use a hash subdirectory while preserving the filename; separate sessions starting within one second use a numbered suffix. Imports preserve original paths and filenames, with moved-path notices for seven days. A stated robot is renamed when a serial is learned. When that serial already has a directory, both manifests name the serial and the import reports the two directories for a later explicit merge.
+
+#### Nominating sessions for a REV file
 
 An import reads the catalog once and updates its in-memory facts after each successful manifest write, rather than walking the store for every file. Before correlating a REV file, it nominates the stated robot's sessions near the REV file's recorded wall clock, else its filename time. The window extends two hours on either side of the REV range; a filename estimate gets another fourteen hours because its zone is not recorded. With no REV clock it considers all of that robot's wpilogs. These estimates never establish a match or widen a session: the signal data decides, and the wpilog supplies the session's time range.
 
-Import, listing, and shared lazy readers own every window through `ScopedLogReader`. It invokes the cleaner on all windows before releasing the read lease, including failed constructions; a failed cleanup leaves the lease held so an import cannot race a live mapping. They cannot rely on GC to permit renames on Windows. The manager's `acquire` returns a use that tools, streams, and background synchronization hold until they finish reading; eviction stops caching and unmaps after the last use closes. An import reserves its source paths against new reads, then calls `release` to evict them and wait up to three seconds for existing readers. A call that still holds a file gets an explained refusal; after it finishes the import can be retried without restarting. The reservation lasts through the rename, including robot-directory promotion, and no I/O or waiting runs under the file-access monitor.
+#### Readers and moves
+
+Import, listing, and shared lazy readers own every window through `ScopedLogReader`. It invokes the cleaner on all windows before releasing the read lease, including failed constructions; a failed cleanup leaves the lease held so an import cannot race a live mapping. They cannot rely on GC to permit renames on Windows.
+
+The manager's `acquire` returns a use that tools, streams, and background synchronization hold until they finish reading; eviction stops caching and unmaps after the last use closes. An import reserves its source paths against new reads, then calls `release` to evict them and wait up to three seconds for existing readers. A call that still holds a file gets an explained refusal; after it finishes the import can be retried without restarting. The reservation lasts through the rename, including robot-directory promotion, and no I/O or waiting runs under the file-access monitor.
 
 ### Path security
 
@@ -614,23 +754,34 @@ The old mapping retires after its last use; a result spanning growth is still di
 the existing explained error. Successful disk-backed calls report the admitted snapshot's
 `inputs.file_size_bytes`. The writer's own live log keeps its fixed-prefix behavior.
 
-Resuming requires growth and equal filesystem identities, plus unchanged bytes of
-the complete WPILOG header (extra header included) and the last complete record before the old
-resume point. The scan saves SHA-256 digests of those two anchors, not views of an old mapping
-that a rewrite could change. Anchor reads use a bounded buffer; their cost depends on the header
-and last record sizes. An interior rewrite preserving both anchors is not detected. This is a
-cheap append check, not a full-prefix integrity proof: hashing every indexed byte would cost the
-scan we are avoiding. Replacements, shrinkage, damaged prior scans, failed anchors and unknown
-identities all load afresh. A filesystem key is the preferred identity. Where the JDK returns no
-key, including the usual Windows provider, the file's creation time is the identity instead.
-NTFS can give a recreated file the deleted file's creation time within a short window (file
-system tunneling); the saved header and last-record anchors defend against that reuse. A
-replacement preserving both creation time and anchors can still escape this cheap check. The checkpoint lives in the existing bounded
-log cache, not a second collection that grows with every path ever read.
+Resuming requires growth and equal filesystem identities, plus unchanged bytes of the complete
+WPILOG header (extra header included) and the last complete record before the old resume point. The
+scan saves SHA-256 digests of those two anchors, not views of an old mapping that a rewrite could
+change. Anchor reads use a bounded buffer, and their cost depends on the header and last record
+sizes.
 
-A loaded log follows its file. The manager keeps the file's size, modification time, and identity (the inode, where the file system has one) as they were just before the log was read, and compares them with the file on every call: a file that changed is loaded again, and a file that is gone is an error. The comparison is made again after each call, and a result read across a change is discarded with an error that says what changed, because the result may hold old data (a file renamed into place keeps serving its old bytes through the mapping) or mix old and new (a file overwritten in place has its old record offsets applied to new bytes). A change the attributes do not show can still make a read of the mapping fault, which the JVM reports as an `InternalError`; the tool base turns that into the same explained error and unloads the log, where before it escaped every catch and ended a stdio server. Each session is told once, on its next result from the log, that the log was reloaded, since results it holds from earlier calls came from the old file; a session that first used the log after the change is not told, having nothing stale. The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when the candidates or their files changed, keeping an offset set by hand for a file that did not. These rules came from logs copied off a robot while it was still writing them, and copied again once they had grown.
+An interior rewrite preserving both anchors is not detected. This is a cheap append check, not a
+full-prefix integrity proof: hashing every indexed byte would cost the scan we are avoiding.
+Replacements, shrinkage, damaged prior scans, failed anchors and unknown identities all load afresh.
 
-Loading does not decode the log. Mapped windows live outside the Java heap, and a single pass records each entry (name, type, and metadata, in announcement order) and each data record's long byte address. `RecordOffsets` keeps an int array until that entry first exceeds the signed-int range, then promotes that array to longs. Ordinary files therefore still need four offset bytes per record: widening the API must not double every team's index. The live index likewise keeps narrow record slots until it needs a wide slot. Records are read one by one through WPILib's record-level access, because WPILib's own iterator silently skips a final record shorter than 16 bytes. If the scan fails in a way the rules below do not cover, an older parser is tried, which decodes the whole log into memory at once.
+A filesystem key is the preferred identity. Where the JDK returns no key, including the usual
+Windows provider, the file's creation time is the identity instead. NTFS can give a recreated file
+the deleted file's creation time within a short window (file system tunneling); the saved header and
+last-record anchors defend against that reuse. A replacement preserving both creation time and
+anchors can still escape this cheap check. The checkpoint lives in the existing bounded log cache,
+not a second collection that grows with every path ever read.
+
+A loaded log follows its file. The manager keeps the file's size, modification time, and identity (the inode, where the file system has one) as they were just before the log was read, and compares them with the file on every call. A file that changed is loaded again, and a file that is gone is an error.
+
+The comparison is made again after each call, and a result read across a change is discarded with an error that says what changed. The result may hold old data (a file renamed into place keeps serving its old bytes through the mapping) or mix old and new (a file overwritten in place has its old record offsets applied to new bytes). A change the attributes do not show can still make a read of the mapping fault, which the JVM reports as an `InternalError`. The tool base turns that into the same explained error and unloads the log; before, it escaped every catch and ended a stdio server.
+
+Each session is told once, on its next result from the log, that the log was reloaded, since results it holds from earlier calls came from the old file. A session that first used the log after the change is not told, having nothing stale.
+
+The REV log tools look again for the REV logs that belong to a wpilog, at most every two seconds, and synchronize again when the candidates or their files changed, keeping an offset set by hand for a file that did not. These rules came from logs copied off a robot while it was still writing them, and copied again once they had grown.
+
+Loading does not decode the log. Mapped windows live outside the Java heap, and a single pass records each entry (name, type, and metadata, in announcement order) and each data record's long byte address. `RecordOffsets` keeps an int array until that entry first exceeds the signed-int range, then promotes that array to longs. Ordinary files therefore still need four offset bytes per record: widening the API must not double every team's index. The live index likewise keeps narrow record slots until it needs a wide slot.
+
+Records are read one by one through WPILib's record-level access, because WPILib's own iterator silently skips a final record shorter than 16 bytes. If the scan fails in a way the rules below do not cover, an older parser is tried, which decodes the whole log into memory at once.
 
 The scan is built for logs that were not closed cleanly:
 
@@ -674,7 +825,7 @@ unit and supplies the runner's JDK through `JAVA_HOME` in its environment file.
 
 ## Memory Management
 
-The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` by default; a background server inherits it from the JVM that starts it. The extension sets that variable from its `wpilog-mcp.maxHeap` setting in the launcher’s environment when it starts or restarts the daemon (and runs the installer with the same heap), so the size never appears in a process list; a daemon another client started keeps its own heap until it is restarted.
+The daemon’s maximum heap comes from the launcher’s `WPILOG_MAX_HEAP`, `4g` by default; a background server inherits it from the JVM that starts it. The extension sets that variable from its `wpilog-mcp.maxHeap` setting in the launcher’s environment when it starts or restarts the daemon (and runs the installer with the same heap), so the size never appears in a process list. A daemon another client started keeps its own heap until it is restarted.
 
 A loaded log costs:
 
@@ -706,7 +857,9 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | The Blue Alliance responses | Memory | 24 hours; "not found" for 5 minutes; failures are not cached; 200 entries of each kind |
 | Game data | Memory | The life of the server |
 
-The disk cache saves the expensive part of loading a log that has REV logs: parsing them and correlating their signals. Its key covers what a result depends on: a fingerprint of each file, both file names (the time in a REV log's name feeds the alignment), and a hash of the CAN database used to decode the frames. The key does not cover the code. So the cache has a format version that is raised with any change to parsing, decoding, or synchronization, and entries of another version are deleted. Before that rule, results computed by older, wrong code were served indefinitely. The server's own version is not part of the key: a release changes the server for many reasons, and rebuilding the cache with each one would make every user wait for synchronizations that come out the same.
+The disk cache saves the expensive part of loading a log that has REV logs: parsing them and correlating their signals. Its key covers what a result depends on: a fingerprint of each file, both file names (the time in a REV log's name feeds the alignment), and a hash of the CAN database used to decode the frames.
+
+The key does not cover the code. So the cache has a format version that is raised with any change to parsing, decoding, or synchronization, and entries of another version are deleted. Before that rule, results computed by older, wrong code were served indefinitely. The server's own version is not part of the key: a release changes the server for many reasons, and rebuilding the cache with each one would make every user wait for synchronizations that come out the same.
 
 Other choices in the disk cache:
 
@@ -765,17 +918,18 @@ credentials or the whole export. Unknown versions, required-field mismatches, ou
 stand down for the session, with state/reason and costs published through the existing provider
 snapshot. A new session may try again.
 
-WebSocket messages use the existing bounded MessagePack decoder. The next message is requested
-only after the preceding snapshot is written on the ordered capture loop, so copied work stays
-bounded. Per-message and archive byte limits, a camera-count bound and request deadlines give
-that backpressure a stated outcome: stand down, retain the last recorded configuration. A
-snapshot's timestamp is the robot time estimate captured at network receipt, before either
-worker queue; this backend has no timestamp of its own. Selective pipeline notifications omit
-camera identity in the pinned release. A replacement read-only socket obtains a complete
-snapshot; the old socket is closed before that handshake because the backend broadcasts full
-state to existing clients too. The provider never applies a delta to a guessed camera or sends
-a settings mutation. Refresh starts are separated by at least one second per backend.
-Notifications during that interval or a refresh remain one pending refresh; completion
+WebSocket messages use the existing bounded MessagePack decoder. The next message is requested only
+after the preceding snapshot is written on the ordered capture loop, so copied work stays bounded.
+Per-message and archive byte limits, a camera-count bound and request deadlines give that
+backpressure a stated outcome: stand down, retain the last recorded configuration. A snapshot's
+timestamp is the robot time estimate captured at network receipt, before either worker queue; this
+backend has no timestamp of its own.
+
+Selective pipeline notifications omit camera identity in the pinned release. A replacement read-only
+socket obtains a complete snapshot. The old socket is closed before that handshake because the
+backend broadcasts full state to existing clients too. The provider never applies a delta to a
+guessed camera or sends a settings mutation. Refresh starts are separated by at least one second per
+backend. Notifications during that interval or a refresh remain one pending refresh, and completion
 checks the generation counter so a change during delivery cannot be lost.
 
 `analyze_vision` attaches `camera_settings` by exact camera name and records the settings entry
@@ -802,18 +956,20 @@ identity is checked at completion and again when the ordered capture loop admits
 This prevents a sample taken in one boot from appearing in the next after a backlog.
 
 Receipt captures the NT4 estimate on the I/O thread, before either queue. Every numeric sample
-includes JVM uptime, FPGA-minus-uptime offset and the JMX-poll-plus-NT4-round-trip bound (plus
-1 ms uptime quantization). Changes larger than both adjacent bounds produce a note; timestamps
-already written remain fixed. Missing NT4 synchronization drops and counts a sample. JVM start
-time is identity metadata only: OpenJDK's cached start time plus monotonic uptime does **not**
-follow later wall-clock changes. No JVM startup-anchored wall timestamp follows the Driver
-Station correction, and this provider does not detect it. SSH stats pair kernel uptime
-with FPGA time; corrected wall-clock evidence comes from pulled-log `systemTime`. The separate
+includes JVM uptime, FPGA-minus-uptime offset and the JMX-poll-plus-NT4-round-trip bound (plus 1 ms
+uptime quantization). Changes larger than both adjacent bounds produce a note; timestamps already
+written remain fixed. Missing NT4 synchronization drops and counts a sample.
+
+JVM start time is identity metadata only: OpenJDK's cached start time plus monotonic uptime does
+**not** follow later wall-clock changes. No JVM startup-anchored wall timestamp follows the
+Driver Station correction, and this provider does not detect it. SSH stats pair kernel uptime with
+FPGA time; corrected wall-clock evidence comes from pulled-log `systemTime`. The separate
 `robot-facts` clock probe also samples uptime beside `date` for the shop. Flight Recorder's future
 mapping must use its actual event clock; its streaming half awaits the runtime module probe.
-`ClockNote` carries both offsets, both bounds and both JVM start identities without diagnosing
-the cause. A sink failure latches stand-down for that session, including a reconnect/resume;
-a new session resets it. This avoids retrying a delivery whose partial write is unknown.
+
+`ClockNote` carries both offsets, both bounds and both JVM start identities without diagnosing the
+cause. A sink failure latches stand-down for that session, including a reconnect/resume; a new
+session resets it. This avoids retrying a delivery whose partial write is unknown.
 [PIT_SERVER_PLAN.md §8.3](PIT_SERVER_PLAN.md#83-the-robot-programs-jvm) records the JDK 17
 chunk-clock evidence and the measurement still required before JFR streaming.
 
@@ -832,16 +988,18 @@ NT4 presence admits them all; only file pulling has the disabled-state gate. Fir
 records identity even with pulling disabled. Pin writes and identity promotion use the store
 queue, while provider readers never wait for it.
 
-`ProcStats` parses explicit Linux ticks, pages and KiB; no unit comes from the pit computer.
-Busy CPU excludes idle/iowait and does not count guest time twice. Rates need two monotonic
-kernel samples, and program CPU needs the same PID and start tick. Missing-program discovery
-retries every ten samples; only a previously known process changing requests an immediate
-next-sample lookup. The persistent reason is logged on state change, not on each sample. `StatsProvider` captures
-the NT4 offset and monotonic send time before exec; an estimate arriving with the reply cannot
-retroactively timestamp the request. Round-trip cost adapts the period from its base up to
-30 seconds and back down. The kernel/FPGA pairing and provider costs are additive manifest
-fields, with no store format change. No robot CPU cost is attributed to this shell command. Numeric quality and data-endpoint views
-respect `sampled: true` metadata even when adaptive periods are irregular.
+`ProcStats` parses explicit Linux ticks, pages and KiB; no unit comes from the pit computer. Busy
+CPU excludes idle/iowait and does not count guest time twice. Rates need two monotonic kernel
+samples, and program CPU needs the same PID and start tick. Missing-program discovery retries every
+ten samples; only a previously known process changing requests an immediate next-sample lookup. The
+persistent reason is logged on state change, not on each sample.
+
+`StatsProvider` captures the NT4 offset and monotonic send time before exec, so an estimate arriving
+with the reply cannot retroactively timestamp the request. Round-trip cost adapts the period from
+its base up to 30 seconds and back down. The kernel/FPGA pairing and provider costs are additive
+manifest fields, with no store format change. No robot CPU cost is attributed to this shell command.
+Numeric quality and data-endpoint views respect `sampled: true` metadata even when adaptive periods
+are irregular.
 
 `ContextProviders` hands bounded results to the writer's ordered context hook. It declares
 `/Daemon/` entries, retains metadata changes and rollover declarations, and feeds the same live
@@ -853,35 +1011,38 @@ Missing sources stand down for that session; SSH loss resets channels without in
 
 ## Pulled system text
 
-`capture/pull.SystemPullPass` is the second phase of the existing pull worker, using its
-shared SSH contact, disabled/connected gate and byte budget. SFTP files reuse `FileTransfer`;
-exec snapshots spool one block at a time with an external read deadline. Unchanged passes
-retain content proofs instead of hashing the same files on the robot every few seconds.
-A closed gate closes the exec channel: a full JSch input pipe otherwise blocks its shared
-network reader and prevents even another channel from opening. The next snapshot starts
-from the committed cursor; SFTP keeps its held prefix. A real-SSH regression caught this
-by opening a hash channel beside a paused ring-buffer reply.
-`store.SystemPullStore` serializes placement and atomic receipts on the store queue. Immutable
-snapshots preserve rotations; kernel/journal append lengths and cursors commit together, and
-an interrupted append is truncated to that receipt before retry. Kernel and journal clocks
-remain different even when their messages happen to agree.
-Its connection owns a parsed inventory and catalog snapshot. File/directory metadata detects
-manifest replacements, placements and session changes; an idle pass neither parses history
-again nor uses a timer to decide that it is stale. A changed manifest alone is reparsed.
+`capture/pull.SystemPullPass` is the second phase of the existing pull worker, using its shared SSH
+contact, disabled/connected gate and byte budget. SFTP files reuse `FileTransfer`; exec snapshots
+spool one block at a time with an external read deadline. Unchanged passes retain content proofs
+instead of hashing the same files on the robot every few seconds. A closed gate closes the exec
+channel: a full JSch input pipe otherwise blocks its shared network reader and prevents even another
+channel from opening. The next snapshot starts from the committed cursor, and SFTP keeps its held
+prefix. A real-SSH regression caught this by opening a hash channel beside a paused ring-buffer
+reply.
 
-`SystemLogState` is an additive session-manifest field, separate from telemetry files.
-Source, remote path, pass time, size and hash explain each copy. Shared syslog files belong to
-the robot: `SystemLogIndex` records them once in `robots/<serial>/system/index.json`, with
-written calendar spans, instead of updating every historical session. Search selects overlaps
-or unknown spans, while honoring legacy per-session shared receipts. The index supplies the
-newer committed prefix when both describe the same path. Per-session kernel and NI files move
-with their directory. Provider snapshots
-retain observed program PIDs so crash placement reads manifest facts, not every capture.
-`tools.SearchSystemLogsTool` reads receipts without joining the store queue or contacting SSH,
-uses the ordinary move lease and a fixed byte prefix, and names every text/clock input.
-`SystemLogClocks` interpolates measured uptime pairs and reads recorded wall clocks;
-missing evidence produces null and a reason. Severity comes from the same classifier as
-`search_strings`. The pulled file is exact text; tail entries are a timely receipt-time copy.
+`store.SystemPullStore` serializes placement and atomic receipts on the store queue. Immutable
+snapshots preserve rotations. Kernel/journal append lengths and cursors commit together, and an
+interrupted append is truncated to that receipt before retry. Kernel and journal clocks remain
+different even when their messages happen to agree.
+
+`store.SystemPullStore` owns a parsed inventory and catalog snapshot for its connection.
+File/directory metadata detects manifest replacements, placements and session changes; an idle pass
+neither parses history again nor uses a timer to decide that it is stale. A changed manifest alone
+is reparsed.
+
+`SystemLogState` is an additive session-manifest field, separate from telemetry files. Source,
+remote path, pass time, size and hash explain each copy. Shared syslog files belong to the robot:
+`SystemLogIndex` records them once in `robots/<serial>/system/index.json`, with written calendar
+spans, instead of updating every historical session. Search selects overlaps or unknown spans, while
+honoring legacy per-session shared receipts. The index supplies the newer committed prefix when both
+describe the same path. Per-session kernel and NI files move with their directory. Provider
+snapshots retain observed program PIDs so crash placement reads manifest facts, not every capture.
+
+`tools.SearchSystemLogsTool` reads receipts without joining the store queue or contacting SSH, uses
+the ordinary move lease and a fixed byte prefix, and names every text/clock input. `SystemLogClocks`
+interpolates measured uptime pairs and reads recorded wall clocks; missing evidence produces null
+and a reason. Severity comes from the same classifier as `search_strings`. The pulled file is exact
+text; tail entries are a timely receipt-time copy.
 
 The catalog-backed door exports session receipts and the shared index, with the same range,
 prefix-hash and path admission as telemetry. `SystemPeerSync` uses `FileTransfer` for held-prefix
@@ -895,7 +1056,9 @@ Search never fetches missing companions: it reports `not_applicable` with the co
 
 ## Concurrency
 
-In stdio mode the server handles one message at a time. In HTTP mode, requests run in parallel on a fixed pool of max(4, 2 × CPU count) threads, with up to 64 further threads for event streams. Requests are not serialized per session. Directory/key registration is serialized only with that session's removal, through the session map's per-key computation; validation and filesystem I/O happen beforehand. DELETE, expiry, and transport shutdown discard the session's permissions together, so a late registration cannot resurrect them. Keys remain in memory, with the most recent live registration taking precedence over the file. Registration is HTTP-only, behind the Origin check and refused on any non-loopback bind: a model's tool call cannot grant itself access.
+In stdio mode the server handles one message at a time. In HTTP mode, requests run in parallel on a fixed pool of max(4, 2 × CPU count) threads, with up to 64 further threads for event streams. Requests are not serialized per session.
+
+Directory/key registration is serialized only with that session's removal, through the session map's per-key computation; validation and filesystem I/O happen beforehand. DELETE, expiry, and transport shutdown discard the session's permissions together, so a late registration cannot resurrect them. Keys remain in memory, with the most recent live registration taking precedence over the file. Registration is HTTP-only, behind the Origin check and refused on any non-loopback bind: a model's tool call cannot grant itself access.
 
 A single-thread loop serializes like a lock. Its blocking work is a budget: keep it only where
 ordering or backpressure requires it, with a stated outcome. Capture record writes still order
@@ -914,9 +1077,10 @@ A check scheduled on the stalled loop cannot detect that loop's stall while it i
 The design keeps shared mutable state small:
 
 - Tools hold no state. One instance of each tool serves every thread, and everything a call builds is created for that call.
-- Shared structures that change while the server runs are concurrent ones: concurrent maps, the Caffeine caches, volatile fields, and atomic counters. The code takes few locks: one per log path during loading, one that keeps heap-pressure checks made at the same time from each unloading a log, the one that makes starts of a background server take turns, and the store/import and install guards described above.
-- Check-then-act sequences are atomic. A log is loaded once under its path's lock, after a second look at the cache. An entry's values are decoded once, through the cache's per-key computation. A finished synchronization replaces its placeholder only if the placeholder is still there, so a log unloaded in the meantime stays unloaded. A background start claims its PID file with an atomic create. A version-mismatch restart replaces the old daemon's record with the starter's PID and `starting` marker while still holding the start lock used to check its version, then retains that claim through stopping and spawning. Another start therefore waits even after the old daemon's PID dies; it cannot decide on the same old record or remove the restart's claim as stale. No start lock is held while waiting for a process to exit or boot.
-- Background work is limited to a single thread that runs REV log synchronizations one at a time, a timer that checks heap pressure every 5 minutes, a timer that removes expired sessions, one sweep of the disk cache at startup, the known-store inbox poller, and the value caches' own upkeep, which Caffeine runs on the JVM's shared pool.
+- Shared structures that change while the server runs are concurrent ones: concurrent maps, the Caffeine caches, volatile fields, and atomic counters. The code takes few locks. One guards each log path during loading, and one keeps heap-pressure checks made at the same time from each unloading a log. One makes starts of a background server take turns, and the store/import and install guards are described above.
+- Check-then-act sequences are atomic. A log is loaded once under its path's lock, after a second look at the cache. An entry's values are decoded once, through the cache's per-key computation. A finished synchronization replaces its placeholder only if the placeholder is still there, so a log unloaded in the meantime stays unloaded.
+- A background start claims its PID file with an atomic create. A version-mismatch restart replaces the old daemon's record with the starter's PID and `starting` marker while still holding the start lock used to check its version, then retains that claim through stopping and spawning. Another start therefore waits even after the old daemon's PID dies; it cannot decide on the same old record or remove the restart's claim as stale. No start lock is held while waiting for a process to exit or boot.
+- Background work is limited to a single thread that runs REV log synchronizations one at a time, a timer that checks heap pressure every 5 minutes, a timer that removes expired sessions, one sweep of the disk cache at startup, and the known-store inbox poller. The value caches' own upkeep is Caffeine's, which runs it on the JVM's shared pool.
 
 On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
 
@@ -981,14 +1145,13 @@ opens a file nor joins that queue, so an import cannot delay a latest-value quer
 for closed sessions; older manifests report unknown counts. An open session is a matching
 candidate even before its first file has a final hash.
 
-The NT4 client's concurrent latest-value table keeps each value, timestamp and authoritative
-type together. A concurrent unannounce and redeclaration cannot relabel an already-read value
-with the next topic's type. Multiple requested entries are independent latest publications,
-not a simultaneous robot sample.
-Ages use its measured robot offset and monotonic clock. Waiters are keyed by topic and MCP
-session, claimed once by the ordered listener, then completed outside the small registry lock.
-The injected scheduler supplies deadlines. Disconnect, unannounce and capture end cancel
-waiters, and duplicate waits return an explained error. The ordinary log tools retain their
+The NT4 client's concurrent latest-value table keeps each value, timestamp and authoritative type
+together. A concurrent unannounce and redeclaration cannot relabel an already-read value with the
+next topic's type. Multiple requested entries are independent latest publications, not a
+simultaneous robot sample. Ages use its measured robot offset and monotonic clock. Waiters are keyed
+by topic and MCP session, claimed once by the ordered listener, then completed outside the small
+registry lock. The injected scheduler supplies deadlines. Disconnect, unannounce and capture end
+cancel waiters, and duplicate waits return an explained error. The ordinary log tools retain their
 consistent-prefix read of the writer-built index.
 
 Proxy credentials follow `config/ClientLeases`: a SecretStorage value belongs to one local
