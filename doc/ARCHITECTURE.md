@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains what wpilog-mcp is for, the principles its design follows, and the reasons for them. It then shows how the code carries those principles out: how it reads logs, manages memory, caches results, synchronizes REV logs, and serves several clients at once.
+This guide explains what wpilog-mcp is for, the principles its design follows, and the reasons for them. It then shows how the code carries those principles out: how it reads logs, manages memory, caches results, synchronizes REV logs, and serves several clients at once.
 
 Other documents cover what this one leaves out. [TOOLS.md](TOOLS.md) describes every tool and the fields of a result. [STANDALONE.md](STANDALONE.md) and the [extension's README](../vscode-extension/README.md) cover installation and configuration. [DEVELOPMENT.md](DEVELOPMENT.md) covers building, testing, and adding a tool.
 
