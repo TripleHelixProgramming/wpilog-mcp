@@ -31,6 +31,12 @@ import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
  * One session-scoped backend, on its own worker. A socket requests its next message only after
  * the preceding snapshot is delivered, bounding copied work without joining the capture loop.
  * The backend has no snapshot clock: receipt is mapped through the robot's NT4 estimate.
+ *
+ * <p>The JDK WebSocket client can lose an abrupt close (no Close frame) received with no
+ * outstanding {@code request(n)}; a later request does not recover its close/error callback.
+ * A graceful Close frame is delivered after demand resumes. Snapshot delivery leaves this
+ * no-demand gap, so the keepalive is the only reliable detection of an abruptly vanished
+ * backend. Tests using a manual worker must advance its clock, not just await a callback.
  */
 public final class PhotonVisionProvider implements AutoCloseable {
   static final long REFRESH_INTERVAL_US = 1_000_000;

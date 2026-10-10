@@ -189,6 +189,12 @@ public final class Nt4Client implements AutoCloseable {
     loop.schedule(() -> sendSync(attempt), 3_000_000);
   }
 
+  /**
+   * The JDK can lose an abrupt close received without outstanding WebSocket demand; a later
+   * request need not recover the close/error callback. Our listener re-requests inside each
+   * network callback, keeping that gap small rather than waiting for the loop, but keepalives
+   * still supply reliable failure detection (pings in 4.1, time-sync replies in 4.0).
+   */
   private void heartbeat(Attempt attempt) {
     if (current != attempt || closed.get()) return;
     long now = loop.nowUs();
