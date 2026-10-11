@@ -118,6 +118,7 @@ if ($tag) { $api = "https://api.github.com/repos/$repo/releases/tags/$tag" }
 if ($preRelease) { $api = "https://api.github.com/repos/$repo/releases?per_page=1" }
 $releases = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'wpilog-mcp-installer' }
 $releaseInfo = @($releases)[0]
+if ($releaseInfo.tag_name -cnotmatch '^v') { throw "Release tag must start with v: $($releaseInfo.tag_name)" }
 $version = $releaseInfo.tag_name -replace '^v', ''
 if ($version -notmatch '^[0-9A-Za-z.-]+$') { throw "Release tag is not a version: $($releaseInfo.tag_name)" }
 $jarAsset = $releaseInfo.assets | Where-Object { $_.name -eq "wpilog-mcp-$version-all.jar" } | Select-Object -First 1

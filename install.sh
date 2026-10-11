@@ -137,8 +137,9 @@ release_field() {
       } }'
 }
 RELEASE_TAG=$(release_field tag_name | head -1)
+case "$RELEASE_TAG" in v*) ;; *) echo "ERROR: Release tag must start with v: $RELEASE_TAG" >&2; exit 1 ;; esac
 VERSION=${RELEASE_TAG#v}
-case "$VERSION" in ""|*[!0-9A-Za-z.-]*) echo "ERROR: Release tag is not a version: $VERSION" >&2; exit 1 ;; esac
+case "$VERSION" in ""|*[!0-9A-Za-z.-]*) echo "ERROR: Release tag is not a version: $RELEASE_TAG" >&2; exit 1 ;; esac
 release_asset() {
     release_field browser_download_url | awk -v ending="/$1" '
       length($0) >= length(ending) && substr($0, length($0) - length(ending) + 1) == ending { print; exit }'

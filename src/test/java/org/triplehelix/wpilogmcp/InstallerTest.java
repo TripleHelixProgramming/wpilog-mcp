@@ -478,6 +478,34 @@ class InstallerTest {
     assertFalse(Files.exists(home.resolve(".wpilog-mcp/bin")), result.output());
   }
 
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void installersRefuseATagWithoutTheLeadingV(boolean ps) throws Exception {
+    assumeTrue(ps ? powershell() != null : !isWindows(), "script shell unavailable");
+    var home = Files.createDirectory(tempDir.resolve("tag-home"));
+    var fakeBin = Files.createDirectory(tempDir.resolve("tag-bin"));
+    if (!ps) executable(fakeBin.resolve("curl"), FAKE_CURL);
+    var release = Files.writeString(tempDir.resolve("no-v.json"),
+        releaseJson("1.2.3").replace("\"tag_name\": \"v1.2.3\"", "\"tag_name\": \"1.2.3\""));
+    var env = new HashMap<String, String>();
+    env.put("HOME", home.toString()); env.put("USERPROFILE", home.toString());
+    env.put("PUBLIC", tempDir.resolve("public").toString());
+    env.put("JAVA_HOME", System.getProperty("java.home"));
+    env.put("PATH", fakeBin + File.pathSeparator + System.getenv("PATH"));
+    env.put("FAKE_RELEASE_JSON", release.toString());
+    env.put("FAKE_DOWNLOAD_URL", tempDir.resolve("download-url").toString());
+    env.put("FAKE_DOWNLOAD_FILE", tempDir.resolve("download-file").toString());
+    var wrapper = Files.writeString(tempDir.resolve("tag.ps1"), PS_WRAPPER);
+    env.put("WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString());
+    var command = ps ? List.of(powershell(), "-NoProfile", "-NonInteractive", "-File", wrapper.toString())
+        : List.of("sh", Path.of("install.sh").toAbsolutePath().toString());
+    var result = run(command, env, false);
+    assertNotEquals(0, result.exit(), result.output());
+    assertTrue(result.output().contains("Release tag must start with v: 1.2.3"), result.output());
+    assertFalse(Files.exists(Path.of(env.get("FAKE_DOWNLOAD_URL"))), "Refuse before any asset download");
+    assertFalse(Files.exists(home.resolve(".wpilog-mcp")));
+  }
+
   /** Windows PowerShell where it is (what irm | iex runs in by default), else pwsh. */
   static String powershell() {
     var names = isWindows() ? List.of("powershell.exe", "pwsh.exe") : List.of("pwsh");
