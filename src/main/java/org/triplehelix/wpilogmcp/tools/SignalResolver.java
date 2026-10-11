@@ -1132,8 +1132,13 @@ public final class SignalResolver {
           || (!wantSetpoint && path.equals("/DriveState/Speeds"));
     }).toList();
     if (!known.isEmpty()) {
-      return ranked(role, known.get(0), known, n -> 0,
-          "AdvantageKit SwerveChassisSpeeds, YAGSL telemetry or CTRE DriveState/Speeds", null, Tier.CONVENTION);
+      // Replay output describes rerunning the robot code; the original robot wins when present.
+      ToIntFunction<String> rank = n -> conventionName(n).startsWith("/ReplayOutputs/") ? 1 : 0;
+      String chosen = known.stream().min(java.util.Comparator.comparingInt(rank)).orElseThrow();
+      String basis = rank.applyAsInt(chosen) == 1
+          ? "AdvantageKit SwerveChassisSpeeds replayed value; no original chassis-speed convention present"
+          : "AdvantageKit SwerveChassisSpeeds, YAGSL telemetry or CTRE DriveState/Speeds";
+      return ranked(role, chosen, known, rank, basis, null, Tier.CONVENTION);
     }
     if (!wantSetpoint && candidates.size() == 1) {
       return ranked(role, candidates.get(0), candidates, n -> 0,

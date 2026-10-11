@@ -727,7 +727,7 @@ The conventions use exact paths after stripping the `NT:` and `/AdvantageKit` wr
 | `auto_chooser` | the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry, or AdvantageKit's `/NetworkInputs/SmartDashboard/<key>` | `chooser_entry` |
 | `path_setpoint` / `path_actual` | `PathPlanner/targetPose`, AdvantageKit `Odometry/TrajectorySetpoint` / `PathPlanner/currentPose`, else the robot pose | `path_setpoint_entry` / `path_actual_entry` |
 | `module_states_measured` / `_setpoint` | AdvantageKit `SwerveStates/Measured` with `SwerveStates/SetpointsOptimized` or `Setpoints`; CTRE `DriveState/ModuleStates` with `ModuleTargets`; YAGSL `swerve/advantagescope/currentStates` with `desiredStates` (the setpoint in the measured entry's own table); or, for measured, the only `SwerveModuleState` entry when it is not named like a setpoint | `measured_entry` / `setpoint_entry` |
-| `chassis_speeds_measured` / `_setpoint` | AdvantageKit `/SwerveChassisSpeeds/Measured` / `Setpoints`, also under `/RealOutputs` or `/ReplayOutputs`; YAGSL `/SmartDashboard/swerve/advantagescope/measuredChassisSpeeds` / `desiredChassisSpeeds`; CTRE `/DriveState/Speeds` for measured. A lone `struct:ChassisSpeeds` is a type-only fallback, whose role may be a setpoint. | none |
+| `chassis_speeds_measured` / `_setpoint` | AdvantageKit `/SwerveChassisSpeeds/Measured` / `Setpoints`, also under `/RealOutputs` or `/ReplayOutputs` (original values rank ahead of replay, whose basis states it is replayed); YAGSL `/SmartDashboard/swerve/advantagescope/measuredChassisSpeeds` / `desiredChassisSpeeds`; CTRE `/DriveState/Speeds` for measured. A lone `struct:ChassisSpeeds` is a type-only fallback, whose role may be a setpoint. | none |
 | `vision_pose_observations` | `struct:PoseObservation[]` entries (the AdvantageKit vision template's record: a timestamp and a pose) | `vision_entries` |
 | `vision_targets` | `struct:TargetObservation` entries with yaw and pitch fields; has-target flags as Limelight's `<table>/tv` and PhotonVision's `photonvision/<camera>/hasTarget` | `vision_entries` |
 | `gyro_yaw` | a yaw entry under a gyro, Pigeon, NavX, Canandgyro, IMU, or AHRS path | none |
@@ -1906,7 +1906,7 @@ the robot source or pass the correct entry.
 - `path` (required): Path to the log file
 - `pose_entry` (optional): The pose, e.g. a pose estimator's output; default: the `robot_pose` role
 - `odometry_pose_entry` (optional): A pose from wheel odometry alone; when given, its change is the prediction
-- `chassis_speeds_entry` (optional): `struct:ChassisSpeeds` to integrate when no odometry pose is given; default: the measured chassis speeds role (a name containing "measured", or the only `ChassisSpeeds` not named like a setpoint; several are listed to confirm)
+- `chassis_speeds_entry` (optional): `struct:ChassisSpeeds` to integrate when no odometry pose is given; default: the shared resolver's measured chassis speeds role (a published convention, original values before replay, or the only `ChassisSpeeds` with its possible setpoint role stated; other entries are listed to confirm)
 - `speeds_frame` (optional): `robot` (default, as kinematics produce them) or `field`
 - `threshold_m` (optional): Residual translation that counts as a correction (default 0.05 m)
 - `heading_threshold_rad` (optional): Residual heading that also counts (default: none)

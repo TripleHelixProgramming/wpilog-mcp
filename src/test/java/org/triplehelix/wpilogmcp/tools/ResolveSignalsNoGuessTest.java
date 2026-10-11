@@ -59,6 +59,10 @@ class ResolveSignalsNoGuessTest {
       var resolved = SignalResolver.resolve(builder.build(), role);
       assertEquals(SignalResolver.Tier.CONVENTION, resolved.tier(), name);
       assertEquals(java.util.List.of(name), resolved.entries(), name);
+      if (path.startsWith("/ReplayOutputs/")) {
+        assertTrue(resolved.basis().contains("replayed value"), resolved.basis());
+        assertFalse(resolved.ambiguous());
+      }
     }
   }
 
@@ -99,6 +103,29 @@ class ResolveSignalsNoGuessTest {
       assertEquals(java.util.List.of(replay), resolved.candidates());
       assertEquals(java.util.List.of(replay), SignalResolver.loopTime(log, role, replay).entries(),
           "An explicit choice can still analyze replay-host timing");
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+      "CHASSIS_SPEEDS_MEASURED, Measured",
+      "CHASSIS_SPEEDS_SETPOINT, Setpoints"
+  })
+  void originalChassisSpeedsOutrankReplayedValues(SignalResolver.Role role, String leaf) {
+    var values = java.util.List.of(new org.triplehelix.wpilogmcp.log.TimestampedValue(
+        0, java.util.Map.of("vx", 1.0, "vy", 0.0, "omega", 0.0)));
+    for (String wrapper : java.util.List.of("", "NT:", "/AdvantageKit", "NT:/AdvantageKit")) {
+      String original = wrapper + "/RealOutputs/SwerveChassisSpeeds/" + leaf;
+      String replay = wrapper + "/ReplayOutputs/SwerveChassisSpeeds/" + leaf;
+      for (var order : java.util.List.of(java.util.List.of(replay, original), java.util.List.of(original, replay))) {
+        var builder = new MockLogBuilder();
+        for (String name : order) builder.addEntry(name, "struct:ChassisSpeeds", values);
+        var resolved = SignalResolver.resolve(builder.build(), role);
+        assertFalse(resolved.ambiguous(), "Replay must rank below original chassis speeds: " + order);
+        assertEquals(java.util.List.of(original), resolved.entries());
+        assertEquals(SignalResolver.Tier.CONVENTION, resolved.tier());
+        assertFalse(resolved.basis().contains("replayed value"));
+      }
     }
   }
 
