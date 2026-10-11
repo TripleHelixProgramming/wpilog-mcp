@@ -229,6 +229,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The ideas guide now records the remaining review hardening by subject: move history and durability, socket admission and receipt timing, client lifecycle and response bounds, Windows token permissions, CSV policy, CI pins and tool dependency ownership. These open decisions previously lived only in the review.
+
 - The publication rule now says commits stay local, one per change, until the maintainer says push; the former instruction to commit locally could read as standing permission to make commits. Specific consent for pushes, tags, version bumps and merges to main is still required.
 
 - The HTTP pool guidance now says that exhausting all 32 dispatch workers closes the next connection without a response. Previously the separate MCP 503 limit could be read as a promise for dispatch overload too.

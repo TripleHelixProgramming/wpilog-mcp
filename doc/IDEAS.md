@@ -24,6 +24,13 @@ Align several logs from the same event (the practice runs, say) on a common time
 
 Today `compare_matches` compares one signal's statistics across two logs, each on its own clock. The only alignment between files is REV log to wpilog sync.
 
+### NetworkTables Receipt Time
+
+NT4 receipt timestamps currently use the ordered loop's processing time. A backlog therefore
+inflates the measured round trip even when the network is fast. Consider stamping receipt on
+the network callback, while preserving message ordering on the loop. Test the mapping with a
+known loop stall before changing the time-sync rules.
+
 ---
 
 ## 3. FRC Domain Features
@@ -149,6 +156,11 @@ Export analysis results in formats AdvantageScope can open:
 - JSON, for web-based visualization or other tools
 
 Today `export_csv` writes one entry as CSV, or returns the rows inline.
+
+CSV's policy for formula-leading text and non-finite numbers remains undecided. A spreadsheet
+may interpret text beginning with `=`, `+`, `-`, or `@` as a formula; escaping it changes the
+exported text. Decide whether to offer a spreadsheet-safe mode and how missing or
+non-finite numbers render, then keep `export_csv` and the CSV data endpoint consistent.
 
 ### 4.3 Scouting System Integration
 Priority: Low. Complexity: Medium.
@@ -351,6 +363,11 @@ Priority: Medium. Complexity: High.
 
 Let teams add their own analysis tools and data sources (such as team-specific CAN devices), distributed as JAR plugins with a manifest, dependencies, and version checks. Custom structs need no plugin: every struct decodes from the schema the log records.
 
+Tool construction still reaches singleton services through the no-argument `ToolBase`
+constructor. Make the transport own and pass the dependencies explicitly before supporting
+independent servers in one JVM. Tests should prove that their log managers, security rules and
+registries cannot cross-talk.
+
 ### 7.2 Reference Test Data
 Priority: High. Complexity: Low.
 
@@ -368,6 +385,15 @@ The REV log tests also cover REV logs in several directories, decoy REV logs, an
 
 Remaining:
 - An end-to-end fixture in which two REV logs (for example, rio and CANivore) attach to one wpilog and both sync by data
+- A real gateway socket whose peer sends fragments without FIN, with a tiny receive budget:
+  refusal must arrive promptly while a second peer keeps receiving. The existing direct
+  `BoundedReceiveDraft` tests do not prove admission through the socket.
+
+### Pinned CI Actions
+
+CI actions are pinned by major tag, so the same workflow can run different action code later.
+Consider commit-SHA pins with an update mechanism, and keep the version labels readable for
+review. This is a build supply-chain decision, separate from the server's runtime dependencies.
 
 ---
 
@@ -409,6 +435,29 @@ Done. A loaded log keeps its file's size, modification time, and identity from j
 Remaining:
 - On Windows, the file cannot be replaced or deleted while it is mapped, and unloading the log does not release the mapping until it is garbage collected, so copying a newer log over a loaded one fails (`FileSystemException`). Releasing the mapping on unload needs a count of the calls still reading the log, since a closed log must keep answering a call that holds it.
 
+### Store Durability and Move History
+
+`MirrorSync` and its recovery still append move records, while `LogStore` and pull placement
+rewrite older records to the final destination. Give mirror moves the same rule and test A to
+B to C with recovery of the second move. Keep the resolver's chain and cycle checks as defence
+for existing manifests.
+
+Durable move history also needs a retention rule: partition it or expire records with an
+explained policy before it can fill a manifest. `StoreFiles` currently refuses a JSON write
+above 4 MiB and keeps the prior file; it does not compact the history. The refusal should name
+the history that grew and explain the supported remedy.
+
+Manifest replacement is atomic, but `StoreFiles` does not force the manifest or its directory
+to durable storage. Decide the required power-loss guarantee, then force the necessary writes
+in their publication order and test recovery at each boundary. Atomic replacement alone does
+not establish that the newest manifest survives power loss.
+
+### Windows Stop-Token Permissions
+
+The stop-token file has no explicit Windows ACL. Decide and enforce an owner-only policy
+there, as POSIX permissions already do on other platforms, and verify it with a second Windows
+account. Do not assume the parent directory's inherited ACL makes the token private.
+
 ---
 
 ## 9. File access and visualization
@@ -447,6 +496,13 @@ useful.
 - **The extension installs and updates the standalone server**: done. The JAR owns the layout; shell installers, Gradle, and the extension delegate to it. The extension offers a missing install, updates older launchers without downgrading or rewriting settings, and provides an on-demand command. Scripts accept tags/pre-releases, prompt interactively, optionally install the matching `.vsix`, and support a settings-preserving refresh with a backup. Bootstrap flows from installer to extension; thereafter the extension updates the server and the Marketplace updates the extension. Real VS Code checks remain listed in EXPLORER_PLAN.md.
 - **Data view and notebook:** explorer milestone 9 is done. Perspective supplies the grid, filters, pivots, quick charts and CSV on exact Arrow samples. Three-cell notebooks preserve the selection and server inputs; Python stays in the user's kernel.
 - **Charts and assistant selections:** explorer milestone 10 is done. `render_chart` returns a headless PNG, versioned specification and full-window measurements with inputs. URI links open the server-validated selection; Ask about this selection uses VS Code chat with clipboard fallback. The own-specification-versus-Vega-Lite question and other assistants' prefill APIs remain open in EXPLORER_PLAN.md. MCP Apps remains a possible future interactive chat surface.
+
+Two client boundaries remain. `ServerManager.dispose()` does not cancel an in-flight
+`ensure()`, so disposal should prevent its pending work from publishing a server or client
+later. `McpClient` and `DataClient` also have no client-side byte ceiling. Define limits for
+responses and streams, cancel a request when it crosses them, and report the refusal without
+leaving the editor waiting. Tests should dispose during startup and feed oversized responses
+in small chunks.
 
 ---
 
