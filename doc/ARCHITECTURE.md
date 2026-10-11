@@ -562,10 +562,13 @@ The design keeps shared mutable state small:
 
 On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
 
-The NT4 gateway charges queued work per peer and drops only a peer that exceeds its allowance.
-Its global fallback requires five seconds without fan-out progress, measured at admission outside
-the loop; a short local stall is not a failure of every connected view. The budgets and ownership
-are described in [the recording architecture](pit-server/ARCHITECTURE.md#gateway-work-limits).
+The NT4 gateway charges queued work per peer and isolates a peer that exceeds its allowance.
+A short stall that fits the budget leaves views connected. If an upstream publication is refused,
+one reserved cleanup disconnects every view when fan-out resumes, even below the five-second
+stall bound: a missed change-only value must not leave a connected dashboard silently stale.
+The global stall fallback still requires five seconds without progress, measured at admission
+outside the loop. Recording waits for neither path. The budgets and ownership are described in
+[the recording architecture](pit-server/ARCHITECTURE.md#gateway-work-limits).
 
 ## Security
 

@@ -349,7 +349,12 @@ public final class Nt4Gateway implements AutoCloseable {
     for (var work : cancelled) work.result.completeExceptionally(
         new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
     for (var socket : refused) refusePeer(socket);
-    if (stalled) overrun();
+    if (stalled) overrun(WORK_LIMIT + ": fan-out loop stalled for at least " + maxFanOutStallUs + " us");
+    else if (!admitted && source == null) {
+      // Capture does not wait on these futures. Even a short overload can lose the only
+      // change to a held topic, so reserve one cleanup outside the full data budget.
+      overrun(WORK_LIMIT + ": upstream publication refused; view incomplete");
+    }
     if (!admitted) return CompletableFuture.failedFuture(
         new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
     try {
@@ -423,10 +428,9 @@ public final class Nt4Gateway implements AutoCloseable {
     catch (java.util.concurrent.RejectedExecutionException ignored) { /* Closing. */ }
   }
 
-  /** A global refusal is a last defence after measured absence of fan-out progress. */
-  private void overrun() {
+  /** Coalesce invalidation outside the data budget; views close when fan-out can run again. */
+  private void overrun(String reason) {
     if (!overflowPending.compareAndSet(false, true)) return;
-    String reason = WORK_LIMIT + ": fan-out loop stalled for at least " + maxFanOutStallUs + " us";
     LoggerFactory.getLogger(Nt4Gateway.class).warn(reason);
     try {
       loop.execute(() -> {

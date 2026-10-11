@@ -56,6 +56,40 @@ class GatewayKeepaliveTest {
       f.loop.drain();
     }
   }
+  @Test void refusedUpstreamValueDisconnectsEveryStaleViewWhenTheLoopResumes() throws Exception {
+    try (var f = new Fixture()) {
+      var other = f.connect("other");
+      var leaving = f.connect("leaving");
+      var announced = f.gateway.announce("/x", "double", new com.google.gson.JsonObject());
+      f.loop.drain(); announced.join();
+      String subscribe = "[{\"method\":\"subscribe\",\"params\":{\"subuid\":1,\"topics\":[\"/x\"],\"options\":{\"all\":true,\"periodic\":0.001}}}]";
+      for (var peer : List.of(f.peer, other)) f.server.onMessage(peer, subscribe);
+      f.loop.drain();
+      var initial = f.gateway.value("/x", 0, 1, 0.0); f.loop.drain(); initial.join();
+      f.loop.advance(1000);
+      assertEquals(1, f.peer.values); assertEquals(1, other.values);
+
+      f.gateway.workLimits(8192, 6);
+      String request = "[{\"method\":\"unsubscribe\",\"params\":{\"subuid\":9}}]";
+      f.server.onMessage(leaving, request); f.server.onMessage(leaving, request);
+      leaving.closeConnection(1000, "peer left");
+      f.server.onClose(leaving, 1000, "peer left", true);
+      // onClose removes the peer's share immediately, but its queued work still holds
+      // global capacity until the loop runs. Neither surviving peer is over its budget.
+      var accepted = new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
+      for (int i = 1; i <= 4; i++) accepted.add(f.gateway.value("/x", i, 1, (double) i));
+      var refused = f.gateway.value("/x", 5, 1, 5.0);
+      assertTrue(refused.isCompletedExceptionally(), "Recording must not wait for a full fan-out queue");
+      assertNull(f.peer.dropped); assertNull(other.dropped);
+      f.loop.elapse(500_000); // Below the five-second global-stall fallback.
+      f.loop.drain();
+      accepted.forEach(java.util.concurrent.CompletableFuture::join);
+      for (var peer : List.of(f.peer, other)) {
+        assertNotNull(peer.dropped, "A refused change-only value must invalidate every stale view");
+        assertTrue(peer.dropped.contains("upstream"), peer.dropped);
+      }
+    }
+  }
   @Test void onePeersQueuedWorkCannotDisconnectAnotherView() throws Exception {
     try (var f = new Fixture()) {
       var slow = f.connect("slow");

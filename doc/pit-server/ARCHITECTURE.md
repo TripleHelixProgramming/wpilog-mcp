@@ -614,9 +614,13 @@ Fan-out admission reserves at most 32 MiB and 65,536 tasks before copying payloa
 work is charged to every view; each peer's private requests divide the remaining capacity fairly.
 A peer that exceeds its own allowance is disconnected without spending another peer's allowance.
 The item bound admits a second of 100 topics at 50 Hz (5,000 records), unlike the former 4,096 cap.
-A global overrun disconnects every view only after five seconds without fan-out progress; that
-monotonic bound is a constructor parameter. Admission observes the stall outside the loop. One
-reserved cleanup per refused peer, or one global cleanup, releases the view; capture never waits.
+A global stall fallback requires five seconds without fan-out progress; that monotonic bound is
+a constructor parameter. Admission observes the stall outside the loop. A refused upstream
+publication separately reserves one coalesced cleanup, outside the full work budget, to disconnect
+every view when the loop resumes. This also applies below five seconds: a change-only topic may
+never publish again, so keeping a connected view after losing its update would hide stale data.
+Short stalls that fit the budget drop nothing. One reserved cleanup per refused peer, or one
+global cleanup, releases the view; capture never waits and recording is unaffected.
 
 ## Integration dependencies
 

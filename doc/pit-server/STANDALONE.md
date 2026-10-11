@@ -590,8 +590,11 @@ choose prefixes, periods, all changes, or announcements only. Client writes are 
 ignored, with one warning per connection, so a dashboard control cannot change the robot. A slow
 subscriber is disconnected, with an explained reason in the server log. Pending work is charged
 per peer: one peer exceeding its allowance does not disconnect the others. The shared admission
-bound is 32 MiB and 65,536 tasks; a global overrun disconnects all views only after five seconds
-without fan-out progress. Short local stalls fit within the work budget while recording continues.
+bound is 32 MiB and 65,536 tasks; its global stall fallback requires five seconds without fan-out
+progress. A short stall that fits the budget drops no connection. If the gateway refuses an
+upstream publication, every view is disconnected as soon as the loop resumes, with an explained
+reason, even below five seconds. A dashboard sees the disconnect rather than silently keeping a
+missed change-only value. Recording continues without waiting for gateway cleanup.
 
 The gateway follows `WPILOG_HTTP_BIND`, including its default `127.0.0.1`. Bind deliberately to
 the team network for other machines to connect. This separate port has **no authentication** and
