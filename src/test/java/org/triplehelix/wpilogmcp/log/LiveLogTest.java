@@ -118,7 +118,7 @@ class LiveLogTest {
       assertEquals(2, after.get("entries").getAsInt());
       assertEquals(2, after.getAsJsonObject("inputs").getAsJsonObject("session_time_range").get("end_sec").getAsDouble());
       assertEquals("ok", before.get("status").getAsString()); assertEquals("ok", after.get("status").getAsString());
-      String guide = Files.readString(Path.of("doc/TOOLS.md"));
+      String guide = Files.readString(Path.of("doc/pit-server/TOOLS.md"));
       for (String field : List.of("inputs.session_time_range", "inputs.session_time_ranges", "start_sec", "end_sec")) {
         assertTrue(guide.contains("`" + field + "`"), field);
       }

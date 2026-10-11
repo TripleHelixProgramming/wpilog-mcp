@@ -15,13 +15,13 @@ import org.triplehelix.wpilogmcp.config.MetricsConfig;
 
 class MetricsDocsTest {
   @Test void documentationNamesEveryKeyAndMetricAndProvisioningConnectsTheDashboard() throws Exception {
-    String guide = Files.readString(Path.of("doc/STANDALONE.md"));
+    String guide = Files.readString(Path.of("doc/pit-server/STANDALONE.md"));
     for (String key : MetricsConfig.KEYS) assertTrue(guide.contains("`metrics." + key + "`"), key);
     var names = java.util.regex.Pattern.compile("\"(wpilog_[a-z_]+)\"").matcher(
         Files.readString(Path.of("src/main/java/org/triplehelix/wpilogmcp/mcp/MetricsEndpoint.java")));
     while (names.find()) assertTrue(guide.contains("`" + names.group(1) + "`"), names.group(1));
     assertTrue(guide.contains("sampled view, not the record"));
-    var yaml = new org.yaml.snakeyaml.Yaml(); var base = Path.of("doc/metrics");
+    var yaml = new org.yaml.snakeyaml.Yaml(); var base = Path.of("doc/pit-server/metrics");
     Map<String, Object> compose = yaml.load(Files.readString(base.resolve("compose.yaml")));
     var services = (Map<?, ?>) compose.get("services");
     for (String service : List.of("prometheus", "grafana")) {

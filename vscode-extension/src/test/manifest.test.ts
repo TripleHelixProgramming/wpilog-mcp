@@ -14,10 +14,15 @@ const settings = Object.assign(
   {},
   ...manifest.contributes.configuration.map((section: { properties: object }) => section.properties)
 );
+const experimentalGuide = fs.readFileSync(
+  path.join(__dirname, "..", "..", "..", "doc", "pit-server", "EXTENSION.md"), "utf8"
+);
 
-test("the gateway guide stays relative so release packaging pins its tag", () => {
+test("the experimental gateway guide stays outside the main README with a relative link", () => {
   const guide = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
-  assert.ok(guide.includes("[NT4 gateway configuration](../doc/STANDALONE.md#nt4-gateway-for-dashboards)"));
+  assert.doesNotMatch(guide, /pit[- ]server|wpilog-mcp\.pitServerUrl/i);
+  assert.ok(experimentalGuide.includes("has not had real-world testing"));
+  assert.ok(experimentalGuide.includes("[NT4 gateway configuration](STANDALONE.md#nt4-gateway-for-dashboards)"));
   assert.doesNotMatch(guide, /https:\/\/github\.com\/TripleHelixProgramming\/wpilog-mcp\/blob\/main\//);
 });
 
@@ -283,14 +288,14 @@ test("mirror settings pin defaults and links to user controls", () => {
 });
 
 
-test("the README names every pit and mirror setting and command", () => {
-  const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
+test("the experimental guide names every pit and mirror setting and command", () => {
+  const readme = experimentalGuide;
   for (const key of Object.keys(settings).filter(key => key.includes("mirror.") || key.endsWith("pitServerUrl"))) assert.ok(readme.includes(`\`${key}\``), key);
   for (const id of ["pinSession", "unpinSession", "syncNow", "openMirrorFolder", "syncFromLaptop", "registerPitWithClaudeCode", "mirrorActions"]) assert.ok(readme.includes(`\`wpilog-mcp.${id}\``), id);
 });
 
 test("the mirror guide explains permanent admission for terminal use with VS Code closed", () => {
-  const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
+  const readme = experimentalGuide;
   assert.match(readme, /With VS Code closed[\s\S]*servers\.yaml[\s\S]*--logdir/);
   assert.match(readme, /For regular offline analysis away from VS Code, use the `mirror` block/);
 });

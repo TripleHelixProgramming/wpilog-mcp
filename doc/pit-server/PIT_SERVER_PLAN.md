@@ -1,8 +1,12 @@
 # The Pit Server: Live Capture, Gateway, and the Long-Term Record
 
+> **Experimental:** the pit server has not had real-world testing. These documents are
+> retained for development and controlled shop evaluation, not as a recommendation for team use.
+> Automated tests and simulation do not establish reliability on a real robot.
+
 A proposal for the next large piece of wpilog-mcp: a program that runs in the shop and in the pit, listens to the robot all the time, keeps everything it hears, and answers questions about it, live and later. The first half is for anyone on the team; the second half specifies the work for the developers who will build it.
 
-**Status, October 2026.** The pit server described here is built and runs on the `development` branch. Part I is the idea as it was proposed, kept as written. Part II is the specification, and under each milestone its implementation record says what was built, what was found, and what changed. Part III is the decision record. To run the pit server, see the [operations and usage manual](OPERATIONS.md); for every setting and route, the [standalone reference](STANDALONE.md).
+**Status, October 2026.** The pit server described here is built and runs on the `development` branch. Part I is the idea as it was proposed, kept as written. Part II is the specification, and under each milestone its implementation record says what was built, what was found, and what changed. Part III is the decision record. For controlled evaluation, see the [operations and usage manual](OPERATIONS.md); for every setting and route, the [standalone reference](STANDALONE.md).
 
 ## Part I: The Idea
 
@@ -80,7 +84,7 @@ The new pieces are the NetworkTables client, the session writer, the log puller,
 
 ## Part II: Specification
 
-What follows is for the developers. It follows the project's rules in `CLAUDE.md` and the design principles in [ARCHITECTURE.md](ARCHITECTURE.md): the log decides, the server does not guess, every result says what it used, and every fix comes with a test that fails without it.
+What follows is for the developers. It follows the project's rules in `CLAUDE.md` and the design principles in [ARCHITECTURE.md](../ARCHITECTURE.md): the log decides, the server does not guess, every result says what it used, and every fix comes with a test that fails without it.
 
 ### 1. Terms
 
@@ -570,7 +574,7 @@ A laptop that runs the capture for the day is the pit server for the day, and th
 
 Peers are remembered by URL so the second sync is one command, and the extension offers the same as a command (§14). Discovery stays manual: mDNS would cost a dependency to save typing a port number once.
 
-**Any server can keep a store.** The layout is not the pit server's alone. The extension offers to turn a laptop's log directory into a store and to organize the files in it the same way ([EXPLORER_PLAN.md](EXPLORER_PLAN.md) §9). So the folder a person fills by hand and the one the pit server fills read alike, and the mirror beside them too.
+**Any server can keep a store.** The layout is not the pit server's alone. The extension offers to turn a laptop's log directory into a store and to organize the files in it the same way ([EXPLORER_PLAN.md](../EXPLORER_PLAN.md) §9). So the folder a person fills by hand and the one the pit server fills read alike, and the mirror beside them too.
 
 A directory that is not a store is read as today, organized however its owner likes. The import runs in the server that owns the store, through `POST /store/import` when a daemon is running and in the `import` command itself otherwise, so a store never has two writers. A laptop pointed at a pit server's store over a shared folder reads it as any directory, since every file in it is a log in a directory.
 
@@ -605,7 +609,7 @@ What it does not do. **It is a view, not the record** (decision 13). A scrape se
 
 **It has no authentication**, as decision 7 says: the endpoint is on the same port as the MCP transport, and behind the same proxy if a team adds one.
 
-A later step, when a dashboard wants the record and not its samples, is the data endpoint the explorer plan specifies ([EXPLORER_PLAN.md](EXPLORER_PLAN.md) §6), which any server on the HTTP transport serves. It gives an entry's values over a range, every sample or reduced to a requested number of points by the minimum, maximum, and mean per bucket, as an Arrow stream or CSV. A `json` format for Grafana's data source plugins is the addition, when someone needs full-resolution history in Grafana rather than in the explorer or a tool. Prometheus first.
+A later step, when a dashboard wants the record and not its samples, is the data endpoint the explorer plan specifies ([EXPLORER_PLAN.md](../EXPLORER_PLAN.md) §6), which any server on the HTTP transport serves. It gives an entry's values over a range, every sample or reduced to a requested number of points by the minimum, maximum, and mean per bucket, as an Arrow stream or CSV. A `json` format for Grafana's data source plugins is the addition, when someone needs full-resolution history in Grafana rather than in the explorer or a tool. Prometheus first.
 
 ### 13. Network exposure
 

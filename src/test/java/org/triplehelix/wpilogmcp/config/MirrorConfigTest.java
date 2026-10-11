@@ -40,7 +40,7 @@ class MirrorConfigTest {
     assertTrue(assertThrows(ConfigException.class, () -> MirrorConfig.parse(json, s -> s)).getMessage().contains("mirror." + key));
   }
   @Test void standaloneDocumentsEveryMirrorKeyAndTheLocalControls() throws Exception {
-    String guide = Files.readString(Path.of("doc/STANDALONE.md"));
+    String guide = Files.readString(Path.of("doc/pit-server/STANDALONE.md"));
     for (String key : MirrorConfig.KEYS) assertTrue(guide.contains("`mirror." + key + "`"), key);
     for (String route : List.of("/store/mirror/configure", "/store/mirror/sync", "/store/mirror/pin_session", "/store/mirror/unpin_session")) assertTrue(guide.contains(route), route);
     assertTrue(guide.contains("not assistant tools")); assertTrue(guide.contains("default `0` means unlimited"));

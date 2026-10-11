@@ -321,11 +321,11 @@ class CaptureIdentityTest {
 
   @Test void identityGuidesNameTheEvidenceAndItsLimits() throws Exception {
     for (String guide : List.of("ARCHITECTURE", "STANDALONE", "TOOLS", "DEVELOPMENT", "PIT_SERVER_PLAN")) {
-      String text = Files.readString(Path.of("doc", guide + ".md"));
+      String text = Files.readString(Path.of("doc/pit-server", guide + ".md"));
       assertTrue(text.contains("robot_candidates"), guide);
       assertTrue(text.contains("/SystemStats/SerialNumber"), guide);
     }
-    String plan = Files.readString(Path.of("doc", "PIT_SERVER_PLAN.md"));
+    String plan = Files.readString(Path.of("doc/pit-server", "PIT_SERVER_PLAN.md"));
     assertTrue(plan.contains("/proc/[0-9]*/environ")); assertTrue(plan.contains("/etc/machine-info"));
   }
 }

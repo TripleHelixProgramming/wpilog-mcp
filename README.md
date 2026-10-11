@@ -20,10 +20,6 @@ It reads WPILib `.wpilog` files and the REV `.revlog` files recorded beside them
 </tr>
 </table>
 
-A standalone HTTP server can also [record NetworkTables and pull robot logs](doc/STANDALONE.md#pit-server) into a local store. Pulling is opt-in and waits for a connected, disabled robot; the open capture is available to the existing tools.
-
-The HTTP transport also serves [Prometheus metrics and a starter Grafana dashboard](doc/STANDALONE.md#metrics-and-a-starter-dashboard). Dashboards show sampled latest values and their ages; the capture keeps the full record between scrapes.
-
 ## How It Works
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open standard by which an AI assistant such as Claude calls tools that a server provides; wpilog-mcp is such a server. Its tools open the logs, find entries, compute statistics, and report events. The reasoning is the model's.
@@ -31,8 +27,6 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open 
 A log viewer such as AdvantageScope shows you the data, but only if you know where to look. With wpilog-mcp you ask an engineering or strategy question; the model finds the relevant entries, proposes an explanation, and tests it against the data with further tool calls.
 
 A log folder can become a store, organized by robot and session: the extension [offers to organize](vscode-extension/README.md#organizing-your-logs) a folder it finds, and the standalone [import command and inbox](doc/STANDALONE.md#importing-logs) do the same from a terminal or a USB stick. Imports preserve filenames and provenance, and the listing reports files awaiting assignment or refused by the inbox.
-
-The extension can [connect to a pit server and keep an offline mirror](vscode-extension/README.md#pit-server-and-offline-mirror): browse or follow its sessions, pin what you need, and continue analyzing the same files after leaving the network. **Sync from Laptop** combines two teammates' stores through the same HTTP door, preserving provenance and reporting conflicts.
 
 ### What You Can Ask
 
@@ -64,9 +58,9 @@ A possible answer: *"Battery voltage dropped below the brownout threshold at 42.
 
 wpilog-mcp is designed for Claude and tested with Claude, but any agent that speaks MCP should work: GitHub Copilot in VS Code, Gemini CLI, Cursor, and others. ChatGPT reaches MCP servers only over the network, so it needs the [HTTP transport](doc/STANDALONE.md#http-transport).
 
-The [operations and usage manual](doc/OPERATIONS.md) walks through the setup check, the first questions, and running the server in the shop and the pit.
+The [operations and usage manual](doc/OPERATIONS.md) walks through the setup check, the first questions, and running the shared server.
 
-The shared-server and pit features described on this branch require 0.10.0-dev1 or newer.
+The shared-server features described on this branch require 0.10.0-dev1 or newer.
 The latest full release may be older; until this version and its installer are published,
 use the [checkout install](doc/STANDALONE.md#install) from `development` and check
 `wpilog-mcp -version` before following the manual.
@@ -104,11 +98,31 @@ A language model tends to find an explanation that fits the data, whether or not
 - **Game rules** for recent seasons, transcribed from each season's final game manual: scoring, match timing, field geometry, and robot limits. See [`get_game_info`](doc/TOOLS.md#get_game_info).
 
 The explorer's **Data view** uses the selected samples for filtering, pivots, quick charts
-and CSV export, and appends new batches while following a session. **Open in Notebook**
+and CSV export. **Open in Notebook**
 saves a three-cell Python notebook with the request and its evidence. Assistants can return
 `render_chart` images with an **Open in Explorer** link; **Ask about this selection** sends
 the path, entries and window to VS Code chat, with a clipboard fallback. See the
 [extension guide](vscode-extension/README.md#exploring-logs).
+
+## Shared-server capabilities
+
+The shared server can record NetworkTables into ordinary WPILOG files, applying exclusion and
+thinning policies while the existing log tools read the open recording. Recording remains
+experimental and has not had real-world testing; the [configuration and limits](doc/pit-server/STANDALONE.md#pit-server)
+are retained for controlled evaluation.
+
+The live tools, `list_sessions`, `get_latest_values` and `wait_for_change`, are registered on
+every server. They report current session facts and publications; without a recording they
+answer `not_applicable` with a reason. See the [tool reference](doc/TOOLS.md#live-tools).
+
+Every HTTP server exposes Prometheus metrics at `/metrics`. A scrape is a sampled view of
+latest values, ages and server counters, not a replacement for a recording. The
+[metrics guide](doc/pit-server/STANDALONE.md#metrics-and-a-starter-dashboard) holds the
+configuration and starter dashboard.
+
+A local store catalogs recorded files by robot and session in manifests, preserving filenames
+and provenance. Import and the inbox organize existing logs; [store transfer and mirror details](doc/pit-server/STANDALONE.md#the-store-door)
+are separate from ordinary local analysis.
 
 ## Tools
 
@@ -127,11 +141,9 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 | **Export** | `export_csv`, `generate_report` |
 | **Live** | `list_sessions`, `get_latest_values`, `wait_for_change` |
 
-The Live tools answer for the present on a server with capture enabled, and `not_applicable` on any other. They report session costs and current publications without opening a log; the other tools still read the live capture by path.
-
 `get_server_guide` describes every tool by category, along with the analysis principles. Its description tells the agent to call it first, so that the agent reaches for a built-in tool rather than writing analysis code of its own.
 
-[TOOLS.md](doc/TOOLS.md) gives each tool's parameters and results; [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) shows real responses from every one.
+[TOOLS.md](doc/TOOLS.md) gives every tool's parameters and results; [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) shows recorded response examples.
 
 ## Documentation
 
@@ -141,25 +153,24 @@ Start with the guide for what you are doing. The reference pages are linked from
 
 | Document | What it covers |
 |----------|----------------|
-| [Operations and usage manual](doc/OPERATIONS.md) | Step by step: the setup check, how a question becomes tool calls, reading an answer, recipes for the common questions, the explorer, the shared server, the pit server, the shop day, stores, maintenance, and what to do when something is wrong |
-| [VS Code extension README](vscode-extension/README.md) | The extension: the explorer, organizing logs, the pit server and the offline mirror, settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
-| [STANDALONE.md](doc/STANDALONE.md) | The reference for the standalone install: the configuration file and every key, command-line flags and environment variables, MCP client setup, the HTTP routes, the pit server's configuration, metrics, Docker |
-| [TOOLS.md](doc/TOOLS.md) | Every tool's parameters and results, the data types, the result fields, and how REV logs are synchronized |
-| [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) | The JSON every tool returns, captured from real logs |
+| [Operations and usage manual](doc/OPERATIONS.md) | Step by step: the setup check, how a question becomes tool calls, reading an answer, recipes for the common questions, the explorer, the shared server, stores, maintenance, and what to do when something is wrong |
+| [VS Code extension README](vscode-extension/README.md) | The extension: the explorer, organizing logs, settings, Claude Code, The Blue Alliance key, upgrading, troubleshooting |
+| [STANDALONE.md](doc/STANDALONE.md) | The reference for the standalone install: shared-server configuration, command-line flags and environment variables, MCP client setup, the HTTP routes, Docker |
+| [TOOLS.md](doc/TOOLS.md) | File-analysis tool parameters and results, the data types, the result fields, and how REV logs are synchronized |
+| [TOOL_RESPONSES.md](doc/TOOL_RESPONSES.md) | Generated examples of the JSON tools return |
 
 **Developing it**
 
 | Document | What it covers |
 |----------|----------------|
-| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | The goals and design principles, and how the server reads logs, records captures, manages memory, caches results, and handles concurrent clients |
-| [DEVELOPMENT.md](doc/DEVELOPMENT.md) | Building, every test suite, adding a tool, releasing, and contributing |
+| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | The goals and design principles, and how the server reads logs, manages memory, caches results, and handles concurrent clients |
+| [DEVELOPMENT.md](doc/DEVELOPMENT.md) | Building, test policy, adding a tool, releasing, and contributing |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 **Plans and proposals**
 
 | Document | What it covers |
 |----------|----------------|
-| [PIT_SERVER_PLAN.md](doc/PIT_SERVER_PLAN.md) | The pit server: the idea for everyone, the specification for developers, and the record of the decisions made while building it |
 | [EXPLORER_PLAN.md](doc/EXPLORER_PLAN.md) | WPILog Explorer, the viewer in the extension: the same server's numbers, plotted, with a path from looking to asking |
 | [IDEAS.md](doc/IDEAS.md) | Proposed work, and the priorities among it |
 

@@ -88,7 +88,7 @@ class CaptureConfigTest {
   }
 
   @Test void standaloneDocumentsEveryAcceptedCaptureKey() throws Exception {
-    String guide = Files.readString(Path.of("doc/STANDALONE.md"));
+    String guide = Files.readString(Path.of("doc/pit-server/STANDALONE.md"));
     assertTrue(guide.contains("default `1073741824` bytes (1 GiB)"));
     // Read the claimed bounds, then ask the actual parser about both edges and their neighbors.
     // A copied file-size limit must not silently become the documented transfer-rate limit.

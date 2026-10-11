@@ -56,11 +56,11 @@ class ProviderConfigTest {
     }
   }
   @Test void guideNamesEveryStatsAndTailKeyAndTheConventions() throws Exception {
-    String text = Files.readString(Path.of("doc/STANDALONE.md"));
+    String text = Files.readString(Path.of("doc/pit-server/STANDALONE.md"));
     for (var key : ProviderConfig.STATS_KEYS) assertTrue(text.contains("`capture.stats." + key + "`"), key);
     for (var key : ProviderConfig.TAIL_KEYS) assertTrue(text.contains("`capture.tail[]." + key + "`"), key);
     for (String role : List.of("program_console", "kernel", "syslog", "journal")) {
-      assertTrue(Files.readString(Path.of("doc/TOOLS.md")).contains("`" + role + "`"));
+      assertTrue(Files.readString(Path.of("doc/pit-server/TOOLS.md")).contains("`" + role + "`"));
     }
     assertTrue(text.contains(ProviderConfig.CONSOLE));
   }

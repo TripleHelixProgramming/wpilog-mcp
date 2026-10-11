@@ -1,6 +1,6 @@
 # WPILog Explorer: Looking at the Data Without an Agent
 
-The plan and implementation record for a viewer inside the WPILog Analyzer extension: a way to look at the logs wpilog-mcp reads, for the people who want to see the data themselves. The first half is for anyone on the team; the second half specifies the work for the developers who will build it, in the form [PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) uses.
+The plan and implementation record for a viewer inside the WPILog Analyzer extension: a way to look at the logs wpilog-mcp reads, for the people who want to see the data themselves. The first half is for anyone on the team; the second half specifies the work for the developers who will build it.
 
 ## Part I: The Idea
 
@@ -10,7 +10,7 @@ WPILog Analyzer gives an AI assistant the tools to analyze a robot's logs. WPILo
 
 It is built on the server the extension already bundles, and it calls the same tools the assistant calls. So the number a student reads off the statistics panel is the number the assistant would have reported, computed by the same code from the same file, with the same data quality beside it. A question that starts by looking can continue by asking: a selection becomes a prompt, already naming the file, the entry, and the time window, so nothing has to be retyped. And it needs no assistant to be useful: install the extension, open a log, and look.
 
-It reads REV logs beside the robot's log, on the robot's clock, as the server already synchronizes them. With a pit server on the team's network (see the pit server plan), it lists the team's sessions, follows a live session as it is recorded, and shows which sessions are mirrored on this laptop for the trip home.
+It reads REV logs beside the robot's log, on the robot's clock, as the server already synchronizes them.
 
 ### Why
 
@@ -18,7 +18,7 @@ It reads REV logs beside the robot's log, on the robot's clock, as the server al
 - **Looking and asking belong together.** Today the look happens in another program and the question in VS Code, and the file, the entry, and the time window are carried between them by hand. Here the plot and the prompt share a selection.
 - **One set of numbers.** A viewer with its own statistics and its own notion of a match phase disagrees with the assistant in small ways that cost an afternoon. The explorer shows what the server computes, so there is one answer.
 - **The code is in the same window.** The log explains the code and the code explains the log, and VS Code already holds the code.
-- **The log folder stops being a pile.** A season's logs copied off a robot by hand are a folder of files named by date, from two robots, with the REV logs mixed in. The extension offers to organize them the way the pit server keeps its own: by robot, then by session, with the robot's files beside each other and a manifest that remembers where each came from. The folder reads the same whether a pit server filled it or a person did, and the layout teaches itself.
+- **The log folder stops being a pile.** A season's logs copied off a robot by hand are a folder of files named by date, from two robots, with the REV logs mixed in. The extension offers to organize them by robot, then by session, with the robot's files beside each other and a manifest that remembers where each came from.
 - **One extension, not two.** A viewer and an analyzer that share a server, a configuration, and a selection belong in one install. A team member with no interest in assistants installs the same extension and uses the viewer; the same server supplies both views and assistant calls.
 
 ### What it is not
@@ -41,7 +41,7 @@ It reads REV logs beside the robot's log, on the robot's clock, as the server al
                   home YAML + clients' directory/key leases
 ```
 
-The webview draws results supplied by the extension host and opens no network connection. The shared server supplies both tool results and sample streams, so a log loaded for the viewer is loaded for the assistant. A configured pit-server URL supplies a separate HTTP connection, and the local server maintains its offline mirror.
+The webview draws results supplied by the extension host and opens no network connection. The shared server supplies both tool results and sample streams, so a log loaded for the viewer is loaded for the assistant.
 
 ### Where it stands
 
@@ -53,12 +53,11 @@ Milestones 1–11 are implemented:
 - console, struct/array fields, and field pose;
 - REV synchronization;
 - organizing stores through import jobs and the inbox;
-- pit sessions, follow, mirror controls and laptop sync;
 - the data view and notebooks;
 - charts for the assistant;
 - a real VS Code smoke in CI.
 
-Automated tests cover pure models, real transport/client integration, and the milestone 11 real-editor smoke. The remaining interactive checks are listed under the milestones and in DEVELOPMENT.md. The remaining viewer conveniences, such as the wall-clock axis labels (§5), are still planned. Pit/mirror interaction in real VS Code remains unverified.
+Automated tests cover pure models, real transport/client integration, and the milestone 11 real-editor smoke. The remaining interactive checks are listed under the milestones and in DEVELOPMENT.md. The remaining viewer conveniences, such as the wall-clock axis labels (§5), are still planned.
 
 ## Part II: Specification
 
@@ -67,7 +66,7 @@ What follows is for the developers. It follows `CLAUDE.md` and the design princi
 ### 1. Decisions
 
 1. **One extension.** The explorer is part of WPILog Analyzer (`TripleHelixProgramming.wpilog-analyzer`), in `vscode-extension/`, under the same version, build, tests, CI, and release. The Marketplace identifier cannot change without becoming a new listing, so it stays; the display name and the README say that the extension analyzes logs with an assistant and shows them without one. "WPILog Explorer" names the viewer inside it: the custom editor, the views, and their commands.
-2. **The webview never touches the network.** The extension host is the client. It starts the shared standalone server and registers the window’s directories by lease; the viewer and assistants reach that server over HTTP. A configured pit server has a separate HTTP client, with no local directory or key lease.
+2. **The webview never touches the network.** The extension host is the client. It starts the shared standalone server and registers the window’s directories by lease; the viewer and assistants reach that server over HTTP.
 
    The webview receives results and data by `postMessage` (typed arrays travel as transferable buffers, which VS Code passes without copying through JSON) and sends requests the same way. This keeps the server's `Origin` check as it is (a webview's origin is `vscode-webview://<id>`, which the check rightly refuses, while a request from the extension host carries no `Origin` at all), and needs no CORS beyond what exists.
 3. **Every number on screen comes from a tool.** The explorer computes no statistic, no phase, no synchronization of its own. What the tools lack is added to the server as a tool, with the tool checklist, the description tests, the conformance sweep, and the differential check, so the assistant can call it too. The first two are `read_entry` at screen resolution and `render_chart` (§6).
@@ -83,7 +82,7 @@ What follows is for the developers. It follows `CLAUDE.md` and the design princi
    Updates flow one way: the standalone scripts may bootstrap the matching extension from an exact tag or the newest release including pre-releases; after that the extension updates the server and the Marketplace updates the extension. Both scripts prompt in a terminal and preserve settings. Explicit `--refresh` stops daemons and builds a fresh install beside a complete recovery backup. Automatic updates never refresh or install an extension. There is no operating-system service: clients start the server when needed, and `idle_exit_minutes` is the user’s policy in YAML (`0` by default). A different running version is replaced on the next `start` or `connect`.
 6. **A bridge, for starting on demand and for clients that take only a command.** `wpilog-mcp connect <name>` is a small program in the same JAR. It makes sure the named daemon is running, starting it if not, then relays newline-delimited JSON-RPC between its standard streams and the daemon's `/mcp` endpoint, one session per bridge.
    - Claude Code’s local registration is this bridge command at user scope. A Claude Code started in a terminal with VS Code closed must start the server itself, which a URL cannot do, and one started beside the viewer must share its server, which VS Code's registry cannot offer to a process outside VS Code.
-   - `connect --url <url>` relays to any server without starting anything, for the clients whose configuration takes only a command (Claude Desktop's file is one), so they reach a pit server too.
+   - `connect --url <url>` relays to any server without starting anything, for the clients whose configuration takes only a command (Claude Desktop's file is one).
 7. **Bulk data has its own door, in Arrow's format.** Every sample of an entry is available from `GET /data/entries` on any server running the HTTP transport (§6), as an Apache Arrow IPC stream or as CSV, with the same `inputs` a tool result would carry.
    - Arrow is the format that pandas, polars, DuckDB, and R read without parsing, which is what a script that analyzes the data wants.
    - The server writes the stream on the heap with Arrow’s Flatbuffers format classes alone, never its allocator, so nothing in the server leaves the garbage collector's care (§6).
@@ -93,7 +92,7 @@ What follows is for the developers. It follows `CLAUDE.md` and the design princi
 
    The bytes are opened by a reader of our own: `media/arrowStream.js`, a few hundred lines for the subset the server writes, parsing the Flatbuffers by hand from the format's definitions. It is used rather than Arrow's JavaScript library, which is several megabytes for what amounts to two columns of numbers. The reader runs under Node too, where it is checked against the server's streams that pyarrow has read, and refuses anything outside the subset rather than misreading it. Arrow's library can replace it the day the data view needs the whole format.
 9. **Opening a log opens the explorer.** The read-only custom editor handles `*.wpilog`; a REV companion opens through its wpilog. A standalone `.revlog` editor remains planned. “Open With” keeps other editors available. Viewing does not write files; the explicit organizing choices in §9 do.
-10. **The log folder can be a store, by the person's choice.** The layout the pit server owns ([PIT_SERVER_PLAN.md](PIT_SERVER_PLAN.md) §11) is not the pit server's alone: any server can keep a store. The extension offers to turn the configured log directory into one and to organize the files already in it. It offers; it never reorganizes a folder unasked. Once the folder is a store, the rules of that plan hold here. Files enter by import, a file dropped in by hand is reported and the extension offers to import it, there is no automatic retention deletion, and imports preserve original names and provenance (moves remove their verified source copy).
+10. **The log folder can be a store, by the person's choice.** Any server can keep a local store. The extension offers to turn a configured log directory into one and organize its files; it never does so unasked. Files enter by import, strays are reported, retention never deletes imports, and original names and provenance are preserved. See [the store architecture](ARCHITECTURE.md#the-log-store).
 
 ### 2. Layout and wiring
 
@@ -101,7 +100,7 @@ Everything is under `vscode-extension/`, in the layout the extension has:
 
 | Path | What it holds |
 |---|---|
-| `package.json` | Gains the custom editor, the views container and views, the explorer's commands (`wpilog-mcp.explorer.*`), and the pit server URL setting, with `order` values the manifest test pins |
+| `package.json` | Gains the custom editor, the views container and views, the explorer's commands (`wpilog-mcp.explorer.*`), with `order` values the manifest test pins |
 | `src/extension.ts`, `src/explorer.ts` | The glue: `extension.ts` wires the explorer in beside the servers; `explorer.ts` holds the clients, the views, the editor provider, and the commands (the URI handler comes with the charts) |
 | `src/explorer/*.ts` | Pure modules: the MCP messages, the tree models, the editor page, and later the request planner for the plot, the chart specification, the prompt builder, CSV formatting |
 | `src/mcpClient.ts`, `src/dataClient.ts` | The MCP client over HTTP (§3), and the data endpoint client that fetches an Arrow stream and hands its bytes to the webview |
@@ -119,7 +118,7 @@ Nothing changes in Gradle, CI, or the release workflow: the one extension they b
 
 **One server, with leased directories (milestone 7).** The extension’s own MCP session registers User and open-project roots with their teams and secret-storage key. A 30-second ping preserves the session without changing lease precedence; a lost session is initialized and registered again. Updating settings, the key, or folders replaces the lease without a daemon restart. The dynamic validator, listing, store discovery, and inbox watcher share the live directory set. The Logs tree shows `configured` or `leased` origins.
 
-**The MCP client.** `initialize`, then `tools/call` over `POST /mcp` with the `Mcp-Session-Id` header, which the extension host can read where a browser could not; a tool's result is the parsed JSON of its text content, and `isError` becomes a rejected promise. Requests run in parallel, which the HTTP transport supports. The planned pit-server connection will use the same client protocol.
+**The MCP client.** `initialize`, then `tools/call` over `POST /mcp` with the `Mcp-Session-Id` header, which the extension host can read where a browser could not; a tool's result is the parsed JSON of its text content, and `isError` becomes a rejected promise. Requests run in parallel, which the HTTP transport supports.
 
 **The data client.** `GET /data/entries` (§6) for the samples of one or more entries over a window, read as a stream of bytes and handed to the webview as a transferable buffer. There the bundled reader opens record batches as typed arrays: an `int64` timestamp column becomes a `BigInt64Array`, which the webview converts once to seconds in a `Float64Array`, and values arrive as `Float64Array`. The extension host parses nothing; it moves bytes. It sends `If-None-Match` with the tag of the last response for the same request, so a window the viewer returns to costs one round trip and no bytes.
 
@@ -127,10 +126,9 @@ Nothing changes in Gradle, CI, or the release workflow: the one extension they b
 
 - **Logs**: a tree in an activity bar container "WPILog Explorer", from `list_available_logs`.
   - In a plain directory, grouped by event and then by date, showing the friendly name, the match, and the size.
-  - In a store (§9), grouped by robot and then by session, each session showing its files (the robot's log, its REV logs, a capture, the system logs) and its event and match. Files the listing reports as unmanaged are in a group of their own that offers to import them.
+  - In a store (§9), grouped by robot and then by session, each session showing its WPILOG and REV files and its event and match. Files the listing reports as unmanaged are in a group of their own that offers to import them.
   - A filter box narrows by name, event, and match.
-  - With a pit server URL set, a second root lists its sessions from `list_available_logs`, newest first, with the robot's name, whether it is open, and whether the mirror holds it (pit server plan §11).
-  - Right-click: open, reveal in the file explorer, copy path, pin or unpin on the pit server.
+  - Right-click: open, reveal in the file explorer, copy path.
 - **Entries**: a tree for the active log, from `list_entries` and `get_entry_info`: name, type, sample count, with struct fields and array elements as children from `numeric_leaf_paths`, and a filter box with the same pattern `list_entries` takes. Click plots the entry in the active pane; drag adds it to another.
 - **The editor**: one webview per open log, in the editor area, with:
   - a **timeline** across the top, the whole log, with phases from `get_match_phases` shaded (autonomous, teleop, test, disabled) and the Driver Station timeline's events as marks (`get_ds_timeline`: brownouts, enable and disable, alerts), where a drag selects the window the panes show;
@@ -139,8 +137,8 @@ Nothing changes in Gradle, CI, or the release workflow: the one extension they b
   - a **console pane**, from `search_strings`: a pattern, a level filter, collapsed repeats, each match with its time, where clicking a line moves the cursor to it and matches in the window are marked on the timeline;
   - a **REV pane**, from `list_revlog_signals` and `get_revlog_data`: the signals by device, each with its synchronization method and confidence. They plot on the robot's clock in the same panes as the log's entries, with the offset shown and a note when a REV log is not synchronized;
   - a **field view**, when the log has a robot pose the signal resolver finds or the user picks. It is a top-down plot of the pose over the window on an outline drawn from the bundled game data's field geometry (length, width, zones), with no field image, since none is bundled;
-  - a **data view**, a `<perspective-viewer>` fed the same Arrow bytes the panes draw from. It is a grid of the selected entries' samples with filtering, sorting, grouping, and pivots, Perspective's own charts for a quick scatter or histogram, and export to CSV. All of that is the library as it comes, for the exploration a person does before deciding what to plot. In follow mode (§8) each batch is appended to its table, so the grid tails the session. The view is the library's, so its charts carry none of the panes' conventions (phases, steps, the shared cursor); the panes stay the place for a time series.
-- **Status**: the viewer's server state in the status bar (starting, ready, restarting), and for a pit server its reachability and the mirror's age, as the pit server plan's extension section specifies.
+  - a **data view**, a `<perspective-viewer>` fed the same Arrow bytes the panes draw from. It is a grid of the selected entries' samples with filtering, sorting, grouping, and pivots, Perspective's own charts for a quick scatter or histogram, and export to CSV. All of that is the library as it comes, for the exploration a person does before deciding what to plot. The view is the library's, so its charts carry none of the panes' conventions (phases, steps, the shared cursor); the panes stay the place for a time series.
+- **Status**: the viewer's server state in the status bar (starting, ready, restarting).
 
 ### 5. The plot and its data
 
@@ -193,8 +191,8 @@ The response is the samples of each named entry over the window, independently t
 - **`csv`** is one table per entry, `timestamp_sec,value` with a header line, concatenated with a blank line and a `# entry: <name>` comment between, the form the existing CSV export writes, so a script written for one reads the other.
 - **Limits and errors.** A response is capped by a configured size (default 512 MB); a request over the cap is refused with a JSON body that gives the count, the size, and the hint to narrow the window or pass `max_points`, never silently cut. A missing entry is an error naming it, as a tool would. A file that changes during the stream is handled as a tool call is: the stream ends early, with a final empty batch whose metadata says the file changed, and the reader discards what it received.
 - **Caching.** `ETag` includes the file snapshot and query, plus each requested REV source and its synchronization state. An unchanged request returns `304`; changing a REV offset invalidates it.
-- **Who reads it.** The viewer, through its data client. An agent with shell access, by `curl` against the URL that `get_server_guide` reports under `data_endpoint` whenever the transport is HTTP, which gives a script every sample of an entry in one request. On a stdio server there is no endpoint, and the CSV export tool stays the way. A notebook or a script: `pyarrow.ipc.open_stream` on the response, or `polars.read_ipc_stream`, gives a data frame in one line, with the timestamps as timestamps and the struct fields as columns. A dashboard: this is the query endpoint the pit server plan leaves for Grafana (its §12), with `format=csv` or a `json` format added when Grafana's data source plugin asks for one.
-- **Security.** The endpoint reads; it writes nothing. It is behind the `Origin` check, so no web page can fetch it, and behind the path validator, so it serves only files in the configured log directories. On the pit server it is under decision 7 of that plan, behind a team's proxy when they add one.
+- **Who reads it.** The viewer, through its data client. An agent with shell access, by `curl` against the URL that `get_server_guide` reports under `data_endpoint` whenever the transport is HTTP, which gives a script every sample of an entry in one request. On a stdio server there is no endpoint, and the CSV export tool stays the way. A notebook or a script: `pyarrow.ipc.open_stream` on the response, or `polars.read_ipc_stream`, gives a data frame in one line, with the timestamps as timestamps and the struct fields as columns.
+- **Security.** The endpoint reads; it writes nothing. It is behind the `Origin` check, so no web page can fetch it, and behind the path validator, so it serves only files in the configured log directories.
 
 **`read_entry` at screen resolution.** For the assistant, which reads through MCP and cannot take an Arrow stream: a new optional parameter `max_points`. When the samples in the window number no more than it, the result is as today, exact. When they do, the window is divided into that many buckets of equal duration, and each bucket with samples returns `timestamp_sec` (its start), `count`, `min`, `max`, `mean`, `first`, and `last`. The result says `bucketed: true` with `bucket_sec`, and `total_in_range` stays the true count.
 
@@ -212,27 +210,21 @@ VS Code opens it with its own notebook editor, and the person has the scientific
 
 **A prompt.** The editor offers "Ask about this selection". The current log's path, the selected entries, the window or selection, and the pane's kind become a prompt that names them and the tool the assistant would call first, and the prompt opens in the chat the user has. VS Code's own chat accepts a prefilled query through `workbench.action.chat.open`; for other assistants the prompt is copied to the clipboard with a message saying so. Which assistants can be opened with a prompt is an open question (§12); the clipboard always works. With no assistant configured, the command still produces the prompt, and the viewer is complete without it.
 
-### 8. Pit server and live sessions
-
-With `wpilog-mcp.pitServerUrl` set (the pit server plan's setting), the Logs view lists the pit server's sessions and the editor opens one by path through the pit server's tools, as it opens a local log through the local server's. An open session has a **follow** toggle: the window tracks the latest time, and the data client fetches each visible series from the last timestamp it holds, once a second, from the data endpoint, appending to the typed arrays in the webview. The console pane pages `search_strings` from the last completed boundary without collapsing repeats and retains the latest 500 matches. Follow runs while the editor is visible.
-
-Mirrored sessions (pit server plan §11) open from the mirror when the pit server is unreachable, and the editor says which copy it is reading. Nothing here subscribes to the robot: the pit server is the one listener, by its own decision 6.
-
 ### 9. Organizing the log folder
 
 **The offer.** When the configured log directory is not a store and holds log files, the extension offers once, through a notification with the count: organize these files by robot and session? The choices are yes, not now, and never for this folder, the last remembered in the extension's global storage. The same offer comes from a command (`wpilog-mcp.explorer.organizeLogs`) at any time, and, once the folder is a store, whenever the listing reports unmanaged files in it (a USB stick's worth dragged in), with the count and the names. Nothing happens without a yes.
 
-**What a yes does.** The server makes the directory a store (`store.json`) and imports every log file in it through the import pipeline the pit server plan specifies (§11 there). Each file is classified by content, hashed, and read for a logged serial, its time range, `systemTime`, and the event and match from its Driver Station entries. It is then moved, not copied, into its place, since the folder is the person's own and the point is the organization; the original path and name go into the session's manifest.
+**What a yes does.** The server makes the directory a store (`store.json`) and imports every log file in it through the verified import pipeline. Each file is classified by content, hashed, and read for a logged serial, its time range, `systemTime`, and the event and match from its Driver Station entries. It is then moved, not copied, into its place, since the folder is the person's own and the point is the organization; the original path and name go into the session's manifest.
 
 A REV log lands in the session of the wpilog it synchronizes with, by the existing synchronization. A file the store already holds by hash is left where it is and reported.
 
-The import runs inside the server that owns the store, the laptop's one daemon (decision 5), through `POST /store/import` with the paths and a `move` flag, which returns a job the extension polls for progress. The `import` command of the pit server plan posts to a running daemon the same way and does the work itself only when none is running, so the store never has two writers. Additional log directories stay plain directories, and their files can be imported into the store by copy from the Logs tree.
+The import runs inside the server that owns the store, the laptop's one daemon (decision 5), through `POST /store/import` with the paths and a `move` flag, which returns a job the extension polls for progress. The `import` command posts to a running daemon the same way and does the work itself only when none is running, so the store never has two writers. Additional log directories stay plain directories, and their files can be imported into the store by copy from the Logs tree.
 
-**Which robot.** Most files copied by hand carry no serial. The import asks the extension, and the extension asks the person, once per batch: a quick pick of the robots the store knows, or a new one by name. A name is an identity basis of its own, `stated`, beside `logged` and `device` in the pit server plan's §8.5. A robot known only by name has its directory under `robots/` by that name until a file logs a serial; then the manifest records the serial and the server renames the directory, as it renames one known by address.
+**Which robot.** Most files copied by hand carry no serial. The import asks the extension, and the extension asks the person, once per batch: a quick pick of the robots the store knows, or a new one by name. A name is an identity basis of its own, `stated`, recorded in the manifest. A robot known only by name has its directory under `robots/` by that name until a file logs a serial; then the manifest records the serial and the server renames the directory.
 
 When a stated robot's file logs a serial that already names another robot's directory, the listing reports the two as one robot and the extension offers a merge; the server never merges on its own. A batch the person declines to assign waits under `unassigned/`, where the listing shows it, and is assigned later from the tree.
 
-**What does not change.** A file keeps its name, under its session's `robot/` directory, so a name someone knows still finds it, and a path someone wrote down in a conversation is answered by the listing's `moved_to` note for a few days after the import. The session directory's name is the convention the pit server's captures follow, so a person reading the folder learns the layout the pit server will fill, and a mirror of the pit server (§8) beside the store reads the same way. The explorer's trees show both stores alike.
+**What does not change.** A file keeps its name, under its session's `robot/` directory, so a name someone knows still finds it, and a path someone wrote down in a conversation is answered by the listing's `moved_to` note for a few days after the import.
 
 ### 10. Testing
 
@@ -266,7 +258,7 @@ When a stated robot's file logs a serial that already names another robot's dire
   - a request carrying a browser `Origin` is refused as `/mcp` refuses it.
 - **Server tools**: `read_entry` with `max_points` against fixtures whose values are functions of time, so each bucket's min, max, and mean are known exactly. It is checked at the boundaries (a window shorter than one bucket, a bucket with one sample, `max_points` of 1), on change-only fixtures for `first` and `last`, and through the conformance sweep and the differential check. `render_chart` is checked for a decodable PNG of the requested size, a specification that names every series drawn, and a summary equal to `get_statistics` over the same window.
 - **The data view and the notebook**: the notebook builder is pure, tested for the generated cells against a fixed selection (the URL, the entry names quoted correctly, the window, the markdown's `inputs`). The data view in the real-VS-Code smoke test below receives the same bytes as the panes and reports its row count equal to the fixture's sample count, and an appended batch raises it.
-- **A real VS Code**: the `@vscode/test-electron` smoke (development dependency), in Linux CI under `xvfb` on the oldest supported and current stable versions. It checks activation, shared-server startup, the Logs tree listing a generated fixture, its custom editor opening, the Perspective table's fixture row count and appended batch, and the pit registration command producing secret-free user-scope arguments. `doc/DEVELOPMENT.md` describes the isolated test home and remaining manual checks. The rendered plots and interaction, including their `max_points` request, remain follow-up coverage, not claims of this smoke.
+- **A real VS Code**: the `@vscode/test-electron` smoke (development dependency), in Linux CI under `xvfb` on the oldest supported and current stable versions. It checks activation, shared-server startup, the Logs tree listing a generated fixture, its custom editor opening, the Perspective table's fixture row count and appended batch. `doc/DEVELOPMENT.md` describes the isolated test home and remaining manual checks. The rendered plots and interaction, including their `max_points` request, remain follow-up coverage, not claims of this smoke.
 - **Windows**: paths built with the path API, the JAR found under both layouts, and the smoke test run on Windows once it is stable on Linux.
 
 ### 11. Milestones
@@ -287,7 +279,7 @@ Each leaves the repository building, tested, and releasable.
    - Not driven in a real VS Code yet; the wall-clock toggle of §5 and the status bar wait.
 4. **Console, structs, field** (§4): the console pane with marks on the timeline; struct fields and array elements in the tree and the panes; the field view. (done: the console pane from `search_strings` with its pattern, level, and window filters, repeats collapsed, a click that moves every pane's cursor, and marks on the timeline by level. `[*]` paths expanded to elements in the tree and the details, with Plot Every Element. The field view from `resolve_signals`' robot pose, or the person's pick among its candidates, on the outline from `get_game_info`'s geometry, the path colored by time and the cursor's pose with its heading. Not driven in a real VS Code yet).
 5. **REV** (§4): the REV pane and signals in the panes, with synchronization shown (done: the data endpoint takes REV keys and streams the signal on the wpilog's clock with the alignment in the metadata. The pane lists the signals by bus and device from `list_revlog_signals` after `wait_for_sync`, with each bus's method, confidence, and offset. It plots a signal in the panes with its alignment on the chip, and plots nothing from a bus that was not synchronized. Not driven in a real VS Code yet).
-6. **Organizing** (§9): the store on any server, `POST /store/import`, the offer, the robot quick pick, the trees by robot and session. Shares the store code with the pit server plan's milestone 2, whichever ships first.
+6. **Organizing** (§9): the store on any server, `POST /store/import`, the offer, the robot quick pick, the trees by robot and session.
    - Done: the server's manifest store and queued Java import pipeline, content classification, hash deduplication, robot identity and serial promotion, sessions and REV pairing before placement, verified copies and moves, and store-aware listing with unmanaged files and moved-path notices.
    - Also done: the HTTP import job and polling, the inbox watcher and receipts, the import command through a running daemon or the locked offline importer, and inbox states in the listing.
    - Also done: the extension's per-folder offer and remembered choices, the on-demand Organize Logs command, move/copy and robot picks, HTTP job polling with progress and refusal/result reporting, assignment, and the store/plain/mixed trees with REV companions.
@@ -300,22 +292,15 @@ Each leaves the repository building, tested, and releasable.
    - Manual checks remain, on the oldest supported and current VS Code: fresh-home offer/install/progress/PATH notice; older update with settings preserved and newer hand install kept; Copilot seeing directory origins/teams; project logs appearing/disappearing with windows.
    - Also key reaching `get_match_info` without a file or command-line copy; settings changes without restart; Claude registration and terminal bridge with VS Code closed; YAML offer/ignore choices.
    - And tracked/custom legacy entries kept and owned ones retired; old daemon stopped once; and explorer/organize behavior on the shared server. DEVELOPMENT.md carries the checklist.
-8. **Pit server** (§8) (done: second HTTP registration, user-scope Claude URL bridge, remote session tree and path-safe editor, bounded follow, identity-based offline mirror fallback, mirror settings/status/pins, and remembered Sync from Laptop jobs; Node/real-transport tests and plants. Real VS Code on oldest/current versions remains the manual checklist): sessions in the Logs view, opening by path through the pit server, follow for an open session, and the mirror's state. Also the sync between two laptops' stores where there is no pit server (the pit server plan's decision 17 and §14).
-9. **Data view and notebook** (§4, §7) (done: bundled Perspective engine/viewer/datagrid/charts consume exact Arrow batches, flatten struct fields and append during follow; pure adapter and notebook builders, row-count/append real-editor smoke, and three-cell notebooks with server inputs. Interactive filter/pivot/export and Python kernel checks remain manual).
+9. **Data view and notebook** (§4, §7) (done: bundled Perspective engine/viewer/datagrid/charts consume exact Arrow batches, flatten struct fields; pure adapter and notebook builders, row-count/append real-editor smoke, and three-cell notebooks with server inputs. Interactive filter/pivot/export and Python kernel checks remain manual).
 10. **Charts for the assistant** (§6, §7) (done: versioned chart specification, bounded headless PNG content, full-window summaries and independent-reader checks; server-validated URI selections, uPlot histogram/scatter panes, and Ask about this selection with chat/clipboard routing. Other assistants' prefill APIs and the long-term Vega-Lite choice remain open).
-11. **A real VS Code in CI** (§10) (done: an isolated `@vscode/test-electron` host on the oldest supported version and current stable under Linux `xvfb`; activation, the shared daemon, generated-fixture Logs listing, custom editor opening, Perspective row counts and append, and actual pit command arguments. Node tests remain separate; dependencies and smoke files stay out of the VSIX. Rendering, offers, credential dialogs, agent discovery, organizing and mirror controls retain the manual checklist).
+11. **A real VS Code in CI** (§10) (done: an isolated `@vscode/test-electron` host on the oldest supported version and current stable under Linux `xvfb`; activation, the shared daemon, generated-fixture Logs listing, custom editor opening, Perspective row counts and append. Node tests remain separate; dependencies and smoke files stay out of the VSIX. Rendering, offers, credential dialogs, agent discovery, organizing retain the manual checklist).
 
-The assistant's fresh-data route is now explicit: `list_sessions`, `get_latest_values` and
-`wait_for_change` answer for the present, while ordinary tools analyze the recorded past.
-`pit://session/current` advertises the current file/identity/gateway/providers through MCP
-resources. `list_available_logs` marks that file `open`; tools with a time scope accept
-`last_seconds` and report its resolved bounds. A mirror remains a recorded copy with a stated
-sync age, not a claim about the robot's present value.
 
 ### 12. Open questions
 
-- **Milestones 9 and 10 choices (0.10.0-dev1):** Perspective 5.5.1 from `@perspective-dev` is vendored as static browser assets with its Apache-2.0 license, not an npm runtime dependency. The 286 KB charts plugin is included alongside the datagrid; CHANGELOG records the packaged VSIX delta. Rows are recorded samples, with entry name and robot time and flattened struct fields, never interpolated table cells. Follow de-duplicates only the repeated inclusive-window prefix, preserving multiple records at a timestamp.
-- **Notebook and links:** three nbformat 4 cells, one Arrow URL per selected entry so batch metadata cannot lose entry names, explicit microsecond robot time, and the server's inputs in markdown. Files go beside a writable local log or into the workspace; no Python/kernel is bundled. URI numbers are finite and ordered, repeated entries select multiple series, and the server admits each path before opening (local first, then the configured pit on refusal; URLs carry no server credentials). A link's start/end encloses disjoint windows; the chart JSON preserves them exactly.
+- **Milestones 9 and 10 choices (0.10.0-dev1):** Perspective 5.5.1 from `@perspective-dev` is vendored as static browser assets with its Apache-2.0 license, not an npm runtime dependency. The 286 KB charts plugin is included alongside the datagrid; CHANGELOG records the packaged VSIX delta. Rows are recorded samples, with entry name and robot time and flattened struct fields, never interpolated table cells.
+- **Notebook and links:** three nbformat 4 cells, one Arrow URL per selected entry so batch metadata cannot lose entry names, explicit microsecond robot time, and the server's inputs in markdown. Files go beside a writable local log or into the workspace; no Python/kernel is bundled. URI numbers are finite and ordered, repeated entries select multiple series, and the server admits each path before opening (URLs carry no server credentials). A link's start/end encloses disjoint windows; the chart JSON preserves them exactly.
 - **Chart version 1:** our own form with the Vega-Lite mapping in TOOLS.md, no Vega runtime. Equal-width square-root histograms capped at 64 bins; scatter pairs exact timestamps in record order with omissions counted; pose x/y uses bundled field geometry. Default PNG 960 by 540, at most four million pixels, and summaries cover the whole requested window independent of drawing pagination. Unavailable headless imaging is an explained partial result. Driver Station phases use the resolver and change-only series use steps.
 
 - **Decided by the maintainer:** `POST /store/import` admits source paths only inside configured log directories, as the Java importer does. A USB stick or any other outside path goes through the inbox. A move-anything write surface on a server with no authentication is not acceptable; the inbox is a folder the user owns.
@@ -328,4 +313,3 @@ sync age, not a claim about the robot's present value.
 - **Implemented:** Arrow is written at the format level, with struct/list metadata guarded by the independent test reader, the extension reader, and the pyarrow CI cross-check.
 - uPlot against drawing on a canvas directly for the plot panes (§5). The library's cursor, bands, and axes are a lot to rewrite; a hand-drawn plot would be smaller and entirely ours. The proposal is the library, revisited if its bundle or its API gets in the way.
 - Whether the custom editor should claim `.revlog` on its own, or only open one beside its wpilog (§1, decision 9). The proposal claims both and shows a REV log alone with its signals on its own clock, marked as not synchronized.
-- How much of the pit server's live data belongs here (§8) against in the pit server's own future web view. The proposal is follow and the console only, with the latest values and `wait_for_change` left to the assistant.

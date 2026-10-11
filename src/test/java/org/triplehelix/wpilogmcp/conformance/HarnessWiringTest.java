@@ -94,10 +94,10 @@ class HarnessWiringTest {
   @Test void guidesNameTheRunnableSuiteAndItsHardwareLimits() throws Exception {
     var checks = new java.util.ArrayList<org.junit.jupiter.api.function.Executable>();
     for (String guide : List.of("DEVELOPMENT", "PIT_SERVER_PLAN", "IDEAS")) {
-      String text = Files.readString(Path.of("doc", guide + ".md"));
+      String text = Files.readString(Path.of("doc/pit-server", guide + ".md"));
       checks.add(() -> assertTrue(text.contains("harness"), guide));
     }
-    String guide = Files.readString(Path.of("doc", "DEVELOPMENT.md"));
+    String guide = Files.readString(Path.of("doc/pit-server", "DEVELOPMENT.md"));
     for (String fact : List.of("harness/run", "shopHarness", "shop-harness", "serialnum", "Linux and macOS")) {
       checks.add(() -> assertTrue(guide.contains(fact), fact));
     }

@@ -62,7 +62,7 @@ def main():
     assert len(jars) == 1, 'Build one shadow JAR first'
     output = Path('build/metrics-smoke')
     output.mkdir(parents=True, exist_ok=True)
-    compose = ['docker', 'compose', '-p', f'wpilog-metrics-check-{os.getpid()}', '-f', 'doc/metrics/compose.yaml']
+    compose = ['docker', 'compose', '-p', f'wpilog-metrics-check-{os.getpid()}', '-f', 'doc/pit-server/metrics/compose.yaml']
     with tempfile.TemporaryDirectory(prefix='wpilog-metrics-') as directory, (output / 'server.log').open('w') as log:
         config = Path(directory) / 'servers.yaml'
         config.write_text('servers:\n  metrics: {transport: http, port: 2363}\n', encoding='utf-8')

@@ -205,6 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Describe NetworkTables recording, live tools, metrics and the store as shared-server capabilities, with the untested integration guides under `doc/pit-server/`. Previously capture, store and gateway were presented as one product beside the features they overlap; the main tool reference again documents every registered tool.
 - The architecture guide now states the short-window autocorrelation estimator's bias toward zero and resulting effective-count inflation; previously its boundedness was documented without that approximation's limit.
 - Gateway work-admission exhaustion is documented as disconnecting all connected views; the previous wording incorrectly limited it to affected views.
 - Pre-release install examples now use the installers from `development` until the full release; previously they fetched `main`'s installers, which predate `--tag` and silently installed the latest full release. The release checklist records when to return those URLs to `main`.

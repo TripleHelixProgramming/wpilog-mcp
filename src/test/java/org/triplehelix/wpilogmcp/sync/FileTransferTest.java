@@ -229,7 +229,7 @@ class FileTransferTest {
 
   @Test void guidesDescribeTheBoundedTransferAndItsFallback() throws Exception {
     for (String name : List.of("ARCHITECTURE", "DEVELOPMENT", "PIT_SERVER_PLAN")) {
-      String text = java.nio.file.Files.readString(java.nio.file.Path.of("doc", name + ".md"));
+      String text = java.nio.file.Files.readString(java.nio.file.Path.of("doc/pit-server", name + ".md"));
       assertTrue(text.contains("64 KiB") || text.contains("64-KiB"), name);
       assertTrue(text.contains("EOF"), name);
     }

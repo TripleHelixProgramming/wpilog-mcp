@@ -14,7 +14,7 @@ import org.triplehelix.wpilogmcp.config.PullConfig;
 
 class PullDocumentationTest {
   @Test void standaloneDocumentsAllAcceptedPullAndSshKeys() throws Exception {
-    String guide = Files.readString(Path.of("doc/STANDALONE.md"));
+    String guide = Files.readString(Path.of("doc/pit-server/STANDALONE.md"));
     for (String key : PullConfig.KEYS) assertTrue(guide.contains("`capture.pull." + key + "`"), key);
     for (String key : PullConfig.SSH_KEYS) assertTrue(guide.contains("`capture.pull.ssh." + key + "`"), key);
     assertTrue(guide.contains("default `false`")); assertTrue(guide.contains("default `1000000`"));
@@ -22,14 +22,14 @@ class PullDocumentationTest {
   }
   @ParameterizedTest @ValueSource(strings = {"ARCHITECTURE", "STANDALONE", "DEVELOPMENT", "PIT_SERVER_PLAN"})
   void guidesDescribeTransportIdentityAndTheMatchingBound(String name) throws Exception {
-    String text = Files.readString(Path.of("doc", name + ".md"));
+    String text = Files.readString(Path.of("doc/pit-server", name + ".md"));
     assertTrue(text.contains("SFTP"), name); assertTrue(text.contains("250 ms"), name);
     assertTrue(text.contains("data_alone"), name);
   }
   @Test void guidesPinReviewBoundsAndTheirReasons() throws Exception {
     var checks = new java.util.ArrayList<org.junit.jupiter.api.function.Executable>();
     for (String name : java.util.List.of("ARCHITECTURE", "STANDALONE", "PIT_SERVER_PLAN")) {
-      String text = Files.readString(Path.of("doc", name + ".md"));
+      String text = Files.readString(Path.of("doc/pit-server", name + ".md"));
       for (String fact : java.util.List.of("2000", "ten seconds", "256 KiB", "accept_changed_host_key", "session close")) {
         checks.add(() -> assertTrue(text.contains(fact), name + ": " + fact));
       }
@@ -41,7 +41,7 @@ class PullDocumentationTest {
 
   @Test void hardwareInvocationIsDocumentedAndOptInOnly() throws Exception {
     String build = Files.readString(Path.of("build.gradle"));
-    String guide = Files.readString(Path.of("doc/DEVELOPMENT.md"));
+    String guide = Files.readString(Path.of("doc/pit-server/DEVELOPMENT.md"));
     assertTrue(build.contains("hasProperty('pullRobot')")); assertTrue(build.contains("systemProperty 'pull.robot'"));
     assertTrue(guide.contains("-PpullRobot=172.22.11.2")); assertTrue(guide.contains("SftpRobotTest"));
     var condition = SftpRobotTest.class.getAnnotation(org.junit.jupiter.api.condition.EnabledIfSystemProperty.class);

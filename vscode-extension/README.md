@@ -61,14 +61,14 @@ The editor shows the time range, entries, sample counts, and any truncation note
 - **Timeline:** Driver Station mode segments and events come from the log. Drag a region to select a time window.
 - **Console:** filter text by pattern, level, and window. Repeats collapse with their count; clicking a line moves the shared cursor.
 - **Field:** the logged pose is drawn on the season's field outline, colored by time. The server's signal resolver selects a documented convention or asks you to choose among candidates.
-- **Data:** select or plot entries, then choose **Data view of selected entries**. Perspective receives the same exact Arrow samples as the plots, with struct fields as columns. Its built-in controls supply filtering, sorting, grouping, pivots, quick charts and CSV export. Follow appends batches without replacing previous rows. Narrow the window if the exact-data request exceeds the endpoint cap.
+- **Data:** select or plot entries, then choose **Data view of selected entries**. Perspective receives the same exact Arrow samples as the plots, with struct fields as columns. Its built-in controls supply filtering, sorting, grouping, pivots, quick charts and CSV export. Narrow the window if the exact-data request exceeds the endpoint cap.
 - **REV:** signals appear by bus and device with their synchronization method, confidence, and offset. They plot on the wpilog's clock; a bus that could not be synchronized is explained and not plotted.
 
 The extension host calls the same tools as the assistant and fetches samples through the [data endpoint](../doc/STANDALONE.md#the-data-endpoint). The webview fetches only bundled extension resources for its static Perspective engine, viewer, datagrid and charts, including WebAssembly and a local-source worker. Log requests stay in the extension host; no remote scripts, fonts or data are admitted by its content security policy.
 
 **WPILog Explorer: Open in Notebook**, in the editor title and context menu, writes an nbformat 4 notebook beside a writable local log, otherwise in the workspace. It contains three cells: Arrow requests into data frames (with a Polars alternative in a comment), plotting, and the path/entries/window with the server's inputs. Each selected entry has its own stream to preserve its type. VS Code opens its notebook editor; install Python, pyarrow, pandas and matplotlib in your chosen kernel. Nothing Python is bundled, and kernel selection and missing-kernel messages belong to VS Code.
 
-`render_chart` returns time-series, histogram, scatter or field PNGs and an `open_url` such as `vscode://TripleHelixProgramming.wpilog-analyzer/open?path=…&entries=…&start=…&end=…&kind=…`. Repeated `entries` select several series. The handler uses the Logs route to validate the path on the local server, then the configured pit server if the local one refuses it, applies the entries/window/pane, and refuses bad numbers. A link grants no directory access and executes no code.
+`render_chart` returns time-series, histogram, scatter or field PNGs and an `open_url` such as `vscode://TripleHelixProgramming.wpilog-analyzer/open?path=…&entries=…&start=…&end=…&kind=…`. Repeated `entries` select several series. The handler uses the Logs route to validate the path on the server, applies the entries/window/pane, and refuses bad numbers. A link grants no directory access and executes no code.
 
 **WPILog Explorer: Ask about this selection**, in the editor title and context menu, sends the path, selected entries, window and pane kind to VS Code chat. It names `get_statistics` first for a plot selection, `search_strings` for console text, or `render_chart` for a pane. If chat cannot be opened, the prompt is copied to the clipboard with a notice. Prefilling other assistants remains an open question; paste is the portable route.
 
@@ -84,80 +84,7 @@ HTTP import sources must be inside the server's configured log directories. For 
 
 Direct imports keep original paths and filenames in the session manifest's file provenance (or `unassigned/<hash>/import.json` before assignment); the listing reports moved paths for seven days. Inbox receipts keep the inbox path and its destination. Duplicate content is reported as present and its source is left in place. Organizing runs in the same server the viewer already uses, whether owned by the extension or the standalone install.
 
-## Pit server and offline mirror
-
-Set `wpilog-mcp.pitServerUrl` to the pit server's HTTP MCP URL, such as `http://pit:2363/mcp`.
-The server must be bound to the team network for another laptop to reach it; this exposes its
-logs to anyone who can reach the port. VS Code's agents see **WPILog Pit Server** beside
-**WPILog Analyzer**. The remote client sends no local directory lease or TBA key.
-
-Dashboards and AdvantageScope can use the pit server's optional read-only NT4 gateway on its
-separate port (default 5810 when enabled). See the standalone guide's
-[NT4 gateway configuration](../doc/STANDALONE.md#nt4-gateway-for-dashboards).
-It carries no authentication and belongs on the private network; the HTTP proxy login does not
-protect it. Writes are ignored. Checking a real dashboard or AdvantageScope against a robot
-remains the user's manual step.
-
-The Logs view gains **This laptop** and **Pit server** roots. Pit sessions are newest first,
-with the robot, event/match, open state, and whether the mirror holds them. Opening one uses
-its exact path through the pit server. **Follow live session** polls once a second: the window
-tracks the latest time and visible series append from their last timestamp. Console follow
-pages the new text and keeps the latest 500 matches without collapsing repeats. Turning follow
-off restores ordinary browsing. No viewer connects to the robot.
-
-The mirror starts by default when a URL is set. The local Java server copies the last 14 days,
-plus whole named events and pinned sessions, under a 20 GB payload cap. Pins are never evicted;
-a copy missing from the origin is retained and reported even if that exceeds the cap. Resuming
-checks the held prefix first. Open captures refresh every 30 seconds; closed copies have the
-same verified bytes and recorded REV alignment as the origin. The mirror is read-only to
-imports and is never offered for organizing.
-
-The status bar shows **Mirror synchronized**, the remaining file count and size, or **Mirror
-offline** with the last-sync age. Click it for the mirror actions. When the pit server is
-unreachable, a remote editor can use the mirrored file with the same origin, session id and
-relative path; the editor says which copy it is reading and when it synchronized. The local
-Logs root also remains available offline. A failed verification or retention exception appears
-in the status tooltip. Settings apply through the local server without rewriting home YAML.
-
-| Command | What it does |
-|---|---|
-| `wpilog-mcp.mirrorActions` | Open the status bar's action picker |
-| `wpilog-mcp.pinSession` | Pick a recent session to retain outside scope and cap |
-| `wpilog-mcp.unpinSession` | Pick a pinned session to return to normal retention |
-| `wpilog-mcp.syncNow` | Start a mirror pass immediately |
-| `wpilog-mcp.openMirrorFolder` | Reveal the mirror directory in the OS file explorer |
-| `wpilog-mcp.syncFromLaptop` | Pull missing files into a local writable store from another laptop |
-| `wpilog-mcp.uploadToPitServer` | Select laptop files and upload verified copies to the pit store |
-| `wpilog-mcp.registerPitWithClaudeCode` | Register the pit URL as the second user-scope Claude server |
-
-**Upload Logs to Pit Server** uses `wpilog-mcp.pitServerUrl`. Pick files (a USB drive is
-fine) and, if the pit server has several stores, a store id. Files stream one at a time;
-the importer verifies their hash and content, groups them by robot and session, and reports
-imports, duplicates, unassigned files and refusals in WPILog Analyzer output. Originals stay
-on the laptop. The pit server must be bound to the network (or reachable through its proxy).
-A lost connection does not silently resubmit; retrying explicitly recognizes a completed copy
-by its hash. A mirror cannot receive uploads. With a proxy, protect `/store/import` first.
-
-**Sync from Laptop** needs no pit-server setting. Choose a local store, enter the peer's
-`host:port` once, then choose its remembered URL on later runs. The peer must bind its server
-to the network. The local store job reports sessions created, copied files and bytes, files
-already present, conflicts, refusals and interruptions; full details go to **WPILog Analyzer**
-output. Nothing is deleted, and mirrors cannot be sources or destinations of peer sync.
-
-The extension offers Claude Code registration for the pit URL at user scope using the installed
-bridge: `claude mcp add --scope user wpilog-pit -- <launcher> connect --url <url>` (through
-`cmd /c` on Windows). No project `.mcp.json` is written. The copy-command fallback and the
-on-demand command remain available; restart existing Claude sessions after registration.
-
 ## Using It with Claude Code
-
-With VS Code closed, the extension's directory lease expires. The mirror remains on disk,
-but a terminal's Claude Code can read it only when the local server admits its folder through
-a `mirror` block in `servers.yaml`, or the bridge registers it with `--logdir`.
-For regular offline analysis away from VS Code, use the `mirror` block in `servers.yaml`
-with the same folder and origin as the extension: it keeps the folder available and continues
-syncing when the origin answers. Use bridge `--logdir /absolute/path/to/mirror` for temporary
-read access without configuring background mirroring. See the [standalone mirror configuration](../doc/STANDALONE.md#the-mirror).
 
 With **Enable For Claude Code** on (the default), the extension runs `claude mcp add --scope user wpilog-analyzer -- <launcher> connect http` once when it finds the Claude CLI. On Windows it registers the batch launcher through `cmd /c`. If the CLI is unavailable, it shows the exact command with **Copy Command**. **WPILog Analyzer: Register with Claude Code** repeats setup on demand. Existing Claude Code sessions need restarting after registration.
 
@@ -184,14 +111,6 @@ User directories remain available for the window; open projects add their own di
 | `wpilog-mcp.additionalLogDirectories` | More directories; relative paths can name project simulation logs | none |
 | `wpilog-mcp.teamNumber` | Fallback team for logs that record none | unset |
 | `wpilog-mcp.tbaApiKey` | Write-only field; moved to secret storage and cleared | empty |
-| `wpilog-mcp.pitServerUrl` | Second MCP server and remote Logs root | empty |
-| `wpilog-mcp.mirror.enabled` | Enable mirroring when a pit URL is set | on with URL |
-| `wpilog-mcp.mirror.folder` | Absolute mirror directory | extension storage `/mirror` |
-| `wpilog-mcp.mirror.days` | Recent-session window | `14` |
-| `wpilog-mcp.mirror.maxSizeGb` | Payload cap, decimal GB | `20` |
-| `wpilog-mcp.mirror.robots` | Serial filter; empty includes all | none |
-| `wpilog-mcp.mirror.events` | Exact event names to keep beyond the window | none |
-| `wpilog-mcp.mirror.intervalSec` | Seconds between attempts, including growing files | `30` |
 | `wpilog-mcp.enableForClaudeCode` | User-scope bridge registration and project YAML offers | on |
 | `wpilog-mcp.javaPath` | Java executable for the bundled installer | auto-detect |
 | `wpilog-mcp.wpiLibYear` | WPILib JDK year for the installer | latest installed |
@@ -243,41 +162,12 @@ Before uninstalling, use **Clear The Blue Alliance API Key** if you want it remo
 
 ## More Information
 
-- [Operations and usage manual](../doc/OPERATIONS.md): step by step, from the setup check to the pit server and the shop day
+- [Operations and usage manual](../doc/OPERATIONS.md): step by step, from the setup check to analysis and running the shared server
 - [Main README](../README.md): overview and tools
 - [Standalone guide](../doc/STANDALONE.md): configuration, installation, and other clients
 - [Tool reference](../doc/TOOLS.md): parameters and result contracts
 
-### Live tools and a pit proxy password
-
-A capture-enabled pit server gives agents `list_sessions` (current/recent sessions, recorder
-costs and matched imports), `get_latest_values` (named publications with robot timestamps and
-ages), and `wait_for_change` (first publication, at most 30 seconds). Ordinary log tools use the
-capture path returned in `inputs.session`; the local mirror has the same finished file answers.
-
-**Set Pit Proxy Credential** (`wpilog-mcp.setPitProxyCredential`) asks for the reverse proxy's
-username and masked password. The credential stays in SecretStorage by HTTP origin, never in
-settings or `.mcp.json`. MCP, plots, uploads and mirror reads use it for that origin only, with
-no redirects. Use HTTPS across the network. **Clear Pit Proxy Credential**
-(`wpilog-mcp.clearPitProxyCredential`) removes it and its local lease.
-
-After setting or clearing one, run **Register Pit Server with Claude Code** again. With a
-credential, that registration uses a secret-free URL through the local server; it needs the
-extension's window open to hold the in-memory credential lease. Re-register if the local server
-port changes. After VS Code closes, analyze the offline mirror through its `servers.yaml`
-mirror block (preferred for regular terminal use) or an explicit bridge `--logdir`; a window's
-folder lease alone does not survive. A proxy password is not put in permanent YAML.
-
-### Sampled dashboards
-
-The local and pit HTTP servers also serve `/metrics`. The
-[standalone metrics guide](../doc/STANDALONE.md#metrics-and-a-starter-dashboard) provides
-Prometheus/Grafana Compose files and a starter dashboard. Configure `metrics` in the server's
-YAML; this adds no extension setting. Scrapes show latest values and ages, while the capture
-and the explorer retain the record between scrapes.
-
-
 The [real-editor smoke](../doc/DEVELOPMENT.md#the-real-editor-smoke) runs in CI on the oldest
 supported VS Code and current stable. It checks activation, shared-server startup, a generated
-log in the Logs tree, its editor opening, and secret-free pit registration arguments. Interactive
-plots, credentials, organizing and mirror controls still have a manual checklist there.
+log in the Logs tree, its editor opening and data-view updates. Interactive plots and organizing still have a
+manual checklist there.

@@ -247,20 +247,20 @@ class ClaimChecksTest {
   // ==================== catalog, README, TOOLS.md ====================
 
   @Test
-  void projectGuidanceCoversPitOwnershipBoundaries() throws IOException {
+  void projectGuidanceCoversSharedServerOwnershipBoundaries() throws IOException {
     String guidance = Files.readString(Path.of("CLAUDE.md"));
     String architecture = guidance.split("## Architecture at a Glance", 2)[1].split("\n## ", 2)[0];
     String concurrency = guidance.split("## Concurrency", 2)[1].split("\n## ", 2)[0];
     String security = guidance.split("## Security", 2)[1].split("\n## ", 2)[0];
     assertAll(
-        () -> assertTrue(architecture.contains("**Capture service**"), "The writer and live index need an ownership rule"),
-        () -> assertTrue(architecture.contains("**Store**"), "Manifests and the transfer paths need a shared rule"),
+        () -> assertTrue(architecture.contains("**NetworkTables recording**"), "The writer and live index need an ownership rule"),
+        () -> assertTrue(architecture.contains("**File catalog**"), "Manifests and the transfer paths need a shared rule"),
         () -> assertTrue(architecture.contains("**Live tools and metrics**"), "Snapshot readers must remain separate from recording"),
-        () -> assertTrue(architecture.contains("**Pit HTTP services**"), "The network and local control surfaces need a pointer"),
+        () -> assertTrue(architecture.contains("**HTTP services**"), "The network and local control surfaces need a pointer"),
         () -> assertTrue(concurrency.contains("store queue"), "Store mutations have one owner"),
         () -> assertTrue(concurrency.contains("wait lock"), "Wait completion must not run under its registry lock"),
         () -> assertTrue(security.contains("loopback-only"), "Local control admission is not the bind address alone"),
-        () -> assertTrue(security.contains("upload"), "The intentional network write surface must be stated"));
+        () -> assertTrue(security.contains("network write surface"), "The intentional network write surface must be stated"));
   }
 
   @Test

@@ -318,7 +318,7 @@ class CaptureRecoveryTest {
 
   @Test void theGuidesStateTheShutdownBoundRecoveryReasonAndSeedTime() throws Exception {
     for (String name : List.of("STANDALONE", "ARCHITECTURE", "PIT_SERVER_PLAN")) {
-      String guide = Files.readString(Path.of("doc", name + ".md"));
+      String guide = Files.readString(Path.of("doc/pit-server", name + ".md"));
       assertTrue(guide.contains(CaptureService.CLOSE_TIMEOUT.toSeconds() + " seconds"), name);
       assertTrue(guide.contains("server stopped while recording"), name);
       assertTrue(guide.contains("after HTTP is listening"), name);

@@ -31,14 +31,15 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
 /** The manual's commands and names are executable claims, including names misspelled nowhere else. */
 class OperationsClaimTest {
-  private static final Path MANUAL = Path.of("doc/OPERATIONS.md");
+  private static final List<Path> MANUALS = List.of(Path.of("doc/OPERATIONS.md"),
+      Path.of("doc/pit-server/OPERATIONS.md"));
   private static final Path SOURCE = Path.of("src/main/java/org/triplehelix/wpilogmcp");
   private static String manual;
   private static ToolRegistry registry;
   @TempDir Path temp;
 
   @BeforeAll static void readManualAndRegistry() throws Exception {
-    manual = Files.readString(MANUAL);
+    manual = Files.readString(MANUALS.get(0)) + "\n" + Files.readString(MANUALS.get(1));
     registry = new ToolRegistry();
     WpilogTools.registerAll(registry);
     LiveTools.registerAll(registry, null);
@@ -180,18 +181,20 @@ class OperationsClaimTest {
   }
 
   @Test void relativeLinksResolveToDocumentHeadings() throws Exception {
-    var links = Pattern.compile("\\[[^\\]]+\\]\\(([^\\s)]+)\\)").matcher(manual);
     int checked = 0;
-    while (links.find()) {
-      String link = links.group(1);
-      if (link.matches("[a-zA-Z][a-zA-Z0-9+.-]*:.*")) continue;
-      String[] parts = link.split("#", 2);
-      Path target = parts[0].isEmpty() ? MANUAL : MANUAL.getParent().resolve(parts[0]).normalize();
-      assertTrue(Files.isRegularFile(target), "OPERATIONS.md: missing link target " + link);
-      var headings = headings(Files.readString(target));
-      assertFalse(headings.isEmpty(), "OPERATIONS.md: target has no heading " + link);
-      if (parts.length == 2) assertTrue(headings.contains(parts[1]), "OPERATIONS.md: missing heading " + link);
-      checked++;
+    for (var document : MANUALS) {
+      var links = Pattern.compile("\\[[^\\]]+\\]\\(([^\\s)]+)\\)").matcher(Files.readString(document));
+      while (links.find()) {
+        String link = links.group(1);
+        if (link.matches("[a-zA-Z][a-zA-Z0-9+.-]*:.*")) continue;
+        String[] parts = link.split("#", 2);
+        Path target = parts[0].isEmpty() ? document : document.getParent().resolve(parts[0]).normalize();
+        assertTrue(Files.isRegularFile(target), document + ": missing link target " + link);
+        var headings = headings(Files.readString(target));
+        assertFalse(headings.isEmpty(), document + ": target has no heading " + link);
+        if (parts.length == 2) assertTrue(headings.contains(parts[1]), document + ": missing heading " + link);
+        checked++;
+      }
     }
     assertTrue(checked > 0, "The manual must actually exercise the relative-link check");
   }
