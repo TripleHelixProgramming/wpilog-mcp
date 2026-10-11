@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release publication uses the annotated tag message's first line as the release title and the rest as its body. Previously the workflow discarded that title and GitHub displayed the tag name instead.
 - Both installers refuse a release tag without its leading `v`, naming the offending tag before downloading an asset. Dev2 silently accepted that malformed tag and could fail later with a misleading asset error.
 - `export_csv` publishes a complete UTF-8 file from a temporary file in the validated directory, removing the temporary file on failure. Previously a failed write could leave a partial target, and the UTF-8 encoding was not stated.
 - AdvantageKit replay full-cycle timing resolve by the published exact path `/ReplayOutputs/LoggedRobot/FullCycleMS` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.

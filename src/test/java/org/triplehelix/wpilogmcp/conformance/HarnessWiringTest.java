@@ -14,6 +14,23 @@ import org.junit.jupiter.api.Test;
 
 /** A simulation-only pass must not silently disappear from CI or enter the ordinary server build. */
 class HarnessWiringTest {
+  @Test void releaseUsesTheAnnotatedTagsSubjectAsItsTitle() throws Exception {
+    Map<?, ?> workflow = new org.yaml.snakeyaml.Yaml().load(Files.readString(Path.of(".github/workflows/release.yml")));
+    var jobs = (Map<?, ?>) workflow.get("jobs");
+    var steps = jobs.values().stream().map(value -> (Map<?, ?>) value)
+        .flatMap(job -> ((List<?>) job.get("steps")).stream()).map(step -> (Map<?, ?>) step).toList();
+    var notes = steps.stream().filter(step -> "Read the release notes from the tag message".equals(step.get("name")))
+        .findFirst().orElseThrow();
+    assertEquals("notes", notes.get("id"), "The tag message must publish a title output");
+    String run = notes.get("run").toString();
+    assertTrue(run.contains("--format='%(contents:subject)'"));
+    assertTrue(run.contains("title=%s") && run.contains("GITHUB_OUTPUT"));
+    assertTrue(run.contains("--format='%(contents:body)'"), "The body stays separate from the title");
+    var release = steps.stream().filter(step -> "softprops/action-gh-release@v2".equals(step.get("uses")))
+        .findFirst().orElseThrow();
+    assertEquals("${{ steps.notes.outputs.title }}", ((Map<?, ?>) release.get("with")).get("name"));
+  }
+
   @Test void ciTokenIsReadOnlyExceptForDependencySubmission() throws Exception {
     Map<?, ?> ci = new org.yaml.snakeyaml.Yaml().load(Files.readString(Path.of(".github/workflows/ci.yml")));
     assertEquals(Map.of("contents", "read"), ci.get("permissions"), "CI must declare a read-only token default");
