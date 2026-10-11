@@ -610,9 +610,13 @@ check scheduled on the stalled loop cannot detect that loop's stall while it is 
 
 The gateway checks aggregate receive
 bytes and fragment counts before accepting each continuation, including an unfinished message.
-Its fan-out work admission reserves at most 32 MiB and 4,096 tasks before copying payloads.
-Exhaustion refuses work and disconnects all connected views, which must reconnect; capture itself
-continues. A single reserved cleanup task coalesces overload handling.
+Fan-out admission reserves at most 32 MiB and 65,536 tasks before copying payloads. Shared upstream
+work is charged to every view; each peer's private requests divide the remaining capacity fairly.
+A peer that exceeds its own allowance is disconnected without spending another peer's allowance.
+The item bound admits a second of 100 topics at 50 Hz (5,000 records), unlike the former 4,096 cap.
+A global overrun disconnects every view only after five seconds without fan-out progress; that
+monotonic bound is a constructor parameter. Admission observes the stall outside the loop. One
+reserved cleanup per refused peer, or one global cleanup, releases the view; capture never waits.
 
 ## Integration dependencies
 

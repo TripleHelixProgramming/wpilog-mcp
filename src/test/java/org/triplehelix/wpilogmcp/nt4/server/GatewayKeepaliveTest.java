@@ -56,6 +56,68 @@ class GatewayKeepaliveTest {
       f.loop.drain();
     }
   }
+  @Test void onePeersQueuedWorkCannotDisconnectAnotherView() throws Exception {
+    try (var f = new Fixture()) {
+      var slow = f.connect("slow");
+      f.gateway.workLimits(2048, 4);
+      String request = "[{\"method\":\"unsubscribe\",\"params\":{\"subuid\":9}}]";
+      for (int i = 0; i < 3; i++) f.server.onMessage(slow, request);
+      f.loop.drain();
+      assertNotNull(slow.dropped, "The peer that exceeded its own work allowance is refused");
+      assertNull(f.peer.dropped, "A second peer must retain its connection after the first overruns");
+      var announced = f.gateway.announce("/x", "double", new com.google.gson.JsonObject());
+      f.loop.drain(); announced.join();
+      f.server.onMessage(f.peer, "[{\"method\":\"subscribe\",\"params\":{\"subuid\":1,\"topics\":[\"/x\"],\"options\":{\"all\":true,\"periodic\":0.001}}}]");
+      f.loop.drain();
+      for (int i = 0; i < 3; i++) {
+        var value = f.gateway.value("/x", i, 1, (double) i); f.loop.drain(); value.join();
+        f.loop.advance(1000);
+      }
+      assertEquals(3, f.peer.values, "The surviving peer keeps receiving every value");
+    }
+  }
+
+  @Test void privateBacklogReleasesCapacityForOtherPeersSharedPublications() throws Exception {
+    try (var f = new Fixture()) {
+      var slow = f.connect("slow"); f.gateway.workLimits(8192, 8);
+      String request = "[{\"method\":\"unsubscribe\",\"params\":{\"subuid\":9}}]";
+      for (int i = 0; i < 4; i++) f.server.onMessage(slow, request);
+      var published = new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
+      for (int i = 0; i < 5; i++) published.add(f.gateway.announce("/x" + i, "double", new com.google.gson.JsonObject()));
+      f.loop.drain();
+      assertNotNull(slow.dropped); assertNull(f.peer.dropped);
+      published.forEach(future -> assertDoesNotThrow(future::join,
+          "Cancelled private work must free capacity without losing a healthy peer's publication"));
+    }
+  }
+
+  @Test void aShortFanOutStallHoldsASecondOfTypicalRobotTraffic() throws Exception {
+    try (var f = new Fixture()) {
+      var announced = f.gateway.announce("/x", "double", new com.google.gson.JsonObject());
+      f.loop.drain(); announced.join();
+      var work = new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
+      // 100 topics at 50 Hz is 5,000 values. A short local stall is not a dead subscriber.
+      for (int i = 0; i < 5000; i++) work.add(f.gateway.value("/x", i, 1, (double) i));
+      f.loop.elapse(500_000); f.loop.drain();
+      assertNull(f.peer.dropped, "A half-second loop stall must not disconnect a healthy view");
+      work.forEach(java.util.concurrent.CompletableFuture::join);
+    }
+  }
+
+  @Test void aGlobalOverrunAfterFiveSecondsNamesTheStalledLoop() throws Exception {
+    try (var f = new Fixture()) {
+      var second = f.connect("second");
+      f.gateway.workLimits(2048, 4);
+      for (int i = 0; i < 4; i++) f.gateway.announce("/x" + i, "double", new com.google.gson.JsonObject());
+      f.loop.elapse(5_000_000);
+      f.gateway.announce("/excess", "double", new com.google.gson.JsonObject());
+      f.loop.drain();
+      assertNotNull(f.peer.dropped); assertNotNull(second.dropped);
+      assertTrue(f.peer.dropped.contains("fan-out loop stalled"), f.peer.dropped);
+      assertTrue(f.peer.dropped.contains("5000000"), f.peer.dropped);
+    }
+  }
+
   private static final class Fixture implements AutoCloseable {
     final ManualScheduler loop = new ManualScheduler(), binds = new ManualScheduler();
     final Nt4Gateway gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 0,
@@ -65,22 +127,32 @@ class GatewayKeepaliveTest {
     Fixture() throws Exception {
       var started = gateway.start(); binds.until(started::isDone); started.join();
       var field = Nt4Gateway.class.getDeclaredField("server"); field.setAccessible(true);
-      server = (WebSocketServer) field.get(gateway); peer = new Peer(server);
-      var request = new HandshakeImpl1Client(); request.setResourceDescriptor("/nt/healthy");
-      server.onOpen(peer, request); loop.drain();
+      server = (WebSocketServer) field.get(gateway); peer = connect("healthy");
+    }
+    Peer connect(String name) {
+      var peer = new Peer(server);
+      var request = new HandshakeImpl1Client(); request.setResourceDescriptor("/nt/" + name);
+      server.onOpen(peer, request); loop.drain(); return peer;
     }
     public void close() throws Exception { gateway.close(); }
   }
   private static final class Peer extends WebSocketImpl {
     final WebSocketServer server;
     boolean answer = true;
-    int pings, pongs;
+    int pings, pongs, values;
     String dropped;
     Peer(WebSocketServer server) { super(server, new Draft_6455()); this.server = server; }
     @Override public Protocol getProtocol() { return new Protocol(Nt4Client.V41); }
     @Override public boolean isOpen() { return dropped == null; }
     @Override public void sendPing() { pings++; if (answer) server.onWebsocketPong(this, new PongFrame()); }
     @Override public void sendFrame(Framedata frame) { if (frame instanceof PongFrame) pongs++; }
+    @Override public void sendFragmentedFrame(org.java_websocket.enums.Opcode opcode,
+        java.nio.ByteBuffer bytes, boolean fin) {
+      if (opcode == org.java_websocket.enums.Opcode.BINARY) {
+        var copy = new byte[bytes.remaining()]; bytes.get(copy);
+        values += org.triplehelix.wpilogmcp.nt4.ValueFrame.decode(copy).size();
+      }
+    }
     @Override public void closeConnection(int code, String reason) { dropped = reason; }
   }
 

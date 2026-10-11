@@ -74,7 +74,34 @@ public final class Nt4Gateway implements AutoCloseable {
   private final int maxQueuedFragments;
   private final java.util.function.BiConsumer<String, String> disconnected;
   private long maxWorkBytes = 32L * 1024 * 1024;
-  private int maxWorkItems = 4096;
+  // A second of 100 topics at 50 Hz is 5,000 items. Keep the record bound consistent
+  // with the core rather than treating a short GC pause as failure of every dashboard.
+  private int maxWorkItems = 65536;
+  static final long DEFAULT_FAN_OUT_STALL_US = 5_000_000;
+  private final long maxFanOutStallUs;
+  private long lastWorkProgressUs;
+  private long sharedWorkBytes;
+  private int sharedWorkItems;
+  private static final class WorkShare {
+    long bytes;
+    int items;
+    boolean rejected;
+    final java.util.Set<Work> queued = new java.util.LinkedHashSet<>();
+  }
+  private static final class Work {
+    final long bytes;
+    final WorkShare owner;
+    final WebSocket source;
+    final CompletableFuture<Void> result;
+    Runnable action;
+    Work(long bytes, WorkShare owner, WebSocket source, CompletableFuture<Void> result, Runnable action) {
+      this.bytes = bytes; this.owner = owner; this.source = source; this.result = result; this.action = action;
+    }
+  }
+  private final java.util.Set<Work> queuedWork = new java.util.LinkedHashSet<>();
+  private boolean workScheduled;
+  // Admission alone owns these counters; socket/core state remains on the fan-out loop.
+  private final Map<WebSocket, WorkShare> shares = new HashMap<>();
   private final Object admission = new Object();
   private long workBytes;
   private int workItems;
@@ -118,6 +145,20 @@ public final class Nt4Gateway implements AutoCloseable {
   Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols,
       int maxQueuedFragments, java.util.function.BiConsumer<String, String> disconnected,
       Clock wallClock, ClientScheduler binds, ClientScheduler loop) {
+    this(address, serverClock, protocols, maxQueuedFragments, disconnected, wallClock, binds,
+        loop, DEFAULT_FAN_OUT_STALL_US);
+  }
+
+  /**
+   * The global fallback requires five seconds without fan-out progress by default. This is
+   * outside the loop's own keepalive judgement and tolerates short local GC/encoding stalls.
+   * A peer's own pending work is still bounded immediately; recording never waits here.
+   */
+  Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols,
+      int maxQueuedFragments, java.util.function.BiConsumer<String, String> disconnected,
+      Clock wallClock, ClientScheduler binds, ClientScheduler loop, long maxFanOutStallUs) {
+    if (maxFanOutStallUs <= 0) throw new IllegalArgumentException("Positive fan-out stall bound required");
+    this.maxFanOutStallUs = maxFanOutStallUs;
     if (address.isUnresolved()) throw new IllegalArgumentException("Gateway bind address must resolve");
     if (maxQueuedFragments <= 0) throw new IllegalArgumentException("Positive socket queue limit required");
     this.maxQueuedFragments = maxQueuedFragments; this.disconnected = disconnected;
@@ -253,44 +294,144 @@ public final class Nt4Gateway implements AutoCloseable {
 
   /** Reserve before copying: the loop can be stalled while network threads continue delivering. */
   private CompletableFuture<Void> enqueue(long bytes, java.util.function.Supplier<Runnable> prepare) {
+    return enqueue(null, bytes, prepare);
+  }
+
+  private CompletableFuture<Void> enqueue(WebSocket source, long bytes,
+      java.util.function.Supplier<Runnable> prepare) {
     var result = new CompletableFuture<Void>();
     if (closed) return CompletableFuture.failedFuture(new IllegalStateException("Gateway closed"));
+    if (source != null && !source.isOpen()) return CompletableFuture.failedFuture(
+        new IllegalStateException("Peer closed"));
+    var refused = new ArrayList<WebSocket>();
+    var cancelled = new ArrayList<Work>();
+    WorkShare owner;
     boolean admitted;
+    boolean stalled;
     synchronized (admission) {
-      admitted = bytes <= maxWorkBytes - workBytes && workItems < maxWorkItems;
-      if (admitted) { workBytes += bytes; workItems++; }
+      if (workItems == 0) lastWorkProgressUs = nowUs();
+      owner = source == null ? null : shares.computeIfAbsent(source, ignored -> new WorkShare());
+      boolean full = bytes > maxWorkBytes - workBytes || workItems >= maxWorkItems;
+      stalled = full && nowUs() - lastWorkProgressUs >= maxFanOutStallUs;
+      if (!stalled) {
+        // Shared upstream work is charged to every view once. Private receive work divides
+        // the remaining capacity fairly, so a noisy peer cannot spend another peer's share.
+        int active = Math.max(1, (int) shares.values().stream().filter(v -> !v.rejected).count());
+        for (var entry : shares.entrySet()) {
+          var share = entry.getValue();
+          if (share.rejected || (source != null && source != entry.getKey())) continue;
+          long byteLimit = (maxWorkBytes - sharedWorkBytes - (source == null ? bytes : 0)) / active;
+          int itemLimit = (maxWorkItems - sharedWorkItems - (source == null ? 1 : 0)) / active;
+          boolean exceeds = source == null
+              ? bytes > maxWorkBytes - sharedWorkBytes || sharedWorkItems >= maxWorkItems
+                  || share.bytes > byteLimit || share.items > itemLimit
+              : bytes > byteLimit - share.bytes || share.items >= itemLimit;
+          if (exceeds) {
+            share.rejected = true; refused.add(entry.getKey());
+            // Remove pending payloads now, not later behind the stalled loop. Ordered work for
+            // surviving peers keeps its position; cancellation costs only this peer's queue.
+            for (var work : share.queued) {
+              queuedWork.remove(work); work.action = null; cancelled.add(work);
+              releaseWork(work.bytes, share);
+            }
+            share.queued.clear();
+          }
+        }
+      }
+      admitted = !stalled && bytes <= maxWorkBytes - workBytes && workItems < maxWorkItems
+          && (owner == null || !owner.rejected);
+      if (admitted) {
+        workBytes += bytes; workItems++;
+        if (owner == null) { sharedWorkBytes += bytes; sharedWorkItems++; }
+        else { owner.bytes += bytes; owner.items++; }
+      }
     }
-    if (!admitted) {
-      overrun();
-      return CompletableFuture.failedFuture(new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
-    }
+    for (var work : cancelled) work.result.completeExceptionally(
+        new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
+    for (var socket : refused) refusePeer(socket);
+    if (stalled) overrun();
+    if (!admitted) return CompletableFuture.failedFuture(
+        new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
     try {
-      var action = prepare.get();
-      loop.execute(() -> {
-        RuntimeException failure = null;
-        try { action.run(); }
-        catch (RuntimeException e) { failure = e; }
-        finally { releaseWork(bytes); }
-        // A completion can run another submitter synchronously; its predecessor is finished.
-        if (failure == null) result.complete(null);
-        else result.completeExceptionally(failure);
-      });
-    } catch (RuntimeException e) { releaseWork(bytes); result.completeExceptionally(e); }
+      var work = new Work(bytes, owner, source, result, prepare.get());
+      boolean schedule;
+      synchronized (admission) {
+        if (closed || (owner != null && owner.rejected)) {
+          releaseWork(bytes, owner);
+          return CompletableFuture.failedFuture(new java.util.concurrent.RejectedExecutionException(WORK_LIMIT));
+        }
+        queuedWork.add(work);
+        if (owner != null) owner.queued.add(work);
+        schedule = !workScheduled; workScheduled = true;
+      }
+      if (schedule) scheduleWork();
+    } catch (RuntimeException e) { releaseWork(bytes, owner); result.completeExceptionally(e); }
     return result;
   }
 
-  private void releaseWork(long bytes) {
-    synchronized (admission) { workBytes -= bytes; workItems--; }
+  private void scheduleWork() {
+    try { loop.execute(this::runWork); }
+    catch (java.util.concurrent.RejectedExecutionException error) { cancelWork(error); }
   }
 
-  /** One reserved cleanup task, independent of the data budget. A lost value ends the view. */
+  private void runWork() {
+    Work work;
+    synchronized (admission) {
+      var iterator = queuedWork.iterator();
+      if (!iterator.hasNext()) { workScheduled = false; return; }
+      work = iterator.next(); iterator.remove();
+      if (work.owner != null) work.owner.queued.remove(work);
+    }
+    RuntimeException failure = null;
+    try { if (work.source == null || work.source.isOpen()) work.action.run(); }
+    catch (RuntimeException e) { failure = e; }
+    finally {
+      work.action = null;
+      synchronized (admission) { releaseWork(work.bytes, work.owner); lastWorkProgressUs = nowUs(); }
+    }
+    // Completion can enqueue more work synchronously; its predecessor is already released.
+    if (failure == null) work.result.complete(null); else work.result.completeExceptionally(failure);
+    scheduleWork();
+  }
+
+  private void cancelWork(RuntimeException reason) {
+    List<Work> cancelled;
+    synchronized (admission) {
+      cancelled = List.copyOf(queuedWork); queuedWork.clear(); workScheduled = false;
+      for (var work : cancelled) {
+        work.action = null;
+        if (work.owner != null) work.owner.queued.remove(work);
+        releaseWork(work.bytes, work.owner);
+      }
+    }
+    cancelled.forEach(work -> work.result.completeExceptionally(reason));
+  }
+
+  private void releaseWork(long bytes, WorkShare owner) {
+    synchronized (admission) {
+      workBytes -= bytes; workItems--;
+      if (owner == null) { sharedWorkBytes -= bytes; sharedWorkItems--; }
+      else { owner.bytes -= bytes; owner.items--; }
+    }
+  }
+
+  private void refusePeer(WebSocket socket) {
+    String reason = WORK_LIMIT + ": peer's pending work exceeded its allowance";
+    socket.closeConnection(1008, reason);
+    // One cleanup per rejected peer, outside the data budget; no socket I/O under admission.
+    try { loop.execute(() -> { var id = connections.get(socket); if (id != null) drop(id, reason); }); }
+    catch (java.util.concurrent.RejectedExecutionException ignored) { /* Closing. */ }
+  }
+
+  /** A global refusal is a last defence after measured absence of fan-out progress. */
   private void overrun() {
     if (!overflowPending.compareAndSet(false, true)) return;
-    LoggerFactory.getLogger(Nt4Gateway.class).warn(WORK_LIMIT);
+    String reason = WORK_LIMIT + ": fan-out loop stalled for at least " + maxFanOutStallUs + " us";
+    LoggerFactory.getLogger(Nt4Gateway.class).warn(reason);
     try {
       loop.execute(() -> {
         try {
-          for (String id : List.copyOf(peers.keySet())) drop(id, WORK_LIMIT);
+          for (String id : List.copyOf(peers.keySet())) drop(id, reason);
           closing.values().forEach(done -> done.complete(null)); closing.clear();
         } finally { overflowPending.set(false); }
       });
@@ -365,6 +506,7 @@ public final class Nt4Gateway implements AutoCloseable {
   private void drop(String id, String reason) {
     var peer = peers.remove(id);
     if (peer == null) return;
+    synchronized (admission) { shares.remove(peer.socket); }
     connections.remove(peer.socket); keepalives.remove(peer.socket); core.disconnect(id); clientCount = peers.size();
     LoggerFactory.getLogger(Nt4Gateway.class).warn("NT4 gateway client {} disconnected: {}", peer.name, reason);
     peer.socket.closeConnection(1001, reason); disconnected.accept(peer.name, reason);
@@ -380,6 +522,7 @@ public final class Nt4Gateway implements AutoCloseable {
     binds.close();
     listening.cancel(false);
     if (bound != null) bound.stopListening();
+    cancelWork(new java.util.concurrent.RejectedExecutionException("Gateway closed"));
     loop.close();
     loop.awaitTermination(5_000_000);
     clientCount = 0;
@@ -422,7 +565,7 @@ public final class Nt4Gateway implements AutoCloseable {
       });
     }
     @Override public void onOpen(WebSocket socket, ClientHandshake request) {
-      enqueue(() -> {
+      enqueue(socket, 256, () -> () -> {
         String id = Integer.toString(nextClient++);
         connections.put(socket, id);
         String name = request.getResourceDescriptor().substring(4);
@@ -435,16 +578,18 @@ public final class Nt4Gateway implements AutoCloseable {
     }
     @Override public void onClose(WebSocket socket, int code, String reason, boolean remote) {
       keepalives.remove(socket);
-      enqueue(() -> {
+      synchronized (admission) { shares.remove(socket); }
+      // A close must release its identity even when the work budget is full.
+      try { loop.execute(() -> {
         var id = connections.remove(socket);
         keepalives.remove(socket);
         if (id != null) { peers.remove(id); core.disconnect(id); clientCount = peers.size(); }
         var done = closing.remove(socket);
         if (done != null) done.complete(null);
-      });
+      }); } catch (java.util.concurrent.RejectedExecutionException ignored) { /* Closing. */ }
     }
     @Override public void onMessage(WebSocket socket, String text) {
-      enqueue(256L + text.length() * 2L, () -> () -> {
+      enqueue(socket, 256L + text.length() * 2L, () -> () -> {
         var id = connections.get(socket);
         if (id == null) return;
         for (var message : ControlMessage.decode(text)) {
@@ -455,7 +600,7 @@ public final class Nt4Gateway implements AutoCloseable {
       }).exceptionally(error -> { rejectMessage(socket, error, "Invalid NT4 text"); return null; });
     }
     @Override public void onMessage(WebSocket socket, ByteBuffer data) {
-      enqueue(256L + data.remaining(), () -> {
+      enqueue(socket, 256L + data.remaining(), () -> {
         var bytes = new byte[data.remaining()]; data.get(bytes);
         return () -> {
           var id = connections.get(socket);

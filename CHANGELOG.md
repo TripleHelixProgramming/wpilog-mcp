@@ -88,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Gateway work admission charges each peer separately and tolerates a short fan-out stall; the global disconnect requires five seconds without progress. Previously one peer or 4,096 queued tasks disconnected every dashboard. Capture remains independent of the gateway.
 - Growing WPILOGs read by another process resume a copied index after file-identity and header/last-record checks; previously every append rescanned all records. Partial final records are retried, decoded caches refresh, and successful disk-backed tool calls name the file size they read. Unknown identities or changed anchors still load afresh.
 - Harness replay allows 32,768 records per batch, bounds bytes for ntcore’s smaller publisher queue and wakes on pipe/receipt events; the former 1,024-record handshake dominated fast replay. Native replay now checks zero-shift transport fidelity, with `conformanceNative=none|sample|full`; Java keeps the placement matrix.
 - SSH stats cache PID/start time and platform constants per connection, rediscovering only after process changes. Previously every sample scanned process command lines and fetched unchanged constants; steady samples use fixed proc reads and one combined `df`.

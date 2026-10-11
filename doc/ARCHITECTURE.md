@@ -560,6 +560,11 @@ The design keeps shared mutable state small:
 
 On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
 
+The NT4 gateway charges queued work per peer and drops only a peer that exceeds its allowance.
+Its global fallback requires five seconds without fan-out progress, measured at admission outside
+the loop; a short local stall is not a failure of every connected view. The budgets and ownership
+are described in [the recording architecture](pit-server/ARCHITECTURE.md#gateway-work-limits).
+
 ## Security
 
 Three rules, each explained in its own section above:
