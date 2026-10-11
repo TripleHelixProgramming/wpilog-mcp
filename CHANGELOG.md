@@ -88,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Power crossings and battery summaries name an unrecovered window boundary `open_at_scope_end`; the former `open_at_log_end` could be true before the log ended. The old `open_at_log_end` and battery-health `open_at_end` names stay as same-value aliases.
+
 - Explorer source removes the empty placeholder left by a retired entry-cache clear. Runtime behavior and caching are unchanged.
 - Daemon ownership decisions and empty power-scope explanations use documented nullable data internally, keeping `Optional` for return values. Previously those two field/parameter uses contradicted the source conventions; their behavior is unchanged.
 - Voltage crossings still open at a scope boundary extend to that window end, or the log end for whole-log analysis, and carry `open_at_log_end` in bounded interval details. Dev2 silently extended the power-summary durations beyond the last voltage sample; the tools now state that basis, and battery-health intervals use the same rule.

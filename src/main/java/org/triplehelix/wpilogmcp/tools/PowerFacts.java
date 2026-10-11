@@ -132,7 +132,10 @@ final class PowerFacts {
       e.addProperty("start", b.start());
       e.addProperty("end", b.end());
       e.addProperty("duration_sec", b.duration());
-      if (b.openAtLogEnd()) e.addProperty("open_at_log_end", true);
+      if (b.openAtLogEnd()) {
+        e.addProperty("open_at_scope_end", true);
+        e.addProperty("open_at_log_end", true); // Compatibility alias.
+      }
       events.add(e);
     }
     o.add("events", events);
@@ -156,7 +159,8 @@ final class PowerFacts {
       var out = new JsonObject();
       out.addProperty("start_time", start); out.addProperty("end_time", end);
       out.addProperty("duration", duration()); out.addProperty("min_voltage", minVolts);
-      out.addProperty("open_at_log_end", openAtEnd);
+      out.addProperty("open_at_scope_end", openAtEnd);
+      out.addProperty("open_at_log_end", openAtEnd); // Compatibility alias.
       return out;
     }
   }
