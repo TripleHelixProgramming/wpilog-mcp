@@ -9,6 +9,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -84,18 +85,8 @@ public final class PhotonBackend implements AutoCloseable {
       assertTrue(database, "Actual export must hold photon.sqlite");
       Files.write(work.resolve("export.zip"), reply.body()); return true;
     });
-    // The release's NT client uses the default port. Only this fresh backend is configured.
-    int before = Files.readString(work.resolve("backend.log")).length();
-    var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:5800/api/settings/general"))
-        .timeout(Duration.ofSeconds(5)).header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(networkConfiguration())).build();
-    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
-    assertEquals(200, response.statusCode(), response.body());
-    // The pinned route always restarts Javalin, even with host network management disabled.
-    // Opening the audit first turns that expected setup restart into a spurious socket failure.
-    HarnessHttp.await("PhotonVision settings restart", 30, () -> {
-      check(); return restarted(Files.readString(work.resolve("backend.log")), before);
-    });
+    configureNetwork(http, URI.create("http://127.0.0.1:5800"), work.resolve("backend.log"),
+        () -> { check(); return true; }, 30);
     socket = http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
         .buildAsync(URI.create("ws://127.0.0.1:5800/websocket_data"), new Audit()).get(10, TimeUnit.SECONDS);
     HarnessHttp.await("file-camera full binary settings", 30, () -> {
@@ -106,12 +97,45 @@ public final class PhotonBackend implements AutoCloseable {
     assertEquals(CAMERA, snapshot.getAsJsonArray("cameraSettings").get(0).getAsJsonObject().get("nickname").getAsString());
     Files.writeString(work.resolve("startup-seconds.txt"), Double.toString((System.nanoTime() - started) / 1e9));
   }
+  static void configureNetwork(HttpClient http, URI backend, Path output,
+      HarnessHttp.Condition alive, int seconds) throws Exception {
+    // The release's NT client uses the default port. Only this fresh backend is configured.
+    int before = Files.readString(output).length();
+    var request = HttpRequest.newBuilder(backend.resolve("/api/settings/general"))
+        .timeout(Duration.ofSeconds(5)).header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(networkConfiguration())).build();
+    IOException deliveryFailure = null;
+    try {
+      var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, response.statusCode(), response.body());
+    } catch (IOException e) {
+      // The save restarts Javalin and can close this response before its headers arrive.
+      // Fresh save and restart evidence below is required even when the send fails.
+      deliveryFailure = e;
+    }
+    try {
+      HarnessHttp.await("PhotonVision settings save and restart", seconds, () -> {
+        if (!alive.ready()) return false;
+        String text = Files.readString(output);
+        return settingsApplied(text, before);
+      });
+    } catch (AssertionError e) {
+      String text = Files.readString(output);
+      var failure = new AssertionError("PhotonVision did not confirm saved general settings and restart; backend.log tail:\n"
+          + text.substring(Math.max(0, text.length() - 8192)), e);
+      if (deliveryFailure != null) failure.addSuppressed(deliveryFailure);
+      throw failure;
+    }
+  }
   static String networkConfiguration() {
     return """
         {"ntServerAddress":"127.0.0.1","connectionType":0,"staticIp":"","hostname":"photon-harness",
          "runNTServer":false,"shouldManage":false,"shouldPublishProto":false,"networkManagerIface":"",
          "setStaticCommand":"","setDHCPcommand":""}
         """;
+  }
+  static boolean settingsApplied(String output, int before) {
+    return output.indexOf("Successfully saved general settings", before) >= 0 && restarted(output, before);
   }
   static boolean restarted(String output, int before) {
     int stop = output.indexOf("Web server going down for restart", before);

@@ -178,6 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The PhotonVision harness proves a fresh settings save and completed web-server restart even when that restart closes the POST response before its headers arrive. Previously the expected restart could fail setup with HTTP EOF; missing save evidence now reports the backend log tail.
 - A real data-endpoint regression holds four response streams on a latch and checks health before releasing them; previously admission tests covered stalled MCP bodies but missed starvation by other HTTP handlers.
 - The operations manual's tool names, CLI verbs, YAML examples, provider names and states, metrics and relative links are checked against the code and document headings; previously no test read the manual, so stale or misspelled claims could pass the build.
 - Legacy unassigned-layout migration now checks the entire file receipt apart from its changed path; previously matching reasons, placement methods and robot fingerprints could be lost without failing the migration test.
