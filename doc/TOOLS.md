@@ -721,7 +721,7 @@ The conventions use exact paths after stripping the `NT:` and `/AdvantageKit` wr
 | `battery_voltage` | a leaf named `BatteryVoltage`; `Voltage` under `PowerDistribution`, `PowerDistribution[<id>]`, `PDH`, `PDP`, or `Battery` | `voltage_entry` |
 | `total_current` | `/PowerDistribution/TotalCurrent`, optionally under `/RealOutputs`, or `/SmartDashboard/PowerDistribution[<id>]/TotalCurrent` (the device id is optional); not the roboRIO's own `SystemStats/BatteryCurrent` | `total_current_entry` |
 | `brownout_flag` | a boolean leaf named `BrownedOut` or `IsBrownedOut` | none |
-| `loop_time_full` / `_user` | AdvantageKit `/LoggedRobot/FullCycleMS` / `UserCodeMS`, also under `/RealOutputs` or `/ReplayOutputs`; periods from AdvantageKit `/Timestamp` | `entry` |
+| `loop_time_full` / `_user` | AdvantageKit `/LoggedRobot/FullCycleMS` / `UserCodeMS`, also under `/RealOutputs`; periods from AdvantageKit `/Timestamp`. `/ReplayOutputs/LoggedRobot` is replay-host timing, listed only as a candidate. | `entry` |
 | `robot_pose` | `DriveState/Pose` (CTRE), `Odometry/Robot` (AdvantageKit template), `Drive/Pose`, `EstimatedPose`, `RobotPose`, `PathPlanner/currentPose`; or the only `Pose2d` outside vision paths | `pose_entry` (`odometry_entry` in `analyze_swerve`) |
 | `vision_pose` | the only scalar `Pose2d`/`Pose3d` with at least two samples under a vision, camera, PhotonVision, or Limelight path | `vision_entry` |
 | `auto_chooser` | the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry, or AdvantageKit's `/NetworkInputs/SmartDashboard/<key>` | `chooser_entry` |

@@ -38,8 +38,6 @@ class ResolveSignalsNoGuessTest {
   }
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.CsvSource({
-      "LOOP_TIME_FULL, /ReplayOutputs/LoggedRobot/FullCycleMS",
-      "LOOP_TIME_USER, /ReplayOutputs/LoggedRobot/UserCodeMS",
       "CHASSIS_SPEEDS_MEASURED, /ReplayOutputs/SwerveChassisSpeeds/Measured",
       "CHASSIS_SPEEDS_SETPOINT, /ReplayOutputs/SwerveChassisSpeeds/Setpoints",
       "CHASSIS_SPEEDS_MEASURED, /SmartDashboard/swerve/advantagescope/measuredChassisSpeeds",
@@ -61,6 +59,46 @@ class ResolveSignalsNoGuessTest {
       var resolved = SignalResolver.resolve(builder.build(), role);
       assertEquals(SignalResolver.Tier.CONVENTION, resolved.tier(), name);
       assertEquals(java.util.List.of(name), resolved.entries(), name);
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+      "LOOP_TIME_FULL, FullCycleMS",
+      "LOOP_TIME_USER, UserCodeMS"
+  })
+  void robotLoopTimingIsUnambiguousBesideReplayHostTiming(SignalResolver.Role role, String leaf) {
+    for (String wrapper : java.util.List.of("", "NT:", "/AdvantageKit", "NT:/AdvantageKit")) {
+      String robot = wrapper + "/RealOutputs/LoggedRobot/" + leaf;
+      String replay = wrapper + "/ReplayOutputs/LoggedRobot/" + leaf;
+      for (var order : java.util.List.of(java.util.List.of(replay, robot), java.util.List.of(robot, replay))) {
+        var builder = new MockLogBuilder();
+        for (String name : order) builder.addNumericEntry(name, new double[]{0, 1}, new double[]{1, 2});
+        var resolved = SignalResolver.resolve(builder.build(), role);
+        assertFalse(resolved.ambiguous(), "Replay-host timing must not tie the robot's timing: " + order);
+        assertEquals(java.util.List.of(robot), resolved.entries());
+        assertEquals(SignalResolver.Tier.CONVENTION, resolved.tier());
+      }
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+      "LOOP_TIME_FULL, FullCycleMS",
+      "LOOP_TIME_USER, UserCodeMS"
+  })
+  void replayHostTimingAloneNeedsConfirmation(SignalResolver.Role role, String leaf) {
+    for (String wrapper : java.util.List.of("", "NT:", "/AdvantageKit", "NT:/AdvantageKit")) {
+      String replay = wrapper + "/ReplayOutputs/LoggedRobot/" + leaf;
+      var log = new MockLogBuilder()
+          .addNumericEntry(replay, new double[]{0, 1}, new double[]{1, 2}).build();
+      var resolved = SignalResolver.resolve(log, role);
+      assertTrue(resolved.entries().isEmpty(), "Replay-host timing is not the robot's loop time");
+      assertEquals(SignalResolver.Tier.HEURISTIC, resolved.tier());
+      assertTrue(resolved.needsConfirmation());
+      assertEquals(java.util.List.of(replay), resolved.candidates());
+      assertEquals(java.util.List.of(replay), SignalResolver.loopTime(log, role, replay).entries(),
+          "An explicit choice can still analyze replay-host timing");
     }
   }
 

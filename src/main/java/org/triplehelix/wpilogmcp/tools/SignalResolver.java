@@ -548,7 +548,8 @@ public final class SignalResolver {
   /**
    * Loop time. Full cycle: AdvantageKit LoggedRobot/FullCycleMS, else periods derived from
    * AdvantageKit's /Timestamp; user code: LoggedRobot/UserCodeMS. Names containing looptime or
-   * cycletime are candidates only.
+   * cycletime are candidates only. ReplayOutputs/LoggedRobot measures the replay host, so it
+   * cannot compete with the robot's original timing or become its automatic fallback.
    */
   static Resolution loopTime(LogData log, Role role, String explicit) {
     if (explicit != null) {
@@ -560,8 +561,7 @@ public final class SignalResolver {
     String want = role == Role.LOOP_TIME_FULL ? "FullCycleMS" : "UserCodeMS";
     var conventional = numeric.stream().filter(e -> {
       String name = conventionName(e.name());
-      return name.equals("/LoggedRobot/" + want) || name.equals("/RealOutputs/LoggedRobot/" + want)
-          || name.equals("/ReplayOutputs/LoggedRobot/" + want);
+      return name.equals("/LoggedRobot/" + want) || name.equals("/RealOutputs/LoggedRobot/" + want);
     })
         .map(EntryInfo::name).toList();
     if (!conventional.isEmpty()) {
