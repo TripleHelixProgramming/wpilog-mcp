@@ -14,6 +14,22 @@ import org.junit.jupiter.api.Test;
 
 /** A simulation-only pass must not silently disappear from CI or enter the ordinary server build. */
 class HarnessWiringTest {
+  @Test void ciTokenIsReadOnlyExceptForDependencySubmission() throws Exception {
+    Map<?, ?> ci = new org.yaml.snakeyaml.Yaml().load(Files.readString(Path.of(".github/workflows/ci.yml")));
+    assertEquals(Map.of("contents", "read"), ci.get("permissions"), "CI must declare a read-only token default");
+    var allowed = java.util.Set.of("robot-dependency-submission", "dependency-submission");
+    var elevated = new java.util.HashSet<String>();
+    var jobs = (Map<?, ?>) ci.get("jobs");
+    jobs.forEach((name, value) -> {
+      var job = (Map<?, ?>) value;
+      if (!job.containsKey("permissions")) return;
+      assertTrue(allowed.contains(name), "Unexpected job permission override: " + name);
+      assertEquals(Map.of("contents", "write"), job.get("permissions"), name.toString());
+      elevated.add(name.toString());
+    });
+    assertEquals(allowed, elevated, "Only the dependency graph submissions need write access");
+  }
+
   @Test void harnessIsOptInAndCiRunsItSeparatelyWithCachedDownloads() throws Exception {
     String build = Files.readString(Path.of("build.gradle")).replace("\r\n", "\n");
     String task = build.substring(build.indexOf("tasks.register('shopHarness', Test)"));

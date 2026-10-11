@@ -169,6 +169,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Health checks:** `health_check` recognizes an in-memory registered TBA key; previously it could report a missing key despite a client's active registration.
 - **File-size refusal:** WPILOGs beyond the supported mapping bound remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed. Windowed mapping raises that bound to 1 TiB.
 
+### Security
+
+- CI now defaults to `contents: read`; only dependency-submission jobs can write the dependency graph. Previously build jobs inherited the repository token defaults. This restriction concerns the build, not permissions in the server or extension.
+
 ### Testing
 
 - A real data-endpoint regression holds four response streams on a latch and checks health before releasing them; previously admission tests covered stalled MCP bodies but missed starvation by other HTTP handlers.
