@@ -544,7 +544,9 @@ In stdio mode the server handles one message at a time. HTTP dispatch uses four 
 and grows to 32 with direct handoff and no waiting queue. Data streams, store transfers and
 health share this pool: four blocked streams start additional workers for new requests instead
 of queuing health behind them. This is bounded capacity, not a dedicated health thread; all 32
-busy handlers can still exhaust it. MCP calls use a separate pool capped at
+busy handlers can still exhaust it. A further HTTP exchange is rejected by the JDK dispatcher,
+which closes the connection without an HTTP response: the client sees a reset, not a 503. This
+is distinct from MCP execution admission, which can return 503. MCP calls use a separate pool capped at
 min(32, max(4, 2 × CPU count)), with up to 64 further threads for event streams. Requests are
 not serialized per session.
 

@@ -222,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The HTTP pool guidance now says that exhausting all 32 dispatch workers closes the next connection without a response. Previously the separate MCP 503 limit could be read as a promise for dispatch overload too.
 - Require explicit maintainer consent for each push, tag, version bump and merge to main; the source rules and release checklist previously read as if publication were routine.
 - Describe NetworkTables recording, live tools, metrics and the store as shared-server capabilities, with the untested integration guides under `doc/pit-server/`. Previously capture, store and gateway were presented as one product beside the features they overlap; the main tool reference again documents every registered tool.
 - The architecture guide now states the short-window autocorrelation estimator's bias toward zero and resulting effective-count inflation; previously its boundedness was documented without that approximation's limit.
