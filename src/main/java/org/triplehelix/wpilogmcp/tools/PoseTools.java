@@ -358,7 +358,9 @@ public final class PoseTools {
           + "entries (analyze_vision) before attributing it. pose_entry defaults to the robot "
           + "pose and chassis_speeds_entry to the measured chassis speeds (conventional "
           + "names or the only candidate; others are listed to confirm, not guessed)."
-          + StatisticsTools.SCOPE_HELP + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
+          + StatisticsTools.SCOPE_HELP + " A type-only chassis-speed choice may be a setpoint; odometry.basis states that "
+          + "uncertainty so its role can be confirmed from robot source."
+          + GUIDANCE_UNIVERSAL + GUIDANCE_MATCH_ANALYSIS;
     }
 
     @Override

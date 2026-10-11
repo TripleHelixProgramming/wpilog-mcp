@@ -99,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A type-only chassis-speed choice now states in `pose_corrections.odometry.basis` that it may be a setpoint. Previously the result named the type fallback without making that consequence explicit; selection itself is unchanged.
 - Release publication uses the annotated tag message's first line as the release title and the rest as its body. Previously the workflow discarded that title and GitHub displayed the tag name instead.
 - Both installers refuse a release tag without its leading `v`, naming the offending tag before downloading an asset. Dev2 silently accepted that malformed tag and could fail later with a misleading asset error.
 - `export_csv` publishes a complete UTF-8 file from a temporary file in the validated directory, removing the temporary file on failure. Previously a failed write could leave a partial target, and the UTF-8 encoding was not stated.

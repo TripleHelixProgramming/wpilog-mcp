@@ -1137,7 +1137,8 @@ public final class SignalResolver {
     }
     if (!wantSetpoint && candidates.size() == 1) {
       return ranked(role, candidates.get(0), candidates, n -> 0,
-          "the only struct:ChassisSpeeds entry; its role is not inferred from its name", null, Tier.TYPE);
+          "the only struct:ChassisSpeeds entry; it may be a setpoint rather than measured speed; "
+              + "confirm its role from the robot source", null, Tier.TYPE);
     }
     return heuristic(role, candidates, "no published chassis-speed role; confirm an entry");
   }

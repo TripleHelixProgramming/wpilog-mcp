@@ -60,6 +60,24 @@ class PoseToolsTest extends ToolTestBase {
     return findTool(tool).execute(args).getAsJsonObject();
   }
 
+  @Test void aLoneChassisStreamStatesThatItMayBeASetpoint() throws Exception {
+    var t = times(3);
+    var log = new MockLogBuilder().setPath(PATH)
+        .addStructEntry("/Pose", "struct:Pose2d", t,
+            List.of(pose(0, 0, 0), pose(0.02, 0, 0), pose(0.04, 0, 0)))
+        .addStructEntry("/Unlabelled", "struct:ChassisSpeeds", t,
+            List.of(speeds(1, 0, 0), speeds(1, 0, 0), speeds(1, 0, 0))).build();
+    putLogInCache(log);
+    var result = run("pose_corrections", "pose_entry", "/Pose");
+    var odometry = result.getAsJsonObject("odometry");
+    assertNotNull(odometry, result.toString());
+    assertEquals("/Unlabelled", odometry.get("entry").getAsString());
+    assertTrue(odometry.get("basis").getAsString().contains("may be a setpoint"),
+        "The type alone does not prove measured speed: " + odometry);
+    assertEquals(SignalResolver.resolve(log, SignalResolver.Role.CHASSIS_SPEEDS_MEASURED).basis(),
+        odometry.get("basis").getAsString());
+  }
+
   @Nested
   @DisplayName("pose_corrections")
   class Corrections {

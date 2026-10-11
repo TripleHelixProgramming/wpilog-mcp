@@ -1898,6 +1898,10 @@ The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter
 ### `pose_corrections`
 How much a pose changed beyond what odometry predicts. For each pair of consecutive `pose_entry` records (in scope, at most `max_interval_sec` apart): the pose's change minus the predicted change. The prediction is the change of `odometry_pose_entry` (a pose from wheel odometry alone, rotated into the pose's frame), or else `chassis_speeds_entry` integrated over the interval (trapezoidal, linear between speed samples; robot-relative speeds rotated by the pose's heading).
 
+When the only `struct:ChassisSpeeds` entry supplies odometry, `odometry.basis` explicitly says
+it may be a setpoint. Its type alone does not establish measured motion; confirm its role from
+the robot source or pass the correct entry.
+
 **Parameters:**
 - `path` (required): Path to the log file
 - `pose_entry` (optional): The pose, e.g. a pose estimator's output; default: the `robot_pose` role
