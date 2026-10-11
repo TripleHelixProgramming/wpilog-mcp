@@ -472,26 +472,27 @@ public class DaemonManager {
   public boolean spawnDaemon(String name, int port, Path configPath) {
     // Choosing to restart and reserving that restart are one decision. The starter's live
     // PID keeps the claim valid even after the old daemon exits, until its replacement boots.
-    record Decision(Optional<RunningDaemon> running, boolean claimed) {}
+    // A null running component means no daemon was found while claiming this name.
+    record Decision(RunningDaemon running, boolean claimed) {}
     Decision decision;
     try {
       decision = locked(name, () -> {
         try (var refresh = InstallGuard.acquire(runDir, runDir.resolve(".install-refresh.guard"))) {
-          var running = findRunning(name);
-          if (running.isPresent() && running.get().managed()) return new Decision(running, false);
-          if (running.isPresent() && !ownVersion.equals(running.get().version())) {
+          var running = findRunning(name).orElse(null);
+          if (running != null && running.managed()) return new Decision(running, false);
+          if (running != null && !ownVersion.equals(running.version())) {
             writePidFile(name, ProcessHandle.current().pid(), port, STARTING_MARKER);
             return new Decision(running, true);
           }
-          return new Decision(running, running.isEmpty() && claimPidFile(name, port));
+          return new Decision(running, running == null && claimPidFile(name, port));
         }
       });
     } catch (java.io.UncheckedIOException e) {
       logger.error("Failed to write PID file for '{}': {}", name, e.getCause().getMessage());
       return false;
     }
-    if (decision.running().isPresent()) {
-      var running = decision.running().get();
+    if (decision.running() != null) {
+      var running = decision.running();
       if (running.managed()) return refuseManaged(name, "restart");
       if (ownVersion.equals(running.version())) {
         return reportRunning(name, port, running);

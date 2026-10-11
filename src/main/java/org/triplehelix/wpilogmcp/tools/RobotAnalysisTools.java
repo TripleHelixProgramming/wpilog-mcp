@@ -743,7 +743,7 @@ public final class RobotAnalysisTools {
         if (voltageEntry.isEmpty() && battery.needsConfirmation()) {
           hint += " " + SignalResolver.unresolvedReason(battery, "voltage_entry");
         }
-        return ResponseBuilder.noMatch(nothingInScope(log, scope, voltageEntry, channelResult))
+        return ResponseBuilder.noMatch(nothingInScope(log, scope, voltageEntry.orElse(null), channelResult))
             .addData("scope", scope.toJson())
             .addInput("voltage", voltageEntry.orElse(null))
             .addInput("brownout_flag", flag.orElse(null))
@@ -879,9 +879,9 @@ public final class RobotAnalysisTools {
 
     /**
      * The no_match reason of a scope with nothing to measure: it holds no time, or no finite
-     * voltage or current sample falls in it.
+     * voltage or current sample falls in it. The voltage entry is null when none was resolved.
      */
-    static String nothingInScope(LogData log, TimeScope scope, Optional<String> voltageEntry,
+    static String nothingInScope(LogData log, TimeScope scope, String voltageEntry,
         Channels currents) {
       if (scope.isEmpty()) {
         var start = scope.requestedStart();
@@ -895,7 +895,7 @@ public final class RobotAnalysisTools {
             + "), so there is nothing to measure in it.";
       }
       var measured = new ArrayList<String>();
-      voltageEntry.ifPresent(measured::add);
+      if (voltageEntry != null) measured.add(voltageEntry);
       if (!currents.entries().isEmpty()) measured.add(currents.describeEntries());
       return "No finite samples of " + String.join(" or of ", measured) + " fall inside the "
           + scope.describe() + ".";
