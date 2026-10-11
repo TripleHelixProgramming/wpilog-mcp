@@ -560,7 +560,8 @@ public final class SignalResolver {
     String want = role == Role.LOOP_TIME_FULL ? "FullCycleMS" : "UserCodeMS";
     var conventional = numeric.stream().filter(e -> {
       String name = conventionName(e.name());
-      return name.equals("/LoggedRobot/" + want) || name.equals("/RealOutputs/LoggedRobot/" + want);
+      return name.equals("/LoggedRobot/" + want) || name.equals("/RealOutputs/LoggedRobot/" + want)
+          || name.equals("/ReplayOutputs/LoggedRobot/" + want);
     })
         .map(EntryInfo::name).toList();
     if (!conventional.isEmpty()) {
@@ -1124,11 +1125,15 @@ public final class SignalResolver {
       String leaf = wantSetpoint ? "Setpoints" : "Measured";
       return path.equals("/SwerveChassisSpeeds/" + leaf)
           || path.equals("/RealOutputs/SwerveChassisSpeeds/" + leaf)
+          || path.equals("/ReplayOutputs/SwerveChassisSpeeds/" + leaf)
+          // YAGSL SwerveDriveTelemetry publishes these exact SmartDashboard struct topics.
+          || path.equals("/SmartDashboard/swerve/advantagescope/"
+              + (wantSetpoint ? "desiredChassisSpeeds" : "measuredChassisSpeeds"))
           || (!wantSetpoint && path.equals("/DriveState/Speeds"));
     }).toList();
     if (!known.isEmpty()) {
       return ranked(role, known.get(0), known, n -> 0,
-          "AdvantageKit SwerveChassisSpeeds or CTRE DriveState/Speeds", null, Tier.CONVENTION);
+          "AdvantageKit SwerveChassisSpeeds, YAGSL telemetry or CTRE DriveState/Speeds", null, Tier.CONVENTION);
     }
     if (!wantSetpoint && candidates.size() == 1) {
       return ranked(role, candidates.get(0), candidates, n -> 0,

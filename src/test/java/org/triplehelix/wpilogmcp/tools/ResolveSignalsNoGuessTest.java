@@ -36,6 +36,34 @@ class ResolveSignalsNoGuessTest {
         .build();
     assertTrue(SignalResolver.resolve(log, SignalResolver.Role.CHASSIS_SPEEDS_MEASURED).entries().isEmpty());
   }
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+      "LOOP_TIME_FULL, /ReplayOutputs/LoggedRobot/FullCycleMS",
+      "LOOP_TIME_USER, /ReplayOutputs/LoggedRobot/UserCodeMS",
+      "CHASSIS_SPEEDS_MEASURED, /ReplayOutputs/SwerveChassisSpeeds/Measured",
+      "CHASSIS_SPEEDS_SETPOINT, /ReplayOutputs/SwerveChassisSpeeds/Setpoints",
+      "CHASSIS_SPEEDS_MEASURED, /SmartDashboard/swerve/advantagescope/measuredChassisSpeeds",
+      "CHASSIS_SPEEDS_SETPOINT, /SmartDashboard/swerve/advantagescope/desiredChassisSpeeds"
+  })
+  void publishedReplayAndYagslPathsRetainTheirRoles(SignalResolver.Role role, String path) {
+    for (String wrapper : java.util.List.of("", "NT:", "/AdvantageKit", "NT:/AdvantageKit")) {
+      String name = wrapper + path;
+      var builder = new MockLogBuilder();
+      if (role.name().startsWith("LOOP")) {
+        builder.addNumericEntry(name, new double[]{0, 1}, new double[]{1, 2});
+      } else {
+        var values = java.util.List.of(new org.triplehelix.wpilogmcp.log.TimestampedValue(
+            0, java.util.Map.of("vx", 1.0, "vy", 0.0, "omega", 0.0)));
+        builder.addEntry(name, "struct:ChassisSpeeds", values);
+        // A second stream prevents the type-only fallback from disguising a missing convention.
+        builder.addEntry("/Unassigned/Velocity", "struct:ChassisSpeeds", values);
+      }
+      var resolved = SignalResolver.resolve(builder.build(), role);
+      assertEquals(SignalResolver.Tier.CONVENTION, resolved.tier(), name);
+      assertEquals(java.util.List.of(name), resolved.entries(), name);
+    }
+  }
+
   @BeforeEach void admitMocks() { logs = new MockLogAdmission(); }
 
   @AfterEach

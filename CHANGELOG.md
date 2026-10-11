@@ -96,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AdvantageKit replay full-cycle timing resolve by the published exact path `/ReplayOutputs/LoggedRobot/FullCycleMS` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
+- AdvantageKit replay user-code timing resolve by the published exact path `/ReplayOutputs/LoggedRobot/UserCodeMS` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
+- AdvantageKit replay measured chassis speeds resolve by the published exact path `/ReplayOutputs/SwerveChassisSpeeds/Measured` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
+- AdvantageKit replay setpoint chassis speeds resolve by the published exact path `/ReplayOutputs/SwerveChassisSpeeds/Setpoints` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
+- YAGSL measured chassis speeds resolve by the published exact path `/SmartDashboard/swerve/advantagescope/measuredChassisSpeeds` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
+- YAGSL desired chassis speeds resolve by the published exact path `/SmartDashboard/swerve/advantagescope/desiredChassisSpeeds` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
 - HTTP dispatch starts additional workers when its four core workers are busy, up to its existing limit of 32; previously four stalled data streams or uploads could queue health checks and delay daemon adoption or the service timer despite unused worker capacity.
 - Sparse complete samples survive an incomplete final record, and decoded values are stably ordered by timestamp; previously a torn tail could discard a valid sample and an out-of-order record could disappear from scoped statistics.
 - Struct decoding refuses schemas deeper than 64 dependencies with an explained error, and synchronization-cache counts are bounded before allocation; crafted inputs previously could overflow the stack or request a VM-sized array.

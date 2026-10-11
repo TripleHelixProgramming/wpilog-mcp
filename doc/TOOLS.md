@@ -713,20 +713,21 @@ A word in a name is not evidence of what an entry holds, and neither is the shap
 
 What an entry holds, and in which units, is decided by the robot code that logs it, so that is where a candidate is confirmed: find where the entry is logged in the robot project's source. Without the source, the entry's type and values (`get_entry_info`, `read_entry`) or the team are the next best evidence.
 
-The conventions:
+The conventions use exact paths after stripping the `NT:` and `/AdvantageKit` wrappers:
 
 | Role | Chosen by convention | Override |
 |---|---|---|
 | DriverStation state | AdvantageKit `/DriverStation/...`, WPILib `DS:...`, NetworkTables `FMSControlData` | none |
 | `battery_voltage` | a leaf named `BatteryVoltage`; `Voltage` under `PowerDistribution`, `PowerDistribution[<id>]`, `PDH`, `PDP`, or `Battery` | `voltage_entry` |
-| `total_current` | a leaf named `TotalCurrent` (not AdvantageKit's `SystemStats/BatteryCurrent`, the roboRIO's own input current) | `total_current_entry` |
+| `total_current` | `/PowerDistribution/TotalCurrent`, optionally under `/RealOutputs`, or `/SmartDashboard/PowerDistribution[<id>]/TotalCurrent` (the device id is optional); not the roboRIO's own `SystemStats/BatteryCurrent` | `total_current_entry` |
 | `brownout_flag` | a boolean leaf named `BrownedOut` or `IsBrownedOut` | none |
-| `loop_time_full` / `_user` | AdvantageKit `LoggedRobot/FullCycleMS` / `UserCodeMS`; periods from AdvantageKit `/Timestamp` | `entry` |
+| `loop_time_full` / `_user` | AdvantageKit `/LoggedRobot/FullCycleMS` / `UserCodeMS`, also under `/RealOutputs` or `/ReplayOutputs`; periods from AdvantageKit `/Timestamp` | `entry` |
 | `robot_pose` | `DriveState/Pose` (CTRE), `Odometry/Robot` (AdvantageKit template), `Drive/Pose`, `EstimatedPose`, `RobotPose`, `PathPlanner/currentPose`; or the only `Pose2d` outside vision paths | `pose_entry` (`odometry_entry` in `analyze_swerve`) |
 | `vision_pose` | the only scalar `Pose2d`/`Pose3d` with at least two samples under a vision, camera, PhotonVision, or Limelight path | `vision_entry` |
 | `auto_chooser` | the one chooser whose key contains `auto`: a WPILib `SendableChooser`'s `active` entry, or AdvantageKit's `/NetworkInputs/SmartDashboard/<key>` | `chooser_entry` |
 | `path_setpoint` / `path_actual` | `PathPlanner/targetPose`, AdvantageKit `Odometry/TrajectorySetpoint` / `PathPlanner/currentPose`, else the robot pose | `path_setpoint_entry` / `path_actual_entry` |
 | `module_states_measured` / `_setpoint` | AdvantageKit `SwerveStates/Measured` with `SwerveStates/SetpointsOptimized` or `Setpoints`; CTRE `DriveState/ModuleStates` with `ModuleTargets`; YAGSL `swerve/advantagescope/currentStates` with `desiredStates` (the setpoint in the measured entry's own table); or, for measured, the only `SwerveModuleState` entry when it is not named like a setpoint | `measured_entry` / `setpoint_entry` |
+| `chassis_speeds_measured` / `_setpoint` | AdvantageKit `/SwerveChassisSpeeds/Measured` / `Setpoints`, also under `/RealOutputs` or `/ReplayOutputs`; YAGSL `/SmartDashboard/swerve/advantagescope/measuredChassisSpeeds` / `desiredChassisSpeeds`; CTRE `/DriveState/Speeds` for measured. A lone `struct:ChassisSpeeds` is a type-only fallback, whose role may be a setpoint. | none |
 | `vision_pose_observations` | `struct:PoseObservation[]` entries (the AdvantageKit vision template's record: a timestamp and a pose) | `vision_entries` |
 | `vision_targets` | `struct:TargetObservation` entries with yaw and pitch fields; has-target flags as Limelight's `<table>/tv` and PhotonVision's `photonvision/<camera>/hasTarget` | `vision_entries` |
 | `gyro_yaw` | a yaw entry under a gyro, Pigeon, NavX, Canandgyro, IMU, or AHRS path | none |
