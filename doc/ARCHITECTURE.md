@@ -270,6 +270,7 @@ Every tool runs through one base, so the same things happen for every call:
 
 - A bad argument, or a file that is not a readable log (missing, a directory, not readable by the server's user, empty, in another format, or too large), becomes an error result whose message says what is wrong.
 - Any other exception becomes an "Internal error" result. The tests treat an internal error as a bug.
+- Stack exhaustion during a tool call or result normalization becomes an explained error. The message handler also bounds raw tools, schema construction and response wrapping with a JSON-RPC error; the next stdio request is still served. Neither boundary tries to serialize the overflowing input or its full stack.
 - Running out of memory becomes an error result that names the heap size and the remedies (a narrower time window, or a larger heap), and the server keeps serving.
 - The result contract is enforced on every result, whatever built it. `success` and `status` come first, a missing reason is filled in, and a number that is NaN or infinite, which is not valid JSON, becomes `null` and is listed in the result's metadata.
 

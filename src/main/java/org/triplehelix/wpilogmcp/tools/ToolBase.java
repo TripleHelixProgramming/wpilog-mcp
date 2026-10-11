@@ -155,7 +155,7 @@ public abstract class ToolBase implements McpServer.Tool {
   public final JsonElement execute(JsonObject arguments) throws Exception {
     JsonElement result;
     try {
-      result = executeInternal(arguments);
+      return ResultContract.enforce(executeInternal(arguments));
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
       result = errorResult(e.getMessage());
@@ -183,6 +183,10 @@ public abstract class ToolBase implements McpServer.Tool {
           + "of the file faulted: " + e.getMessage() + "), which happens when the file is "
           + "truncated or rewritten while it is loaded. Call again: the server loads a changed "
           + "file again.");
+    } catch (StackOverflowError e) {
+      // Unwind first; do not recursively render the arguments, result or full stack here.
+      result = errorResult("Stack overflow: this call exceeded the supported nesting or recursion "
+          + "depth. Reduce nested input; the server remains available for the next call.");
     } catch (OutOfMemoryError e) {
       // One call's allocations (usually decoding a dense entry of a very large log) exceeded the
       // heap; they are garbage once the call unwinds, so the server can go on serving

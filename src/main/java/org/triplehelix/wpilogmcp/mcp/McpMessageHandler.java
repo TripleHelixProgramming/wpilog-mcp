@@ -177,6 +177,12 @@ public class McpMessageHandler {
       return HandlerResult.of(
           JsonRpc.createErrorResponse(
               id, JsonRpc.INTERNAL_ERROR, "Internal error: " + e.getMessage()));
+    } catch (StackOverflowError e) {
+      // Also protect raw tools, schema construction and response wrapping, outside ToolBase.
+      if (isNotification) return HandlerResult.noResponse();
+      return HandlerResult.of(JsonRpc.createErrorResponse(id, JsonRpc.INTERNAL_ERROR,
+          "Stack overflow: this request exceeded the supported nesting or recursion depth. "
+              + "Reduce nested input; the server remains available for the next request."));
     } finally {
       if (session != null) {
         SessionContext.clear();

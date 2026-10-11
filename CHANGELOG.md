@@ -100,6 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stack exhaustion in a tool, result normalization or request dispatch now returns an explained error and leaves the server answering the next request; previously it could end a stdio session.
+
 - A type-only chassis-speed choice now states in `pose_corrections.odometry.basis` that it may be a setpoint. Previously the result named the type fallback without making that consequence explicit; selection itself is unchanged.
 - Release publication uses the annotated tag message's first line as the release title and the rest as its body. Previously the workflow discarded that title and GitHub displayed the tag name instead.
 - Both installers refuse a release tag without its leading `v`, naming the offending tag before downloading an asset. Dev2 silently accepted that malformed tag and could fail later with a misleading asset error.
