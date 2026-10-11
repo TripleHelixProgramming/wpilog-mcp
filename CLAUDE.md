@@ -43,6 +43,7 @@ All code should follow JDK 17 idioms:
 - Javadoc explains why, not only what: the rule a class follows, the convention it reads, and the failure that motivated it, as `doc/ARCHITECTURE.md` does. A comment that dates a change names a release that exists or is being prepared, never a later one; a test enforces this against the version in `build.gradle`.
 - Result fields are `snake_case`, and a number's name carries its unit where the unit is not obvious (`loop_time_ms`, `auto_duration_sec`, `mean_abs_speed_mps`).
 - Commit messages: a subject that states the change in the project's terms, often prefixed by the component or tool (`Extension:`, `Release workflow:`, `power_analysis:`), and a body that says why, what was wrong before, and how the change was verified.
+- This is a public repository: never push, tag, bump the version, or merge to main without the maintainer's explicit consent in words for that specific action. A go-ahead for a task is not consent for the push that ends it; commit locally and report.
 
 ## FRC Domain Knowledge
 
