@@ -576,7 +576,6 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
   /** Shows a log's entries: the one the editor just loaded, or none. */
   setActive(log: OpenLog | undefined): void {
     if (log?.path !== this.active?.path) {
-
       this.filter = "";
       void vscode.commands.executeCommand("setContext", "wpilog-mcp.entryFilter", false);
     }
