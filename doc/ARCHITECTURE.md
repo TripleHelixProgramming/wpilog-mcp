@@ -1056,7 +1056,13 @@ Search never fetches missing companions: it reports `not_applicable` with the co
 
 ## Concurrency
 
-In stdio mode the server handles one message at a time. In HTTP mode, requests run in parallel on a fixed pool of max(4, 2 × CPU count) threads, with up to 64 further threads for event streams. Requests are not serialized per session.
+In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads
+and grows to 32 with direct handoff and no waiting queue. Data streams, store transfers and
+health share this pool: four blocked streams start additional workers for new requests instead
+of queuing health behind them. This is bounded capacity, not a dedicated health thread; all 32
+busy handlers can still exhaust it. MCP calls use a separate pool capped at
+min(32, max(4, 2 × CPU count)), with up to 64 further threads for event streams. Requests are
+not serialized per session.
 
 Directory/key registration is serialized only with that session's removal, through the session map's per-key computation; validation and filesystem I/O happen beforehand. DELETE, expiry, and transport shutdown discard the session's permissions together, so a late registration cannot resurrect them. Keys remain in memory, with the most recent live registration taking precedence over the file. Registration is HTTP-only, behind the Origin check and refused on any non-loopback bind: a model's tool call cannot grant itself access.
 
@@ -1210,14 +1216,18 @@ have unequal lengths. Derivatives weight adjacent slopes by the opposite interva
 uneven timestamps place the derivative at the middle sample. Voltage crossings end at each
 scope boundary; they never span a disabled interval excluded from the request.
 
+The autocorrelation estimator is biased toward zero for short windows, so the effective sample
+size can be slightly inflated; it is an approximation, not an exact independent-sample count.
+
 MCP HTTP bodies are limited to 4 MiB and ten seconds. A separate pool admits at most
 `min(32, max(4, processors * 2))` MCP requests with no waiting queue; overload answers 503.
-The short HTTP dispatch queue is also bounded. Slow MCP bodies and tool calls therefore do not
-occupy the threads that serve health. The gateway checks aggregate receive bytes and fragment
-counts before accepting each continuation, including an unfinished message. Its fan-out work
-admission reserves at most 32 MiB and 4,096 tasks before copying payloads. Exhaustion refuses
-work and disconnects affected views, which must reconnect; capture itself continues. A single
-reserved cleanup task coalesces overload handling.
+HTTP dispatch uses direct handoff to four-to-32 workers, without a waiting queue. Slow MCP
+bodies and tool calls do not occupy those workers; data and store streams do, so dispatch grows
+immediately beyond its four core workers when they are busy. The gateway checks aggregate receive
+bytes and fragment counts before accepting each continuation, including an unfinished message.
+Its fan-out work admission reserves at most 32 MiB and 4,096 tasks before copying payloads.
+Exhaustion refuses work and disconnects all connected views, which must reconnect; capture itself
+continues. A single reserved cleanup task coalesces overload handling.
 
 Store JSON publication uses the same 4 MiB limit as reading. An oversized update is refused
 before replacing the last readable manifest. Move aliases follow a bounded chain with cycle

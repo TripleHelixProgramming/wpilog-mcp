@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTTP dispatch starts additional workers when its four core workers are busy, up to its existing limit of 32; previously four stalled data streams or uploads could queue health checks and delay daemon adoption or the service timer despite unused worker capacity.
 - Sparse complete samples survive an incomplete final record, and decoded values are stably ordered by timestamp; previously a torn tail could discard a valid sample and an out-of-order record could disappear from scoped statistics.
 - Struct decoding refuses schemas deeper than 64 dependencies with an explained error, and synchronization-cache counts are bounded before allocation; crafted inputs previously could overflow the stack or request a VM-sized array.
 - Calendar, total-current, loop-time and chassis-speed roles require their published paths or a unique eligible type; unrelated leaves and suggestive words previously could select the wrong signal.
@@ -160,6 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- A real data-endpoint regression holds four response streams on a latch and checks health before releasing them; previously admission tests covered stalled MCP bodies but missed starvation by other HTTP handlers.
 - The operations manual's tool names, CLI verbs, YAML examples, provider names and states, metrics and relative links are checked against the code and document headings; previously no test read the manual, so stale or misspelled claims could pass the build.
 - Legacy unassigned-layout migration now checks the entire file receipt apart from its changed path; previously matching reasons, placement methods and robot fingerprints could be lost without failing the migration test.
 - The PhotonVision stand-down check now pins a late snapshot notification and an abrupt backend close with no outstanding message demand, advancing its manual keepalive clock to detect the latter. Previously a stale notice could satisfy the malformed-message wait early, while a blocking wait froze the only reliable detection of a vanished backend and failed under load.
@@ -203,6 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The architecture guide now states the short-window autocorrelation estimator's bias toward zero and resulting effective-count inflation; previously its boundedness was documented without that approximation's limit.
+- Gateway work-admission exhaustion is documented as disconnecting all connected views; the previous wording incorrectly limited it to affected views.
 - Pre-release install examples now use the installers from `development` until the full release; previously they fetched `main`'s installers, which predate `--tag` and silently installed the latest full release. The release checklist records when to return those URLs to `main`.
 - Working-branch CI, dependency submission and checkout instructions now name `development`; previously they named the retired branch. The release checklist names the temporary checkout qualifications to remove before a full release.
 - The operations walkthrough now states its version and PATH prerequisites, the confidence field's location, archive and registration checks, the shared HTTP port, and provider states before the first session; previously following the examples could select an older release, report a missing archive, or leave the laptop server running when capture was expected.

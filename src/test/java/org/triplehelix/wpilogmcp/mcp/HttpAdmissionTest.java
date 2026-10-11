@@ -5,13 +5,26 @@
 package org.triplehelix.wpilogmcp.mcp;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sun.net.httpserver.Filter;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.FilterOutputStream;
+import java.io.IOException;
 import java.net.Socket;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
+import org.triplehelix.wpilogmcp.log.LogManager;
 
 class HttpAdmissionTest {
   @Test void anUnfinishedBodyHasADeadlineAndReleasesItsAdmissionSlot() throws Exception {
@@ -55,5 +68,82 @@ class HttpAdmissionTest {
           .POST(HttpRequest.BodyPublishers.ofString(INITIALIZE)).build(), HttpResponse.BodyHandlers.ofString());
       assertEquals(503, overload.statusCode(), "A request beyond admission must not join an unbounded queue");
     } finally { transport.stop(); }
+  }
+
+  @Test void fourStalledDataStreamsLeaveHealthAnswering(@TempDir Path directory) throws Exception {
+    var path = directory.resolve("stream.wpilog");
+    try (var writer = new WpilogWriter(path, "synthetic dispatch fixture")) {
+      int entry = writer.start("/Value", "double", "", 0);
+      writer.append(entry, 1_000_000, WpilogWriter.encodeDouble(1));
+    }
+    var manager = LogManager.getInstance();
+    var configuredDirectories = manager.getConfiguredDirectories();
+    manager.addAllowedDirectory(directory);
+    var transport = new HttpTransport(new ToolRegistry(), 0);
+    var writing = new CountDownLatch(4);
+    var finish = new CountDownLatch(1);
+    var streams = new ArrayList<CompletableFuture<HttpResponse<byte[]>>>();
+    transport.start();
+    try {
+      // Use the real endpoint on the transport's executor, gating its output rather than
+      // depending on kernel socket buffers or a large fixture to keep four handlers busy.
+      var field = HttpTransport.class.getDeclaredField("server");
+      field.setAccessible(true);
+      var server = (HttpServer) field.get(transport);
+      var context = server.createContext("/stalled-data", new DataEndpoint(manager)::handle);
+      context.getFilters().add(new Filter() {
+        @Override public String description() { return "Gate data writes for the admission test"; }
+        @Override public void doFilter(HttpExchange exchange, Chain chain) throws IOException {
+          exchange.setStreams(null, new FilterOutputStream(exchange.getResponseBody()) {
+            private boolean started;
+            private void awaitRelease() throws IOException {
+              if (started) return;
+              started = true;
+              writing.countDown();
+              try {
+                if (!finish.await(30, TimeUnit.SECONDS)) throw new IOException("Data write guard expired");
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Data write interrupted", e);
+              }
+            }
+            @Override public void write(int value) throws IOException {
+              awaitRelease(); out.write(value);
+            }
+            @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+              awaitRelease(); out.write(bytes, offset, length);
+            }
+          });
+          chain.doFilter(exchange);
+        }
+      });
+      var client = HttpClient.newHttpClient();
+      var base = "http://127.0.0.1:" + transport.getPort();
+      var data = URI.create(base + "/stalled-data?path="
+          + URLEncoder.encode(path.toString(), StandardCharsets.UTF_8) + "&names=/Value");
+      for (int i = 0; i < 4; i++) {
+        streams.add(client.sendAsync(HttpRequest.newBuilder(data).build(),
+            HttpResponse.BodyHandlers.ofByteArray()));
+      }
+      assertTrue(writing.await(30, TimeUnit.SECONDS), "All four data streams entered their writes");
+      assertTrue(streams.stream().noneMatch(CompletableFuture::isDone), "Data streams are still stalled");
+      var health = assertDoesNotThrow(() -> client.send(HttpRequest.newBuilder(
+          URI.create(base + "/health")).timeout(Duration.ofSeconds(5)).build(),
+          HttpResponse.BodyHandlers.ofString()), "Health must answer while four data streams are stalled");
+      assertEquals(200, health.statusCode(), health.body());
+      assertEquals(1, finish.getCount(), "Health did not need the streams released");
+      finish.countDown();
+      for (var stream : streams) {
+        var response = stream.get(30, TimeUnit.SECONDS);
+        assertEquals(200, response.statusCode());
+        assertTrue(response.body().length > 0);
+      }
+    } finally {
+      finish.countDown();
+      transport.stop();
+      manager.unloadLog(path.toString());
+      manager.clearAllowedDirectories();
+      configuredDirectories.forEach(manager::addAllowedDirectory);
+    }
   }
 }

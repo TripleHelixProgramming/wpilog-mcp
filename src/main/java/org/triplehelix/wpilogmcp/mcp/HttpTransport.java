@@ -208,8 +208,10 @@ public class HttpTransport {
     server.createContext("/store", counted(this::handleStore));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
+    // Direct handoff grows beyond four workers as soon as they are busy. A waiting queue
+    // would keep health behind four streaming data/store responses until that queue filled.
     httpExecutor = new ThreadPoolExecutor(4, 32, 60, TimeUnit.SECONDS,
-        new java.util.concurrent.ArrayBlockingQueue<>(256), r -> {
+        new SynchronousQueue<>(), r -> {
           var thread = new Thread(r, "http-request"); thread.setDaemon(true); return thread;
         });
     mcpExecutor = new ThreadPoolExecutor(0, maxMcpRequests, 60, TimeUnit.SECONDS,

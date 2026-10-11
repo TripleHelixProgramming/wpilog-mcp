@@ -1061,7 +1061,9 @@ On Windows, use `"command": "cmd"` and `"args": ["/c", "C:\\Users\\you\\.wpilog-
 
 MCP request bodies are limited to 4 MiB and ten seconds; an unfinished body is disconnected.
 At most 32 MCP requests run at once (fewer on small machines), with overload reported as HTTP
-503 rather than an unbounded wait. Health checks use a separate dispatch pool.
+503 rather than an unbounded wait. Health, data streams and store transfers share a separate
+dispatch pool that grows from four to 32 workers without a waiting queue. Four blocked streams
+therefore leave capacity for health; exhausting all 32 workers can still prevent a health reply.
 
 For browser-based or multi-client access, start the `http` server from `servers.yaml`:
 ```bash
