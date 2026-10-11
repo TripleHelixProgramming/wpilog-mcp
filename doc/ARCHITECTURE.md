@@ -496,6 +496,7 @@ The key does not cover the code. So the cache has a format version that is raise
 Other choices in the disk cache:
 
 - The fingerprint is a SHA-256 over the file's size and three 64 KB samples (its start, middle, and end), not the whole file. That is a trade of certainty for speed: a change confined to another part of a file would go unnoticed.
+- A sync cache file above 64 MiB is refused before its contents are opened and removed by the startup sweep. The read is also bounded by the measured size plus one byte, so growth after the size check cannot bypass the cap. This bounds optional encoded cache input, not source-log size or total decoded heap; an oversized entry is recomputed from the logs. The written format stays unchanged.
 - Each file ends with a CRC-32, which catches accidental corruption. A file that fails it is deleted and its result recomputed.
 - Files are written under a temporary name and moved into place, so a reader never sees half a file.
 - A result read back must give the same answers as the one computed, down to the order of devices and signals, which is the order the REV log first shows them. The in-process stress test compares the two.

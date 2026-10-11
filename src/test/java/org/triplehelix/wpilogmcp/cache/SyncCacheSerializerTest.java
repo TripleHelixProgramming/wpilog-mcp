@@ -7,8 +7,11 @@ package org.triplehelix.wpilogmcp.cache;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +31,62 @@ import org.triplehelix.wpilogmcp.sync.SyncResult;
 class SyncCacheSerializerTest {
   @TempDir Path tempDir;
   private final SyncCacheSerializer serializer = new SyncCacheSerializer();
+
+  @Test void oversizedCacheIsRefusedBeforeOpeningItsContents() throws IOException {
+    Path file = currentVersionSparseFile(SyncCacheSerializer.MAX_CACHE_FILE_BYTES + 1L);
+    var rejectingOpener = new SyncCacheSerializer() {
+      @Override InputStream openInput(Path path) {
+        throw new AssertionError("Oversized cache contents must not be opened");
+      }
+    };
+    assertNull(rejectingOpener.read(file));
+  }
+
+  @Test void oversizedFormatProbeIsRefusedBeforeOpeningItsContents() throws IOException {
+    Path file = currentVersionSparseFile(SyncCacheSerializer.MAX_CACHE_FILE_BYTES + 1L);
+    var rejectingOpener = new SyncCacheSerializer() {
+      @Override InputStream openInput(Path path) {
+        throw new AssertionError("Oversized format probe must not open cache contents");
+      }
+    };
+    assertEquals(-1, rejectingOpener.readFormatVersion(file));
+  }
+
+  @Test void exactSizeLimitStillAllowsTheFormatProbe() throws IOException {
+    Path file = currentVersionSparseFile(SyncCacheSerializer.MAX_CACHE_FILE_BYTES);
+    assertEquals(SyncCacheSerializer.CURRENT_FORMAT_VERSION, serializer.readFormatVersion(file));
+  }
+
+  @Test void aFileGrowingAfterTheSizeCheckCannotExtendTheReadWithoutBound() throws IOException {
+    Path file = currentVersionSparseFile(1);
+    var closed = new java.util.concurrent.atomic.AtomicBoolean();
+    var growing = new SyncCacheSerializer() {
+      @Override InputStream openInput(Path path) {
+        return new InputStream() {
+          private int read;
+          public int read() {
+            if (++read > 2) throw new AssertionError("Read beyond the measured size and one sentinel byte");
+            return 0;
+          }
+          public void close() { closed.set(true); }
+        };
+      }
+    };
+    assertNull(growing.read(file));
+    assertTrue(closed.get(), "A rejected growing cache must still close its stream");
+  }
+
+  private Path currentVersionSparseFile(long size) throws IOException {
+    Path file = tempDir.resolve("size-bound-sync.msgpack");
+    try (var channel = Files.newByteChannel(file, StandardOpenOption.CREATE_NEW,
+        StandardOpenOption.WRITE, StandardOpenOption.SPARSE)) {
+      channel.write(ByteBuffer.wrap(new byte[]{(byte) SyncCacheSerializer.CURRENT_FORMAT_VERSION}));
+      channel.position(size - 1);
+      channel.write(ByteBuffer.wrap(new byte[]{0}));
+    }
+    assertEquals(size, Files.size(file));
+    return file;
+  }
 
   @Test void validCrcDoesNotAuthorizeUnboundedApplicationCounts() throws Exception {
     for (boolean pairs : List.of(false, true)) {

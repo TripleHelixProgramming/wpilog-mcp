@@ -299,6 +299,28 @@ class DiskCacheTest {
   @DisplayName("Cleanup")
   class CleanupTests {
 
+    @Test void removesOversizedCurrentVersionSyncCacheAtStartup() throws IOException {
+      Path oversized = cacheDir.resolve("oversized-sync.msgpack");
+      try (var channel = Files.newByteChannel(oversized, java.nio.file.StandardOpenOption.CREATE_NEW,
+          java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.SPARSE)) {
+        channel.write(java.nio.ByteBuffer.wrap(new byte[]{
+            (byte) SyncCacheSerializer.CURRENT_FORMAT_VERSION}));
+        channel.position(SyncCacheSerializer.MAX_CACHE_FILE_BYTES);
+        channel.write(java.nio.ByteBuffer.wrap(new byte[]{0}));
+      }
+      Path valid = cacheDir.resolve("valid-sync.msgpack");
+      var serializer = new SyncCacheSerializer();
+      serializer.write(new SyncCacheSerializer.CachedSyncEntry(
+          new org.triplehelix.wpilogmcp.revlog.ParsedRevLog(null, null, Map.of(), Map.of(), 0, 0, 0),
+          org.triplehelix.wpilogmcp.sync.SyncResult.failed("No fixture signal pairs"), "a", "b", 0), valid);
+      assertTrue(Files.size(oversized) > SyncCacheSerializer.MAX_CACHE_FILE_BYTES);
+
+      cache.cleanup();
+
+      assertFalse(Files.exists(oversized), "Startup must delete an oversized current-format sync cache");
+      assertNotNull(serializer.read(valid), "The size cap must preserve a readable current-format cache");
+    }
+
     @Test
     @DisplayName("cleanup preserves valid cache files")
     void preservesValidFiles() throws IOException {

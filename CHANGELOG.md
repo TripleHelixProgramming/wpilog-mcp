@@ -100,6 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sync cache files above 64 MiB are refused before reading and removed at startup; previously a crafted large file could allocate its whole payload despite bounded record counts. Reads also stop at the measured size if a file grows; format version 12 is unchanged.
+
 - Stack exhaustion in a tool, result normalization or request dispatch now returns an explained error and leaves the server answering the next request; previously it could end a stdio session.
 
 - A type-only chassis-speed choice now states in `pose_corrections.odometry.basis` that it may be a setpoint. Previously the result named the type fallback without making that consequence explicit; selection itself is unchanged.

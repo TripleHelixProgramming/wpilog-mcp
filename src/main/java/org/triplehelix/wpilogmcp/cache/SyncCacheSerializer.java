@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.cache;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -62,6 +63,13 @@ public class SyncCacheSerializer {
   // Version 12 corrects the cached clock-drift explanation's ms/hour conversion.
   public static final int CURRENT_FORMAT_VERSION = 12;
 
+  /**
+   * Whole-payload decoding retains encoded bytes and decoded objects at the same time. A 64 MiB
+   * encoded ceiling bounds that optional cache input independently of the source log's size;
+   * larger entries are cache misses, rebuilt from the logs. This is not a bound on total heap.
+   */
+  public static final int MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024;
+
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(
       ParsedRevLog revlog,
@@ -96,8 +104,14 @@ public class SyncCacheSerializer {
 
   public CachedSyncEntry read(Path cacheFile) {
     try {
-      byte[] allBytes = Files.readAllBytes(cacheFile);
-      if (allBytes.length < 4) return null;
+      long size = checkedSize(cacheFile);
+      byte[] allBytes;
+      try (var in = openInput(cacheFile)) {
+        // Cache files are immutable after publication. One sentinel byte detects growth after
+        // the stat without allowing a concurrent writer to turn this into an unbounded read.
+        allBytes = in.readNBytes((int) size + 1);
+      }
+      if (allBytes.length != size || allBytes.length < 4) return null;
       var crc = new CRC32();
       crc.update(allBytes, 0, allBytes.length - 4);
       int storedCrc = ByteBuffer.wrap(allBytes, allBytes.length - 4, 4)
@@ -123,12 +137,28 @@ public class SyncCacheSerializer {
   }
 
   public int readFormatVersion(Path cacheFile) {
-    try (var in = new BufferedInputStream(Files.newInputStream(cacheFile));
-         var unpacker = MessagePack.newDefaultUnpacker(in)) {
-      return unpacker.unpackInt();
+    try {
+      checkedSize(cacheFile); // Startup sweeps discard oversized files before reading contents.
+      try (var in = new BufferedInputStream(openInput(cacheFile));
+           var unpacker = MessagePack.newDefaultUnpacker(in)) {
+        return unpacker.unpackInt();
+      }
     } catch (Exception e) {
       return -1;
     }
+  }
+
+  private long checkedSize(Path cacheFile) throws IOException {
+    long size = Files.size(cacheFile);
+    if (size > MAX_CACHE_FILE_BYTES) {
+      throw new IOException("Sync cache exceeds the " + MAX_CACHE_FILE_BYTES + " byte file limit");
+    }
+    return size;
+  }
+
+  // A boundary seam lets tests prove that refusal precedes any content read or allocation.
+  InputStream openInput(Path cacheFile) throws IOException {
+    return Files.newInputStream(cacheFile);
   }
 
   private void packRevLog(MessagePacker p, ParsedRevLog revlog) throws IOException {
