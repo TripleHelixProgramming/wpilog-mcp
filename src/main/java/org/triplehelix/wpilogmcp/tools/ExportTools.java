@@ -7,7 +7,6 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.BufferedWriter;
 import java.nio.file.Files;
@@ -82,11 +81,12 @@ public final class ExportTools {
 
     @Override
     public String description() {
-      return "Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return the "
+      return "Export an entry to UTF-8 CSV for external analysis (Python, Excel, MATLAB), or return the "
           + "rows inline. Every value is flattened into columns: a struct becomes one column per "
           + "numeric or text field (nested fields as dot paths, e.g. translation.x, arrays as "
           + "field[i]), a struct array or primitive array becomes one row per element with an "
-          + "index column. Files are written inside the server's export directory "
+          + "index column. A complete file replaces the destination only after writing succeeds; "
+          + "a failed write removes its temporary file. Files are written inside the server's export directory "
           + "(export_directory in every file result): pass a bare or relative output_path, which is "
           + "resolved inside it, or omit it for a generated name; an absolute path must lie inside "
           + "it. The result gives the absolute path written. With inline=true no file is written "
@@ -193,22 +193,34 @@ public final class ExportTools {
       }
 
       int rowCount = 0;
-      try (var writer = new BufferedWriter(openWriter(outputFilePath))) {
-        writer.write(String.join(",", columns));
-        writer.newLine();
-        for (var row : rows) {
-          var sb = new StringBuilder();
-          sb.append(row.timestamp());
-          if (indexed) sb.append(',').append(row.index());
-          for (var c : columnSet) {
-            var v = row.fields().get(c);
-            sb.append(',');
-            if (v != null) sb.append(csvEscape(String.valueOf(v)));
+      try {
+        // The validated parent owns the temporary file, so both moves stay on its filesystem.
+        var temporary = Files.createTempFile(outputFilePath.getParent(), ".wpilog-export-", ".tmp");
+        try {
+          try (var writer = new BufferedWriter(openWriter(temporary))) {
+            writer.write(String.join(",", columns));
+            writer.newLine();
+            for (var row : rows) {
+              var sb = new StringBuilder();
+              sb.append(row.timestamp());
+              if (indexed) sb.append(',').append(row.index());
+              for (var c : columnSet) {
+                var v = row.fields().get(c);
+                sb.append(',');
+                if (v != null) sb.append(csvEscape(String.valueOf(v)));
+              }
+              writer.write(sb.toString());
+              writer.newLine();
+              rowCount++;
+            }
           }
-          writer.write(sb.toString());
-          writer.newLine();
-          rowCount++;
-        }
+          try {
+            Files.move(temporary, outputFilePath, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+          } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(temporary, outputFilePath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+          }
+        } finally { Files.deleteIfExists(temporary); }
       } catch (IOException e) {
         return errorResult("Could not write CSV export: " + e.getMessage());
       }

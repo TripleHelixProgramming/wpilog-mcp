@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `export_csv` publishes a complete UTF-8 file from a temporary file in the validated directory, removing the temporary file on failure. Previously a failed write could leave a partial target, and the UTF-8 encoding was not stated.
 - AdvantageKit replay full-cycle timing resolve by the published exact path `/ReplayOutputs/LoggedRobot/FullCycleMS` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
 - AdvantageKit replay user-code timing resolve by the published exact path `/ReplayOutputs/LoggedRobot/UserCodeMS` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.
 - AdvantageKit replay measured chassis speeds resolve by the published exact path `/ReplayOutputs/SwerveChassisSpeeds/Measured` again. These logs resolved before dev2, which narrowed the conventions and left this path only as a candidate.

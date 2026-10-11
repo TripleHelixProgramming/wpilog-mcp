@@ -29,11 +29,12 @@ class ExportToolsLogicTest extends ToolTestBase {
           .addNumericEntry("/x", new double[]{0, 1}, new double[]{1, 2}).build();
       putLogInCache(log);
       var tool = new ExportTools.ExportCsvTool() {
-        @Override java.io.Writer openWriter(Path ignored) {
-          return new java.io.Writer() {
-            public void write(char[] chars, int start, int length) throws java.io.IOException { throw new java.io.IOException("Synthetic disk full"); }
-            public void flush() throws java.io.IOException { throw new java.io.IOException("Synthetic disk full"); }
-            public void close() {}
+        @Override java.io.Writer openWriter(Path path) throws java.io.IOException {
+          return new java.io.FilterWriter(Files.newBufferedWriter(path)) {
+            @Override public void write(char[] chars, int start, int length) throws java.io.IOException {
+              out.write(chars, start, Math.min(10, length)); out.flush();
+              throw new java.io.IOException("Synthetic disk full after a partial write");
+            }
           };
         }
       };
@@ -42,6 +43,10 @@ class ExportToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args).getAsJsonObject();
       assertEquals("error", result.get("status").getAsString(), result.toString());
       assertTrue(result.get("error").getAsString().contains("disk full"), result.toString());
+      assertFalse(Files.exists(directory.resolve("failed.csv")), "A failed write must not publish a partial CSV");
+      try (var files = Files.list(directory)) {
+        assertEquals(java.util.List.of(), files.toList(), "Failed exports must remove their temporary file");
+      }
     } finally { ExportTools.setExportDirectory(previous.toString()); }
   }
 

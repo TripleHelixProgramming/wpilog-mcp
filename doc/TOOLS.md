@@ -2360,6 +2360,10 @@ Quote values as "per the bundled game data (manual_version ...)" and check the c
 ### `export_csv`
 Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return its rows inline. Use it when no tool can compute what you need: export, compute, and cite the export. Returns `no_match`, and writes nothing, when the window holds no samples.
 
+Files use UTF-8. A complete temporary file in the validated export directory replaces the target
+only after writing succeeds; failures remove the temporary file and leave any previous target
+untouched. The replacement is atomic when the filesystem supports atomic moves.
+
 **Parameters:**
 - `path` (required): Path to the log file
 - `name` (required): Entry to export
