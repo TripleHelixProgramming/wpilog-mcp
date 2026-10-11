@@ -5,7 +5,7 @@ the server in the shop and the pit. The [standalone guide](STANDALONE.md) is the
 every setting, flag and route, and the [tool reference](TOOLS.md) describes every tool's
 parameters and results. This manual says which to use, in what order, and what you should see.
 
-The shared-server and pit instructions describe 0.10.0-dev1 or newer. The latest full release
+The shared-server and pit instructions describe 0.10.0-dev3 or newer. The latest full release
 can be older than this branch. Check the version before following them; if it is not published
 yet, install the checkout as described in [6.1](#61-install).
 
@@ -319,7 +319,7 @@ export PATH="$HOME/.wpilog-mcp/bin:$PATH"
 wpilog-mcp -version
 ```
 
-Use your own JDK path if it differs. Continue only when the printed version is 0.10.0-dev1 or
+Use your own JDK path if it differs. Continue only when the printed version is 0.10.0-dev3 or
 newer; a completed download alone does not show that the installed launcher works.
 
 #### 6.2 Start, stop, status

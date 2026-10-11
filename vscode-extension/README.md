@@ -35,7 +35,7 @@ Find **WPILog Analyzer** in VS Code's Extensions view, or on the [Marketplace](h
 
 The [standalone installer](../doc/STANDALONE.md#trying-a-pre-release) can install both the server and the matching extension from one release. WPILib VS Code and system VS Code keep separate extension directories; install into the editor you use.
 
-For the prepared development build, use `--tag v0.10.0-dev1 --with-extension` after that tag is
+For the prepared development build, use `--tag v0.10.0-dev3 --with-extension` after that tag is
 published on Releases; until this version is released, use the installer from the `development`
 branch as the [pre-release instructions](../doc/STANDALONE.md#trying-a-pre-release) show.
 `--pre-release --with-extension` selects the newest published build instead.

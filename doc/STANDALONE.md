@@ -8,7 +8,7 @@ steps to use the tools and run the shared server, see the [operations and usage 
 
 The server is designed for and tested with Claude. Other MCP clients work too, but the depth and quality of the analysis depend on the model.
 
-The shared-server features described on this branch require 0.10.0-dev1 or newer.
+The shared-server features described on this branch require 0.10.0-dev3 or newer.
 The latest full release can be older. Until this version and its installer are published,
 install the `development` checkout below and check `wpilog-mcp -version` before continuing.
 
@@ -85,7 +85,7 @@ For these changes before release, use the installers from `development`: those o
 predate `--tag` until this version is released, when both installer URLs below return to `main`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/development/install.sh | sh -s -- --tag v0.10.0-dev1 --with-extension
+curl -fsSL https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/development/install.sh | sh -s -- --tag v0.10.0-dev3 --with-extension
 ```
 
 In PowerShell, download the script to a temporary file, then run it with the same flags:
@@ -94,7 +94,7 @@ In PowerShell, download the script to a temporary file, then run it with the sam
 $installer = Join-Path $env:TEMP 'wpilog-install.ps1'
 try {
     Invoke-WebRequest https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/development/install.ps1 -OutFile $installer
-    & $installer --tag v0.10.0-dev1 --with-extension
+    & $installer --tag v0.10.0-dev3 --with-extension
 } finally { Remove-Item $installer -ErrorAction SilentlyContinue }
 ```
 

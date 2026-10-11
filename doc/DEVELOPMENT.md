@@ -375,9 +375,9 @@ Before tagging a full release, remove the temporary version and checkout qualifi
 `README.md` (Installation), `vscode-extension/README.md` (the `--tag` paragraph under Install),
 `doc/OPERATIONS.md` (opening note and 6.1 Install), and `doc/STANDALONE.md` (opening note and
 Install). Search those four files case-insensitively for
-"0.10.0-dev1", "Until this version" and "For these changes before release". The qualifications
+"0.10.0-dev3", "Until this version" and "For these changes before release". The qualifications
 apply only while `main` is older than this branch; keep the general checkout instructions and
-JDK advice. The `--tag v0.10.0-dev1 --with-extension` examples in `README.md` (Installation) and
+JDK advice. The `--tag v0.10.0-dev3 --with-extension` examples in `README.md` (Installation) and
 `doc/STANDALONE.md` (Install) also match the version search and stay: they show how to install a
 published pre-release, not a temporary qualification. The two installer URLs in
 `doc/STANDALONE.md` (Trying a pre-release) return from `development` to `main` at the release.
