@@ -1392,7 +1392,7 @@ Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are exc
 
 **Returns:**
 - `scope`: the time scope analyzed (`scope` parameter; default `enabled` when the log records enabled state, else `all`), so idle and boot time do not dilute averages or peaks
-- `voltage_analysis`: `{entry, samples, min_voltage, min_voltage_time_sec, max_voltage, avg_voltage, samples_below_threshold, threshold_crossings, seconds_below_threshold, brownout_threshold, brownout_threshold_basis, brownout_threshold_entry (when logged), brownout_risk, brownout_risk_basis}` over the scope, finite samples only. A crossing starts below the threshold and ends when the voltage recovers 0.2 V above it. `brownout_risk` follows the rule above. Absent when no battery voltage entry is found or none of its samples fall in scope (`skipped` says why)
+- `voltage_analysis`: `{entry, samples, min_voltage, min_voltage_time_sec, max_voltage, avg_voltage, samples_below_threshold, threshold_crossings, seconds_below_threshold, brownout_threshold, brownout_threshold_basis, brownout_threshold_entry (when logged), brownout_risk, brownout_risk_basis}` over the scope, finite samples only. A crossing starts below the threshold and ends when the voltage recovers 0.2 V above it. An unrecovered interval ends at its scope window boundary; whole-log scope uses the log's last timestamp, not the last voltage sample. `crossing_details` gives the first ten intervals with `start_time`, `end_time`, `duration`, `min_voltage`, and `open_at_log_end: true` for every such boundary (including an enabled-window end); `limits.crossing_details` gives the total. `brownout_risk` follows the rule above. Absent when no battery voltage entry is found or none of its samples fall in scope (`skipped` says why)
 - `rio_brownouts`: `{flag_entry, count, total_sec, events: [{start, end, duration_sec, open_at_log_end?}]}` in scope, when the brownout flag is logged
 - `current_entries_analyzed`: number of current entries/channels found (always present; 0 when none)
 - `channel_analysis`: present when at least one current entry exists, cut at `channel_limit` with `limits.channel_analysis` (total vs returned); sorted by `|peak_current_A|` descending, over the scope: `{entry, peak_current_A, peak_current_time_sec, max_current_A, min_current_A, avg_current_A, sample_count}`. `peak_current_A` is the sample with the largest magnitude, signed (a −150 A stall on a direction-signed torque current is reported as −150); `max_current_A`/`min_current_A` are the signed extremes. Entries expanded from an array (`double[]`, `float[]`, `int64[]`) add `source_entry` and `channel` (the index) and are named `<entry>[<index>]`; ragged arrays yield per-channel sample counts. Non-finite samples are ignored.
@@ -2203,7 +2203,7 @@ Battery and power-delivery evidence, with a heuristic health score and risk leve
 **Evidence returned:**
 - `voltage_stats`: `min_volts` (with `min_time_sec`), `max_volts`, `avg_volts`, `voltage_sag` (nominal − min), `samples`, all over the scope. The voltage entry is chosen as `power_analysis` chooses it (`inputs.entries.voltage`)
 - `brownout_threshold`, `brownout_threshold_basis`, `brownout_events`, and `brownout_basis`: when the roboRIO's brownout flag is logged, brownouts are its true intervals (`rio_brownouts`, with start and duration), the times outputs were actually disabled. Otherwise they are crossings below the threshold, and the basis says the roboRIO state cannot be determined
-- `threshold_crossings` and `brownout_details`: voltage crossings below the threshold (0.2 V exit hysteresis), whether or not the roboRIO browned out. `brownout_details` lists the first 10, with `limits.brownout_details`
+- `threshold_crossings` and `brownout_details`: voltage crossings below the threshold (0.2 V exit hysteresis), whether or not the roboRIO browned out. `brownout_details` lists the first 10, with `limits.brownout_details`. Unrecovered intervals extend to their scope window end and carry `open_at_log_end: true` (`open_at_end` remains an alias), even when the window ends before the log does
 - `warning_events`: dips below `warning_threshold`
 - `load_line` (when a `TotalCurrent` entry exists, or `total_current_entry` names one, and the scope has at least 30 samples spanning 10 A): battery voltage regressed on total current. Fields: `current_entry`, `resistance_ohm` (effective source resistance: battery internal resistance plus wiring and connectors), `open_circuit_voltage`, `r_squared`, `samples`, `current_range_a`. Otherwise listed in `skipped`
 - `recovery_analysis`: `avg_recovery_sec`, `max_recovery_sec`, and `sample_count` for the time to recover 90% of drops larger than 0.5 V
@@ -2403,6 +2403,9 @@ Generate a one-call summary of a log. Each section uses the same entry choice an
 - `data_quality` and `server_analysis_directives`: of the battery voltage entry, when there is one
 
 Sections that cannot be produced are listed in `skipped` (status `partial`); an empty log is `no_match`.
+
+The battery summary shares `power_analysis`'s `crossing_details`, limits and boundary rule: an
+unrecovered interval is held to the window end and marked `open_at_log_end`.
 
 **Parameters:**
 - `path` (required): Path to the log file

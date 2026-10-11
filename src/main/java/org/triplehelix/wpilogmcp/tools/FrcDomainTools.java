@@ -2666,7 +2666,9 @@ public final class FrcDomainTools {
           + "level (MINIMAL/LOW/MODERATE/HIGH/CRITICAL). Facts first: voltage statistics over the "
           + "scope (default: enabled time when the log records it); brownouts from the roboRIO's "
           + "logged flag (e.g. /SystemStats/BrownedOut, with start and duration) or, when no flag "
-          + "is logged, threshold crossings (basis stated); the brownout threshold from the log's "
+          + "is logged, threshold crossings (basis stated); open crossings extend to each scope "
+          + "window end, marked open_at_log_end (open_at_end is its older alias), not merely "
+          + "the last voltage sample; the brownout threshold from the log's "
           + "BrownoutVoltage entry when logged, else 6.8 V (roboRIO 1, stated); dips below "
           + "warning_threshold; and, when a total-current entry exists, the load line: battery "
           + "voltage regressed on total current, giving the effective source resistance (battery "
@@ -2761,15 +2763,13 @@ public final class FrcDomainTools {
           null).stream().filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
       // Crossings and recoveries are found within each window of the scope, never across the
       // time between two (a dip at the end of one enabled segment does not last until the next)
-      var crossings = new ArrayList<JsonObject>();
-      var dips = new ArrayList<JsonObject>();
+      var crossings = voltageEvents(log.values().get(voltageEntry.get()), scope, threshold.volts());
+      var dips = voltageEvents(log.values().get(voltageEntry.get()), scope, warningThreshold);
       var recoveryTimes = new ArrayList<Double>();
       for (var window : voltageWindows) {
         var finite = window.stream()
             .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
             .toList();
-        crossings.addAll(detectVoltageEvents(finite, threshold.volts()));
-        dips.addAll(detectVoltageEvents(finite, warningThreshold));
         recoveryTimes.addAll(voltageRecoveryTimes(finite));
       }
       int brownoutCount = flag.isPresent() ? rioBrownouts.size() : crossings.size();
@@ -2941,49 +2941,13 @@ public final class FrcDomainTools {
       return o;
     }
 
-    private java.util.List<JsonObject> detectVoltageEvents(
-        java.util.List<TimestampedValue> voltageValues,
-        double threshold) {
-      var events = new ArrayList<JsonObject>();
-      boolean inEvent = false;
-      double eventStartTime = 0;
-      double eventMinVoltage = Double.MAX_VALUE;
-
-      for (var tv : voltageValues) {
-        var voltage = toDouble(tv.value());
-        if (voltage == null) continue;
-
-        // Hysteresis: enter below threshold, exit only above threshold + 0.2V
-        double hysteresis = 0.2;
-        if (voltage < threshold && !inEvent) {
-          inEvent = true;
-          eventStartTime = tv.timestamp();
-          eventMinVoltage = voltage;
-        } else if (voltage < threshold && inEvent) {
-          eventMinVoltage = Math.min(eventMinVoltage, voltage);
-        } else if (voltage >= threshold + hysteresis && inEvent) {
-          var event = new JsonObject();
-          event.addProperty("start_time", eventStartTime);
-          event.addProperty("end_time", tv.timestamp());
-          event.addProperty("duration", tv.timestamp() - eventStartTime);
-          event.addProperty("min_voltage", eventMinVoltage);
-          events.add(event);
-          inEvent = false;
-        }
-      }
-
-      // Emit open-ended event if voltage was still below threshold at end of the data
-      if (inEvent && !voltageValues.isEmpty()) {
-        double lastTime = voltageValues.get(voltageValues.size() - 1).timestamp();
-        var event = new JsonObject();
-        event.addProperty("start_time", eventStartTime);
-        event.addProperty("end_time", lastTime);
-        event.addProperty("duration", lastTime - eventStartTime);
-        event.addProperty("min_voltage", eventMinVoltage);
-        event.addProperty("open_at_end", true);
-        events.add(event);
-      }
-      return events;
+    private List<JsonObject> voltageEvents(List<TimestampedValue> values, TimeScope scope, double threshold) {
+      return PowerFacts.voltage(values, scope, threshold).map(facts -> facts.crossings().stream().map(c -> {
+        var event = c.toJson();
+        // Retain the older battery-health field as an alias for existing callers.
+        event.addProperty("open_at_end", c.openAtEnd());
+        return event;
+      }).toList()).orElse(List.of());
     }
 
     /** How long the voltage takes to recover 90% of a drop of more than 0.5 V (up to 2 s). */

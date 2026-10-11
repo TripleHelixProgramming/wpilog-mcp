@@ -147,16 +147,24 @@ final class PowerFacts {
   static final double HYSTERESIS = 0.2;
 
   /** An interval the battery voltage spent below the threshold (with hysteresis). */
-  record Crossing(double start, double end, double minVolts) {
+  record Crossing(double start, double end, double minVolts, boolean openAtEnd) {
     double duration() {
       return end - start;
+    }
+
+    JsonObject toJson() {
+      var out = new JsonObject();
+      out.addProperty("start_time", start); out.addProperty("end_time", end);
+      out.addProperty("duration", duration()); out.addProperty("min_voltage", minVolts);
+      out.addProperty("open_at_log_end", openAtEnd);
+      return out;
     }
   }
 
   /**
    * Battery voltage over a scope: sample count, minimum (and when), maximum, mean, samples below
    * the threshold, and crossings below it (each ending when the voltage recovers above the
-   * threshold plus {@value #HYSTERESIS} V, or at the scope's last sample).
+   * threshold plus {@value #HYSTERESIS} V, or at that scope window's end).
    */
   record VoltageFacts(int samples, double min, double minTime, double max, double mean,
       long samplesBelow, List<Crossing> crossings) {
@@ -174,6 +182,9 @@ final class PowerFacts {
       o.addProperty("samples_below_threshold", samplesBelow);
       o.addProperty("threshold_crossings", crossings.size());
       o.addProperty("seconds_below_threshold", secondsBelow());
+      var details = new JsonArray();
+      crossings.stream().limit(10).forEach(crossing -> details.add(crossing.toJson()));
+      ResultContract.addLimitedList(o, "crossing_details", details, crossings.size(), 10);
     }
   }
 
@@ -209,13 +220,13 @@ final class PowerFacts {
         } else if (openedAt != null) {
           openMin = Math.min(openMin, v);
           if (v >= threshold + HYSTERESIS) {
-            crossings.add(new Crossing(openedAt, t, openMin));
+            crossings.add(new Crossing(openedAt, t, openMin, false));
             openedAt = null;
           }
         }
       }
       // A held low voltage ends at this scope boundary, never at a later window's recovery.
-      if (openedAt != null) crossings.add(new Crossing(openedAt, scope.windows().get(window).end(), openMin));
+      if (openedAt != null) crossings.add(new Crossing(openedAt, scope.windows().get(window).end(), openMin, true));
     }
     if (n == 0) return Optional.empty();
     return Optional.of(new VoltageFacts(n, min, minTime, max, sum / n, below, crossings));

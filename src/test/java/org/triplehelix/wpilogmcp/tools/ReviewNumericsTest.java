@@ -37,14 +37,33 @@ class ReviewNumericsTest extends ToolTestBase {
     assertEquals(2, scope.filter(log.values().get("/x")).size());
   }
 
-  @Test void lowVoltageIntervalsStopAtEachWindowEnd() {
+  @Test void lowVoltageIntervalsStopAtEachWindowEnd() throws Exception {
     var log = new MockLogBuilder()
         .addBooleanEntry("DS:enabled", new double[]{0, 2, 10, 12}, new boolean[]{true, false, true, false})
-        .addNumericEntry("/x", new double[]{0, 1, 2, 10, 11}, new double[]{12, 6, 12, 6, 12}).build();
-    var facts = PowerFacts.voltage(log.values().get("/x"),
+        .addNumericEntry("/SystemStats/BatteryVoltage", new double[]{0, 1, 2, 10, 11}, new double[]{12, 6, 12, 6, 12}).build();
+    var facts = PowerFacts.voltage(log.values().get("/SystemStats/BatteryVoltage"),
         TimeScope.resolve(log, null, "enabled", null, null), 6.8).orElseThrow();
     assertEquals(2, facts.crossings().size());
     assertEquals(2, facts.secondsBelow(), "(2-1) + (11-10), never the disabled gap");
+    assertEquals(2, facts.crossings().get(0).end());
+    var json = new JsonObject(); facts.addTo(json);
+    assertTrue(json.has("crossing_details"), "Each held interval must state its boundary basis");
+    var first = json.getAsJsonArray("crossing_details").get(0).getAsJsonObject();
+    assertEquals(2, first.get("end_time").getAsDouble());
+    assertTrue(first.get("open_at_log_end").getAsBoolean(), "This is a window end, not the log end");
+    assertFalse(json.getAsJsonArray("crossing_details").get(1).getAsJsonObject().get("open_at_log_end").getAsBoolean());
+    var args = new JsonObject(); args.addProperty("scope", "enabled");
+    var health = new FrcDomainTools.PredictBatteryHealthTool().executeWithLog(log, args).getAsJsonObject();
+    var detail = health.getAsJsonArray("brownout_details").get(0).getAsJsonObject();
+    assertEquals(2, detail.get("end_time").getAsDouble());
+    assertTrue(detail.get("open_at_log_end").getAsBoolean());
+
+    var wholeLog = new MockLogBuilder()
+        .addNumericEntry("/voltage", new double[]{0, 1}, new double[]{12, 6})
+        .addNumericEntry("/other", new double[]{0, 12}, new double[]{0, 1}).build();
+    var held = PowerFacts.voltage(wholeLog.values().get("/voltage"),
+        TimeScope.resolve(wholeLog, null, "all", null, null), 6.8).orElseThrow();
+    assertEquals(12, held.crossings().get(0).end(), "Whole-log end, not the last voltage at 1 s");
   }
 
   @Test void singletonWindowsCannotInflateAutocorrelationBeyondOne() {
