@@ -6,6 +6,7 @@ $installDir = Join-Path $env:USERPROFILE ".wpilog-mcp"
 $tag = $null
 $preRelease = $false
 $extension = $null
+$vscode = $null
 $interactive = -not [Console]::IsInputRedirected
 $hasLogdir = $false
 $hasTeam = $false
@@ -14,7 +15,7 @@ $installArgs = @()
 for ($i = 0; $i -lt $args.Count; $i++) {
     $flag = $args[$i]
     switch ($flag) {
-        { $_ -in '--tag', '--install-dir', '--logdir', '--team' } {
+        { $_ -in '--tag', '--install-dir', '--logdir', '--team', '--vscode' } {
             $i++
             if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace($args[$i])) { throw "Missing value for $flag" }
             $value = $args[$i]
@@ -23,6 +24,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
                 '--install-dir' { $installDir = $value; $advanced = $true }
                 '--logdir' { $installArgs += @($flag, $value); $hasLogdir = $true; $advanced = $true }
                 '--team' { $installArgs += @($flag, $value); $hasTeam = $true; $advanced = $true }
+                '--vscode' { $vscode = $value }
             }
         }
         '--pre-release' { $preRelease = $true }
@@ -36,6 +38,13 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 }
 if ($tag -and $preRelease) { throw 'Choose --tag or --pre-release, not both.' }
 if ($tag -and $tag -notmatch '^[0-9A-Za-z.-]+$') { throw "Invalid release tag: $tag" }
+# --vscode names the editor for the extension: a WPILib season, or system for any other VS Code.
+if ($vscode) {
+    if ($vscode -cnotmatch '^(system|[0-9]{4})$') { throw "--vscode takes a WPILib season such as 2026, or system: $vscode" }
+    if ($extension -eq $false) { throw 'Choose --vscode or --without-extension, not both.' }
+    $extension = $true
+    $advanced = $true
+}
 if ($interactive) {
     if ((Test-Path (Join-Path $installDir 'servers.yaml')) -or (Test-Path (Join-Path $installDir 'servers.json'))) {
         Write-Host 'Keeping your existing server settings, including during --refresh.'
@@ -55,11 +64,6 @@ if ($interactive) {
             $answer = Read-Host 'Team number (Enter to leave unset)'
             if (-not [string]::IsNullOrWhiteSpace($answer)) { $installArgs += @('--team', $answer) }
         }
-    }
-    if ($null -eq $extension) {
-        $answer = Read-Host 'Install the matching VS Code extension? [Y/n]'
-        $extension = $answer -notmatch '^(n|no)$'
-        if ($extension) { $advanced = $true }
     }
 }
 
@@ -133,10 +137,59 @@ try {
     $temporaryJar = Join-Path $scratch 'server.jar'
     $errorFile = Join-Path $scratch 'stderr.txt'
     Invoke-WebRequest -Uri $jarAsset.browser_download_url -OutFile $temporaryJar -UseBasicParsing
+
+    # The extension is offered only for a WPILib VS Code that the release's JAR finds and the
+    # extension accepts. The JAR lists them newest first as a season, a tab and a version; its
+    # other lines are notes for the person. Any other VS Code is opt-in with --vscode system, and a
+    # JAR that cannot list editors offers nothing.
+    if ($interactive -and $null -eq $extension) {
+        $extension = $false
+        if ($vsixAsset) {
+            $ErrorActionPreference = 'Continue'
+            $listing = @(& $javaExe -jar $temporaryJar install --list-vscode 2>$null)
+            $listStatus = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($listStatus -eq 0) {
+                $offered = @($listing | Where-Object { $_ -match '^[0-9]{4}\t\S+$' })
+                $listing | Where-Object { $_ -and $_ -notmatch '^[0-9]{4}\t' } | ForEach-Object { Write-Host $_ }
+                $chosen = $null
+                if ($offered.Count -eq 1) {
+                    $parts = $offered[0] -split "`t"
+                    $answer = Read-Host "Install the matching extension into WPILib VS Code $($parts[0]) (version $($parts[1]))? [Y/n]"
+                    if ($answer -notmatch '^(n|no)$') { $chosen = $offered[0] }
+                } elseif ($offered.Count -gt 1) {
+                    Write-Host 'Install the matching VS Code extension into:'
+                    for ($n = 0; $n -lt $offered.Count; $n++) {
+                        $parts = $offered[$n] -split "`t"
+                        Write-Host "  $($n + 1)) WPILib VS Code $($parts[0]) (version $($parts[1]))"
+                    }
+                    Write-Host '  n) none'
+                    while ($true) {
+                        $answer = Read-Host 'Choice [1]'
+                        if ([string]::IsNullOrWhiteSpace($answer)) { $answer = '1' }
+                        if ($answer -match '^(n|no)$') { break }
+                        $number = 0
+                        if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $offered.Count) {
+                            $chosen = $offered[$number - 1]
+                            break
+                        }
+                        Write-Host "Choose a number from 1 to $($offered.Count), or n for none."
+                    }
+                }
+                if ($chosen) {
+                    $extension = $true
+                    $advanced = $true
+                    $vscode = ($chosen -split "`t")[0]
+                }
+            }
+        }
+    }
+
     if ($extension) {
         $temporaryVsix = Join-Path $scratch 'extension.vsix'
         Invoke-WebRequest -Uri $vsixAsset.browser_download_url -OutFile $temporaryVsix -UseBasicParsing
         $installArgs += @('--with-extension', '--vsix', $temporaryVsix)
+        if ($vscode) { $installArgs += @('--vscode', $vscode) }
     }
     # Capture stderr separately: JVM banners and code's output must not hide the exit status.
     $ErrorActionPreference = 'Continue'

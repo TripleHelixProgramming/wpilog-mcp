@@ -33,7 +33,7 @@ Most users need no configuration changes. Keep the robot project open: the assis
 
 Find **WPILog Analyzer** in VS Code's Extensions view, or on the [Marketplace](https://marketplace.visualstudio.com/items?itemName=TripleHelixProgramming.wpilog-analyzer). For a test build, download its `.vsix` from [Releases](https://github.com/TripleHelixProgramming/wpilog-mcp/releases) and choose **Install from VSIX…** in the Extensions view, then reload the window.
 
-The [standalone installer](../doc/STANDALONE.md#trying-a-pre-release) can install both the server and the matching extension from one release. WPILib VS Code and system VS Code keep separate extension directories; install into the editor you use.
+The [standalone installer](../doc/STANDALONE.md#trying-a-pre-release) can install both the server and the matching extension from one release. It installs into WPILib's VS Code, asking which season when it finds several. WPILib VS Code and a VS Code installed apart from it keep separate extensions; to install into the other one, add `--vscode system` ([details](../doc/STANDALONE.md#the-matching-extension)).
 
 For the prepared development build, use `--tag v0.10.0-dev3 --with-extension` after that tag is
 published on Releases; until this version is released, use the installer from the `development`

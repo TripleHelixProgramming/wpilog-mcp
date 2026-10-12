@@ -8,6 +8,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.math.BigInteger;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +24,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.regex.Pattern;
 import org.triplehelix.wpilogmcp.Version;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
@@ -42,10 +44,14 @@ public final class InstallCommand {
   private InstallCommand() {
   }
 
+  /**
+   * @param vscode the editor {@code --vscode} names for the extension; the newest WPILib season by default
+   * @param listVscode print the WPILib editors an installer may offer and install nothing
+   */
   public record Options(Path directory, List<String> logdirs, Integer team, boolean force, boolean json,
-      boolean withExtension, Path vsix, boolean refresh) {
+      boolean withExtension, Path vsix, boolean refresh, CodeInstaller.Choice vscode, boolean listVscode) {
     public Options(Path directory, List<String> logdirs, Integer team, boolean force, boolean json) {
-      this(directory, logdirs, team, force, json, false, null, false);
+      this(directory, logdirs, team, force, json, false, null, false, new CodeInstaller.Choice.Newest(), false);
     }
   }
 
@@ -142,14 +148,17 @@ public final class InstallCommand {
     boolean json = false;
     boolean withExtension = false;
     boolean refresh = false;
+    boolean listVscode = false;
     Path vsix = null;
+    CodeInstaller.Choice vscode = null;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
         case "--force" -> force = true;
         case "--json" -> json = true;
         case "--with-extension" -> withExtension = true;
         case "--refresh" -> refresh = true;
-        case "--install-dir", "--logdir", "--team", "--vsix" -> {
+        case "--list-vscode" -> listVscode = true;
+        case "--install-dir", "--logdir", "--team", "--vsix", "--vscode" -> {
           var flag = args[i];
           if (++i == args.length || args[i].isBlank() || args[i].startsWith("--")) {
             throw new IllegalArgumentException("Missing value for " + flag);
@@ -158,6 +167,7 @@ public final class InstallCommand {
             case "--install-dir" -> directory = Path.of(args[i]);
             case "--logdir" -> logdirs.add(args[i]);
             case "--vsix" -> vsix = Path.of(args[i]);
+            case "--vscode" -> vscode = CodeInstaller.Choice.parse(args[i]);
             default -> {
               try {
                 team = Integer.valueOf(args[i]);
@@ -179,7 +189,28 @@ public final class InstallCommand {
     if (!withExtension && vsix != null) {
       throw new IllegalArgumentException("--vsix requires --with-extension");
     }
-    return new Options(directory, List.copyOf(logdirs), team, force, json, withExtension, vsix, refresh);
+    if (!withExtension && vscode != null) {
+      throw new IllegalArgumentException("--vscode requires --with-extension");
+    }
+    if (listVscode && args.length > 2) {
+      throw new IllegalArgumentException("--list-vscode takes no other options");
+    }
+    return new Options(directory, List.copyOf(logdirs), team, force, json, withExtension, vsix, refresh,
+        Objects.requireNonNullElseGet(vscode, CodeInstaller.Choice.Newest::new), listVscode);
+  }
+
+  /**
+   * {@code install --list-vscode}: the WPILib editors an installer may offer the extension to,
+   * newest first, each on one line as the season, a tab, and the editor's version or "unknown".
+   * Every other line is a note for the person, naming an editor the extension does not accept.
+   * Notes share standard output because Windows PowerShell rewrites a redirected native error
+   * stream. The release scripts ask about the extension only when this lists an editor.
+   */
+  public static void listVscode(PrintStream out) {
+    var listing = CodeInstaller.list(CodeInstaller.Places.current(), Version.VSCODE_ENGINE);
+    listing.notes().forEach(out::println);
+    listing.offered().forEach(editor ->
+        out.println(editor.season() + "\t" + Objects.requireNonNullElse(editor.version(), "unknown")));
   }
 
   public static Summary install(Options options) throws IOException {
@@ -195,10 +226,26 @@ public final class InstallCommand {
     }
   }
 
-  /** The file lock makes the no-downgrade decision hold across simultaneous VS Code windows. */
   static Summary install(Path source, String version, Options options, boolean windows, String searchPath)
       throws IOException {
+    return install(source, version, options, windows, searchPath, CodeInstaller.Places.current(), Version.VSCODE_ENGINE);
+  }
+
+  /**
+   * The file lock makes the no-downgrade decision hold across simultaneous VS Code windows. The
+   * editor for the extension is chosen before anything is written: an install asked for the
+   * extension either gets it or changes nothing.
+   */
+  static Summary install(Path source, String version, Options options, boolean windows, String searchPath,
+      CodeInstaller.Places places, String engine) throws IOException {
     requireVersion(version);
+    CodeInstaller.Editor editor = null;
+    if (options.withExtension()) {
+      if (options.vsix() == null || !Files.isRegularFile(options.vsix())) {
+        throw new IOException("VSIX file does not exist: " + options.vsix());
+      }
+      editor = CodeInstaller.choose(places, options.vscode(), engine);
+    }
     var root = options.directory().toAbsolutePath().normalize();
     boolean newRoot = !Files.exists(root);
     Files.createDirectories(root, programAttributes(root, true));
@@ -206,16 +253,13 @@ public final class InstallCommand {
     var layout = Layout.at(root, version, windows);
     var io = new InstallFiles(root);
     io.preflight(layout);
-    if (options.withExtension() && (options.vsix() == null || !Files.isRegularFile(options.vsix()))) {
-      throw new IOException("VSIX file does not exist: " + options.vsix());
-    }
     var refresh = options.refresh() ? InstallRefresh.prepare(root, source, version, options.force(), windows) : null;
     Path backup = refresh == null ? null : refresh.backup();
     Summary summary;
     try (var guard = InstallGuard.acquire(root, io.check(layout.lock()))) {
       summary = writeLayout(source, version, options, windows, searchPath, layout, io);
-      if (options.withExtension()) {
-        CodeInstaller.install(options.vsix());
+      if (editor != null) {
+        CodeInstaller.install(editor, options.vsix(), places.windows());
       }
     } catch (IOException e) {
       if (backup != null) {

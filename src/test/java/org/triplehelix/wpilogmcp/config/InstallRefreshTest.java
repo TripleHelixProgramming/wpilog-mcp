@@ -25,7 +25,8 @@ class InstallRefreshTest {
   private static final boolean WINDOWS = System.getProperty("os.name").startsWith("Windows");
 
   private InstallCommand.Options options(Path root, boolean force) {
-    return new InstallCommand.Options(root, List.of("ignored-new-default"), 9999, force, true, false, null, true);
+    return new InstallCommand.Options(root, List.of("ignored-new-default"), 9999, force, true, false, null, true,
+        new CodeInstaller.Choice.Newest(), false);
   }
 
   @ParameterizedTest

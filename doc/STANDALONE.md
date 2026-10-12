@@ -43,7 +43,7 @@ The launcher uses the newest WPILib JDK it finds, then `JAVA_HOME`, then `java` 
 
 ## Install
 
-Run the installer for your system to get the latest full release. The installer shipped with these changes prompts in a terminal for log directories, a team number, and whether to install the matching VS Code extension. Existing server settings are kept, without asking you to enter them again. A run without a terminal does not prompt and takes the defaults; `--interactive` asks anyway, and `--non-interactive` never asks. Older published installers offer fewer options.
+Run the installer for your system to get the latest full release. The installer shipped with these changes prompts in a terminal for log directories and a team number, then offers the matching VS Code extension for each WPILib VS Code it finds that accepts it (see [The matching extension](#the-matching-extension)). Existing server settings are kept, without asking you to enter them again. A run without a terminal does not prompt and takes the defaults; `--interactive` asks anyway, and `--non-interactive` never asks. Older published installers offer fewer options.
 
 macOS and Linux:
 ```bash
@@ -98,7 +98,24 @@ try {
 } finally { Remove-Item $installer -ErrorAction SilentlyContinue }
 ```
 
-`--with-extension` downloads the matching `.vsix` and passes `install --with-extension --vsix <file>` to the JAR. The JAR requires both flags and finds the current year's WPILib VS Code, then `code` on PATH. `--without-extension` skips the interactive offer. The extension never passes these flags: after bootstrap, it updates the server and the Marketplace updates the extension to the next full release.
+### The matching extension
+
+`--with-extension` downloads the matching `.vsix` and passes `install --with-extension --vsix <file>` to the JAR, which installs it into WPILib's VS Code. The JAR looks in every season's folder, `~/wpilib/<season>/vscode` (on Windows, `C:\Users\Public\wpilib\<season>\vscode` first, then the one in your user folder), including the app bundle there on a Mac, so `code` need not be on your PATH. An editor older than the extension accepts (the `engines.vscode` in the extension's `package.json`) is never used, since VS Code would refuse the install; of the rest, the newest season is the default. When no WPILib VS Code accepts the extension, `--with-extension` fails before anything is installed and names where it looked.
+
+In a terminal, the installers ask instead of choosing. One editor gets a yes-or-no question, and an editor too old for the extension is named with its version instead of offered. With WPILib 2025 and 2026 installed, for example:
+
+```
+WPILib VS Code 2025 (version 1.96.2) is older than the extension needs (VS Code ^1.101.0), so it is not offered.
+Install the matching extension into WPILib VS Code 2026 (version 1.105.1)? [Y/n]:
+```
+
+Several editors get a numbered menu instead, newest season first and the default, with `n` for none. Without a WPILib VS Code that accepts the extension, the installers do not ask at all. The version reads `unknown` when the editor's own `package.json` cannot be read; such an editor is offered, and VS Code itself reports a refusal.
+
+`--vscode <season>` names one WPILib season, such as `--vscode 2025`. `--vscode system` installs into a VS Code installed apart from WPILib instead, which is never chosen otherwise: on Windows the user installer's folder, then the system installer's; on a Mac, `Visual Studio Code.app` in `/Applications`, then in `~/Applications`; then `code` on PATH. In the installers either form implies `--with-extension`; the JAR requires both. `--without-extension` skips the offer. `java -jar wpilog-mcp-<version>-all.jar install --list-vscode` prints what the installers would offer, newest first, one editor per line as its season, a tab and its version; other lines name the editors left out and why.
+
+The extension never passes these flags: after bootstrap, it updates the server and the Marketplace updates the extension to the next full release.
+
+### Layout
 
 The default layout is:
 ```

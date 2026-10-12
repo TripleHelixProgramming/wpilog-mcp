@@ -37,10 +37,16 @@ license {
 // Generate Version.java from the Gradle project version — single source of truth.
 // The generated file goes to build/generated/sources so it doesn't conflict with src/.
 def generatedSrcDir = file("${buildDir}/generated/sources/version/java")
+// The extension's engines.vscode, so the installers offer only editors that accept it.
+def vscodeEngine = new groovy.json.JsonSlurper().parse(file('vscode-extension/package.json')).engines?.vscode
+if (!(vscodeEngine instanceof String)) {
+    throw new GradleException('vscode-extension/package.json has no engines.vscode')
+}
 
 tasks.register('generateVersionSource') {
     def outputFile = file("${generatedSrcDir}/org/triplehelix/wpilogmcp/Version.java")
     inputs.property('version', project.version)
+    inputs.property('vscodeEngine', vscodeEngine)
     outputs.file(outputFile)
     doLast {
         outputFile.parentFile.mkdirs()
@@ -53,6 +59,8 @@ package org.triplehelix.wpilogmcp;
  */
 public final class Version {
   public static final String VERSION = "${project.version}";
+  /** The VS Code versions the matching extension accepts: its package.json's engines.vscode. */
+  public static final String VSCODE_ENGINE = "${vscodeEngine}";
   private Version() {}
 }
 """
@@ -454,9 +462,14 @@ tasks.register('installExtension', Exec) {
     doFirst {
         println "Installing WPILog Analyzer VS Code extension v${extVersion}..."
         def javaExe = new File(System.getProperty('java.home'), "bin/java${isWindows ? '.exe' : ''}")
-        commandLine javaExe.absolutePath, '-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath,
+        def command = [javaExe.absolutePath, '-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath,
             'install', '--force', '--with-extension', '--vsix', file("${extDir}/${vsixFile}").absolutePath,
-            '--install-dir', (findProperty('installDir') ?: new File(System.getProperty('user.home'), '.wpilog-mcp')).toString()
+            '--install-dir', (findProperty('installDir') ?: new File(System.getProperty('user.home'), '.wpilog-mcp')).toString()]
+        // -Pvscode=<season|system> names the editor; without it, the newest WPILib season it accepts
+        if (findProperty('vscode')) {
+            command += ['--vscode', findProperty('vscode').toString()]
+        }
+        commandLine command
     }
 
     doLast {

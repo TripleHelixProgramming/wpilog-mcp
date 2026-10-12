@@ -292,7 +292,10 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
 #### 6.1 Install
 
 One command installs the latest full release. The installer shipped with these changes offers
-log directories, a team number and the matching extension when run in a terminal. It keeps
+log directories and a team number when run in a terminal, then the matching extension for each
+WPILib VS Code that accepts it: one editor gets a yes-or-no question, several get a numbered
+menu with the newest season first and the default. An editor too old for the extension is named
+with its version instead, and with no WPILib VS Code the installer does not ask. It keeps
 existing settings; without a terminal it takes the defaults. Older installers offer fewer
 options, and the latest full release may not yet carry the commands in this manual:
 

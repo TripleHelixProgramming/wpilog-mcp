@@ -70,6 +70,53 @@ class InstallCommandTest {
   }
 
   @Test
+  void theEditorIsNamedOnlyWithTheExtensionAndListedAlone() {
+    var vsix = temp.resolve("matching extension.vsix").toString();
+    assertEquals(new CodeInstaller.Choice.Newest(),
+        InstallCommand.parse(new String[] {"install", "--with-extension", "--vsix", vsix}).vscode());
+    assertEquals(new CodeInstaller.Choice.Season(2025),
+        InstallCommand.parse(new String[] {"install", "--with-extension", "--vsix", vsix, "--vscode", "2025"}).vscode());
+    assertEquals(new CodeInstaller.Choice.SystemVsCode(),
+        InstallCommand.parse(new String[] {"install", "--vscode", "system", "--with-extension", "--vsix", vsix}).vscode());
+    var alone = assertThrows(IllegalArgumentException.class,
+        () -> InstallCommand.parse(new String[] {"install", "--vscode", "system"}));
+    assertEquals("--vscode requires --with-extension", alone.getMessage());
+    assertThrows(IllegalArgumentException.class,
+        () -> InstallCommand.parse(new String[] {"install", "--with-extension", "--vsix", vsix, "--vscode", "latest"}));
+    assertThrows(IllegalArgumentException.class,
+        () -> InstallCommand.parse(new String[] {"install", "--with-extension", "--vsix", vsix, "--vscode"}));
+    assertTrue(InstallCommand.parse(new String[] {"install", "--list-vscode"}).listVscode());
+    var listing = assertThrows(IllegalArgumentException.class,
+        () -> InstallCommand.parse(new String[] {"install", "--list-vscode", "--json"}));
+    assertEquals("--list-vscode takes no other options", listing.getMessage());
+  }
+
+  @Test
+  void anExtensionInstallWithoutAnEditorChangesNothing() throws Exception {
+    var root = temp.resolve("install");
+    var vsix = Files.writeString(temp.resolve("matching extension.vsix"), "synthetic vsix");
+    var home = Files.createDirectories(temp.resolve("home"));
+    var places = new CodeInstaller.Places(WINDOWS, home, temp.resolve("public"), List.of(), null);
+    var options = InstallCommand.parse(new String[] {"install", "--install-dir", root.toString(),
+        "--with-extension", "--vsix", vsix.toString()});
+    var refused = assertThrows(IOException.class,
+        () -> InstallCommand.install(source(), "1.0.0", options, WINDOWS, "", places, "^1.101.0"));
+    assertTrue(refused.getMessage().startsWith("No WPILib VS Code was found in "), refused.getMessage());
+    assertFalse(Files.exists(root), "the install root is not even created");
+    var tooOld = home.resolve("wpilib").resolve("2025").resolve("vscode");
+    Files.createDirectories(tooOld.resolve("resources").resolve("app"));
+    Files.writeString(tooOld.resolve("resources").resolve("app").resolve("package.json"), "{\"version\": \"1.96.2\"}");
+    var cli = Files.createDirectories(tooOld.resolve("bin")).resolve(WINDOWS ? "code.cmd" : "code");
+    Files.writeString(cli, "never run");
+    assertTrue(cli.toFile().setExecutable(true));
+    var old = assertThrows(IOException.class,
+        () -> InstallCommand.install(source(), "1.0.0", options, WINDOWS, "", places, "^1.101.0"));
+    assertTrue(old.getMessage().startsWith("No WPILib VS Code accepts the extension: WPILib VS Code 2025 (version 1.96.2)"),
+        old.getMessage());
+    assertFalse(Files.exists(root));
+  }
+
+  @Test
   void refreshIsAnExplicitInstallOperation() {
     assertDoesNotThrow(() -> InstallCommand.parse(new String[] {"install", "--refresh", "--install-dir",
         temp.resolve("install").toString()}));

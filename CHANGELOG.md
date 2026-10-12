@@ -83,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `idle_exit_minutes` lets a background HTTP server exit after a configured period without sessions or requests; health probes do not keep it alive. Previously unused daemons needed an explicit stop. Automatic exit is disabled by default, and capture servers require it to stay disabled.
 - `GET /health` includes the server version and process ID, so launchers can identify the process answering a port instead of relying on liveness alone.
 - `wpilog-mcp install` owns the JAR and launcher layout, optional initial configuration, version selection and text/JSON result. Shell, PowerShell and Gradle installers now delegate to it instead of maintaining separate layouts. Equal/newer launchers are kept unless forced; configuration and running daemons are preserved. Windows launchers also fall back to `JAVA_HOME` after WPILib.
-- Installers support an exact `--tag`, the newest `--pre-release`, and a matching extension with `--with-extension`; terminal prompts offer directories, team and the extension. Explicit `--refresh` makes a backed-up fresh install after stopping its daemons, where ordinary updates stay non-disruptive. Older releases fall back only when their JAR lacks the install verb, never after a real write failure.
+- Installers support an exact `--tag`, the newest `--pre-release`, and a matching extension with `--with-extension`; terminal prompts offer directories and team, then the extension for each WPILib VS Code that accepts it. `--vscode <season>` names a WPILib season and `--vscode system` a VS Code installed apart from WPILib; the JAR's `install --list-vscode` prints what the installers would offer. Explicit `--refresh` makes a backed-up fresh install after stopping its daemons, where ordinary updates stay non-disruptive. Older releases fall back only when their JAR lacks the install verb, never after a real write failure.
 - Loopback-only session registration leases directories and an in-memory TBA key to the shared server, revoking access when the session ends. Previously each client needed permanent configuration. The bridge accepts project/flag leases while taking daemon settings only from the home or explicit configuration, so one project cannot choose the shared server's settings.
 
 ### Changed
@@ -101,6 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `start` verifies that a process answering its port is wpilog-mcp, adopts a matching server missing its PID file, and reports an unrelated listener without starting another process. Previously any HTTP response counted as the daemon and a busy port could spawn a server that immediately failed to bind.
 
 ### Fixed
+
+- The installers find WPILib's VS Code in every season's folder without PATH, including the app bundle on a Mac, and offer the extension only to an editor whose version it accepts: one gets a yes-or-no question, several a menu with the newest season first and the default, and none no question at all. 0.10.0-dev3 looked only at the calendar year's `vscode/bin/code`, then at `code` on PATH: it found no WPILib editor on a Mac, or last season's each January; it would install into an editor too old for the extension or into a VS Code installed apart from WPILib; and it asked about the extension before looking, so a yes with no editor installed the server and then failed. An explicit `--with-extension` now fails before anything is written when no editor accepts the extension, and another VS Code is used only with `--vscode system`.
 
 - Sync cache files above 64 MiB are refused before reading and removed at startup; previously a crafted large file could allocate its whole payload despite bounded record counts. Reads also stop at the measured size if a file grows; format version 12 is unchanged.
 
@@ -183,6 +185,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now defaults to `contents: read`; only dependency-submission jobs can write the dependency graph. Previously build jobs inherited the repository token defaults. This restriction concerns the build, not permissions in the server or extension.
 
 ### Testing
+
+- Editor lookup tests build the Linux, Windows and Mac app-bundle layouts on every platform with fixed seasons, and drive both installer scripts through a three-season menu with one season too old, a named season, `--vscode system`, a home without WPILib and a refused explicit install that leaves nothing behind. Previously the one fake editor sat in the calendar year's folder, the only place 0.10.0-dev3 looked. The extension's `engines.vscode` reaches the JAR through the generated version class, and a test compares the two.
 
 - The PhotonVision harness proves a fresh settings save and completed web-server restart even when that restart closes the POST response before its headers arrive. Previously the expected restart could fail setup with HTTP EOF; missing save evidence now reports the backend log tail.
 - A real data-endpoint regression holds four response streams on a latch and checks health before releasing them; previously admission tests covered stalled MCP bodies but missed starvation by other HTTP handlers.

@@ -317,6 +317,10 @@ public class Main {
   static int runInstall(String[] args) {
     try {
       var options = InstallCommand.parse(args);
+      if (options.listVscode()) {
+        InstallCommand.listVscode(System.out);
+        return 0;
+      }
       var summary = InstallCommand.install(options);
       System.out.println(options.json() ? summary.json() : summary.text());
       return 0;
@@ -865,7 +869,7 @@ public class Main {
     logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
     logger().info("  import <path>...   Import logs into the configured store, using its daemon when running");
     logger().info("  sync [url]         Pull missing store files from a peer, or from all remembered peers");
-    logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--refresh] [--with-extension --vsix <file>] [--json]");
+    logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--refresh] [--with-extension --vsix <file> [--vscode <season|system>]] [--list-vscode] [--json]");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");

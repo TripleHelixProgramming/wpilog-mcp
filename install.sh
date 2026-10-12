@@ -8,6 +8,7 @@ INSTALL_DIR="$HOME/.wpilog-mcp"
 tag=""
 pre_release=false
 extension=""
+vscode=""
 interactive=auto
 has_logdir=false
 has_team=false
@@ -20,7 +21,7 @@ while [ "$remaining" -gt 0 ]; do
     shift
     remaining=$((remaining - 1))
     case "$flag" in
-        --tag|--install-dir|--logdir|--team)
+        --tag|--install-dir|--logdir|--team|--vscode)
             if [ "$remaining" -eq 0 ] || [ -z "$1" ]; then
                 echo "ERROR: Missing value for $flag" >&2; exit 2
             fi
@@ -30,6 +31,7 @@ while [ "$remaining" -gt 0 ]; do
                 --install-dir) INSTALL_DIR=$value; advanced=true ;;
                 --logdir) set -- "$@" "$flag" "$value"; has_logdir=true; advanced=true ;;
                 --team) set -- "$@" "$flag" "$value"; has_team=true; advanced=true ;;
+                --vscode) vscode=$value ;;
             esac ;;
         --pre-release) pre_release=true ;;
         --with-extension) extension=yes; advanced=true ;;
@@ -44,14 +46,29 @@ if [ -n "$tag" ] && [ "$pre_release" = true ]; then
     echo "ERROR: Choose --tag or --pre-release, not both." >&2; exit 2
 fi
 case "$tag" in *[!0-9A-Za-z.-]*) echo "ERROR: Invalid release tag: $tag" >&2; exit 2 ;; esac
+# --vscode names the editor for the extension: a WPILib season, or system for any other VS Code.
+case "$vscode" in
+    ""|system|[0-9][0-9][0-9][0-9]) ;;
+    *) echo "ERROR: --vscode takes a WPILib season such as 2026, or system: $vscode" >&2; exit 2 ;;
+esac
+if [ -n "$vscode" ]; then
+    if [ "$extension" = no ]; then
+        echo "ERROR: Choose --vscode or --without-extension, not both." >&2; exit 2
+    fi
+    extension=yes; advanced=true
+fi
 
 # Reading /dev/tty also works with curl | sh, whose stdin contains this script.
 if [ "$interactive" = auto ]; then
     interactive=no
     if [ -t 1 ] && (exec 3</dev/tty) 2>/dev/null; then interactive=yes; fi
 fi
-if [ "$interactive" = yes ]; then
+# Answers come from the terminal, or from stdin when --interactive is given without one.
+open_answers() {
     if [ -t 1 ] && (exec 3</dev/tty) 2>/dev/null; then exec 3</dev/tty; else exec 3<&0; fi
+}
+if [ "$interactive" = yes ]; then
+    open_answers
     if [ -f "$INSTALL_DIR/servers.yaml" ] || [ -f "$INSTALL_DIR/servers.json" ]; then
         echo "Keeping your existing server settings, including during --refresh."
     else
@@ -71,11 +88,6 @@ if [ "$interactive" = yes ]; then
             IFS= read -r answer <&3 || answer=""
             if [ -n "$answer" ]; then set -- "$@" --team "$answer"; fi
         fi
-    fi
-    if [ -z "$extension" ]; then
-        printf 'Install the matching VS Code extension? [Y/n]: '
-        IFS= read -r answer <&3 || answer=""
-        case "$answer" in n|N|no|No) extension=no ;; *) extension=yes; advanced=true ;; esac
     fi
     exec 3<&-
 fi
@@ -157,9 +169,70 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/wpilog-install.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 TEMP_JAR="$scratch/server.jar"
 curl -fsSL -o "$TEMP_JAR" "$JAR_URL"
+
+# The extension is offered only for a WPILib VS Code that the release's JAR finds and the
+# extension accepts. The JAR lists them newest first as a season, a tab and a version; its other
+# lines are notes for the person. Any other VS Code is opt-in with --vscode system, and a JAR
+# that cannot list editors offers nothing.
+tab=$(printf '\t')
+editor_label() {
+    printf 'WPILib VS Code %s (version %s)' "${1%%"$tab"*}" "${1#*"$tab"}"
+}
+offer_extension() {
+    "$JAVA_EXEC" -jar "$TEMP_JAR" install --list-vscode </dev/null >"$scratch/editors" 2>/dev/null || return 0
+    count=0
+    : >"$scratch/offered"
+    while IFS= read -r line; do
+        case "$line" in
+            [0-9][0-9][0-9][0-9]"$tab"?*) count=$((count + 1)); printf '%s\n' "$line" >>"$scratch/offered" ;;
+            ?*) printf '%s\n' "$line" ;;
+        esac
+    done <"$scratch/editors"
+    [ "$count" -gt 0 ] || return 0
+    chosen=""
+    open_answers
+    if [ "$count" -eq 1 ]; then
+        line=$(cat "$scratch/offered")
+        printf 'Install the matching extension into %s? [Y/n]: ' "$(editor_label "$line")"
+        IFS= read -r answer <&3 || answer=""
+        case "$answer" in n|N|no|No) ;; *) chosen=$line ;; esac
+    else
+        echo "Install the matching VS Code extension into:"
+        number=0
+        while IFS= read -r line; do
+            number=$((number + 1))
+            printf '  %s) %s\n' "$number" "$(editor_label "$line")"
+        done <"$scratch/offered"
+        echo "  n) none"
+        while :; do
+            printf 'Choice [1]: '
+            IFS= read -r answer <&3 || answer=""
+            case "$answer" in
+                "") answer=1 ;;
+                n|N|no|No) answer=""; break ;;
+            esac
+            case "$answer" in
+                *[!0-9]*) ;;
+                *) if [ "$answer" -ge 1 ] && [ "$answer" -le "$count" ]; then break; fi ;;
+            esac
+            echo "Choose a number from 1 to $count, or n for none."
+        done
+        if [ -n "$answer" ]; then chosen=$(sed -n "${answer}p" "$scratch/offered"); fi
+    fi
+    exec 3<&-
+    if [ -n "$chosen" ]; then
+        extension=yes; advanced=true; vscode=${chosen%%"$tab"*}
+    fi
+}
+if [ "$interactive" = yes ] && [ -z "$extension" ]; then
+    extension=no
+    if [ -n "$VSIX_URL" ]; then offer_extension; fi
+fi
+
 if [ "$extension" = yes ]; then
     curl -fsSL -o "$scratch/extension.vsix" "$VSIX_URL"
     set -- "$@" --with-extension --vsix "$scratch/extension.vsix"
+    if [ -n "$vscode" ]; then set -- "$@" --vscode "$vscode"; fi
 fi
 if "$JAVA_EXEC" -jar "$TEMP_JAR" install --install-dir "$INSTALL_DIR" "$@" 2>"$scratch/error"; then
     cat "$scratch/error" >&2

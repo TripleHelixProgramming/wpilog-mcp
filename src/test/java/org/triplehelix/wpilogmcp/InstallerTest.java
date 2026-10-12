@@ -198,7 +198,8 @@ class InstallerTest {
   @Test
   void matchingVsixIsInstalledOnceAndCliOutputDoesNotPolluteJson() throws Exception {
     var home = Files.createDirectory(tempDir.resolve("code home"));
-    var code = home.resolve("wpilib").resolve(Integer.toString(Year.now().getValue()))
+    // A past season with nothing on PATH: 0.10.0-dev3 looked only at this calendar year's folder
+    var code = home.resolve("wpilib").resolve("2025")
         .resolve("vscode").resolve("bin").resolve(isWindows() ? "code.cmd" : "code");
     var capture = tempDir.resolve("code-args.txt");
     executable(code, isWindows() ? "@echo off\r\n(echo %~1& echo %~2& echo %~3)>>\"%CODE_ARGS%\"\r\necho code output\r\nexit /b %CODE_EXIT%\r\n"
@@ -219,6 +220,62 @@ class InstallerTest {
     assertNotEquals(0, failed.exit());
     assertTrue(failed.stderr().contains("exit 7"), failed.output());
     assertTrue(failed.stdout().isBlank());
+  }
+
+  /** The lowest VS Code version the extension accepts, and one just above it. */
+  static String minimumVsCode() {
+    return Version.VSCODE_ENGINE.replaceFirst("^[^0-9]*", "");
+  }
+
+  static String aboveMinimumVsCode() {
+    var parts = minimumVsCode().split("\\.");
+    parts[parts.length - 1] = Integer.toString(Integer.parseInt(parts[parts.length - 1]) + 1);
+    return String.join(".", parts);
+  }
+
+  /**
+   * A WPILib season's VS Code at its Linux or Windows place: a command line that records the
+   * season and its arguments in {@code $CODE_ARGS}, and the version, when given, in its manifest.
+   */
+  static Path wpilibCode(Path root, String season, String version) throws Exception {
+    var vscode = root.resolve("wpilib").resolve(season).resolve("vscode");
+    if (version != null) {
+      Files.createDirectories(vscode.resolve("resources").resolve("app"));
+      Files.writeString(vscode.resolve("resources").resolve("app").resolve("package.json"), "{\"version\": \"" + version + "\"}");
+    }
+    return recordingCode(vscode.resolve("bin"), season);
+  }
+
+  /** A VS Code command line that writes its name, then its first three arguments, to {@code $CODE_ARGS}. */
+  static Path recordingCode(Path bin, String name) throws Exception {
+    return executable(bin.resolve(isWindows() ? "code.cmd" : "code"), isWindows()
+        ? "@echo off\r\n(echo " + name + "& echo %~1& echo %~2& echo %~3)>>\"%CODE_ARGS%\"\r\n"
+        : "#!/bin/sh\nprintf '%s\\n' '" + name + "' \"$@\" >> \"$CODE_ARGS\"\n");
+  }
+
+  @Test
+  void theJarListsWpilibEditorsAndRefusesAnExtensionInstallWithoutOne() throws Exception {
+    var home = Files.createDirectory(tempDir.resolve("editor home"));
+    var env = Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + home + "\"", "PUBLIC", tempDir.resolve("public").toString());
+    var vsix = Files.writeString(tempDir.resolve("matching extension.vsix"), "synthetic vsix");
+    var root = tempDir.resolve("standalone");
+    var refused = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+        "--with-extension", "--vsix", vsix.toString(), "--json"), env, false);
+    assertEquals(1, refused.exit(), refused.output());
+    assertTrue(refused.stderr().contains("Install failed: No WPILib VS Code was found in "), refused.output());
+    assertTrue(refused.stdout().isBlank(), "a refused install has no JSON success");
+    assertFalse(Files.exists(root), "nothing is installed when the extension cannot be");
+
+    wpilibCode(home, "2024", "1.0.0");
+    wpilibCode(home, "2025", null);
+    wpilibCode(home, "2026", minimumVsCode());
+    var listed = run(List.of(java(), "-jar", jar().toString(), "install", "--list-vscode"), env, false);
+    assertEquals(0, listed.exit(), listed.output());
+    assertEquals(List.of("WPILib VS Code 2024 (version 1.0.0) is older than the extension needs (VS Code "
+        + Version.VSCODE_ENGINE + "), so it is not offered.", "2026\t" + minimumVsCode(), "2025\tunknown"),
+        listed.stdout().lines().toList(), "notes, then the offered editors newest first");
+    assertFalse(Files.exists(root), "listing installs nothing");
+    assertEquals(2, run(List.of(java(), "-jar", jar().toString(), "install", "--list-vscode", "--json"), env, false).exit());
   }
 
   static Path jar() {
@@ -678,6 +735,118 @@ class InstallerTest {
     assertNotEquals(0, refused.exit());
     assertFalse(refused.output().contains("predates"), refused.output());
     assertTrue(refused.output().contains("--team must be a positive integer"), refused.output());
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void scriptsOfferOnlyWpilibEditorsTheExtensionAcceptsAndAnotherVsCodeOnRequest(boolean ps) throws Exception {
+    assumeTrue(ps ? powershell() != null : !isWindows(), "script shell unavailable");
+    var home = Files.createDirectory(tempDir.resolve("editors home"));
+    var fakeBin = Files.createDirectory(tempDir.resolve("editors-bin"));
+    if (!ps) executable(fakeBin.resolve("curl"), FAKE_CURL);
+    wpilibCode(home, "2024", "1.0.0");
+    wpilibCode(home, "2025", minimumVsCode());
+    wpilibCode(home, "2026", aboveMinimumVsCode());
+    var systemBin = Files.createDirectory(tempDir.resolve("system vscode"));
+    recordingCode(systemBin, "system");
+    var capture = tempDir.resolve("editor-code-args");
+    var env = new HashMap<String, String>();
+    env.put("HOME", home.toString());
+    env.put("USERPROFILE", home.toString());
+    env.put("JAVA_HOME", System.getProperty("java.home"));
+    env.put("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + home + "\"");
+    // The usual Windows folders of a VS Code installed apart from WPILib, empty here
+    env.put("PUBLIC", tempDir.resolve("public").toString());
+    env.put("LOCALAPPDATA", tempDir.resolve("local app data").toString());
+    env.put("ProgramFiles", tempDir.resolve("program files").toString());
+    env.put("PATH", fakeBin + File.pathSeparator + systemBin + File.pathSeparator + System.getenv("PATH"));
+    env.put("CODE_ARGS", capture.toString());
+    env.put("FAKE_JAR", jar().toString());
+    env.put("FAKE_VSIX", Files.writeString(tempDir.resolve("editors.vsix"), "vsix bytes").toString());
+    env.put("FAKE_RELEASE_JSON", Files.writeString(tempDir.resolve("editors-release.json"), releaseJson("1.3.0-dev4")).toString());
+    for (String name : List.of("FAKE_API_URL", "FAKE_DOWNLOAD_URL", "FAKE_DOWNLOAD_FILE", "FAKE_VSIX_URL", "FAKE_VSIX_FILE")) {
+      env.put(name, tempDir.resolve("editors " + name).toString());
+    }
+    var wrapper = Files.writeString(tempDir.resolve("editors-wrapper.ps1"), PS_WRAPPER);
+    env.put("WPILOG_INSTALLER", Path.of("install.ps1").toAbsolutePath().toString());
+    record Scenario(String name, List<String> args, String answers, String installedInto) {
+    }
+    var scenarios = List.of(
+        // The menu lists accepted seasons newest first; the season too old for the extension is named instead
+        new Scenario("second of two", List.of("--interactive"), "\n\n\n2\n", "2025"),
+        new Scenario("default after a wrong answer", List.of("--interactive"), "\n\n\nnine\n\n", "2026"),
+        new Scenario("none", List.of("--interactive"), "\n\n\nn\n", null),
+        new Scenario("newest without a terminal", List.of("--non-interactive", "--with-extension"), null, "2026"),
+        new Scenario("named season", List.of("--non-interactive", "--vscode", "2025"), null, "2025"),
+        new Scenario("system on request", List.of("--non-interactive", "--vscode", "system"), null, "system"));
+    for (var scenario : scenarios) {
+      // The usual Mac folder of another VS Code is absolute; never run a developer's own editor
+      if (scenario.installedInto() != null && scenario.installedInto().equals("system") && isMac()) continue;
+      Files.deleteIfExists(capture);
+      var root = tempDir.resolve("editors " + scenario.name());
+      var result = runScript(ps, wrapper, scenario.args(), root, scenario.answers(), env);
+      assertEquals(0, result.exit(), scenario.name() + ": " + result.output());
+      if (scenario.installedInto() == null) {
+        assertFalse(Files.exists(capture), scenario.name() + ": no editor ran");
+      } else {
+        var codeArgs = Files.readAllLines(capture).stream().map(String::strip).toList();
+        assertEquals(scenario.installedInto(), codeArgs.get(0), scenario.name() + ": " + result.output());
+        assertEquals(List.of("--install-extension", "--force"), List.of(codeArgs.get(1), codeArgs.get(3)), scenario.name());
+      }
+      if (scenario.answers() != null) {
+        assertAll(scenario.name(),
+            () -> assertTrue(result.stdout().contains("1) WPILib VS Code 2026 (version " + aboveMinimumVsCode() + ")"), result.output()),
+            () -> assertTrue(result.stdout().contains("2) WPILib VS Code 2025 (version " + minimumVsCode() + ")"), result.output()),
+            () -> assertFalse(result.stdout().contains(") WPILib VS Code 2024"), "only accepted seasons are offered"),
+            () -> assertTrue(result.stdout().contains("WPILib VS Code 2024 (version 1.0.0) is older than the extension needs"),
+                result.output()));
+      }
+    }
+
+    // Without WPILib's VS Code nothing is offered, and asking for the extension changes nothing
+    var bare = new HashMap<>(env);
+    var bareHome = Files.createDirectory(tempDir.resolve("bare home"));
+    bare.put("HOME", bareHome.toString());
+    bare.put("USERPROFILE", bareHome.toString());
+    bare.put("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + bareHome + "\"");
+    Files.deleteIfExists(capture);
+    Files.deleteIfExists(Path.of(env.get("FAKE_VSIX_URL")));
+    var root = tempDir.resolve("editors none installed");
+    var unoffered = runScript(ps, wrapper, List.of("--interactive"), root, "\n\n\n", bare);
+    assertEquals(0, unoffered.exit(), unoffered.output());
+    assertFalse(unoffered.output().contains("Install the matching"), unoffered.output());
+    assertFalse(Files.exists(Path.of(env.get("FAKE_VSIX_URL"))), "the extension is not downloaded");
+    assertTrue(Files.exists(root.resolve("servers.yaml")), "the server is installed");
+    var refusedRoot = tempDir.resolve("editors refused");
+    var refused = runScript(ps, wrapper, List.of("--non-interactive", "--with-extension"), refusedRoot, null, bare);
+    assertNotEquals(0, refused.exit(), refused.output());
+    assertTrue(refused.output().contains("No WPILib VS Code was found in"), refused.output());
+    assertFalse(Files.exists(refusedRoot), "nothing is installed");
+    assertFalse(Files.exists(capture), "no editor ran");
+    var contradictory = runScript(ps, wrapper, List.of("--non-interactive", "--vscode", "system", "--without-extension"),
+        refusedRoot, null, bare);
+    assertNotEquals(0, contradictory.exit());
+    assertTrue(contradictory.output().contains("Choose --vscode or --without-extension, not both."), contradictory.output());
+  }
+
+  Run runScript(boolean ps, Path wrapper, List<String> scriptArgs, Path root, String answers, Map<String, String> env)
+      throws Exception {
+    var args = new ArrayList<>(scriptArgs);
+    args.addAll(List.of("--install-dir", root.toString()));
+    var runEnv = new HashMap<>(env);
+    runEnv.remove("FAKE_ANSWERS");
+    if (answers != null) {
+      runEnv.put("FAKE_ANSWERS", Files.writeString(Files.createTempFile(tempDir, "answers-", ".txt"), answers).toString());
+    }
+    runEnv.put("FAKE_SCRIPT_ARGS", Files.writeString(Files.createTempFile(tempDir, "args-", ".json"), new Gson().toJson(args)).toString());
+    var command = new ArrayList<>(ps ? List.of(powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", wrapper.toString())
+        : List.of("sh", Path.of("install.sh").toAbsolutePath().toString()));
+    if (!ps) command.addAll(args);
+    return run(command, runEnv, false);
+  }
+
+  static boolean isMac() {
+    return System.getProperty("os.name", "").startsWith("Mac");
   }
 
   /** Reproduces pre-install argument handling without embedding or downloading an old release. */

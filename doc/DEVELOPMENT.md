@@ -25,7 +25,7 @@ The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` runs the fat JAR
 ./gradlew installExtension   # Build, package, and install into VS Code
 ```
 
-`installExtension` delegates to the JAR’s `install --force --with-extension --vsix <file>` verb, installing the standalone layout and the matching extension. VS Code lookup lives in that verb: the current year’s WPILib VS Code, then `code` on PATH. `-PinstallDir=/path/to/scratch` overrides the server’s install directory. Close VS Code before running the task, and restart VS Code when the task is done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
+`installExtension` delegates to the JAR’s `install --force --with-extension --vsix <file>` verb, installing the standalone layout and the matching extension. VS Code lookup lives in that verb: the newest WPILib season whose VS Code the extension accepts, found without PATH ([STANDALONE.md](STANDALONE.md#the-matching-extension) has the folders). `-Pvscode=2025` names a season, and `-Pvscode=system` a VS Code installed apart from WPILib. `-PinstallDir=/path/to/scratch` overrides the server’s install directory. Close VS Code before running the task, and restart VS Code when the task is done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
 
 The extension's version is the project version in `build.gradle`. Every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release, and the release that follows it installs over the development version.
 
