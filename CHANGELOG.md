@@ -102,6 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, the search for a VS Code installed apart from WPILib reads a quoted PATH entry as the folder inside the quotes, and passes over an entry no file system can name. In 0.10.0-dev3 such an entry made every `--with-extension` install fail as a usage error naming an illegal character, even when WPILib's editor came first; now only `--vscode system` reads PATH.
+
 - The installers find WPILib's VS Code in every season's folder without PATH, including the app bundle on a Mac, and offer the extension only to an editor whose version it accepts: one gets a yes-or-no question, several a menu with the newest season first and the default, and none no question at all. 0.10.0-dev3 looked only at the calendar year's `vscode/bin/code`, then at `code` on PATH: it found no WPILib editor on a Mac, or last season's each January; it would install into an editor too old for the extension or into a VS Code installed apart from WPILib; and it asked about the extension before looking, so a yes with no editor installed the server and then failed. An explicit `--with-extension` now fails before anything is written when no editor accepts the extension, and another VS Code is used only with `--vscode system`.
 
 - Sync cache files above 64 MiB are refused before reading and removed at startup; previously a crafted large file could allocate its whole payload despite bounded record counts. Reads also stop at the measured size if a file grows; format version 12 is unchanged.

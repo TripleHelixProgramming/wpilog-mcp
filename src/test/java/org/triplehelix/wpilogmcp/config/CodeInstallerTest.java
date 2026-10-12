@@ -159,6 +159,19 @@ class CodeInstallerTest {
   }
 
   @Test
+  void pathEntriesAreReadAsTheSystemReadsThem() throws Exception {
+    var home = Files.createDirectories(temp.resolve("home"));
+    // Windows reads a quoted entry as the folder inside the quotes
+    var windowsCli = executable(temp.resolve("quoted").resolve("code.cmd"));
+    var quoted = places(true, home, List.of(), "\"" + windowsCli.getParent() + "\"");
+    assertEquals(windowsCli, CodeInstaller.choose(quoted, new CodeInstaller.Choice.SystemVsCode(), ENGINE).cli());
+    // An entry no file system can name is passed over, not reported as a bad --vscode argument
+    var cli = executable(temp.resolve("named").resolve("code"));
+    var unnamed = places(false, home, List.of(), "bad\0entry" + File.pathSeparator + cli.getParent());
+    assertEquals(cli, CodeInstaller.choose(unnamed, new CodeInstaller.Choice.SystemVsCode(), ENGINE).cli());
+  }
+
+  @Test
   void aVersionThatCannotBeReadIsOfferedAndNamedUnknown() throws Exception {
     var home = temp.resolve("home");
     var cli = wpilibEditor(home, 2026, WINDOWS, null);

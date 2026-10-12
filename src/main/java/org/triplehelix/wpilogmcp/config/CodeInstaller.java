@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.file.DirectoryIteratorException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -161,9 +162,16 @@ final class CodeInstaller {
     var candidates = new ArrayList<Path>(places.systemEditors());
     if (places.searchPath() != null) {
       var name = places.windows() ? "code.cmd" : "code";
-      for (var directory : places.searchPath().split(Pattern.quote(places.windows() ? ";" : File.pathSeparator))) {
-        if (!directory.isBlank()) {
+      for (var entry : places.searchPath().split(Pattern.quote(places.windows() ? ";" : File.pathSeparator))) {
+        // Windows reads a quoted entry as the folder inside the quotes
+        var directory = places.windows() ? entry.replace("\"", "") : entry;
+        if (directory.isBlank()) {
+          continue;
+        }
+        try {
           candidates.add(Path.of(directory).resolve(name));
+        } catch (InvalidPathException e) {
+          // An entry this file system cannot name holds no editor; it is not a bad argument
         }
       }
     }
