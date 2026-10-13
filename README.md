@@ -60,7 +60,7 @@ wpilog-mcp is designed for Claude and tested with Claude, but any agent that spe
 
 The [operations and usage manual](doc/OPERATIONS.md) walks through the setup check, the first questions, and running the shared server.
 
-The shared-server features described on this branch require 0.10.0-dev3 or newer.
+The shared-server features described on this branch require 0.10.0-dev4 or newer.
 The latest full release may be older; until this version and its installer are published,
 use the [checkout install](doc/STANDALONE.md#install) from `development` and check
 `wpilog-mcp -version` before following the manual.
@@ -73,7 +73,7 @@ Most people want the extension. It installs and updates the same standalone serv
 
 Without VS Code, use the [standalone installer](doc/STANDALONE.md). The installer shipped with these changes offers directories and team in a terminal, then the matching extension for a WPILib VS Code that accepts it; it keeps existing settings and uses defaults without a terminal. Point clients at the launcher's `connect http` bridge. For permanent directories or advanced server settings, edit `~/.wpilog-mcp/servers.yaml`; VS Code's Settings UI does not edit it. A Blue Alliance key is optional: the extension registers its secret-storage key in memory, while standalone users can configure the key in YAML or the environment.
 
-For a published pre-release, pass the installer `--tag v0.10.0-dev3 --with-extension` to select
+For a published pre-release, pass the installer `--tag v0.10.0-dev4 --with-extension` to select
 that server and its matching extension together; the [pre-release instructions](doc/STANDALONE.md#trying-a-pre-release)
 cover both platforms, using the installer from the `development` branch until this version is
 released. The tag must already exist on Releases. Upgrades use user-scope Claude Code
