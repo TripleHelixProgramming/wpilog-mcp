@@ -24,7 +24,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
  * <ul>
  *   <li>Injects a required {@code path} parameter into the tool schema</li>
  *   <li>Extracts the path from arguments and auto-loads the log via
- *       {@link LogManager#acquire(String)}, retaining its mapping
+ *       {@link org.triplehelix.wpilogmcp.read.server.ManagedLogAccess#acquire(String)}, retaining its mapping
  *       until the result and its input annotations are complete</li>
  *   <li>Passes the loaded log to {@link #executeWithLog(LogData, JsonObject)}</li>
  * </ul>
@@ -139,7 +139,7 @@ public abstract class LogRequiringTool extends ToolBase {
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
     var path = getRequiredString(arguments, "path");
-    try (var use = logManager.acquire(path)) {
+    try (var use = logAccess.acquire(path)) {
       var loaded = use.log();
       // The file as the log was read from it, taken now so that an eviction during the call does
       // not lose it; the call's result is trusted only if the file is still that file afterwards

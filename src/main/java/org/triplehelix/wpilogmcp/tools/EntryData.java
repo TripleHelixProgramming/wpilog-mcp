@@ -12,12 +12,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 import org.triplehelix.wpilogmcp.data.ArrowType;
-import org.triplehelix.wpilogmcp.data.ArrowType.Field;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
-import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.sync.SyncMethod;
 
@@ -238,111 +236,8 @@ public final class EntryData {
    */
   public static ArrowType arrowType(LogData log, Series series) {
     if (series.field() != null) return new ArrowType.Float64();
-    var type = series.type();
-    switch (type) {
-      case "double", "float", "revlog" -> {
-        return new ArrowType.Float64();
-      }
-      case "int64" -> {
-        return new ArrowType.Int64();
-      }
-      case "boolean" -> {
-        return new ArrowType.Bool();
-      }
-      case "string", "json" -> {
-        return new ArrowType.Utf8();
-      }
-      case "raw" -> {
-        return new ArrowType.Binary();
-      }
-      case "double[]", "float[]" -> {
-        return list(new ArrowType.Float64());
-      }
-      case "int64[]" -> {
-        return list(new ArrowType.Int64());
-      }
-      case "boolean[]" -> {
-        return list(new ArrowType.Bool());
-      }
-      case "string[]" -> {
-        return list(new ArrowType.Utf8());
-      }
-      default -> {
-        var structName = StructSchemas.structName(type);
-        if (structName == null) return new ArrowType.Binary();
-        boolean array = StructSchemas.isArrayType(type);
-        var element = structType(log, structName, series.values(), array);
-        return array ? list(element) : element;
-      }
-    }
-  }
-
-  private static ArrowType list(ArrowType element) {
-    return new ArrowType.ListOf(new Field("item", element, true));
-  }
-
-  /** The struct's Arrow type from its first decoded value, else from its schema's fields. */
-  private static ArrowType structType(LogData log, String structName,
-      List<TimestampedValue> values, boolean array) {
-    for (var tv : values) {
-      Object sample = tv.value();
-      if (array) {
-        var elements = sample instanceof List<?> l ? l : null;
-        if (elements == null || elements.isEmpty()) continue;
-        sample = elements.get(0);
-      }
-      if (sample instanceof Map<?, ?> map) return typeOfValue(map);
-    }
-    return fromSchema(log.structSchemas(), structName, 0);
-  }
-
-  /** The Arrow type of a decoded value, recursively. */
-  private static ArrowType typeOfValue(Object value) {
-    if (value instanceof Map<?, ?> map) {
-      var fields = new ArrayList<Field>();
-      for (var e : map.entrySet()) {
-        fields.add(new Field(String.valueOf(e.getKey()), typeOfValue(e.getValue()), true));
-      }
-      return new ArrowType.Struct(fields);
-    }
-    if (value instanceof EnumValue) {
-      return new ArrowType.Struct(List.of(new Field("value", new ArrowType.Int64(), true),
-          new Field("label", new ArrowType.Utf8(), true)));
-    }
-    if (value instanceof Boolean) return new ArrowType.Bool();
-    if (value instanceof Double || value instanceof Float) return new ArrowType.Float64();
-    if (value instanceof Number) return new ArrowType.Int64();
-    if (value instanceof String) return new ArrowType.Utf8();
-    if (value instanceof byte[]) return new ArrowType.Binary();
-    if (value instanceof double[] || value instanceof float[]) return list(new ArrowType.Float64());
-    if (value instanceof long[] || value instanceof int[]) return list(new ArrowType.Int64());
-    if (value instanceof boolean[]) return list(new ArrowType.Bool());
-    if (value instanceof String[]) return list(new ArrowType.Utf8());
-    if (value instanceof List<?> l) {
-      return list(l.isEmpty() ? new ArrowType.Float64() : typeOfValue(l.get(0)));
-    }
-    if (value == null) return new ArrowType.Float64();
-    return new ArrowType.Utf8();
-  }
-
-  /** The struct's Arrow type from the schema alone: when no record of it was decoded. */
-  private static ArrowType fromSchema(StructSchemas schemas, String structName, int depth) {
-    var info = schemas.info(structName).orElse(null);
-    if (info == null || depth > 8) return new ArrowType.Struct(List.of());
-    var fields = new ArrayList<Field>();
-    for (var f : info.fields()) {
-      ArrowType type = switch (f.type()) {
-        case "double", "float" -> new ArrowType.Float64();
-        case "bool" -> new ArrowType.Bool();
-        case "char" -> new ArrowType.Utf8();
-        case "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64" ->
-            new ArrowType.Int64();
-        default -> fromSchema(schemas, f.type(), depth + 1);
-      };
-      if (f.isArray() && !"char".equals(f.type())) type = list(type);
-      fields.add(new Field(f.name(), type, true));
-    }
-    return new ArrowType.Struct(fields);
+    return org.triplehelix.wpilogmcp.data.ReadArrowTypes.type(series.type(), log.structSchemas(),
+        () -> series.values().stream().map(TimestampedValue::value).iterator());
   }
 
   // ---- CSV ----

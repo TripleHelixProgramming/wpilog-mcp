@@ -265,7 +265,12 @@ public class LogDirectory {
    * @since 0.9.0
    */
   public record DirectoryScan(List<Path> directories, List<LogFileInfo> logs,
-      List<UnavailableDirectory> unavailable, List<StoreCatalog.Snapshot> stores) {
+      List<UnavailableDirectory> unavailable, List<StoreCatalog.Snapshot> stores) implements RobotCandidates.DirectoryFacts {
+
+    @Override public java.util.Optional<String> loggedSerial(Path path) {
+      return logs.stream().filter(log -> Path.of(log.path()).equals(path) && log.robot() != null)
+          .map(log -> log.robot().serialNumber()).findFirst();
+    }
 
     /** Whether no configured directory could be scanned. */
     public boolean noneReadable() {

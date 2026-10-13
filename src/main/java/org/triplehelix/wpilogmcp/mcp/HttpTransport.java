@@ -81,6 +81,11 @@ public class HttpTransport {
   private java.util.concurrent.ExecutorService sseExecutor;
   private java.util.concurrent.ExecutorService mcpExecutor;
   private ScheduledExecutorService bodyDeadlines;
+  private StreamingRequests streaming;
+  private StreamingRequests storeStreaming;
+  private Duration streamTimeout = Duration.ofSeconds(10);
+  void streamTimeout(Duration timeout) { streamTimeout = timeout; }
+  int activeStreams() { return streaming == null ? 0 : streaming.activeCount(); }
   private int maxRequestBytes = 4 * 1024 * 1024;
   private int maxMcpRequests = Math.min(32, Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
   private Duration bodyTimeout = Duration.ofSeconds(10);
@@ -112,6 +117,17 @@ public class HttpTransport {
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
           .getConfiguredDirectories());
   private final StoreEndpoint storeEndpoint = new StoreEndpoint(storeDoor);
+  private final ReadEndpoint readEndpoint = new ReadEndpoint(
+      org.triplehelix.wpilogmcp.log.LogManager.getInstance().readAccess(), () -> {
+        var inventory = storeDoor.inventory();
+        var roots = new java.util.ArrayList<java.nio.file.Path>();
+        inventory.stores().forEach(s -> roots.add(s.root()));
+        inventory.unreadable().forEach(s -> roots.add(java.nio.file.Path.of(s.path())));
+        return roots.isEmpty() ? null : new org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog(
+            org.triplehelix.wpilogmcp.read.ReadOptions.defaults(roots),
+            org.triplehelix.wpilogmcp.log.LogManager.getInstance().readAccess(),
+            org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES);
+      });
   private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null);
   private volatile java.util.function.Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> gatewayStatus =
       () -> org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED;
@@ -202,10 +218,13 @@ public class HttpTransport {
     server.createContext("/health", counted(this::handleHealthCheck));
     server.createContext("/metrics", counted(this::handleMetrics));
     server.createContext("/stop", counted(this::handleStop));
-    server.createContext(DATA_PATH, counted(this::handleData));
-    server.createContext(StoreImportEndpoint.PATH, counted(this::handleImport));
-    server.createContext(StoreImportEndpoint.ASSIGN_PATH, counted(this::handleImport));
-    server.createContext("/store", counted(this::handleStore));
+    streaming = new StreamingRequests(16, streamTimeout);
+    storeStreaming = new StreamingRequests(4, streamTimeout);
+    server.createContext(DATA_PATH, streaming.handle(counted(this::handleData)));
+    server.createContext(ReadEndpoint.PATH, streaming.handle(counted(this::handleRead)));
+    server.createContext(StoreImportEndpoint.PATH, storeStreaming.handle(counted(this::handleImport)));
+    server.createContext(StoreImportEndpoint.ASSIGN_PATH, storeStreaming.handle(counted(this::handleImport)));
+    server.createContext("/store", storeStreaming.handle(counted(this::handleStore)));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
     // Direct handoff grows beyond four workers as soon as they are busy. A waiting queue
@@ -301,6 +320,7 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
+    readEndpoint.close();
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
     //    which closes the exchange. They would otherwise stay open until the client went away.
     if (sseExecutor != null) {
@@ -334,6 +354,8 @@ public class HttpTransport {
     }
     if (mcpExecutor != null) mcpExecutor.shutdownNow();
     if (bodyDeadlines != null) bodyDeadlines.shutdownNow();
+    if (streaming != null) streaming.close();
+    if (storeStreaming != null) storeStreaming.close();
     sessionManager.clear();
     stores.stopWatching();
     stores.awaitImports();
@@ -727,6 +749,15 @@ public class HttpTransport {
       return;
     }
     dataEndpoint.handle(exchange);
+  }
+
+  /** Native reads share the existing Origin and configured-directory admission policies. */
+  private void handleRead(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin"); return;
+    }
+    readEndpoint.handle(exchange);
   }
 
   /** The import write surface has exactly the same Origin gate as MCP and data reads. */

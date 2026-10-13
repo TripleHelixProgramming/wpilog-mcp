@@ -458,14 +458,9 @@ public final class MirrorSync {
     }
     Files.delete(io.check(pendingPath()));
   }
-  static Path journalPath(Path root) { return root.resolve(".mirror/pull.json"); }
+  static Path journalPath(Path root) { return StoreTransferInventory.mirrorJournal(root); }
   static Set<Path> managed(Path root, StoreFiles io) throws IOException {
-    var path = journalPath(root); if (!Files.exists(path)) return Set.of();
-    var result = new HashSet<Path>(); result.add(path);
-    if (Files.exists(root.resolve(".mirror/pending.json"))) result.add(root.resolve(".mirror/pending.json"));
-    var journal = io.read(path, PullManifest.class);
-    for (var entry : java.util.stream.Stream.concat(journal.files().stream(), journal.history().stream()).toList()) result.add(io.resolve(root, entry.localName()));
-    return result;
+    return StoreTransferInventory.mirrorFiles(root, io);
   }
   private final class Local implements FileTransfer.Local {
     public String create(String remoteName) throws IOException {

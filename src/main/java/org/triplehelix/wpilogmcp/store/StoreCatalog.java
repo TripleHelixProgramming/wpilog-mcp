@@ -127,11 +127,22 @@ public final class StoreCatalog {
     return read(directory, security, strays, null);
   }
 
-  /** A damaged historical session cannot stop a new capture. Only status publication skips
-   * it; imports and the HTTP door continue to require a complete, valid catalog. */
-  static Snapshot readInventory(Path directory, SecurityValidator security,
+  /** A damaged historical session cannot hide readable sessions from read-only inventory.
+   * Imports and the HTTP door continue to require a complete, valid catalog. */
+  public static Snapshot readInventory(Path directory, SecurityValidator security,
       java.util.function.BiConsumer<Path, String> skipped) throws IOException {
     return read(directory, security, false, skipped);
+  }
+
+  /** Inventory dependencies include absent folders and payloads, not just JSON files. */
+  @FunctionalInterface public interface PathObserver { void inspect(Path path) throws IOException; }
+  /** Third-party read-only discovery may skip damaged control manifests. Writer inventories
+   * retain their stricter policy: only a historical session may be skipped. */
+  public static Snapshot readTolerantInventory(Path directory, SecurityValidator security,
+      java.util.function.BiConsumer<Path, String> skipped, PathObserver observer) throws IOException {
+    try { return readValidated(directory, security, false, skipped,
+        (io, path) -> io.read(path, Session.class), observer, true); }
+    catch (RuntimeException e) { throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e); }
   }
 
   @FunctionalInterface interface SessionReader { Session read(StoreFiles io, Path path) throws IOException; }
@@ -146,16 +157,17 @@ public final class StoreCatalog {
   private static Snapshot read(Path directory, SecurityValidator security, boolean strays,
       java.util.function.BiConsumer<Path, String> skipped, SessionReader reader) throws IOException {
     try {
-      return readValidated(directory, security, strays, skipped, reader);
+      return readValidated(directory, security, strays, skipped, reader, path -> {}, false);
     } catch (RuntimeException e) {
       throw new IOException("Invalid store manifest at " + directory + ": " + e.getMessage(), e);
     }
   }
 
   private static Snapshot readValidated(Path directory, SecurityValidator security, boolean strays,
-      java.util.function.BiConsumer<Path, String> skipped, SessionReader reader) throws IOException {
+      java.util.function.BiConsumer<Path, String> skipped, SessionReader reader, PathObserver observer, boolean tolerateControls) throws IOException {
     var root = directory.toRealPath();
     var io = new StoreFiles(root, security);
+    io.observe(observer);
     var headerPath = root.resolve("store.json");
     var header = io.read(headerPath, Header.class);
     if (header.formatVersion() != StoreManifest.FORMAT_VERSION) {
@@ -179,27 +191,44 @@ public final class StoreCatalog {
         io.check(robotDir);
         var robotPath = robotDir.resolve("robot.json");
         if (!Files.isDirectory(robotDir) || !Files.isRegularFile(robotPath)) continue;
-        var robot = io.read(robotPath, Robot.class);
-        if (robot.id() == null || !robot.id().equals(robotDir.getFileName().toString())
-            || !List.of("logged", "device", "stated", "address").contains(robot.basis())) {
-          throw new IOException("Invalid robot manifest: " + robotPath);
+        Robot robot;
+        try {
+          robot = io.read(robotPath, Robot.class);
+          if (robot.id() == null || !robot.id().equals(robotDir.getFileName().toString())
+              || !List.of("logged", "device", "stated", "address").contains(robot.basis())) {
+            throw new IOException("Invalid robot manifest: " + robotPath);
+          }
+        } catch (IOException | RuntimeException invalid) {
+          if (!tolerateControls || skipped == null) throw invalid;
+          skipped.accept(robotPath, invalid.getMessage());
+          continue;
         }
         managed.add(robotPath);
         robots.add(new RobotDirectory(robotDir, robot));
         var systemIndex = io.check(SystemLogIndex.path(robotDir));
         if (Files.exists(systemIndex)) {
-          managed.add(systemIndex);
-          for (var entry : SystemLogIndex.read(io, robotDir).files()) managed.add(SystemLogFiles.shared(io, root, robotDir, entry.file()));
+          try {
+            managed.add(systemIndex);
+            for (var entry : SystemLogIndex.read(io, robotDir).files()) managed.add(SystemLogFiles.shared(io, root, robotDir, entry.file()));
+          } catch (IOException | RuntimeException invalid) {
+            if (!tolerateControls || skipped == null) throw invalid;
+            skipped.accept(systemIndex, invalid.getMessage());
+          }
         }
         var pullPath = io.check(robotDir.resolve("pull.json"));
         if (Files.exists(pullPath)) {
-          var pull = io.read(pullPath, org.triplehelix.wpilogmcp.sync.PullManifest.class);
-          if (!java.util.Objects.equals(robot.serialNumber(), pull.serialNumber())) throw new IOException("Pull manifest serial differs from robot: " + pullPath);
-          managed.add(pullPath);
-          for (var entry : java.util.stream.Stream.concat(pull.files().stream(), pull.history().stream()).toList()) {
-            var held = io.resolve(root, entry.localName());
-            // A verified file is also in session.json; only staging needs this membership.
-            if (held.startsWith(robotDir.resolve("pulled"))) managed.add(held);
+          try {
+            var pull = io.read(pullPath, org.triplehelix.wpilogmcp.sync.PullManifest.class);
+            if (!java.util.Objects.equals(robot.serialNumber(), pull.serialNumber())) throw new IOException("Pull manifest serial differs from robot: " + pullPath);
+            managed.add(pullPath);
+            for (var entry : java.util.stream.Stream.concat(pull.files().stream(), pull.history().stream()).toList()) {
+              var held = io.resolve(root, entry.localName());
+              // A verified file is also in session.json; only staging needs this membership.
+              if (held.startsWith(robotDir.resolve("pulled"))) managed.add(held);
+            }
+          } catch (IOException | RuntimeException invalid) {
+            if (!tolerateControls || skipped == null) throw invalid;
+            skipped.accept(pullPath, invalid.getMessage());
           }
         }
         var sessions = io.check(robotDir.resolve("sessions"));
@@ -232,17 +261,22 @@ public final class StoreCatalog {
         io.check(bucket);
         var manifest = bucket.resolve("import.json");
         if (!Files.isDirectory(bucket) || !Files.isRegularFile(manifest)) continue;
-        var file = io.read(manifest, LogFile.class);
-        var path = io.resolve(bucket, file.path());
-        validate(file, path);
-        managed.add(manifest);
-        if (!managed.add(path)) throw new IOException("File listed twice: " + path);
-        files.add(new StoredFile(path, manifest, null, null, file));
+        try {
+          var file = io.read(manifest, LogFile.class);
+          var path = io.resolve(bucket, file.path());
+          validate(file, path);
+          managed.add(manifest);
+          if (!managed.add(path)) throw new IOException("File listed twice: " + path);
+          files.add(new StoredFile(path, manifest, null, null, file));
+        } catch (IOException | RuntimeException invalid) {
+          if (!tolerateControls || skipped == null) throw invalid;
+          skipped.accept(manifest, invalid.getMessage());
+        }
       }
     }
     var unmanaged = new ArrayList<Path>();
-    if (strays) managed.addAll(StoreSync.managed(root, io));
-    if (strays && header.mirror()) managed.addAll(MirrorSync.managed(root, io));
+    if (strays) managed.addAll(StoreTransferInventory.peerFiles(root, io));
+    if (strays && header.mirror()) managed.addAll(StoreTransferInventory.mirrorFiles(root, io));
     if (strays) try (var walk = Files.walk(root)) {
       for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
         if (!header.mirror() && path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))) continue;
@@ -259,6 +293,48 @@ public final class StoreCatalog {
     }
     return new Snapshot(root, header, List.copyOf(robots), List.copyOf(files),
         List.copyOf(unmanaged), List.copyOf(moved), List.copyOf(openCaptures), List.copyOf(sessionDirectories));
+  }
+
+  /** Shared system-text receipts are manifest facts too. This reads the existing robot index
+   * without opening text payloads or applying a session's clock/span selection. */
+  public static SystemLogIndex readSystemIndex(Path robot, SecurityValidator security) throws IOException {
+    return readSystemIndex(robot, security, path -> {});
+  }
+  public static SystemLogIndex readSystemIndex(Path robot, SecurityValidator security, PathObserver observer) throws IOException {
+    var root = containing(robot.resolve("robot.json"))
+        .orElseThrow(() -> new IOException("Robot directory is not inside a store: " + robot));
+    var io = new StoreFiles(root, security);
+    io.observe(observer);
+    io.check(robot);
+    var index = SystemLogIndex.read(io, robot);
+    for (var entry : index.files()) SystemLogFiles.shared(io, root, robot, entry.file());
+    return index;
+  }
+
+  /** Move notices expire from listings, but a path once handed to a reader remains a durable alias.
+   * The final member must still pass the caller's catalog admission; aliases never adopt strays. */
+  public static Path resolveMoved(Path original, SecurityValidator security) throws IOException {
+    var root = containing(original);
+    if (root.isEmpty()) return original;
+    var io = new StoreFiles(root.get(), security);
+    var header = io.read(root.get().resolve("store.json"), Header.class);
+    if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
+    return resolveMoved(original, root.get(), header, security);
+  }
+  public static Path resolveMoved(Path original, Path root, Header header, SecurityValidator security) throws IOException {
+    var io = new StoreFiles(root, security);
+    var moves = new java.util.HashMap<Path, Path>();
+    for (var move : header.moves()) {
+      moves.put(Path.of(move.originalPath()).toAbsolutePath().normalize(),
+          io.resolve(root, move.movedTo()));
+    }
+    Path result = original.toAbsolutePath().normalize();
+    var visited = new java.util.HashSet<Path>();
+    while (moves.containsKey(result)) {
+      if (!visited.add(result)) throw new IOException("Cyclic move aliases in " + root.resolve("store.json"));
+      result = moves.get(result);
+    }
+    return result;
   }
 
   /** Resolve one catalog member without walking the catalog for every transfer block. */

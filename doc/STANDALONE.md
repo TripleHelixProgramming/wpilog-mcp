@@ -484,12 +484,14 @@ On Windows, use `"command": "cmd"` and `"args": ["/c", "C:\\Users\\you\\.wpilog-
 
 MCP request bodies are limited to 4 MiB and ten seconds; an unfinished body is disconnected.
 At most 32 MCP requests run at once (fewer on small machines), with overload reported as HTTP
-503 rather than an unbounded wait. Health, data streams and store transfers share a separate
-dispatch pool that grows from four to 32 workers without a waiting queue. Four blocked streams
-therefore leave capacity for health. When all 32 dispatch workers are busy, the JDK rejects the
-next exchange and closes its connection without an HTTP response. The client sees a reset, not
-a 503, and a health check can fail that way too. The 503 above is the separate MCP execution
-limit, after dispatch admits a request.
+503 rather than an unbounded wait. Data streams and native reads use 16 separate workers;
+store transfers and imports have another four, so readers cannot exhaust upload capacity.
+Excess transfers receive JSON `BUSY` with HTTP 503 and a one-second retry hint. Ten seconds without IO progress ends a transfer, releasing
+its reads, so clients that stop reading cannot occupy health's dispatch workers indefinitely.
+Writes use progress units of at most 64 KiB. Health and registration use a dispatch pool growing
+from four to 32 workers without a waiting queue. If other handlers occupy all 32, the JDK still
+rejects the next exchange by closing its connection without an HTTP response. That reset differs
+from the explicit MCP and streaming admission refusals.
 
 For browser-based or multi-client access, start the `http` server from `servers.yaml`:
 ```bash
@@ -589,6 +591,21 @@ curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16
 **Changing files and caching.** A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`.
 
 `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
+
+### The native read API
+
+`/read/v1` gives custom applications the shared reader directly: a manifest catalog, retained
+WPILOG snapshots and bounded sample queries in Arrow or typed NDJSON. Queries use exact integer
+microseconds and preserve native values; snapshots expose schema provenance and file boundaries.
+Queries can project struct fields, reduce numeric values to min/max buckets, request several
+entries or combine session files with recorded clock proof; REV queries decode the named signal.
+Session reads reuse the server's indexes and live recording prefixes; reopen to see new samples.
+A standalone library excludes open captures it cannot freeze and names the recording-server route
+as the remedy. Session indexes share a bounded catalog allowance as described in the API guide.
+A terminal status proves stream completion. These additive routes follow the same Origin and path
+admission as other read routes, and store files must be manifested. They make no store changes.
+The existing `/data/entries` format and MCP tools keep their behavior. [READ_API.md](READ_API.md)
+documents the routes, limits, Java local/remote library, recorded REV access and Python example.
 
 ### The Import Endpoint
 

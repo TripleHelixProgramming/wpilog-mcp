@@ -5,13 +5,12 @@
 package org.triplehelix.wpilogmcp.log;
 
 import edu.wpi.first.util.datalog.*;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
-/** Long-addressed framing around WPILib's DataLogReader. WPILib still decodes each complete
- * record: the byte source supplies a zero-copy window view or a copy of a straddling record.
+/** Long-addressed framing around WPILib's DataLogRecord. WPILib still decodes each complete
+ * payload: the byte source supplies a zero-copy window view or a copy of a straddling payload.
  * The upstream reader adapter keeps independent tests using WPILib's original buffer reader. */
 public final class LogReader implements Iterable<DataLogRecord> {
   private final LogBytes source;
@@ -57,11 +56,59 @@ public final class LogReader implements Iterable<DataLogRecord> {
   }
   public DataLogRecord getRecord(long offset) {
     if (legacy != null) return DataLogAccess.getRecord(legacy, Math.toIntExact(offset));
-    long end = recordEnd(offset);
-    if (end < 0) throw new NoSuchElementException("Incomplete WPILOG record at byte " + offset);
-    // The upstream decoder addresses this record from zero, never the file's long address.
-    ByteBuffer record = source.view(offset, Math.toIntExact(end - offset));
-    return DataLogAccess.getRecord(new DataLogReader(record), 0);
+    try {
+      int flags = source.get(offset) & 255;
+      int entryBytes = (flags & 3) + 1;
+      int sizeBytes = ((flags >>> 2) & 3) + 1;
+      int timestampBytes = ((flags >>> 4) & 7) + 1;
+      int headerBytes = 1 + entryBytes + sizeBytes + timestampBytes;
+      if (offset < 0 || offset > size() - headerBytes) throw new IndexOutOfBoundsException();
+      long payloadBytes = unsigned(offset + 1 + entryBytes, sizeBytes);
+      if (payloadBytes > size() - offset - headerBytes) throw new IndexOutOfBoundsException();
+      // Preserve the existing int-sized complete-record bound, including its header.
+      Math.toIntExact(headerBytes + payloadBytes);
+      int entry = (int) unsigned(offset + 1, entryBytes);
+      long timestamp = unsigned(offset + 1 + entryBytes + sizeBytes, timestampBytes);
+      return DataLogAccess.record(entry, timestamp,
+          source.view(offset + headerBytes, (int) payloadBytes), headerBytes);
+    } catch (IndexOutOfBoundsException e) {
+      throw new NoSuchElementException("Incomplete WPILOG record at byte " + offset);
+    }
+  }
+  /** A time-window lookup must not copy a straddling payload merely to compare its timestamp. */
+  public long recordTimestampUs(long offset) {
+    return legacy != null ? DataLogAccess.recordTimestampUs(legacy, offset) : headerField(offset, 2);
+  }
+  /** Unsigned payload length; a caller can reject an oversized value before obtaining its view. */
+  public long recordPayloadSize(long offset) {
+    return legacy != null ? DataLogAccess.recordPayloadSize(legacy, offset) : headerField(offset, 1);
+  }
+  /** The index only needs payloads for entry zero's declarations and metadata records. */
+  public int recordEntry(long offset) {
+    return legacy != null ? DataLogAccess.recordEntry(legacy, offset) : (int) headerField(offset, 0);
+  }
+
+  private long headerField(long offset, int field) {
+    try {
+      if (offset < 0 || offset >= size()) throw new IndexOutOfBoundsException();
+      int flags = source.get(offset) & 255;
+      int entryBytes = (flags & 3) + 1;
+      int sizeBytes = ((flags >>> 2) & 3) + 1;
+      int timestampBytes = ((flags >>> 4) & 7) + 1;
+      int headerBytes = 1 + entryBytes + sizeBytes + timestampBytes;
+      // Subtraction keeps even a hostile long address from wrapping around the file bounds.
+      if (offset < 0 || offset > size() - headerBytes) throw new IndexOutOfBoundsException();
+      long payloadBytes = unsigned(offset + 1 + entryBytes, sizeBytes);
+      if (payloadBytes > size() - offset - headerBytes) throw new IndexOutOfBoundsException();
+      return switch (field) {
+        case 0 -> unsigned(offset + 1, entryBytes);
+        case 1 -> payloadBytes;
+        case 2 -> unsigned(offset + 1 + entryBytes + sizeBytes, timestampBytes);
+        default -> throw new AssertionError("Unknown WPILOG header field");
+      };
+    } catch (IndexOutOfBoundsException e) {
+      throw new NoSuchElementException("Incomplete WPILOG record at byte " + offset);
+    }
   }
   @Override public Iterator<DataLogRecord> iterator() {
     if (legacy != null) return legacy.iterator();

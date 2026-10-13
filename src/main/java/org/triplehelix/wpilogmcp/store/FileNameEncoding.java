@@ -25,7 +25,7 @@ final class FileNameEncoding {
   }
   static void warnIfNeeded() {
     warnIfNeeded(System.getProperty("sun.jnu.encoding", "unknown"), warned,
-        message -> org.slf4j.LoggerFactory.getLogger(LogStore.class).warn(message));
+        message -> org.slf4j.LoggerFactory.getLogger("org.triplehelix.wpilogmcp.store.LogStore").warn(message));
   }
   static void warnIfNeeded(String encoding, AtomicBoolean once, Consumer<String> output) {
     boolean utf8;

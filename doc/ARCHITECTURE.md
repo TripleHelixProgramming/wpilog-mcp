@@ -373,9 +373,147 @@ The manager's `acquire` returns a use that tools, streams, and background synchr
 
 A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. The server validator's dynamic set is the union of permanent configuration and live session leases (`ClientLeases`); listings, store discovery, inbox polling, and import validation see the same leases. A server with no configured directory and no lease admits nothing, and cached files receive the same validation as new reads, so a lease that ends takes its files with it. A listing resolves file symlinks before reading metadata, so a link cannot broaden a lease. CSV exports are written only inside the export directory, which is checked the same way.
 
+### Shared read API
+
+The `read` package owns record selection and bounded batches for local callers, MCP tools and
+Arrow/CSV extraction. `LogAccess.local` requires explicit roots and owns its snapshots; it reads
+no home configuration, creates no store, starts no daemon and writes no cache. The server's
+`ManagedLogAccess` uses the existing `LogManager` admission, leases, catalog aliases and cached
+index instead. It does not map or scan the same file again. Native opens suppress automatic REV
+synchronization without changing the manager's global setting; a subsequent legacy acquisition
+still starts synchronization for a natively loaded version. `StoreReadCatalog` reads existing
+manifests and durable aliases without starting a writer; `RecordedRevRead` applies only the
+recorded alignment. The additive `/read/v1` routes and `RemoteLogAccess` expose retained snapshots
+and the same queries to third-party clients. `readerJar` packages the pure reader and catalog
+owners separately from the server. [READ_API.md](READ_API.md) defines the public lifecycle, wire
+formats, limits and examples; existing REV tool and endpoint behavior keeps its original owner.
+
+Both adapters feed `SampleCursors` through a borrowed `RecordSeries`. Local snapshots, cached
+WPILOGs and writer-owned live prefixes share this traversal; sorting permutations and cursor
+lifetime guards each have one owner. `LegacyMaterializer` preserves whole-entry decode counts,
+first-error wording, cached values, unknown-type previews and stable double-second ordering for
+existing tools and Arrow/CSV. The selection engine admits a contiguous range to the backend, whose
+tight loop delivers decoded values to the sink. Whole-entry reads use one range, without per-record
+query dispatch or a second sample/batch representation. File and live backends own their storage
+access; both clients share the decoding and failure policy. Narrow cursors still read headers
+before copying or decoding payloads. In particular, adjacent large integer timestamps can round to the
+same double; the legacy view preserves their file order, while native cursors retain exact
+microsecond ordering. The compatibility view is the original `LogData` object, because reload
+and REV synchronization checks rely on its identity. Domain rules and existing encodings stay
+above this boundary, and narrow legacy queries still validate the whole entry.
+
+`LogScan` owns indexing and corruption rules for both paths. Indexing telemetry and locating a
+window read record headers without copying payloads across mapping boundaries. Each entry keeps
+its compact file-order offsets plus constant-size monotonicity facts. Ordered entries use binary
+search. Only an unordered entry requested in time order needs a primitive ordinal permutation,
+ordered by integer microseconds and original ordinal. Its temporary timestamps and permutation
+cost twelve bytes per record during sorting and retain four afterward. Their shared per-access
+budget defaults to 64 MiB; exceeding it is an explained refusal, with file-order reading still
+available. Snapshots of the same loaded file version share the permutation; live views share only
+when they belong to the same writer and publication boundary. The final snapshot's last cursor
+releases it, so a later prefix cannot inherit a shorter sort and a closed peer cannot release
+another peer's memory charge. Local snapshots use canonical path and file attributes for identity.
+
+`StoreReadCatalog` retains its inventory and canonical membership map until a manifest, inspected
+directory or payload changes identity, size or modification time. It checks those dependencies
+without reading payloads; expiry of a moved-path notice also refreshes the listing. An external
+rewrite preserving all attributes remains outside this check, as for loaded logs. Concurrent
+refreshes share one future; filesystem work and waiting happen outside the ownership monitor.
+The HTTP endpoint retains the catalog while its admitted root set agrees, retiring an old set
+after its final request. REV descriptions and queries share bounded immutable decodes there,
+with leases charging active reads and alignment kept per request. Native REV queries decode only
+exactly selected signals and the first model value needed for a SPARK identity; describe still
+reads all signals, and a complete decode can serve a selection. The decoder's input and
+decoded-storage limits are documented in [READ_API.md](READ_API.md#stores-and-recorded-rev-alignment);
+legacy synchronization keeps its existing decoder limits and results. Native REV retention uses
+primitive timestamp/value chunks, charged before allocation, without the former four-million-value
+ceiling. Store-reader tolerance is explicit and separate from writer inventory: invalid historical
+sessions may be skipped by either, but invalid robot/control manifests still stop writer inventory.
+
+A query selects one entry and explicit disjoint windows, with inclusive or exclusive right ends.
+`read.FieldPath` owns projection for native and legacy callers; `NumericBucket` owns arithmetic
+for their reductions. Native buckets use exact integer boundaries while legacy tools retain their
+double-second results. `TimeWindows` shares containment and binary-boundary traversal without
+rounding one clock representation into the other. Multi-entry reads admit their cursors together
+and return separate tables rather than inventing a join. A manifest-backed session union applies
+recorded clock transforms to an explicit anchor, rejects unexplained overlaps by default, and
+keeps source coordinates. Capture rollover needs no fitted offset: `CaptureWriter` keeps the same
+session object through rollover and continuing reconnects, and creates a new one after a backward
+clock or a reconnect discrepancy beyond five seconds. `CaptureStore` records the writer's original
+start instant on every file. A union checks that provenance and the collecting store, preserved
+through peer copies and mirror origins. Peer sync can consolidate manifests using calendar
+information, so a shared session ID alone never proves a shared clock. An external editor forging
+those provenance facts is outside this recorded-evidence rule.
+
+Server sessions borrow `ManagedLogAccess` for every member, reusing its cached index and live
+publication boundary. A later append does not invalidate that writer-owned prefix. When a live
+member shares an entry with another member, `KEEP_ALL` is required: stale manifest timestamps
+cannot prove those recordings are disjoint. A standalone
+catalog cannot freeze an external writer and excludes manifested open captures with a reason;
+choosing one as the anchor is refused. Read the session from its recording server or follow files
+individually. The merge shares an 8 MiB lookahead bound across at most 64 files. A catalog also
+charges at most 128 MiB of retained session address indexes, until each snapshot's last cursor
+closes. Admissions use a nonblocking single-owner guard: at most one uncharged cold index is being
+constructed, and competing opens get `BUSY`. File IO and closes remain outside monitors. This is
+a retained-index bound, not a total heap quota, and one cold index can exceed it before refusal.
+Unproven files are excluded with reasons, and identical hashes are not read twice.
+
+Session windows are mapped backwards through the recorded alignment chain before the shared
+cursor's binary search. Exact offset subtraction preserves large integer timestamps. Drift
+inversion rounds outwards, allowing for each floating operation and integer rounding in the
+forward mapping; final inclusion still uses that original forward mapping. Overlapping inverse
+margins are merged to avoid duplicate reads. Extreme coefficients fall back to a complete read
+when a conservative inverse cannot be established.
+Batches visit at most 4,096 records and target at most 4 MiB of encoded payload. File-order records
+outside a window still count against the work bound. A larger record is delivered alone, up to an
+explicit 64 MiB default limit; controls and recorded schemas are checked before allocation too.
+These are encoded-byte and sort-workspace bounds, not a total heap quota: mappings, offsets and
+expanded decoded values have their own cost. Integer timestamps, long byte positions and native
+values survive without numeric coercion. Unknown types retain their complete bytes in this API;
+legacy tools keep their historical preview. Structs use the shared decoder and report schema basis.
+
+A snapshot publishes the file boundary it indexed. Its open and each batch check file attributes
+before and after reading; a changed file discards the operation and requires reopening. This also
+applies to a growing file read from disk unless the caller explicitly uses `LogFollower`.
+That caller-polled owner reuses `LogScan.resume` after the identity/header/last-record anchors
+agree, retries partial tails, and reads appended ordinals without assuming timestamp order.
+Each refresh remaps a fixed prefix; an admitted older cursor keeps its original mapping.
+Replacement or changed anchors select a fresh scan, never an append to an unrelated file. A mapping pins a lifetime, not an immutable copy; edits
+that preserve the filesystem identity, size and modification time remain undetectable, as in the
+existing manager. Closing an owner rejects new reads, while admitted cursors retain every window
+until they close. The process-wide move lease is released only after unmapping, including on
+Windows; scanning, sorting and unmapping happen outside the lifetime monitor.
+
+Native cursors report decode problems only for selected records. Full validation is an explicit
+all-record cursor. Existing MCP and data endpoint reads retain their whole-entry diagnostics;
+selective reading must not silently remove an existing warning.
+
+A managed live snapshot retains the writer's published sequence, entry lengths and robot-time
+scope end. Later appends cannot change that view; hot wire values and mapped cold records expose
+the same source values without rescan. Its file boundary is null, so appends do not invent an ETag
+or invalidate the fixed prefix. Closed files still use the existing reload and stream-change
+checks at their original response boundaries. Owner shutdown retires native snapshots after their
+last cursor; a compatibility tool's acquisition stays retained until the caller closes it,
+even if shutdown evicts the cached log meanwhile.
+
+The HTTP reader retains a bounded set of expiring snapshots so multiple queries see one live
+prefix, not a freshly opened file on each request. Active requests postpone idle expiry; the
+idle clock starts again when they finish. DELETE retires admission but lets active cursors finish.
+Bounded streaming workers and an IO-progress deadline contain slow or stopped readers. NDJSON preserves integer coordinates and floating-point bits with explicit
+tags; Arrow shares one type mapping and the existing IPC writer. Both require a terminal status,
+so a disconnected or invalidated response is never a completed query. Store paths are checked
+against manifest membership after canonicalization, including paths reached through symlinks.
+
+The library's manifest types are the store's existing record owners, not a parallel format.
+Transfer-journal inventory and metadata interfaces are pure shared owners, keeping store writers,
+server singletons and network providers out of the reader artifact. Isolated consumer compilation,
+execution and bytecode dependency checks enforce this boundary. Recorded REV remains an eager
+adapter with double-second timestamps and a charged immutable decode; it neither claims
+constant-space input streaming nor recomputes an offset. Raw and converted clocks are explicit.
+
 ### Loading
 
-The log manager returns a log already in memory, or loads it. Loading takes a lock for that path, so two calls for the same log load it once, while different logs load in parallel. `MappedLogBytes` owns read-only windows of at most 1 GiB, addressed with long offsets, up to a stated 1 TiB file limit. `LogReader` frames each record from that byte source and gives it to WPILib's unchanged `DataLogReader` at offset zero. A record contained in one window is a buffer view; only a straddling record is copied. The window size is injectable for tests.
+The log manager returns a log already in memory, or loads it. Loading takes a lock for that path, so two calls for the same log load it once, while different logs load in parallel. `MappedLogBytes` owns read-only windows of at most 1 GiB, addressed with long offsets, up to a stated 1 TiB file limit. `LogReader` validates and frames each record once, passing only its payload view to WPILib's unchanged `DataLogRecord` value and control decoders. Previously the long-addressed reader framed a complete record, then an upstream reader framed it again and allocated more buffer views. A payload contained in one window is a view; only a straddling payload is copied. The window size is injectable for tests, and buffer-backed differential reads retain WPILib's original framing.
 
 For another process's append, `LogScan.resume(previous, reader, path)` copies the old compact
 offset index, entry declarations (including ID aliases and metadata) and time range, then reads
@@ -543,10 +681,14 @@ Game data is one file per season, bundled in the JAR. The current season's is lo
 ## Concurrency
 
 In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads
-and grows to 32 with direct handoff and no waiting queue. Data streams, store transfers and
-health share this pool: four blocked streams start additional workers for new requests instead
-of queuing health behind them. This is bounded capacity, not a dedicated health thread; all 32
-busy handlers can still exhaust it. A further HTTP exchange is rejected by the JDK dispatcher,
+and grows to 32 with direct handoff and no waiting queue. Data and native-read routes hand off
+to 16 streaming workers; store and import routes have four independent workers. Excess transfers
+receive JSON `BUSY` and 503 with a retry hint; stalled streams cannot
+occupy health or registration's dispatch workers. A progress watchdog interrupts the owning
+SocketChannel worker after ten seconds without IO progress, including request uploads. Output
+progress is checked in at most 64 KiB units. The watchdog never flushes or closes an exchange
+itself, since closing a chunked stream can block behind the same peer. If all 32 dispatch
+workers are occupied by other handlers, a further exchange is still rejected by the JDK dispatcher,
 which closes the connection without an HTTP response: the client sees a reset, not a 503. This
 is distinct from MCP execution admission, which can return 503. MCP calls use a separate pool capped at
 min(32, max(4, 2 × CPU count)), with up to 64 further threads for event streams. Requests are
@@ -628,8 +770,8 @@ size can be slightly inflated; it is an approximation, not an exact independent-
 MCP HTTP bodies are limited to 4 MiB and ten seconds. A separate pool admits at most
 `min(32, max(4, processors * 2))` MCP requests with no waiting queue; overload answers 503.
 HTTP dispatch uses direct handoff to four-to-32 workers, without a waiting queue. Slow MCP
-bodies and tool calls do not occupy those workers; data and store streams do, so dispatch grows
-immediately beyond its four core workers when they are busy.
+bodies, tool calls and data/store streams do not occupy those workers; streaming admission has
+its own pools and progress deadlines as described above.
 
 Store JSON publication uses the same 4 MiB limit as reading. An oversized update is refused
 before replacing the last readable manifest. Move aliases follow a bounded chain with cycle

@@ -59,7 +59,7 @@ final class CaptureRecovery {
         var files = new ArrayList<>(session.files());
         files.removeIf(f -> f.path().equals(open.path()));
         files.add(new LogFile(open.path(), hash, size, "wpilog",
-            new Provenance("captured", null, file.getFileName().toString(), session.startedAt(), false),
+            new Provenance(Provenance.CAPTURED, null, file.getFileName().toString(), session.startedAt(), false),
             true, scan.minTimestamp(), scan.maxTimestamp(), session.startedAt(), ended,
             session.startBasis(), scan.truncated(), null));
         io.write(manifest, new Session(session.id(), session.startedAt(), ended, session.startBasis(),

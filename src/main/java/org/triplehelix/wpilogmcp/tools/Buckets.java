@@ -71,13 +71,7 @@ public final class Buckets {
 
     var buckets = new ArrayList<Bucket>();
     int index = -1;
-    int count = 0;
-    double min = Double.POSITIVE_INFINITY;
-    double max = Double.NEGATIVE_INFINITY;
-    double sum = 0;
-    int finite = 0;
-    double first = 0;
-    double last = 0;
+    var accumulator = new org.triplehelix.wpilogmcp.read.NumericBucket();
     for (var tv : values) {
       double t = tv.timestamp();
       double v = ((Number) tv.value()).doubleValue();
@@ -85,33 +79,18 @@ public final class Buckets {
       if (i < 0) i = 0; // a sample before the window's start, if a caller passes one, counts first
       if (i != index) {
         if (index >= 0) {
-          buckets.add(bucket(start + index * bucketSec, count, min, max, sum, finite, first, last));
+          buckets.add(bucket(start + index * bucketSec, accumulator));
         }
         index = i;
-        count = 0;
-        min = Double.POSITIVE_INFINITY;
-        max = Double.NEGATIVE_INFINITY;
-        sum = 0;
-        finite = 0;
-        first = v;
+        accumulator = new org.triplehelix.wpilogmcp.read.NumericBucket();
       }
-      count++;
-      last = v;
-      if (Double.isFinite(v)) {
-        finite++;
-        sum += v;
-        if (v < min) min = v;
-        if (v > max) max = v;
-      }
+      accumulator.add(v);
     }
-    buckets.add(bucket(start + index * bucketSec, count, min, max, sum, finite, first, last));
+    buckets.add(bucket(start + index * bucketSec, accumulator));
     return new Result(bucketSec, buckets);
   }
 
-  private static Bucket bucket(double start, int count, double min, double max, double sum,
-      int finite, double first, double last) {
-    return finite > 0
-        ? new Bucket(start, count, min, max, sum / finite, first, last)
-        : new Bucket(start, count, null, null, null, first, last);
+  private static Bucket bucket(double start, org.triplehelix.wpilogmcp.read.NumericBucket value) {
+    return new Bucket(start, Math.toIntExact(value.count()), value.min(), value.max(), value.mean(), value.first(), value.last());
   }
 }

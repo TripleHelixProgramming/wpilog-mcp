@@ -161,6 +161,10 @@ public final class ArrowStreamWriter {
       typeType = Type.Int;
       type = Int.createInt(b, 64, true);
       childOffsets = new int[0];
+    } else if (t instanceof ArrowType.UInt64) {
+      typeType = Type.Int;
+      type = Int.createInt(b, 64, false);
+      childOffsets = new int[0];
     } else if (t instanceof ArrowType.Bool) {
       typeType = Type.Bool;
       Bool.startBool(b);

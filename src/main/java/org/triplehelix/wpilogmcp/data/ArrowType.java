@@ -19,6 +19,9 @@ public sealed interface ArrowType {
   /** A signed 64-bit integer: a log's int64 values, a bucket's count, an enum's number. */
   record Int64() implements ArrowType {}
 
+  /** A native struct's uint64 field; its full unsigned value never passes through a double. */
+  record UInt64() implements ArrowType {}
+
   /** A boolean, bit-packed as Arrow packs it. */
   record Bool() implements ArrowType {}
 

@@ -89,6 +89,12 @@ public class LogManager {
   private final LogParser logParser;
   private final LogCache logCache;
 
+  /** Shared admission for tools and streaming encoders, backed by this manager's existing uses. */
+  private final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess readAccess =
+      new org.triplehelix.wpilogmcp.read.server.ManagedLogAccess(this);
+
+  public org.triplehelix.wpilogmcp.read.server.ManagedLogAccess readAccess() { return readAccess; }
+
   // Disk cache (initialized in constructor)
   private final DiskCache diskCache;
   private final CacheDirectory cacheDirectory;
@@ -103,6 +109,7 @@ public class LogManager {
   private final ExecutorService syncExecutor;
   private final ScheduledExecutorService evictionScheduler;
   private volatile boolean autoSyncEnabled = true;
+  private final java.util.Set<LogData> nativeSyncPending = ConcurrentHashMap.newKeySet();
 
   /** Per-path locks to prevent duplicate concurrent parses of the same log file. */
   private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
@@ -220,6 +227,7 @@ public class LogManager {
     // running for it. Only its own: the path may already hold a newer instance (a reload, or a
     // load after an expiry the cache reports late), whose records must stay
     this.logCache.setEvictionCallback((evictedPath, evicted) -> {
+      nativeSyncPending.remove(evicted);
       loaded.computeIfPresent(evictedPath, (k, v) -> v.log() == evicted ? null : v);
       // The sync results and a pending sync belong to the newer instance only when the sync
       // cache already holds that instance's entry; otherwise they are the evicted log's
@@ -268,6 +276,8 @@ public class LogManager {
    */
   public void shutdown() {
     logger.info("Shutting down LogManager");
+    try { readAccess.close(); }
+    catch (IOException e) { logger.warn("Could not retire read access", e); }
     stores.close();
     evictionScheduler.shutdownNow();
     syncExecutor.shutdownNow();
@@ -414,7 +424,7 @@ public class LogManager {
       return view == null ? null : new LogUse(view, snapshot, view::close);
     }
     if (log instanceof LazyParsedLog lazy) {
-      if (!lazy.retain()) return null;
+      if (snapshot == null || !lazy.retain()) return null;
       return new LogUse(log, snapshot, () -> {});
     }
     // Eager results hold no mapping, but moving their source mid-call would invalidate the
@@ -428,7 +438,13 @@ public class LogManager {
    * Loads and retains as one operation. Taking a bare cached log and retaining it later would
    * let an eviction unmap it between those steps; an already retired instance is retried.
    */
-  public LogUse acquire(String path) throws IOException {
+  public LogUse acquire(String path) throws IOException { return acquire(path, true); }
+
+  /** Native snapshot reads share admission and mappings without starting correlation. A later
+   * legacy acquisition of the same cached version still gets its usual automatic sync. */
+  public LogUse acquireReadOnly(String path) throws IOException { return acquire(path, false); }
+
+  private LogUse acquire(String path, boolean synchronize) throws IOException {
     Path filePath = Path.of(path).toAbsolutePath().normalize();
 
     // Validate path is allowed (or cache is already loaded)
@@ -448,7 +464,8 @@ public class LogManager {
       if (use != null) return use;
     }
     LogData cachedLog = logCache.get(normalizedPath);
-    if (cachedLog != null && changeSinceLoad(normalizedPath, cachedLog) == null) {
+    if (cachedLog != null && !(synchronize && autoSyncEnabled && nativeSyncPending.contains(cachedLog))
+        && changeSinceLoad(normalizedPath, cachedLog) == null) {
       logger.debug("Returning cached log: {}", filePath);
       var use = retain(cachedLog, snapshotOf(path, cachedLog));
       if (use != null) return use;
@@ -473,7 +490,12 @@ public class LogManager {
         if (change == null) {
           logger.debug("Returning cached log (loaded by another thread): {}", filePath);
           var use = retain(cachedLog, snapshotOf(path, cachedLog));
-          if (use != null) return use;
+          if (use != null) {
+            try {
+              if (synchronize && autoSyncEnabled && nativeSyncPending.remove(cachedLog)) startAutoSync(cachedLog);
+              return use;
+            } catch (RuntimeException | Error failure) { use.close(); throw failure; }
+          }
           logCache.remove(normalizedPath, cachedLog);
         } else {
           logger.info("Reloading {}: {}", filePath.getFileName(), change);
@@ -551,22 +573,13 @@ public class LogManager {
       try {
         LogFileAccess.checkReadable(filePath);
         loaded.put(normalizedPath, new Loaded(log, snapshot));
+        if (!synchronize) nativeSyncPending.add(log);
         logCache.put(normalizedPath, log);
         logger.debug(
             "Loaded log with {} entries spanning {} seconds",
             log.entryCount(), String.format("%.2f", log.duration()));
 
-        // Auto-sync matching revlogs asynchronously (doesn't block the MCP response)
-        if (autoSyncEnabled) {
-          try {
-            autoSyncRevLogsAsync(log);
-          } catch (RejectedExecutionException e) {
-            // The sync executor is shut down (the server is stopping): the log still loads
-            logger.warn("RevLog sync skipped for {}: the sync executor is shut down",
-                filePath.getFileName());
-            syncCache.remove(normalizedPath);
-          }
-        }
+        if (synchronize && autoSyncEnabled) startAutoSync(log);
 
         // Evict again after adding the new log in case it pushed us over limits
         logCache.evictIfNeeded();
@@ -833,6 +846,7 @@ public class LogManager {
     logCache.clear();
     syncCache.clear();
     loaded.clear();
+    nativeSyncPending.clear();
     revCandidates.clear();
     logger.info("Cleared all loaded logs");
   }
@@ -1123,6 +1137,14 @@ public class LogManager {
    *
    * @param wpilog The parsed wpilog to sync revlogs for
    */
+  private void startAutoSync(LogData log) {
+    try { autoSyncRevLogsAsync(log); }
+    catch (RejectedExecutionException failure) {
+      logger.warn("RevLog sync skipped for {}: the sync executor is shut down", Path.of(log.path()).getFileName());
+      syncCache.remove(log.path());
+    }
+  }
+
   private void autoSyncRevLogsAsync(LogData wpilog) {
     startRevLogSync(wpilog, findMatchingRevLogs(wpilog), null, Map.of());
   }

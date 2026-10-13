@@ -11,7 +11,8 @@ How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) ex
 
 ```bash
 ./gradlew build          # Full build with tests
-./gradlew shadowJar      # Build the self-contained JAR only
+./gradlew shadowJar      # Build the self-contained server JAR only
+./gradlew readerJar      # Build the standalone read-only Java library
 ./gradlew install        # Build and install to ~/.wpilog-mcp/
 ```
 
@@ -341,6 +342,144 @@ Native Windows launchers/CLI integration and the interactive installer should al
 ### The data endpoint's streams
 
 `DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`. CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.
+
+The same check reads `native/native_unsigned.arrow`, written by `NativeUnsignedReadTest`,
+when the native sample directory is present. It compares the unsigned Arrow schema and exact
+integer boundary values with independent Python integers, including values above 2^53 and
+the signed 64-bit boundary. Native samples stay separate from the legacy CSV comparison,
+whose unsigned struct conversion is unchanged. Run the checker with `TZ=UTC` on a workstation:
+its legacy timestamp comparison uses Python's local interpretation of timezone-free datetimes,
+and the Linux CI runner already uses UTC.
+
+### Shared reader checks
+
+`LocalLogAccessTest`, `LocalReadBoundaryTest`, `LocalReadConcurrencyTest` and `HeaderIndexTest`
+exercise selective decoding, explicit window ends, large integer timestamps and values, original
+ordinals, encoded-byte/workspace limits, close races and deterministic mapping release. The header
+checks use a counting byte source to reject whole-payload reads during indexing and window lookup.
+`LocalReadDifferentialTest` reads every generated fixture through 4 KiB mappings, checking raw
+record positions, timestamps, primitive values and struct fields against the independent reader
+and WPILib's dynamic struct decoder. Legacy enrichment and decode diagnostics are compared
+separately. No real logs, Python, native robot runtime or HTTP service are needed for these checks.
+
+`SampleCursorsTest` and `GuardedSampleCursorTest` pin shared traversal, whole-entry legacy
+materialization, exact diagnostic wording, large double-timestamp ties and cancellation during
+an active batch. The work checks require one backend admission for a complete entry, one framing
+pass per record and payload-only buffer views. Performance comparisons measure indexing and decoding
+separately, using mixed scalar/array/string entries, structs, incremental reloads and hot/cold live
+prefixes; a faster scan must not hide a slower read. Keep the original and candidate JARs frozen,
+alternate their run order, record allocation as well as time, and check values independently.
+`ManagedLogAccessTest` checks shared cache identity, path admission, shutdown
+and eviction lifetimes, live publication prefixes, and a source guard against direct manager
+acquisition in tools or encoders. `LiveReadEngineTest` checks fixed-prefix order facts and address
+accounting, hot/cold opaque values and the live decoder's exception policy. The existing reload,
+mapping-lifetime and data-endpoint checks retain their response-level assertions.
+
+`StoreReadCatalogTest` covers manifest-only admission, mirrors, provenance, invalid manifests,
+move aliases, shared system receipts and independently calculated REV offsets/drift.
+It also checks reuse and invalidation after new manifests, atomic replacements and payload loss,
+and session unions against hand-calculated clocks, overlap refusals, excluded unproven sources and
+provenance. It also checks captured rollover admission, exclusion of other recording runs, peer
+round trips, retained index budgets and concurrent catalog retirement. `SessionReadTest` drives
+the real HTTP transport over a writer-owned live prefix while new samples arrive.
+`SessionTransferReadTest` connects the actual recorder to a loopback NT4 fixture, holds a session
+prefix through growth and rollover, then reads the closed session after peer sync and mirroring
+over HTTP. Timestamps and values are checked against the generating function on every path;
+the manifests are written by the production recorder and transfer code. This proves those
+software paths, not real-robot networking or filesystem behavior on an untested platform.
+`SessionClockTest` checks inverse-window margins, clock chains and integer edges above 2^53;
+a narrow session query asserts its visited-record count as well as hand-calculated values.
+`SessionCursorTest` checks the aggregate lookahead bound. `QueryOperationsTest` pins
+projection, exact bucket boundaries, non-finite counts and shared arithmetic; the legacy bucket and
+window tests retain their independently computed expectations. `LogFollowerTest` covers partial
+tails, incremental scan positions, backward timestamps and a held older prefix.
+`RevReadCacheTest` checks concurrent decode sharing, active memory charges, replacement identity,
+and input/decoded expansion bounds, plus selective decoding for exact device/signal keys.
+`RevLogParserNativeFormatTest` checks that selection in the other REV container format. `LocalLogAccessTest` pins shared sort charges across snapshots.
+`HttpAdmissionTest` includes 32 real clients that stop reading; `StreamingRequestsTest` proves
+the progress watchdog releases a blocked socket without the client disconnecting. These tests
+use bounded generated batches, so heap exhaustion cannot accidentally free a worker and disguise
+the starvation being tested.
+`ReadEndpointTest`, `ReadWireTest`, `RemoteLogAccessTest` and `RevReadEndpointTest` cover the
+versioned read routes, exact typed values, projected/reduced Arrow shapes, multi-entry NDJSON
+and multipart Arrow, bounded leases, cancellation, completion proof and input/path admission.
+They also check retryable overload, schema errors and null-message failures. Read and store
+streaming admission are tested independently; the Python example test plants a decode problem
+and requires it to survive the terminal-status check. `StructSchemaDescriptionsTest` keeps schema provenance intact
+without trusting remote byte sizes. `ReadArrowTypesTest` pins the shared encoding owner.
+`ReadLibraryTest` compiles and runs a consumer with only `readerJar` on its classpath, including a
+mirror and recorded REV data, typed remote catalog/descriptor signatures, and checks that no home
+or cache is written. `ReadLibraryLinkageTest`
+checks bytecode dependencies so an unexercised error path cannot depend on an omitted server class.
+The public API and runnable examples are in [READ_API.md](READ_API.md).
+
+Run the frozen-build comparison below whenever shared scanning or decoding changes. The same-build
+conformance oracle alone cannot prove compatibility with the previous implementation. Both MCP and
+Arrow/CSV now use the shared admission and traversal; their compatibility materializer deliberately
+keeps the legacy whole-entry diagnostics and value representation.
+
+### Comparing frozen server builds
+
+The shared read API migration starts with a behavior baseline, before changing the reader.
+The ordinary conformance sweep compares entry orders within one implementation. The frozen-build
+check instead runs the same requests against two packaged servers through HTTP MCP and the data
+endpoint. It requires zero unexplained differences; a passing comparison is evidence for the
+listed cases, not proof about every possible input or thread interleaving.
+
+Create the corpus once from the baseline checkout, outside the repository. Keep its absolute
+location, files, modification times and request manifest unchanged for both captures. Requests
+are generated from the baseline's schemas and entries, never regenerated from the candidate.
+The generator and capture commands refuse an existing output directory. Select the baseline
+JAR from `build/libs` explicitly; that folder can also hold earlier versions.
+
+```bash
+evidence=$(mktemp -d)
+git rev-parse HEAD > "$evidence/baseline-commit.txt"
+./gradlew shadowJar readBehaviorCorpus -PreadBehaviorDir="$evidence/corpus"
+cp /path/to/baseline-all.jar "$evidence/baseline.jar"
+python3 ci/capture_read_behavior.py --jar "$evidence/baseline.jar" \
+  --corpus "$evidence/corpus" --output "$evidence/baseline"
+```
+
+After the candidate is built, pass its JAR explicitly and use the baseline capture's `port`
+from `manifest.json`. The endpoint URL is part of the public response and must be identical.
+Do not copy the corpus to a second directory: paths and file identity affect responses and ETags.
+
+```bash
+python3 ci/capture_read_behavior.py --jar /path/to/candidate.jar \
+  --corpus "$evidence/corpus" --output "$evidence/candidate" --port <baseline-port>
+python3 ci/compare_read_behavior.py "$evidence/baseline" "$evidence/candidate" \
+  --report "$evidence/comparison.json"
+python3 -m unittest ci.test_compare_read_behavior ci.test_capture_read_behavior
+```
+
+The comparison preserves numeric tokens exactly, including integers above 2^53 and negative zero,
+array order, null versus missing fields, warnings, paths and complete result metadata. MCP JSON text
+blocks are compared structurally, and Arrow, CSV and image data retain their bytes. Object member
+order is immaterial. Only the top-level tool execution duration is replaced with numeric zero;
+its presence and numeric type remain checked. HTTP Date and the random MCP session identifier are
+run-specific; MCP Content-Length is omitted because the duration changes the response length.
+The capture manifest lists these rules. Raw responses are retained alongside compared results.
+Inputs' hashes and modification times are checked before and after each capture. The corpus hash
+is compared too. Missing cases, changed requests, malformed captures and incomplete runs fail.
+
+Each child has an isolated home and cache, no TBA credentials, and a loopback-only listener.
+Export artifacts are collected only for the request that writes them, and owned temporary exports
+are removed on exit. Startup health and initial REV synchronization are barriers, with their raw
+responses retained; their timing is not an equality assertion. Timings for every measured request,
+the JDK and JAR hash are recorded under `run`, separately from behavior.
+
+The corpus covers convention fixtures, a frozen manifest with system text, successful REV reads,
+typed and projected Arrow/CSV, multiple entries, nonempty windows and refusals. A malformed record
+outside a requested window pins existing whole-entry diagnostics. Existing consumers must retain
+those diagnostics when selective decoding arrives; scoped diagnostics will be a new API option.
+Runtime heap/cache observations, external TBA results and alignment writes are explicitly excluded.
+Live growth, cancellation, mapping lifetimes, concurrent access, mirrors and third-party adapters
+remain separate migration gates, with independent-reader and numerical checks retained. Do not
+call a static corpus comparison complete validation of those behaviors or silently fix a baseline
+defect during the refactor. Keep stage results separately reviewable; proceed through multiple
+stages only when the maintainer has authorized doing so. Neither passing checks nor a completed
+migration authorize publication.
 
 ## Changing or Adding a Tool
 

@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native read queries now project nested struct/array fields and reduce numeric windows to explicit min/max buckets through the same field and arithmetic owners as legacy tools. Previously third-party readers had to reimplement these operations or use the explorer endpoint.
+- Multi-entry native reads admit separate tables together, in NDJSON or multipart Arrow, and manifested sessions can be read on a requested anchor clock with recorded alignment and source coordinates. Previously readers had to coordinate separate queries and combine files themselves; unproven clocks and overlaps are never silently merged.
+- A caller-polled local follower resumes appended WPILOG prefixes, including partial records and backward timestamps, while retaining older cursors. Previously local native reads could only refuse a growing file and start over.
+- Native REV queries decode only named signals and the model evidence needed for device identity; complete descriptions still share their decode with later queries. Previously reading one signal expanded every device signal and could exceed the decoded-storage budget unnecessarily.
+- A standalone Java reader and additive `/read/v1` HTTP API expose bounded snapshots, native samples and schema provenance to third-party clients. Previously custom applications needed server internals or the explorer's extraction format; existing MCP and `/data/entries` responses stay unchanged.
+- Read-only store catalogs now expose recorded files, shared system receipts, provenance and mirror facts through the public reader, and REV access applies recorded offset and drift with an explicit raw-clock fallback. Previously those manifest and alignment owners were reachable only through server workflows.
+
+- MCP and Arrow/CSV now share read admission and record traversal with the local API, including writer-owned live prefixes. Previously the cached, live and selective paths traversed records separately; compatibility materialization retains existing diagnostics, values, ordering, reload notices and lifetimes.
+- A transport-neutral local read foundation now offers explicitly owned snapshots and bounded, selective WPILOG cursors with exact timestamps, native values and scoped diagnostics. Previously every narrow query decoded a whole entry; existing MCP and Arrow consumers retain their established behavior.
+
 - Windowed WPILOG mapping reads, imports, uploads and captures files through 1 TiB; the old single buffer refused files above 2 GiB. Ordinary-file indexes retain four-byte offsets, and all windows are released before Windows renames.
 
 #### Capture and store
@@ -102,10 +112,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+
+- Session overlap refusals distinguish closed recordings from potentially overlapping live prefixes; previously even an entirely closed session was described as live.
+- Native session unions recognize the store's `captured` provenance and include rollover files on their recorded clock; previously the mismatched kind excluded them. Original start time and collecting-store identity distinguish a recording from independently captured files merged into the same session. An excluded duplicate no longer hides a later source with recorded alignment.
+- HTTP session reads reuse managed indexes and fixed live prefixes, with a shared retained-index budget; previously they scanned every member separately and refused reads after an open capture grew. Standalone catalogs now name open captures they cannot freeze instead of admitting an unstable session. Live members sharing an entry require explicit overlap admission because their manifests may lag the recording.
+- Windowed session queries seek into each source through conservative inverse clock bounds; previously even a small window decoded every record of every member. Exact forward filtering and source coordinates remain unchanged.
+
+- Public Java catalog and descriptor methods return typed models without relocated Gson in their signatures; previously consumers had to import an implementation package to use these APIs.
+- Store transfers and uploads have independent streaming capacity, and overload returns retryable JSON `BUSY`; previously slow telemetry readers could occupy every upload worker and the remote client described a plain-text 503 as invalid JSON.
+- Native read diagnostics preserve null-message failures, explain unavailable Arrow schemas, distinguish lost disk boundaries from live recordings, and report absent REV alignment as null. Previously these edges lost their reason or implied facts that were not measured; the Python example now retains batch decode problems too.
+- Arrow query schemas identify their retained snapshot instead of repeating its full descriptor, file-order window lookup uses the shared binary boundary rules, and remote REV calls reuse HTTP resources. Previously large catalogs inflated every stream, many windows repeated linear searches and each REV call created another client and timer.
 - On Windows, the search for a VS Code installed apart from WPILib reads a quoted PATH entry as the folder inside the quotes, and passes over an entry no file system can name. In 0.10.0-dev3 such an entry made every `--with-extension` install fail as a usage error naming an illegal character, even when WPILib's editor came first; now only `--vscode system` reads PATH.
 
 - The installers find WPILib's VS Code in every season's folder without PATH, including the app bundle on a Mac, and offer the extension only to an editor whose version it accepts: one gets a yes-or-no question, several a menu with the newest season first and the default, and none no question at all. 0.10.0-dev3 looked only at the calendar year's `vscode/bin/code`, then at `code` on PATH: it found no WPILib editor on a Mac, or last season's each January; it would install into an editor too old for the extension or into a VS Code installed apart from WPILib; and it asked about the extension before looking, so a yes with no editor installed the server and then failed. An explicit `--with-extension` now fails before anything is written when no editor accepts the extension, and another VS Code is used only with `--vscode system`.
 
+- Native NDJSON queries split wide decoded batches to fit the wire budget, preserving all samples and exact byte/work totals. Previously default queries for ordinary wide arrays returned 413 even though local reads and Arrow succeeded.
+- Tolerant discovery is confined to read-only store catalogs. Previously its new handling of invalid robot, pull, import and system-index manifests also weakened the existing inventories used by store writers.
+- Native snapshot opens no longer start REV correlation or write its cache. Previously they inherited that side effect from legacy tool admission; later legacy acquisition of the same cached file still starts its normal synchronization.
+- Active read requests prevent snapshot idle expiry, with the idle clock restarting at completion. Previously a slow stream could finish successfully but lose its fixed-prefix lease before the next query.
+- Native REV reads retain bounded primitive chunks instead of millions of boxed samples. Previously a four-million-sample ceiling refused long practice logs that fit within the same 512 MiB budget.
+- The standalone reader relocates bundled dependencies and includes WPILib's redistribution notice. Previously it could shadow an application's WPILib or JSON classes, exposed a split package, and omitted the notice.
+- Shared read requests reuse manifest inventories, immutable REV decodes and chronological permutations for the same file version. Previously each request rebuilt the catalog and REV values, and separate snapshots repeated the same sort; file changes still invalidate the shared work.
+- HTTP data, native-read and store streams now use bounded workers separate from health and registration, with a ten-second IO-progress deadline. Previously 32 peers that stopped reading exhausted dispatch indefinitely and made health fail; excess streams now receive 503 and stalled reads release their resources.
+- Native REV reads now bound input size, decoded expansion and retained reads before allocating their eager decode. Previously simultaneous queries could each retain an unbounded expansion of the same file.
+- Shared-reader materialization admits whole ranges to the storage backend and frames each record once, retaining WPILib's value decoders. The refactor had added per-record query dispatch; duplicate framing and buffer views also made mixed-entry and mapped live reads slower despite faster indexing.
 - Sync cache files above 64 MiB are refused before reading and removed at startup; previously a crafted large file could allocate its whole payload despite bounded record counts. Reads also stop at the measured size if a file grows; format version 12 is unchanged.
 
 - Stack exhaustion in a tool, result normalization or request dispatch now returns an explained error and leaves the server answering the next request; previously it could end a stdio session.
@@ -188,8 +218,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Session reads now pass through a real loopback recorder, rollover, peer sync and mirror, with every timestamp and value checked independently. Earlier session tests assembled their manifests directly and did not cover that complete path.
+- Shared-reader regressions cover projected and reduced values, multi-entry completion, session merge clocks and bounds, selective REV retention, append following and a standalone consumer's public types. Failing-first checks and restored fault plants guard the new behavior, alongside frozen legacy responses and independent real-file comparisons.
 - Editor lookup tests build the Linux, Windows and Mac app-bundle layouts on every platform with fixed seasons, and drive both installer scripts through a three-season menu with one season too old, a named season, `--vscode system`, a home without WPILib and a refused explicit install that leaves nothing behind. Previously the one fake editor sat in the calendar year's folder, the only place 0.10.0-dev3 looked. The extension's `engines.vscode` reaches the JAR through the generated version class, and a test compares the two.
 
+- Frozen-build read comparisons now exercise identical generated inputs and requests through MCP and Arrow/CSV, preserving exact numbers, warnings, ordering and metadata; previously conformance compared entry orders only within one implementation. The comparator's fault plants check that changed answers and bytes cannot pass as equivalent.
 - The PhotonVision harness proves a fresh settings save and completed web-server restart even when that restart closes the POST response before its headers arrive. Previously the expected restart could fail setup with HTTP EOF; missing save evidence now reports the backend log tail.
 - A real data-endpoint regression holds four response streams on a latch and checks health before releasing them; previously admission tests covered stalled MCP bodies but missed starvation by other HTTP handlers.
 - The operations manual's tool names, CLI verbs, YAML examples, provider names and states, metrics and relative links are checked against the code and document headings; previously no test read the manual, so stale or misspelled claims could pass the build.

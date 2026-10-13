@@ -5,11 +5,13 @@
 package org.triplehelix.wpilogmcp.data;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
+import org.triplehelix.wpilogmcp.log.struct.UnsignedEnumValue;
 
 /**
  * Builds one column of a record batch in Arrow's IPC layout, on the heap: the validity bitmap,
@@ -107,6 +109,7 @@ public abstract class ColumnBuilder {
   public static ColumnBuilder of(ArrowType type) {
     if (type instanceof ArrowType.Float64) return new Float64Builder();
     if (type instanceof ArrowType.Int64) return new Int64Builder();
+    if (type instanceof ArrowType.UInt64) return new UInt64Builder();
     if (type instanceof ArrowType.TimestampMicros) return new Int64Builder();
     if (type instanceof ArrowType.Bool) return new BoolBuilder();
     if (type instanceof ArrowType.Utf8) return new BinaryBuilder(true);
@@ -200,7 +203,7 @@ public abstract class ColumnBuilder {
     }
   }
 
-  static final class Int64Builder extends ColumnBuilder {
+  static class Int64Builder extends ColumnBuilder {
     private final Bytes data = new Bytes();
 
     @Override
@@ -221,6 +224,15 @@ public abstract class ColumnBuilder {
     @Override
     protected void resetOwn() {
       data.clear();
+    }
+  }
+
+  /** Unsigned Arrow uses the same eight payload bytes with different schema signedness. */
+  static final class UInt64Builder extends Int64Builder {
+    @Override protected void appendValue(Object value) {
+      if (!(value instanceof BigInteger integer) || integer.signum() < 0 || integer.bitLength() > 64)
+        throw new IllegalArgumentException("uint64 values must be BigInteger in 0..18446744073709551615");
+      super.appendValue(value);
     }
   }
 
@@ -312,6 +324,8 @@ public abstract class ColumnBuilder {
       for (int i = 0; i < names.size(); i++) {
         // A number absent from the enum schema is still valid; only its label is null.
         Object child = value instanceof EnumValue e
+            ? (names.get(i).equals("value") ? e.value() : e.label())
+            : value instanceof UnsignedEnumValue e
             ? (names.get(i).equals("value") ? e.value() : e.label())
             : ((Map<?, ?>) value).get(names.get(i));
         children.get(i).append(child);

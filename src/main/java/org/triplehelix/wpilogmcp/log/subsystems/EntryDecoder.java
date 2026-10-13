@@ -24,6 +24,16 @@ public final class EntryDecoder {
 
   /** The client already decoded primitive NT4 values; only arrays and opaque types need conversion. */
   public static Object decodeNetworkValue(Object value, String type, StructSchemas schemas) {
+    return decodeNetworkValue(value, type, schemas, false);
+  }
+
+  /** The read API retains unknown wire payloads, independently owned by each returned sample. */
+  public static Object decodeNetworkRecordedValue(Object value, String type, StructSchemas schemas) {
+    return decodeNetworkValue(value, type, schemas, true);
+  }
+
+  private static Object decodeNetworkValue(Object value, String type, StructSchemas schemas,
+      boolean preserveOpaque) {
     return switch (type) {
       case "boolean", "int64", "float", "double", "string", "json" -> value;
       case "structschema" -> new String((byte[]) value, java.nio.charset.StandardCharsets.UTF_8);
@@ -43,7 +53,8 @@ public final class EntryDecoder {
       case "string[]" -> ((java.util.List<?>) value).toArray(String[]::new);
       default -> {
         var bytes = (byte[]) value;
-        yield isStruct(type) ? schemas.decode(type, bytes)
+        yield isStruct(type) ? preserveOpaque ? schemas.decodeRecorded(type, bytes) : schemas.decode(type, bytes)
+            : preserveOpaque ? bytes.clone()
             : bytes.length <= 100 ? BinaryReader.bytesToHex(bytes) : "<" + bytes.length + " bytes>";
       }
     };
@@ -60,6 +71,17 @@ public final class EntryDecoder {
    *     no usable schema or does not fit it
    */
   public static Object decodeValue(DataLogRecord record, String type, StructSchemas schemas) {
+    return decodeValue(record, type, schemas, false);
+  }
+
+  /** Source-preserving reads keep an opaque payload intact. Legacy tools retain their historical
+   * hex/size preview for unknown types; both paths share primitive and struct decoding. */
+  public static Object decodeRecordedValue(DataLogRecord record, String type, StructSchemas schemas) {
+    return decodeValue(record, type, schemas, true);
+  }
+
+  private static Object decodeValue(DataLogRecord record, String type, StructSchemas schemas,
+      boolean preserveOpaque) {
     return switch (type) {
       case "boolean" -> record.getBoolean();
       case "int64" -> record.getInteger();
@@ -74,11 +96,11 @@ public final class EntryDecoder {
       case "raw" -> record.getRaw();
       default -> {
         if (isStruct(type)) {
-          yield schemas.decode(type, record.getRaw());
+          yield preserveOpaque ? schemas.decodeRecorded(type, record.getRaw()) : schemas.decode(type, record.getRaw());
         }
         logger.debug("Unknown WPILib data type: '{}', falling back to raw bytes", type);
         byte[] raw = record.getRaw();
-        yield raw.length <= 100 ? BinaryReader.bytesToHex(raw) : "<" + raw.length + " bytes>";
+        yield preserveOpaque ? raw : raw.length <= 100 ? BinaryReader.bytesToHex(raw) : "<" + raw.length + " bytes>";
       }
     };
   }

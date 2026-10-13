@@ -24,6 +24,8 @@ import org.triplehelix.wpilogmcp.log.LogFileAccess;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.store.StoreManifest.*;
+import org.triplehelix.wpilogmcp.store.StoreTransferInventory.Placement;
+import org.triplehelix.wpilogmcp.store.StoreTransferInventory.Merge;
 import org.triplehelix.wpilogmcp.sync.FileTransfer;
 import org.triplehelix.wpilogmcp.sync.HttpRemoteFiles;
 import org.triplehelix.wpilogmcp.sync.PullManifest;
@@ -53,9 +55,6 @@ public final class StoreSync {
         description.mirror() ? new StoreDoor.Sessions(List.of(), List.of()) : remote.sessions(), remote);
   }
   private record Incoming(String path, Path manifest, LogFile file) {}
-  private record Placement(String staged, String destination, String manifest, LogFile file, boolean committed) {}
-  private record Merge(String sourceDirectory, String destinationDirectory, String manifest,
-      Session session, String movedAt, boolean committed) {}
   private final Path root;
   private final StoreFiles io;
   private final SecurityValidator security;
@@ -420,7 +419,7 @@ public final class StoreSync {
   }
 
   private static String peerDirectory(String id) {
-    return "peer-" + StoreFiles.component(id);
+    return StoreTransferInventory.peerDirectory(id);
   }
 
   private void move(Path from, Path to) throws IOException {
@@ -475,35 +474,6 @@ public final class StoreSync {
 
   /** Journals own staging bytes without admitting them as logs or serving them through the door. */
   static List<Path> managed(Path root, StoreFiles io) throws IOException {
-    var result = new ArrayList<Path>(); var directory = io.check(root.resolve(".sync"));
-    if (!Files.isDirectory(directory)) return List.of();
-    try (var peers = Files.list(directory)) {
-      for (var peer : peers.toList()) {
-        if (peer.getFileName().toString().equals("merges")) {
-          try (var receipts = Files.list(peer)) {
-            for (var receipt : receipts.toList()) { io.read(receipt, Merge.class); result.add(io.check(receipt)); }
-          }
-          continue;
-        }
-        result.addAll(SystemPeerSync.managed(root, io, peer.resolve("system")));
-        var journal = io.check(peer.resolve("pull.json"));
-        if (!Files.isRegularFile(journal)) continue;
-        var progress = io.read(journal, PullManifest.class);
-        if (!peer.getFileName().toString().equals(peerDirectory(progress.serialNumber()))) throw new IOException("Peer journal id differs from its directory");
-        result.add(journal);
-        for (var entry : union(progress.files(), progress.history())) {
-          var held = io.resolve(root, entry.localName());
-          if (held.startsWith(peer.resolve("files")) && Files.isRegularFile(held)) result.add(held);
-        }
-        var receipt = io.check(peer.resolve("placing.json"));
-        if (Files.isRegularFile(receipt)) {
-          var pending = io.read(receipt, Placement.class); result.add(receipt);
-          var staged = io.resolve(root, pending.staged());
-          if (staged.startsWith(peer.resolve("files")) && Files.isRegularFile(staged)) result.add(staged);
-          if (!pending.committed()) result.add(io.resolve(root, pending.destination()));
-        }
-      }
-    }
-    return List.copyOf(result);
+    return StoreTransferInventory.peerFiles(root, io);
   }
 }

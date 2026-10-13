@@ -124,6 +124,14 @@ A local store catalogs recorded files by robot and session in manifests, preserv
 and provenance. Import and the inbox organize existing logs; [store transfer and mirror details](doc/pit-server/STANDALONE.md#the-store-door)
 are separate from ordinary local analysis.
 
+## Building your own analysis
+
+The [shared read API](doc/READ_API.md) reads WPILOG files and store manifests from Java without
+starting a server, or through a versioned HTTP endpoint in Arrow and lossless typed JSON.
+Snapshots, projected or reduced queries, multi-entry reads, proven session unions, local append
+following and selective REV access let other applications use the same data access as the MCP tools. A standalone reader JAR and Java/Python examples are
+built from this repository.
+
 ## Tools
 
 Every tool that reads a log takes a `path` parameter. The server loads a log the first time a tool names it; it unloads a log that sits idle, or any log when memory runs short. The tools, in the categories `get_server_guide` uses:

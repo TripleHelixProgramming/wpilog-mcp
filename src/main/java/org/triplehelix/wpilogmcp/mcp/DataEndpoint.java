@@ -69,11 +69,13 @@ final class DataEndpoint {
   static final long DEFAULT_MAX_BYTES = 512L * 1024 * 1024;
 
   private final LogManager logManager;
+  private final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
   private final Gson gson = new GsonBuilder().serializeNulls().create();
   private volatile long maxBytes = DEFAULT_MAX_BYTES;
 
   DataEndpoint(LogManager logManager) {
     this.logManager = logManager;
+    this.logAccess = logManager.readAccess();
   }
 
   /** The size cap, in bytes. */
@@ -194,9 +196,9 @@ final class DataEndpoint {
       EntryData.RevSync rev, JsonObject decoding) {}
 
   private void serve(HttpExchange exchange, Request request) throws IOException, Refusal {
-    LogManager.LogUse use;
+    org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
     try {
-      use = logManager.acquire(request.path());
+      use = logAccess.acquire(request.path());
     } catch (LogFileException e) {
       throw new Refusal(e.getMessage().startsWith("File not found") ? 404 : 403, e.getMessage(),
           "Pass a log file inside the configured log directories, as list_available_logs lists them");

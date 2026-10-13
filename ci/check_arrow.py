@@ -176,6 +176,35 @@ def check(arrow_path: Path) -> list[str]:
     return problems
 
 
+def check_native_unsigned(arrow_path: Path) -> list[str]:
+    """The native fixture spans 2^53 and both signed boundaries; compare exact Python ints.
+
+    It has no legacy CSV: those intentionally retain the old struct uint64 conversion.
+    PyArrow verifies the new unsigned schema and bytes independently of our Java reader.
+    """
+    schema, _metadata, batches = read_stream(arrow_path)
+    expected = pa.schema([pa.field("value", pa.struct([
+        pa.field("value", pa.uint64()),
+        pa.field("mode", pa.struct([pa.field("value", pa.uint64()), pa.field("label", pa.string())])),
+    ]), nullable=False)])
+    problems = []
+    if schema != expected:
+        problems.append(f"native unsigned schema {schema} differs from {expected}")
+    rows = []
+    for _tag, batch in batches:
+        batch.validate(full=True)
+        rows.extend(batch.to_pylist())
+    # Literal boundaries, independent of the server's low-64-bit writer and Java oracle.
+    integers = [0, 1, 9007199254740993, 9223372036854775807,
+                9223372036854775808, 9223372036854775809, 18446744073709551615]
+    expected_rows = [{"value": {"value": value, "mode": {"value": value,
+                      "label": "ZERO" if value == 0 else "ONE" if value == 1 else None}}}
+                     for value in integers]
+    if rows != expected_rows:
+        problems.append(f"native unsigned values differ: {rows!r} != {expected_rows!r}")
+    return problems
+
+
 def main(argv):
     if len(argv) != 2:
         print(__doc__)
@@ -195,7 +224,23 @@ def main(argv):
         for p in problems[:20]:
             print(f"       {p}")
         failed += bool(problems)
-    print(f"{len(samples) - failed} of {len(samples)} streams agree with pyarrow and the CSV")
+    native = Path(argv[1]) / "native"
+    native_count = 0
+    if native.is_dir():
+        # The dedicated subdirectory keeps native schemas out of the legacy CSV comparison.
+        # Once a build supplies it, absence of its expected fixture is a failure, not a skip.
+        sample = native / "native_unsigned.arrow"
+        native_count = 1
+        try:
+            problems = check_native_unsigned(sample)
+        except Exception as e:
+            problems = [f"pyarrow could not read native fixture: {type(e).__name__}: {e}"]
+        print(f"{'ok' if not problems else 'FAIL':4} native/{sample.name}")
+        for problem in problems[:20]:
+            print(f"       {problem}")
+        failed += bool(problems)
+    total = len(samples) + native_count
+    print(f"{total - failed} of {total} streams agree with pyarrow and their independent references")
     return 1 if failed else 0
 
 

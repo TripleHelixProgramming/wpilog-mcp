@@ -52,7 +52,11 @@ final class StoreFiles {
     containment.addAllowedDirectory(this.root);
   }
 
+  private StoreCatalog.PathObserver observer = path -> {};
+  void observe(StoreCatalog.PathObserver observer) { this.observer = observer; }
+
   Path check(Path path) throws IOException {
+    observer.inspect(path);
     security.validate(path);
     containment.validate(path);
     return path;

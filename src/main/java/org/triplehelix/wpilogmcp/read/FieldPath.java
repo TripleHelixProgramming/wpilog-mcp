@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
  * SPDX-License-Identifier: MIT
  */
-package org.triplehelix.wpilogmcp.tools;
+package org.triplehelix.wpilogmcp.read;
 
 import java.lang.reflect.Array;
 import java.util.ArrayList;
@@ -52,10 +52,10 @@ public final class FieldPath {
   }
 
   /** One step of a path. */
-  sealed interface Step permits Field, Index, All {}
+  public sealed interface Step permits Field, Index, All {}
 
   /** A struct field by name. */
-  record Field(String name) implements Step {
+  public record Field(String name) implements Step {
     @Override
     public String toString() {
       return "." + name;
@@ -63,7 +63,7 @@ public final class FieldPath {
   }
 
   /** One array element, zero-based. */
-  record Index(int index) implements Step {
+  public record Index(int index) implements Step {
     @Override
     public String toString() {
       return "[" + index + "]";
@@ -71,7 +71,7 @@ public final class FieldPath {
   }
 
   /** Every element of an array. */
-  record All() implements Step {
+  public record All() implements Step {
     @Override
     public String toString() {
       return "[*]";
@@ -85,7 +85,7 @@ public final class FieldPath {
   }
 
   /** The empty path: the value itself. */
-  static final FieldPath ROOT = new FieldPath(List.of());
+  public static final FieldPath ROOT = new FieldPath(List.of());
 
   /**
    * Parses a path.
@@ -93,7 +93,7 @@ public final class FieldPath {
    * @throws IllegalArgumentException for malformed paths (unclosed brackets, bad indexes,
    *     empty field names)
    */
-  static FieldPath parse(String text) {
+  public static FieldPath parse(String text) {
     if (text == null || text.isEmpty()) return ROOT;
     var steps = new ArrayList<Step>();
     int i = 0;
@@ -134,24 +134,25 @@ public final class FieldPath {
         }
       }
     }
+    if (steps.size() > 64) throw new IllegalArgumentException("Field path exceeds 64 steps");
     return new FieldPath(steps);
   }
 
-  List<Step> steps() {
+  public List<Step> steps() {
     return steps;
   }
 
-  boolean isRoot() {
+  public boolean isRoot() {
     return steps.isEmpty();
   }
 
   /** Whether the path selects every element of some array, so one value yields several leaves. */
-  boolean hasWildcard() {
+  public boolean hasWildcard() {
     return steps.stream().anyMatch(s -> s instanceof All);
   }
 
   /** The leaf at this path, or null when the path does not exist in the value. */
-  Object resolveOne(Object value) {
+  public Object resolveOne(Object value) {
     Object current = value;
     for (var step : steps) {
       if (current == null) return null;
@@ -167,7 +168,7 @@ public final class FieldPath {
   }
 
   /** Every leaf at this path (several for a wildcard); missing branches contribute nothing. */
-  List<Object> resolveAll(Object value) {
+  public List<Object> resolveAll(Object value) {
     var out = new ArrayList<Object>();
     collect(value, 0, out);
     return out;
@@ -191,7 +192,7 @@ public final class FieldPath {
   }
 
   /** Array or list element, or null when out of range or not an array. */
-  static Object element(Object value, int index) {
+  public static Object element(Object value, int index) {
     if (value instanceof List<?> list) return index < list.size() ? list.get(index) : null;
     if (value != null && value.getClass().isArray() && !(value instanceof byte[])) {
       return index < Array.getLength(value) ? Array.get(value, index) : null;
@@ -200,7 +201,7 @@ public final class FieldPath {
   }
 
   /** Array or list length; 0 for anything else. */
-  static int length(Object value) {
+  public static int length(Object value) {
     if (value instanceof List<?> list) return list.size();
     if (value != null && value.getClass().isArray() && !(value instanceof byte[])) {
       return Array.getLength(value);
@@ -212,7 +213,7 @@ public final class FieldPath {
    * A leaf as a number: numbers as themselves, booleans as 1 or 0, enum fields as their stored
    * value; null for anything else (maps, strings, missing).
    */
-  static Double toNumber(Object leaf) {
+  public static Double toNumber(Object leaf) {
     if (leaf instanceof Number n) return n.doubleValue();
     if (leaf instanceof Boolean b) return b ? 1.0 : 0.0;
     if (leaf instanceof EnumValue e) return (double) e.value();

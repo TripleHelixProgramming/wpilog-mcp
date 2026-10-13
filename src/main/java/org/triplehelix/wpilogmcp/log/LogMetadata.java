@@ -10,7 +10,7 @@ import org.triplehelix.wpilogmcp.tools.SignalResolver.MetadataRole;
 
 /** Facts from the entire log: an import cannot stop before the Driver Station connected. */
 public record LogMetadata(String serialNumber, String comments, String event,
-    String matchType, Integer matchNumber, Integer teamNumber) {
+    String matchType, Integer matchNumber, Integer teamNumber) implements RobotCandidates.TeamFacts {
 
   private record Fact(MetadataRole role, double time, int id, Object value) {}
 

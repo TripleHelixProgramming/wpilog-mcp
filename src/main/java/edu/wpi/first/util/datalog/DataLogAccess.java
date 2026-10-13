@@ -8,8 +8,9 @@ package edu.wpi.first.util.datalog;
  * Exposes package-private methods from WPILib's {@link DataLogReader} for random access.
  *
  * <p>WPILib's {@code getRecord(int pos)} and {@code getNextRecord(int pos)} are package-private,
- * as is the {@link DataLogRecord} constructor. By placing this class in the same package, we
- * can delegate to them directly — no reimplementation of the binary format, no risk of divergence.
+ * as is the {@link DataLogRecord} constructor. The long-addressed reader frames a record once
+ * and passes its payload to that constructor; WPILib still owns all value/control decoding.
+ * Buffer-backed reference readers retain the upstream framing for differential tests.
  *
  * <p>If WPILib makes these methods public in a future release, this class can be deleted.
  *
@@ -26,11 +27,34 @@ public final class DataLogAccess {
   public static long recordEnd(org.triplehelix.wpilogmcp.log.LogReader reader, long pos) { return reader.recordEnd(pos); }
   public static long size(org.triplehelix.wpilogmcp.log.LogReader reader) { return reader.size(); }
 
+  /** The long-addressed reader already validated the header; do not slice and parse it again. */
+  public static DataLogRecord record(int entry, long timestampUs, java.nio.ByteBuffer payload,
+      int headerBytes) {
+    var observer = READ_BYTES.get();
+    if (observer != null) observer.accept(headerBytes + (long) payload.remaining());
+    return new DataLogRecord(entry, timestampUs, payload);
+  }
+
   /** Reads a record at the given byte offset. */
   public static DataLogRecord getRecord(DataLogReader reader, long pos) {
     var observer = READ_BYTES.get();
     if (observer != null) observer.accept(reader.getNextRecord(Math.toIntExact(pos)) - (long) pos);
     return reader.getRecord(Math.toIntExact(pos));
+  }
+
+  /** The upstream buffer reader decodes only the header, leaving its payload as an unread slice. */
+  public static long recordTimestampUs(DataLogReader reader, long pos) {
+    return reader.getRecord(Math.toIntExact(pos)).getTimestamp();
+  }
+
+  /** Header-only access for legacy buffer readers; no payload bytes are read or copied. */
+  public static long recordPayloadSize(DataLogReader reader, long pos) {
+    return reader.getRecord(Math.toIntExact(pos)).getSize();
+  }
+
+  /** Header-only access lets a scan distinguish data from control records before making a view. */
+  public static int recordEntry(DataLogReader reader, long pos) {
+    return reader.getRecord(Math.toIntExact(pos)).getEntry();
   }
 
   /** Computes the byte offset of the next record after the one at {@code pos}. */

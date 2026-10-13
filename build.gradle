@@ -309,7 +309,83 @@ tasks.register('shopHarness', Test) {
     outputs.upToDateWhen { false }
 }
 
+// The public reader is packaged separately from the application. An explicit class boundary
+// keeps CLI/manager/provider startup and native test dependencies out; ReadLibraryTest compiles
+// and runs a consumer with this JAR alone so the server's classpath cannot mask missing owners.
+def readerOwners = [
+    'log/EntryInfo', 'log/DecodeProblem', 'log/LogBytes', 'log/MappedLogBytes',
+    'log/LogReader', 'log/LogScan', 'log/RecordOffsets', 'log/ScopedLogReader',
+    'log/LogFileAccess', 'log/FileSnapshot', 'log/LogFileException', 'log/TimestampedValue',
+    'log/RobotCandidates', 'log/LogData', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
+    'log/subsystems/SecurityValidator', 'config/ClientLeases',
+    'store/StoreCatalog', 'store/StoreManifest', 'store/StoreFiles', 'store/FileNameEncoding',
+    'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex',
+    'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
+    'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',
+    'capture/pull/KernelLines', 'capture/pull/SystemLogTime',
+    'sync/SyncResult', 'sync/SignalPair', 'sync/ConfidenceLevel', 'sync/SyncMethod', 'sync/PullManifest', 'sync/RemoteFiles'
+]
+def readerIncludes = ['edu/wpi/first/util/datalog/DataLogAccess*',
+    'org/triplehelix/wpilogmcp/read/**', 'org/triplehelix/wpilogmcp/data/**',
+    'org/triplehelix/wpilogmcp/log/struct/**', 'org/triplehelix/wpilogmcp/revlog/**', 'dbc/**'] +
+    readerOwners.collect { "org/triplehelix/wpilogmcp/${it}*.class" }
+tasks.register('readerJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    dependsOn classes
+    group = 'build'
+    description = 'Build the standalone read-only Java library (no server bootstrap or native runtime)'
+    archiveBaseName = 'wpilog-reader'
+    archiveClassifier = ''
+    configurations = [project.configurations.runtimeClasspath]
+    from(sourceSets.main.output) {
+        include readerIncludes
+        exclude 'org/triplehelix/wpilogmcp/read/server/**'
+    }
+    dependencies {
+        include dependency('edu.wpi.first.wpiutil:wpiutil-java:.*')
+        include dependency('com.google.code.gson:gson:.*')
+        include dependency('org.apache.arrow:arrow-format:.*')
+        include dependency('com.google.flatbuffers:flatbuffers-java:.*')
+        include dependency('org.slf4j:slf4j-api:.*')
+    }
+    // Keep the reader independent of the embedding application's WPILib season and JSON/Arrow
+    // versions. DataLogAccess moves with WPILib, avoiding an exported split package as well.
+    ['edu.wpi.first.util', 'com.google.gson', 'com.google.flatbuffers', 'org.apache.arrow', 'org.slf4j'].each { name ->
+        relocate name, 'org.triplehelix.wpilogmcp.reader.internal.' + name
+    }
+    // Only the pure Java DataLog record classes are used; do not ship JNI loaders or their
+    // optional Jackson/QuickBuf dependencies from the rest of wpiutil-java.
+    exclude { entry ->
+        String path = entry.path
+        path.startsWith('edu/wpi/first/util/') && path.endsWith('.class') &&
+            !(path.startsWith('edu/wpi/first/util/struct/') ||
+              path == 'edu/wpi/first/util/WPISerializable.class' ||
+              path.matches('edu/wpi/first/util/datalog/DataLog(Access|Reader|Iterator|Record)(\\$.*)?\\.class'))
+    }
+    from('src/main/resources/META-INF/LICENSE-WPILib') { into 'META-INF' }
+    exclude 'module-info.class', 'META-INF/versions/**/module-info.class'
+    manifest { attributes 'Implementation-Version': project.version, 'Automatic-Module-Name': 'org.triplehelix.wpilog.reader' }
+    from('LICENSE') { into 'META-INF'; rename { 'LICENSE-wpilog-mcp' } }
+}
+tasks.named('assemble') { dependsOn tasks.named('readerJar') }
+tasks.named('test') {
+    dependsOn tasks.named('readerJar')
+    systemProperty 'read.testJar', tasks.named('readerJar').get().archiveFile.get().asFile.absolutePath
+}
+
 // Convenience task to build the fat JAR
+// Freeze once from the baseline; both server JARs consume these exact requests and files.
+tasks.register('readBehaviorCorpus', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.triplehelix.wpilogmcp.conformance.ReadBehaviorCorpus'
+    maxHeapSize = '768m'
+    environment 'WPILOG_DISK_CACHE_DIR', file("$buildDir/read-behavior-generator-cache").absolutePath
+    doFirst {
+        if (!project.hasProperty('readBehaviorDir')) throw new GradleException('Specify a new -PreadBehaviorDir=/path/to/corpus')
+        args file(project.property('readBehaviorDir')).absolutePath
+    }
+}
+
 tasks.register('buildMcp') {
     dependsOn shadowJar
     doLast {

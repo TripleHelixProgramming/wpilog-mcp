@@ -98,6 +98,12 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
   boolean acceptsAppend(LogReader reader) {
     var c = continuation;
     if (damaged || c == null || c.header == null || reader.size() <= c.fileSize) return false;
+    return anchorsMatch(reader);
+  }
+  /** Compare the old fixed prefix's two anchors without requiring an appended mapping. */
+  public boolean anchorsMatch(LogReader reader) {
+    var c = continuation;
+    if (damaged || c == null || c.header == null || reader.size() < resumePoint) return false;
     return java.util.Arrays.equals(c.header, reader.fingerprint(0, c.headerEnd))
         && (c.lastRecord < 0 || java.util.Arrays.equals(c.lastRecordHash,
             reader.fingerprint(c.lastRecord, resumePoint)));
@@ -105,7 +111,13 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
 
   /** Remap outside this class, then copy the old index and read only records at its resume point. */
   public static LogScan resume(LogScan previous, LogReader reader, Path path) throws IOException {
-    return previous.acceptsAppend(reader) ? scan(previous, reader, path) : of(reader, path);
+    return previous.acceptsAppend(reader) ? scan(previous, reader, path, Long.MAX_VALUE) : of(reader, path);
+  }
+
+  /** Resume with the same control allocation bound used by native snapshot admission. */
+  public static LogScan resume(LogScan previous, LogReader reader, Path path, int maxControlRecordBytes) throws IOException {
+    if (maxControlRecordBytes < 1) throw new IllegalArgumentException("Control record bound must be positive");
+    return previous.acceptsAppend(reader) ? scan(previous, reader, path, maxControlRecordBytes) : of(reader, path, maxControlRecordBytes);
   }
 
   /**
@@ -121,10 +133,23 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
   }
 
   public static LogScan of(LogReader reader, Path path) throws IOException {
-    return scan(null, reader, path);
+    return scan(null, reader, path, Long.MAX_VALUE);
   }
 
-  private static LogScan scan(LogScan previous, LogReader reader, Path path) throws IOException {
+  /** A selective reader bounds control payloads before mapping-window copies and string decoding.
+   * Legacy callers retain their existing limits; data payloads are bounded when selected. */
+  public static LogScan of(LogReader reader, Path path, int maxControlRecordBytes) throws IOException {
+    if (maxControlRecordBytes < 1) throw new IllegalArgumentException("Control record bound must be positive");
+    return scan(null, reader, path, maxControlRecordBytes);
+  }
+
+  public static final class RecordLimitException extends IOException {
+    RecordLimitException(long offset, long size, long limit) {
+      super("WPILOG control record at byte " + offset + " has " + size + " payload bytes, above the limit " + limit);
+    }
+  }
+
+  private static LogScan scan(LogScan previous, LogReader reader, Path path, long controlLimit) throws IOException {
     var entriesById = new HashMap<Integer, EntryInfo>();
     var ignoredIds = new HashSet<Integer>(); // declared, deliberately not indexed
     var entriesByName = new LinkedHashMap<String, EntryInfo>();
@@ -167,8 +192,13 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
           cutInsideRecord = true;
           break;
         }
-        var record = DataLogAccess.getRecord(reader, pos);
-        if (record.isStart()) {
+        // Match the decoder's existing int-sized record bound without materializing data payloads.
+        int id = reader.recordEntry(pos);
+        if (id == 0 && reader.recordPayloadSize(pos) > controlLimit)
+          throw new RecordLimitException(pos, reader.recordPayloadSize(pos), controlLimit);
+        Math.toIntExact(next - pos);
+        var record = id == 0 ? DataLogAccess.getRecord(reader, pos) : null;
+        if (record != null && record.isStart()) {
           var start = record.getStartData();
           if (start.name == null || start.name.isEmpty()) {
             ignoredIds.add(start.entry);
@@ -190,16 +220,15 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
               ignoredIds.add(start.entry);
             }
           }
-        } else if (record.isSetMetadata()) {
+        } else if (record != null && record.isSetMetadata()) {
           var update = record.getSetMetadataData();
           var existing = entriesById.get(update.entry);
           if (existing != null) {
             var info = new EntryInfo(existing.id(), existing.name(), existing.type(), update.metadata);
             entriesByName.put(existing.name(), info);
-            entriesById.replaceAll((id, entry) -> entry.name().equals(existing.name()) ? info : entry);
+            entriesById.replaceAll((entryId, entry) -> entry.name().equals(existing.name()) ? info : entry);
           }
-        } else if (!record.isControl()) {
-          int id = record.getEntry();
+        } else if (id != 0) {
           var info = entriesById.get(id);
           if (info == null) {
             if (!ignoredIds.contains(id)) {
@@ -208,7 +237,8 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
               break;
             }
           } else {
-            double timestamp = record.getTimestamp() / 1_000_000.0;
+            long timestampUs = reader.recordTimestampUs(pos);
+            double timestamp = timestampUs / 1_000_000.0;
             if (dataRecords > 0 && timestamp > maxTs + MAX_FORWARD_JUMP_SEC) {
               // A clock cannot jump a day within one log. (A negative timestamp is not such a
               // sign: DataLogManager logs carry them on healthy robots.)
@@ -219,7 +249,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
               if (recent.size() > ROLLBACK_LIMIT) recent.removeFirst();
               minTs = Math.min(minTs, timestamp);
               maxTs = Math.max(maxTs, timestamp);
-              offsets.get(info.name()).add(pos);
+              offsets.get(info.name()).add(pos, timestampUs);
               dataRecords++;
             }
           }
@@ -247,7 +277,10 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
                 && last.timestamp() <= last.maxBefore() + MAX_BACKWARD_NEAR_DAMAGE_SEC);
         if (fits) break;
         recent.removeLast();
-        offsets.get(last.name()).removeLast();
+        var removedFrom = offsets.get(last.name());
+        long precedingTimestampUs = removedFrom.size() < 2 ? 0
+            : reader.recordTimestampUs(removedFrom.get(removedFrom.size() - 2));
+        removedFrom.removeLast(precedingTimestampUs);
         minTs = last.minBefore();
         maxTs = last.maxBefore();
         dataRecords--;

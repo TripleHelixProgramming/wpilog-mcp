@@ -114,6 +114,9 @@ public final class StoreManifest {
       double minTimestampSec, double maxTimestampSec) {}
   public record Provenance(String kind, String originalPath, String originalName,
       String importedAt, boolean moved, String sourceRobotSerial, List<PeerCopy> copiedFrom) {
+    /** Writer provenance, shared with readers so rollover admission cannot drift from the store. */
+    public static final String CAPTURED = "captured";
+    public boolean captured() { return CAPTURED.equals(kind); }
     public Provenance { copiedFrom = copiedFrom == null ? List.of() : List.copyOf(copiedFrom); }
     public Provenance(String kind, String originalPath, String originalName, String importedAt, boolean moved, String sourceRobotSerial) {
       this(kind, originalPath, originalName, importedAt, moved, sourceRobotSerial, List.of());

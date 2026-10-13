@@ -172,6 +172,15 @@ public final class ArrowSpecReader {
         if (data.remaining() < 8L * n) throw new IllegalStateException("int64 data too short");
         for (int i = 0; i < n; i++) out.add(valid[i] ? data.getLong(8 * i) : null);
       }
+      case "uint64" -> {
+        var data = buffer(batch, body, cursor[1]++);
+        if (data.remaining() < 8L * n) throw new IllegalStateException("uint64 data too short");
+        for (int i = 0; i < n; i++) {
+          byte[] magnitude = new byte[8];
+          for (int b = 0; b < 8; b++) magnitude[7 - b] = data.get(8 * i + b);
+          out.add(valid[i] ? new java.math.BigInteger(1, magnitude) : null);
+        }
+      }
       case "bool" -> {
         var data = buffer(batch, body, cursor[1]++);
         if (data.remaining() < (n + 7) / 8) throw new IllegalStateException("bool data too short");

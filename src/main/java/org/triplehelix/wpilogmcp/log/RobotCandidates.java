@@ -21,6 +21,13 @@ public final class RobotCandidates {
   public record Known(String serialNumber, Fingerprint fingerprint) {}
   public record Evidence(String kind, String value) {}
   public record Candidate(String serialNumber, List<Evidence> evidence) {}
+  /** Only the directory owner knows which prefix serial overrides a stored identity. */
+  public interface DirectoryFacts {
+    List<StoreCatalog.Snapshot> stores();
+    java.util.Optional<String> loggedSerial(Path path);
+  }
+  /** Import has already inspected the identity metadata; fingerprinting does not repeat it. */
+  public interface TeamFacts { Integer teamNumber(); }
   private RobotCandidates() {}
 
   /** Each evidence kind must itself match exactly one serial; conflicting unique hints disappear. */
@@ -45,13 +52,12 @@ public final class RobotCandidates {
   }
 
   /** Only persisted import facts participate; listing never opens a file for a fingerprint. */
-  public static List<Known> known(LogDirectory.DirectoryScan scan) {
+  public static List<Known> known(DirectoryFacts scan) {
     var result = new ArrayList<Known>();
     for (var store : scan.stores()) for (var file : store.files()) {
       if (file.robot() == null || file.robot().serialNumber() == null || file.file().robotFingerprint() == null) continue;
       // A prefix's logged value still takes precedence over the connection's identity.
-      String serial = scan.logs().stream().filter(l -> Path.of(l.path()).equals(file.path()) && l.robot() != null)
-          .map(l -> l.robot().serialNumber()).findFirst().orElse(file.robot().serialNumber());
+      String serial = scan.loggedSerial(file.path()).orElse(file.robot().serialNumber());
       result.add(new Known(serial, file.file().robotFingerprint()));
     }
     return List.copyOf(result);
@@ -60,7 +66,7 @@ public final class RobotCandidates {
     return file == null || file.file().robotFingerprint() == null ? List.of() : match(file.file().robotFingerprint(), known);
   }
   /** Called during import's existing inspection, never by directory discovery. */
-  public static Fingerprint inspect(LogData log, LogMetadata metadata) {
+  public static Fingerprint inspect(LogData log, TeamFacts metadata) {
     var entries = new TreeSet<String>();
     log.entries().values().forEach(e -> entries.add(e.name().length() + ":" + e.name() + ":" + e.type()));
     return new Fingerprint(metadata.teamNumber(), entries.isEmpty() ? null : digest(entries), null);

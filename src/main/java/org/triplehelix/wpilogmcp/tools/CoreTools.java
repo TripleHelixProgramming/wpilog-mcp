@@ -1002,7 +1002,7 @@ public final class CoreTools {
         return result;
       }
 
-      try (var use = logManager.acquire(path)) {
+      try (var use = logAccess.acquire(path)) {
         var log = use.log();
         var schemas = log.structSchemas();
         // Declaration (entry id) order, whatever order the entry map iterates in

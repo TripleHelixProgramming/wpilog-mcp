@@ -119,7 +119,7 @@ public final class SearchSystemLogsTool extends LogRequiringTool {
     for (Path path : snapshot.clocks()) {
       StoreManifest.LogFile receipt = session.files().stream().filter(f -> snapshot.manifest().getParent().resolve(f.path()).equals(path)).findFirst().orElse(null);
       if (receipt == null || !receipt.provenance().kind().equals("pulled")) continue;
-      try (var use = logManager.acquire(path.toString())) {
+      try (var use = logAccess.acquire(path.toString())) {
         var matching = receipt.matching();
         java.util.function.DoubleUnaryOperator shift = matching == null ? t -> t : t -> t + matching.offsetMicros() / 1e6
             + (matching.referenceTimeSec() == 0 ? 0 : (t - matching.referenceTimeSec()) * matching.driftRateNanosPerSec() / 1e9);
@@ -130,7 +130,7 @@ public final class SearchSystemLogsTool extends LogRequiringTool {
     for (Path path : snapshot.clocks()) {
       if (session.files().stream().anyMatch(f -> snapshot.manifest().getParent().resolve(f.path()).equals(path) && f.provenance().kind().equals("pulled"))) continue;
       if (path.toString().equals(log.path())) result.add(log, t -> t, wallFallback);
-      else try (var use = logManager.acquire(path.toString())) { result.add(use.log(), t -> t, wallFallback); }
+      else try (var use = logAccess.acquire(path.toString())) { result.add(use.log(), t -> t, wallFallback); }
       read.add(path.toString());
     }
     result.sort(); return result;

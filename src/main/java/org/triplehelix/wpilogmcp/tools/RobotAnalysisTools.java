@@ -1229,8 +1229,8 @@ public final class RobotAnalysisTools {
         throw new IllegalArgumentException("path and compare_path must be different log files");
       }
 
-      try (var first = logManager.acquire(path1);
-           var second = logManager.acquire(path2)) {
+      try (var first = logAccess.acquire(path1);
+           var second = logAccess.acquire(path2)) {
         var logs = new java.util.LinkedHashMap<String, LogData>();
         logs.put(path1, new AccessTrackingLogData(first.log()));
         logs.put(path2, new AccessTrackingLogData(second.log()));

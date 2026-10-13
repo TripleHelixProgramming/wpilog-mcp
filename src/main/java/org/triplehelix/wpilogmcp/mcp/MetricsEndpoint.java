@@ -17,7 +17,7 @@ import org.triplehelix.wpilogmcp.capture.LiveCapture;
 import org.triplehelix.wpilogmcp.config.MetricsConfig;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
-import org.triplehelix.wpilogmcp.tools.FieldPath;
+import org.triplehelix.wpilogmcp.read.FieldPath;
 
 /** Prometheus 0.0.4 from published facts: no recorder, queue, filesystem, or scrape history.
  * Each scrape is a sampled view; only capture records every publication between scrapes. */

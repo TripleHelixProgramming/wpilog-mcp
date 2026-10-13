@@ -13,7 +13,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -31,6 +30,9 @@ import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructMap;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
+import org.triplehelix.wpilogmcp.read.LegacyMaterializer;
+import org.triplehelix.wpilogmcp.read.RecordSeries;
+import org.triplehelix.wpilogmcp.read.SampleCursors;
 
 /**
  * Lazily-loaded wpilog data backed by a memory-mapped file and Caffeine cache.
@@ -328,58 +330,90 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     logger.debug("Closed LazyParsedLog: {}", path);
   }
 
+  /** The offset index remains int-backed until an address requires long storage. */
+  public long indexBytes() {
+    return recordOffsets.values().stream().mapToLong(RecordOffsets::storageBytes).sum();
+  }
+
   /**
-   * Decodes all records for a specific entry using random access via byte offsets.
-   * No file re-scan — reads only the records for the requested entry.
+   * Exposes this scan without rebuilding its index or schema table. Compatibility tools retain
+   * their unknown-type previews; source readers request exact recorded bytes instead.
+   * The caller must hold this log's use while reading the returned series.
    */
-  private List<TimestampedValue> decodeEntry(String entryName) {
+  public RecordSeries records(String entryName, boolean sourceValues) {
     if (unmapped) throw new IllegalStateException("Log mapping has been released: " + path);
     var info = entries.get(entryName);
-    if (info == null) return null;
-
+    if (info == null) throw new IllegalArgumentException("Entry not found: " + entryName);
     var offsets = recordOffsets.get(entryName);
-    if (offsets == null || offsets.size() == 0) {
-      decodedOnce.add(entryName);
-      return List.of();
-    }
+    return new RecordSeries() {
+      private DataLogRecord record;
+      @Override public int size() { return offsets == null ? 0 : offsets.size(); }
+      @Override public long timestampUs(int index) {
+        record = null;
+        return reader.recordTimestampUs(offsets.get(index));
+      }
+      @Override public long offset(int index) { return offsets.get(index); }
+      @Override public long payloadBytes(int index) {
+        record = null;
+        return reader.recordPayloadSize(offsets.get(index));
+      }
+      @Override public boolean monotonic() { return offsets == null || offsets.monotonic(); }
+      @Override public Object decode(int index) {
+        record = null;
+        record = DataLogAccess.getRecord(reader, offsets.get(index));
+        return sourceValues ? EntryDecoder.decodeRecordedValue(record, info.type(), structSchemas)
+            : EntryDecoder.decodeValue(record, info.type(), structSchemas);
+      }
+      @Override public void readRange(int start, int end, String entry, SampleCursors.Sink sink) {
+        var type = info.type();
+        for (int index = start; index < end; index++) {
+          long offset = offsets.get(index);
+          DataLogRecord current = null;
+          Object value;
+          long time;
+          try {
+            current = DataLogAccess.getRecord(reader, offset);
+            time = current.getTimestamp();
+            value = sourceValues ? EntryDecoder.decodeRecordedValue(current, type, structSchemas)
+                : EntryDecoder.decodeValue(current, type, structSchemas);
+          } catch (RuntimeException failure) {
+            record = current;
+            reportFailure(index, offset, entry, failure, sink);
+            continue;
+          }
+          sink.sample(time, offset, index, value);
+        }
+      }
+      @Override public String problemMessage(int index, Exception failure) {
+        if (!sourceValues && failure instanceof StructDecodeException) return failure.getMessage();
+        if (!sourceValues)
+          logger.trace("Malformed record at offset {} for {}: {}", offsets.get(index), entryName,
+              failure.getMessage());
+        return EntryDecoder.malformedMessage(record, info.type(), failure);
+      }
+    };
+  }
 
-    var type = info.type();
-    var values = new ArrayList<TimestampedValue>(offsets.size());
+  /** Decode only this entry through the same selection engine as source reads. */
+  private List<TimestampedValue> decodeEntry(String entryName) {
+    if (unmapped) throw new IllegalStateException("Log mapping has been released: " + path);
+    if (!entries.containsKey(entryName)) return null;
 
     long startTime = System.nanoTime();
-    int failed = 0;
-    String firstFailure = null;
-
-    for (int index = 0; index < offsets.size(); index++) {
-      long offset = offsets.get(index);
-      DataLogRecord record = null;
-      try {
-        record = DataLogAccess.getRecord(reader, offset);
-        double timestamp = record.getTimestamp() / 1_000_000.0;
-        var value = EntryDecoder.decodeValue(record, type, structSchemas);
-        values.add(new TimestampedValue(timestamp, value));
-      } catch (StructDecodeException e) {
-        failed++;
-        if (firstFailure == null) firstFailure = e.getMessage();
-      } catch (Exception e) {
-        failed++;
-        if (firstFailure == null) firstFailure = EntryDecoder.malformedMessage(record, type, e);
-        logger.trace("Malformed record at offset {} for {}: {}", offset, entryName, e.getMessage());
-      }
-    }
-    if (failed > 0) {
-      decodeProblems.put(entryName, new DecodeProblem(firstFailure, failed, offsets.size()));
-      logger.debug("{}: {} of {} records not decoded: {}", entryName, failed, offsets.size(),
-          firstFailure);
+    var decoded = LegacyMaterializer.read(entryName, records(entryName, false));
+    if (decoded.problem() != null) {
+      var problem = decoded.problem();
+      decodeProblems.put(entryName, problem);
+      logger.debug("{}: {} of {} records not decoded: {}", entryName, problem.failedRecords(),
+          problem.totalRecords(), problem.message());
     }
     decodedOnce.add(entryName);
-
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     if (elapsedMs > 10) {
-      logger.debug("Decoded {}: {} values in {}ms (random access)", entryName, values.size(), elapsedMs);
+      logger.debug("Decoded {}: {} values in {}ms (random access)", entryName,
+          decoded.values().size(), elapsedMs);
     }
-
-    return TimestampedValue.inTimeOrder(values);
+    return decoded.values();
   }
 
   /**

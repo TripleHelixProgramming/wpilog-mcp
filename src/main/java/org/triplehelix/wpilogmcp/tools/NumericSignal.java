@@ -4,6 +4,8 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import org.triplehelix.wpilogmcp.read.FieldPath;
+
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;

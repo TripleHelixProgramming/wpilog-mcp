@@ -19,7 +19,7 @@ public record SystemLogIndex(List<Entry> files) {
   public SystemLogIndex { files = files == null ? List.of() : List.copyOf(files); }
   public record Span(double startEpochSec, double endEpochSec) {}
   public record Entry(SystemLogState.File file, Span writtenSpan) {}
-  static Path path(Path robot) { return robot.resolve("system/index.json"); }
+  public static Path path(Path robot) { return robot.resolve("system/index.json"); }
   static SystemLogIndex read(StoreFiles io, Path robot) throws IOException {
     var path = io.check(path(robot));
     var index = Files.exists(path) ? io.read(path, SystemLogIndex.class) : EMPTY;

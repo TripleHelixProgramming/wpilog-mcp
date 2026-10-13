@@ -130,7 +130,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
       path = io.check(path);
       var manifest = path.getParent().resolve("session.json");
       var old = io.read(manifest, Session.class);
-      var provenance = new Provenance("captured", null, path.getFileName().toString(), start.toString(), false);
+      var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), start.toString(), false);
       String filename = path.getFileName().toString();
       var files = old.files().stream().filter(f -> !f.path().equals(filename)).toList();
       io.write(manifest, new Session(old.id(), old.startedAt(), clock.instant().toString(), old.startBasis(),
@@ -261,12 +261,12 @@ public final class CaptureStore implements CaptureWriter.Observer {
       var previous = old.files().stream().filter(f -> f.path().equals(closed.name()) && f.sizeBytes() == closed.sizeBytes()).findFirst();
       String hash = previous.isPresent() ? previous.get().sha256() : StoreFiles.hash(file);
       files.add(new LogFile(closed.name(), hash, closed.sizeBytes(), "wpilog",
-          new Provenance("captured", null, closed.name(), capture.startedAt().toString(), false), true,
+          new Provenance(Provenance.CAPTURED, null, closed.name(), capture.startedAt().toString(), false), true,
           closed.minUs() / 1_000_000.0, closed.maxUs() / 1_000_000.0,
           capture.startedAt().toString(), closed.endedAt().toString(), "pit_clock", false, null));
     }
     OpenCapture open = update.open() ? new OpenCapture(update.name(),
-        new Provenance("captured", null, update.name(), capture.startedAt().toString(), false),
+        new Provenance(Provenance.CAPTURED, null, update.name(), capture.startedAt().toString(), false),
         update.size(), update.min(), update.max()) : null;
     var identityConflicts = java.util.stream.Stream.concat(old.identityConflicts().stream(), update.conflicts().stream()).distinct().toList();
     String ended = Instant.parse(old.endedAt()).isAfter(update.endedAt()) ? old.endedAt() : update.endedAt().toString();

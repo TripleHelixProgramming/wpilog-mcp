@@ -36,7 +36,7 @@ public final class TimeScope {
     }
 
     public boolean contains(double t) {
-      return t >= start && (endInclusive ? t <= end : t < end);
+      return org.triplehelix.wpilogmcp.read.TimeWindows.contains(start, end, endInclusive, t);
     }
   }
 
@@ -302,14 +302,7 @@ public final class TimeScope {
   }
 
   private static int firstAtOrAfter(List<TimestampedValue> values, double t) {
-    int lo = 0;
-    int hi = values.size();
-    while (lo < hi) {
-      int mid = (lo + hi) >>> 1;
-      if (values.get(mid).timestamp() < t) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
+    return org.triplehelix.wpilogmcp.read.TimeWindows.bound(values.size(), i -> values.get(i).timestamp() < t);
   }
 
   /** Whether {@code t} lies in any window. */

@@ -358,6 +358,24 @@ REV log sync follows the same rule: names only nominate candidate pairs (by leaf
 
 ## 7. Developer Experience
 
+### Shared read API
+
+Implemented locally: MCP and Arrow/CSV use the shared read admission and traversal, while
+compatibility materialization preserves their established answers. Local and remote snapshots,
+manifest-backed catalogs and recorded REV adapters are documented in [READ_API.md](READ_API.md),
+with a standalone reader JAR and third-party examples. Domain inference stays above raw access;
+Arrow encodes the shared result rather than adding a decoding hop for local tools. Frozen-build
+comparison and independent samples guard further migration. Publishing a library package is a
+separate release decision; automatic alignment and store mutation are outside the read API.
+The remaining plan features are implemented locally: shared field projection and numeric buckets,
+multi-entry queries, session unions with recorded clock proof, selective REV decoding and a
+caller-polled local follower. Session members now share the server's managed/live admission;
+rollover clock proof uses recorded provenance rather than session membership alone. Narrow union
+windows seek before decoding, and retained session indexes have a shared budget.
+Input, sort and session-merge bounds remain explicit; clients can
+read individual files or signals when a larger combined view exceeds admission. Publication and
+Windows validation still require their own release/CI step.
+
 ### 7.1 Plugin Architecture
 Priority: Medium. Complexity: High.
 

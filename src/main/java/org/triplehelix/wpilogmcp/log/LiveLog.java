@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.AbstractMap;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -28,6 +27,9 @@ import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.read.LegacyMaterializer;
+import org.triplehelix.wpilogmcp.read.RecordSeries;
+import org.triplehelix.wpilogmcp.read.SampleCursors;
 
 /**
  * An index built by the single capture writer, never by rescanning its growing file. A record
@@ -45,14 +47,19 @@ public final class LiveLog implements LogData, AutoCloseable {
   private static class Record {
     final long sequence, timestampUs;
     final int offset, end;
+    // WPILOG framing uses at most 17 header bytes; avoid mapping or re-encoding a hot value
+    // merely to charge its payload to a bounded read batch.
+    final byte headerBytes;
     volatile Object hot;
     Record(long sequence, long timestampUs, WpilogOutput.Written written, Object hot) {
       this.sequence = sequence; this.timestampUs = timestampUs;
       this.offset = (int) written.offset(); this.end = (int) (written.offset() + written.size());
+      this.headerBytes = (byte) (written.payloadOffset() - written.offset());
       this.hot = hot;
     }
     long offset() { return offset; }
     long end() { return end; }
+    long payloadBytes() { return end() - offset() - Byte.toUnsignedInt(headerBytes); }
   }
   private static final class WideRecord extends Record {
     final long wideOffset, wideEnd;
@@ -66,9 +73,15 @@ public final class LiveLog implements LogData, AutoCloseable {
     final EntryInfo info;
     volatile Record[][] chunks = new Record[1][];
     volatile int length;
+    volatile int firstInversion = Integer.MAX_VALUE;
+    // A writer's byte offsets only increase, so every record after this one is wide too.
+    volatile int firstWide = Integer.MAX_VALUE;
     Series(EntryInfo info) { this.info = info; }
     void append(Record record) {
       int index = length, chunk = index / CHUNK;
+      if (firstWide == Integer.MAX_VALUE && record instanceof WideRecord) firstWide = index;
+      if (firstInversion == Integer.MAX_VALUE && index > 0 && record.timestampUs < at(index - 1).timestampUs)
+        firstInversion = index;
       if (chunk == chunks.length) chunks = java.util.Arrays.copyOf(chunks, chunks.length * 2);
       if (chunks[chunk] == null) chunks[chunk] = new Record[CHUNK];
       chunks[chunk][index % CHUNK] = record;
@@ -257,6 +270,10 @@ public final class LiveLog implements LogData, AutoCloseable {
     private final StructSchemas schemas;
     private final LogFileAccess.Lease claim;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private record ReadIdentity(LiveLog owner, long sequence) {}
+    /** Equal only for views of this writer's same immutable publication prefix. */
+    public Object readIdentity() { return new ReadIdentity(LiveLog.this, seen.sequence()); }
+
     private View(State seen, String seenPath, LogFileAccess.Lease claim) {
       this.seen = seen; this.seenPath = seenPath; this.claim = claim;
       Double now = seen.open() ? robotNowUs.get() : null;
@@ -309,16 +326,59 @@ public final class LiveLog implements LogData, AutoCloseable {
         }
       };
     }
-    private List<TimestampedValue> decode(String name) {
-      var series = seen.entries().get(name); int length = sampleCount(name);
-      var result = new ArrayList<TimestampedValue>(length); int failed = 0; String reason = null;
-      for (int i = 0; i < length; i++) {
-        var record = series.at(i);
-        try { result.add(new TimestampedValue(record.timestampUs / 1_000_000.0, value(record, series.info.type(), schemas))); }
-        catch (StructDecodeException e) { failed++; if (reason == null) reason = e.getMessage(); }
+    /** Address fields in this view's prefix, excluding timestamps and hot value objects. */
+    public long indexBytes() {
+      long bytes = 0;
+      for (var entry : seen.entries().entrySet()) {
+        int length = sampleCount(entry.getKey());
+        // WideRecord retains its two inherited int fields as well as its two long addresses.
+        bytes += 8L * length + 16L * Math.max(0, length - entry.getValue().firstWide);
       }
-      if (failed > 0) problems.put(name, new DecodeProblem(reason, failed, length));
-      return TimestampedValue.inTimeOrder(result);
+      return bytes;
+    }
+    /** File-order access to this immutable publication prefix; the caller retains this view.
+     * Exact source values preserve opaque bytes; legacy materialization keeps its presentation. */
+    public RecordSeries records(String name, boolean sourceValues) {
+      var series = seen.entries().get(name);
+      if (series == null) throw new IllegalArgumentException("Entry not found: " + name);
+      int length = sampleCount(name);
+      return new RecordSeries() {
+        private Record at(int index) { return series.at(java.util.Objects.checkIndex(index, length)); }
+        @Override public int size() { return length; }
+        @Override public long timestampUs(int index) { return at(index).timestampUs; }
+        @Override public long offset(int index) { return at(index).offset(); }
+        @Override public long payloadBytes(int index) { return at(index).payloadBytes(); }
+        @Override public boolean monotonic() { return series.firstInversion >= length; }
+        @Override public Object decode(int index) {
+          return value(at(index), series.info.type(), schemas, sourceValues);
+        }
+        @Override public void readRange(int start, int end, String entry, SampleCursors.Sink sink) {
+          var type = series.info.type();
+          for (int index = start; index < end; index++) {
+            var record = at(index);
+            Object decoded;
+            try {
+              decoded = value(record, type, schemas, sourceValues);
+            } catch (RuntimeException failure) {
+              reportFailure(index, record.offset(), entry, failure, sink);
+              continue;
+            }
+            sink.sample(record.timestampUs, record.offset(), index, decoded);
+          }
+        }
+        @Override public String problemMessage(int index, Exception failure) {
+          // The live path has always counted only schema failures. An invalid hot value or
+          // retired mapping remains an exception, rather than silently becoming missing data.
+          if (failure instanceof StructDecodeException) return failure.getMessage();
+          if (failure instanceof RuntimeException runtime) throw runtime;
+          throw new IllegalStateException(failure);
+        }
+      };
+    }
+    private List<TimestampedValue> decode(String name) {
+      var result = LegacyMaterializer.read(name, records(name, false));
+      if (result.problem() != null) problems.put(name, result.problem());
+      return result.values();
     }
     @Override public void close() {
       if (claim != null && closed.compareAndSet(false, true)) { try { claim.close(); } finally { releaseUse(); } }
@@ -326,14 +386,22 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
 
   private Object value(Record record, String type, StructSchemas schemas) {
+    return value(record, type, schemas, false);
+  }
+  private Object value(Record record, String type, StructSchemas schemas, boolean sourceValues) {
     var cached = record.hot;
-    if (cached != null) return EntryDecoder.decodeNetworkValue(cached, type, schemas);
+    if (cached != null) return sourceValues ? EntryDecoder.decodeNetworkRecordedValue(cached, type, schemas)
+        : EntryDecoder.decodeNetworkValue(cached, type, schemas);
     while (true) {
       var held = mapping.get();
       if (held == null) throw new IllegalStateException("Live log mapping is retired: " + path);
       if (!held.retain()) continue;
-      try { mappedReads.incrementAndGet(); return EntryDecoder.decodeValue(DataLogAccess.getRecord(held.reader.reader(), record.offset()), type, schemas); }
-      finally { held.release(); }
+      try {
+        mappedReads.incrementAndGet();
+        var data = DataLogAccess.getRecord(held.reader.reader(), record.offset());
+        return sourceValues ? EntryDecoder.decodeRecordedValue(data, type, schemas)
+            : EntryDecoder.decodeValue(data, type, schemas);
+      } finally { held.release(); }
     }
   }
   private View current() { return new View(state, path.toString(), null); }

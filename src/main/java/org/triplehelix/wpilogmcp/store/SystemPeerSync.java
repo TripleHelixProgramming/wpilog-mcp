@@ -195,12 +195,6 @@ final class SystemPeerSync {
     io.write(directory.resolve("placing.json"), new Pending(pending.staged(), pending.destination(), pending.manifest(), pending.robotId(), entry, true));
   }
   static List<Path> managed(Path root, StoreFiles io, Path directory) throws IOException {
-    var path = io.check(directory.resolve("pull.json")); if (!Files.exists(path)) return List.of();
-    var result = new ArrayList<Path>(); result.add(path); var journal = io.read(path, PullManifest.class);
-    for (var entry : java.util.stream.Stream.concat(journal.files().stream(), journal.history().stream()).toList()) {
-      var file = io.resolve(root, entry.localName()); if (!file.startsWith(directory.resolve("files"))) throw new IOException("Invalid system transfer journal path"); result.add(file);
-    }
-    if (Files.exists(directory.resolve("placing.json"))) result.add(io.check(directory.resolve("placing.json")));
-    return result;
+    return StoreTransferInventory.systemFiles(root, io, directory);
   }
 }

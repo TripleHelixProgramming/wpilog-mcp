@@ -27,6 +27,50 @@ import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
 
 class HttpAdmissionTest {
+  @Test void aPoolOfPeersThatNeverReadCannotStarveHealth(@TempDir Path directory) throws Exception {
+    var path = directory.resolve("unread.wpilog");
+    try (var writer = new WpilogWriter(path, "synthetic stalled reader")) {
+      int id = writer.start("/Wide", "double[]", "", 0);
+      byte[] payload = new byte[8192];
+      for (int i = 0; i < 4096; i++) writer.append(id, i * 1000L, payload);
+    }
+    var manager = LogManager.getInstance();
+    var directories = manager.getConfiguredDirectories();
+    manager.addAllowedDirectory(directory);
+    var transport = new HttpTransport(new ToolRegistry(), 0);
+    var sockets = new ArrayList<Socket>();
+    transport.start();
+    try {
+      var body = new com.google.gson.JsonObject(); body.addProperty("path", path.toString());
+      var opened = HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create(
+          "http://127.0.0.1:" + transport.getPort() + "/read/v1/snapshots"))
+          .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(), HttpResponse.BodyHandlers.ofString());
+      assertEquals(201, opened.statusCode(), opened.body());
+      String route = "/read/v1/snapshots/" + com.google.gson.JsonParser.parseString(opened.body())
+          .getAsJsonObject().get("id").getAsString() + "/query";
+      String query = "{\"entry\":\"/Wide\",\"format\":\"arrow\",\"batch_records\":4,\"batch_bytes\":65536}";
+      for (int i = 0; i < 32; i++) {
+        var socket = new Socket(); sockets.add(socket);
+        socket.setReceiveBufferSize(1024);
+        socket.connect(new java.net.InetSocketAddress("127.0.0.1", transport.getPort()));
+        socket.setSoTimeout(10000);
+        socket.getOutputStream().write(("POST " + route + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+            + query.length() + "\r\n\r\n" + query).getBytes(StandardCharsets.US_ASCII));
+        // Headers prove the exchange is admitted; stop reading before the large response.
+        var status = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream())).readLine();
+        assertTrue(status.contains("200") || status.contains("503"), status);
+      }
+      var health = assertDoesNotThrow(() -> HttpClient.newHttpClient().send(HttpRequest.newBuilder(
+          URI.create("http://127.0.0.1:" + transport.getPort() + "/health")).timeout(Duration.ofSeconds(3)).build(),
+          HttpResponse.BodyHandlers.ofString()), "32 stalled streams must not exhaust health's dispatch workers");
+      assertEquals(200, health.statusCode());
+    } finally {
+      for (var socket : sockets) socket.close();
+      transport.stop(); manager.unloadLog(path.toString());
+      manager.clearAllowedDirectories(); directories.forEach(manager::addAllowedDirectory);
+    }
+  }
+
   @Test void anUnfinishedBodyHasADeadlineAndReleasesItsAdmissionSlot() throws Exception {
     var transport = new HttpTransport(new ToolRegistry(), 0);
     transport.requestLimits(1024, 1, Duration.ofMillis(200)); transport.start();

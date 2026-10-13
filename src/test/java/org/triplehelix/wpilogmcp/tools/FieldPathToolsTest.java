@@ -4,6 +4,8 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import org.triplehelix.wpilogmcp.read.FieldPath;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;

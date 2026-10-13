@@ -43,7 +43,7 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *     {@literal @}Override
  *     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
  *         var path = getRequiredString(arguments, "path");
- *         try (var use = logManager.acquire(path)) {
+ *         try (var use = logAccess.acquire(path)) {
  *           var name = getRequiredString(arguments, "name");
  *           var values = requireEntry(use.log(), name);
  *
@@ -65,6 +65,9 @@ public abstract class ToolBase implements McpServer.Tool {
 
   /** The injected LogManager instance (or from singleton if using no-arg constructor). */
   protected final LogManager logManager;
+
+  /** Shared read admission; domain and REV services remain on the manager. */
+  protected final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
 
   /** The injected TbaClient instance (or from singleton if using no-arg constructor). */
   protected final TbaClient tbaClient;
@@ -93,6 +96,7 @@ public abstract class ToolBase implements McpServer.Tool {
    */
   protected ToolBase(ToolDependencies deps) {
     this.logManager = deps.logManager();
+    this.logAccess = logManager == null ? null : logManager.readAccess();
     this.tbaClient = deps.tbaClient();
     this.tbaConfig = deps.tbaConfig();
     this.logDirectory = deps.logDirectory();
