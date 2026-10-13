@@ -49,6 +49,9 @@ curl http://127.0.0.1:2363/health
 version, configuration `name`, process ID, `managed` and the `gateway` status field. The server's log is at
 `~/.wpilog-mcp/logs/http.log`.
 
+Startup writes one `Configuring log directory:` line per configured root to that log.
+Containment checks during installation and reads do not add INFO messages of their own.
+
 #### 1.3 Check that your assistant sees the tools
 
 - Claude Code: type `/mcp`. `wpilog-analyzer` should be connected; approve it if asked.

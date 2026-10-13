@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Configured symbolic-link log roots now list WPILOG and REV files, with loadable paths and no traversal of child links. In 0.10.0-dev3 a linked root returned an empty listing; linked store subtrees now retain catalog membership and resolved-path filtering too.
+- Containment validators log their directory changes at DEBUG, while server startup reports each configured root once. In 0.10.0-dev3 internal validators added INFO lines to installation, library use and individual read requests, and startup announced directories more than once.
 
 - Session overlap refusals distinguish closed recordings from potentially overlapping live prefixes; previously even an entirely closed session was described as live.
 - Named foreground HTTP `run` accepts `port: 0` and reports its actual bound port; previously its startup test had to release a probed port before the child bound, allowing a competing process to claim it. Daemon commands still require a fixed port, and test cleanup no longer hides a startup failure behind a shutdown assertion.

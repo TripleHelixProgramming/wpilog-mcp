@@ -91,6 +91,8 @@ class InstallerTest {
     var first = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
     assertEquals(0, first.exit(), first.output());
     var summary = JsonParser.parseString(first.stdout()).getAsJsonObject();
+    assertFalse(first.stderr().contains("SecurityValidator"),
+        "Install output must not include containment-validator messages:\n" + first.stderr());
     if (jvmBanner) {
       assertTrue(first.stderr().contains("-Dwpilog.install.banner=true"), first.output());
     }

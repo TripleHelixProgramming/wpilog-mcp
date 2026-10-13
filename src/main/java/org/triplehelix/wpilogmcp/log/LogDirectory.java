@@ -163,9 +163,9 @@ public class LogDirectory {
         .toList();
     this.logDirectories = dirs;
     if (dirs.isEmpty()) {
-      logger.info("Log directories cleared");
+      logger.debug("Log directories cleared");
     } else {
-      logger.info("Log directories set to: {}", dirs);
+      logger.debug("Log directories set to: {}", dirs);
     }
   }
 

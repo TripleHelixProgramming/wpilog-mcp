@@ -75,7 +75,9 @@ public class SecurityValidator {
         normalized = directory.toAbsolutePath().normalize();
       }
       allowedDirectories.add(normalized);
-      logger.info("Added allowed directory: {}", normalized);
+      // Validators also contain install writes and individual reads. The server's
+      // Main owns the operator-facing announcement of configured roots.
+      logger.debug("Added allowed directory: {}", normalized);
     }
   }
 
@@ -93,7 +95,7 @@ public class SecurityValidator {
   /** Clears all allowed directories. */
   public void clearAllowedDirectories() {
     allowedDirectories.clear();
-    logger.info("Cleared all allowed directories");
+    logger.debug("Cleared all allowed directories");
   }
 
   /**

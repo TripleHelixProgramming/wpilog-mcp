@@ -397,7 +397,8 @@ Several log directories: repeat `-logdir`, or separate them in `WPILOG_DIR` as i
 A configured directory may be a symbolic link. Discovery resolves that root, but does not
 follow links below it. Ordinary WPILOG and REV paths keep the configured spelling; store
 members keep the catalog's resolved paths. Either spelling returned by the listing can be
-passed back to a reading tool.
+passed back to a reading tool. Server startup logs each configured directory once; internal
+containment validators report only at DEBUG, including during installation and library reads.
 
 `wpilog-mcp -debug` on its own is a start with flags too, so it reads no configuration file. To debug a configured server, run `wpilog-mcp start default -debug` or set `debug: true`.
 
