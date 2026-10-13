@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Configured symbolic-link log roots now list WPILOG and REV files, with loadable paths and no traversal of child links. In 0.10.0-dev3 a linked root returned an empty listing; linked store subtrees now retain catalog membership and resolved-path filtering too.
+- Claude Code registration now recognizes and remembers an identical user-scope bridge in each editor or profile without showing the expected duplicate-add error; in 0.10.0-dev3 a second editor warned that registration failed, for both `wpilog-analyzer` and `wpilog-pit`. Conflicts leave the entry unchanged and give manual instructions. Real failures and conflicts retain the add command's stdout and stderr, while lookup output stays private; each registration keeps its own success and failure wording and a failure offers its registration command.
 - Containment validators log their directory changes at DEBUG, while server startup reports each configured root once. In 0.10.0-dev3 internal validators added INFO lines to installation, library use and individual read requests, and startup announced directories more than once.
 
 - Session overlap refusals distinguish closed recordings from potentially overlapping live prefixes; previously even an entirely closed session was described as live.

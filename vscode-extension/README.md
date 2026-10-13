@@ -88,6 +88,14 @@ Direct imports keep original paths and filenames in the session manifest's file 
 
 With **Enable For Claude Code** on (the default), the extension runs `claude mcp add --scope user wpilog-analyzer -- <launcher> connect http` once when it finds the Claude CLI. On Windows it registers the batch launcher through `cmd /c`. If the CLI is unavailable, it shows the exact command with **Copy Command**. **WPILog Analyzer: Register with Claude Code** repeats setup on demand. Existing Claude Code sessions need restarting after registration.
 
+An editor or profile with no local registration history checks an existing entry through
+`claude mcp get`. When its user scope, launcher and arguments match, the extension remembers
+it and writes one line to Output without warning. A different entry gets a conflict warning
+and manual instructions in **WPILog Analyzer** Output; the extension never replaces it. The
+instructions explain how to inspect it and, if you choose, remove an obsolete user entry and
+register again. **Copy Command** copies only the registration command. A real failure still
+warns and offers **Copy Command**.
+
 No project `.mcp.json` entry is written. The user-scope bridge works from a terminal with VS Code closed: it starts the same server from the home configuration and leases directories from flags or the current project's `.wpilog-mcp.yaml`.
 
 For a project with its own Workspace directories, the extension offers once to write that YAML, with an option to add it to `.gitignore`. Nothing is written without your choice, and an existing or tracked file is left alone. The file contains only directories and an optional team:

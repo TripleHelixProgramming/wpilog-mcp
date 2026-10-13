@@ -68,6 +68,13 @@ The extension offers Claude Code registration for the pit URL at user scope usin
 bridge: `claude mcp add --scope user wpilog-pit -- <launcher> connect --url <url>` (through
 `cmd /c` on Windows). No project `.mcp.json` is written. The copy-command fallback and the
 on-demand command remain available; restart existing Claude sessions after registration.
+If another editor or profile already registered the same user-scope launcher and URL bridge,
+the extension verifies it with `claude mcp get wpilog-pit`, remembers it, and writes one line
+to Output without warning. A different entry gets a conflict warning and manual instructions
+in **WPILog Analyzer** Output. Inspect it with `claude mcp get wpilog-pit`; only if you choose
+to replace an obsolete user entry, run `claude mcp remove wpilog-pit --scope user`, then the
+registration command. A project or local entry belongs to its own scope. **Copy Command**
+copies only the registration command. The extension never removes or replaces an entry.
 
 ### Live tools and a pit proxy password
 

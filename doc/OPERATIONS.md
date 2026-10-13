@@ -373,6 +373,12 @@ command should be this install's launcher, with arguments `connect http`. Do not
 name. If that existing registration is obsolete, remove just this user entry with
 `claude mcp remove wpilog-analyzer --scope user`, then run the add command again.
 
+The extension recognizes a matching user entry from another editor or profile, remembers it
+locally and writes one line to Output without a warning. If the entry differs, it warns of a
+conflict and leaves it unchanged, with the manual steps above in **WPILog Analyzer** Output.
+**Copy Command** copies only the add command; removal is your decision. Connection health is a
+separate check: an existing registration can be correct while the server is not reachable.
+
 Restart an open Claude Code session afterwards and check `/mcp`. The extension runs this
 command for you when it finds the Claude CLI (**WPILog Analyzer: Register with Claude Code**
 repeats it). Claude Desktop, Codex, Antigravity and other clients take the same command form or

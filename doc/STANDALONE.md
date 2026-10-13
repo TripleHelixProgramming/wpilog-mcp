@@ -431,6 +431,11 @@ The [VS Code extension](../vscode-extension/README.md#using-it-with-claude-code)
 
 `claude mcp get wpilog-analyzer` checks the registration and connection from a terminal.
 If `add` says the name already exists, inspect it with `get`; a correct entry needs no change.
+The extension makes that check itself when another editor or profile registered the same
+user-scope launcher and arguments: it remembers the entry and writes one line to Output,
+without warning or changing the registration. A different scope, launcher or arguments gets
+a conflict warning with manual instructions in **WPILog Analyzer** Output; the extension never
+replaces the entry. **Copy Command** copies only the registration command, not a removal.
 To replace an obsolete user entry, run `claude mcp remove wpilog-analyzer --scope user`, then
 the add command above. This does not remove a project's separate registration.
 

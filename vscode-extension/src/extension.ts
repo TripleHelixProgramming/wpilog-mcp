@@ -9,10 +9,10 @@ import { wellKnownLogDirectory } from "./logFinder";
 import { LogSettings, combineLogDirectories } from "./logDirectories";
 import { findJar } from "./jarManager";
 import { ServerManager, StandaloneDaemonSpec } from "./serverManager";
-import { STANDALONE_SERVER, findStandaloneInstall } from "./standaloneServer";
+import { STANDALONE_SERVER, findStandaloneInstall, LauncherCommand } from "./standaloneServer";
 import { InstallSummary, installAction, installArgs, launcherVersion, parseInstallSummary } from "./standaloneInstall";
 import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./directoryLease";
-import { claudeCommand, claudeCommandText, claudePitCommand, claudePitCommandText, findClaude } from "./claudeRegistration";
+import { claudeArgs, claudeCommandText, claudePitArgs, claudePitCommandText, findClaude, registerWithClaude, ClaudeReply, ClaudeRegistrationAttempt, claudeRegistrationFeedback } from "./claudeRegistration";
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
 import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
 import { MirrorStatus, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, serverDefinitions, sessionPicks } from "./explorer/pitServer";
@@ -357,6 +357,24 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   // One queue keeps registration and file offers from appearing over one another.
   let projectOffers = Promise.resolve();
   let registrationOffered = false;
+  function runClaude(command: LauncherCommand): Promise<ClaudeReply> {
+    return new Promise(resolve => execFile(command.command, command.args,
+      { timeout: 30_000, windowsHide: true, windowsVerbatimArguments: command.windowsVerbatimArguments }, (error, stdout, stderr) => {
+        // The pure registration policy decides which add diagnostics to show; never log get.
+        resolve({ ok: !error, stdout, stderr });
+      }));
+  }
+  async function finishClaudeRegistration(result: ClaudeRegistrationAttempt, name: string, key: string, value: string, command: string) {
+    let feedback = claudeRegistrationFeedback(result, name, command);
+    if (feedback.remember) {
+      try { await context.globalState.update(key, value); }
+      catch { feedback = claudeRegistrationFeedback({ ...result, result: "failed" }, name, command); }
+    }
+    if (feedback.output) outputChannel.appendLine(feedback.output);
+    if (feedback.information) void vscode.window.showInformationMessage(feedback.information);
+    if (feedback.warning && await vscode.window.showWarningMessage(feedback.warning, "Copy Command") === "Copy Command")
+      await vscode.env.clipboard.writeText(feedback.copyCommand!);
+  }
   async function registerClaude(requested: boolean) {
     if (!requested && (registrationOffered || !vscode.workspace.getConfiguration("wpilog-mcp").get<boolean>("enableForClaudeCode"))) return;
     const spec = await prepareStandalone();
@@ -374,21 +392,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       if (choice === "Copy Command") await vscode.env.clipboard.writeText(text);
       return;
     }
-    const command = claudeCommand(cli, spec.launcher, process.platform);
-    try {
-      await new Promise<void>((resolve, reject) => execFile(command.command, command.args,
-        { timeout: 30_000, windowsHide: true, windowsVerbatimArguments: command.windowsVerbatimArguments }, (error, stdout, stderr) => {
-          if (stdout.trim()) outputChannel.appendLine(stdout.trim());
-          if (stderr.trim()) outputChannel.appendLine(stderr.trim());
-          if (error) reject(error); else resolve();
-        }));
-      await context.globalState.update(CLAUDE_REGISTERED, spec.launcher);
-      void vscode.window.showInformationMessage("WPILog Analyzer registered with Claude Code for your user account. Restart existing Claude Code sessions to use it.");
-    } catch {
-      outputChannel.appendLine(`Claude Code registration did not complete. Run: ${text}`);
-      const choice = await vscode.window.showWarningMessage("WPILog Analyzer: Claude Code registration failed; the output shows the command.", "Copy Command");
-      if (choice === "Copy Command") await vscode.env.clipboard.writeText(text);
-    }
+    const result = await registerWithClaude(cli, claudeArgs(spec.launcher, process.platform), process.platform, runClaude);
+    await finishClaudeRegistration(result, "wpilog-analyzer", CLAUDE_REGISTERED, spec.launcher, text);
   }
   function scheduleProjectOffers(requested = false) {
     projectOffers = projectOffers.then(async () => {
@@ -520,11 +525,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       if (await vscode.window.showInformationMessage("Claude Code CLI was not found. Copy its user registration command?", "Copy Command") === "Copy Command") await vscode.env.clipboard.writeText(text);
       return;
     }
-    const run = claudePitCommand(cli, spec.launcher, bridgeUrl, process.platform);
-    await new Promise<void>((resolve, reject) => execFile(run.command, run.args, { timeout: 30_000, windowsHide: true,
-      windowsVerbatimArguments: run.windowsVerbatimArguments }, error => error ? reject(new Error(`Pit registration failed. Run: ${text}`)) : resolve()));
-    await context.globalState.update("wpilog-mcp.claudePitUrl", url);
-    void vscode.window.showInformationMessage("Pit server registered as wpilog-pit at user scope. Restart existing Claude Code sessions to use it.");
+    const result = await registerWithClaude(cli, claudePitArgs(spec.launcher, bridgeUrl, process.platform), process.platform, runClaude);
+    await finishClaudeRegistration(result, "wpilog-pit", "wpilog-mcp.claudePitUrl", url, text);
   }
   async function changePitCredential(clear: boolean) {
     const url = pitEndpoint(pitUrl()); if (!url) throw new Error("Set wpilog-mcp.pitServerUrl first.");
