@@ -573,6 +573,11 @@ Structs are decoded from the schemas the log records, using WPILib's schema pars
 
 ## Foreground and supervisor ownership
 
+A named foreground HTTP `run` may use port zero: the listener chooses its own available port
+and reports the bound address. Probing a free port and releasing it before a child binds is a
+race; it caused the foreground ownership test to fail under a parallel build. Daemon loading
+still rejects zero, since adoption, stop and bridges discover the server by its configured port.
+
 `run <name>` shares the internal daemon's configuration/startup path but never claims a PID
 file or daemonizes. Only `--managed` publishes supervisor ownership through the registry to
 health; a hand-written unit must pass it too. The inherited `INVOCATION_ID`

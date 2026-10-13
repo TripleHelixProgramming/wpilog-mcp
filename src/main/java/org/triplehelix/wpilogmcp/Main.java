@@ -183,7 +183,14 @@ public class Main {
    */
   private static ServerConfig loadConfig(String configName, Path configPath)
       throws ConfigException {
-    var loaded = new ConfigLoader().loadDetailed(configName, configPath);
+    return loadConfig(configName, configPath, false);
+  }
+
+  private static ServerConfig loadConfig(String configName, Path configPath, boolean foreground)
+      throws ConfigException {
+    var loader = new ConfigLoader();
+    var loaded = foreground ? loader.loadForegroundDetailed(configName, configPath)
+        : loader.loadDetailed(configName, configPath);
     if (Boolean.TRUE.equals(loaded.config().debug())) {
       enableDebugLogging();
     }
@@ -251,7 +258,7 @@ public class Main {
     try {
       var configPath = foregroundOptions(args).config();
       var configName = args[1];
-      var config = loadConfig(configName, configPath);
+      var config = loadConfig(configName, configPath, publicRun);
       logger().info("Starting wpilog-mcp foreground server (config: {})...", configName);
       applyConfig(config);
       var daemonBind = System.getenv("WPILOG_HTTP_BIND");

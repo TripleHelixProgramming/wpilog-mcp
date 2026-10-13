@@ -120,6 +120,16 @@ public class ConfigLoader {
    * @throws ConfigException if the config file is not found, unparseable, or the name is missing
    */
   public Loaded loadDetailed(String configName, Path explicitPath) throws ConfigException {
+    return loadDetailed(configName, explicitPath, false);
+  }
+
+  /** A foreground process can publish its OS-assigned port in stderr. Background daemons
+   * require a fixed port for discovery, so their normal loading path must still reject zero. */
+  public Loaded loadForegroundDetailed(String configName, Path explicitPath) throws ConfigException {
+    return loadDetailed(configName, explicitPath, true);
+  }
+
+  private Loaded loadDetailed(String configName, Path explicitPath, boolean foreground) throws ConfigException {
     var configFile = discoverConfigFile(explicitPath);
     var root = parseFile(configFile);
     var warnings = new LinkedHashSet<String>();
@@ -151,7 +161,7 @@ public class ConfigLoader {
     var config = parseServerBlock(configName, serverBlock, warnings).mergeWithDefaults(defaults);
 
     // Validate
-    validate(config);
+    validate(config, foreground);
 
     return new Loaded(config, configFile, List.copyOf(warnings));
   }
@@ -380,7 +390,7 @@ public class ConfigLoader {
     );
   }
 
-  private void validate(ServerConfig config) throws ConfigException {
+  private void validate(ServerConfig config, boolean foreground) throws ConfigException {
     if (config.context() != null && config.context().jvm() != null && config.capture() == null) throw new ConfigException("context.jvm requires capture");
     if (config.context() != null && !config.context().photonvision().isEmpty() && config.capture() == null) throw new ConfigException("context.photonvision requires capture");
     if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
@@ -397,10 +407,11 @@ public class ConfigLoader {
     }
 
     int port = config.effectivePort();
-    if (port < 1 || port > 65535) {
+    int minimumPort = foreground && config.isHttp() ? 0 : 1;
+    if (port < minimumPort || port > 65535) {
       throw new ConfigException(
           "Invalid port " + port + " in configuration '" + config.name()
-              + "'. Must be between 1 and 65535.");
+              + "'. Must be between " + minimumPort + " and 65535.");
     }
 
     if (config.idleExitMinutes() != null && config.idleExitMinutes() < 0) {

@@ -180,7 +180,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `team` | Your team number, for logs that do not record one | None |
 | `tba_key` | The Blue Alliance API key | `TBA_API_KEY` from the environment |
 | `transport` | `stdio` or `http` | `stdio` |
-| `port` | HTTP port | `2363` |
+| `port` | HTTP port, 1–65535; `run` also accepts `0` for an OS-assigned port | `2363` |
 | `diskcachedir` | Directory for the persistent disk cache | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
 | `diskcachesize` | Maximum disk cache size, in MB | `8192` |
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
@@ -237,6 +237,11 @@ foreground. Logs go to stderr; it writes no PID file and spawns no background se
 transport stop returns 0; a bad configuration or failed HTTP bind returns nonzero with the
 reason. Ctrl-C or SIGTERM requests exit 0 after the shutdown hooks finish. Windows' forced
 process termination cannot be caught; a stdio EOF is a clean stop there.
+
+For a temporary foreground HTTP server, `port: 0` lets the operating system bind an available
+port in one step. Read the actual port from the `MCP HTTP server listening on` line on stderr.
+`start`, `connect`, the internal daemon and service units still require a fixed port from 1
+through 65535, so clients and the health timer know where to reach them.
 
 Only the explicit `--managed` flag makes both `GET /health` and `list_sessions` report
 `managed: true`. A hand-written service unit must pass `--managed`, as the printed unit does.

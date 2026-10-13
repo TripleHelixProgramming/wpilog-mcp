@@ -81,6 +81,20 @@ class ConfigLoaderTest {
 
   // ==================== JSON Parsing ====================
 
+  @Test void ephemeralPortsBelongOnlyToForegroundHttp() throws Exception {
+    var loader = new ConfigLoader();
+    var path = writeYaml("servers: {example: {transport: http, port: 0}}\n");
+    assertEquals(0, loader.loadForegroundDetailed("example", path).config().effectivePort());
+    assertThrows(ConfigException.class, () -> loader.loadDetailed("example", path));
+    assertThrows(ConfigException.class, () -> loader.loadHomeDetailed("example", path));
+    for (int invalid : List.of(-1, 65536)) {
+      writeYaml("servers: {example: {transport: http, port: " + invalid + "}}\n");
+      assertThrows(ConfigException.class, () -> loader.loadForegroundDetailed("example", path));
+    }
+    writeYaml("servers: {example: {transport: stdio, port: 0}}\n");
+    assertThrows(ConfigException.class, () -> loader.loadForegroundDetailed("example", path));
+  }
+
   @Nested
   @DisplayName("JSON parsing")
   class JsonParsingTests {
