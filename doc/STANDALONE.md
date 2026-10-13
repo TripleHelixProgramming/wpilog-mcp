@@ -394,6 +394,11 @@ Prefer `tba_key` in the configuration file, or `TBA_API_KEY`, to `-tba-key`: a c
 
 Several log directories: repeat `-logdir`, or separate them in `WPILOG_DIR` as in `PATH` (`:`, or `;` on Windows); `-logdir` replaces `WPILOG_DIR`'s directories. The server expands `~` only in the configuration file. In a flag or an environment variable, your shell expands it or nothing does: macOS and Linux shells do, but Windows Command Prompt and MCP client configurations do not, so give the full path there.
 
+A configured directory may be a symbolic link. Discovery resolves that root, but does not
+follow links below it. Ordinary WPILOG and REV paths keep the configured spelling; store
+members keep the catalog's resolved paths. Either spelling returned by the listing can be
+passed back to a reading tool.
+
 `wpilog-mcp -debug` on its own is a start with flags too, so it reads no configuration file. To debug a configured server, run `wpilog-mcp start default -debug` or set `debug: true`.
 
 Three environment variables, with no flag or config field, set up the HTTP transport whether the server was started with flags or with `start`:

@@ -9,6 +9,7 @@ import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -400,20 +401,24 @@ public class LogDirectory {
       }
       List<Path> files;
       try {
-        Path storeRoot = dir.toAbsolutePath().normalize();
+        // Resolve only the requested root. FOLLOW_LINKS would also traverse child links,
+        // admitting cycles and unrelated directories. Rebase loose files onto the caller's
+        // spelling; store members keep the catalog's canonical identity.
+        var realDir = dir.toRealPath();
+        Path storeRoot = realDir;
         while (storeRoot != null && !StoreCatalog.isStore(storeRoot)) storeRoot = storeRoot.getParent();
         if (storeRoot != null) {
           var security = new SecurityValidator();
           getLogDirectories().forEach(security::addAllowedDirectory);
           var store = StoreCatalog.read(storeRoot, security);
-          var realDir = realPath(dir);
           files = store.allFiles().stream().filter(f -> f.session() != null)
               .filter(f -> wanted == REVLOG_FILE ? f.file().kind().equals("revlog") : f.file().kind().equals("wpilog"))
               .map(StoreCatalog.StoredFile::path).filter(p -> p.startsWith(realDir)).toList();
         } else {
-          try (var paths = Files.walk(dir, scanDepth)) {
-            files = paths.filter(Files::isRegularFile).filter(wanted)
-                .filter(p -> StoreCatalog.containing(p).isEmpty()).toList();
+          try (var paths = Files.walk(realDir, scanDepth)) {
+            files = paths.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).filter(wanted)
+                .filter(p -> StoreCatalog.containing(p).isEmpty())
+                .map(p -> dir.resolve(realDir.relativize(p))).toList();
           }
         }
       } catch (IOException | UncheckedIOException e) {

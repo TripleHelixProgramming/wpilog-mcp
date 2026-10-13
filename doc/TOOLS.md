@@ -372,6 +372,11 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 
 **Log directories:** at least one configured directory or live session lease is required: `-logdir` (repeatable), `WPILOG_DIR`, or `logdir` in the server configuration (a path or a list). Without one, the call is an error that says how to set it. Local clients may register directories through `POST /directories` (not a tool); see [Directories by lease](STANDALONE.md#directories-by-lease). A logged team wins, then the matching lease team, then the configured default.
 
+A linked root is scanned at its resolved directory; links encountered below the root are not
+followed. Ordinary file paths keep the configured spelling and store paths keep the catalog's
+resolved spelling. Both can be passed directly to a log-reading tool. REV companion discovery
+uses the same root and child-link rules.
+
 **Event, match, and team:** read from the entries that carry them by convention, among the log's first records, and otherwise from the file name.
 
 - Entries: a string `DriverStation/EventName` or `FMSInfo/EventName`; integer `MatchType` (1 practice, 2 qualification, 3 elimination) and `MatchNumber` in the same tables; an integer `SystemStats/TeamNumber`. These are AdvantageKit's tables and the NetworkTables table WPILib's DataLogManager records (`NT:/FMSInfo/...`). An entry of a team's own with a similar name (a `GameState/MatchType` string, a scoreboard table) is not read. A match number counts only while a match type is set: with no match, the Driver Station's number can hold anything.

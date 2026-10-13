@@ -371,7 +371,7 @@ The manager's `acquire` returns a use that tools, streams, and background synchr
 
 ### Path security
 
-A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. The server validator's dynamic set is the union of permanent configuration and live session leases (`ClientLeases`); listings, store discovery, inbox polling, and import validation see the same leases. A server with no configured directory and no lease admits nothing, and cached files receive the same validation as new reads, so a lease that ends takes its files with it. A listing resolves file symlinks before reading metadata, so a link cannot broaden a lease. CSV exports are written only inside the export directory, which is checked the same way.
+A path given to a tool is checked before the file is opened: its real path, with symbolic links resolved, must be inside a configured log directory. The server validator's dynamic set is the union of permanent configuration and live session leases (`ClientLeases`); listings, store discovery, inbox polling, and import validation see the same leases. A server with no configured directory and no lease admits nothing, and cached files receive the same validation as new reads, so a lease that ends takes its files with it. Discovery resolves the configured root before walking, without following links below it: a linked root is usable, while child links cannot introduce cycles or broaden a lease. Ordinary listings retain the configured spelling; store members retain their canonical catalog paths and the real-directory prefix filter. CSV exports are written only inside the export directory, which is checked the same way.
 
 ### Shared read API
 
