@@ -763,6 +763,16 @@ public class Main {
     // Create tool registry and register all tools
     var toolRegistry = new ToolRegistry();
     toolRegistry.setManaged(managed);
+    if (configurationName != null && configurationFile != null) {
+      try {
+        toolRegistry.serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity.open(
+            Path.of(System.getProperty("user.home")), configurationFile, configurationName));
+      } catch (IOException e) {
+        logger().warn("Local visualization state unavailable; using an ephemeral identity: {}", e.getMessage());
+        toolRegistry.serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral(
+            "Durable visualization state unavailable (" + e.getClass().getSimpleName() + "); see the server log"));
+      }
+    }
     WpilogTools.registerAll(toolRegistry);
     org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, null);
     toolRegistry.setServerLocation(captureConfig == null ? ToolRegistry.LOCAL_LOCATION : ToolRegistry.PIT_LOCATION);

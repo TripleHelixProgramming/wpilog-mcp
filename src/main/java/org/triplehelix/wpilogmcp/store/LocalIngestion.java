@@ -123,7 +123,7 @@ public final class LocalIngestion implements AutoCloseable {
   public static Path policyFileFor(Path home, Path canonicalConfig, String name) throws IOException {
     if (name == null || name.isBlank()) throw new IllegalArgumentException("A named server is required");
     return home.toRealPath().resolve(".wpilog-mcp/state/local-ingestion")
-        .resolve(digest(canonicalConfig.toRealPath() + "\n" + name) + ".json");
+        .resolve(org.triplehelix.wpilogmcp.config.ConfigurationIdentity.key(canonicalConfig, name) + ".json");
   }
 
   /** Persistent grants remain separate from client leases, and a paused store remains readable. */

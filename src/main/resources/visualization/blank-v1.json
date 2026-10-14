@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "requirements": [],
+  "time": {
+    "recorded": {
+      "mode": "full"
+    },
+    "live": {
+      "mode": "follow",
+      "window_sec": 30
+    }
+  },
+  "links": {
+    "cursor": true,
+    "time_range": true
+  },
+  "layout": {
+    "columns": 12,
+    "items": []
+  },
+  "panels": []
+}

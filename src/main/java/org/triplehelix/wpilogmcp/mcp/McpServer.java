@@ -76,7 +76,7 @@ public class McpServer {
 
       try {
         var message = JsonParser.parseString(line).getAsJsonObject();
-        var result = handler.handleMessage(message);
+        var result = handler.handleMessage(message, null, CallerContext.Authority.STDIO_LOCAL);
 
         if (result.shouldShutdown()) {
           running = false;

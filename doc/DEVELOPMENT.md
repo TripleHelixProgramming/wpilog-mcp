@@ -377,6 +377,33 @@ oldest supported and current versions by hand:
 
 Native Windows launchers/CLI integration and the interactive installer should also be checked on Windows; Node tests of Windows path/argument rules do not replace that. Installer tests use temporary homes and fake releases/CLIs, never the user's install.
 
+### Visualization Stage 1 lifecycle prototype
+
+`npm run test:visualization` in `vscode-extension` compiles and runs an isolated fixture extension
+in real VS Code; set `VSCODE_VERSION` to an explicit cached/test release (for example `1.101.0`).
+The runner uses a new profile, workspace, shared-data directory where supported, and synthetic backend under `build/visualization-stage1`;
+it does not activate the product extension, start the installed server, or access robot logs.
+On Linux, run it under Xvfb. On macOS it uses the cached editor and opens a disposable window.
+It launches normally rather than using VS Code's in-memory test workbench; its second launch
+checks actual dirty-document restoration and reconciliation of an offline edit. Set
+`WPILOG_VISUALIZATION_DIALOGS=1` for the interactive Close check, then click **Cancel** in the
+fixture's dirty-document dialog. The unattended run does not claim that check. The fixture
+serializes editor switches through a webview acknowledgement, then requires the intended editor
+to stay active for 200 ms. Lost focus retries reveal within one ten-second deadline; native
+Undo/Redo commands are never retried. Deterministic Node tests inject focus loss at and after
+acknowledgement, plus deadline exhaustion. A native cleanup regression starts with B active,
+reveals A before Revert and checks B is unchanged. Each native Undo/Redo must invoke exactly one
+callback and persist the expected configuration. It records callback and focus traces in `initial-native-events.json` (and the
+restore equivalent); it never retries a failed Undo to obtain a pass. Native lifecycle failures are gates,
+not optional passes; evidence must distinguish them from pure controller tests.
+
+Focused server tests are `*Visualization*Test` and `*CallerContextTest`; the ordinary Node suite
+includes visualization controller and recovery-journal tests. The Java contract resource owns
+configuration validation. The fixture backend is a synthetic lifecycle test double, not a second
+production persistence service. Native Save As stays unavailable with a Save view… hint until
+its picker, destination alias, and replacement-tab gates are established. No source overview or
+new visualization commands are registered by normal extension activation in Stage 1.
+
 ### The data endpoint's streams
 
 `DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`. CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.

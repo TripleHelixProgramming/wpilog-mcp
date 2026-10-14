@@ -46,7 +46,11 @@ curl http://127.0.0.1:2363/health
 ```
 
 `start http` prints that the server is running (or already was); `/health` answers with the
-version, configuration `name`, process ID, `managed` and the `gateway` status field. The server's log is at
+version, configuration `name`, process ID, `managed`, the `gateway` status field, and
+`server_instance_id`/`working_state`. A named server normally reports durable local owner
+identity. If its visualization state cannot be opened, it logs a warning and continues with
+ephemeral identity; `working_state_reason` explains the fallback. Unnamed servers also report
+ephemeral identity and a reason. This does not enable visualization editing or create a log store. The server's log is at
 `~/.wpilog-mcp/logs/http.log`.
 
 Startup writes one `Configuring log directory:` line per configured root to that log.

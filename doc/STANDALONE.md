@@ -604,7 +604,19 @@ For browser-based or multi-client access, start the `http` server from `servers.
 wpilog-mcp start http
 ```
 
-The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, configuration `name`, process ID, `managed` ownership. `name` is null for HTTP started with the unnamed legacy flags; stdio has no health route.
+The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, configuration `name`, process ID, `managed` ownership, `server_instance_id`, and `working_state`. `name` is null for HTTP started with the unnamed legacy flags; stdio has no health route.
+
+Named servers persist their local visualization owner identity in
+`~/.wpilog-mcp/state/visualizations/<config-key>/server.json`. The key is SHA-256 of the real
+configuration path, a newline, and the server name; changing the port preserves it. Health and
+`get_server_guide` report the same `server_instance_id` with `working_state: "durable"`.
+If that state directory cannot be opened (including a refused symlink or permission denial),
+the server logs a warning and continues with a fresh ephemeral identity. Unnamed servers also
+report `working_state: "ephemeral"`. In both cases, `working_state_reason` explains why durable
+recovery is unavailable; restarting may change the owner ID. This fallback does not stop log
+analysis or recording.
+This identity creates no log store or ingestion policy. Reusable visualization editing is still
+an isolated development prototype, not an enabled server route or Explorer workflow.
 
 Without a PID record, `start` and `connect` adopt a server only when its health name matches
 the requested configuration. Another name is refused with its owner, PID, stop command and

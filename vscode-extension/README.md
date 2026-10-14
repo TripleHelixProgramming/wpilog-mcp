@@ -72,6 +72,10 @@ The extension host calls the same tools as the assistant and fetches samples thr
 
 **WPILog Explorer: Ask about this selection**, in the editor title and context menu, sends the path, selected entries, window and pane kind to VS Code chat. It names `get_statistics` first for a plot selection, `search_strings` for console text, or `render_chart` for a pane. If chat cannot be opened, the prompt is copied to the clipboard with a notice. Prefilling other assistants remains an open question; paste is the portable route.
 
+The reusable visualization editor is still an isolated development prototype. Stage 1 tests its
+revision and recovery contracts; it adds no commands to the installed Explorer and does not
+change which editor opens logs. [Development checks](../doc/DEVELOPMENT.md#visualization-stage-1-lifecycle-prototype) describe the opt-in fixture.
+
 ## A Data Store That Follows Your Folders
 
 Continuous folder imports are experimental and disabled by default. To test them, enable

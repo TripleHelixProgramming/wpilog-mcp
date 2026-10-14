@@ -280,7 +280,7 @@ public final class StoreCatalog {
     if (strays) try (var walk = Files.walk(root)) {
       for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
         if (!header.mirror() && path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))
-            || path.startsWith(root.resolve(".local-ingestion")) || path.startsWith(root.resolve(".rev-reconsideration"))) continue;
+            || path.startsWith(root.resolve("visualizations")) || path.startsWith(root.resolve(".local-ingestion")) || path.startsWith(root.resolve(".rev-reconsideration"))) continue;
         io.check(path);
         if (!managed.contains(path)) unmanaged.add(path);
       }

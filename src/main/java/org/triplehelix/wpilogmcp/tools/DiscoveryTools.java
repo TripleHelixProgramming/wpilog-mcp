@@ -39,7 +39,7 @@ public final class DiscoveryTools {
   public static void registerAll(ToolRegistry registry) {
     java.util.function.Predicate<String> available = name -> !List.of("list_sessions", "get_latest_values", "wait_for_change").contains(name)
         || registry.getTool(name) != null;
-    registry.registerTool(new GetServerGuideTool(registry::getServerLocation, available));
+    registry.registerTool(new GetServerGuideTool(registry::getServerLocation, available, () -> registry.serverIdentity().describe()));
     registry.registerTool(new SuggestToolsTool(available));
   }
 
@@ -482,7 +482,12 @@ public final class DiscoveryTools {
     GetServerGuideTool() { this(() -> ToolRegistry.LOCAL_LOCATION); }
     private final java.util.function.Predicate<String> available;
     GetServerGuideTool(java.util.function.Supplier<String> location) { this(location, name -> !name.equals("list_sessions") && !name.equals("get_latest_values") && !name.equals("wait_for_change")); }
-    GetServerGuideTool(java.util.function.Supplier<String> location, java.util.function.Predicate<String> available) { this.location = location; this.available = available; }
+    private final java.util.function.Supplier<JsonObject> identity;
+    GetServerGuideTool(java.util.function.Supplier<String> location, java.util.function.Predicate<String> available) {
+      this(location, available, org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral()::describe);
+    }
+    GetServerGuideTool(java.util.function.Supplier<String> location, java.util.function.Predicate<String> available,
+        java.util.function.Supplier<JsonObject> identity) { this.location = location; this.available = available; this.identity = identity; }
     private List<ToolInfo> catalog() { return TOOL_CATALOG.stream().filter(t -> available.test(t.name())).toList(); }
 
     @Override
@@ -494,7 +499,7 @@ public final class DiscoveryTools {
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
           + "Returns a structured overview of all " + catalog().size() + " tools organized by category, with usage guidance "
-          + "and anti-patterns to avoid, plus server_location describing this server's local or pit role, and analysis_principles: how to reason about results "
+          + "and anti-patterns to avoid, plus server_instance_id and working_state (durable or ephemeral local recovery identity), working_state_reason when ephemeral, server_location describing this server's local or pit role, and analysis_principles: how to reason about results "
           + "without confabulating (method, confidence calibration, traps, report format). "
           + "This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
@@ -534,6 +539,7 @@ public final class DiscoveryTools {
       var result = new JsonObject();
       result.addProperty("success", true);
       result.addProperty("server_location", location.get());
+      identity.get().entrySet().forEach(e -> result.add(e.getKey(), e.getValue()));
 
       // Overview section
       var overview = new JsonObject();

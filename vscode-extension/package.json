@@ -631,7 +631,8 @@
     "test": "tsc -p ./ && node out/test/runTests.js",
     "test:smoke": "tsc -p ./ && node out/smoke/run.js",
     "test:smoke:plants": "tsc -p ./ && node out/smoke/plants.js",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test:visualization": "tsc -p ./ && node out/smoke/visualizationRun.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

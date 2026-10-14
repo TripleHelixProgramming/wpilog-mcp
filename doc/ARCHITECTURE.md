@@ -796,6 +796,44 @@ or a test command. It does not expose the extension context, SecretStorage, or s
 The smoke owns a disposable standalone install and an argv-recording Claude executable;
 ordinary Node tests and packaged extension code do not load its Electron runner.
 
+### Visualization Stage 1 contracts
+
+The replacement editor is an isolated lifecycle prototype; normal activation still registers the
+existing editor. The Java visualization contract resource is the authority for source references
+and declarative configuration. Strict raw-text parsing rejects duplicate keys, non-finite
+numbers, lone surrogates, unknown fields, future versions, and excessive depth/size before state
+admission. The internal object-taking validators cannot recover duplicate keys discarded by an
+earlier parser. Stage 2b adapters must validate raw JSON before ordinary JSON-RPC parsing (or
+carry the definition as raw text); parsed-object validation alone does not establish that promise.
+No source connection, credential, sample buffer, or filesystem locator is part of a durable source
+reference. Binding and telemetry still belong to the existing resolver and reader.
+
+A named configuration owns a persistent server UUID in its independent visualization state
+folder. If opening that optional state fails, startup warns and uses an ephemeral identity;
+health and the guide report the reason. Working-state operations use their own bounded,
+single-worker queue (64 pending jobs),
+atomic replacement, and exclusive cross-process state lock. They never join recording or import
+work. Limits are 256 working records, 256 MiB aggregate metadata, and 1 MiB per configuration;
+quota exhaustion retains existing work, and every budget check first removes expired records.
+A malformed or unknown working record moves intact to `quarantine/<uuid>/` under the state
+directory with a warning; valid records still load. Quarantine is outside the active-state quota
+and is retained for manual inspection. A failed quarantine move retains the original and fails
+recovery. Detached records carry a 30-day recovery expiry; attachments currently last until
+explicit detach or restart. Stage 2a client registration must detach a crashed window on session
+expiry, through this queue, without releasing other windows. Shutdown stops admission,
+allows queued operations to drain, and waits at most two seconds; a daemon cleanup task retains
+the state lock until that drain completes. The Stage 1 API is internal, without public routes.
+
+Saved-view writes use the store's existing queue, cross-process lock, containment checks, mirror
+refusal, and atomic writer. Revision comparison happens under that lock. Visualization metadata
+is excluded from unmanaged-file discovery; older readers can still list it as stray metadata.
+
+Caller authority is a separate immutable request value. Stdio explicitly grants trusted-local
+authority. HTTP derives it from the actual loopback listener, loopback peer, and Origin for each
+single or batch call. An omitted context is untrusted. The handler clears authority and session
+state in `finally`; queued mutations receive the captured value rather than reading a later
+thread-local. No new acquisition connection or telemetry pipeline is introduced.
+
 ## Known Limits
 
 - A WPILOG file over 1 TiB is not loaded; single records still have the upstream decoder's int-sized buffer bound.

@@ -479,6 +479,20 @@ The reader also resumes another process's growing file from its incomplete-tail
 boundary, copying the prior index after identity and header/last-record checks. Unknown
 identity or failed anchors load afresh.
 
+### 9.4 Reusable visualization documents
+
+[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stage 1 supplies internal
+contracts and an isolated native lifecycle prototype, accepted by its second implementation review;
+Stage 2a is next. Client
+session expiry must release crashed-window attachments in Stage 2a, and Stage 2b must preserve
+raw JSON through duplicate-key validation at its adapters; neither integration exists in Stage 1. Source
+overviews, unsaved-view navigation, real source binding, the public adapters and templates,
+notification delivery, and live following are not enabled by this foundation. Native Save As
+requires proof of the real picker, destination alias, and replacement behavior; until then it
+refuses with a Save view… hint. The decoded-buffer setting (64 MiB default) belongs to the Stage 3
+broker, not to the legacy editor. Record unresolved native/platform gates in the Stage 1 report
+before proceeding.
+
 ### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.
 

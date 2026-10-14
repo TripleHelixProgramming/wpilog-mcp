@@ -97,6 +97,18 @@ public class McpMessageHandler {
    * @return The handler result containing the response and shutdown flag
    */
   public HandlerResult handleMessage(JsonObject message, McpSession session) {
+    return handleMessage(message, session, CallerContext.Authority.UNTRUSTED);
+  }
+
+  /** Only transports supply authority; no session or null-session convention implies trust. */
+  public HandlerResult handleMessage(JsonObject message, McpSession session, CallerContext.Authority authority) {
+    CallerContext.set(authority);
+    SessionContext.set(session);
+    try { return dispatchMessage(message, session); }
+    finally { CallerContext.clear(); SessionContext.clear(); }
+  }
+
+  private HandlerResult dispatchMessage(JsonObject message, McpSession session) {
     var id = message.get("id");
     var params = message.get("params");
     boolean isNotification = id == null || id.isJsonNull();

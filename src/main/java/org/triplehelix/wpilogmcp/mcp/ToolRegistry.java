@@ -22,6 +22,10 @@ public class ToolRegistry {
   private static final Logger logger = LoggerFactory.getLogger(ToolRegistry.class);
 
   private final Map<String, Tool> tools = new ConcurrentHashMap<>();
+  private volatile org.triplehelix.wpilogmcp.visualization.ServerIdentity identity =
+      org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral();
+  public org.triplehelix.wpilogmcp.visualization.ServerIdentity serverIdentity() { return identity; }
+  public void serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity value) { identity = java.util.Objects.requireNonNull(value); }
   private volatile boolean managed;
   public void setManaged(boolean value) { managed = value; }
   public boolean isManaged() { return managed; }

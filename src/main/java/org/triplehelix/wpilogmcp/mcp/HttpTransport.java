@@ -499,6 +499,12 @@ public class HttpTransport {
     }
   }
 
+  private CallerContext.Authority callerAuthority(HttpExchange exchange) {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    return CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(),
+        origin == null || isAllowedOrigin(origin));
+  }
+
   private void handleSinglePost(HttpExchange exchange, JsonObject message) throws IOException {
     // Determine if this is an initialize request (no session required). A non-string method is
     // not a crash: the handler answers it with an invalid-request error.
@@ -520,7 +526,7 @@ public class HttpTransport {
     }
 
     // Handle the message
-    var result = handler.handleMessage(message, session);
+    var result = handler.handleMessage(message, session, callerAuthority(exchange));
 
     if (result.response() == null) {
       // Notification — no response body
@@ -578,7 +584,7 @@ public class HttpTransport {
         continue;
       }
       var msg = element.getAsJsonObject();
-      var result = handler.handleMessage(msg, session);
+      var result = handler.handleMessage(msg, session, callerAuthority(exchange));
       if (result.newSessionId() != null) {
         newSessionId = result.newSessionId();
         // Update session for subsequent messages in the batch
@@ -865,6 +871,7 @@ public class HttpTransport {
     health.addProperty("version", Version.VERSION);
     health.addProperty("name", configurationName);
     health.addProperty("pid", ProcessHandle.current().pid());
+    toolRegistry.serverIdentity().describe().entrySet().forEach(e -> health.add(e.getKey(), e.getValue()));
     health.add("gateway", gatewayStatus.get().json());
     var bytes = gson.toJson(health).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", "application/json");

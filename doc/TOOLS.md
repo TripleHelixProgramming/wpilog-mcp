@@ -106,6 +106,8 @@ These two tools tell an agent which tools exist and when to use them. The descri
 
 ### `get_server_guide`
 
+`server_instance_id` identifies this server's local working-state owner; `working_state` is `durable` for a named configuration with persisted identity and `ephemeral` otherwise. An ephemeral owner also reports `working_state_reason`: either the unnamed-server limit or a durable-state startup failure, whose details are logged. Such a failure warns and permits startup. These fields also appear in HTTP health. They identify an owner, not a source, connection credential, or permission grant.
+
 `server_location` identifies whether this server supplies local files or a live recording and explains that completed mirrors answer from the same bytes offline.
 An overview of every tool, grouped by category, with usage guidance and the mistakes each category is meant to prevent. Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code keeps the description loaded even when it defers other MCP tools.
 

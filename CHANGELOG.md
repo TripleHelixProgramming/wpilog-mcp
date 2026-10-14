@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Visualization Stage 1 adds shared definition validation, bounded revisioned working-state and store metadata primitives, transport-derived local caller authority, and an isolated native-editor lifecycle prototype. Previously views had no durable owner identity or revision contract. Named servers report `server_instance_id` and `working_state` through health and the server guide; unavailable optional state warns and uses ephemeral identity with `working_state_reason`. The unreleased prototype retains conflicting backups for comparison, releases the native Save acknowledgement wait after five seconds with a warning, quarantines bad working records intact, and prunes expired drafts before quota checks. Normal log opening still uses the existing Explorer editor.
+
 - The Entries sidebar now offers **Group by: Path / Data type**, remembered per workspace. Data-type groups show entry counts and full signal paths while retaining filtering and lazy field expansion; previously entries could only be browsed by their path hierarchy.
 - `./gradlew runExtension` compiles the extension, opens it in a VS Code development window, and watches TypeScript changes. `openExtension` opens without watching; `watchExtension` watches without opening. These tasks find Node on PATH or in an existing Codex runtime, with an explicit executable override, and reuse the installer's editor lookup. Previously local UI iteration required separate compiler and editor commands.
 - The Entries sidebar now filters full signal paths in an inline text field, with clear and Collapse All controls. Previously filtering opened a separate input dialog and the view had no collapse-all action; unopened groups remain searchable and matching paths open to reveal their entries.
@@ -255,6 +257,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now defaults to `contents: read`; only dependency-submission jobs can write the dependency graph. Previously build jobs inherited the repository token defaults. This restriction concerns the build, not permissions in the server or extension.
 
 ### Testing
+
+- Native visualization lifecycle checks now wait for renderer acknowledgement and assert the Undo/Redo callback and server state; the earlier fixture raced editor switches and could report intermittent Undo timeouts. Callback traces and repeated switches make the target observable.
 
 - The provider-reason documentation check now reads paragraphs by lines and exercises both LF and CRLF. Previously regex backtracking treated one Windows line ending as a blank paragraph and hid the documented sampling-budget explanation.
 - The pulled-file replacement regression now mutates after cached readers are released and asserts the exact changed-after-verification refusal, retained stage and unchanged progress. Previously Windows refused the fixture's truncation of a mapped file before the intended placement guard could run.
